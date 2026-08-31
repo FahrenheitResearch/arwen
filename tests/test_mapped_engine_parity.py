@@ -2388,6 +2388,14 @@ def test_the_compose_registry_covers_every_registered_composition_source():
         # be permanently skipped rather than covered.  It is reported by
         # `--kind compose --list` the moment the bytes appear.
         "20crv3-cf": "no staged NetCDF-CF corpus",
+        # The ERA5 native-model-level source (registered 960dda063,
+        # 2026-08-20, without a row here): its composition takes a
+        # 137-level model-level series plus the same hour's
+        # pressure-level/single-level donor, and no such pair is in the
+        # staging tree on any box this battery has run on.  Same posture
+        # as 20crv3-cf: stage the pair, extract the golden with
+        # `--kind compose --source era5-l137`, and delete this entry.
+        "era5-l137": "no staged ERA5 model-level + same-hour donor pair",
     }
     registered = {
         adapter.source_id for adapter in source_adapters()

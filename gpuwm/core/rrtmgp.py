@@ -1593,9 +1593,12 @@ def cal_cldfra1(qv, qc, qi, qs, tlay, play, *, f_qc=True, f_qi=True,
 
     Moisture-set dispatch mirrors the driver flags: ``f_qc and f_qi and
     f_qs`` is the Morrison-class branch (lines 3870-3877, QCLD=QI+QC+QS,
-    weight=(QI+QS)/QCLD); ``f_qc`` alone is the Kessler-class branch
-    (lines 3891-3899, QCLD=QC, 273.15 K phase threshold).  Rain never
-    enters QCLD (lines 3904-3916).
+    weight=(QI+QS)/QCLD); ``f_qc and f_qi and not f_qs`` is the branch WRF
+    comments "for P3, mp option 50 or 51" (lines 3879-3887, QCLD=QI+QC,
+    weight=QI/QCLD), for a package with one ice category and no snow
+    species; ``f_qc`` alone is the Kessler-class branch (lines 3891-3899,
+    QCLD=QC, 273.15 K phase threshold).  Rain never enters QCLD (lines
+    3904-3916).
     """
     import cupy as cp
 
@@ -1607,10 +1610,16 @@ def cal_cldfra1(qv, qc, qi, qs, tlay, play, *, f_qc=True, f_qi=True,
     qs = _device_profile(qs, qv.shape, "qs")
     tlay = _device_profile(tlay, qv.shape, "tlay")
     play = _device_profile(play, qv.shape, "play")
-    if not f_qc or f_qi != f_qs:
+    if not f_qc or (f_qs and not f_qi):
         raise NotImplementedError(
-            "cal_cldfra1 port supports the qc-only (Kessler) and qc+qi+qs "
-            "(Morrison) WRF moisture sets")
+            "cal_cldfra1 port carries WRF's three F_QC arms: qc+qi+qs "
+            "(module_radiation_driver.F:3870-3877), qc+qi with no snow "
+            "species (the P3 arm, :3879-3887) and qc alone (:3891-3899). "
+            f"f_qc={bool(f_qc)}/f_qi={bool(f_qi)}/f_qs={bool(f_qs)} is "
+            "WRF's mp=5 arm at :3902-3922, whose weight is the F_ICE_PHY "
+            "ice fraction this port does not carry -- taking any other arm "
+            "for it would weight the saturation blend with a field that "
+            "does not exist")
     qcldmin = DTYPE(1.0e-12)
     svpt0 = DTYPE(273.15)
     tc = tlay - svpt0
@@ -1621,10 +1630,18 @@ def cal_cldfra1(qv, qc, qi, qs, tlay, play, *, f_qc=True, f_qi=True,
     ep2 = DTYPE(287.0) / DTYPE(461.6)
     qvsw = ep2 * esw / (play - esw)
     qvsi = ep2 * esi / (play - esi)
-    if f_qi:
+    if f_qi and f_qs:
         qcld = qi + qc + qs
         weight = cp.where(qcld < qcldmin, DTYPE(0.0),
                           (qi + qs) / cp.maximum(qcld, qcldmin))
+    elif f_qi:
+        # module_radiation_driver.F:3879-3887, "for P3, mp option 50 or
+        # 51": one ice category, no snow species, so QS never enters QCLD
+        # and the ice weight is QI/QCLD.  qs is ignored here rather than
+        # added as a zero -- a package without qs has no such array.
+        qcld = qi + qc
+        weight = cp.where(qcld < qcldmin, DTYPE(0.0),
+                          qi / cp.maximum(qcld, qcldmin))
     else:
         qcld = qc
         weight = cp.where(qcld < qcldmin, DTYPE(0.0),

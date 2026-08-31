@@ -14,6 +14,7 @@ use std::time::Instant;
 use rayon::prelude::*;
 
 use crate::error::{MpasError, MpasResult};
+use crate::staticfile::coordframe::CoordinateRepresentation;
 use crate::static_geog::{GeogDataset, SourceGeometry, SourceKind, TileRef};
 use crate::static_memory::{
     checked_len, checked_vec, checked_vec_filled, checked_vec_with, plan_tile_parallelism,
@@ -111,6 +112,18 @@ pub struct StaticBuildConfig {
     /// receipt that pinned its sha256 pointing at different bytes under the
     /// same name.
     pub clobber: bool,
+    /// How the fifteen coordinate arrays are stored, and what the file
+    /// DECLARES it stored them as.
+    ///
+    /// [`CoordinateRepresentation::Binary32EarthCentred`] is the default and
+    /// is what preserves the dycore byte-identity anchor: it is what native
+    /// MPAS-A writes and what both published statics carry.
+    /// [`CoordinateRepresentation::Binary64EarthCentred`] is legal only for a
+    /// mesh with NO native counterpart, where there is nothing to be
+    /// byte-identical to; `rw_mpas_static` takes it from the grid file's own
+    /// declaration rather than from a flag, so the choice travels with the
+    /// mesh instead of with the command line.
+    pub coordinates: CoordinateRepresentation,
 }
 
 /// The `xtime` a static carries when a caller did not say.
@@ -2374,6 +2387,22 @@ fn write_static(
             NcAttr::text("long_name", long),
         ])
     };
+    // The FIFTEEN coordinate arrays -- the three lat/lon/xyz families -- are
+    // the only ones whose type follows `cfg.coordinates`.  They move together
+    // because the port cross-checks xyz against the lat/lon pair beside it and
+    // tightens its comparison the moment it sees binary64 metrics; a binary64
+    // `xCell` beside a binary32 `latCell` fails the load.  Every METRIC
+    // (dcEdge, dvEdge, areaCell, areaTriangle, kiteAreasOnVertex,
+    // weightsOnEdge) stays binary32 whatever the coordinates do: a stored
+    // metric is a relative quantity that binary32 carries to 6e-8 at any
+    // length, and leaving them alone keeps the port's `metric_rtol` on its
+    // 2.0e-5 binary32 branch -- the branch every published mesh is judged on.
+    let coord = |name: &str, dd: Vec<usize>, units: &str, long: &str| -> NcVarDef {
+        NcVarDef::new(name, cfg.coordinates.nc_type(), dd).with_attrs(vec![
+            NcAttr::text("units", units),
+            NcAttr::text("long_name", long),
+        ])
+    };
     let int = |name: &str, dd: Vec<usize>, long: &str| -> NcVarDef {
         NcVarDef::new(name, NcType::Int, dd)
             .with_attrs(vec![NcAttr::text("units", "-"), NcAttr::text("long_name", long)])
@@ -2384,23 +2413,23 @@ fn write_static(
             NcAttr::text("units", "YYYY-MM-DD_hh:mm:ss"),
             NcAttr::text("long_name", "Model valid time"),
         ]),
-        flt("latCell", vec![d_c], "rad", "Latitude of cells"),
-        flt("lonCell", vec![d_c], "rad", "Longitude of cells"),
-        flt("xCell", vec![d_c], "m", "Cartesian x-coordinate of cells"),
-        flt("yCell", vec![d_c], "m", "Cartesian y-coordinate of cells"),
-        flt("zCell", vec![d_c], "m", "Cartesian z-coordinate of cells"),
+        coord("latCell", vec![d_c], "rad", "Latitude of cells"),
+        coord("lonCell", vec![d_c], "rad", "Longitude of cells"),
+        coord("xCell", vec![d_c], "m", "Cartesian x-coordinate of cells"),
+        coord("yCell", vec![d_c], "m", "Cartesian y-coordinate of cells"),
+        coord("zCell", vec![d_c], "m", "Cartesian z-coordinate of cells"),
         int("indexToCellID", vec![d_c], "Mapping from local array index to global cell ID"),
-        flt("latEdge", vec![d_e], "rad", "Latitude of edges"),
-        flt("lonEdge", vec![d_e], "rad", "Longitude of edges"),
-        flt("xEdge", vec![d_e], "m", "Cartesian x-coordinate of edges"),
-        flt("yEdge", vec![d_e], "m", "Cartesian y-coordinate of edges"),
-        flt("zEdge", vec![d_e], "m", "Cartesian z-coordinate of edges"),
+        coord("latEdge", vec![d_e], "rad", "Latitude of edges"),
+        coord("lonEdge", vec![d_e], "rad", "Longitude of edges"),
+        coord("xEdge", vec![d_e], "m", "Cartesian x-coordinate of edges"),
+        coord("yEdge", vec![d_e], "m", "Cartesian y-coordinate of edges"),
+        coord("zEdge", vec![d_e], "m", "Cartesian z-coordinate of edges"),
         int("indexToEdgeID", vec![d_e], "Mapping from local array index to global edge ID"),
-        flt("latVertex", vec![d_v], "rad", "Latitude of vertices"),
-        flt("lonVertex", vec![d_v], "rad", "Longitude of vertices"),
-        flt("xVertex", vec![d_v], "m", "Cartesian x-coordinate of vertices"),
-        flt("yVertex", vec![d_v], "m", "Cartesian y-coordinate of vertices"),
-        flt("zVertex", vec![d_v], "m", "Cartesian z-coordinate of vertices"),
+        coord("latVertex", vec![d_v], "rad", "Latitude of vertices"),
+        coord("lonVertex", vec![d_v], "rad", "Longitude of vertices"),
+        coord("xVertex", vec![d_v], "m", "Cartesian x-coordinate of vertices"),
+        coord("yVertex", vec![d_v], "m", "Cartesian y-coordinate of vertices"),
+        coord("zVertex", vec![d_v], "m", "Cartesian z-coordinate of vertices"),
         int("indexToVertexID", vec![d_v], "Mapping from local array index to global vertex ID"),
         int("cellsOnEdge", vec![d_e, d_two], "IDs of cells divided by an edge"),
         int("nEdgesOnCell", vec![d_c], "Number of edges forming the boundary of a cell"),
@@ -2523,7 +2552,7 @@ fn write_static(
         )));
     }
 
-    let gattrs = vec![
+    let mut gattrs = vec![
         NcAttr::text("mesh_spec", crate::mesh::emit::MESH_SPEC),
         NcAttr::text("on_a_sphere", "YES"),
         NcAttr::floats("sphere_radius", vec![mesh.sphere_radius as f32]),
@@ -2542,6 +2571,9 @@ fn write_static(
         // makes two identical builds unregisterable under the same name.
         NcAttr::text("rw_static_provenance_json", provenance_json.to_string()),
     ];
+    // The coordinate frame is DECLARED, never inferred.  See
+    // `staticfile::coordframe` for what an inferred one breaks.
+    gattrs.extend(cfg.coordinates.declaration_attributes(mesh.sphere_radius));
 
     let mut w = NcClassicWriter::create(
         &cfg.out_path,
@@ -2564,23 +2596,37 @@ fn write_static(
             w.put($name, NcData::Floats(&tmp))?;
         }};
     }
-    put_f!("latCell", &mesh.lat_cell);
-    put_f!("lonCell", &mesh.lon_cell);
-    put_f!("xCell", &mesh.x_cell);
-    put_f!("yCell", &mesh.y_cell);
-    put_f!("zCell", &mesh.z_cell);
+    // A coordinate array goes out in the DECLARED representation, and nothing
+    // else does.  At binary32 this is byte-for-byte the `put_f!` path (the
+    // same `f32_from_f64` on the same values); at binary64 the f64 the mesh
+    // was derived in reaches the file unrounded.
+    macro_rules! put_coord {
+        ($name:literal, $v:expr) => {{
+            if cfg.coordinates.is_binary64() {
+                w.put($name, NcData::Doubles($v))?;
+            } else {
+                let tmp = f32_from_f64($v);
+                w.put($name, NcData::Floats(&tmp))?;
+            }
+        }};
+    }
+    put_coord!("latCell", &mesh.lat_cell);
+    put_coord!("lonCell", &mesh.lon_cell);
+    put_coord!("xCell", &mesh.x_cell);
+    put_coord!("yCell", &mesh.y_cell);
+    put_coord!("zCell", &mesh.z_cell);
     w.put("indexToCellID", NcData::Ints(&mesh.index_to_cell_id))?;
-    put_f!("latEdge", &mesh.lat_edge);
-    put_f!("lonEdge", &mesh.lon_edge);
-    put_f!("xEdge", &mesh.x_edge);
-    put_f!("yEdge", &mesh.y_edge);
-    put_f!("zEdge", &mesh.z_edge);
+    put_coord!("latEdge", &mesh.lat_edge);
+    put_coord!("lonEdge", &mesh.lon_edge);
+    put_coord!("xEdge", &mesh.x_edge);
+    put_coord!("yEdge", &mesh.y_edge);
+    put_coord!("zEdge", &mesh.z_edge);
     w.put("indexToEdgeID", NcData::Ints(&mesh.index_to_edge_id))?;
-    put_f!("latVertex", &mesh.lat_vertex);
-    put_f!("lonVertex", &mesh.lon_vertex);
-    put_f!("xVertex", &mesh.x_vertex);
-    put_f!("yVertex", &mesh.y_vertex);
-    put_f!("zVertex", &mesh.z_vertex);
+    put_coord!("latVertex", &mesh.lat_vertex);
+    put_coord!("lonVertex", &mesh.lon_vertex);
+    put_coord!("xVertex", &mesh.x_vertex);
+    put_coord!("yVertex", &mesh.y_vertex);
+    put_coord!("zVertex", &mesh.z_vertex);
     w.put("indexToVertexID", NcData::Ints(&mesh.index_to_vertex_id))?;
 
     // Topology goes out exactly as the grid stored it; see the `raw_*` note
@@ -3126,11 +3172,22 @@ pub fn build_static_reporting(
     // contract change; stale-guard audit 2026-08-25, finding 3).  This
     // reading decides whether the mesh being built can reach a forecast.
     let f32v = |v: &[f64]| -> Vec<f32> { v.iter().map(|&x| x as f32).collect() };
+    // Coordinates go through the DECLARED representation, metrics always
+    // through f32: that is exactly what the writer below does, so this
+    // reading is taken on the bytes the file will carry rather than on a
+    // model of them.
+    let coordv = |v: &[f64]| -> Vec<f64> {
+        if cfg.coordinates.is_binary64() {
+            v.to_vec()
+        } else {
+            v.iter().map(|&x| (x as f32) as f64).collect()
+        }
+    };
     let fp32_metric_agreement = crate::staticfile::fp32metrics::measure(
         &f32v(&mesh.dv_edge),
-        &f32v(&mesh.x_vertex),
-        &f32v(&mesh.y_vertex),
-        &f32v(&mesh.z_vertex),
+        &coordv(&mesh.x_vertex),
+        &coordv(&mesh.y_vertex),
+        &coordv(&mesh.z_vertex),
         &mesh
             .raw_vertices_on_edge
             .iter()
@@ -3138,6 +3195,7 @@ pub fn build_static_reporting(
             .collect::<Vec<i64>>(),
         &f32v(&mesh.dc_edge),
         mesh.sphere_radius,
+        cfg.coordinates,
     );
     progress(&format!(
         "FP32METRICS\t{:.3e}\t{:.3}\t{}\t{:.3e}\t{}\t{}",
@@ -4010,6 +4068,7 @@ mod tests {
                 valid_time: DEFAULT_VALID_TIME.to_string(),
                 nominal_dx_m: None,
                 clobber: true,
+                coordinates: CoordinateRepresentation::default(),
             }
         }
     }

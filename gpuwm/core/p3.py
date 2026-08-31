@@ -1704,8 +1704,15 @@ def _from_slab(dev, slab) -> None:
     dev[...] = _as_backend(dev, host)
 
 
-def apply(state, cfg, dt: float, *, refl_10cm_due: bool = False):
-    """Prepare WRF's microphysics inputs and run P3 on ``state`` in place.
+def apply_reference(state, cfg, dt: float, *, refl_10cm_due: bool = False):
+    """THE REFERENCE/DEBUG PATH: prepare WRF's inputs and run the CPU
+    float32 transcription on ``state`` in place.
+
+    This is not the production path -- :func:`apply` dispatches to the
+    device kernels (``gpuwm/core/p3_device.py``).  It is kept, and kept
+    reachable through ``run.p3_backend = "reference"``, because it is
+    what every later device optimisation is checkable against and it is
+    what runs where there is no CuPy at all.
 
     The CPU float32 authority runs on host copies of the device state and
     the results are written back; see the module docstring for the
@@ -1831,3 +1838,152 @@ def apply(state, cfg, dt: float, *, refl_10cm_due: bool = False):
     return MicrophysicsDiagnostics(
         rainnc=rainnc, rainncv=rainncv, sr=sr,
         snownc=snownc, snowncv=snowncv)
+
+
+# ---------------------------------------------------------------------------
+# The production adapter: device-resident P3.
+# ---------------------------------------------------------------------------
+
+def _p3_backend(state, cfg) -> str:
+    """Which arm this call takes, and why.
+
+    ``run.p3_backend`` selects; ``cuda`` is the default and is what "fixed"
+    means here.  The reference path is taken WITHOUT being asked when the
+    state is not on a CuPy backend at all -- a host-array state has no
+    device to launch on, and refusing there would turn every CPU-side unit
+    test of the scheme into a GPU test.
+    """
+    want = str(getattr(cfg, "p3_backend", "cuda"))
+    if want == "reference":
+        return "reference"
+    if not hasattr(state.qv, "get"):        # host arrays: no device to use
+        return "reference"
+    return want
+
+
+def apply(state, cfg, dt: float, *, refl_10cm_due: bool = False):
+    """Run P3 on ``state`` in place, on the card.
+
+    Prognostic state never leaves the device.  The lookup tables are
+    uploaded once per process and stay resident.  The per-step host work is
+    the kernel launches and nothing else: no slab transpose, no host copy
+    of any prognostic field, no Python loop over columns.
+
+    ``run.p3_backend = "reference"`` selects the CPU float32 transcription
+    (:func:`apply_reference`) instead, and a state whose arrays are not on
+    a CuPy backend takes that path automatically.
+    """
+    backend = _p3_backend(state, cfg)
+    if backend == "reference":
+        return apply_reference(state, cfg, dt, refl_10cm_due=refl_10cm_due)
+
+    import cupy as cp
+
+    from gpuwm.core import constants as c
+    from gpuwm.core import p3_device as PD
+    from gpuwm.core.microphysics import (MicrophysicsDiagnostics,
+                                         moist_physics_finish,
+                                         save_pre_mp_theta)
+    from gpuwm.core.state import DTYPE
+
+    required = ("qi", "nr", "ni", "qir", "qib", "th_old", "qv_old")
+    missing = [name for name in required
+               if getattr(state, name, None) is None]
+    if missing:
+        raise ValueError("mp_physics=50 state lacks P3 fields: "
+                         + ", ".join(missing))
+    # p3_init stays on the host and runs once: it carries the loud SHA-256
+    # table refusal, which must fire before any live state is touched.
+    runtime = p3_init()
+    tables = PD.device_tables(runtime)
+
+    nz, ny, nx = state.p.shape
+    ncol = ny * nx
+    thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
+    phb = state.phb if state.phb.ndim == 3 else state.phb[:, None, None]
+
+    th_dev = state.scratch((nz, ny, nx), "mp_th")
+    dz_dev = state.scratch((nz, ny, nx), "mp_dz8w")
+    z8w = state.scratch((nz + 1, ny, nx), "mp_z8w")
+    th_dev[...] = thb + state.thp
+    z8w[...] = (phb + state.php) / DTYPE(c.G)
+    dz_dev[...] = z8w[1:] - z8w[:-1]
+    # ``mp_pii`` is NOT allocated on this path.  The device kernels build
+    # the Exner factor themselves from pres, exactly where the authority
+    # builds it (:2293), so a separate full-domain array would be a second
+    # copy of a value the kernel already holds in a register.
+
+    surface = (ny, nx)
+    diag_slots = {"zdbz": "refl_10cm", "effc": "p3_effc", "effi": "p3_effi",
+                  "vmi": "p3_vmi", "di": "p3_di", "rhopo": "p3_rhopo"}
+    diag = {name: state.scratch((nz, ny, nx), slot)
+            for name, slot in diag_slots.items()}
+    surf_slots = {"prt_liq": "p3_prt_liq", "prt_sol": "p3_prt_sol",
+                  "rainnc": "mp_rainnc", "rainncv": "mp_rainncv",
+                  "sr": "mp_sr", "snownc": "mp_snownc",
+                  "snowncv": "mp_snowncv"}
+    surf = {name: state.scratch(surface, slot)
+            for name, slot in surf_slots.items()}
+
+    # SEAM 1: ssat is a real (nz, ny, nx) device array threaded through
+    # every kernel that the authority threads it through.  It is zero on
+    # entry (the wrapper's :851) and p3_main DIAGNOSES it; the seam is that
+    # it is storage and an argument, not a constant folded away because
+    # log_predictSsat is false today.
+    ssat = state.scratch((nz, ny, nx), "p3_ssat")
+    ssat[...] = 0.0
+    # SEAM 3: log_predictNc is driven by whether nc is a prognostic field
+    # on the state, exactly as the authority drives it from `present(nc)`
+    # (:819-820).  mp=50 has no such field and gets the specified-Nc
+    # scratch; mp=51 would pass its own.
+    prognostic_nc = getattr(state, "nc", None)
+    log_predict_nc = bool(cfg.mp_physics == 51 and prognostic_nc is not None)
+    nc_dev = prognostic_nc if log_predict_nc else state.scratch(
+        (nz, ny, nx), "p3_nc")
+
+    fields = {"qc": state.qc, "nc": nc_dev, "qr": state.qr, "nr": state.nr,
+              "qi": state.qi, "qir": state.qir, "ni": state.ni,
+              "qib": state.qib, "th": th_dev, "qv": state.qv,
+              "th_old": state.th_old, "qv_old": state.qv_old,
+              "ssat": ssat, "pres": state.p, "dz": dz_dev}
+
+    # See gpuwm/core/p3.py:apply_reference for why the clock, not a
+    # serialized counter, is what makes ``it`` survive a restart.
+    prior = getattr(state, "p3_itimestep", None)
+    if prior is None:
+        prior = 1 if float(getattr(state, "elapsed_seconds", 0.0)) > 0.0 else 0
+    it = int(prior) + 1
+    state.p3_itimestep = it
+
+    ws = getattr(state, "_p3_workspace", None)
+    if ws is None or ws.ncol != ncol or ws.nk != nz:
+        # Every P3 companion comes from DomainState.scratch, so the
+        # allocation gate sees all of it and a normal timestep allocates
+        # nothing.  gpuwm/core/preflight.py prices these slots for mp=50.
+        ws = PD.make_workspace(
+            ncol, nz,
+            allocate=lambda slot, nlev: state.scratch((nlev, ny, nx), slot))
+        state._p3_workspace = ws
+
+    save_pre_mp_theta(state)          # WRF moist_physics_prep_em
+    PD.run_p3_device(
+        {k: v.reshape(nz, ncol) for k, v in fields.items()},
+        {k: v.reshape(nz, ncol) for k, v in diag.items()},
+        {k: v.reshape(ncol) for k, v in surf.items()},
+        workspace=ws, tables=tables, dt=float(dt), it=it,
+        log_predictNc=log_predict_nc,
+        arm=PD.CONFIG_ARM[str(getattr(cfg, "p3_backend", "cuda"))])
+
+    # P3 returns effective radii in METRES; the state carries the
+    # radiation-facing MICRON convention (gpuwm/core/state.py mp arms).
+    state.effc[...] = diag["effc"] * cp.float32(1.0e6)
+    state.effi[...] = diag["effi"] * cp.float32(1.0e6)
+
+    if refl_10cm_due:
+        from gpuwm.core.refl import stash_refl_10cm
+        stash_refl_10cm(state, diag["zdbz"])
+
+    moist_physics_finish(state, cfg, th_dev, dt)
+    return MicrophysicsDiagnostics(
+        rainnc=surf["rainnc"], rainncv=surf["rainncv"], sr=surf["sr"],
+        snownc=surf["snownc"], snowncv=surf["snowncv"])

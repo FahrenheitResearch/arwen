@@ -24,7 +24,8 @@ import pytest
 import gpuwm.cli as cli
 from gpuwm.physics_compat import CONSTANT_DOWNWARD_LONGWAVE_ACK
 from gpuwm.experiment import DEFAULT_COLUMN_CHUNK, load_experiment
-from gpuwm.namelist_import import (SubstitutionReport, import_namelists,
+from gpuwm.namelist_import import (GF_SCHEME_GENERATION_NOTICE,
+                                   SubstitutionReport, import_namelists,
                                    parse_namelist)
 from gpuwm.native_wrf_contract import validate_native_lambert_contracts
 from gpuwm.static.lambert import (
@@ -1210,6 +1211,90 @@ def test_grell_freitas_imports_natively_per_domain(tmp_path):
     assert "no Grell scheme selected" in \
         sdropped["clos_choice/ishallow"].reason
     assert "ishallow = 1" not in stray_toml
+
+
+def _gf_input(extra_physics: str = "") -> str:
+    """INPUT_TEXT selecting GF on d01 (nz >= 12 for GF's preflight)."""
+    return INPUT_TEXT.replace(
+        " cu_physics = 1, 0,",
+        " cu_physics = 3, 0," + extra_physics).replace(
+        " e_vert = 9, 9,", " e_vert = 14, 14,").replace(
+        " eta_levels = 1.0, 0.9, 0.8, 0.7, 0.6,\n"
+        "              0.5, 0.4, 0.2, 0.0,",
+        " eta_levels = 1.0, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7,\n"
+        "              0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0,")
+
+
+def test_gf_import_records_scheme_generation_notice(tmp_path):
+    """Every GF import declares the v4.6.1/GFL generation substitution.
+
+    The hazard (GF-UPSTREAM-AND-NOCTURNAL-BIAS.md, ranked action 0): WRF
+    v4.8.0 rebinds cu_physics = 3 to Grell-Freitas-Li while adding zero
+    namelist options and changing zero defaults, so a v4.8.0 namelist is
+    byte-indistinguishable from a v4.6.1 one at the GF option level and
+    would import silently as the wrong scheme.  No refusal can detect
+    that, so the defined behaviour is a notice recorded on every GF
+    import and rendered by the report the CLI prints.
+    """
+    _, report = import_namelists(
+        *_pair(tmp_path, inp=_gf_input()), name="gfnotice")
+    assert report.notices == (GF_SCHEME_GENERATION_NOTICE,)
+    text = report.format()
+    assert "Scheme-generation notices:" in text
+    assert "Grell-Freitas-Li" in text
+    assert "v4.6.1" in text
+    # A non-GF import carries no GF generation statement -- the notice
+    # is about the scheme selected, not boilerplate.
+    _, plain_report = import_namelists(
+        *_pair(tmp_path, inp=INPUT_TEXT), name="plain")
+    assert plain_report.notices == ()
+    assert "Grell-Freitas-Li" not in plain_report.format()
+
+
+def test_cugd_avedx_nondefault_with_gf_is_refused_by_name(tmp_path):
+    """cugd_avedx != 1 beside cu_physics = 3 is the one namelist spelling
+    that reveals a spreading-generation (GFL/G3) configuration; importing
+    it as v4.6.1 GF would silently run convection without the requested
+    subsidence spreading, so the refusal names that breakage rather than
+    dying in the generic unmapped-key sentence."""
+    inp = _gf_input("\n cugd_avedx = 3,")
+    with pytest.raises(ValueError, match="cugd_avedx") as excinfo:
+        import_namelists(*_pair(tmp_path, inp=inp))
+    message = str(excinfo.value)
+    assert "Grell-Freitas-Li" in message
+    assert "subsidence spreading" in message
+    # Non-integer spellings get the type sentence, not a crash.
+    with pytest.raises(ValueError, match="cugd_avedx.*integer"):
+        import_namelists(*_pair(
+            tmp_path, inp=_gf_input("\n cugd_avedx = .true.,")))
+
+
+def test_cugd_avedx_registry_default_with_gf_is_recorded_inert(tmp_path):
+    """cugd_avedx = 1 (the Registry default) is inert under v4.6.1 GF --
+    the driver hands it only to G3 -- so it is validated and recorded in
+    the fixed-by-ArWen section, never emitted into the TOML."""
+    toml_text, report = import_namelists(
+        *_pair(tmp_path, inp=_gf_input("\n cugd_avedx = 1,")),
+        name="gfavedx1")
+    entries = {entry.key: entry for entry in report.fixed}
+    assert "cugd_avedx" in entries
+    assert entries["cugd_avedx"].fixed_value == 1
+    assert "G3" in entries["cugd_avedx"].reason
+    assert "cugd_avedx" not in toml_text
+
+
+def test_cugd_avedx_without_grell_scheme_is_dropped(tmp_path):
+    """With no Grell scheme selected the key has no consumer in WRF's
+    v4.6.1 driver either; it is dropped with that reason, never silently
+    honoured and never a generic unmapped-key refusal."""
+    inp = INPUT_TEXT.replace(
+        " cudt = 5, 0,", " cudt = 5, 0,\n cugd_avedx = 3,")
+    toml_text, report = import_namelists(
+        *_pair(tmp_path, inp=inp), name="noavedx")
+    entries = {entry.key: entry for entry in report.dropped}
+    assert "cugd_avedx" in entries
+    assert "no Grell scheme selected" in entries["cugd_avedx"].reason
+    assert "cugd_avedx" not in toml_text
 
 
 @pytest.mark.parametrize(

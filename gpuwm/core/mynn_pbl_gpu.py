@@ -1,6 +1,10 @@
 """CUDA wrappers for pinned WRF v4.6.1 MYNN PBL core routines.
 
-Nothing here allocates a device array.  Every working array comes from a
+The solver allocates no device array; the one exception is the DMP
+sibling lane (``mynn_dmp_mf_cuda``, ``bl_mynn_mixscalars = 1`` only),
+whose four plume-edge buffers are recorded and ratcheted in
+``tests/test_physics_allocation_inventory.py``.  Every other working
+array comes from a
 :class:`gpuwm.core.mynn_pbl_scratch.MynnPblScratch` holder, which on the
 runtime path is backed by ``DomainState.scratch`` and therefore priced by
 ``preflight.scratch_slot_registry``; see that module for what the previous

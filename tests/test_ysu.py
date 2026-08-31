@@ -677,7 +677,7 @@ def test_ysu_producer_input_view_binds_the_fields_the_kernel_reads():
     with pytest.raises(KeyError):
         view["tsk"]
 def test_exactly_zero_ust_with_live_fluxes_is_defined():
-    """ust == 0 with nonzero heat flux misses the ysu.cu:104 short circuit;
+    """ust == 0 with nonzero heat flux misses the ysu.cu:203 short circuit;
     WRF's prfac2 is then 0/0 (the parity suite's case-13 pathology).  The
     kernel and the float64 mirror now both take the defined algebraic limit
     instead of laundering or propagating a NaN."""

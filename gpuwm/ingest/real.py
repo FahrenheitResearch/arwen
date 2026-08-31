@@ -124,6 +124,89 @@ _HRRR_DISPOSITION_OPERATOR = {
     "above_source_top": "fatal",
 }
 
+#: What each admitted id's WRF Registry ``moist:`` package can RECEIVE, keyed
+#: by the id, WRF v4.6.1 (commit d66e442fccc04111067e29274c9f9eaccc3cef28).
+#:
+#: This mapping is the tuple's membership rule made executable rather than
+#: written down.  Retention used to be an ``if cfg.mp_physics == 1`` ladder
+#: below, so Kessler's narrow package was the only one anybody had to
+#: remember, and the next admitted scheme whose package is narrower than
+#: WSM6's would have been handed five species -- two of them into state
+#: fields that do not exist for it.
+#:
+#:   1  kesslerscheme   Registry.EM_COMMON:3015  moist:qv,qc,qr
+#:   6  wsm6scheme      Registry.EM_COMMON:3021  moist:qv,qc,qr,qi,qs,qg
+#:   8  thompson        Registry.EM_COMMON:3024  moist:qv,qc,qr,qi,qs,qg
+#:   9  milbrandt2mom   Registry.EM_COMMON:3025  moist:qv,qc,qr,qi,qs,qg,qh
+#:  10  morr_two_moment Registry.EM_COMMON:3026  moist:qv,qc,qr,qi,qs,qg
+#:  16  wdm6scheme      Registry.EM_COMMON:3031  moist:qv,qc,qr,qi,qs,qg
+#:  18  nssl_2mom       Registry.EM_COMMON:3033  moist:qv,qc,qr,qi,qs,qg
+#:  28  thompsonaero    Registry.EM_COMMON:3036  moist:qv,qc,qr,qi,qs,qg
+#:  50  p3_1category    Registry.EM_COMMON:3038  moist:qv,qc,qr,qi
+#:
+#: mp=28's moist list is character for character mp=8's -- the aerosol-aware
+#: scheme adds only ``scalar:`` members -- so the mass-species handling is
+#: the same at both, and that identity was verified against :3024 and :3036
+#: directly rather than assumed from the mp=8 arm.
+#:
+#: mp=50 is the second narrow package, and narrow in the other direction
+#: from Kessler's: P3 one-category HAS qi and has no qs and no qg at all,
+#: because it carries ONE ice category and predicts rime mass fraction and
+#: rime density (``scalar:qir,qib``, :3038) instead of splitting the frozen
+#: mass into snow and graupel.  ``gpuwm/core/state.py:464-497`` allocates no
+#: qs and no qg on an mp=50 state, so retaining five species here would not
+#: merely be wrong about the scheme, it would write into fields that do not
+#: exist.  Its number moments (qni/qnr) and its rime pair are Registry
+#: ``scalar:`` members that no real-data source read here supplies, so they
+#: stay at the allocator's exact FP32 zero and P3 owns their first update --
+#: the same source-absent policy mp=8/10/16/18/28 already take for their own
+#: scalars, and the scheme is defined at that zero and says so: it floors
+#: nitot at ``nsmall`` before any mean size is taken
+#: (phys/module_mp_p3.F:2572-2573) and zeroes an unsupported rime pair in
+#: ``calc_bulkRhoRime`` (:6799-6813).
+#:
+#: mp=9 is the first package WIDER than the decoded inventory: Milbrandt-Yau
+#: carries hail mass beside graupel (``moist:qv,qc,qr,qi,qs,qg,qh``, :3025),
+#: so it retains all five decoded species and discards nothing.  The seventh
+#: member has no decoded source -- the native HRRR decoder reads exactly
+#: QC/QI/QR/QS/QG (gpuwm/ingest/hrrr.py:47), hail among them nowhere --
+#: and real.exe's own QH arm agrees about what that means: the
+#: interpolation at dyn_em/module_initialize_real.F:1979-1997 runs only
+#: under ``flag_qh``, which a source that supplies no QH never raises, so
+#: stock real.exe leaves QH at its allocated zero for this source too.
+#: ``qh`` therefore stays at the allocator's exact FP32 zero
+#: (gpuwm/core/state.py mp=9 arm) exactly like the scheme's six number
+#: moments (``scalar:qnc,qnr,qni,qns,qng,qnh``, :3025), which no real-data
+#: source read here supplies either -- the same source-absent policy
+#: mp=8/10/16/18/28 take.  The scheme is defined at that zero and says so:
+#: its moment-consistency pass prescribes each number from its own mass
+#: wherever Qx>epsQ and Nx<epsN, before any process rate is formed
+#: (phys/module_mp_milbrandt2mom.F:1444-1530 -- N_c_SM for cloud at
+#: :1459-1460, the No_r_SM/No_g_SM/No_h_SM intercept inversions for rain,
+#: graupel and hail, Cooper for ice, Nos_Thompson for snow), so analyzed
+#: mass entering with zero moments gets the scheme's own prescribed size
+#: distributions on the first call rather than undefined arithmetic.
+HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE = {
+    1: {"registry_citation": "Registry/Registry.EM_COMMON:3015",
+        "retained": ("QC", "QR")},
+    6: {"registry_citation": "Registry/Registry.EM_COMMON:3021",
+        "retained": HRRR_ANALYZED_HYDROMETEORS},
+    8: {"registry_citation": "Registry/Registry.EM_COMMON:3024",
+        "retained": HRRR_ANALYZED_HYDROMETEORS},
+    9: {"registry_citation": "Registry/Registry.EM_COMMON:3025",
+        "retained": HRRR_ANALYZED_HYDROMETEORS},
+    10: {"registry_citation": "Registry/Registry.EM_COMMON:3026",
+         "retained": HRRR_ANALYZED_HYDROMETEORS},
+    16: {"registry_citation": "Registry/Registry.EM_COMMON:3031",
+         "retained": HRRR_ANALYZED_HYDROMETEORS},
+    18: {"registry_citation": "Registry/Registry.EM_COMMON:3033",
+         "retained": HRRR_ANALYZED_HYDROMETEORS},
+    28: {"registry_citation": "Registry/Registry.EM_COMMON:3036",
+         "retained": HRRR_ANALYZED_HYDROMETEORS},
+    50: {"registry_citation": "Registry/Registry.EM_COMMON:3038",
+         "retained": ("QC", "QR", "QI")},
+}
+
 #: The microphysics ids whose WRF Registry ``moist:`` package can receive the
 #: decoded HRRR analyzed hydrometeor inventory, so the decoder must supply it.
 #:
@@ -133,35 +216,50 @@ _HRRR_DISPOSITION_OPERATOR = {
 #: declared them required, never shape-checked them, never interpolated them,
 #: and produced a condensate-free initial state from a cloudy analysis with
 #: no error anywhere.  A single name makes that class of omission impossible.
+#: mp=50 then reproduced that failure verbatim: the tuple was already a
+#: single name, and P3 was simply never added to it, so a decoded native
+#: HRRR analysis initialized an mp=50 forecast with qc/qr/qi identically
+#: zero and nothing raised.  mp=9 was the third recurrence: Milbrandt-Yau's
+#: package holds every decoded species and two more Registry members
+#: besides, yet with 9 absent from the tuple an mp=9 real-data run started
+#: with all five mass species identically zero,
+#: ``hydrometeor_initialization`` empty, and nothing raised -- the same
+#: condensate-free start from a cloudy analysis.  The ids are now exactly
+#: the keys of HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE above, and the
+#: retention each one gets is read from that same mapping instead of from
+#: a ladder here.
 #:
-#: Membership is decided by the Registry package, per id, WRF v4.6.1
-#: (commit d66e442fccc04111067e29274c9f9eaccc3cef28):
-#:   1  kesslerscheme   Registry.EM_COMMON:3015  moist:qv,qc,qr
-#:   6  wsm6scheme      Registry.EM_COMMON:3021  moist:qv,qc,qr,qi,qs,qg
-#:   8  thompson        Registry.EM_COMMON:3024  moist:qv,qc,qr,qi,qs,qg
-#:  10  morr_two_moment Registry.EM_COMMON:3026  moist:qv,qc,qr,qi,qs,qg
-#:  18  nssl_2mom       Registry.EM_COMMON:3033  moist:qv,qc,qr,qi,qs,qg
-#:  28  thompsonaero    Registry.EM_COMMON:3036  moist:qv,qc,qr,qi,qs,qg
-#: Kessler is a member because real.exe still requires the decoded inventory
-#: and then discards what its package lacks (WRF_REAL_KESSLER_FROZEN_POLICY);
-#: mp_physics=0 is refused outright above.  mp=28's moist list is character
-#: for character mp=8's -- the aerosol-aware scheme adds only ``scalar:``
-#: members -- so the mass-species handling is the same at all three sites,
-#: and that identity was verified against :3024 and :3036 directly rather
-#: than assumed from the mp=8 arm.
-HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS = (1, 6, 8, 10, 16, 18, 28)
+#: Kessler and P3 are members even though their packages are narrower than
+#: the decoded inventory, because real.exe still requires the decoded
+#: inventory and then discards what the ACTIVE package lacks
+#: (WRF_REAL_PACKAGE_ABSENT_SPECIES_POLICY below); mp_physics=0 is refused
+#: outright above.
+#:
+#: The literal is spelled out rather than derived from the mapping's keys so
+#: the repo-wide admission-tuple census in
+#: ``tests/test_mp28_runtime_reachability.py`` -- which walks for literal
+#: integer sets and would go blind on a comprehension -- can still see this
+#: site.  ``test_the_analyzed_inventory_tuple_and_its_moist_packages_agree``
+#: pins the two equal.
+HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50)
 
 # WRF v4.6.1, commit d66e442fccc04111067e29274c9f9eaccc3cef28:
-# Registry/Registry.EM_COMMON:3015 gives Kessler only moist:qv,qc,qr.
-# dyn_em/module_initialize_real.F:1859-1977 separately interpolates QR/QC/
-# QI/QS/QG only after finding each P_Q* in the active num_moist package.
-# Thus real.exe retains HRRR QC/QR for Kessler and deliberately does not
-# carry analyzed QI/QS/QG into a scheme whose Registry package lacks them.
-WRF_REAL_KESSLER_FROZEN_POLICY = {
+# dyn_em/module_initialize_real.F:1859-1977 interpolates QR/QC/QI/QS/QG one
+# species at a time, and each interpolation runs only when the source flag
+# is set AND that species' P_Q* index is a member of the ACTIVE num_moist
+# package.  So real.exe retains the analyzed species the scheme's package
+# carries and drops the rest, with no error and no diagnostic: QI/QS/QG for
+# Kessler (Registry.EM_COMMON:3015, moist:qv,qc,qr) and QS/QG for P3
+# one-category (:3038, moist:qv,qc,qr,qi).  Dropping them SILENTLY is what
+# real.exe does; this receipt is what gpuwm does instead, so that a species
+# deliberately discarded and a species accidentally lost stay
+# distinguishable after the fact.  ``registry_citation`` is filled per id
+# from HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE, because WHICH package did
+# the discarding is the content of the claim.
+WRF_REAL_PACKAGE_ABSENT_SPECIES_POLICY = {
     "policy": "discard-source-species-absent-from-active-moist-package",
     "wrf_version": "v4.6.1",
     "wrf_commit": "d66e442fccc04111067e29274c9f9eaccc3cef28",
-    "registry_citation": "Registry/Registry.EM_COMMON:3015",
     "real_citation": "dyn_em/module_initialize_real.F:1859-1977",
 }
 
@@ -2844,10 +2942,15 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                 preprocess.float32(fields[name]))
             for name in HRRR_ANALYZED_HYDROMETEORS
         }
-        retained_names = (
-            ("QC", "QR") if cfg.mp_physics == 1
-            else HRRR_ANALYZED_HYDROMETEORS
-        )
+        # Retention is READ from the Registry-package mapping, never decided
+        # here: the membership test above and the species this loop writes
+        # have to be answers to the same question, and an if-ladder is how
+        # they stop being.  The lookup cannot miss -- the mapping's keys ARE
+        # HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS, pinned by
+        # test_the_analyzed_inventory_tuple_and_its_moist_packages_agree.
+        moist_package = HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE[
+            int(cfg.mp_physics)]
+        retained_names = moist_package["retained"]
         for name in retained_names:
             value = mass_vertical_plan.apply(
                 backend_ordered_levels(fields[name]),
@@ -2859,15 +2962,19 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                 raise ValueError(
                     f"interpolated HRRR hydrometeor {name} is invalid")
             hydrometeors[name] = value
-        discarded = {}
-        if cfg.mp_physics == 1:
-            discarded = {
-                name: {
-                    "source": source_fingerprints[name],
-                    **WRF_REAL_KESSLER_FROZEN_POLICY,
-                }
-                for name in ("QI", "QS", "QG")
+        # Everything decoded and not retained is discarded BY THE PACKAGE,
+        # and is named as such with that package's own Registry line.  The
+        # partition is derived from one source (retained + discarded is the
+        # decoded inventory, always, for every id) rather than listed twice.
+        discarded = {
+            name: {
+                "source": source_fingerprints[name],
+                **WRF_REAL_PACKAGE_ABSENT_SPECIES_POLICY,
+                "registry_citation": moist_package["registry_citation"],
             }
+            for name in HRRR_ANALYZED_HYDROMETEORS
+            if name not in retained_names
+        }
         vertical_disposition = build_hrrr_hydrometeor_vertical_disposition(
             {name: fields[name] for name in retained_names},
             order,

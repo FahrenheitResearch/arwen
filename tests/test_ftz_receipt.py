@@ -201,7 +201,12 @@ def test_each_arm_matches_the_site_it_claims(receipt):
     expected = {
         "R1": ("gpuwm/core/kernels/__init__.py", "cupy.RawModule",
                "load_module"),
-        "R2": ("gpuwm/core/rrtmg_sw.py", "cupy.RawModule", None),
+        # R2's kind moved with 2358b3c06 (out-of-core merge): NVRTC 13
+        # rejects the duplicated --ftz, so the shortwave compile left
+        # cupy.RawModule for the direct-NVRTC bypass the longwave site
+        # already used.  Same option tuple, new constructor.
+        "R2": ("gpuwm/core/rrtmg_sw.py",
+               "cupy.cuda.compiler.compile_using_nvrtc", "__init__"),
         "R3": ("gpuwm/core/rrtmg_lw.py",
                "cupy.cuda.compiler.compile_using_nvrtc", None),
         "R4": ("gpuwm/core/mynn_pbl_gpu.py", "cupy.ReductionKernel",

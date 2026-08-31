@@ -64,6 +64,7 @@ from gpuwm.physics_compat import (  # noqa: E402
     NOAHMP_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
+    P3_LEGACY_RRTMG_PROFILE_ID,
     RUC_PROFILE_ID,
     THOMPSON_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_PROFILE_ID,
@@ -280,6 +281,25 @@ def runner_capabilities() -> dict[str, object]:
                 "contract_id": NSSL2_CONTRACT_ID,
                 "radiation_solver": "legacy RRTMG",
                 "resolved_fixed_preset": True,
+            },
+            P3_LEGACY_RRTMG_PROFILE_ID: {
+                "selector": 50,
+                "readiness": "IMPLEMENTED_UNVERIFIED",
+                "explicit_expert_consent_required": False,
+                # The lookup table ships INSIDE the gpuwm wheel
+                # (gpuwm/data/p3/tables) and is byte-validated at profile
+                # binding, so nothing is external -- the guard names the
+                # check, not an environment variable.
+                "runtime_guards": [
+                    "exact-size-and-sha256 p3_lookupTable_1 before GPU "
+                    "setup",
+                ],
+                "external_table_assets": [],
+                "radiation_solver": "legacy RRTMG",
+                "source_scope": ["hrrr"],
+                "frozen_species_policy": (
+                    "retain QC/QR/QI; discard source QS/QG with a "
+                    "receipt (P3 carries one ice category)"),
             },
             MYNN_PROFILE_ID: {
                 "selector": 6,
@@ -1151,6 +1171,29 @@ _NATIVE_HRRR_NAMELIST_CONTRACTS = MappingProxyType({
             "diff_6th_slopeopt": 1.0,
         }),
     }),
+    # The Thompson legacy-RRTMG contract row with ONE field moved
+    # (mp_physics 8.0 -> 50.0), TRANSCRIBED for the reason the Shin-Hong
+    # row above states: this table is a hard per-field equality gate on
+    # the supplied namelist, and an alias would pin mp=8 against a P3
+    # namelist and refuse it one gate later on value drift.
+    P3_LEGACY_RRTMG_PROFILE_ID: MappingProxyType({
+        "physics": MappingProxyType({
+            "mp_physics": 50.0,
+            "ra_lw_physics": 4.0,
+            "ra_sw_physics": 4.0,
+            "radt": 12.0,
+            "sf_sfclay_physics": 91.0,
+            "sf_surface_physics": 2.0,
+            "bl_pbl_physics": 1.0,
+            "cu_physics": 0.0,
+        }),
+        "dynamics": MappingProxyType({
+            "km_opt": 4.0,
+            "diff_6th_opt": 2.0,
+            "diff_6th_factor": 0.12,
+            "diff_6th_slopeopt": 1.0,
+        }),
+    }),
 })
 
 _NATIVE_HRRR_RUNTIME_SWITCHES = MappingProxyType({
@@ -1177,6 +1220,17 @@ _HRRR_SOURCE_ABSENT_STATE_DEFAULTS = MappingProxyType({
         "qns": 0.0, "qng": 0.0, "qnh": 0.0,
         "qnn": 408163264.0, "qvolg": 0.0, "qvolh": 0.0,
     }),
+    # P3's Registry ``scalar:`` members (Registry.EM_COMMON:3038): the two
+    # number moments and the prognostic rime pair.  No real-data source
+    # read here supplies any of them, so all four cold-start at the
+    # allocator's exact FP32 zero and the scheme owns their first update
+    # -- it floors nitot at nsmall before any mean size is taken
+    # (module_mp_p3.F:2572-2573) and zeroes an unsupported rime pair in
+    # calc_bulkRhoRime (:6799-6813).  Same policy, same words, as
+    # gpuwm/ingest/real.py's mp=50 entry.
+    P3_LEGACY_RRTMG_PROFILE_ID: MappingProxyType({
+        "ni": 0.0, "nr": 0.0, "qir": 0.0, "qib": 0.0,
+    }),
 })
 
 _HRRR_SOURCE_ABSENT_WRF_FIELDS = MappingProxyType({
@@ -1193,6 +1247,8 @@ _HRRR_SOURCE_ABSENT_WRF_FIELDS = MappingProxyType({
     NSSL2_PROFILE_ID: (
         "QHAIL", "QNDROP", "QNRAIN", "QNICE", "QNSNOW",
         "QNGRAUPEL", "QNHAIL", "QNCCN", "QVGRAUPEL", "QVHAIL"),
+    P3_LEGACY_RRTMG_PROFILE_ID: (
+        "QNICE", "QNRAIN", "QIR", "QIB"),
 })
 
 
@@ -1370,38 +1426,70 @@ def _microphysics_table_authority(profile: str) -> dict[str, object] | None:
     """
 
     switches = _native_hrrr_runtime_switches(profile)
-    if int(switches["mp_physics"]) != THOMPSON_MP_PHYSICS:
-        return None
-    from gpuwm.core.thompson_contract import (
-        CLASSIC_TABLE_ASSETS,
-        TABLE_SET_ID,
-        WRF_REFERENCE_COMMIT,
-        WRF_REFERENCE_VERSION,
-        validate_table_assets,
-    )
-    from gpuwm.table_assets import require_thompson_tables
+    mp_physics = int(switches["mp_physics"])
+    if mp_physics == THOMPSON_MP_PHYSICS:
+        from gpuwm.core.thompson_contract import (
+            CLASSIC_TABLE_ASSETS,
+            TABLE_SET_ID,
+            WRF_REFERENCE_COMMIT,
+            WRF_REFERENCE_VERSION,
+            validate_table_assets,
+        )
+        from gpuwm.table_assets import require_thompson_tables
 
-    # Presence first, in a sentence naming ``gpuwm fetch-tables``; then
-    # exact bytes.  ``validate_table_assets`` defaults to the pinned
-    # classic set and fails closed on an absent, resized or substituted
-    # asset, so it IS the contract -- re-comparing its return value to
-    # the same constant would only ever catch a test double.
-    root = Path(require_thompson_tables(
-        assets=CLASSIC_TABLE_ASSETS)).resolve()
-    assets = validate_table_assets(root)
-    return {
-        "schema": "gpuwm-prepared-microphysics-table-authority-v1",
-        "mp_physics": THOMPSON_MP_PHYSICS,
-        "table_root": str(root),
-        "table_set": TABLE_SET_ID,
-        "wrf_reference_version": WRF_REFERENCE_VERSION,
-        "wrf_reference_commit": WRF_REFERENCE_COMMIT,
-        "assets": [
-            {"filename": item.filename, "bytes": item.bytes,
-             "sha256": item.sha256}
-            for item in assets
-        ],
-    }
+        # Presence first, in a sentence naming ``gpuwm fetch-tables``; then
+        # exact bytes.  ``validate_table_assets`` defaults to the pinned
+        # classic set and fails closed on an absent, resized or substituted
+        # asset, so it IS the contract -- re-comparing its return value to
+        # the same constant would only ever catch a test double.
+        root = Path(require_thompson_tables(
+            assets=CLASSIC_TABLE_ASSETS)).resolve()
+        assets = validate_table_assets(root)
+        return {
+            "schema": "gpuwm-prepared-microphysics-table-authority-v1",
+            "mp_physics": THOMPSON_MP_PHYSICS,
+            "table_root": str(root),
+            "table_set": TABLE_SET_ID,
+            "wrf_reference_version": WRF_REFERENCE_VERSION,
+            "wrf_reference_commit": WRF_REFERENCE_COMMIT,
+            "assets": [
+                {"filename": item.filename, "bytes": item.bytes,
+                 "sha256": item.sha256}
+                for item in assets
+            ],
+        }
+    if mp_physics == 50:
+        # P3's single lookup table ships INSIDE the gpuwm wheel and its
+        # loader (gpuwm.core.p3_tables) is the byte authority; p3_init
+        # READS the file and computes nothing, so an absent or modified
+        # copy would otherwise surface as a hard stop at the top of a
+        # paid GPU run.  The loader's own validator runs here, at
+        # profile binding, the same stage the Thompson arm above chose
+        # for the same reason.
+        from gpuwm.core.p3_tables import (
+            TABLE_1_2MOM_ASSET,
+            _validate_asset_bytes,
+            p3_table_root,
+        )
+
+        root = Path(p3_table_root()).resolve()
+        _validate_asset_bytes(root / TABLE_1_2MOM_ASSET.filename,
+                              TABLE_1_2MOM_ASSET)
+        return {
+            "schema": "gpuwm-prepared-microphysics-table-authority-v1",
+            "mp_physics": 50,
+            "table_root": str(root),
+            "table_set": "wrf-v4.6.1-p3-lookuptable1-2momi-v1",
+            "wrf_reference_version": "v4.6.1",
+            "wrf_reference_commit":
+                "d66e442fccc04111067e29274c9f9eaccc3cef28",
+            "assets": [
+                {"filename": TABLE_1_2MOM_ASSET.filename,
+                 "bytes": TABLE_1_2MOM_ASSET.size,
+                 "sha256": TABLE_1_2MOM_ASSET.sha256},
+            ],
+        }
+    return None
 
 
 def _validate_native_hrrr_physics_profile(
@@ -1598,7 +1686,10 @@ def _validate_native_hrrr_physics_profile(
     elif profile in (
             KESSLER_PROFILE_ID, MYNN_PROFILE_ID, MYNN_RUC_PROFILE_ID,
             RUC_PROFILE_ID,
-            NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID):
+            NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID,
+            # P3: the port is oracle-measured but no receipt covers the
+            # composed suite; the registry template says the same.
+            P3_LEGACY_RRTMG_PROFILE_ID):
         receipt["readiness"] = "IMPLEMENTED_UNVERIFIED"
     if profile in (MORRISON_PROFILE_ID, NSSL2_PROFILE_ID):
         receipt["radiation_substitution"] = {
@@ -2584,7 +2675,10 @@ def _initialize_boundary_sides(
             # to disagree with it.  And this runner cannot reach the mp=28
             # block at all today: its physics selection is the closed
             # ``_NATIVE_HRRR_RUNTIME_SWITCHES`` registry, whose profiles
-            # resolve mp_physics 1, 6, 8, 10 and 18 and nothing else.
+            # resolve mp_physics 1, 6, 8, 10, 18 and 50 and nothing else
+            # -- none of them aerosol-aware.  (50 joined with the P3
+            # profile row and changes nothing here: P3 carries no aerosol
+            # scalars either.)
             #
             # IF AN AEROSOL-AWARE PROFILE IS EVER ADDED TO THAT REGISTRY,
             # this is the line to revisit -- not by pasting ``grid=`` in,

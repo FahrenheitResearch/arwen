@@ -354,7 +354,7 @@ def test_the_three_documented_behavioural_divergences_are_exactly_these():
     assert float(fixture.surface_reference["delta"].reshape(-1)[i]) == 0.0
     assert float(port["delta"].reshape(-1)[i]) > 0.0
 
-    # cases 12 and 13: ysu.cu:104 short circuits where WRF runs the scheme.
+    # cases 12 and 13: ysu.cu:203 short circuits where WRF runs the scheme.
     for case, wrf_kpbl in ((12, 9), (13, 2)):
         i = index[case]
         assert int(port["kpbl"].reshape(-1)[i]) == 1

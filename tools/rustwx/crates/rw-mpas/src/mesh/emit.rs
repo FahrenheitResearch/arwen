@@ -58,7 +58,21 @@ pub struct Provenance {
     pub request: String,
     /// The generator's own receipt, as JSON.
     pub receipt_json: String,
+    /// The coordinate representation a STATIC built from this grid must
+    /// declare and store.
+    ///
+    /// `None` writes no attribute at all, and a reader that finds none must
+    /// take `binary32_earth_centred` -- what every published file carries and
+    /// what the dycore byte-identity anchor is a property of. It is `Some`
+    /// only for a mesh this generator created, which by construction has no
+    /// native MPAS-A counterpart and therefore nothing to be byte-identical
+    /// to. The choice travels with the MESH rather than with a command line so
+    /// a static cannot be built at a representation its grid never asked for.
+    pub static_coordinates: Option<crate::staticfile::coordframe::CoordinateRepresentation>,
 }
+
+/// Attribute a grid carries to say what representation its static must use.
+pub const STATIC_COORDINATES_ATTR: &str = "rw_static_coordinate_representation";
 
 /// Write `mesh` as a classic-netCDF MPAS grid file.
 ///
@@ -138,6 +152,15 @@ pub fn write_grid(
             "This is a grid file. Running it needs a matching static file carrying terrain, land use and soil on these cells, nVertLevels=55, nSoilLevels=4 and an FP32-bit-exact nominalMinDc; this binary does not produce one.",
         ),
     ]);
+    // Written only when the caller says so; absent means binary32, which is
+    // what every published grid is and what keeps the byte-identity anchor.
+    if let Some(rep) = provenance.static_coordinates {
+        gattrs.push(NcAttr::text(STATIC_COORDINATES_ATTR, rep.tag()));
+        gattrs.push(NcAttr::text(
+            "rw_static_coordinate_note",
+            "A static built from this grid must store xCell/yCell/zCell and the lat/lon pair              beside them in rw_static_coordinate_representation and must declare it as              rw_coordinate_representation. This mesh was GENERATED and has no native MPAS-A              counterpart, so no byte-identity anchor binds its storage precision. A grid              without this attribute is binary32_earth_centred and stays so.",
+        ));
+    }
 
     // --- 38 variables, in the order the published files carry them ----------
     let dbl = |name: &str, dims: Vec<usize>, units: &str, long: &str| -> NcVarDef {

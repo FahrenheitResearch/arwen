@@ -1503,7 +1503,15 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # separate change; until then the stated bound is the compiled
     # ceiling, which is the safe direction for a rail gate.
     "sase": 6272,
+    # The two MYNN-EDMF qn-family modules (4a0bb3f69) landed declared
+    # UNMEASURED because their lane had no measurement platform; the
+    # 2026-08-31 sm_86 campaign measured both at 0 B (RTX 3080, NVRTC
+    # 13.0.48; node-1's sm_120 at NVRTC 13.0.88 also read 0 B), which
+    # retired that declaration.  Scalar per column, no per-thread stack
+    # arrays -- the same shape as mynn_pbl itself.
+    "mynn_dmp_sibling": 0,
     "mynn_pbl": 0,
+    "mynn_scalar_mix": 0,
     "mynn_surface": 0,
     "nest": 0,
     "nest_microphysics": 0,
@@ -1920,8 +1928,22 @@ WSM6_TIER_FRAME = TieredKernelFrame("wsm6", "WSM6_KMAX", 64, 112)
 UNMEASURED_KERNEL_MODULES = frozenset({
     "noahmp_driver", "noahmp_energy", "noahmp_thermal", "noahmp_libm_slab",
     "noahmp_glacier",
+    # P3 borrows r_pow/r_exp/r_log from noahmp_leaves.cu rather than
+    # carrying a second copy of the tree's one glibc transcription, so
+    # p3.cu alone fails NVRTC exactly as the three Noah-MP fragments do.
+    # Its composed unit is gpuwm/core/p3_device.p3_source(), and the frame
+    # that unit compiles to is measured in CHAINED_TRANSLATION_UNIT_FRAMES
+    # below -- so unlike the Noah-MP fragments this one is priced, not a
+    # refusal.
+    "p3",
     "rrtmg_sw", "rrtmg_lw_chain", "rrtmg_lw_taugb02_10_11_12",
     "rrtmg_lw_taugb03_05", "rrtmg_lw_taugb06_09", "rrtmg_lw_taugb13_16"})
+# mynn_scalar_mix and mynn_dmp_sibling (4a0bb3f69) sat in this set from
+# 2026-08-31 under a "no measurement platform in this lane" declaration;
+# the sm_86 campaign measured both the same day (0 B, RTX 3080 at NVRTC
+# 13.0.48 -- rows in kernel_frame_recordings.SM86_NVRTC_13_0_48), which
+# retired the declaration: they compile standalone and are priced like
+# any other module.
 
 
 @dataclass(frozen=True)
@@ -1973,6 +1995,20 @@ CHAINED_TRANSLATION_UNIT_FRAMES: dict[str, ChainedTranslationUnitFrame] = {
         module="rrtmg_sw_legacy",
         max_local_size_bytes=0,
         covers=frozenset({"rrtmg_sw"})),
+    # P3 one-category (mp=50).  ``noahmp_leaves.cu`` + ``p3.cu`` compiled as
+    # ONE unit by gpuwm/core/p3_device.p3_source(), the same shape the
+    # legacy-RRTMG chain and the Noah-MP driver use.
+    #
+    # Measured 2026-08-29, cupy 14.2.0 NVRTC on sm_120 (RTX 5070 Ti,
+    # node-1), over all twelve kernels of the unit: local_size_bytes = 0
+    # for every one, both arms.  The widest register user is
+    # ``p3k_kloopmain`` at 244 registers (the fused ``p3k_fused_process``
+    # at 250), which costs occupancy but spills nothing.  A re-measure past
+    # zero must move this row in the same diff.
+    "p3_composed": ChainedTranslationUnitFrame(
+        module="p3_composed",
+        max_local_size_bytes=0,
+        covers=frozenset({"p3"})),
 }
 
 _seen_covers: set[str] = set()
@@ -2043,32 +2079,33 @@ _MICROPHYSICS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     28: ("thompson", "thompson_aerosol_state", "thompson_aerosol_sat",
          "thompson_aerosol_cold", "thompson_aerosol_warm",
          "thompson_aerosol_sed"),
-    # P3 one-category.  The row is ONE module, and the reason is the
-    # scheme's execution model rather than a gap in this table: P3 is a
-    # HOST float32 transcription.  ``gpuwm/core/p3.py:apply`` pulls the
-    # prognostic slabs off the device with ``_host`` (:1683-1691), runs
-    # ``mp_p3_wrapper_wrf`` in NumPy on the host, and writes the results
-    # back with ``_from_slab`` (:1701-1705).  There is no
-    # ``gpuwm/core/kernels/p3.cu``; the module directory has none, and
-    # ``p3.py`` contains no ``get_kernel`` call and no CuPy import outside
-    # ``_as_backend``'s host->device copy.  So P3 launches NOTHING of its
-    # own and reserves no per-thread local frame of its own, and pricing
-    # a P3-named module here would reserve backing store for a
-    # translation unit that never compiles.
+    # P3 one-category.  ``p3_composed`` is the noahmp_leaves.cu + p3.cu
+    # translation unit gpuwm/core/p3_device.p3_source() assembles; it is
+    # priced through CHAINED_TRANSLATION_UNIT_FRAMES because p3.cu cannot
+    # compile standalone (it borrows the tree's single glibc r_pow/r_exp/
+    # r_log rather than carrying a second copy).
+    #
+    # This row said ONE module until the CUDA port landed, and the reason
+    # it gave -- "P3 is a HOST float32 transcription ... there is no
+    # gpuwm/core/kernels/p3.cu" -- was true when written and is now false:
+    # gpuwm/core/p3.py:apply launches the device kernels and the prognostic
+    # state never leaves the card.  The reference/debug arm
+    # (run.p3_backend = "reference") still takes the host path and launches
+    # nothing, which is why it is a debug selection and not a second
+    # priced composition.
     #
     # ``microphysics_validation`` IS launched, on the same footing as
-    # Kessler/WSM6/Thompson/Morrison/Milbrandt-Yau: mp=50 has a
-    # five-slot canonical row (gpuwm/core/physics.py:603-608) and P3's
-    # diagnostics are exactly those canonical scratch arrays, so
-    # ``accept_microphysics`` takes the native path and launches the
-    # shared validator (gpuwm/core/microphysics.py:385-386).  Its frame
-    # is 0 B, which is the honest price and not a placeholder.
+    # Kessler/WSM6/Thompson/Morrison/Milbrandt-Yau: mp=50 has a five-slot
+    # canonical row (gpuwm/core/physics.py:603-608) and P3's diagnostics
+    # are exactly those canonical scratch arrays, so ``accept_microphysics``
+    # takes the native path and launches the shared validator
+    # (gpuwm/core/microphysics.py:385-386).
     #
-    # 50 is deliberately ABSENT from _REFLECTIVITY_MICROPHYSICS below,
-    # for mp=9's reason: P3 computes REFL_10CM inside its own host pass
-    # and ``stash_refl_10cm`` only parks the array on the driver
+    # 50 stays deliberately ABSENT from _REFLECTIVITY_MICROPHYSICS below,
+    # for mp=9's reason: P3 computes REFL_10CM inside its own kernels and
+    # ``stash_refl_10cm`` only parks the array on the driver
     # (gpuwm/core/refl.py:651-663), so no ``refl`` kernel is ever loaded.
-    50: ("microphysics_validation",),
+    50: ("p3_composed", "microphysics_validation"),
 }
 
 #: ``mp_physics`` values with a REFL_10CM path in ``gpuwm/core/refl.py``.
@@ -2111,7 +2148,19 @@ _PBL_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     # price of selecting MYJ at all; the row's own comment records that
     # specializing it is a real saving and a separate change.
     MYJ_PBL_SCHEME: ("myjpbl",),
-    5: ("mynn_pbl",),
+    # MYNN-EDMF.  THREE modules (row widened by the 2026-08-31 scheme-5
+    # enumeration fix; it said one module and hid two): the launcher stack
+    # gpuwm/core/mynn_pbl_gpu.py loads ``mynn_pbl`` always, and under
+    # bl_mynn_mixscalars=1 dispatches the sibling DMP unit
+    # (kernels/mynn_dmp_sibling.cu, :1329) plus the qn flux/mix unit
+    # (kernels/mynn_scalar_mix.cu via gpuwm/core/mynn_scalar_mix_gpu.py,
+    # both added by 4a0bb3f69).  The two conditional modules are priced
+    # FLAT rather than dispatched on the option (the ra_physics=4
+    # pattern) because over-pricing is the safe direction for a rail gate
+    # and both measured 0 B on SM86_NVRTC_13_0_48 (803ab8e58), so the
+    # flat row refuses nothing -- while a module this table cannot see is
+    # exactly where a future non-zero frame would hide.
+    5: ("mynn_pbl", "mynn_dmp_sibling", "mynn_scalar_mix"),
     # Shin-Hong launches its column kernel plus its own batched output
     # validator, the YSU pair's shape (gpuwm/core/shinhong.py).
     11: ("shinhong", "shinhong_validation"),
@@ -3506,11 +3555,39 @@ def scratch_slot_registry(cfg: RunConfig, *,
         # output the model computes and does not consume.  They are
         # registered rather than left unclassified so the allocation gate
         # sees their true size.
+        #
+        # THE DEVICE COMPANIONS (the CUDA port, 2026-08-29).  Eighteen
+        # (nz, ny, nx) float32 arrays: twelve that carry values between the
+        # kernels and six of sedimentation workspace the three sedimentation
+        # steps share, plus the two column-scope logical flags as one
+        # (2, ny, nx) slot.  That is 72 bytes per grid cell of scratch, and
+        # it is registered here rather than allocated behind the gate's back
+        # -- gpuwm/core/p3.py:apply hands DomainState.scratch to
+        # p3_device.make_workspace as its allocator for exactly that reason.
+        # The names are gpuwm.core.p3_device.SCRATCH_SLOTS and SEDW_SLOTS
+        # with the p3_/p3_sed_ prefixes that function applies;
+        # tests/test_p3_cuda.py pins the two lists against each other so a
+        # slot cannot appear on one side only.
+        #
+        # ``mp_pii`` is deliberately GONE.  The host path built a full
+        # (nz, ny, nx) Exner array; the kernels build the same factor in a
+        # register where the authority builds it (module_mp_p3.F:2293), so
+        # keeping the array would reserve a domain-sized allocation nothing
+        # reads.  The reference arm (run.p3_backend = "reference") does not
+        # use it either: it recomputes tmparr1 the same way.
         slots.update(
-            mp_th=m, mp_pii=m, mp_dz8w=m, mp_z8w=fl,
+            mp_th=m, mp_dz8w=m, mp_z8w=fl,
             mp_rainnc=s2, mp_rainncv=s2, mp_snownc=s2, mp_snowncv=s2,
             mp_sr=s2,
-            p3_vmi=m, p3_di=m, p3_rhopo=m,
+            p3_vmi=m, p3_di=m, p3_rhopo=m, p3_effc=m, p3_effi=m,
+            p3_nc=m, p3_ssat=m,
+            p3_prt_liq=s2, p3_prt_sol=s2,
+            p3_rho=m, p3_inv_rho=m, p3_qvs=m, p3_qvi=m, p3_sup=m,
+            p3_supi=m, p3_rhofacr=m, p3_rhofaci=m, p3_acn=m, p3_t=m,
+            p3_tmparr1=m, p3_qv_cld=m,
+            p3_sed_v_q=m, p3_sed_v_n=m, p3_sed_flux_q=m, p3_sed_flux_n=m,
+            p3_sed_flux_qir=m, p3_sed_flux_bir=m,
+            p3_flags=(2, ny, nx),
             refl_10cm=m,
         )
     if cfg.mp_physics == 28:
@@ -3744,18 +3821,54 @@ def scratch_slot_registry(cfg: RunConfig, *,
             slots["physics_qi"] = m                 # physics.py:1400-1404
         if cfg.mp_physics not in (6, 8, 10, 16, 18, 28):
             slots["physics_qs"] = m                 # physics.py:1405-1409
+    # FOUR producers write this one uint32 word and the disjunction has to
+    # name every one of them: YSU (physics.py:_run_ysu), Shin-Hong
+    # (physics.py:_run_shinhong), the native microphysics validator
+    # (physics.py:2052) and KF (physics.py:_validate_native_kf_result).
+    # A producer this registry does not name is not a refusal -- the word
+    # is still allocated, just outside the audited arena, because
+    # DomainState.scratch falls back to a private per-state allocation for
+    # any slot the arena has no registry row for (state.py:933-939).
+    #
+    # The microphysics leg is DERIVED, not spelled.  The literal it
+    # replaces -- (1, 6, 8, 10, 16, 28) -- was the ported-scheme list as it
+    # stood when mp=28 landed, and it went stale twice with nobody deciding
+    # to exclude anything: mp=9 and mp=50 both take the native arm and
+    # neither was in it.  ``accept_microphysics`` routes a scheme through
+    # ``_validate_native_microphysics`` exactly when it has a canonical
+    # surface-diagnostic row and is not mp=18 (physics.py:2036-2052), so
+    # that predicate IS the membership rule, read from the same table the
+    # runtime reads instead of copied out of it.  18 stays out because
+    # accept_microphysics excludes it BY NAME (physics.py:2046): NSSL owns
+    # every accumulator in its own contract and takes the per-field arm,
+    # which launches no validator.
+    #
+    # P3 (mp=50) belongs, and its one ice category is the reason it looked
+    # like it did not.  No qs and no qg means its driver arm binds FIVE
+    # surface diagnostics where mp=6/8 bind seven -- RAINNC/RAINNCV/SR/
+    # SNOWNC/SNOWNCV and no graupel argument
+    # (module_microphysics_driver.F:1590-1595, transcribed at
+    # physics_inventory.py:157-170).  Five is still a canonical row, and
+    # the SR bound at :1592 is P3's own solid-to-total ratio
+    # pcprt_sol/(pcprt_liq+pcprt_sol+1.e-12) (module_mp_p3.F:898), which
+    # the validator range-checks every step.  Both P3 backends return those
+    # exact canonical scratch arrays (p3.py:1838-1840 reference,
+    # p3.py:1987-1989 CUDA), so the native arm is taken and the word IS
+    # asked for on every P3 step.  mp=9 arrives on the same predicate for
+    # the same reason (milbrandt2.py:300-303), and this file already priced
+    # the validator kernel module for both selectors
+    # (_MICROPHYSICS_KERNEL_MODULES 9 and 50) while omitting its status
+    # word -- the contradiction this derivation removes.
+    #
+    # bl=11 rides the same word as bl=1: Shin-Hong validates its outputs
+    # through the identical batched-status policy.
+    from gpuwm.core.physics_inventory import microphysics_scratch_slots
+    native_microphysics_validation = bool(
+        microphysics_scratch_slots(int(cfg.mp_physics))
+        and int(cfg.mp_physics) != 18)
     if (int(cfg.bl_pbl_physics) in (1, 11)
-            or int(cfg.mp_physics) in (1, 6, 8, 10, 16, 28)
+            or native_microphysics_validation
             or int(cfg.cu_physics) == 1):
-        # 28 is here for the same reason 6/8/10 are, and it was found by the
-        # merge rather than by the port: physics.py:1284-1291 takes the
-        # native-diagnostics arm for every scheme whose result IS the
-        # canonical scratch set, and mp=28's adapter writes exactly the
-        # seven canonical slots mp=8 does (physics.py:390-401).  18 is
-        # absent because :1286 excludes it explicitly, not because NSSL
-        # skips validation.  bl=11 rides the same word as bl=1: Shin-Hong
-        # validates its outputs through the identical batched-status
-        # policy (physics.py:_run_shinhong).
         slots["physics_validation_status"] = (1,)
     if int(cfg.bl_pbl_physics) == 5:
         # MYNN's whole working set, declared in
@@ -4142,14 +4255,51 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "snapshots before the process kernel reads them; NUCOND overwrites "
         "its supersaturation filter before reading it"),
     ScratchSlotLifetime(
-        ("p3_vmi", "p3_di", "p3_rhopo"), "write_before_read",
+        # The eighteen device companions plus the two column-scope logical
+        # flags.  Every one is written before it is read WITHIN a call and
+        # nothing in any of them crosses a call boundary: p3k_prep and
+        # p3k_kloop1 fill the twelve carriers for every level of every
+        # column before p3k_kloopmain reads one, each sedimentation step
+        # zeroes the six workspace arrays over the whole column before its
+        # own substep loop touches them (gpuwm/core/kernels/p3.cu, the
+        # `for (int k = 0; k < nk; ++k) AT(W[...], k) = 0.0f` prologues),
+        # and p3k_prep clears both flags before p3k_kloop1 sets them.
+        #
+        # The cross-step carriers of this scheme are th_old and qv_old, and
+        # they are DomainState FIELDS serialized by gpuwm/io/restart.py --
+        # deliberately not scratch, because the diagnosed-ssat branch reads
+        # them on the next call (module_mp_p3.F:2325-2337, :5018-5021).
+        ("p3_rho", "p3_inv_rho", "p3_qvs", "p3_qvi", "p3_sup", "p3_supi",
+         "p3_rhofacr", "p3_rhofaci", "p3_acn", "p3_t", "p3_tmparr1",
+         "p3_qv_cld", "p3_sed_v_q", "p3_sed_v_n", "p3_sed_flux_q",
+         "p3_sed_flux_n", "p3_sed_flux_qir", "p3_sed_flux_bir",
+         "p3_flags", "p3_nc", "p3_ssat", "p3_prt_liq", "p3_prt_sol"),
+        "write_before_read",
+        "gpuwm/core/p3_device.py:SCRATCH_SLOTS/SEDW_SLOTS (allocation via "
+        "DomainState.scratch); gpuwm/core/kernels/p3.cu p3_step_prep_col, "
+        "p3_step_kloop1_col, the three p3_step_sed_*_col prologues; "
+        "gpuwm/core/p3.py:apply (ssat zeroed on entry, the wrapper's "
+        "module_mp_p3.F:851)",
+        "the twelve carriers are filled by prep/kloop1 before kloopmain "
+        "reads them, the six sedimentation arrays are zeroed over the whole "
+        "column at the top of each sedimentation step, the flag pair is "
+        "cleared in prep, nc is respecified from nccnst/rho every call at "
+        "the specified-Nc setting (:2350) and ssat is zeroed by the adapter "
+        "and diagnosed in kloop1 -- none of them carries a value across a "
+        "call boundary"),
+    ScratchSlotLifetime(
+        ("p3_vmi", "p3_di", "p3_rhopo", "p3_effc", "p3_effi"),
+        "write_before_read",
         "gpuwm/core/p3.py:1749-1751 (allocation), :p3_main diagnostic pass; "
         "phys/module_mp_p3.F:1965-1967 (intent(out)), :2282-2284 (zeroed on "
         "entry), :4856-4858 (written from the post-update ice state)",
-        "P3's three ice diagnostics are intent(out) of p3_main: it zeroes "
-        "them on entry and refills them from the updated ice state before "
+        "P3's diagnostics are intent(out) of p3_main: it presets them on "
+        "entry (:2278-2288) and refills them from the updated state before "
         "returning, so nothing in them survives a call boundary and the "
-        "driver's read-back always follows that call's own write"),
+        "driver's read-back always follows that call's own write.  effc and "
+        "effi joined this row with the CUDA port: the device kernels write "
+        "them in metres and the adapter converts into state.effc/effi in "
+        "microns, where the host path used two host arrays instead"),
     ScratchSlotLifetime(
         ("mp_thompson_temperature",
          "mp_thompson_frozen_reference_density",

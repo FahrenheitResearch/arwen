@@ -1,0 +1,96 @@
+# The Rust packages a mutation run may mutate, and what a survivor means
+# for each of them.
+#
+# THE BREAKAGE THIS GATE PREVENTS
+#   A wrong forecast NUMBER that neither crashes nor moves any hash: an
+#   inverted or off-by-one comparison, or a dropped unit-conversion arm,
+#   in the arithmetic a published product is read off.  Nothing this tree
+#   already runs can see that class.  The SHA-256 kernel pin proves the
+#   code did not CHANGE unnoticed; it says nothing about code that
+#   changed WRONGLY.  tools/battery/cargo_gates.txt's MIN_TESTS floors
+#   prove a suite still runs its tests; they say nothing about whether
+#   those tests would fail if the arithmetic under them were reversed.
+#   Conservation checks and byte-identity are blind to a compensating
+#   change on both sides of a comparison.
+#
+#   It is not hypothetical.  Every one of these survived the full suite
+#   of the crate it lives in, measured on this branch:
+#     * rw-netcdf, whose cargo_gates.txt entry calls it "the only thing
+#       standing between a broken CF time parse and a wrong initial
+#       condition": deleting the `"min" | "mins" | "minute" | "minutes"`
+#       arm of the CF unit match, and both multiplies in the
+#       minutes-to-nanoseconds conversion.  A `minutes since` history
+#       file decodes to the wrong times and every test still passes.
+#     * rustwx-ensemble, whose tests that file describes as "a probe
+#       whose WRONG answer was once shipped": inverting the comparison in
+#       `exceedance_probability`, which turns every exceedance
+#       probability into its complement.
+#     * obs-regrid, whose contract is bit-identical float64 parity with
+#       scipy: the k-d tree's pruning-geometry comparisons, which decide
+#       which subtrees are skipped.  The goldens pin the ANSWER on the
+#       grids they cover and never exercise the branches.
+#
+# WHY THIS LIST IS CURATED AND SHORT
+#   The workspace carries 60,713 mutants.  At the CHEAPEST measured rate
+#   -- 1.8 s per mutant with a warm target -- testing all of them is over
+#   30 hours, and rw-mpas alone runs at 61 s per mutant because its suite
+#   takes 61 s.  A gate that costs a day cannot run per commit, so the
+#   cost has to follow the diff (`--since`) AND the list has to stop at
+#   packages whose suites finish in seconds.
+#
+#   The packages below are the ones where a surviving mutant is a WRONG
+#   NUMBER rather than a wrong-looking picture: unit conversions, CF time
+#   decode, exceedance and neighbourhood probabilities, interpolation
+#   weights, contour thresholds, field comparison.  A renderer mutant
+#   that survives usually means the pixels moved somewhere no assertion
+#   looks, which is a real hole but not this hole.
+#
+# FORMAT
+#   One entry per line, three fixed columns:
+#
+#       MODE  WORKSPACE  PACKAGE
+#
+#   MODE     `block`   a surviving mutant that is not in
+#                      tools/battery/mutation_survivors.txt fails the
+#                      run.  Only packages whose whole suite runs in
+#                      seconds belong here.
+#            `report`  mutants are tested and counted, and survivors are
+#                      printed, but they do not fail the run.  This is
+#                      where an expensive package lives, and where a
+#                      package lives until its survivor rate is low
+#                      enough that a red run means something.  Promoting
+#                      report -> block is a deliberate act by a person,
+#                      not a threshold the runner crosses on its own.
+#   WORKSPACE repository-relative directory holding Cargo.toml AND
+#            .cargo/config.toml, the same column and the same meaning as
+#            tools/battery/cargo_gates.txt.
+#   PACKAGE  a member package of that workspace, by name.  It must also
+#            appear in cargo_gates.txt: a package with no test leg has
+#            nothing for a mutant to survive, and a 100% survival rate
+#            reported as a number would read like a finding when it is
+#            just an absence.  tests/test_mutation_gate_manifest.py
+#            enforces that.
+#
+#   Blank lines and lines whose first non-space character is `#` are
+#   ignored.  tools/battery/run_mutation_gate.py is the runner.
+#
+# WHY rw-mpas IS `report` AND NOT `block`
+#   88% of this branch's Rust file-touches land in rw-mpas, and its suite
+#   takes 61 s, so every mutant costs 61 s: the MEDIAN commit into it is
+#   about 55 mutants, 56 minutes serial and 7-8 minutes across eight
+#   shards, and a large one measured 388 mutants -- 6.6 hours serial.
+#   That is not a per-commit cost.  It is also not, today, a per-commit
+#   SIGNAL: at the survival rates measured elsewhere it would emit tens
+#   of survivors on its first red run, and a gate that is red on day one
+#   gets widened until it means nothing.  Run it over a day's accumulated
+#   diff and read the number.
+
+block   tools/rustwx  netcdf-writer
+block   tools/rustwx  obs-regrid
+block   tools/rustwx  rustwx-calc
+block   tools/rustwx  rustwx-contour
+block   tools/rustwx  rustwx-core
+block   tools/rustwx  rustwx-ensemble
+block   tools/rustwx  rw-fieldcmp
+block   tools/rustwx  rw-netcdf
+report  tools/rustwx  rw-mpas

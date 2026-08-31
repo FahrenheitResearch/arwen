@@ -8,14 +8,15 @@ seams produces a physically sane, conserving state.
 
 WHAT IT DOES NOT CLAIM
 ----------------------
-Any agreement with WRF.  There is NO oracle comparison here: no ULP
-measurement against the byte-frozen ``phys/module_mp_p3.F``, no matched WRF
-run, no forecast-trajectory comparison.  Every number below is checked
-against PHYSICS or against gpuwm's own float64 mirror of its own
-arithmetic, never against Fortran output, because no Fortran output exists
-yet.  That is why the registry row says ``implemented-unverified`` and why
-the evidence string in it says the same thing in prose.  The WRF-Fortran
-oracle campaign is the declared next stage.
+Any agreement with WRF.  There is no oracle comparison IN THIS MODULE:
+every number below is checked against PHYSICS or against gpuwm's own
+float64 mirror of its own arithmetic, never against Fortran output.  The
+WRF-Fortran oracle campaign ran separately -- twelve fixtures through the
+unmodified ``phys/module_mp_p3.F``, results carried verbatim in the
+registry row's first warning -- and the row still says
+``implemented-unverified`` because per-step agreement with Fortran is not
+evidence of forecast skill: no matched WRF forecast run and no comparison
+against observations exists.
 
 The conservation and work assertions are guarded by a MUTATION CONTROL
 (:func:`test_the_column_assertions_fail_when_the_solver_is_stubbed_out`):
@@ -135,13 +136,21 @@ def test_the_registry_row_claims_no_more_than_was_measured():
         "components"]["microphysics"]["options"]["p3-mp50"]
     assert row["implemented"] is True
     assert row["maturity"] == "implemented-unverified"
-    assert row["reachability"]["state"] == "component-override"
+    # "template" since the registered HRRR preparation profile
+    # (p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1) made P3 a template
+    # selection rather than a per-domain override.
+    assert row["reachability"]["state"] == "template"
     assert row["selectors"] == {"mp_physics": 50}
     evidence = row["warnings"][0]
-    # The whole point of the label: it must SAY there is no oracle.
-    assert "NO oracle comparison" in evidence
-    assert "no ULP measurement" in evidence
-    assert "oracle campaign is the declared NEXT stage" in evidence
+    # The whole point of the label: it claims the measurement that was
+    # made and nothing past it.  The oracle campaign ran, so the warning
+    # must carry the measured result, disclose what is still open, and
+    # still refuse the forecast-skill claim that would justify a higher
+    # maturity rung.
+    assert "4 of 12 bit-identical" in evidence
+    assert "STILL OPEN" in evidence
+    assert "no matched WRF forecast run" in evidence
+    assert "not evidence of forecast skill" in evidence
 
 
 def test_the_namelist_importer_takes_mp50_natively():
@@ -746,6 +755,65 @@ def test_the_rime_pair_reaches_every_derived_transport_inventory():
         assert name in STATE_REBUILT_ATTRS, name
 
 
+def test_the_rime_pair_reaches_its_rk_time_t_copies(monkeypatch):
+    """The fifth hand-written transcription of the species registry.
+
+    ``RK_TIME_T_SEED_PAIRS`` is gpuwm's name-list stand-in for something
+    WRF does by INDEX: ``dyn_em/solve_em.F`` walks
+    ``DO im = PARAM_FIRST_SCALAR, num_3d_s`` (:1915, :2769) and hands
+    ``scalar_old(ims,kms,jms,im)`` (:1917, :2783) to the RK update, so
+    every member of the active package -- for mp=50 that is
+    ``scalar:qni,qnr,qir,qib``, Registry.EM_COMMON:3038, with the rime
+    pair declared in the same 4-D array at :555 and :557 -- carries a
+    time-t copy with nothing to enumerate.  A name list is equivalent to
+    that index range only while it names every member.
+
+    MEASURED before the rime pair was added: a P3 state got twelve of its
+    fourteen time-t copies written.  ``qir0``/``qib0`` kept whatever the
+    cold-start interpolation left while ``qir``/``qib`` carried the
+    relocation transplant, ``seed_rk_time_t_copies`` returned a
+    twelve-name list into the birth and relocation receipts, and
+    ``gpuwm.verify.cases.nest_relocate.rk_seed_consistency`` -- which
+    iterates this same tuple to check WRF ``start_domain``'s
+    post-condition -- reported ``pass`` over the twelve fields it could
+    see and never looked at the two it could not.
+
+    The completeness half below is stated against the species registry
+    rather than as a list of two names, so the next transported field
+    added to a one-ice-category state is caught here too.
+    """
+    import gpuwm.core.state as state_module
+    from gpuwm.core.moist import moist_species
+    from gpuwm.ingest.nest_init import (RK_TIME_T_SEED_PAIRS,
+                                        seed_rk_time_t_copies)
+    from gpuwm.verify.cases.nest_relocate import rk_seed_consistency
+
+    monkeypatch.setattr(state_module, "cp", np)
+    state = state_module.DomainState(_cfg())
+
+    copied_from = {current for current, _ in RK_TIME_T_SEED_PAIRS}
+    for name in moist_species(state):
+        assert getattr(state, name + "0", None) is not None, name + "0"
+        assert name in copied_from, name
+
+    # Distinct per field, so a row that filled the wrong copy is a
+    # mismatch rather than a coincidence.
+    for index, name in enumerate(moist_species(state)):
+        getattr(state, name)[...] = np.float32(1.0 + index)
+
+    written = seed_rk_time_t_copies(state)
+    for name in ("qir", "qib"):
+        assert name + "0" in written, name + "0"
+        assert np.array_equal(getattr(state, name + "0"),
+                              getattr(state, name)), name
+
+    census = rk_seed_consistency(state)
+    assert census["pass"]
+    for name in ("qir0", "qib0"):
+        assert name in census["fields"], name
+        assert census["fields"][name]["bit_mismatches"] == 0, name
+
+
 @requires_gpu
 def test_the_rime_pair_advects_exactly_with_the_ice_it_describes():
     """The transport operator, isolated from the microphysics.
@@ -803,7 +871,7 @@ def test_the_rime_pair_advects_exactly_with_the_ice_it_describes():
 
 
 def _p3_bubble_setup():
-    """A real mp=50 experiment: WK82 moist bubble with a seeded rime blob."""
+    """A real mp=50 experiment: WK82 moist bubble with an implanted rime blob."""
     from gpuwm.core.grid import make_base_state, make_vertical_coord
     from gpuwm.verify.cases import moist_bubble
     from gpuwm.verify.cases.wk82 import wk82_sounding
@@ -927,3 +995,129 @@ def test_an_mp50_run_writes_and_resumes_a_restart_after_real_steps(tmp_path):
         source = getattr(state, name).get()
         assert source.any(), f"{name} is all zero: the check proves nothing"
         assert getattr(fresh, name).get().tobytes() == source.tobytes(), name
+
+
+# ---------------------------------------------------------------------------
+# 8.  The legacy-RRTMG radiation seam: has_req* is a TRIPLE for P3.
+# ---------------------------------------------------------------------------
+#
+# WHY THIS SECTION EXISTS.  ``gpuwm/config.py``'s ``validate_p3_radiation``
+# refuses mp=50 against RTE+RRTMGP and names
+# ``ra_rrtmg_variant='rrtmg_legacy'`` as the remedy, so the legacy adapter
+# is the only 4/4 radiation an mp=50 run can reach and the shipped P3
+# configs take exactly that route.  The adapter used to ask WRF's use_mp_re
+# scheme table ONE boolean question and apply the answer to all three of
+# effc/effi/effs.  P3 is the one selector whose answer is not one boolean:
+# WRF sets has_reqc = has_reqi = 1 in the disjunction
+# (module_physics_init.F:1004-1023) and then zeroes has_reqs again in a
+# second statement (:1026-1033).  With no row at all the adapter raised
+# NotImplementedError at the FIRST radiation call; with a bare ``50: True``
+# it would instead have demanded a ``state.effs`` P3 never allocates.
+
+
+def test_p3_declares_cloud_and_ice_radii_to_legacy_rrtmg_but_no_snow():
+    """The triple, and that P3 is the only selector that needs a triple."""
+    from gpuwm.core.rrtmg_legacy import (
+        _MP_DECLARES_RADII, legacy_scheme_has_req)
+
+    # P3 predicts diag_effc/diag_effi (module_mp_p3.F:2279-2281, bound to
+    # re_cloud/re_ice at module_microphysics_driver.F:1597-1598) and
+    # nothing snow-shaped: Registry/Registry.EM_COMMON:3038 gives mp=50
+    # moist:qv,qc,qr,qi and state:re_cloud,re_ice -- ONE ice category with
+    # a rime mass/volume pair, no qs, no qg, no re_snow.
+    # (has_reqc, has_reqi, has_reqs)
+    assert legacy_scheme_has_req(50, 1) == (1, 1, 0)
+    # use_mp_re=0 is WRF's outer gate and still zeroes all three.
+    assert legacy_scheme_has_req(50, 0) == (0, 0, 0)
+
+    # Every OTHER selector gpuwm can drive answers with one value three
+    # times -- which is why one boolean served until P3 arrived, and why
+    # "add 50: True" is not the fix.
+    for mp_physics in sorted(_MP_DECLARES_RADII):
+        flags = set(legacy_scheme_has_req(mp_physics, 1))
+        if mp_physics == 50:
+            assert flags == {0, 1}
+        else:
+            assert len(flags) == 1, (
+                f"mp_physics={mp_physics} now needs a per-radius has_req*; "
+                "give it its own WRF citation rather than sharing P3's")
+
+
+def test_p3s_zero_snow_flag_is_what_moves_its_ice_into_the_snow_optics():
+    """The 0 on effs is a switch, not an omission.
+
+    WRF does not drop P3's ice from the radiation when has_reqs=0 -- it
+    moves the ice radius AND the ice mass onto the snow optics slot, zeroes
+    the ice slot and pins reice to 10 um
+    (module_ra_rrtmg_lw.F:12250-12260, module_ra_rrtmg_sw.F:10851-10861).
+    The prep already implements that case; this asserts the flags the gate
+    hands it actually select it, so the two halves cannot drift apart.
+    """
+    from gpuwm.core import rrtmg_legacy_prep as prep
+    from gpuwm.core.rrtmg_legacy import legacy_scheme_has_req
+
+    kte = 4
+    has_reqc, has_reqi, has_reqs = legacy_scheme_has_req(50, 1)
+    # P3's radiation-facing column, in the prep's METER convention.
+    re_cloud = np.full(kte, 12.0e-6, np.float32)
+    re_ice = np.full(kte, 40.0e-6, np.float32)
+    qi = np.full(kte, 1.0e-4, np.float32)
+    cldfra = np.ones(kte, np.float32)
+    t3d = np.full(kte, 250.0, np.float32)
+    zeros = np.zeros(kte, np.float32)
+
+    inflg, iceflg, recloud, reice, resnow, qs1d, qi1d = prep._effective_radii(
+        kte, 1, has_reqc, has_reqi, has_reqs, t3d, cldfra, 1.0,
+        re_cloud, re_ice, zeros, qi, zeros.copy(), qi.copy())
+
+    # iceflg 5 is the snow-bearing ice optics WRF selects for P3.
+    assert (inflg, iceflg) == (5, 5)
+    # The ice radius is on the SNOW slot; the ice slot is the constant.
+    assert np.allclose(resnow, 40.0)
+    assert np.allclose(reice, 10.0)
+    assert np.allclose(recloud, 12.0)
+    # ...and so is the ice MASS, which is what actually makes a P3 ice
+    # cloud radiate rather than vanish.
+    assert np.array_equal(qs1d, qi)
+    assert not qi1d.any()
+
+    # CONTROL: the same column under a scheme that DOES declare snow keeps
+    # its ice on the ice slot, so the assertions above are P3's remap and
+    # not something every flag combination produces.
+    thompson = legacy_scheme_has_req(8, 1)
+    assert thompson == (1, 1, 1)
+    _, _, _, reice_t, resnow_t, qs_t, qi_t = prep._effective_radii(
+        kte, 1, *thompson, t3d,
+        cldfra, 1.0, re_cloud, re_ice, zeros, qi, zeros.copy(), qi.copy())
+    assert np.allclose(reice_t, 40.0)
+    assert np.allclose(resnow_t, 10.0)
+    assert not qs_t.any()
+    assert np.array_equal(qi_t, qi)
+
+
+def test_the_legacy_adapter_never_asks_p3_for_a_snow_radius_it_lacks():
+    """A bare ``50: True`` would raise on state.effs; the triple does not.
+
+    The mp=50 state allocates effc and effi and NO effs (its Registry
+    package has no re_snow), and the adapter refuses to radiate fallback
+    radii silently when a DECLARED radius is missing.  So the only reason
+    the run survives is that has_reqs is 0 -- asserted here against the
+    shipped allocator's own inventory rather than against the flag alone.
+    """
+    from gpuwm.core.preflight import state_array_shapes
+    from gpuwm.core.rrtmg_legacy import legacy_scheme_has_req
+
+    cfg = _cfg()
+    validate_run_config(cfg)
+    allocated = set(state_array_shapes(cfg))
+    has = legacy_scheme_has_req(cfg.mp_physics, 1)
+    for name, flag in zip(("effc", "effi", "effs"), has):
+        assert (name in allocated) == bool(flag), (
+            f"state.{name} allocated={name in allocated} but has_req says "
+            f"{flag}: the legacy adapter would either raise on a missing "
+            "declared radius or silently drop a predicted one")
+
+    # And the reason there is no effs, stated where the next reader looks:
+    # P3 carries one ice category plus its rime pair and no snow species.
+    assert {"qi", "qir", "qib"} <= allocated
+    assert not ({"qs", "qg"} & allocated)

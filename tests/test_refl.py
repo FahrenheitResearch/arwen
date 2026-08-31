@@ -343,6 +343,14 @@ def test_refl_stash_has_no_trajectory_or_restart_reader():
         # which the scatter carries into the domain field like any other
         # carrier.
         "gpuwm/core/streaming.py",
+        # The hex column-batch seam (6e333822e, phase two of the mpas
+        # seam: WRF's history-step diagflag).  On a due step it consumes
+        # the handoff inside the same transaction that builds the step
+        # RECEIPT the hex caller assembles its history from -- output
+        # assembly on exactly the grounds gpuwm/runtime.py is here, and
+        # an unconsumed stash would be the same cadence refusal one call
+        # later.
+        "gpuwm/core/mpas_column_batch.py",
     }
 
     # Prevent a direct attribute read or constant-name getattr from bypassing
@@ -635,7 +643,17 @@ def test_wrfout_refl_10cm_variable_is_registry_faithful(tmp_path):
 def test_make_reflectivity_map_is_optional_and_renders(tmp_path):
     """The Task 9 map hook writes the composite PNG from a wrfout that
     carries REFL_10CM and refuses one that does not (the current T7
-    product path never calls it, so nothing there changes)."""
+    product path never calls it, so nothing there changes).
+
+    Drawn by ``rw_wrfbatch`` since the render-law rewiring (bceb46073),
+    whose raw-wrfout road probes ``T`` for the grid dimensions and
+    requires a run origin (``START_DATE``) -- both of which every real
+    product tape carries -- so the tape here carries the real shape
+    rather than the matplotlib-era three-variable minimum.  The refusal
+    moved with the same commit: the renderer skips the panel and the
+    hook raises RuntimeError naming the missing field, where the old
+    in-process reader raised ValueError.
+    """
     from gpuwm.io.wrfout import WrfoutWriter, wrf_time_str
     from gpuwm.verify.cases.real74_d01 import make_reflectivity_map
 
@@ -646,19 +664,23 @@ def test_make_reflectivity_map_is_optional_and_renders(tmp_path):
         np.float32)
     refl = np.full((nz, ny, nx), -35.0, dtype=np.float32)
     refl[:2, 2:4, 3:6] = 55.0                      # a convective core
+    theta_pert = np.zeros((nz, ny, nx), dtype=np.float32)
+    stamp = wrf_time_str(0.0)
+    origin = {"START_DATE": stamp, "SIMULATION_START_DATE": stamp}
     path = tmp_path / "wrfout_refl.nc"
     with WrfoutWriter(path, nx=nx, ny=ny, nz=nz, dx=1000.0,
-                      dy=1000.0) as writer:
-        writer.write_frame(wrf_time_str(0.0),
-                           {"REFL_10CM": refl, "XLAT": lat, "XLONG": lon})
+                      dy=1000.0, global_attrs=origin) as writer:
+        writer.write_frame(stamp, {"REFL_10CM": refl, "XLAT": lat,
+                                   "XLONG": lon, "T": theta_pert})
     out = make_reflectivity_map(path, tmp_path / "maps")
     assert out.exists() and out.stat().st_size > 0
 
     bare = tmp_path / "wrfout_bare.nc"
     with WrfoutWriter(bare, nx=nx, ny=ny, nz=nz, dx=1000.0,
-                      dy=1000.0) as writer:
-        writer.write_frame(wrf_time_str(0.0), {"XLAT": lat, "XLONG": lon})
-    with pytest.raises(ValueError, match="REFL_10CM"):
+                      dy=1000.0, global_attrs=origin) as writer:
+        writer.write_frame(stamp, {"XLAT": lat, "XLONG": lon,
+                                   "T": theta_pert})
+    with pytest.raises(RuntimeError, match="REFL_10CM"):
         make_reflectivity_map(bare, tmp_path / "maps")
 
 

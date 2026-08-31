@@ -511,28 +511,28 @@ machine-level facts worth knowing:
   13.3 (13030)) across the 6 compile routes the model
   uses, crossed with 6 arithmetic mechanisms.  The answer
   depends on the route:
-  - `R1` loader RawModule (`gpuwm/core/kernels/__init__.py:78`,
+  - `R1` loader RawModule (`gpuwm/core/kernels/__init__.py:84`,
     gpuwm.core.kernels.load_module), effective NVRTC options `-std=c++17`
     `-ftz=true`: `flush-to-zero` on 6 of 6 mechanisms [disassembly
     `tools/ftz_receipt/receipt/sass/r1.sass`]
   - `R1-ftztrue` loader RawModule + explicit --ftz=true (control)
-    (`gpuwm/core/kernels/__init__.py:78 + control flag`, cupy.RawModule),
+    (`gpuwm/core/kernels/__init__.py:84 + control flag`, cupy.RawModule),
     effective NVRTC options `-std=c++17` `--ftz=true` `-ftz=true`:
     `flush-to-zero` on 6 of 6 mechanisms [disassembly
     `tools/ftz_receipt/receipt/sass/r1_ftztrue.sass`]
   - `R2` RawModule with the shortwave option tuple
-    (`gpuwm/core/rrtmg_sw.py:2890`, cupy.RawModule), effective NVRTC options
+    (`gpuwm/core/rrtmg_sw.py:2906`, cupy.RawModule), effective NVRTC options
     `-std=c++17` `--ftz=false` `-ftz=true`: `flush-to-zero` on 6 of 6
     mechanisms [disassembly `tools/ftz_receipt/receipt/sass/r2.sass`]
-  - `R3` direct NVRTC + cuda.function.Module (`gpuwm/core/rrtmg_lw.py:3723`,
+  - `R3` direct NVRTC + cuda.function.Module (`gpuwm/core/rrtmg_lw.py:3733`,
     cupy.cuda.compiler.compile_using_nvrtc), effective NVRTC options
     `-std=c++17` `--ftz=false` `-arch=compute_120`: `ieee-agreement` on 6 of
     6 mechanisms [disassembly `tools/ftz_receipt/receipt/sass/r3.sass`]
-  - `R4` CuPy-generated ReductionKernel (`gpuwm/core/mynn_pbl_gpu.py:290`,
+  - `R4` CuPy-generated ReductionKernel (`gpuwm/core/mynn_pbl_gpu.py:296`,
     cupy.ReductionKernel), effective NVRTC options `--std=c++17`
     `-ftz=true`: `flush-to-zero` on 6 of 6 mechanisms [disassembly of 6
     objects, `tools/ftz_receipt/receipt/sass/r4_0.sass` and siblings]
-  - `R5` inline PTX without .ftz (`gpuwm/core/kernels/__init__.py:78`,
+  - `R5` inline PTX without .ftz (`gpuwm/core/kernels/__init__.py:84`,
     gpuwm.core.kernels.load_module), effective NVRTC options `-std=c++17`
     `-ftz=true` (this route rides `R1`'s compile): `ieee-agreement` on 4 of
     6 mechanisms; `not-applicable` on 2 of 6 mechanisms [disassembly

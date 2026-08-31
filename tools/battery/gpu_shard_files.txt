@@ -85,6 +85,27 @@ tests/test_dycore_full.py
 # proved by stepping, and stepping needs the card.
 tests/test_anisotropic_mixing_w_stability.py
 
+# The advective forcing pair: RTHFTEN/RQVFTEN leave the dycore for the cumulus
+# driver.  Untested, the pair silently reverts to zeros and Grell-Freitas runs
+# on half its forcing.  Measured 2026-08-28 this file was on the CPU stage-1
+# list and on no GPU list, and every test in it is whole-module GPU-marked, so
+# it collected 0 of 9 on the leg that named it and ran on no leg at all --
+# nine tests for a defect a lane had already closed once, guarded by nothing.
+tests/test_dycore_advective_forcing_export.py
+
+# The dycore's symmetry relations: x-reflection, x<->y transpose, and
+# well-balancedness at rest.  Every other dycore gate on this list proves
+# either that the code has not CHANGED (byte identity, kernel source pins)
+# or that it CONSERVES; a compensating error is invariant under both.
+# Measured with injected faults: an al_pp -> alt substitution in the
+# terrain-following pressure gradient drives an at-rest atmosphere to
+# 108.5 m/s while the domain mass drift stays IDENTICAL to the clean run,
+# and a one-cell shift of the y advection stencil leaves the drift at
+# exactly 0.000e+00.  These are the only assertions in the tree that
+# constrain the operator's structure, and at 7 s of card time they belong
+# on the per-cut leg rather than the weekly one.
+tests/test_dycore_symmetry_relations.py
+
 # ---------------------------------------------------------------------------
 # SHARD 1b: the same dycore seen from the files whose GPU half is
 # function-marked rather than whole-module.  tests/conftest.py marks
@@ -245,6 +266,34 @@ tests/test_ruc_nzs_device.py
 # here and not on stage1_files.txt.  Its CPU twin tests/test_mynn_pbl.py
 # runs 60 rows on a CPU and went to stage1_files.txt instead.
 tests/test_mynn_pbl_gpu.py
+
+# SHARD 1i: the P3 (mp_physics=50) device legs.  Same rule as 1f, 1g and
+# 1h -- a device file on no list is asked by nobody -- and P3 is the case
+# where that had already cost a forecast.
+#
+# WHAT HAPPENED.  The CUDA port landed with tests/test_p3_cuda_gpu.py on
+# no list at all.  Shipped mp=50 could not complete a single forecast:
+# gpuwm/core/p3.py caches state._p3_workspace, gpuwm/io/restart.py
+# refused to classify it, and every run died in canonical_state_digest
+# before its first history frame.  A CPU leg cannot ask that question --
+# the CPU shim state never calls p3.apply, so
+# test_every_domainstate_attribute_is_classified passed with
+# mp_physics=50 parametrized throughout.  Only a real device step asks
+# it, which is what test_p3_restart_manifest_gpu.py does.
+#
+# GPU-bound by measurement (tests/conftest.py::_cupy_scope), not by the
+# _gpu in the name: test_p3_cuda_gpu.py is whole-module GPU, and
+# test_p3_restart_manifest_gpu.py is GPU at both of its functions.
+tests/test_p3_cuda_gpu.py
+tests/test_p3_restart_manifest_gpu.py
+# And tests/test_p3_port.py, which the first pass of SHARD 1i MISSED --
+# recorded because the miss is the shard's own thesis a third time.  It
+# predates the CUDA port, it is whole-module GPU by _cupy_scope, and its
+# 31 rows are 31/31 DESELECTED under the stage-1 marker filter, so on a
+# CPU list it would report green on nothing and on no list it was asked
+# by nobody.  Measured 31 passed on node-1's RTX 5070 Ti at this tip,
+# against package files hash-matched to the worktree, before listing.
+tests/test_p3_port.py
 
 # ---------------------------------------------------------------------------
 # SHARD 2 (WEEKLY, not per-cut): the GF cumulus family.

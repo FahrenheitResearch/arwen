@@ -102,8 +102,13 @@ def _bytes(a):
 
 
 def _ordered_int(v: np.ndarray) -> np.ndarray:
-    i = v.view(np.int32).astype(np.int64)
-    return np.where(i >= 0, i, np.int64(-2147483648) - i)
+    # The one total-order owner, not a local copy: this held the correct
+    # INT32_MIN reflection, but tests/test_fp32_ulp.py exists because
+    # thirteen such copies carried the sign error, so even a right copy
+    # imports the shared map (2026-08-30).
+    from gpuwm.core.fp32_ulp import monotone_fp32_key
+
+    return monotone_fp32_key(np.asarray(v, dtype=np.float32))
 
 
 def ulp_stats(a, b) -> dict:

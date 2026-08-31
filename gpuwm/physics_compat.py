@@ -426,6 +426,21 @@ NSSL2_PROFILE_ID = (
 NSSL2_LEGACY_RRTMG_PROFILE_ID = (
     "nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1"
 )
+#: The P3 one-category composition: the Thompson legacy-RRTMG suite with
+#: exactly ONE selector moved (``mp_physics`` 8 -> 50), transcribed switch
+#: for switch so a paired run of the two isolates the microphysics.
+#: Legacy RRTMG rather than RTE+RRTMGP because that is the one 4/4 engine
+#: P3 can couple to: WRF sets ``has_reqs = 0`` for P3
+#: (phys/module_physics_init.F:1027-1033) and the single ice category
+#: carries no separate snow species, so RTE+RRTMGP has no snow radius to
+#: consume and ``gpuwm.config.validate_p3_radiation`` refuses that
+#: pairing by name; the legacy port computes its own radii the way WRF
+#: does.  ``cu_physics`` stays 0 (its sibling's value), which also keeps
+#: the suite admissible on the nested HRRR route's own physics gate.
+#: Registered HRRR-only on the Kessler rule.
+P3_LEGACY_RRTMG_PROFILE_ID = (
+    "p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1"
+)
 #: The MYNN 5/5 suite, which differs from :data:`WSM6_PROFILE_ID` in exactly
 #: two selectors (``bl_pbl_physics`` 1 -> 5 and ``sf_sfclay_physics`` 91 -> 5).
 #: It is a peer profile rather than an expert one because it RUNS at production
@@ -524,6 +539,11 @@ SINGLE_DOMAIN_PHYSICS_PROFILES = (
     MORRISON_PROFILE_ID,
     NSSL2_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
+    # P3 closes the scheme-family block: one composition, legacy RRTMG
+    # only (validate_p3_radiation refuses the RTE+RRTMGP pairing), placed
+    # here so the discovery order keeps microphysics families together
+    # ahead of the PBL/land-surface families below.
+    P3_LEGACY_RRTMG_PROFILE_ID,
     MYNN_PROFILE_ID,
     # Each radiation-bearing twin sits immediately after the row it
     # mirrors, the same way the Thompson and NSSL-2 legacy-RRTMG twins do.
@@ -713,6 +733,29 @@ _SINGLE_DOMAIN_RUNTIME_SWITCHES = MappingProxyType({
         "ra_rrtmg_variant": RRTMG_VARIANT_LEGACY,
         "sf_sfclay_physics": 91, "sf_surface_physics": 2,
         "bl_pbl_physics": 1, "cu_physics": 1, "cudt_minutes": 5.0,
+        "num_soil_layers": 4, "terrain_opt": 1,
+        "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.12,
+        "diff_6th_slopeopt": 1,
+    }),
+    # The THOMPSON_LEGACY_RRTMG row with ONE selector moved: mp_physics
+    # 8 -> 50.  Every other value is transcribed from that row rather
+    # than re-derived (the paired-run property the Shin-Hong row states
+    # above).  moist_cq stays True: P3's four moist species feed the same
+    # device cq path (gpuwm/core/acoustic.py prepare_moist_cq keys a
+    # mass-species row for 50), and a mixed P3 nest edge requires
+    # moist_cq=true on both sides.  ra_rrtmg_variant stays the legacy
+    # engine, which for mp=50 is a REQUIREMENT rather than a taste:
+    # validate_p3_radiation (gpuwm/config.py) refuses P3 on RTE+RRTMGP
+    # because WRF's has_reqs=0 leaves no snow radius to hand it.
+    P3_LEGACY_RRTMG_PROFILE_ID: MappingProxyType({
+        "moist": True, "moist_cq": True, "mp_physics": 50,
+        "top_lid": False, "epssm": 0.5, "morr_rimed_ice": 1,
+        "wsm6_hail_opt": 0, "ra_physics": 0,
+        "ra_lw_physics": 4, "ra_sw_physics": 4, "radt": 12.0,
+        "wrf_rrtmg_compatibility": WRF_RRTMG_LEGACY,
+        "ra_rrtmg_variant": RRTMG_VARIANT_LEGACY,
+        "sf_sfclay_physics": 91, "sf_surface_physics": 2,
+        "bl_pbl_physics": 1, "cu_physics": 0, "cudt_minutes": 0.0,
         "num_soil_layers": 4, "terrain_opt": 1,
         "km_opt": 4, "diff_6th_opt": 2, "diff_6th_factor": 0.12,
         "diff_6th_slopeopt": 1,
@@ -3019,6 +3062,7 @@ __all__ = [
     "noahmp_expert_column_budget",
     "noahmp_projected_call_seconds",
     "NSSL2_PROFILE_ID",
+    "P3_LEGACY_RRTMG_PROFILE_ID",
     "RUC_PROFILE_ID",
     "PhysicsPortBlocker",
     "PhysicsCapabilityError",

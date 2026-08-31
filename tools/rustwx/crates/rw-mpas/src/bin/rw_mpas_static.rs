@@ -252,6 +252,20 @@ fn main() -> ExitCode {
             .unwrap_or_else(|| DEFAULT_VALID_TIME.to_string()),
         nominal_dx_m,
         clobber: argv.iter().any(|a| a == "--clobber"),
+        // The GRID says which representation its static must carry; there is
+        // no flag, because the choice is a property of the mesh (does it have
+        // a native MPAS-A counterpart?) and not of the command line.  A grid
+        // that declares nothing gets binary32 -- every published mesh, and
+        // every cull of one.
+        coordinates: match rw_mpas::staticfile::coordframe::for_static_from_grid(&PathBuf::from(
+            &grid,
+        )) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::from(2);
+            }
+        },
     };
 
     let started = std::time::Instant::now();

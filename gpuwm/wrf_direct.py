@@ -321,6 +321,13 @@ def _load_contract() -> Mapping[str, object]:
     return payload
 
 
+#: The moist members the frozen WSM6 direct contract carries.  Named as data
+#: so `_physics_contract_bundle` can prune what a package does not declare
+#: without hard-coding species names inside the loop.
+_FROZEN_CONTRACT_MOIST_MEMBERS = frozenset({
+    "QVAPOR", "QCLOUD", "QRAIN", "QICE", "QSNOW", "QGRAUP",
+})
+
 _PACKAGE_FIELD_METADATA = {
     "QHAIL": ("Hail mixing ratio", "kg kg-1"),
     "QNDROP": ("Droplet number mixing ratio", "# kg-1"),
@@ -332,6 +339,17 @@ _PACKAGE_FIELD_METADATA = {
     "QNCCN": ("CCN Number concentration", "# kg(-1)"),
     "QVGRAUPEL": ("Graupel Particle Volume", "m(3) kg(-1)"),
     "QVHAIL": ("Hail Particle Volume", "m(3) kg(-1)"),
+    # P3 (mp_physics=50, Registry.EM_COMMON:555-558).  These two are why
+    # the mp=50 row could not simply be declared in
+    # gpuwm/wrf_physics_inventory.py and left there: _physics_contract_bundle
+    # below SKIPS any inventoried field this dict does not name, and
+    # _write_wrfinput iterates the contract -- so without these entries a P3
+    # export would have written QNICE and QNRAIN and silently dropped the
+    # rime mass and rime volume, which are two of P3's four scalars and the
+    # two that carry its whole ice-density prediction.  That is the exact
+    # failure mode the mp=28 row's docstring names as a known downstream gap.
+    "QIR": ("Rime ice mass-1 mixing ratio", "kg kg(-1)"),
+    "QIB": ("Rime ice volume-1 mixing ratio", "m(3) kg(-1)"),
 }
 
 
@@ -353,6 +371,41 @@ def _physics_contract_bundle(
     result = copy.deepcopy(dict(contract_bundle))
     input_contract = result["wrfinput"]
     bdy_contract = result["wrfbdy"]
+    # THE FROZEN CONTRACT IS A WSM6 FILE, so it carries WSM6's six moist
+    # members; every package inventoried before P3 declared those six plus
+    # additions, and this loop only ever ADDED.  mp_physics=50 is the first
+    # package that declares FEWER: Registry.EM_COMMON:3038 gives
+    # p3_1category ``moist:qv,qc,qr,qi`` with no qs and no qg, because P3's
+    # single ice category spans the snow/graupel continuum through rime mass
+    # and rime volume instead of splitting it into species.  Without this
+    # prune the exported wrfinput would carry a QSNOW and a QGRAUP for a
+    # domain whose scheme has no snow and no graupel species at all -- two
+    # zero-valued variables asserting hydrometeors that do not exist in the
+    # run that wrote them.
+    #
+    # For mp_physics 6, 8, 10, 18 and 28 the declared moist list is exactly
+    # (or a superset of) the frozen six, so `undeclared` is EMPTY and this
+    # block is a provable no-op for every package that shipped before P3;
+    # tests/test_wrf_physics_inventory.py measures that rather than asserting
+    # it.
+    declared_moist = {
+        field.netcdf_name for field in inventory.wrfinput_fields
+        if field.collection == "moist"
+    }
+    frozen_moist = {
+        item["name"] for item in input_contract["variables"]
+        if item["name"] in _FROZEN_CONTRACT_MOIST_MEMBERS
+    }
+    undeclared = frozen_moist - declared_moist
+    if undeclared:
+        input_contract["variables"] = [
+            item for item in input_contract["variables"]
+            if item["name"] not in undeclared
+        ]
+        bdy_contract["variables"] = [
+            item for item in bdy_contract["variables"]
+            if item["name"].split("_B")[0] not in undeclared
+        ]
     extension_names = [
         field.netcdf_name
         for field in inventory.wrfinput_fields
@@ -774,9 +827,21 @@ def _dimensions(contract: Mapping[str, object], *, nx: int, ny: int,
 
 
 def _prepared_vertical_contract(
-    cache: PreparedCache, *, nx: int, ny: int, nz: int
+    cache: PreparedCache, *, nx: int, ny: int, nz: int,
+    mp_physics: int | None = None,
 ) -> float:
-    """Validate serialized vertical dimensions and return the bound p_top."""
+    """Validate serialized vertical dimensions and return the bound p_top.
+
+    ``mp_physics`` selects WHICH moist arrays the prepared cache must carry.
+    It used to require WSM6's six unconditionally, which was correct while
+    every exportable package declared those six; mp_physics=50 is the first
+    that does not (Registry.EM_COMMON:3038 -- P3 carries one ice category and
+    no snow or graupel species), and the prepared cache for a P3 domain
+    therefore has no ``state/qs`` and no ``state/qg`` to offer.  Requiring
+    them turned a correct cache into "direct-WRF prepared cache lacks
+    required arrays ['state/qg', 'state/qs']" and refused the run.  ``None``
+    keeps the historical six for callers that have not resolved a scheme.
+    """
 
     coord_shapes = {
         name.removeprefix("coord/"): spec["shape"]
@@ -792,12 +857,6 @@ def _prepared_vertical_contract(
         "state/w": (nz + 1, ny, nx),
         "state/php": (nz + 1, ny, nx),
         "state/thp": (nz, ny, nx),
-        "state/qv": (nz, ny, nx),
-        "state/qc": (nz, ny, nx),
-        "state/qr": (nz, ny, nx),
-        "state/qi": (nz, ny, nx),
-        "state/qs": (nz, ny, nx),
-        "state/qg": (nz, ny, nx),
         "state/mup": (ny, nx),
         "base/mub": (ny, nx),
         "base/pb": (nz, ny, nx),
@@ -806,6 +865,18 @@ def _prepared_vertical_contract(
         "base/phb": (nz + 1, ny, nx),
         "base/terrain_z": (ny, nx),
     }
+    # The moist half, from the package rather than from WSM6's habit.
+    if mp_physics is None:
+        moist_registry_names = ("qv", "qc", "qr", "qi", "qs", "qg")
+    else:
+        moist_registry_names = tuple(
+            field.registry_name
+            for field in stock_wrf_physics_inventory(
+                int(mp_physics)).wrfinput_fields
+            if field.collection == "moist"
+        )
+    for registry_name in moist_registry_names:
+        expected_shapes[f"state/{registry_name}"] = (nz, ny, nx)
     missing = sorted(set(expected_shapes) - set(cache._arrays))
     if missing:
         raise ValueError(
@@ -1286,8 +1357,6 @@ def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
         "QCLOUD": cache.array("state/qc"),
         "QRAIN": cache.array("state/qr"),
         "QICE": cache.array("state/qi"),
-        "QSNOW": cache.array("state/qs"),
-        "QGRAUP": cache.array("state/qg"),
         "SHDMAX": surface["SHDMAX"],
         "SHDMIN": surface["SHDMIN"],
         "SHDAVG": surface["SHDAVG"],
@@ -1336,6 +1405,13 @@ def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
     # otherwise materialize zeros so the stock-WRF file is complete and its
     # package choice is auditable.
     inventory = stock_wrf_physics_inventory(mp_physics)
+    # QSNOW/QGRAUP used to be listed unconditionally beside QCLOUD above.
+    # They are package members like any other, and mp_physics=50 declares
+    # neither (Registry.EM_COMMON:3038), so a hard-coded read of
+    # ``state/qs`` raised KeyError on a perfectly valid P3 cache.  The loop
+    # below already handles every declared member -- prepared state when the
+    # cache carries it, real.exe's zeros when it does not -- so the two
+    # species simply join it.
     for field in inventory.wrfinput_fields:
         if field.netcdf_name in result:
             continue
@@ -1798,7 +1874,8 @@ def _prepared_domain_context(artifact: PreparedDomainArtifacts, domain,
                 rel_tol=1e-12):
             raise ValueError(
                 f"d{domain.grid_id:02d} geometry/cache {name} mismatch")
-    p_top = _prepared_vertical_contract(cache, nx=nx, ny=ny, nz=nz)
+    p_top = _prepared_vertical_contract(
+        cache, nx=nx, ny=ny, nz=nz, mp_physics=cfg.get("mp_physics"))
     if p_top != float(exp.vertical.p_top):
         raise ValueError(
             f"d{domain.grid_id:02d} prepared p_top differs from namelist")
@@ -2180,7 +2257,7 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
     if not math.isclose(float(geometry["dy_m"]), float(cfg["dy"]), rel_tol=1e-12):
         raise ValueError("geometry/cache dy mismatch")
     p_top = _prepared_vertical_contract(
-        cache, nx=nx, ny=ny, nz=nz)
+        cache, nx=nx, ny=ny, nz=nz, mp_physics=cfg.get("mp_physics"))
     expected_static_sha256 = identity.get("static_cache_sha256")
     if actual_static_sha256 != expected_static_sha256:
         raise ValueError("static cache digest does not match prepared identity")

@@ -48,6 +48,14 @@ def _experiment(eta, *, run_seconds: float, sample_interval_s: float):
         "experiment": {
             "name": "hrrr_native_easy_d01_d02",
             "start_time": datetime(2026, 7, 18),
+            # Easy-physics on purpose: shortwave on, no longwave scheme,
+            # so the land surface integrates the declared constant GLW.
+            # The constant-GLW guard (efee20b9e) refuses that pairing at
+            # config load unless it is declared -- that commit wired
+            # declared_constant_glw(exp) through this very runner but
+            # never added the declaration its own guard demands, so the
+            # tool refused its own config from then on.
+            "acknowledgements": ["constant-downward-longwave-v1"],
             "run_seconds": float(run_seconds),
             "feedback": 0,
             "smooth_option": 0,

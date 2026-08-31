@@ -165,7 +165,54 @@ def _imports_cupy(path: str) -> bool:
     return whole or bool(functions)
 
 
+def _register_silent_deselection_guard(config):
+    """Load tools/battery/no_silent_deselection BY PATH, on every run.
+
+    THE BREAKAGE, measured 2026-08-28.  ``pytestmark = pytest.mark.gpu`` at
+    the top of tests/test_ruc.py retired all sixty RUC bitwise-oracle tests --
+    the suite that detects a ONE-ULP change to Stefan-Boltzmann -- and the leg
+    reported rc=0 with 8 passed, 61 deselected.  Nothing saw it: not
+    test_gpu_marker_discipline.py, not test_module_skip_placement.py, not
+    test_stage1_manifest.py.  One line retires any suite in this repository.
+
+    Registered here rather than left to the battery's command line because a
+    guard that runs only when somebody remembers to pass ``-p`` is not a
+    default, and the battery is driven from queue scripts that do not live in
+    this repository.  It is loaded BY PATH rather than as ``tools.battery.*``
+    because that import fails whenever pytest is run from a subdirectory --
+    measured: ImportError, and it takes the whole session with it.
+
+    Failure to load is reported and not fatal: this hook must never be the
+    reason a test run cannot start.
+    """
+
+    import importlib.util
+    import sys
+
+    path = (pathlib.Path(__file__).resolve().parents[1]
+            / "tools" / "battery" / "no_silent_deselection.py")
+    if not path.is_file():
+        print()
+        print(f"no_silent_deselection guard NOT LOADED: {path} is "
+              "missing; "
+              "a whole suite can be retired by one marker line and this run "
+              "would not see it")
+        return
+    spec = importlib.util.spec_from_file_location(
+        "gpuwm_no_silent_deselection", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["gpuwm_no_silent_deselection"] = module
+    try:
+        spec.loader.exec_module(module)
+        module.pytest_configure(config)
+    except Exception as error:                       # pragma: no cover
+        print()
+        print(f"no_silent_deselection guard NOT LOADED: {error!r}")
+
+
 def pytest_configure(config):
+    if not config.pluginmanager.hasplugin("no_silent_deselection_guard"):
+        _register_silent_deselection_guard(config)
     config.addinivalue_line(
         "markers",
         "slow_acceptance: multi-minute end-to-end acceptance runs; excluded "

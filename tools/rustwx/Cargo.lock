@@ -1758,6 +1758,7 @@ name = "rw-netcdf"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "netcdf-writer",
  "netcrust",
  "serde",
  "serde_json",

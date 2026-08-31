@@ -218,8 +218,10 @@ FROZEN_MODULE_DIGESTS = {
         '53fc37398d086dcf54c317917872e5d8d473b83d6d217697335d5ae6bc96d143',
         '7981384362444c8e782abb80efb29cbf61d0a3183cc0c316799b3bf9f3c43671'),
     'diagnostics': (
-        'b1e2fb2866d73e37d98a0ae3aed791ffd3fd6242f3413e617957049903386e52',
-        '76ed32fcddf6cb1bd196d447c1d10b77feec652d6c7d3c764cb8f3110c7da774'),
+        # Re-pinned for the two-way feedback landing (88fdf60b9,
+        # "bitwise-gated" by its own suite).  Not an mp=8 unit.
+        'b2f877f0c2f6b06a573ac71f0a46c94b173d5eca00b0aa96016db85f05cb489f',
+        'd8d36d28a856e4f8b04a19eb850186f0c16d98f64b4c03d54efc2d8b3e9ca4ca'),
     'diff6': (
         '7dbcfb2d4e259ad36a3d29705e936a276b56e9ea52511c5f82054749e38302e9',
         '563febbc809cd53695782a77095b3ab01f60c64866657091b790f792f39a5394'),
@@ -288,8 +290,11 @@ FROZEN_MODULE_DIGESTS = {
         'fecf2e8028fda0ed4cb47fccce4c602d4632048d2dcbdd163613685ded952fdc',
         '530faef7f3bc5e5600d7a5f1086c9e4d0914a3aeda735214072bed30907c05d7'),
     'kf': (
-        '287b91e65affe88194822fafb2b428938db3ac84b6aef239b1a98aa4bcac956b',
-        'b15a1ef99e8a0e7994e68ad4c2e34957a2c9772937ba035fa7bed63ce6381752'),
+        # Re-pinned for the column-workspace move (48ff6b813), measured
+        # on node-1 with its two declared bit-moving placements named in
+        # the commit.  Not an mp=8 unit.
+        '2fc1cbef7be1b7482ff795cdcf48746e708a1d3a7caefb5c2ff5ace2d49cbbf6',
+        '09ee4871fe2424180029548f44c32e7d7ac4518e2237a76c438f74081e864180'),
     'lbc_flow': (
         '09ad5f0ad10b75efb9207c5217aa6eba2c4a4a45d20bf111dd517c2867b92e64',
         '6383f03f152f827b1bef4cc3fb42b3e4dd0a34aa5e817dbf9323f894398de0c4'),
@@ -318,11 +323,19 @@ FROZEN_MODULE_DIGESTS = {
         'a94de3ff2da95c37e12b437123b4a3807ac1318c524b339609f6024f4d21f85b',
         '891ec5d565c720afabab57169f1a3b1aa95efc3d1ac84e87ffbd4ebb239c57fe'),
     'nest': (
-        '19ebb671e2fc3d25f7d4ec571ec3bcfa4da6d137c175f02f232d865b0fb37e6a',
-        '3635d3b6ae282e9f341898286ecdf769ed27003dbb713168d18c02d4df75391d'),
+        # Re-pinned with diagnostics for 88fdf60b9's parent smoothers.
+        '565d5eeda0f2907d256a09ed6cf555416281a0a266eac795922256d6eef2dc7c',
+        'f4c1e5726308e4b069398f788ff17038051a50798bc34c50c8e21bdafabc31db'),
     'nest_microphysics': (
-        '674374b70247c65fd818ab7845f375db46e859f28a6b88e977b938c70bf2e859',
-        '78a85fff68e0312503549e5d34214b8dc4a89e11e5478199b90079ae5cfd1caf'),
+        # Re-pinned for the mp=50 (P3) mixed-edge ratification: the generic
+        # microphysics_edge_field kernel gained the source_qir/source_qib
+        # inputs, a source_mp parameter and the two P3 arms.  The frozen
+        # mp8_to_mp18_mass_diagnosed_field entry point in the same file is
+        # byte-unchanged (its own bitwise test still binds it), and no mp=8
+        # trajectory reaches the changed kernel: the edge matrix launches
+        # only on MIXED nest edges, which an all-mp8 run never resolves.
+        'add31c6944c01f68c05c37480f34be461be81de377f8229ed3c63368c262cedc',
+        'fdf0a5b48cc21accb6dc74c2209538d75dbcb20c49e5be5a041fd21f4d1faad7'),
     'noah': (
         'c3eefebad446acb74bcb3c3666f90789f278560fabfefc0b08da9d38496bf245',
         '57c25845288d4de8c66030c8a0ead986dd03355c49f1cdaabcebadfcb2835a85'),
@@ -413,8 +426,10 @@ FROZEN_MODULE_DIGESTS = {
         'ff4e3c6dd532be49fc866692e829e9a7efa7ac1c65a95b4cd1beb910f39d07b6',
         '8e3843a3884edee0ed8ade032401df5750ccde3df2d396a4d17a59267d0f27a1'),
     'rrtmg_lw': (
-        'd6bd85ef62136e77c083d929fbe923135b0165b3f689206778b82170879d5583',
-        '0a7af901550d4ad74566f612928549377ee7c839bb5643d7ad0ba1010dbb208f'),
+        # Re-pinned for the buffer-march positivity fix (7ce2f5de7,
+        # dp == DELTAP bitwise for in-contract tops per its message).
+        '391e459a9c174e07fc0fddba6de6e59ea836f04edccd00b7e0ae6c0d41ae2555',
+        'c39e41b508935b52b22914c1385dc636451d8aa34e10b8eb316e4d7e98b944b9'),
     'rrtmg_lw_chain': (
         'a71a779ea3a733e422414ee5d5d885cb904972fe32ac2bfe6438d6c5214c1252',
         'ee8f4c95e52248d0b641a48a8532d44d6aff0b75344dda59a416a3905ae972c1'),
@@ -434,20 +449,37 @@ FROZEN_MODULE_DIGESTS = {
         'edb6bcb71a9d0763d3576b602db0afa05ec5eddc9bc63548f4991f34bd6d718c',
         '07af9ba6f5a0ed7e3c735f0b574041aace48f306e2641e7563252ae992a2cfd9'),
     'rrtmg_sw': (
-        '36d2e51fee63649acb551fc3fb2d4996a0a556ddf1e09cb3346a9532eb58d8e5',
-        '6b790600388493317e095e04538dc5197d12ef7c75283b190420ffbe47309825'),
+        # Re-pinned for the one-instruction subnormal armor (65944605a,
+        # exact in binary64 per its message; witness at 25ad40769).
+        '1d2f967e09a299e1f8a9964a940f53d14a4dfbc42cb132161839e7db2de94478',
+        '6cc32f3a8a32e2539e4c8aba4ca927355cf08516d2a0bc98f3dd99623a8e709a'),
     'rrtmgp_cloud': (
         '015aec6065be8a23bcec1ce5421ae28cfbc74de1d6a7713a75bc1a78d1f7bc08',
         '5976824ca813f3e40a8b6d73ccb88d39b333f110054bb502d482817a3a7c6ad7'),
     'rrtmgp_gas': (
-        'e744423659529d02d2df9eb6cc9a96ced538fceeb6677ab6f33796166b643212',
-        'd1da202a9a0a59bbb646659431a67d81b734c9ce0c245b27f80b1d20378ce7fb'),
+        # Re-pinned for the contributed RRTMGP optimisation (51819ed0f,
+        # plus af2fe5e7f's follow-up): cell-per-block gas optics with
+        # shared memory, __f*_rn-pinned expressions.  Equivalence is the
+        # commit's own bitwise gates
+        # (test_gas_vmr_fused_kernel_matches_the_expression_reference and
+        # siblings), run green on sm_86.  Not an mp=8 unit.
+        '06249ff6c626dc914912c27465dc5cd3aa0ac3969f40b7cc515c639871594d04',
+        '01ad92e76fedbe87270f701260a324fb182446657a59030b7023458ae6bc0b3e'),
     'rrtmgp_mcica': (
-        '2f816f5e7adcfc7cf6ba405af9b70aa71d4271ba9b21836bba7d45a7d73b0be9',
-        'd324e9c18e7656190cb4a1aafc5dcf783def58e789b307cbad4ca1a5511e2f9e'),
+        # Re-pinned with rrtmgp_gas for 51819ed0f (mcica jump operators);
+        # the same commit's bitwise gates cover it.  Not an mp=8 unit.
+        'e59fe155d595c74a8c17619758091633652773a509a56030d3dc1a7d90b11039',
+        '49a078da7c25f9ecc321b26a827a1972c641808613d0a8aac9143291805dfd29'),
     'rrtmgp_rte': (
-        '684184537fe8023f78c20037ddc4396f2923a6f79517835f6a0c0283b9e89388',
-        '32ace441d06180613420ba4c5c4d1693cc8ddee95760e1d56ec23637300bdee9'),
+        # Re-pinned for 51819ed0f: in-solver Planck derivation, fused
+        # finalize, warp fold -- each with an in-commit bitwise
+        # equivalence test against the kernel it replaces.  This unit
+        # also carries the rrtmgp_planck_common.cuh header grant; the
+        # loader-inertness gate below defers to
+        # test_kernel_loader_inert's closed mapping for exactly the
+        # modules the loader names.  Not an mp=8 unit.
+        '22e0afb97b08a24e6daf30a3a03197558d6f452a1bfe225c729e83fdc12c6087',
+        '3204abbd31c1600c43a2f1bbf7e7c2d416b5a4be77fac81041a8a9dcbd68d63e'),
     'rrtmgp_validation': (
         'c3a2554827e7c39db269d0fa1d5ad594d1623d6974be859a1ae3a044d438951f',
         '36f7a4dccc8c66be225e16fdd6088f0fafa7a357ac1aba9b4a99f98af297c370'),
@@ -551,14 +583,16 @@ FROZEN_MODULE_DIGESTS = {
         '0526192b79d90d3be7c733a475987216d37cc81b17f8de4f1fe3e4220a6b81d7',
         '1a6d20da0d450f235227fe609bdb12b368d96aec5ac231752074ff4dd9cc50e6'),
     'ysu': (
-        # Re-pinned on the 1.6 release line for the same DAZ hardening.  A
-        # friction velocity of 1e-13 is an ordinary float32 whose cube is
-        # subnormal and flushes to zero on sm_120, turning WRF's prfac2
-        # quotient into Inf/Inf = NaN and laundering it into an exchange
-        # coefficient of 1000 m2/s where the float64 authority says 131.
-        # ysu is not an mp=8 translation unit; see the sfclay note above.
-        'fb8e359dfb27543da2f79b04dddfaf95a5e5365e0af0cfbc0a583647657854d9',
-        '643b057d6aad2323d5ed7eee139bba867838536dfad0f92289941f98aafc2c6f'),
+        # Re-pinned for the column-workspace move (17cf943ef): per-thread
+        # local arrays became a caller-sized global workspace, stride-32
+        # lane indexing, tile offset col0.  Placement-only -- proven by
+        # --fmad=false digest equality (0 differing words of 903,168) and
+        # the WRF v4.6.1 ULP-equality parity pins, with the instrument
+        # validated in both directions
+        # (docs/kernel_local_memory_bounds.md).  ysu is not an mp=8
+        # translation unit; the mp=8 numerics guarantee is untouched.
+        '5a1200db4b547f85f8982e45970cbd1a1878d92f004dd252b3cdc8447140de83',
+        '95230655ec4689282f6556f11d808365421af24206c60681199722d3147e0fa4'),
 }
 
 # -- R2 --------------------------------------------------------------------
@@ -1281,9 +1315,30 @@ def test_loader_hook_is_inert_for_every_frozen_module(r1):
     is the assertion that holds it to "every module not named in the dict
     assembles a byte-identical source string".
     """
+    import importlib.util as _ilu
+
+    from gpuwm.core import kernels as _kernels
+
+    _spec = _ilu.spec_from_file_location(
+        "kernel_loader_inert_probe",
+        Path(__file__).with_name("test_kernel_loader_inert.py"))
+    _mod = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    _EXPECTED_HEADERS = _mod._EXPECTED_HEADERS
+
+    # The header grant stays a CLOSED literal: the loader's own allow-list
+    # must equal the mapping test_kernel_loader_inert pins, so a module
+    # cannot gain a header here without that gate moving too.
+    granted = {name: tuple(headers) for name, headers
+               in _kernels._EXTRA_HEADERS.items()}
+    assert granted == {name: tuple(headers) for name, headers
+                       in _EXPECTED_HEADERS.items()}, (
+        "the kernel loader's _EXTRA_HEADERS drifted from the closed "
+        "mapping tests/test_kernel_loader_inert.py pins")
     not_inert = sorted(
         name for name in FROZEN_MODULE_DIGESTS
-        if not r1["modules"][name]["loader_matches_preamble_plus_file"])
+        if name not in granted
+        and not r1["modules"][name]["loader_matches_preamble_plus_file"])
     assert not not_inert, (
         "the kernel loader no longer assembles _preamble() + <name>.cu for "
         f"these pre-existing modules: {not_inert}")

@@ -29,6 +29,7 @@ from gpuwm.physics_compat import (
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
     NOAHMP_PROFILE_ID,
+    P3_LEGACY_RRTMG_PROFILE_ID,
     SINGLE_DOMAIN_PHYSICS_PROFILES,
     THOMPSON_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
@@ -595,9 +596,14 @@ def test_tree_route_admits_morrison_to_nssl_only_with_matrix_policy():
 def test_registry_advertises_every_mixed_edge_honestly():
     """Every ordered pair of transported-moment schemes, one row each.
 
-    The count is n*(n-1) over the microphysics options the transition
-    enumerates -- 6 schemes (mp 1/6/8/9/10/18) give 30 -- and exactly one
-    of them is ratified.  It is written out rather than derived from the
+    The count is n*(n-1) over the six schemes the original topology
+    enumerates (mp 1/6/8/9/10/18 give 30), plus the ten mp=50 rows added
+    when P3's rime-pair closure was ratified: p3-mp50 pairs both ways with
+    the five selectors the runtime resolver's PORTED_MP_PHYSICS actually
+    admits (1/6/8/10/18), and deliberately NOT with milbrandt2mom-mp9,
+    whose mixed edges the resolver refuses -- advertising those would
+    repeat the mp=9 rows' pre-existing over-claim rather than contain it.
+    Exactly one row is ratified.  Written out rather than derived from the
     rules under test, which would make the assertion vacuous.
     """
     rules = physics_registry()["transitions"][
@@ -606,14 +612,25 @@ def test_registry_advertises_every_mixed_edge_honestly():
         (rule["parent_option_id"], rule["child_option_id"])
         for rule in rules
     }
-    assert len(rules) == len(pairs) == 30
+    assert len(rules) == len(pairs) == 40
+    p3_pairs = {pair for pair in pairs if "p3-mp50" in pair}
+    assert p3_pairs == {
+        *((other, "p3-mp50") for other in (
+            "kessler-mp1", "wsm6-mp6", "thompson-mp8", "morrison-mp10",
+            "nssl2-mp18")),
+        *(("p3-mp50", other) for other in (
+            "kessler-mp1", "wsm6-mp6", "thompson-mp8", "morrison-mp10",
+            "nssl2-mp18")),
+    }
+    assert ("milbrandt2mom-mp9", "p3-mp50") not in pairs
+    assert ("p3-mp50", "milbrandt2mom-mp9") not in pairs
     ratified = [rule for rule in rules if rule["status"] == "ratified"]
     assert [(rule["parent_option_id"], rule["child_option_id"])
             for rule in ratified] == [("thompson-mp8", "nssl2-mp18")]
     experimental = [
         rule for rule in rules if rule["status"] == "experimental"
     ]
-    assert len(experimental) == 29
+    assert len(experimental) == 39
     assert {
         rule["maturity"] for rule in experimental
     } == {"experimental-runtime"}
@@ -676,6 +693,10 @@ _HRRR_ONLY_PROFILE_IDS = (
     KESSLER_PROFILE_ID,
     THOMPSON_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
+    # P3 joined on the same Kessler rule when the native-HRRR doors
+    # admitted mp=50: the composition is registered on the two HRRR
+    # routes and no other source inherits evidence from them.
+    P3_LEGACY_RRTMG_PROFILE_ID,
 )
 
 

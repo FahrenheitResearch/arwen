@@ -391,3 +391,326 @@ def test_the_repository_declares_no_conversion_at_all():
     # And git agrees, for a file nothing names individually.
     reported = _git("check-attr", "text", "--", "gpuwm/core/model.py")
     assert reported.strip().endswith(": text: unset"), reported
+
+
+# ---------------------------------------------------------------------------
+# The blob is not the whole promise either
+# ---------------------------------------------------------------------------
+#
+# Everything above reads the OBJECT DATABASE, and `.gitattributes` runs two
+# regimes that fail differently under it.  `* -text` covers most of the
+# tree: no conversion in either direction, so a CRLF write lands in the
+# blob verbatim and `test_no_authored_file_gains_a_carriage_return` sees
+# it.  Twenty explicit `text eol=lf` rules are the other regime -- git
+# NORMALIZES those on the way in, so the blob stays clean while the
+# working tree stays CRLF, and every test above is structurally blind to
+# the whole class.  Measured: across all 127 commits that touched
+# `gpuwm/physics_registry_v2.json`, not one blob has ever carried a CR
+# byte, so no amount of blob-reading could ever have caught it.
+#
+# The damage is a digest split rather than a merge.  The 52
+# `gpuwm/authorities/*.json` are in this class, and `packaged_authorities`
+# in `gpuwm/source_authorities.py` resolves each one, takes
+# `hashlib.sha256(path.read_bytes())` OFF DISK, and raises `packaged
+# <profile> <role> authority hash differs` when it does not match the
+# pinned contract -- as does `packaged_contributing_mappings` beside it.
+# A CRLF working-tree copy is a different digest, so it raises, on a
+# machine whose blobs are all correct.  The prepared-forecast proof
+# re-derives its export-source digests from disk in the same way, which
+# is the `proof export source hashes differ from preparation` that
+# `.gitattributes` was written to prevent -- while every blob-reading
+# gate above stays green on the machine that caused it.
+# `gpuwm/physics_registry_v2.json` surfaced exactly this way, by accident,
+# as a disk-versus-blob mismatch inside an unrelated byte-reproduction
+# test.
+#
+# So the gate below reads the WORKING TREE, for exactly the normalizing
+# set, and derives that set at runtime from `git check-attr` rather than
+# restating the twenty patterns -- a copied list drifts from
+# `.gitattributes` the moment somebody adds the twenty-first.
+
+
+def _normalizing_paths() -> set[str]:
+    """Tracked paths git normalizes on the way into the object database.
+
+    `text`, not `eol`, because the LAST matching rule in `.gitattributes`
+    wins: 283 tracked paths carry `eol=lf` and only 260 of them also have
+    `text` set -- the other 23 are `*.sh` under `tools/rustwx/crates/**`,
+    which a later `-text` takes back.  `text` set is what actually makes
+    git convert, so it is the attribute asked; keying on `eol` would put
+    those 23 on the wrong side.
+    """
+
+    listed = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT,
+                            capture_output=True, check=True).stdout
+    paths = [entry for entry
+             in listed.decode("utf-8", "surrogateescape").split("\x00")
+             if entry]
+    asked = subprocess.run(
+        ["git", "check-attr", "-z", "--stdin", "text"], cwd=ROOT,
+        input="\x00".join(paths).encode("utf-8", "surrogateescape"),
+        capture_output=True, check=True).stdout
+    fields = asked.decode("utf-8", "surrogateescape").split("\x00")
+    # `-z` output is a flat NUL-separated stream of (path, attr, value).
+    return {fields[i] for i in range(0, len(fields) - 2, 3)
+            if fields[i + 2] == "set"}
+
+
+@pytest.mark.skipif(not _is_checkout(),
+                    reason="line-ending stability is a checkout property")
+def test_no_normalized_file_carries_a_carriage_return_on_disk():
+    """For the `text eol=lf` set, the working tree is the only witness.
+
+    NO ALLOWLIST, and that is deliberate rather than strict: `_CRLF_DEBT`
+    above records "this blob carries CR", which is a different fact and
+    cannot be true here at all -- git strips the CR before the blob
+    exists.  There is no such thing as recorded debt in this class, so a
+    hit is always fresh and the remedy is always to normalize the file.
+    Measured when this was written: 260 tracked paths normalize, 60 of
+    them are authored, and none of the 260 carried a CR on disk, so this
+    is a ratchet from its first commit and not a cleanup.
+    """
+
+    carrying = sorted(
+        relative for relative in _normalizing_paths()
+        if _is_authored(relative)
+        and (ROOT / relative).is_file()
+        and b"\r" in (ROOT / relative).read_bytes())
+    assert not carrying, (
+        "these files carry CR in the WORKING TREE while `text eol=lf` "
+        "keeps their committed blobs clean, so no blob-reading gate can "
+        "see them.  The product hashes several of them from disk -- "
+        "`packaged_authorities` sha256s each gpuwm/authorities/*.json "
+        "off disk against its pinned contract, and the prepared-forecast "
+        "proof re-derives its export-source digests the same way -- so "
+        "this clone raises `authority hash differs` or `proof export "
+        "source hashes differ from preparation` against a wheel built "
+        "from the same commit.  Normalize them to LF; there is no debt "
+        f"list for this class: {carrying}")
+
+    # The 200 normalizing paths outside `_is_authored` -- the vendored
+    # `.sh` under `patches/`, `gpuwm/data/`, the FTZ receipt trees -- are
+    # deliberately out of scope, so both halves of this gate keep one
+    # definition of "ours" instead of two that drift.
+
+
+# ---------------------------------------------------------------------------
+# And a gate nobody runs is not a gate
+# ---------------------------------------------------------------------------
+
+
+def _hook_module():
+    """`tools/git_hooks/pre_commit_line_endings.py`, loaded by path."""
+
+    import importlib.util
+
+    source = ROOT / "tools" / "git_hooks" / "pre_commit_line_endings.py"
+    spec = importlib.util.spec_from_file_location("_hook_under_test", source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.skipif(not _is_checkout(),
+                    reason="line-ending stability is a checkout property")
+def test_the_pre_commit_hook_is_armed():
+    """The write-side hook is installed in this clone, right now.
+
+    THE BREAKAGE THIS NAMES is the one that already happened twice.  The
+    hook was reachable only behind an `--install` flag documented inside
+    its own docstring; nothing in the repository ran it, so
+    `.git/hooks/pre-commit` did not exist at all, and two commits walked
+    straight through the check written to stop them:
+    `tests/test_offline_child.py` rewritten to CRLF across all 673 lines
+    with a real 79-line addition buried inside the whole-file diff
+    (repaired by 39ef138c5), and
+    `tools/rustwx/crates/rw-mpas/src/bin/fp32_floor_probe.rs` born with
+    525 carriage returns (repaired by abb5ff270).  The release gates in
+    this file catch that class only at release time, by which point the
+    bytes are landed history and the cost is a whole-file merge conflict
+    rather than one sed.
+
+    `conftest.py` at the repository root arms the hook on every pytest
+    session, so this passes without anyone doing anything.  It is a
+    separate question from the filesystem rather than the same call
+    twice: if arming failed -- a read-only `.git`, or a `pre-commit`
+    belonging to something else, which is never overwritten -- this is
+    where that becomes visible.  A hook that is quietly not there is the
+    defect being fixed, so its absence must fail rather than pass.
+    """
+
+    hook = _hook_module()
+    installed = hook.hooks_dir() / "pre-commit"
+    assert installed.is_file(), (
+        "no pre-commit hook in this clone, so a patch script can flip a "
+        "whole file to CRLF and commit it unopposed -- which is exactly "
+        f"how 39ef138c5 and abb5ff270 came to be needed.  Arm it: {installed}"
+        " is written by conftest.py at the repository root, or by "
+        "`python tools/git_hooks/pre_commit_line_endings.py --install`")
+    assert installed.read_bytes() == hook.hook_shim().encode("utf-8"), (
+        f"{installed} exists but is not the shim this repository "
+        "installs, so what runs at commit time is not this check.  If it "
+        "is another tool's hook, chain this one from it; if it is a stale "
+        "copy, re-run `python tools/git_hooks/pre_commit_line_endings.py "
+        "--install`")
+
+
+@pytest.mark.skipif(not _is_checkout(),
+                    reason="line-ending stability is a checkout property")
+def test_the_hook_and_the_gate_agree_on_which_paths_git_normalizes():
+    """One answer to "does git convert this path", not two.
+
+    The hook decides per staged path whether to ask the INDEX or the
+    WORKING TREE, and it is the working-tree branch that sees the
+    `text eol=lf` class at all.  If that classification drifts from this
+    file's -- a `-z` parse that silently returns nothing, an `eol=lf`
+    read where `text` is what actually converts -- the branch stops
+    firing and the hook goes quietly back to being blind to the class,
+    with every test still green.  That is the failure mode this whole
+    change exists to remove, so the two are compared directly rather
+    than each being trusted on its own.
+    """
+
+    hook = _hook_module()
+    tracked = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT,
+                             capture_output=True, check=True).stdout
+    paths = [entry for entry
+             in tracked.decode("utf-8", "surrogateescape").split("\x00")
+             if entry]
+
+    assert hook.normalizing(paths) == _normalizing_paths()
+
+    # And the set is not empty, because two functions that both return
+    # nothing also "agree".  `gpuwm/physics_registry_v2.json` is the file
+    # that surfaced this class, by accident, as a disk-versus-blob
+    # mismatch inside an unrelated byte-reproduction test.
+    assert "gpuwm/physics_registry_v2.json" in _normalizing_paths()
+    assert "gpuwm/core/model.py" not in _normalizing_paths()
+
+
+def test_the_hook_and_the_gate_agree_on_what_binary_means():
+    """A binary blob is outside the promise, on BOTH sides of it.
+
+    The release scan (`_cr_bearing_authored`) runs `git grep -I`, which
+    skips blobs git considers binary, so a binary path can never appear
+    in its answer -- and therefore can never be recorded in `_CRLF_DEBT`
+    without `test_the_crlf_debt_does_not_rot` striking it as settled on
+    the next run.  The hook must draw the same line or it refuses
+    commits whose only lawful remedy it itself names and this file
+    forbids: rw-netcdf's checked-in NetCDF-4 fixtures are HDF5, whose
+    signature contains `\\r\\n` by specification, and the hook refused
+    them as fresh carriage returns.  git's binary test is a NUL in the
+    leading window; the hook's predicate is pinned to it here, against
+    the HDF5 signature that surfaced the drift.
+    """
+
+    hook = _hook_module()
+    hdf5_signature = b"\x89HDF\r\n\x1a\n"
+    assert hook._blob_is_binary(hdf5_signature + b"\x00" * 8)
+    assert not hook._blob_is_binary(b"plain text\r\nwith crlf\r\n"), (
+        "a text blob must stay inside the ratchet; only content git "
+        "itself would call binary may pass")
+
+
+@pytest.mark.skipif(not _is_checkout(),
+                    reason="line-ending stability is a checkout property")
+def test_arming_is_idempotent_and_never_clobbers_a_hook_it_did_not_write(
+        tmp_path, monkeypatch):
+    """Default-on has to be safe to run on every pytest session.
+
+    `conftest.py` calls `ensure_installed()` unconditionally, in every
+    lane, in a clone with 192 worktrees (censused 2026-08-29) that all
+    share one hooks directory.  Two things have to hold for that to be
+    a fix rather than a new hazard.  It must be idempotent, or a test
+    run rewrites the hook every time and any other tool watching that
+    file sees churn.
+    And it must refuse a `pre-commit` it did not write: silently
+    replacing somebody else's hook is a worse failure than the CRLF
+    flips being prevented, and it would be invisible until whatever that
+    hook did stopped happening.
+
+    The refusal is reported rather than swallowed -- `conftest.py` turns
+    a False into a RuntimeWarning and
+    `test_the_pre_commit_hook_is_armed` turns it into a red test -- so a
+    clone where arming could not happen says so, instead of quietly not
+    having a hook, which is the original defect.
+    """
+
+    hook = _hook_module()
+    monkeypatch.setattr(hook, "hooks_dir", lambda: tmp_path)
+    shim = hook.hook_shim().encode("utf-8")
+
+    armed, _story = hook.ensure_installed()
+    assert armed
+    assert (tmp_path / "pre-commit").read_bytes() == shim
+
+    armed, story = hook.ensure_installed()
+    assert armed and "already armed" in story
+
+    foreign = b"#!/bin/sh\n# another tool's pre-commit hook\nexit 0\n"
+    (tmp_path / "pre-commit").write_bytes(foreign)
+    armed, story = hook.ensure_installed()
+    assert not armed, story
+    assert (tmp_path / "pre-commit").read_bytes() == foreign
+
+
+def test_the_installed_shim_is_a_no_op_where_the_script_is_absent():
+    """The hooks directory is per CLONE, and most worktrees predate this.
+
+    `git rev-parse --git-path hooks` from a linked worktree answers with
+    the MAIN checkout's hooks, shared by every worktree cut from it.
+    Censused on 2026-08-29: 192 worktrees share this clone's hooks and
+    only 72 contain `tools/git_hooks/pre_commit_line_endings.py` -- the
+    rest sit on branches that predate it.  A shim that simply `exec`s the
+    script exits 2 there with "can't open file" and REFUSES EVERY COMMIT
+    in 120 working trees, saying nothing about line endings.  Arming by
+    default is only safe because of this one line, so it is pinned here.
+    """
+
+    lines = [line.strip() for line in _hook_module().hook_shim().splitlines()]
+    assert '[ -f "$script" ] || exit 0' in lines
+
+    # And the interpreter is made to RUN before it is trusted.  `command
+    # -v python3` succeeds on this machine and resolves to the Windows App
+    # Execution Alias, which prints "Python was not found" and exits 49 --
+    # a shim that only checked PATH refused a real commit on its first
+    # try, which is a different way of arming nothing.
+    assert 'if "$py" -c "" >/dev/null 2>&1; then' in lines
+
+def test_the_arming_conftest_only_claims_hooks_it_owns(monkeypatch):
+    """An unpacked sdist inside a stranger's repo must not arm anything.
+
+    ``rev-parse --git-dir`` answers "yes" from ANY directory under ANY
+    repository, so the old check would have written our pre-commit hook
+    into a git directory we do not own the day someone ran pytest over an
+    sdist unpacked inside their own project.  The ownership tie is the
+    toplevel comparison: arm only when the working tree's root IS the
+    directory holding the root conftest.
+    """
+    import importlib.util
+    import pathlib as _pathlib
+    import subprocess as _subprocess
+
+    root = _pathlib.Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "gpuwm_root_conftest_probe", root / "conftest.py")
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+
+    # In this checkout the toplevel IS the conftest's directory.
+    assert probe._is_checkout() is True
+
+    # A stranger's repository: rev-parse succeeds, toplevel is elsewhere.
+    real_run = _subprocess.run
+
+    def foreign_toplevel(cmd, **kwargs):
+        if "--show-toplevel" in cmd:
+            class Done:
+                returncode = 0
+                stdout = str(root.parent).encode()
+                stderr = b""
+            return Done()
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(probe.subprocess, "run", foreign_toplevel)
+    assert probe._is_checkout() is False

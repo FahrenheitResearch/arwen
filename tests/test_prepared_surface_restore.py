@@ -69,7 +69,12 @@ def _native_met():
 
 
 def _cfg(sf_surface_physics: int = 2):
-    return SimpleNamespace(sf_surface_physics=sf_surface_physics)
+    # soil_layer_count(cfg) reads the requested count and checks it against
+    # the scheme's defined geometries; Noah defines exactly four.  The
+    # parametric-soil landing (54a18cf4e) made the count an explicit config
+    # read and this fake never carried it.
+    return SimpleNamespace(sf_surface_physics=sf_surface_physics,
+                           num_soil_layers=4)
 
 
 def _static():

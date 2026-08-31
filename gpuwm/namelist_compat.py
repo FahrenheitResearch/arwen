@@ -928,6 +928,25 @@ def analyze_namelists(
                 _column(physics, "sf_surface_mosaic", max_dom, default=0),
                 "&physics/sf_surface_mosaic",
             )
+            # Radiation columns are read ONLY when a domain selects P3.
+            # This report evaluates no radiation selector for any other
+            # scheme, and reading these unconditionally would let a
+            # malformed radiation column fail a stock-WRF export verdict
+            # that no rule here has ever gated on radiation.  P3 is the one
+            # reachable scheme whose runtime refusal is microphysics-COUPLED
+            # (see the mp=50 arm below), so it is the one scheme that has to
+            # look.
+            ra_lw: list[int] = []
+            ra_sw: list[int] = []
+            if 50 in mp:
+                ra_lw = _integers(
+                    _column(physics, "ra_lw_physics", max_dom, default=0),
+                    "&physics/ra_lw_physics",
+                )
+                ra_sw = _integers(
+                    _column(physics, "ra_sw_physics", max_dom, default=0),
+                    "&physics/ra_sw_physics",
+                )
             monalb = _column(physics, "usemonalb", max_dom, default=False)
             lai2d = _column(physics, "rdlai2d", max_dom, default=False)
             if any(not isinstance(value, bool)
@@ -1019,20 +1038,79 @@ def analyze_namelists(
                 # run (_INVENTORIES[28], wrf_physics_inventory.py:281) -- so
                 # 28 reaches this line and the value is load-bearing, not
                 # aspirational.
-                runtime_supported = mp[index] in {6, 8, 10, 16, 18, 28}
+                # P3 one-category 50 is selectable since the mp=50 port
+                # landed its adapter (gpuwm/core/p3.py), its device arms
+                # (gpuwm/core/p3_device.py plus gpuwm/core/kernels/p3.cu,
+                # selected by cfg.p3_backend) and the driver dispatch arm at
+                # gpuwm/core/microphysics.py:721.  Its Registry package is
+                # p3_1category (Registry.EM_COMMON:3038) and WRF's driver
+                # calls it in exactly the one-category shape gpuwm ports
+                # (module_microphysics_driver.F:1569-1602: no nc_3d, no
+                # qzi1_3d, n_iceCat = 1).
+                #
+                # Until this value carried 50, the line answered "gpuwm
+                # runtime on paired head does not implement mp_physics=50"
+                # -- once per domain -- for a selector
+                # gpuwm.config.MP_PHYSICS_ACCEPTED admits, the inventory
+                # eleven lines above resolves
+                # (wrf_physics_inventory.py:363), the restart identity binds
+                # and wrfout writes QIR/QIB for.  The stock export row was
+                # written and the runtime verdict then denied the scheme
+                # exists, in the same report.
+                runtime_supported = mp[index] in {6, 8, 10, 16, 18, 28, 50}
                 if not runtime_supported:
                     gpuwm_reasons.append(
                         f"d{index + 1:02d}: gpuwm runtime on paired head does not "
                         f"implement mp_physics={mp[index]} ({inventory.scheme}); "
                         "stock-WRF export inventory is independent and supported."
                     )
+                elif (mp[index] == 50
+                        and (ra_lw[index], ra_sw[index]) == (4, 4)):
+                    # Admitting the SCHEME does not admit one PAIRING, and
+                    # this is the pairing.  P3 supplies cloud and ice radii
+                    # (state.effc/state.effi) but no snow radius at all: WRF
+                    # sets has_reqs = 0 for the P3 family
+                    # (phys/module_physics_init.F:1027-1033) because the
+                    # single ice category spans rime mass fraction instead of
+                    # separating snow from graupel.  So
+                    # gpuwm.config.validate_p3_radiation refuses
+                    # ra_lw_physics=4/ra_sw_physics=4 by name at the head's
+                    # config door, and it is default-on: ra_rrtmg_variant
+                    # defaults to "rte-rrtmgp" (config.py:259), which is the
+                    # reading a WRF namelist's bare 4/4 gets.
+                    #
+                    # The concrete breakage naming it here prevents: a green
+                    # report, a full six-domain WPS export, and only then a
+                    # NotImplementedError at config load, before the first
+                    # step.  Both ways through that refusal are gpuwm
+                    # RunConfig choices with no WRF namelist spelling, so
+                    # this namelist-only report cannot read them and does not
+                    # assume either -- it reads the default and refuses.
+                    gpuwm_reasons.append(
+                        f"d{index + 1:02d}: gpuwm forecast runtime implements "
+                        f"mp_physics=50 ({inventory.scheme}) but refuses it "
+                        "with ra_lw_physics=4/ra_sw_physics=4: WRF sets "
+                        "has_reqs=0 for P3 "
+                        "(phys/module_physics_init.F:1027-1033) and P3's "
+                        "single ice category carries no separate snow "
+                        "species, so the RTE+RRTMGP cloud-optics adapter has "
+                        "no snow radius to bind and inventing one would be "
+                        "inventing physics "
+                        "(gpuwm.config.validate_p3_radiation). A bare 4/4 "
+                        "namelist resolves to the RTE+RRTMGP variant, which "
+                        "is the paired head's default. Choose the P3 "
+                        "radiation pairing at the head, where "
+                        "validate_p3_radiation names both ways through; a "
+                        "WRF namelist cannot express either. Stock-WRF "
+                        "export inventory is independent and supported."
+                    )
         except (KeyError, TypeError, ValueError) as error:
             issues.append(_issue(
                 "UNSUPPORTED_MICROPHYSICS_INVENTORY", "&physics/mp_physics",
                 str(error),
                 "Use an inventoried scheme (6 WSM6, 8 Thompson, 10 Morrison, "
-                "or 18 NSSL) or add its exact WRF Registry/real.exe state "
-                "contract.",
+                "18 NSSL, 28 Thompson aerosol-aware, or 50 P3) or add its "
+                "exact WRF Registry/real.exe state contract.",
             ))
 
     timing = None

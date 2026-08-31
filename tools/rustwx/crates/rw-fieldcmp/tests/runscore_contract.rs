@@ -59,8 +59,21 @@ fn lay_out(root: &Path, domain: &str, minutes: &[i64]) -> PathBuf {
     root.to_path_buf()
 }
 
+/// A scratch root private to THIS process.
+///
+/// The process id is not decoration.  Without it two concurrent runs of
+/// this suite on one box share `%TEMP%\rw-runscore-<name>`, and the
+/// `remove_dir_all` below deletes the fixtures the other run is part way
+/// through laying out; the loser panics with
+/// `Os { code: 3, kind: NotFound }` at the `fs::write` in `lay_out`,
+/// which reads like a bug in the code under test and is not.  It is not
+/// hypothetical: it took out every shard of a parallel mutation run
+/// (tools/battery/run_mutation_gate.py runs the suite in N copies at
+/// once) before a single mutant had been tested.  Every other suite in
+/// this workspace that writes under `temp_dir()` already scopes its root
+/// this way.
 fn scratch(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("rw-runscore-{name}"));
+    let root = std::env::temp_dir().join(format!("rw-runscore-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("scratch root");
     root

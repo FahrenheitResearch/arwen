@@ -185,9 +185,15 @@ void mp8_to_mp18_mass_diagnosed_field(
 }
 
 // General ArWen MP edge matrix.  This entry point is never used by the
-// bit-specified MP8->MP18 edge above.  Source moments are deliberately absent
-// from the API: every destination moment is reconstructed from destination
-// mass using the destination scheme's own entry closure.
+// bit-specified MP8->MP18 edge above.  Source NUMBER moments are
+// deliberately absent from the API: every destination moment is
+// reconstructed from destination mass using the destination scheme's own
+// entry closure.  The one deliberate exception is P3's rime pair
+// (source_qir/source_qib): those are MASS/VOLUME prognostics, not numbers,
+// and leaving mp=50 they are consumed by the ice split -- dropping them
+// would drop the only record of where the single category's snow/graupel
+// boundary lies.  They are read only when source_mp == 50; every other
+// source passes a placeholder the code never dereferences into meaning.
 
 static __device__ __forceinline__
 float edge_source_mass(
@@ -308,6 +314,99 @@ float morrison_edge_number(float q, int kind, float rimed_density)
     return q * lambda * lambda * lambda / six_c;
 }
 
+// P3 (mp_physics=50) edge closure.  WRF defines neither direction of a P3
+// mixed nest edge, so both arms below execute the DEFINED, documented ArWen
+// closure whose constants live beside their citations in
+// microphysics_transition.py (the P3_EDGE_* constants).  Every float
+// operation uses a round-to-nearest intrinsic so the arithmetic mirrors the
+// CPU references p3_edge_entry_reference/p3_edge_exit_reference bitwise --
+// plain expressions would let NVRTC contract mul+add into FMA and the GPU
+// shard's equivalence tests compare exact.
+
+// calc_bulkRhoRime, module_mp_p3.F:6784-6830: P3's own admission function
+// for a (qitot, qirim, birim) triple.  Running it on every edge output is
+// what makes qirim <= qitot and the [50, 900] kg/m3 density bound hold by
+// construction.
+static __device__ __forceinline__
+float p3_edge_bulk_rho_rime(float qi_tot, float* qi_rim, float* bi_rim)
+{
+    float rho_rime = 0.0f;
+    if (*bi_rim >= 1.0e-15f) {
+        rho_rime = __fdiv_rn(*qi_rim, *bi_rim);
+        if (rho_rime < 50.0f) {
+            rho_rime = 50.0f;
+            *bi_rim = __fdiv_rn(*qi_rim, rho_rime);
+        } else if (rho_rime > 900.0f) {
+            rho_rime = 900.0f;
+            *bi_rim = __fdiv_rn(*qi_rim, rho_rime);
+        }
+    } else {
+        *qi_rim = 0.0f;
+        *bi_rim = 0.0f;
+        rho_rime = 0.0f;
+    }
+    if (*qi_rim > qi_tot && rho_rime > 0.0f) {
+        *qi_rim = qi_tot;
+        *bi_rim = __fdiv_rn(*qi_rim, rho_rime);
+    }
+    if (*qi_rim < 1.0e-14f) {          // qsmall, module_mp_p3.F:230
+        *qi_rim = 0.0f;
+        *bi_rim = 0.0f;
+    }
+    return rho_rime;
+}
+
+// Entering P3: merge every frozen source species into the single ice
+// category (mass-conserving; sub-qsmall ice returns to vapor exactly as
+// p3_main's own end-of-step canonicalization does), diagnose the rime pair
+// at the two named densities -- fresh snow 100 kg/m3
+// (module_mp_morr_two_moment.F:377), dense rime 400 kg/m3 (:378-382, the
+// IHAIL=0 graupel arm; hail merges at the same dense constant, a
+// documented divergence) -- and diagnose nr/ni with P3's own entry-closure
+// constants (get_rain_dsd2's lammin reconstruction :6705-6780; mi0 :242
+// capped by max_total_Ni :186 per impose_max_total_Ni :6833-6855).
+static __device__ __forceinline__
+float p3_edge_field(
+    int field, float inv_rho,
+    float qv, float qc, float qr, float qi, float qs, float qg, float qh)
+{
+    const float qsmall = 1.0e-14f;
+    float vapor = qv;
+    const float frozen_dense = __fadd_rn(qg, qh);
+    float qitot = __fadd_rn(__fadd_rn(qi, qs), frozen_dense);
+    float qirim = __fadd_rn(qs, frozen_dense);
+    float birim = __fadd_rn(__fdiv_rn(qs, 100.0f),
+                            __fdiv_rn(frozen_dense, 400.0f));
+    if (qitot < qsmall) {
+        vapor = __fadd_rn(vapor, qitot);
+        qitot = 0.0f;
+        qirim = 0.0f;
+        birim = 0.0f;
+    }
+    p3_edge_bulk_rho_rime(qitot, &qirim, &birim);
+    if (field == 0) return vapor;
+    if (field == 1) return qc;
+    if (field == 2) return qr;
+    if (field == 3) return qitot;
+    if (field == 6) {
+        if (qr < qsmall) return 0.0f;
+        // P3_EDGE_RAIN_NUMBER_PER_RAIN_MASS: lammin^3/(6*cons1) in the
+        // float32 chain p3_init uses (lammin = 1/0.002 rounds to
+        // 499.99997f, so the value is 39788.727f, not 500^3/(6*cons1)).
+        return __fmul_rn(qr, 39788.727f);
+    }
+    if (field == 7) {
+        if (qitot < qsmall) return 0.0f;
+        const float mi0 = 3.7699116e-15f;        // module_mp_p3.F:242
+        const float max_total_ni = 2000.0e3f;    // module_mp_p3.F:186
+        return fminf(__fdiv_rn(qitot, mi0),
+                     __fmul_rn(max_total_ni, inv_rho));
+    }
+    if (field == 20) return qirim;
+    if (field == 21) return birim;
+    return 0.0f;
+}
+
 static __device__ __forceinline__
 float edge_plain_or_moment_field(
     int field, int target_mp, float rho, float morr_rhog,
@@ -315,7 +414,8 @@ float edge_plain_or_moment_field(
 {
     // Stable host field codes:
     // qv/qc/qr/qi/qs/qg=0..5, nr/ni/ns/ng=6..9, qh=10,
-    // qndrop/qnr/qni/qns/qng/qnh/qnn/qvolg/qvolh=11..19.
+    // qndrop/qnr/qni/qns/qng/qnh/qnn/qvolg/qvolh=11..19,
+    // qir/qib=20/21 (mp_physics=50).
     if (field == 0) return qv;
     if (field == 1) return qc;
     if (field == 2) return qr;
@@ -346,6 +446,8 @@ void microphysics_edge_field(
     const float* __restrict__ source_qs,
     const float* __restrict__ source_qg,
     const float* __restrict__ source_qh,
+    const float* __restrict__ source_qir,
+    const float* __restrict__ source_qib,
     const float* __restrict__ mub2d,
     const float* __restrict__ mup,
     const float* __restrict__ c1h,
@@ -353,7 +455,7 @@ void microphysics_edge_field(
     float* __restrict__ out,
     int qv_source, int qc_source, int qr_source, int qi_source,
     int qs_source, int qg_source, int qh_source,
-    int field, int target_mp, float morr_rhog,
+    int field, int source_mp, int target_mp, float morr_rhog,
     int coupled, int nz, int ny, int nx)
 {
     const int idx = blockDim.x * blockIdx.x + threadIdx.x;
@@ -372,18 +474,45 @@ void microphysics_edge_field(
     const float qr = edge_source_mass(
         qr_source, idx, source_qv, source_qc, source_qr, source_qi,
         source_qs, source_qg, source_qh);
-    const float qi = edge_source_mass(
+    float qi = edge_source_mass(
         qi_source, idx, source_qv, source_qc, source_qr, source_qi,
         source_qs, source_qg, source_qh);
-    const float qs = edge_source_mass(
+    float qs = edge_source_mass(
         qs_source, idx, source_qv, source_qc, source_qr, source_qi,
         source_qs, source_qg, source_qh);
-    const float qg = edge_source_mass(
+    float qg = edge_source_mass(
         qg_source, idx, source_qv, source_qc, source_qr, source_qi,
         source_qs, source_qg, source_qh);
-    const float qh = edge_source_mass(
+    float qh = edge_source_mass(
         qh_source, idx, source_qv, source_qc, source_qr, source_qi,
         source_qs, source_qg, source_qh);
+
+    if (source_mp == 50) {
+        // Leaving P3: split the single ice category back into qi/qs/qg by
+        // rime state, mass-conserving, before the target scheme's own
+        // closure runs on the split masses.  Mirrors
+        // p3_edge_exit_reference operation for operation; zero ice and
+        // zero rime are exact, adversarial negatives floor at zero, and
+        // calc_bulkRhoRime enforces qirim <= qitot and the density bound.
+        float qitot = fmaxf(qi, 0.0f);
+        float qirim = fmaxf(source_qir[idx], 0.0f);
+        float birim = fmaxf(source_qib[idx], 0.0f);
+        p3_edge_bulk_rho_rime(qitot, &qirim, &birim);
+        float graupel = 0.0f;
+        if (qirim > 0.0f) {
+            // Invert the entry diagnosis: conserve rime mass AND rime
+            // volume against the same two densities (100/400 kg/m3), so
+            // qg = (qirim - 100*qib) * 400/300, clamped to [0, qirim].
+            const float scale = __fdiv_rn(400.0f, 300.0f);
+            graupel = __fmul_rn(
+                __fsub_rn(qirim, __fmul_rn(100.0f, birim)), scale);
+            graupel = fminf(fmaxf(graupel, 0.0f), qirim);
+        }
+        qg = graupel;
+        qs = __fsub_rn(qirim, graupel);
+        qi = __fsub_rn(qitot, qirim);
+        qh = 0.0f;
+    }
 
     float value;
     if (target_mp == 18) {
@@ -394,6 +523,9 @@ void microphysics_edge_field(
         if (field == 10) nssl_field = 6;
         else if (field >= 11) nssl_field = field - 4;
         value = transition_field(diagnosed, nssl_field);
+    } else if (target_mp == 50) {
+        value = p3_edge_field(
+            field, alt[idx], qv, qc, qr, qi, qs, qg, qh);
     } else {
         value = edge_plain_or_moment_field(
             field, target_mp, rho, morr_rhog, qv, qc, qr, qi, qs, qg, qh);

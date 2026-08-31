@@ -1272,6 +1272,63 @@ pub fn cull_file(
         });
     }
 
+    // THE COORDINATE FRAME CROSSES THE CULL, OR THE CHILD IS AMBIGUOUS.
+    //
+    // A cull SUBSETS its parent: every coordinate it writes is a parent byte,
+    // at the parent's own width, so the child is in the parent's frame by
+    // construction and inherits its declaration rather than minting one.  The
+    // native MPAS-Limited-Area cull copies exactly two global attributes and
+    // this reproduces that byte for byte -- a NATIVE parent declares nothing,
+    // so nothing is added and the child's bytes are unchanged.  A parent this
+    // generator made declares `rw_coordinate_representation`, and dropping it
+    // here would hand a reader binary64 arrays under the binary32 default: a
+    // storage tolerance 5.4e8 times too loose, which admits a dvEdge corrupted
+    // by a metre.  The declaration is checked against the parent's actual
+    // dtype first, so a parent whose attribute and arrays disagree is refused
+    // by name here rather than carried forward.
+    {
+        use crate::staticfile::coordframe;
+        let parent_says = parent
+            .gattrs
+            .iter()
+            .find(|a| a.name == coordframe::REPRESENTATION_ATTR)
+            .map(|a| match attr_value(a)? {
+                rw_store::netcdf_classic::NcAttrValue::Text(t) => Ok(t),
+                other => Err(MpasError::Refusal(format!(
+                    "parent {} is {other:?}, not text; a frame that cannot be read is a frame                      that would be guessed",
+                    coordframe::REPRESENTATION_ATTR
+                ))),
+            })
+            .transpose()?;
+        let stored_is_binary64 = parent
+            .vars
+            .iter()
+            .find(|v| v.name == "xCell")
+            .map(|v| v.nc_type == raw::NC_DOUBLE)
+            .unwrap_or(false);
+        let radius = parent
+            .gattrs
+            .iter()
+            .find(|a| a.name == "sphere_radius")
+            .and_then(|a| attr_value(a).ok())
+            .and_then(|v| match v {
+                rw_store::netcdf_classic::NcAttrValue::Doubles(d) => d.first().copied(),
+                rw_store::netcdf_classic::NcAttrValue::Floats(f) => f.first().map(|&x| x as f64),
+                _ => None,
+            })
+            .unwrap_or(crate::mesh::geom::EARTH_RADIUS_M);
+        let rep = coordframe::verify_declaration(
+            "cull parent",
+            parent_says.as_deref(),
+            stored_is_binary64,
+            None,
+            radius,
+        )?;
+        if parent_says.is_some() {
+            gattrs.extend(rep.declaration_attributes(radius));
+        }
+    }
+
     // Variables: the three masks first, then the parent's variables in parent
     // order, minus any parent bdyMask* (a static parent carries stale ones).
     let mut vars: Vec<NcVarDef> = Vec::with_capacity(parent.vars.len() + 3);

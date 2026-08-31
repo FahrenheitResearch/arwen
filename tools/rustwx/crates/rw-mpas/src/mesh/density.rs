@@ -355,6 +355,455 @@ impl PreparedShape {
             }
         }
     }
+
+    /// A representative DEEPEST-INSIDE point, the prepared twin of
+    /// [`Shape::interior_point`]. Exact for a cap and a box; the normalised
+    /// vertex centroid for a polygon, which is inside a convex ring and only
+    /// representative otherwise. It is one probe among many here, so a
+    /// non-convex ring costs nothing but a redundant point.
+    pub fn interior_point(&self) -> V3 {
+        match self {
+            PreparedShape::Cap { centre, .. } => *centre,
+            PreparedShape::LatLonBox {
+                lat0,
+                lat1,
+                lon_a,
+                lon_b,
+            } => box_centre(*lat0, *lat1, *lon_a, *lon_b),
+            PreparedShape::Polygon { ring, .. } => {
+                let mut acc = [0.0f64; 3];
+                for &v in ring {
+                    acc = crate::mesh::geom::add(acc, v);
+                }
+                unit(acc).unwrap_or([0.0, 0.0, 1.0])
+            }
+        }
+    }
+
+    /// A spherical cap that provably contains this shape's BOUNDARY, or `None`
+    /// when no cap under a quarter turn does.
+    ///
+    /// NOT [`PreparedShape::enclosing_cap`], and the difference is
+    /// load-bearing rather than stylistic. That one exists to underwrite the
+    /// evaluation-time saturation skip, which needs
+    /// `arc(c, p) - radius <= signed_distance(p)` -- a statement about the
+    /// FIELD -- and it declines for a cap and a box because "bounding them
+    /// would cost what it saves": both are already one cheap evaluation. This
+    /// contract is weaker and purely geometric, so all three shapes can honour
+    /// it, and `None` here is not a failure -- it only means the disc shortcut
+    /// in [`PreparedShape::boundary_shell_probes`] is unavailable and the
+    /// per-shape walk is used instead.
+    ///
+    /// THE BOX ARM IS EXACT, not sampled. With the box centre at latitude
+    /// `lc`, `cos(arc)` to a point at `(lat, lon)` is
+    /// `sin(lc) sin(lat) + cos(lc) cos(lat) cos(dlon)`. In `dlon` that falls
+    /// monotonically out to half a turn, so the extreme longitude offset is
+    /// `min(width/2, pi)`; at any fixed `dlon` the expression is
+    /// `R cos(lat - phi)`, which is unimodal in `lat`, so its minimum over a
+    /// latitude interval is at an endpoint. The farthest point of the whole
+    /// parameter rectangle -- boundary and interior alike -- is therefore one
+    /// of those two corner candidates.
+    pub fn probe_bound(&self) -> Option<(V3, f64)> {
+        let quarter = std::f64::consts::FRAC_PI_2;
+        match self {
+            PreparedShape::Cap { centre, radius_rad } => Some((*centre, *radius_rad)),
+            PreparedShape::LatLonBox {
+                lat0,
+                lat1,
+                lon_a,
+                lon_b,
+            } => {
+                let centre = box_centre(*lat0, *lat1, *lon_a, *lon_b);
+                let tau = std::f64::consts::TAU;
+                let wrap = |x: f64| ((x % tau) + tau) % tau;
+                let width = wrap(*lon_b - *lon_a);
+                let dmax = (0.5 * width).min(std::f64::consts::PI);
+                let (_, lon_c) = lat_lon(centre);
+                let mut radius = 0.0f64;
+                for lat in [*lat0, *lat1] {
+                    for sign in [1.0f64, -1.0] {
+                        radius = radius.max(arc(centre, from_lat_lon(lat, lon_c + sign * dmax)));
+                    }
+                }
+                if radius < quarter { Some((centre, radius)) } else { None }
+            }
+            PreparedShape::Polygon { ring, .. } => {
+                // A cap under a quarter turn is convex, so every edge arc
+                // between two contained vertices stays inside it.
+                let mut acc = [0.0f64; 3];
+                for &v in ring {
+                    acc = crate::mesh::geom::add(acc, v);
+                }
+                let centre = unit(acc)?;
+                let mut radius = 0.0f64;
+                for &v in ring {
+                    radius = radius.max(arc(centre, v));
+                }
+                if radius < quarter { Some((centre, radius)) } else { None }
+            }
+        }
+    }
+
+    /// Probe points covering the TRANSITION SHELL
+    /// `{ p : |signed_distance(p)| <= half_width_rad }`, spaced `gn` across the
+    /// boundary and `gt` along it, appended to `out`.
+    ///
+    /// `align_rad` is the signed distance at which this region's ramp is
+    /// steepest -- `W ln(rho) / 2`, known in closed form. It is placed on the
+    /// across-boundary grid EXPLICITLY, on both sides, so the peak surface is
+    /// hit rather than approached; the grid around it is what catches the
+    /// composite peak of a nested ladder, where a rung's real neighbour is the
+    /// next rung and not the global background.
+    ///
+    /// `false` means the budget was exhausted. Whatever was generated STAYS in
+    /// `out` -- more points can only raise a `max` -- but a caller must never
+    /// report a partial set as complete.
+    ///
+    /// THE CONTRACT IS SHAPE-AGNOSTIC, and so is the test that proves it:
+    /// draw an independent point cloud FROM THE SHAPE'S OWN BOUND (never from
+    /// a globe lattice, which would reproduce inside the guard the very defect
+    /// the guard exists for), keep the points inside the shell, and demand
+    /// each lie within `sqrt(gn^2 + gt^2)` of a probe. The test names no
+    /// shape, so a new arm inherits the obligation instead of being trusted.
+    pub fn boundary_shell_probes(
+        &self,
+        half_width_rad: f64,
+        align_rad: f64,
+        gn: f64,
+        gt: f64,
+        budget: &mut usize,
+        out: &mut Vec<V3>,
+    ) -> bool {
+        let mut probes = ShellProbes {
+            shape: self,
+            keep: half_width_rad + gn,
+            budget: *budget,
+            out,
+            exhausted: false,
+        };
+        probes.offer(self.interior_point());
+
+        // THE DISC SHORTCUT, open to every shape: when a cap containing the
+        // boundary is no wider than the shell, the whole shell lies inside one
+        // cap and filling that cap beats tracing the boundary. It is what
+        // keeps a many-vertex swath polygon affordable -- its ramp is wider
+        // than the polygon itself, so the per-edge bands would overlap dozens
+        // of times over.
+        let mut done = false;
+        if let Some((c, rb)) = self.probe_bound() {
+            if rb <= half_width_rad {
+                let r_hi = (rb + half_width_rad).min(std::f64::consts::PI);
+                probes.annulus(c, 0.0, r_hi, &[rb + align_rad, rb - align_rad], gn, gt);
+                done = true;
+            }
+        }
+        if !done {
+            match self {
+                PreparedShape::Cap { centre, radius_rad } => {
+                    let lo = (radius_rad - half_width_rad).max(0.0);
+                    let hi = (radius_rad + half_width_rad).min(std::f64::consts::PI);
+                    probes.annulus(
+                        *centre,
+                        lo,
+                        hi,
+                        &[radius_rad + align_rad, radius_rad - align_rad],
+                        gn,
+                        gt,
+                    );
+                }
+                PreparedShape::LatLonBox {
+                    lat0,
+                    lat1,
+                    lon_a,
+                    lon_b,
+                } => probes.box_shell(
+                    *lat0,
+                    *lat1,
+                    *lon_a,
+                    *lon_b,
+                    half_width_rad,
+                    align_rad,
+                    gn,
+                    gt,
+                ),
+                PreparedShape::Polygon { edges, .. } => {
+                    probes.polygon_shell(edges, half_width_rad, align_rad, gn, gt)
+                }
+            }
+        }
+        let exhausted = probes.exhausted;
+        *budget = probes.budget;
+        !exhausted
+    }
+}
+
+/// The great-circle midpoint of a latitude/longitude box, honouring a wrap
+/// through the antimeridian.
+fn box_centre(lat0: f64, lat1: f64, lon_a: f64, lon_b: f64) -> V3 {
+    let tau = std::f64::consts::TAU;
+    let wrap = |x: f64| ((x % tau) + tau) % tau;
+    from_lat_lon(0.5 * (lat0 + lat1), lon_a + 0.5 * wrap(lon_b - lon_a))
+}
+
+/// Two orthonormal tangents at `c`. Unlike [`crate::mesh::geom::east_north`]
+/// this never declines: a probe generator that dropped a whole region because
+/// its centre sat on the polar axis would be a coverage hole with no
+/// signature, so the frame is built from whichever axis `c` is least aligned
+/// with.
+fn orthonormal_frame(c: V3) -> (V3, V3) {
+    let axis = if c[2].abs() < 0.9 {
+        [0.0, 0.0, 1.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let e = unit(cross(axis, c)).unwrap_or([1.0, 0.0, 0.0]);
+    let n = cross(c, e);
+    (e, n)
+}
+
+/// The across-boundary offsets: a grid of step `gn` over `[-half, half]`, plus
+/// the two closed-form peak offsets placed EXACTLY.
+///
+/// `None` when the grid would be larger than the budget allows, which the
+/// caller turns into `Coverage::Partial` rather than a truncated reading.
+fn across_offsets(half: f64, align: f64, gn: f64, budget: usize) -> Option<Vec<f64>> {
+    if !(gn.is_finite() && gn > 0.0 && half.is_finite() && half >= 0.0) {
+        return None;
+    }
+    let count = (2.0 * half / gn).ceil();
+    if !count.is_finite() || count > budget as f64 {
+        return None;
+    }
+    let n = count as usize;
+    let mut v = Vec::with_capacity(n + 4);
+    for k in 0..=n {
+        v.push(-half + 2.0 * half * (k as f64 / n.max(1) as f64));
+    }
+    for a in [align, -align] {
+        if a.is_finite() && a.abs() <= half {
+            v.push(a);
+        }
+    }
+    Some(v)
+}
+
+/// The probe generator's shared state: a budget that stops a pathological
+/// request instead of truncating its answer, and the shell filter that keeps
+/// the set defined against the REAL signed distance rather than against a
+/// model of it.
+struct ShellProbes<'a> {
+    shape: &'a PreparedShape,
+    /// `half_width + gn`: a candidate this close to the boundary is inside the
+    /// shell, or close enough to it that keeping it can only help.
+    keep: f64,
+    budget: usize,
+    out: &'a mut Vec<V3>,
+    exhausted: bool,
+}
+
+impl ShellProbes<'_> {
+    fn offer(&mut self, p: V3) {
+        if self.exhausted {
+            return;
+        }
+        if self.budget == 0 {
+            self.exhausted = true;
+            return;
+        }
+        self.budget -= 1;
+        if self.shape.signed_distance(p).abs() <= self.keep {
+            self.out.push(p);
+        }
+    }
+
+    /// Rings about `centre` from `r_lo` to `r_hi`: radial step `gn`, arc step
+    /// `gt`, with every radius in `exact` placed on the grid as well.
+    fn annulus(&mut self, centre: V3, r_lo: f64, r_hi: f64, exact: &[f64], gn: f64, gt: f64) {
+        let half = 0.5 * (r_hi - r_lo);
+        let mid = 0.5 * (r_hi + r_lo);
+        let Some(offsets) = across_offsets(half, 0.0, gn, self.budget) else {
+            self.exhausted = true;
+            return;
+        };
+        let (e, n) = orthonormal_frame(centre);
+        let mut radii: Vec<f64> = offsets.iter().map(|d| mid + d).collect();
+        for &r in exact {
+            if r >= r_lo && r <= r_hi {
+                radii.push(r);
+            }
+        }
+        for rr in radii {
+            if self.exhausted {
+                return;
+            }
+            if rr <= 0.0 {
+                self.offer(centre);
+                continue;
+            }
+            let circumference = std::f64::consts::TAU * rr.sin().abs();
+            let m = ((circumference / gt).ceil().max(1.0)).min(self.budget as f64 + 1.0) as usize;
+            for j in 0..m.max(1) {
+                let az = std::f64::consts::TAU * j as f64 / m.max(1) as f64;
+                let dir = crate::mesh::geom::add(
+                    crate::mesh::geom::scale(e, az.cos()),
+                    crate::mesh::geom::scale(n, az.sin()),
+                );
+                self.offer(crate::mesh::geom::add(
+                    crate::mesh::geom::scale(centre, rr.cos()),
+                    crate::mesh::geom::scale(dir, rr.sin()),
+                ));
+                if self.exhausted {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// FOUR STRIPS, not a filled sweep: the interior of a large box is
+    /// saturated and carries nothing.
+    ///
+    /// The parameter box is EXACT rather than padded by guess. The box's
+    /// signed distance is built from `d_lat` and `d_lon * cos(lat)`: outside,
+    /// `s = sqrt(qx^2 + qy^2) >= max(qx, qy)`, so `|s| <= half` forces BOTH to
+    /// be within `half`; inside, `s = max(d_lat, d_lon cos lat)` with both
+    /// negative, so `|s| <= half` forces at least ONE of them to be. Either
+    /// way the shell lies within `half` of a latitude boundary or within
+    /// `half` of a longitude boundary, which is what these four strips are.
+    /// Every candidate is then kept only if `signed_distance` agrees.
+    #[allow(clippy::too_many_arguments)]
+    fn box_shell(
+        &mut self,
+        lat0: f64,
+        lat1: f64,
+        lon_a: f64,
+        lon_b: f64,
+        half: f64,
+        align: f64,
+        gn: f64,
+        gt: f64,
+    ) {
+        const COS_FLOOR: f64 = 1e-6;
+        let tau = std::f64::consts::TAU;
+        let quarter = std::f64::consts::FRAC_PI_2;
+        let wrap = |x: f64| ((x % tau) + tau) % tau;
+        let width = wrap(lon_b - lon_a);
+        let Some(offsets) = across_offsets(half, align, gn, self.budget) else {
+            self.exhausted = true;
+            return;
+        };
+
+        // The two parallels: fine in latitude, coarse in longitude.
+        for blat in [lat0, lat1] {
+            for &d in &offsets {
+                let lat = (blat + d).clamp(-quarter, quarter);
+                let c = lat.cos().abs().max(COS_FLOOR);
+                let ext = half / c;
+                let dlon = gt / c;
+                let (lo, hi) = if width + 2.0 * ext >= tau {
+                    (0.0, tau)
+                } else {
+                    (-ext, width + ext)
+                };
+                let steps = ((hi - lo) / dlon).ceil();
+                if !steps.is_finite() || steps > self.budget as f64 {
+                    self.exhausted = true;
+                    return;
+                }
+                let steps = (steps as usize).max(1);
+                for k in 0..=steps {
+                    let t = lo + (hi - lo) * (k as f64 / steps as f64);
+                    self.offer(from_lat_lon(lat, lon_a + t));
+                    if self.exhausted {
+                        return;
+                    }
+                }
+            }
+        }
+
+        // The two meridian edges: fine in longitude, coarse in latitude. A box
+        // spanning every longitude has no meridian edge to walk.
+        if width >= tau - 1e-12 {
+            return;
+        }
+        let lat_lo = (lat0 - half).max(-quarter);
+        let lat_hi = (lat1 + half).min(quarter);
+        let steps = ((lat_hi - lat_lo) / gt).ceil();
+        if !steps.is_finite() || steps > self.budget as f64 {
+            self.exhausted = true;
+            return;
+        }
+        let steps = (steps as usize).max(1);
+        for blon in [lon_a, lon_b] {
+            for k in 0..=steps {
+                let lat = lat_lo + (lat_hi - lat_lo) * (k as f64 / steps as f64);
+                let c = lat.cos().abs().max(COS_FLOOR);
+                for &d in &offsets {
+                    self.offer(from_lat_lon(lat, blon + d / c));
+                    if self.exhausted {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Edge bands, each walked from `half` BEFORE its start to `half` past its
+    /// end, offset by an exact geodesic rotation about the edge's own
+    /// great-circle normal.
+    ///
+    /// The over-walk is what closes the corner wedges, with no separate vertex
+    /// discs to size: a point within `half` of a vertex `v` has both its
+    /// along-edge and its across-edge coordinate within `half` of `v`, so it
+    /// lies in the extended band of either incident edge. `q cos(b) + n sin(b)`
+    /// is an exact geodesic offset -- no tangent-plane approximation, at any
+    /// width.
+    fn polygon_shell(
+        &mut self,
+        edges: &[PreparedEdge],
+        half: f64,
+        align: f64,
+        gn: f64,
+        gt: f64,
+    ) {
+        let Some(offsets) = across_offsets(half, align, gn, self.budget) else {
+            self.exhausted = true;
+            return;
+        };
+        for e in edges {
+            let Some(n) = e.normal else {
+                // A degenerate edge has no direction to offset along; its
+                // endpoint is a vertex of the two neighbours, whose own
+                // over-walked bands cover the disc around it.
+                continue;
+            };
+            let Some(d) = unit(sub(e.b, crate::mesh::geom::scale(e.a, dot(e.a, e.b)))) else {
+                continue;
+            };
+            let (t_lo, t_hi) = (-half, e.seg + half);
+            let steps = ((t_hi - t_lo) / gt).ceil();
+            if !steps.is_finite() || steps > self.budget as f64 {
+                self.exhausted = true;
+                return;
+            }
+            let steps = (steps as usize).max(1);
+            for i in 0..=steps {
+                let t = t_lo + (t_hi - t_lo) * (i as f64 / steps as f64);
+                let q = crate::mesh::geom::add(
+                    crate::mesh::geom::scale(e.a, t.cos()),
+                    crate::mesh::geom::scale(d, t.sin()),
+                );
+                for &b in &offsets {
+                    self.offer(crate::mesh::geom::add(
+                        crate::mesh::geom::scale(q, b.cos()),
+                        crate::mesh::geom::scale(n, b.sin()),
+                    ));
+                    if self.exhausted {
+                        return;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// `cos(best + half)`, the dot-product threshold below which an edge whose
@@ -564,6 +1013,135 @@ pub struct MeshSpec {
 /// receipt says so with the number rather than refusing a legitimate request.
 pub const PUBLISHED_RAMP_CELLS: f64 = 81.0;
 
+/// Whether a probe set covered every locus where a field varies.
+///
+/// THE BREAKAGE THIS PREVENTS. [`steepest_gradient_reading_of`] reports a
+/// `max`, so a probe set that never touched a feature reports 0.0 -- and
+/// [`crate::mesh::hierarchy`] maps a zero gradient to a band of
+/// `f64::INFINITY`, the most permissive verdict it has. Zero is not evidence
+/// of a flat field; it is equally the signature of an instrument that never
+/// looked, and the two used to be spelled the same. MEASURED on the shipped
+/// sampler: a 3 km cap at 0.15 km spacing on a 76.8 km background -- a 512:1
+/// refinement -- read exactly 0.0000 %/cell and was ADMITTED, because none of
+/// the 50,000 lattice points landed inside its 24 km detection radius. A
+/// `Complete` coverage is what earns a zero the right to mean flat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Coverage {
+    /// Every locus where the field varies was covered to the stated radius.
+    Complete,
+    /// Loci this field could not cover inside its probe budget, named for the
+    /// refusal text.
+    Partial(Vec<String>),
+}
+
+impl Coverage {
+    pub fn is_complete(&self) -> bool {
+        matches!(self, Coverage::Complete)
+    }
+    /// The single word a receipt carries, so a reader -- and a downstream gate
+    /// -- can tell a measured reading from an unmeasured one.
+    pub fn as_receipt_word(&self) -> &'static str {
+        match self {
+            Coverage::Complete => "complete",
+            Coverage::Partial(_) => "partial",
+        }
+    }
+    pub fn missed(&self) -> &[String] {
+        match self {
+            Coverage::Complete => &[],
+            Coverage::Partial(v) => v,
+        }
+    }
+}
+
+/// One reading of the steepest per-cell spacing change, WITH the certificate
+/// that says whether it was taken.
+///
+/// `per_cell` is a `max` over the probe set, hence always a LOWER bound on the
+/// field's true peak: adding probe points can only raise it, never lower it.
+/// That one-sidedness is what makes a wider probe set incapable of loosening a
+/// gate built on this number.
+#[derive(Debug, Clone)]
+pub struct GradientReading {
+    /// Steepest per-cell spacing change found, as a fraction.
+    pub per_cell: f64,
+    /// Whether the probe set reached every locus where the field varies.
+    pub coverage: Coverage,
+    /// How many region-targeted probes were spent. The global lattice is
+    /// unioned on top of these and is not counted here.
+    pub probe_points: usize,
+    /// The finest spacing the FIELD declares, recovered exactly from one
+    /// probe -- see [`declared_finest_m_of`].
+    pub declared_finest_m: f64,
+    /// The finest spacing any probe actually READ.
+    pub visited_finest_m: f64,
+    /// The coarsest spacing any probe read.
+    pub background_m: f64,
+}
+
+impl GradientReading {
+    /// Did the probe set actually reach the refinement the field asks for?
+    ///
+    /// An independent check on [`Coverage`], failing differently: coverage
+    /// says "I probed every locus I know about", this says "the probes reached
+    /// the resolution the spec asks for". A probe set that never left the
+    /// background while the field declares something finer measured the
+    /// background and not the request, and `per_cell` is then a reading of the
+    /// wrong field. Only the WEAK form is asserted -- something deviated at
+    /// all -- because the strict form (probes reached within a few percent of
+    /// the declared finest) false-alarms on regions that legitimately cannot
+    /// attain their own request, which `region_attainment` already reports.
+    pub fn saw_the_refinement(&self) -> bool {
+        self.declared_finest_m >= self.background_m * (1.0 - 1e-12)
+            || self.visited_finest_m < self.background_m * (1.0 - 1e-9)
+    }
+}
+
+/// The finest spacing a field DECLARES, recovered exactly from one point.
+///
+/// `density` is `(finest / h)^4` for a spec and `(level_spacing / h)^4` for a
+/// level clamp, so `h * density^(1/4)` inverts to the field's own infimum with
+/// no second arithmetic and no extra trait method to keep in step. It is exact
+/// at every point, which is what lets a reading state what it was LOOKING for
+/// beside what it found.
+pub fn declared_finest_m_of(field: &impl DensityField, p: V3) -> f64 {
+    field.spacing_m(p) * field.density(p).powf(0.25)
+}
+
+/// The ceiling on region-targeted probe points one reading may spend.
+///
+/// A cost ceiling, not a resolution choice: the largest spec in either tree
+/// spends well under a tenth of it, and a request that cannot be covered
+/// inside it is reported as UNMEASURED ([`Coverage::Partial`]) rather than
+/// silently truncated to a max over whatever was reached. A truncated max is a
+/// second way to under-read with no signature at all.
+pub const PROBE_BUDGET: usize = 4_000_000;
+
+/// How much of a ramp's own peak gradient the shell is allowed to omit. One
+/// ramp's peak per-cell gradient sits at signed distance `W ln(rho) / 2`; the
+/// tail at `K` widths is `(sqrt(rho)+1)^2 sech^2(K) / 4` of it, which is what
+/// [`PreparedSpec::variation_probes`] solves `K` from.
+const SHELL_TAIL_FRACTION: f64 = 1e-3;
+/// The shell is never thinner than this many transition widths.
+const SHELL_MIN_WIDTHS: f64 = 6.0;
+/// And never thicker, because it cannot need to be: `tanh(x) == 1.0` exactly
+/// in f64 for `x >= 19.07`, which [`PreparedSpec::spacing_m`]'s saturation
+/// skip already exploits, so beyond this many widths the field is BIT
+/// IDENTICAL to the background and there is nothing left to measure.
+const SHELL_SATURATION_WIDTHS: f64 = 19.07;
+/// The across-boundary probe step resolves the smaller of the ramp's own width
+/// and the step the instrument itself takes inside the refinement.
+const ACROSS_STEP_DIVISOR: f64 = 2.0;
+/// ...but never coarser than this fraction of the ramp width.
+const ACROSS_STEP_FLOOR_DIVISOR: f64 = 64.0;
+/// ALONG the boundary the field is the same `tanh` of the same signed
+/// distance, so a quarter of the ramp width is enough. MEASURED: sweeping the
+/// azimuths per ray from 1 to 256 moved a reading by one part in a million,
+/// while sweeping the across-ramp step over a comparable range moved it by
+/// 13%. Resolution is needed across the ramp, not along it, and that
+/// anisotropy is what makes the cost affordable.
+const ALONG_STEP_DIVISOR: f64 = 4.0;
+
 /// What the relaxation actually reads off a resolution request.
 ///
 /// [`MeshSpec`] is the USER's request and stays the only thing a receipt or a
@@ -578,6 +1156,37 @@ pub trait DensityField {
     fn density(&self, p: V3) -> f64;
     /// The requested spacing at a point, in metres.
     fn spacing_m(&self, p: V3) -> f64;
+
+    /// WHERE this field varies. Appends probe points to `out` and reports
+    /// whether the budget covered every locus.
+    ///
+    /// NO DEFAULT BODY, deliberately. THE BREAKAGE THIS PREVENTS: the gradient
+    /// meter steps a distance `h(p)` from each probe, which is right, but it
+    /// used to take its probes from a lattice uniform over the WHOLE SPHERE
+    /// while every feature it measures lives in a shell a few transition
+    /// widths wide around a region boundary. At the 50,000 samples every
+    /// caller passes, those points sit 101 km apart; a CPAS-class ladder's
+    /// innermost ramp is 3.3 km wide, ZERO lattice points landed within three
+    /// widths of it, and the build gate read 12.1 %/cell for a field that does
+    /// 38. Two gates in two repositories then agreed, to the last bit, on a
+    /// number three times too low.
+    ///
+    /// RAISING THE SAMPLE COUNT IS NOT THE FIX AND CANNOT BE MADE ONE. Let A
+    /// be any procedure that reads a field only through this trait's other two
+    /// methods and makes at most N calls. Run A on a uniform field: every
+    /// answer is the same constant, so A's adaptive choices are determined and
+    /// the point set it queries is fixed. Any N points on the sphere leave an
+    /// empty cap of angular radius at least `c / sqrt(N)`, and a legal spec
+    /// can put a whole region inside it -- [`MeshSpec::check`] puts no
+    /// positive floor on a radius or a transition width, and `tanh` saturates
+    /// to exactly 1.0 in f64 beyond 19.07 widths, so that region is compactly
+    /// supported and agrees with the uniform field BIT FOR BIT at every point
+    /// A looked at. A returns the uniform answer, which is zero. That holds
+    /// for every finite N, adaptive or not, randomised or not. The escape is
+    /// not more samples: it is the field naming its own loci, which is what
+    /// this method is. A field that cannot answer this question has no
+    /// business being gated on, so it is a compile error not to answer it.
+    fn variation_probes(&self, budget: usize, out: &mut Vec<V3>) -> Coverage;
 }
 
 impl DensityField for MeshSpec {
@@ -586,6 +1195,9 @@ impl DensityField for MeshSpec {
     }
     fn spacing_m(&self, p: V3) -> f64 {
         MeshSpec::spacing_m(self, p)
+    }
+    fn variation_probes(&self, budget: usize, out: &mut Vec<V3>) -> Coverage {
+        self.prepared().variation_probes(budget, out)
     }
 }
 
@@ -661,6 +1273,75 @@ impl PreparedSpec {
             level_spacing_m,
         }
     }
+
+    /// WHERE THIS FIELD VARIES -- one transition shell per region.
+    ///
+    /// `inv(p) = max(background, max_i inv_i(p))`, and outside region `i`'s
+    /// shell its `tanh` has saturated so `inv_i` is a constant there. A point
+    /// outside EVERY shell therefore has every term locally constant, so `inv`
+    /// is, so `h` is: the field's variation is contained in the union of the
+    /// shells, up to the tail the `K` rule bounds. Two corollaries this design
+    /// leans on. A CROSSOVER between two regions -- where the `max` switches
+    /// and the field has a kink -- needs at least one of them unsaturated, so
+    /// it lies inside at least one shell and is covered; that is the case a
+    /// nested rung stack lives in, and it is why the answer is found there.
+    /// And [`PreparedSpec::spacing_m`]'s saturation skip already makes the
+    /// field BIT IDENTICAL to the background beyond about 19 widths, so a `K`
+    /// in `[6, 19.07]` genuinely brackets every non-constant point.
+    ///
+    /// The cost follows the REGIONS, not the globe. Per region it is about
+    /// `(2 K W / gn) * (L / gt) = C K (L / W)` with `L` the boundary length --
+    /// the boundary measured in ramp widths, a dimensionless number the spec
+    /// writes. Shrink every length in a request by any factor and `L / W` does
+    /// not move, so the probe count does not move either: the same request at
+    /// one sixteen-thousandth the size costs the same and reads the same.
+    /// Nothing here depends on the radius of the Earth.
+    pub fn variation_probes(&self, budget: usize, out: &mut Vec<V3>) -> Coverage {
+        let mut missed: Vec<String> = Vec::new();
+        let mut left = budget;
+        for (i, r) in self.regions.iter().enumerate() {
+            // rho = background / region spacing, the refinement ratio.
+            let ratio = (r.fine_inv_m / r.back_inv_m).max(1.0);
+            if ratio <= 1.0 {
+                // A region no finer than the background contributes nothing to
+                // the field; `spacing_m` never lets it raise `inv`.
+                continue;
+            }
+            // K SHELL WIDTHS. One ramp's peak per-cell gradient sits at
+            // `s = W ln(rho) / 2`; the tail at K widths is
+            // `(sqrt(rho) + 1)^2 sech^2(K) / 4` of that peak, so this K holds
+            // the omission under SHELL_TAIL_FRACTION of it.
+            let k = ((ratio.sqrt() + 1.0) / SHELL_TAIL_FRACTION.sqrt())
+                .ln()
+                .clamp(SHELL_MIN_WIDTHS, SHELL_SATURATION_WIDTHS);
+            // TWO SCALES SET THE ACROSS-RAMP STEP. The ramp's own width, and
+            // the step length the instrument itself takes -- because the
+            // measure is already adaptive (`step = h / EARTH_RADIUS_M`), and
+            // that is the deep reason this fix works: a probe placed INSIDE a
+            // refinement takes a short step and can resolve a short ramp,
+            // while a globe lattice's points sit almost entirely on the
+            // background, where the step is tens of kilometres and nothing
+            // narrow is resolvable however many of them there are.
+            let h_fine_rad = 1.0 / (r.fine_inv_m * EARTH_RADIUS_M);
+            let gn = (r.width_rad.min(h_fine_rad) / ACROSS_STEP_DIVISOR)
+                .max(r.width_rad / ACROSS_STEP_FLOOR_DIVISOR);
+            let gt = r.width_rad / ALONG_STEP_DIVISOR;
+            // The closed-form peak offset, placed exactly rather than
+            // approached: s* = W ln(rho) / 2.
+            let align = 0.5 * r.width_rad * ratio.ln();
+            if !r
+                .shape
+                .boundary_shell_probes(k * r.width_rad, align, gn, gt, &mut left, out)
+            {
+                missed.push(format!("region {i}"));
+            }
+        }
+        if missed.is_empty() {
+            Coverage::Complete
+        } else {
+            Coverage::Partial(missed)
+        }
+    }
 }
 
 impl DensityField for PreparedSpec {
@@ -669,6 +1350,9 @@ impl DensityField for PreparedSpec {
     }
     fn spacing_m(&self, p: V3) -> f64 {
         PreparedSpec::spacing_m(self, p)
+    }
+    fn variation_probes(&self, budget: usize, out: &mut Vec<V3>) -> Coverage {
+        PreparedSpec::variation_probes(self, budget, out)
     }
 }
 
@@ -689,6 +1373,17 @@ pub struct LevelClamp<'a> {
 impl DensityField for LevelClamp<'_> {
     fn spacing_m(&self, p: V3) -> f64 {
         self.spec.spacing_m(p).max(self.level_spacing_m)
+    }
+    /// VERBATIM DELEGATION to the spec, and it is a theorem rather than a
+    /// shortcut. `h_bar = max(h, h_l)` is a pointwise monotone map of `h`, so
+    /// wherever the spec's field is locally constant the clamped one is too:
+    /// the spec's loci are a SUPERSET of the clamp's, and probing the spec's
+    /// loci covers the clamp's. The clamp also cannot read HIGHER than the
+    /// spec -- for `a >= b > 0`, `max(a,c) / max(b,c) <= a / b` in all three
+    /// orderings of `c` -- so nothing is lost by measuring where the spec
+    /// varies.
+    fn variation_probes(&self, budget: usize, out: &mut Vec<V3>) -> Coverage {
+        self.spec.variation_probes(budget, out)
     }
     fn density(&self, p: V3) -> f64 {
         // Normalised so the level's own spacing reads 1.0 -- the same
@@ -949,12 +1644,17 @@ impl MeshSpec {
         Ok((self.scaled(k), k))
     }
 
-    /// The steepest per-cell spacing change the spec asks for, as a fraction.
-    /// The published variable mesh runs 1.53% per cell; a receipt quotes this
-    /// beside that number so a steeper request is a stated fact rather than a
-    /// surprise in the output.
-    pub fn steepest_gradient_per_cell(&self, samples: usize) -> f64 {
-        steepest_gradient_per_cell_of(&self.prepared(), samples)
+    /// The steepest per-cell spacing change the spec asks for, with the
+    /// certificate that says whether it was measured. The published variable
+    /// mesh runs 1.53% per cell; a receipt quotes this beside that number so a
+    /// steeper request is a stated fact rather than a surprise in the output.
+    ///
+    /// `lattice_samples` now sizes only the GLOBAL arm of the probe set. The
+    /// region-targeted arm is sized by the request's own geometry and is not a
+    /// caller's choice, because it was never a choice a caller could make
+    /// correctly -- see [`steepest_gradient_reading_of`].
+    pub fn steepest_gradient_reading(&self, lattice_samples: usize) -> GradientReading {
+        steepest_gradient_reading_of(&self.prepared(), lattice_samples)
     }
 }
 
@@ -972,33 +1672,76 @@ pub fn predicted_cells_of(field: &impl DensityField, samples: usize) -> f64 {
     sphere_area * mean_inv_h2 / (3f64.sqrt() / 2.0)
 }
 
-/// [`MeshSpec::steepest_gradient_per_cell`] over any [`DensityField`], so the
+/// [`MeshSpec::steepest_gradient_reading`] over any [`DensityField`], so the
 /// relaxation's oscillation refusal can quote the gradient of the field it
 /// actually relaxed under (a level clamp's, not only a spec's).
-pub fn steepest_gradient_per_cell_of(field: &impl DensityField, samples: usize) -> f64 {
-    {
-        let mut worst = 0.0f64;
-        for p in fibonacci_lattice(samples) {
-            let h = field.spacing_m(p);
-            let step = h / EARTH_RADIUS_M;
-            let (east, north) = match crate::mesh::geom::east_north(p) {
-                Some(v) => v,
-                None => continue,
-            };
-            for dir in [east, north] {
-                for sign in [1.0f64, -1.0] {
-                    let q = unit(crate::mesh::geom::add(
-                        p,
-                        crate::mesh::geom::scale(dir, sign * step),
-                    ));
-                    if let Some(q) = q {
-                        let hq = field.spacing_m(q);
-                        worst = worst.max((hq / h - 1.0).abs());
-                    }
+///
+/// WHAT IT MEASURES, unchanged: at each probe `p` it reads `h = spacing_m(p)`,
+/// steps that same distance east, north and back, and takes the largest
+/// `|h(q)/h(p) - 1|`. The step is the local requested spacing, which is what
+/// turns a spatial derivative into the PER-CELL change the band arithmetic
+/// `ln 2 / ln(1+g)` needs.
+///
+/// WHERE IT LOOKS, corrected. The probe set is the field's own declared loci
+/// ([`DensityField::variation_probes`]) UNIONED WITH the global lattice, never
+/// replacing it. The union is arithmetic and not tidiness: the reading is a
+/// `max`, so a strict superset of the old probe set can only raise it, and
+/// keeping the lattice is what makes this change structurally incapable of
+/// loosening any gate built on the number. It is also not redundant -- on
+/// several real specs the region-targeted set ALONE reads slightly LOWER than
+/// the lattice, because a lattice point happened to land on a rung crossover
+/// where no region boundary is.
+///
+/// WHAT IT STILL UNDER-READS, so nobody has to rediscover it. The measure is a
+/// MEAN of `|dh/dx|` over a step of length `h(p)`, therefore bounded above by
+/// the supremum over that step: with sampling eliminated entirely it reads
+/// 15-22% below the continuum peak. That bias is one-sided (it can admit, it
+/// can never wrongly refuse), it is independent of where the probes are, and
+/// this function does not address it. Neither do the two other instruments on
+/// the same receipt: `predicted_cells_of` and `region_attainment` still walk
+/// the global lattice alone.
+pub fn steepest_gradient_reading_of(
+    field: &impl DensityField,
+    lattice_samples: usize,
+) -> GradientReading {
+    let mut points: Vec<V3> = Vec::new();
+    let coverage = field.variation_probes(PROBE_BUDGET, &mut points);
+    let probe_points = points.len();
+    points.extend(fibonacci_lattice(lattice_samples));
+
+    let declared_finest_m = declared_finest_m_of(field, [0.0, 0.0, 1.0]);
+    let mut background_m = 0.0f64;
+    let mut visited_finest_m = f64::INFINITY;
+    let mut worst = 0.0f64;
+    for p in points {
+        let h = field.spacing_m(p);
+        background_m = background_m.max(h);
+        visited_finest_m = visited_finest_m.min(h);
+        let step = h / EARTH_RADIUS_M;
+        let (east, north) = match crate::mesh::geom::east_north(p) {
+            Some(v) => v,
+            None => continue,
+        };
+        for dir in [east, north] {
+            for sign in [1.0f64, -1.0] {
+                let q = unit(crate::mesh::geom::add(
+                    p,
+                    crate::mesh::geom::scale(dir, sign * step),
+                ));
+                if let Some(q) = q {
+                    let hq = field.spacing_m(q);
+                    worst = worst.max((hq / h - 1.0).abs());
                 }
             }
         }
-        worst
+    }
+    GradientReading {
+        per_cell: worst,
+        coverage,
+        probe_points,
+        declared_finest_m,
+        visited_finest_m,
+        background_m,
     }
 }
 
@@ -1516,8 +2259,8 @@ mod tests {
             }],
             name: None,
         };
-        let g_polygon = polygon.steepest_gradient_per_cell(50_000);
-        let g_cap = cap.steepest_gradient_per_cell(50_000);
+        let g_polygon = polygon.steepest_gradient_reading(50_000).per_cell;
+        let g_cap = cap.steepest_gradient_reading(50_000).per_cell;
         let step = 75.0 / 4.0 - 1.0; // what a field with no ramp reads
         assert!(
             g_polygon < 0.5 * step,
@@ -1674,8 +2417,17 @@ mod tests {
 
     #[test]
     fn the_gradient_meter_reads_zero_on_a_uniform_spec_and_more_on_a_steep_one() {
-        let flat = MeshSpec::uniform(120.0).steepest_gradient_per_cell(20_000);
-        assert!(flat < 1e-12, "a uniform spec has a gradient of {flat}");
+        let flat = MeshSpec::uniform(120.0).steepest_gradient_reading(20_000);
+        assert!(
+            flat.per_cell < 1e-12,
+            "a uniform spec has a gradient of {}",
+            flat.per_cell
+        );
+        // A zero reading is only meaningful with a coverage word beside it,
+        // and a spec with no regions has nothing to cover.
+        assert!(flat.coverage.is_complete());
+        assert_eq!(flat.probe_points, 0);
+        assert!(flat.saw_the_refinement());
         let gentle = MeshSpec {
             background_km: 120.0,
             regions: vec![Region {
@@ -1700,8 +2452,560 @@ mod tests {
             }],
             name: None,
         };
-        let g = gentle.steepest_gradient_per_cell(50_000);
-        let s = steep.steepest_gradient_per_cell(50_000);
+        let g = gentle.steepest_gradient_reading(50_000).per_cell;
+        let s = steep.steepest_gradient_reading(50_000).per_cell;
         assert!(s > 3.0 * g, "a 6x narrower ramp read {s:.4} against {g:.4}");
+    }
+
+    // ---------------------------------------------------------------------
+    // WHERE THE INSTRUMENT LOOKS
+    //
+    // Every assertion below fails on the retired sampler, which took its
+    // probes from a lattice uniform over the whole sphere. The retired body is
+    // kept verbatim as `lattice_only_gradient` so the two can be compared
+    // rather than argued about, exactly as `arc_segment_distance` is kept as
+    // the oracle for the prepared signed distance.
+    // ---------------------------------------------------------------------
+
+    /// THE RETIRED SAMPLER, copied verbatim from the body
+    /// `steepest_gradient_per_cell_of` carried before the probe set became the
+    /// field's own. It exists only here, only as an oracle, and it is what
+    /// makes "the corrected reading can never be lower" a measurement rather
+    /// than a claim.
+    fn lattice_only_gradient(field: &impl DensityField, samples: usize) -> f64 {
+        let mut worst = 0.0f64;
+        for p in fibonacci_lattice(samples) {
+            let h = field.spacing_m(p);
+            let step = h / EARTH_RADIUS_M;
+            let (east, north) = match crate::mesh::geom::east_north(p) {
+                Some(v) => v,
+                None => continue,
+            };
+            for dir in [east, north] {
+                for sign in [1.0f64, -1.0] {
+                    let q = unit(crate::mesh::geom::add(
+                        p,
+                        crate::mesh::geom::scale(dir, sign * step),
+                    ));
+                    if let Some(q) = q {
+                        let hq = field.spacing_m(q);
+                        worst = worst.max((hq / h - 1.0).abs());
+                    }
+                }
+            }
+        }
+        worst
+    }
+
+    /// One cap region, spelled once for the tests that vary it.
+    fn one_cap(background_km: f64, at: [f64; 2], radius_km: f64, spacing_km: f64, w_km: f64) -> MeshSpec {
+        MeshSpec {
+            background_km,
+            regions: vec![Region {
+                shape: Shape::Cap {
+                    center_deg: at,
+                    radius_km,
+                },
+                spacing_km,
+                transition: TransitionField::Km(w_km),
+            }],
+            name: None,
+        }
+    }
+
+    /// The closed-form peak per-cell gradient of ONE isolated ramp:
+    /// `|dh/dx|` peaks at `h = (h_bg + h_i)/2` with the value
+    /// `L (h_bg - h_i) / (2 W)`. Derived, not fitted: with `u = 1/h` linear in
+    /// `phi = (1 - tanh(s/W))/2`, `|dh/dx| = 2 (a-b) h^2 phi (1-phi) / W`,
+    /// whose maximum over `phi` sits at `phi = 1/(1+rho)`. `L` is the shape's
+    /// `sup|grad s|`, which is exactly 1 for a cap (arc distance) and for a
+    /// polygon (a corner FANS the level sets, it does not compress them).
+    fn isolated_peak_per_cell(background_km: f64, spacing_km: f64, w_km: f64) -> f64 {
+        (background_km - spacing_km) / (2.0 * w_km)
+    }
+
+    /// REQUIREMENT: the instrument must find a transition narrower than the
+    /// global lattice's own point spacing.
+    ///
+    /// 50,000 Fibonacci points sit 101 km apart. This ramp is 3.253 km wide
+    /// around a 10 km cap -- the CPAS-class innermost rung -- so the retired
+    /// sampler stepped over it entirely and read the flat background it landed
+    /// on. MEASURED: 0.0000 %/cell from the lattice alone, which the ladder's
+    /// band arithmetic turns into `f64::INFINITY` cells and admits, against a
+    /// closed-form peak of 1177.4 %/cell and a band of a fifth of a cell.
+    #[test]
+    fn a_transition_narrower_than_the_global_lattice_is_still_measured() {
+        let spec = one_cap(76.8, [-60.0, 0.0], 10.0, 0.2, 3.253);
+        let truth = isolated_peak_per_cell(76.8, 0.2, 3.253);
+        let blind = lattice_only_gradient(&spec.prepared(), 50_000);
+        let reading = spec.steepest_gradient_reading(50_000);
+        assert!(
+            blind < 1e-4 * truth,
+            "the global lattice was supposed to be blind here and read {blind:.6} against a peak of {truth:.4}"
+        );
+        // WHAT IS STILL MISSING, stated as a number rather than left to be
+        // rediscovered. The measure is a MEAN of |dh/dx| over a step of length
+        // h(p), so it is bounded above by the continuum peak and reads about
+        // three quarters of it here. That bias is one-sided -- it can admit,
+        // it can never wrongly refuse -- it does not depend on where the
+        // probes are, and this change does not address it.
+        assert!(
+            reading.per_cell > 0.5 * truth,
+            "the corrected reading is {:.4} against a closed-form peak of {truth:.4}",
+            reading.per_cell
+        );
+        assert!(
+            reading.per_cell <= truth,
+            "a secant over a step of length h cannot exceed the continuum peak: {:.4} against {truth:.4}",
+            reading.per_cell
+        );
+        // The operational statement: a band this narrow is what the surgery
+        // locality gate exists to refuse, and it now gets the chance to.
+        let band = (2f64).ln() / (1.0 + reading.per_cell).ln();
+        assert!(
+            band < 1.0,
+            "a 384:1 refinement over a 3.253 km ramp reports a band of {band:.3} cells"
+        );
+        assert!(reading.coverage.is_complete());
+        assert!(reading.saw_the_refinement());
+    }
+
+    /// The same request shrunk is GEOMETRICALLY SIMILAR, so its steepest
+    /// per-cell spacing change is a dimensionless constant and the instrument
+    /// must return the same number at every size. The retired sampler read
+    /// 9.23 %/cell at k = 1 and exactly 0.0000 %/cell at k = 1/128 -- a
+    /// receipt printing "this is a uniform mesh" for a 16:1 refinement.
+    #[test]
+    fn the_gradient_meter_is_scale_invariant() {
+        let truth = isolated_peak_per_cell(76.8, 4.8, 388.8);
+        let mut readings = Vec::new();
+        for k in [1.0f64, 1.0 / 8.0, 1.0 / 128.0, 1.0 / 2048.0, 1.0 / 16384.0] {
+            let spec = one_cap(76.8 * k, [21.0, 137.0], 307.2 * k, 4.8 * k, 388.8 * k);
+            let r = spec.steepest_gradient_reading(50_000);
+            assert!(r.coverage.is_complete());
+            readings.push(r.per_cell);
+        }
+        let lo = readings.iter().cloned().fold(f64::INFINITY, f64::min);
+        let hi = readings.iter().cloned().fold(0.0f64, f64::max);
+        assert!(
+            hi / lo < 1.001,
+            "one request read {lo:.6} at its smallest size and {hi:.6} at its largest: {readings:?}"
+        );
+        assert!(
+            lo > 0.99 * truth && hi <= truth,
+            "the scale-free reading is {lo:.6}..{hi:.6} against a closed-form {truth:.6}"
+        );
+    }
+
+    /// A gate whose answer depends on the longitude of the storm is not a
+    /// function of the spec at all. The retired sampler read one request
+    /// anywhere between 0.66 %/cell and 325 %/cell depending only on where the
+    /// cap was placed, and admitted it at some placements and refused it at
+    /// others.
+    #[test]
+    fn the_gradient_meter_does_not_depend_on_where_on_earth_the_region_sits() {
+        let mut lo = f64::INFINITY;
+        let mut hi = 0.0f64;
+        let mut blind_lo = f64::INFINITY;
+        let mut blind_hi = 0.0f64;
+        for k in 0..24 {
+            let lat = -80.0 + 160.0 * (k as f64 / 23.0);
+            let lon = -180.0 + 359.0 * ((k * 7 % 24) as f64 / 24.0);
+            let spec = one_cap(51.2, [lat, lon], 10.0, 0.2, 6.685);
+            let g = spec.steepest_gradient_reading(50_000).per_cell;
+            lo = lo.min(g);
+            hi = hi.max(g);
+            let b = lattice_only_gradient(&spec.prepared(), 50_000);
+            blind_lo = blind_lo.min(b);
+            blind_hi = blind_hi.max(b);
+        }
+        assert!(
+            hi / lo < 1.001,
+            "one request read {lo:.4}..{hi:.4} over 24 placements"
+        );
+        // And say plainly what it used to do, so the guard is not mistaken for
+        // a tautology if the sampler is ever changed back.
+        assert!(
+            blind_hi / blind_lo.max(1e-12) > 10.0,
+            "the global lattice was supposed to be placement-dependent here: {blind_lo:.4}..{blind_hi:.4}"
+        );
+    }
+
+    /// NON-LOOSENING, BY ARITHMETIC AND BY MEASUREMENT. The reading is a `max`
+    /// over a probe set that is a strict SUPERSET of the retired one -- the
+    /// global lattice is kept in full and the region-targeted points are
+    /// unioned on top -- so the corrected reading is >= the old one for every
+    /// field, unconditionally. No spec that is refused today can pass.
+    ///
+    /// The union is arithmetic and not tidiness: on real specs the
+    /// region-targeted set ALONE sometimes reads a shade lower than the
+    /// lattice, because a lattice point landed on a rung crossover where no
+    /// region boundary is. Replacing rather than unioning would loosen the
+    /// gate on exactly those.
+    #[test]
+    fn the_corrected_reading_never_falls_below_the_lattice_alone() {
+        for spec in fixture_corpus() {
+            let prepared = spec.prepared();
+            let old = lattice_only_gradient(&prepared, 50_000);
+            let new = steepest_gradient_reading_of(&prepared, 50_000).per_cell;
+            assert!(
+                new >= old,
+                "{:?}: the corrected reading {new:.6} is below the lattice-only {old:.6}",
+                spec.name
+            );
+        }
+    }
+
+    /// THE ANTI-DRIFT GUARD. A sampled maximum is a mean of `|dh/dx|` over a
+    /// step of length `h(p)`, so it can never exceed the field's continuum
+    /// supremum; and `h` is a MIN of Lipschitz branches, so that supremum is
+    /// bounded by the steepest single branch,
+    /// `max_i L_i (h_bg - h_i) / (2 W_i)`. If a probe generator ever starts
+    /// reporting above this, either the generator or the field it claims to
+    /// describe has changed, and this is where that shows up.
+    ///
+    /// Caps and polygons only: `L = 1` for both, exactly. A `LatLonBox`'s
+    /// signed distance is NOT a distance -- it scales the longitude term by
+    /// the cosine of the QUERY point's latitude, so `|grad s|` exceeds 1 and
+    /// the box's delivered ramp is narrower than the `transition_km` its
+    /// author wrote. That is a defect in the FIELD, not in this instrument,
+    /// and deriving the box's Lipschitz constant is not this guard's job.
+    #[test]
+    fn the_reading_never_exceeds_the_steepest_single_branch() {
+        for spec in fixture_corpus() {
+            if spec
+                .regions
+                .iter()
+                .any(|r| matches!(r.shape, Shape::LatLonBox { .. }))
+            {
+                continue;
+            }
+            let bound = spec
+                .regions
+                .iter()
+                .map(|r| {
+                    let w_km = r.transition.width_rad(r.spacing_km) * EARTH_RADIUS_M / 1000.0;
+                    isolated_peak_per_cell(spec.background_km, r.spacing_km, w_km)
+                })
+                .fold(0.0f64, f64::max);
+            let read = spec.steepest_gradient_reading(50_000).per_cell;
+            assert!(
+                read <= bound * (1.0 + 1e-9),
+                "{:?} read {read:.6} against a closed-form ceiling of {bound:.6}",
+                spec.name
+            );
+        }
+    }
+
+    /// The receipt carries `gradient_probe_points`, so two runs of one spec
+    /// must agree exactly or the receipt stops being reproducible and the
+    /// grid registry's digests stop being stable. No RNG, fixed azimuths,
+    /// fixed traversal order.
+    #[test]
+    fn the_gradient_meter_is_deterministic() {
+        for spec in fixture_corpus() {
+            let a = spec.steepest_gradient_reading(50_000);
+            let b = spec.steepest_gradient_reading(50_000);
+            assert_eq!(a.per_cell.to_bits(), b.per_cell.to_bits(), "{:?}", spec.name);
+            assert_eq!(a.probe_points, b.probe_points, "{:?}", spec.name);
+        }
+    }
+
+    /// THE COVERING CONTRACT, and it names no shape.
+    ///
+    /// Draw an independent point cloud FROM THE SHAPE'S OWN BOUND -- never
+    /// from a globe lattice, which on a thin shell would land almost nothing
+    /// inside it and reproduce, inside the guard, the very defect the guard
+    /// exists for. Keep the cloud points that are in the shell, and demand
+    /// each lies within one probe cell `sqrt(gn^2 + gt^2)` of a probe. A new
+    /// `Shape` arm inherits this obligation instead of being trusted.
+    #[test]
+    fn the_transition_shell_is_covered_for_every_shape_kind() {
+        for spec in covering_corpus() {
+            let prepared = spec.prepared();
+            let mut probes: Vec<V3> = Vec::new();
+            let coverage = prepared.variation_probes(PROBE_BUDGET, &mut probes);
+            assert!(
+                coverage.is_complete(),
+                "{:?} could not be covered: {:?}",
+                spec.name,
+                coverage.missed()
+            );
+            // The same constants `variation_probes` derives, re-derived here
+            // so the test is checking the contract and not echoing the code.
+            let r = &prepared.regions[0];
+            let ratio = r.fine_inv_m / r.back_inv_m;
+            let k = ((ratio.sqrt() + 1.0) / SHELL_TAIL_FRACTION.sqrt())
+                .ln()
+                .clamp(SHELL_MIN_WIDTHS, SHELL_SATURATION_WIDTHS);
+            let half = k * r.width_rad;
+            let h_fine_rad = 1.0 / (r.fine_inv_m * EARTH_RADIUS_M);
+            let gn = (r.width_rad.min(h_fine_rad) / ACROSS_STEP_DIVISOR)
+                .max(r.width_rad / ACROSS_STEP_FLOOR_DIVISOR);
+            let gt = r.width_rad / ALONG_STEP_DIVISOR;
+            let cell = (gn * gn + gt * gt).sqrt();
+
+            // z-sorted probes: |z_p - z_q| <= arc(p, q), so a window on z
+            // prunes without ever excluding a true neighbour.
+            let mut by_z = probes.clone();
+            by_z.sort_by(|a, b| a[2].total_cmp(&b[2]));
+            let zs: Vec<f64> = by_z.iter().map(|p| p[2]).collect();
+
+            let mut checked = 0usize;
+            let mut worst = 0.0f64;
+            for q in cloud_over(&r.shape, half, 900) {
+                let s = r.shape.signed_distance(q);
+                if s.abs() > half {
+                    continue;
+                }
+                checked += 1;
+                let lo = zs.partition_point(|z| *z < q[2] - cell);
+                let hi = zs.partition_point(|z| *z <= q[2] + cell);
+                let mut best = f64::INFINITY;
+                for p in &by_z[lo..hi] {
+                    best = best.min(arc(*p, q));
+                }
+                worst = worst.max(best);
+            }
+            assert!(
+                checked > 50,
+                "{:?}: only {checked} cloud points landed in the shell, so this proved nothing",
+                spec.name
+            );
+            assert!(
+                worst <= cell,
+                "{:?}: a shell point sits {:.6} rad from the nearest probe, against a covering radius of {cell:.6}",
+                spec.name,
+                worst
+            );
+        }
+    }
+
+    /// A cloud drawn uniformly over the cap that contains the shape's shell,
+    /// or over the sphere when the shape declines to bound itself. It shares
+    /// no arithmetic with the probe generator -- different lattice, different
+    /// frame, different count -- which is what makes it a check and not an
+    /// echo.
+    fn cloud_over(shape: &PreparedShape, half: f64, n: usize) -> Vec<V3> {
+        let ga = std::f64::consts::PI * (3.0 - 5f64.sqrt());
+        let (centre, radius) = match shape.probe_bound() {
+            Some((c, rb)) => (c, (rb + half).min(std::f64::consts::PI)),
+            None => ([0.0, 0.0, 1.0], std::f64::consts::PI),
+        };
+        let axis = if centre[0].abs() < 0.9 {
+            [1.0, 0.0, 0.0]
+        } else {
+            [0.0, 1.0, 0.0]
+        };
+        let e = unit(cross(axis, centre)).unwrap_or([0.0, 1.0, 0.0]);
+        let f = cross(centre, e);
+        let z_min = radius.cos();
+        (0..n)
+            .map(|k| {
+                let z = 1.0 - (1.0 - z_min) * ((2 * k + 1) as f64 / (2 * n) as f64);
+                let r = (1.0 - z * z).max(0.0).sqrt();
+                let t = ga * k as f64 + 0.37;
+                let dir = crate::mesh::geom::add(
+                    crate::mesh::geom::scale(e, t.cos()),
+                    crate::mesh::geom::scale(f, t.sin()),
+                );
+                crate::mesh::geom::add(
+                    crate::mesh::geom::scale(centre, z),
+                    crate::mesh::geom::scale(dir, r),
+                )
+            })
+            .collect()
+    }
+
+    /// The specs the non-loosening, drift and determinism guards run over: one
+    /// of every shape kind, a nested ladder, the request the shipped example
+    /// makes, and the two sizes at which the retired sampler went blind.
+    fn fixture_corpus() -> Vec<MeshSpec> {
+        let named = |name: &str, spec: MeshSpec| MeshSpec {
+            name: Some(name.to_string()),
+            ..spec
+        };
+        let mut out = vec![
+            named("uniform", MeshSpec::uniform(120.0)),
+            named("wide-cap", one_cap(120.0, [39.0, -98.0], 1200.0, 20.0, 900.0)),
+            named("narrow-cap", one_cap(76.8, [-60.0, 0.0], 10.0, 0.2, 3.253)),
+            named("tiny-cap", one_cap(76.8, [12.0, 44.0], 3.0, 0.15, 1.125)),
+            named(
+                "cells-ramp-cap",
+                MeshSpec {
+                    background_km: 75.0,
+                    regions: vec![Region {
+                        shape: Shape::Cap {
+                            center_deg: [0.2, 0.2],
+                            radius_km: 300.0,
+                        },
+                        spacing_km: 4.0,
+                        transition: TransitionField::Cells(81.0),
+                    }],
+                    name: None,
+                },
+            ),
+            named(
+                "box",
+                MeshSpec {
+                    background_km: 120.0,
+                    regions: vec![Region {
+                        shape: Shape::LatLonBox {
+                            lat_deg: [33.0, 43.0],
+                            lon_deg: [-104.0, -88.0],
+                        },
+                        spacing_km: 15.0,
+                        transition: TransitionField::Cells(30.0),
+                    }],
+                    name: None,
+                },
+            ),
+            named(
+                "polygon",
+                MeshSpec {
+                    background_km: 75.0,
+                    regions: vec![Region {
+                        shape: Shape::Polygon {
+                            vertices_deg: vec![
+                                [36.0, -100.0],
+                                [36.0, -94.0],
+                                [41.0, -92.0],
+                                [43.0, -98.0],
+                                [39.0, -103.0],
+                            ],
+                        },
+                        spacing_km: 4.0,
+                        transition: TransitionField::Cells(81.0),
+                    }],
+                    name: None,
+                },
+            ),
+        ];
+        // A nested ladder: the class where the answer actually lives, and the
+        // one an isolated per-region argument cannot decide on its own.
+        let mut rungs = Vec::new();
+        let mut h = 25.6f64;
+        let mut radius = 1600.0f64;
+        while h >= 0.2 {
+            rungs.push(Region {
+                shape: Shape::Cap {
+                    center_deg: [39.0, -98.0],
+                    radius_km: radius,
+                },
+                spacing_km: h,
+                transition: TransitionField::Cells(16.4),
+            });
+            h *= 0.5;
+            radius *= 0.5;
+        }
+        out.push(named(
+            "nested-ladder",
+            MeshSpec {
+                background_km: 51.2,
+                regions: rungs,
+                name: None,
+            },
+        ));
+        out
+    }
+
+    /// One region per shape kind, plus the awkward ones: a cap far wider than
+    /// its shell, a box straddling the pole and every longitude, a non-convex
+    /// ring, and a ring whose vertices cancel so it has no bound at all.
+    fn covering_corpus() -> Vec<MeshSpec> {
+        let named = |name: &str, spec: MeshSpec| MeshSpec {
+            name: Some(name.to_string()),
+            ..spec
+        };
+        vec![
+            named("small-cap", one_cap(76.8, [-60.0, 0.0], 10.0, 0.2, 3.253)),
+            named("big-cap", one_cap(120.0, [39.0, -98.0], 2200.0, 20.0, 400.0)),
+            named(
+                "mid-latitude-box",
+                MeshSpec {
+                    background_km: 120.0,
+                    regions: vec![Region {
+                        shape: Shape::LatLonBox {
+                            lat_deg: [33.0, 43.0],
+                            lon_deg: [-104.0, -88.0],
+                        },
+                        spacing_km: 15.0,
+                        transition: TransitionField::Cells(30.0),
+                    }],
+                    name: None,
+                },
+            ),
+            named(
+                "polar-box",
+                MeshSpec {
+                    background_km: 240.0,
+                    regions: vec![Region {
+                        shape: Shape::LatLonBox {
+                            lat_deg: [72.0, 89.0],
+                            lon_deg: [0.0, 359.9],
+                        },
+                        spacing_km: 60.0,
+                        transition: TransitionField::Km(600.0),
+                    }],
+                    name: None,
+                },
+            ),
+            named(
+                "triangle",
+                MeshSpec {
+                    background_km: 120.0,
+                    regions: vec![Region {
+                        shape: Shape::Polygon {
+                            vertices_deg: vec![[10.0, 20.0], [10.0, 32.0], [20.0, 26.0]],
+                        },
+                        spacing_km: 20.0,
+                        transition: TransitionField::Km(300.0),
+                    }],
+                    name: None,
+                },
+            ),
+            named(
+                "crescent",
+                MeshSpec {
+                    background_km: 120.0,
+                    regions: vec![Region {
+                        shape: Shape::Polygon {
+                            vertices_deg: vec![
+                                [0.0, 0.0],
+                                [6.0, 3.0],
+                                [12.0, 0.0],
+                                [9.0, 8.0],
+                                [12.0, 16.0],
+                                [6.0, 13.0],
+                                [0.0, 16.0],
+                                [3.0, 8.0],
+                            ],
+                        },
+                        spacing_km: 20.0,
+                        transition: TransitionField::Km(300.0),
+                    }],
+                    name: None,
+                },
+            ),
+            named(
+                "cancelling-ring",
+                MeshSpec {
+                    background_km: 240.0,
+                    regions: vec![Region {
+                        shape: Shape::Polygon {
+                            vertices_deg: vec![
+                                [0.0, 0.0],
+                                [0.0, 90.0],
+                                [0.0, 180.0],
+                                [0.0, 270.0],
+                            ],
+                        },
+                        spacing_km: 60.0,
+                        transition: TransitionField::Km(900.0),
+                    }],
+                    name: None,
+                },
+            ),
+        ]
     }
 }

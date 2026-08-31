@@ -862,6 +862,7 @@ class RRTMLongwaveRadiation:
         from gpuwm.core.mynn_radiation import (merge_mynn_bl_clouds,
                                                mynn_bl_cloud_active,
                                                wrf_itimestep)
+        from gpuwm.core.rrtmg_legacy import legacy_cloud_fraction_flags
         from gpuwm.core.rrtmgp import cal_cldfra1
 
         temperature = atmosphere["temperature"]
@@ -894,8 +895,25 @@ class RRTMLongwaveRadiation:
             # cal_cldfra1 is the driver's icloud=1 branch and takes
             # (ncol, nlay) blocks; it is elementwise, so the top-down
             # packing carries through unchanged.
+            #
+            # F_QI/F_QS come from the scheme's Registry package membership
+            # (the same resolution the legacy-RRTMG sibling performs),
+            # never hardcoded True.  WRF's driver hands cal_cldfra1 the
+            # Registry flags (module_radiation_driver.F:1326-1332) and the
+            # qc-only arm at :3891-3899 weights a sub-freezing liquid
+            # cloud with the ICE saturation (weight=1 at T<=273.15 K).
+            # Hardcoding f_qi=f_qs=True with zero-filled qi/qs sent a
+            # Kessler-class supercooled cloud through the Morrison arm at
+            # :3870-3877 instead, whose weight collapses to 0 (liquid
+            # saturation) -- a real divergence on this default path.  For
+            # a both-species scheme the zero-fill made the two spellings
+            # identical, and for P3 (qi, no qs) the qs=0 collapse makes
+            # (True, True) equal (True, False) byte for byte
+            # (tests/test_rrtm_lw_cloud_fraction_flags.py measures it).
+            f_qi, f_qs = legacy_cloud_fraction_flags(
+                int(getattr(cfg, "mp_physics", 0)))
             cldfra = cal_cldfra1(qv, qc, qi, qs, t_cols, p_cols,
-                                 f_qc=True, f_qi=True, f_qs=True)
+                                 f_qc=True, f_qi=f_qi, f_qs=f_qs)
             active_bl = mynn_bl_cloud_active(
                 getattr(cfg, "bl_pbl_physics", 0),
                 getattr(cfg, "icloud_bl", 0))

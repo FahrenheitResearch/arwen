@@ -10,7 +10,10 @@ from gpuwm.namelist_compat import analyze_namelists, require_supported_namelists
 from gpuwm.source_cli import EXIT_CONFIG, main as source_cli_main
 
 
-def _write_pair(tmp_path, *, max_dom=6, mass_levels=49, mp=8, extra_physics=""):
+def _write_pair(
+    tmp_path, *, max_dom=6, mass_levels=49, mp=8, ra_lw=4, ra_sw=4,
+    extra_physics="",
+):
     def values(root, child=None):
         child = root if child is None else child
         return ", ".join(str(value) for value in [root] + [child] * (max_dom - 1))
@@ -86,8 +89,8 @@ def _write_pair(tmp_path, *, max_dom=6, mass_levels=49, mp=8, extra_physics=""):
 /
 &physics
  mp_physics = {values(mp)},
- ra_lw_physics = {values(4)},
- ra_sw_physics = {values(4)},
+ ra_lw_physics = {values(ra_lw)},
+ ra_sw_physics = {values(ra_sw)},
  sf_sfclay_physics = {values(91)},
  sf_surface_physics = {values(2)},
  bl_pbl_physics = {values(1)},
@@ -401,6 +404,63 @@ def test_nssl2_runtime_is_reported_runnable_with_full_moment_inventory(
     ]
 
 
+def test_p3_runtime_is_reported_runnable_and_not_denied_as_unimplemented(
+        tmp_path):
+    """mp50 is runtime-supported since the P3 port landed.
+
+    The report used to print, once per domain, "gpuwm runtime on paired
+    head does not implement mp_physics=50" for a selector
+    gpuwm.config.MP_PHYSICS_ACCEPTED admits, gpuwm/core/microphysics.py
+    dispatches to gpuwm/core/p3.py, and this same report writes a full
+    stock-export row for.  A user reading the support report for an mp=50
+    experiment was told to abandon a scheme that runs.  Radiation is the
+    Dudhia pair here, because the 4/4 RTE+RRTMGP pairing is separately
+    refused (the test below).
+    """
+    report = require_supported_namelists(
+        *_write_pair(tmp_path, mp=50, ra_lw=0, ra_sw=1))
+    assert report["verdict"] == "PASS"
+    assert report["required_state"]["stock_wrf_export"]["verdict"] == "PASS"
+    assert report["required_state"]["gpuwm_runtime"] == {
+        "verdict": "PASS",
+        "reasons": [],
+    }
+    row = report["required_state"]["stock_wrf_export"]["domains"][0]
+    assert row["microphysics"] == "P3 one-category two-moment ice"
+    names = [field["netcdf_name"] for field in row["wrfinput_fields"]]
+    # P3's Registry package p3_1category (Registry.EM_COMMON:3038): one ice
+    # category with the rime pair, and NO QSNOW/QGRAUP to carry.
+    assert names[-4:] == ["QNICE", "QNRAIN", "QIR", "QIB"]
+    assert "QSNOW" not in names and "QGRAUP" not in names
+
+
+def test_p3_rte_rrtmgp_pairing_is_refused_by_name_not_as_unimplemented(
+        tmp_path):
+    """Admitting the SCHEME does not admit the 4/4 RTE+RRTMGP PAIRING.
+
+    P3 supplies cloud and ice radii but no snow radius -- WRF sets
+    has_reqs=0 for the P3 family (phys/module_physics_init.F:1027-1033) --
+    so gpuwm.config.validate_p3_radiation refuses ra_lw_physics=4 /
+    ra_sw_physics=4 at the head's config door, by default
+    (ra_rrtmg_variant defaults to "rte-rrtmgp").  The concrete breakage
+    this reason prevents is a green support report followed by a full WPS
+    export and then a NotImplementedError at config load.  The reason must
+    say WHY, and must not say the scheme is unimplemented.
+    """
+    report = analyze_namelists(*_write_pair(tmp_path, mp=50, ra_lw=4, ra_sw=4))
+    assert report["required_state"]["stock_wrf_export"]["verdict"] == "PASS"
+    runtime = report["required_state"]["gpuwm_runtime"]
+    assert runtime["verdict"] == "FAIL"
+    assert len(runtime["reasons"]) == 6
+    for reason in runtime["reasons"]:
+        assert "does not implement mp_physics=50" not in reason
+        assert "implements mp_physics=50" in reason
+        assert "ra_lw_physics=4/ra_sw_physics=4" in reason
+        assert "has_reqs=0" in reason
+        assert "module_physics_init.F:1027-1033" in reason
+        assert "validate_p3_radiation" in reason
+
+
 @pytest.mark.parametrize("mass_levels", [35, 49, 80])
 def test_namelist_report_accepts_arbitrary_structural_vertical_counts(tmp_path, mass_levels):
     report = require_supported_namelists(
@@ -424,6 +484,34 @@ def test_unclassified_physics_fails_closed_and_names_action(tmp_path):
     )
     assert issue["location"] == "&physics/mystery_cloud_state"
     assert "will not be ignored or substituted" in issue["action"]
+
+
+def test_gfl_era_spreading_key_fails_closed_on_the_support_surface(tmp_path):
+    """The v4.8.0 Grell-Freitas-Li generation hazard, on the RW-WPS side.
+
+    A v4.8.0 namelist selecting GFL (cu_physics = 3) is
+    byte-indistinguishable from a v4.6.1 GF one at the option level
+    (GF-UPSTREAM-AND-NOCTURNAL-BIAS.md, ranked action 0); the one
+    spelling that reveals spreading-generation intent is cugd_avedx.
+    This report's stock target is pinned as unchanged WRF v4.6.1, and
+    cugd_avedx must stay UNCLASSIFIED -- fail-closed -- rather than ever
+    being silently blessed into a classification, because blessing it
+    would green-light a namelist written for a scheme generation the
+    v4.6.1 target does not contain.
+    """
+    report = analyze_namelists(
+        *_write_pair(tmp_path, extra_physics="cu_physics = 3,\n"
+                                             " cugd_avedx = 3,"),
+    )
+    assert report["verdict"] == "FAIL"
+    issue = next(
+        item for item in report["issues"]
+        if item["code"] == "UNCLASSIFIED_NAMELIST_SETTING"
+        and item["location"] == "&physics/cugd_avedx"
+    )
+    assert "will not be ignored or substituted" in issue["action"]
+    assert (report["required_state"]["stock_wrf_export"]["target"]
+            == "unchanged WRF v4.6.1")
 
 
 def test_wrf_runner_runtime_io_keys_classify_without_unclassified(tmp_path):

@@ -68,6 +68,17 @@ pub struct EmitLedger {
     pub bytes: u64,
 }
 
+/// The fifteen arrays a static may legitimately store as binary64.
+///
+/// The three lat/lon/xyz families, and nothing else. They move together
+/// because the port cross-checks xyz against the lat/lon pair beside it; see
+/// `staticfile::coordframe::CoordinateRepresentation::nc_type`.
+const COORDINATE_ARRAYS: [&str; 15] = [
+    "latCell", "lonCell", "xCell", "yCell", "zCell",
+    "latEdge", "lonEdge", "xEdge", "yEdge", "zEdge",
+    "latVertex", "lonVertex", "xVertex", "yVertex", "zVertex",
+];
+
 fn nc_type_of(dtype: &netcrust::DataType) -> MpasResult<NcType> {
     Ok(match dtype {
         netcrust::DataType::Char | netcrust::DataType::I8 | netcrust::DataType::U8 => NcType::Char,
@@ -369,9 +380,37 @@ pub fn write_init(
                 }
                 .map_err(|e| MpasError::Refusal(format!("cannot write {name}: {e}")))?;
             }
+            // A Double is carried ONLY where a Double is the mesh's own
+            // representation, which is the fifteen coordinate arrays of a
+            // static built for a mesh with no native MPAS-A counterpart (see
+            // `staticfile::coordframe`).  Copying such an array as f32 would
+            // put the 0.5 m coordinate quantum back into the init file the
+            // dycore actually runs, which is the whole of what the binary64
+            // representation exists to remove.  A binary32 static reaches the
+            // `NcType::Float` arm above and its bytes do not move.
+            //
+            // Everywhere ELSE a Double still refuses by type name, and that
+            // refusal is what disciplines the native-free init door to
+            // pre-declare its whole vertical contract as float32 zero slots
+            // (`tests/init_capsule_abi.rs`).  Widening it to every variable
+            // would let a met-state slot arrive as a Double and be copied,
+            // which is the thing that gate exists to stop.
+            NcType::Double if COORDINATE_ARRAYS.contains(&name.as_str()) => {
+                let values: Vec<f64> = capsule.read_array_f64(&name)?.into_values();
+                if is_record {
+                    writer.put_record(&name, 0, NcData::Doubles(&values))
+                } else {
+                    writer.put(&name, NcData::Doubles(&values))
+                }
+                .map_err(|e| MpasError::Refusal(format!("cannot write {name}: {e}")))?;
+            }
             other => {
                 return Err(MpasError::Refusal(format!(
-                    "carried variable {name} is {other:?}, which this emitter does not copy"
+                    "carried variable {name} is {other:?}, which this emitter does not copy. \
+                     Only the fifteen mesh coordinate arrays may arrive as Double, and only \
+                     because a static for a mesh with no native MPAS-A counterpart stores them \
+                     that way; everything else -- the vertical contract and every met-state slot \
+                     -- is pre-declared as a float32 zero slot by the door that mints the capsule"
                 )))
             }
         }

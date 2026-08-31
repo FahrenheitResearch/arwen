@@ -174,12 +174,19 @@ BRIDGE_ABI_MARKERS = {
     # fixed term, which is the wrong number on any other part -- 133,144
     # on the 70 SM card, sized against a measured fixed term instead of a
     # borrowed one.  Spelled to match gpuwm.mpas_mesh.MESH_ABI_MARKER; a
-    # test binds the two.
+    # test binds the two.  `--triangulation` is in the vector for the
+    # sharpest version of the same reason yet: a build predating it takes
+    # `--triangulation incremental` as an unknown flag, generates on the
+    # REBUILD arm anyway, and hands back a mesh that took the two hours the
+    # caller was trying not to spend -- or, on the other side of it, a
+    # caller who believes the flag took effect registers a digest against an
+    # arm that never ran.
     "rw_mpas_mesh": (
         b"rw_mpas_mesh --out GRID.nc [--spec SPEC.json | --background-km KM "
         b"| --from-centres GRID.nc] [--cells N | --card KEY [--vram-gib X]] "
         b"[--fit-spacing yes|no] [--sweeps N] [--tolerance X] [--omega X] "
-        b"[--receipt JSON] [--clobber] [--dry-run] [--list-cards]"),
+        b"[--receipt JSON] [--triangulation rebuild|incremental] [--clobber] "
+        b"[--dry-run] [--list-cards]"),
     # The MPAS static builder, the other half of what `gpuwm mesh`
     # delivers.  The literal is the argument vector for the same reason
     # the generator's is: a build predating the `--compare` grading route

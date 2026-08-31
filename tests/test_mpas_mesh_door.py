@@ -754,6 +754,10 @@ def test_the_door_plans_a_real_request_through_the_real_binary(tmp_path):
     assert plan["dry_run"] is True
     assert plan["target_cells"] == 2000
     assert plan["steepest_requested_gradient_percent_per_cell"] >= 0.0
+    # The repaired meter's contract: a plan must SAY its probe coverage,
+    # and the door refuses anything but "complete" (see
+    # test_the_door_refuses_a_plan_without_complete_gradient_coverage).
+    assert plan["gradient_probe_coverage"] == "complete"
 
 
 @pytest.mark.skipif(_mesh_binary() is None,
@@ -765,3 +769,163 @@ def test_the_static_gap_is_stated_by_the_binary_itself(tmp_path):
         spec=mpas_mesh.build_spec(background_km=480.0, refine=[]),
         cells=2000, workdir=tmp_path)
     assert "static" in plan["deliverable_boundary"]
+
+
+def test_the_door_refuses_a_plan_without_complete_gradient_coverage():
+    """A missing measurement must never become the friendliest verdict.
+
+    The engine's receipt contract (rw-mpas mesh/mod.rs) says a consumer
+    refuses a plan whose gradient_probe_coverage is missing or not
+    "complete".  This door used to read the gradient with .get(..., 0.0)
+    and never read the coverage word at all -- the exact shape of the
+    lattice blindness the meter repair closed: a spec truly at 65.2 %/cell
+    read 8.3 and was admitted at 7.3x the build ceiling.
+    """
+
+    complete = {"steepest_requested_gradient_percent_per_cell": 4.25,
+                "gradient_probe_coverage": "complete"}
+    assert mpas_mesh.gradient_gate_reading(complete) == 4.25
+
+    with pytest.raises(mpas_mesh.MeshRequestError) as caught:
+        mpas_mesh.gradient_gate_reading(
+            {"gradient_probe_coverage": "complete"})
+    assert "will not invent a 0.0" in str(caught.value)
+
+    for coverage in ("partial", None):
+        plan_doc = {"steepest_requested_gradient_percent_per_cell": 0.0}
+        if coverage is not None:
+            plan_doc["gradient_probe_coverage"] = coverage
+        with pytest.raises(mpas_mesh.MeshRequestError) as caught:
+            mpas_mesh.gradient_gate_reading(plan_doc)
+        assert "not a measurement of this spec's field" in str(caught.value)
+        assert repr(coverage) in str(caught.value)
+
+
+# ---------------------------------------------------------------------------
+# 11. the triangulation arm: a capability with a front door, and a class
+#     boundary a caller cannot cross by accident
+# ---------------------------------------------------------------------------
+
+def test_the_default_request_names_no_triangulation_arm(tmp_path):
+    """THE BREAKAGE: the default arm is what every registered mesh digest
+    was minted on.  If the door started sending `--triangulation
+    incremental` by default -- or sent `rebuild` explicitly to a binary
+    that does not know the flag -- a bare `gpuwm mesh` would stop
+    reproducing the published x1 and x4 grids and every registry pin that
+    names them would lapse with nothing in the run saying why."""
+
+    calls = []
+
+    def fake_run(arguments, progress=None):
+        calls.append(list(arguments))
+        return {"receipt": {}}
+
+    original = mpas_mesh._run_mesh
+    mpas_mesh._run_mesh = fake_run
+    try:
+        mpas_mesh.generate(spec=mpas_mesh.build_spec(background_km=120.0,
+                                                     refine=[]),
+                           cells=2562, out=tmp_path / "x.nc",
+                           workdir=tmp_path)
+    finally:
+        mpas_mesh._run_mesh = original
+    assert "--triangulation" not in calls[0], (
+        "the door sent a triangulation arm on a request that did not ask "
+        f"for one: {calls[0]}")
+
+
+def test_asking_for_the_fast_arm_passes_it_through_by_name(tmp_path):
+    """A capability the door cannot reach is not shipped."""
+
+    calls = []
+
+    def fake_run(arguments, progress=None):
+        calls.append(list(arguments))
+        return {"receipt": {}}
+
+    original = mpas_mesh._run_mesh
+    mpas_mesh._run_mesh = fake_run
+    try:
+        mpas_mesh.generate(spec=mpas_mesh.build_spec(background_km=120.0,
+                                                     refine=[]),
+                           cells=2562, out=tmp_path / "x.nc",
+                           workdir=tmp_path, triangulation="incremental")
+    finally:
+        mpas_mesh._run_mesh = original
+    argv = calls[0]
+    assert argv[argv.index("--triangulation") + 1] == "incremental"
+
+
+def test_an_unknown_triangulation_arm_is_refused_by_name(tmp_path):
+    """A misspelt arm must not fall back to the other one silently: one
+    direction wastes the hours the caller was avoiding, the other pins a
+    digest against an arm that never ran."""
+
+    with pytest.raises(mpas_mesh.MeshRequestError) as caught:
+        mpas_mesh.generate(spec=mpas_mesh.build_spec(background_km=120.0,
+                                                     refine=[]),
+                           cells=2562, out=tmp_path / "x.nc",
+                           workdir=tmp_path, triangulation="fast")
+    text = str(caught.value)
+    assert "rebuild" in text and "incremental" in text and "registered" in text
+
+
+def test_the_cli_offers_the_arm_and_defaults_to_the_registered_one():
+    """`gpuwm mesh` is the front door; the flag has to exist on it."""
+
+    parser = mpas_mesh.build_parser()
+    args = parser.parse_args(["--out", "g.nc", "--background-km", "120",
+                              "--cells", "2562"])
+    assert args.triangulation is None
+    args = parser.parse_args(["--out", "g.nc", "--background-km", "120",
+                              "--cells", "2562",
+                              "--triangulation", "incremental"])
+    assert args.triangulation == "incremental"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--out", "g.nc", "--background-km", "120",
+                           "--cells", "2562", "--triangulation", "fast"])
+
+
+@pytest.mark.skipif(_mesh_binary() is None,
+                    reason="rw_mpas_mesh is not built or staged here")
+def test_the_real_binary_knows_both_arms_and_refuses_a_third():
+    """Run the exe.  The arm list is a claim about bytes on this disk, and
+    a build predating the flag would take `incremental` as an unknown
+    option and generate on the rebuild arm anyway."""
+
+    binary = _mesh_binary()
+    for arm in mpas_mesh.TRIANGULATION_ARMS:
+        result = subprocess.run(
+            [str(binary), "--background-km", "480", "--cells", "162",
+             "--triangulation", arm, "--dry-run"],
+            capture_output=True, text=True, errors="replace", timeout=120)
+        assert result.returncode == 0, f"{arm}: {result.stderr}"
+    result = subprocess.run(
+        [str(binary), "--background-km", "480", "--cells", "162",
+         "--triangulation", "fast", "--dry-run"],
+        capture_output=True, text=True, errors="replace", timeout=120)
+    assert result.returncode != 0
+    assert "rebuild" in result.stderr and "incremental" in result.stderr
+
+
+@pytest.mark.skipif(_mesh_binary() is None,
+                    reason="rw_mpas_mesh is not built or staged here")
+def test_the_dry_run_still_prints_the_record_alone_on_either_arm():
+    """THE BREAKAGE THIS RE-ARMS: `gpuwm.mpas_mesh` and `hexcore.swath` both
+    parse the WHOLE of a dry run's stdout as JSON, so any progress line above
+    the record is a JSONDecodeError at line 1 column 1 rather than a message
+    anybody reads -- a defect this repo has already fixed once.  The
+    incremental arm prints a `TRIANGULATION` progress line naming its class,
+    and that line must not reach the dry run.  Asserted through
+    `json.loads` on raw stdout, which is exactly what the consumers do."""
+
+    binary = _mesh_binary()
+    for extra in ([], ["--triangulation", "incremental"],
+                  ["--triangulation", "rebuild"]):
+        result = subprocess.run(
+            [str(binary), "--background-km", "480", "--cells", "2000",
+             "--dry-run", *extra],
+            capture_output=True, text=True, errors="replace", timeout=120)
+        assert result.returncode == 0, f"{extra}: {result.stderr}"
+        plan = json.loads(result.stdout)
+        assert plan["dry_run"] is True, extra

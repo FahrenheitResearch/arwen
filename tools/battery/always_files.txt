@@ -33,10 +33,15 @@
 # AMENDMENT DISCIPLINE
 #   As stage1_files.txt: an addition carries its REASON inline, on the lines
 #   above it, naming the task or the incident that earned it.  A removal is
-#   an argument, not a tidy-up.  tests/test_always_manifest.py is the gate --
-#   it checks every path exists, rejects duplicates, and pins that a file
-#   here reads the tree rather than importing the product, which is the
-#   property that makes it unselectable in the first place.
+#   an argument, not a tidy-up.  This header used to name
+#   `tests/test_always_manifest.py` as the gate.  Measured 2026-08-29: NO SUCH
+#   FILE HAS EVER EXISTED in this tree, and the only file that reads this list
+#   is tests/test_fastfix_selector.py -- so the amendment discipline above was
+#   enforced by nothing at all, and an entry could be deleted from here without
+#   any gate noticing.  tests/test_battery_list_census.py is the gate now: it
+#   holds a recorded test count per entry in tools/battery/list_census.json and
+#   checks the bijection both ways, so a deleted entry fails by name and says
+#   how much coverage left with it.
 
 # The manifest gates.  Each one is the only thing that stops a tidy-up
 # dropping an entry from the list it gates -- including, since the audit
@@ -45,6 +50,21 @@
 tests/test_stage1_manifest.py
 tests/test_cargo_gate_manifest.py
 tests/test_tiles_gate_manifest.py
+
+# The fourth manifest gate, and the one that counts.  Its three siblings above
+# check that a listed path exists, reject duplicates and pin four entries by
+# name; none of them notices an entry being DELETED, which was measured on
+# three separate entries at b47a400a5 and caught by nothing.  This one holds a
+# recorded test count per entry and checks the bijection in both directions, so
+# a removal fails by name and says how much coverage went with it.  It reads
+# two files and imports nothing, which is what puts it on this list rather than
+# only on the cut leg.
+#
+# It also covers this file: tools/battery/always_files.txt's own header names
+# `tests/test_always_manifest.py` as its gate and NO SUCH FILE EXISTS in this
+# tree -- measured 2026-08-29 -- so until now the ALWAYS list was the one
+# battery list with no manifest gate at all.
+tests/test_battery_list_census.py
 
 # Byte-level repository hygiene.  `.gitattributes` sets `* -text`, so an
 # LF-to-CRLF rewrite is a real byte change in files the product hashes for
@@ -161,3 +181,34 @@ tests/test_mynn_dmp_sibling.py
 # that must run on every lane, not on the lanes that happen to touch the
 # right module.  3 passed, 15.4 s (it reads about 5600 tracked files).
 tests/test_excluded_subsystem_absent.py
+
+# ADDED 2026-08-29, and the reason is the defect they exist for.
+# fastfix's selector answers a non-Python change (a .cu, a .rs, a receipt)
+# with the ALWAYS list AND NOTHING ELSE -- its own docstring says so, because
+# import analysis has nothing to say about those files.  These four gates
+# READ files rather than importing modules, so the selector can never reach
+# them by edge, and four of the five gates built on 2026-08-29 to catch a
+# silent CUDA edit were on stage 1 only.  A WSM6 kernel could therefore be
+# switched off and the FAST path would still select nothing that looks at it
+# -- which is the exact fault they were written for, surviving in the lane
+# most likely to be used while iterating.  Measured cost of all four: 2.02 s.
+tests/test_kernel_source_freeze_per_module.py
+tests/test_cuda_libm_table_copies.py
+tests/test_excluded_subsystem_scan_is_armed.py
+tests/test_fastfix_batched_durations.py
+
+# The writers that land on a TRACKED file. Twenty-one call sites in ten
+# files write a path this repository tracks, and `Path.write_text` is
+# text mode: one read_text/write_text round trip over
+# gpuwm/core/noahmp_water.py takes it from 0 CR bytes to 352. Five of
+# the ten destinations had already been flipped whole before this
+# landed. It reads ten modules with ast and round-trips their
+# destinations through tmp_path -- no import, no device, 1.4 s.
+tests/test_tracked_file_writers_keep_lf.py
+
+# The mutation gate's own manifest and DEBT_CEILING ratchet. Its direct
+# siblings test_cargo_gate_manifest.py and test_tiles_gate_manifest.py
+# are here, and fastfix cannot select it by import edge (it loads the
+# runner via spec_from_file_location) -- a ratchet no leg runs cannot
+# refuse a silently grown debt list.
+tests/test_mutation_gate_manifest.py

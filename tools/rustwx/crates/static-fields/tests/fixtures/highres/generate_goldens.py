@@ -705,8 +705,11 @@ def main() -> None:
     gen_merges()
     gen_mosaic()
     gen_tile_ids()
-    (HERE / "meta.json").write_text(
-        json.dumps(META, indent=1, sort_keys=True), encoding="utf-8")
+    # write_bytes, not write_text: on Windows the text-mode writer turns
+    # every "\n" into "\r\n", and meta.json is a tracked fixture whose
+    # bytes the goldens are compared against.
+    (HERE / "meta.json").write_bytes(
+        json.dumps(META, indent=1, sort_keys=True).encode("utf-8"))
     total = sum(p.stat().st_size for p in HERE.iterdir()
                 if p.suffix in (".bin", ".tif", ".json"))
     print(f"goldens written: {total / 1e6:.2f} MB in {HERE}")

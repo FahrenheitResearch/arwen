@@ -325,6 +325,20 @@ impl File {
         }
     }
 
+    /// Read a char (or string) variable as one string per leading element.
+    ///
+    /// Classic char arrays interpret the last dimension as the string
+    /// length and flatten the leading dimensions; NetCDF-4 files answer
+    /// through the HDF5 arm.  This exists because `read_array_f64` only
+    /// promotes char through the raw-HDF5 fallback: on a CLASSIC container
+    /// there is no HDF5 handle to fall back to, so a char variable such as
+    /// WRF's `Times` was readable from an HDF5 tape and refused with
+    /// "expected numeric type, got Char" from a CDF-1/2/5 one.  Text is
+    /// read as text in both containers instead.
+    pub fn read_strings(&self, name: &str) -> Result<Vec<String>> {
+        Ok(self.inner.read_variable_as_strings(name)?)
+    }
+
     /// Read a hyperslab selection as promoted `f64` values with shape metadata.
     pub fn read_array_f64_slice(&self, name: &str, selection: &NcSliceInfo) -> Result<DataArray> {
         if let Ok(variable) = self.inner.variable(name) {

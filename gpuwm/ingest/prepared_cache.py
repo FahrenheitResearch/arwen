@@ -155,7 +155,21 @@ def prepared_domain_config_identity(domain_config) -> dict[str, object]:
 #: domain that really is dormant holds a SpawnConfig document instead,
 #: and is refused against an older header, as it must be: the cache was
 #: prepared for a nest that is not the dormant one.
-DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({"start_time", "spawn"})
+#:
+#: Five more fields joined ``DomainConfig`` after spawn WITHOUT joining
+#: this table when they landed -- ``tiles`` (df5cf42d0), ``output``
+#: (8d8855a8c), and the lifecycle trio ``retire``/``rearm``/``follow``
+#: (8e663a751/21254c056) -- which re-opened the V-12 hole for every
+#: tree prepared before them: an upgrade refused the tree and blamed
+#: the experiment file.  Each declares an optional feature whose
+#: not-in-use value is ``None``, the exact state every pre-field header
+#: describes, on the same grounds as ``spawn``: none of them changes
+#: the prepared initial state or the boundary tables -- ``tiles`` and
+#: ``output`` say how the run writes, the lifecycle trio says what a
+#: nest does after birth.  A domain that really uses one holds a
+#: document instead of ``None`` and is refused against an older header.
+DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
+    "start_time", "spawn", "tiles", "output", "retire", "rearm", "follow"})
 
 
 def undelayed_identity_defaults(experiment) -> dict[str, object]:
@@ -176,7 +190,12 @@ def undelayed_identity_defaults(experiment) -> dict[str, object]:
             if isinstance(start, datetime) else start,
             # A domain with no spawn declaration carries None, which is
             # the state every pre-spawn header describes.
-            "spawn": None}
+            "spawn": None,
+            # Same shape for the five fields that joined DomainConfig
+            # after spawn (see DEFAULT_TOLERANT_IDENTITY_FIELDS): each is
+            # an optional declaration whose off state is None.
+            "tiles": None, "output": None,
+            "retire": None, "rearm": None, "follow": None}
 
 
 #: Identity fields that describe when the run WRITES, not what it

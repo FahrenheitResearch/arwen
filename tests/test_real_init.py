@@ -12,6 +12,9 @@ from gpuwm.config import RunConfig
 from gpuwm.core import constants as c
 from gpuwm.core.grid import make_vertical_coord
 from gpuwm.ingest.real import (
+    HRRR_ANALYZED_HYDROMETEORS,
+    HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE,
+    HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS,
     _WRF_QV_MIN_VALUE,
     _cap_stratospheric_qv,
     _floor_flag_sh_surface_mixing_ratio,
@@ -1319,6 +1322,285 @@ def test_mp28_real_ingest_shape_checks_the_analyzed_inventory():
     """
     with pytest.raises(ValueError, match="mass-field shapes do not match"):
         _analyzed_hrrr_real_init(28, reshape="QG")
+
+
+def test_the_analyzed_inventory_tuple_and_its_moist_packages_agree():
+    """The admission tuple and the retention table answer one question.
+
+    ``HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS`` decides whether the decoder
+    SUPPLIES the analyzed inventory for an id;
+    ``HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE`` decides which of it that
+    id's Registry package can HOLD.  Those are the same question asked
+    twice, so the ids must be identical -- an id in the tuple with no
+    package row would raise a bare ``KeyError`` mid-initialization, and a
+    package row for an id outside the tuple is a retention rule nothing
+    reads.  The tuple stays a literal so the repo-wide admission census can
+    see the site; this is what keeps the literal honest.
+    """
+    assert (tuple(sorted(HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE))
+            == tuple(sorted(HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS)))
+    assert (len(set(HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS))
+            == len(HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS))
+    for mp_physics, package in sorted(
+            HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE.items()):
+        retained = package["retained"]
+        assert retained, (
+            f"mp={mp_physics} would be admitted and retain nothing")
+        # Retention is a SUBSEQUENCE of the decoded inventory, in the decoded
+        # order: the receipt's partition and the interpolation order both
+        # depend on it, and a reordered or invented name would silently
+        # change which field a decoded species lands in.
+        assert tuple(
+            name for name in HRRR_ANALYZED_HYDROMETEORS if name in retained
+        ) == tuple(retained), f"mp={mp_physics} retention is not decoded order"
+        assert package["registry_citation"].startswith(
+            "Registry/Registry.EM_COMMON:")
+
+
+def test_mp50_real_ingest_retains_the_condensate_p3_can_hold():
+    """P3 one-category is a first-class real-data selector.
+
+    Registry.EM_COMMON:3038 gives ``p3_1category`` moist:qv,qc,qr,qi --
+    strictly RICHER than Kessler's moist:qv,qc,qr at :3015, which this
+    module has always admitted -- so by the tuple's own stated rule mp=50
+    belongs in it, and real.exe agrees: module_initialize_real.F:1859-1977
+    interpolates a decoded species exactly when its P_Q* is in the active
+    ``num_moist`` package, which for P3 is QC, QR and QI.
+
+    MEASURED on the tree that omitted 50: this same decoded snapshot
+    produced qc/qr/qi identically zero with ``hydrometeor_initialization``
+    empty and nothing raised -- a condensate-free initial state from a
+    cloudy analysis, verbatim the defect the tuple exists to prevent.
+    """
+    result, _ = _analyzed_hrrr_real_init(50)
+    state = result.state
+
+    evidence = result.hydrometeor_initialization
+    assert evidence["schema"] == "gpuwm-real-hydrometeor-correspondence-v2"
+    assert evidence["mp_physics"] == 50
+    assert set(evidence["retained_correspondence"]) == {"QC", "QR", "QI"}
+    for source_name, state_name in sorted(
+            evidence["retained_correspondence"].items()):
+        live = _host_array(getattr(state, state_name))
+        assert live.dtype == np.float32
+        assert live.shape == (8, 2, 3)
+        assert np.isfinite(live).all()
+        assert live.min() >= 0.0
+        assert np.count_nonzero(live) > 0, (
+            f"{source_name}->{state_name} carried no analyzed mass")
+        assert live.max() <= float(
+            evidence["decoded_source_species"][source_name]["maximum"]
+        ) * (1.0 + 4.0e-7)
+
+    # mp=10 is the control: the mass path is one piece of code and the only
+    # difference is which species the package holds, so the three P3 keeps
+    # must be bit for bit what a six-species scheme gets from the same
+    # snapshot.  A P3 arm that quietly interpolated differently would pass
+    # every assertion above and fail this one.
+    control, _ = _analyzed_hrrr_real_init(10)
+    for name in ("qc", "qr", "qi"):
+        np.testing.assert_array_equal(
+            _host_array(getattr(state, name)),
+            _host_array(getattr(control.state, name)))
+
+    # P3's Registry scalars are source-absent, so they arrive at exact FP32
+    # zero and the scheme owns their first update -- it floors nitot at
+    # nsmall before any mean size is taken (module_mp_p3.F:2572-2573) and
+    # zeroes an unsupported rime pair in calc_bulkRhoRime (:6799-6813).
+    for name in ("ni", "nr", "qir", "qib"):
+        live = _host_array(getattr(state, name))
+        assert int(live.view(np.uint32).max()) == 0, (
+            f"state.{name} is not exact FP32 zero")
+
+
+def test_mp50_real_ingest_discards_snow_and_graupel_by_name():
+    """P3 has no qs and no qg, and the receipt says so rather than omitting.
+
+    An mp=50 state allocates no snow and no graupel field at all
+    (gpuwm/core/state.py:464-497), because P3 carries ONE ice category and
+    predicts rime mass fraction and rime density instead of splitting the
+    frozen mass.  So two of the five decoded species cannot be kept -- and
+    a decoded species that was deliberately dropped must stay
+    distinguishable from one that was accidentally lost.
+    """
+    result, _ = _analyzed_hrrr_real_init(50)
+    evidence = result.hydrometeor_initialization
+
+    assert set(evidence["decoded_source_species"]) == {
+        "QC", "QR", "QI", "QS", "QG"}
+    assert set(evidence["discarded_source_species"]) == {"QS", "QG"}
+    for name, policy in sorted(evidence["discarded_source_species"].items()):
+        assert policy["policy"] == (
+            "discard-source-species-absent-from-active-moist-package")
+        assert policy["wrf_commit"] == (
+            "d66e442fccc04111067e29274c9f9eaccc3cef28")
+        # The citation names P3's OWN package line, not Kessler's, because
+        # which package did the discarding is the content of the claim.
+        assert policy["registry_citation"] == (
+            "Registry/Registry.EM_COMMON:3038")
+        assert policy["source"]["nonzero_count"] > 0, (
+            f"{name} was discarded from an empty source and proves nothing")
+    assert getattr(result.state, "qs", None) is None
+    assert getattr(result.state, "qg", None) is None
+    # The partition is total and disjoint, which is what every downstream
+    # receipt validator checks before it will accept the preparation.
+    assert (set(evidence["retained_correspondence"])
+            | set(evidence["discarded_source_species"])
+            == set(evidence["decoded_source_species"]))
+    assert not (set(evidence["retained_correspondence"])
+                & set(evidence["discarded_source_species"]))
+
+
+def test_mp50_real_ingest_requires_the_analyzed_inventory_by_name():
+    """The required-field gate, exercised for P3 rather than asserted.
+
+    QI is a species P3 keeps, so its absence has to be named at the
+    required-field check.  Without 50 in the tuple the field was never
+    declared required and the run proceeded to a condensate-free state.
+    """
+    with pytest.raises(KeyError, match=r"missing real-data field\(s\).*QI"):
+        _analyzed_hrrr_real_init(50, drop=("QI",))
+
+
+def test_mp50_real_ingest_requires_even_the_species_it_discards():
+    """QS is required, then discarded -- the Kessler rule, applied to P3.
+
+    real.exe requires the decoded inventory and only then drops what the
+    active package lacks, so a truncated analysis is a broken analysis for
+    mp=50 exactly as it is for every other admitted id.  Silently accepting
+    a missing QS because P3 has no snow would make an incomplete decode
+    indistinguishable from a complete one.
+    """
+    with pytest.raises(KeyError, match=r"missing real-data field\(s\).*QS"):
+        _analyzed_hrrr_real_init(50, drop=("QS",))
+
+
+def test_mp50_real_ingest_shape_checks_the_analyzed_inventory():
+    """The mass-shape gate, for a species P3 discards.
+
+    Without 50 in the tuple a truncated QG reached neither the shape check
+    nor the interpolation for mp=50: nothing looked at it at all.
+    """
+    with pytest.raises(ValueError, match="mass-field shapes do not match"):
+        _analyzed_hrrr_real_init(50, reshape="QG")
+
+
+def test_mp9_real_ingest_retains_every_analyzed_hydrometeor():
+    """Milbrandt-Yau is a first-class real-data selector.
+
+    Registry.EM_COMMON:3025 gives ``milbrandt2mom``
+    moist:qv,qc,qr,qi,qs,qg,qh -- the first admitted package WIDER than
+    the decoded inventory -- so all five decoded HRRR mass species must
+    survive to the state and the receipt must discard nothing.  Before 9
+    joined the tuple, this same snapshot produced qc/qr/qi/qs/qg
+    identically zero with ``hydrometeor_initialization`` empty and nothing
+    raised: the mp=28 omission failure, back a third time
+    (``test_mp9_reverted_tuple_reproduces_the_condensate_free_start``
+    below keeps that measurement).
+    """
+    result, _ = _analyzed_hrrr_real_init(9)
+    state = result.state
+
+    evidence = result.hydrometeor_initialization
+    assert evidence["schema"] == "gpuwm-real-hydrometeor-correspondence-v2"
+    assert evidence["mp_physics"] == 9
+    assert set(evidence["retained_correspondence"]) == {
+        "QC", "QR", "QI", "QS", "QG"}
+    assert evidence["discarded_source_species"] == {}
+    for source_name, state_name in sorted(
+            evidence["retained_correspondence"].items()):
+        live = _host_array(getattr(state, state_name))
+        assert live.dtype == np.float32
+        assert live.shape == (8, 2, 3)
+        assert np.isfinite(live).all()
+        assert live.min() >= 0.0
+        assert np.count_nonzero(live) > 0, (
+            f"{source_name}->{state_name} carried no analyzed mass")
+        assert live.max() <= float(
+            evidence["decoded_source_species"][source_name]["maximum"]
+        ) * (1.0 + 4.0e-7)
+
+    # mp=10 is the control: the mass path is one piece of code and the only
+    # difference is which scalars sit beside it, so the five species must
+    # be bit for bit what Morrison gets from the same snapshot.
+    control, _ = _analyzed_hrrr_real_init(10)
+    for name in ("qc", "qr", "qi", "qs", "qg"):
+        np.testing.assert_array_equal(
+            _host_array(getattr(state, name)),
+            _host_array(getattr(control.state, name)))
+
+
+def test_mp9_real_ingest_leaves_hail_and_the_moments_at_exact_zero():
+    """The package members with no decoded source begin at exact FP32 zero.
+
+    The native HRRR decoder reads exactly QC/QI/QR/QS/QG
+    (gpuwm/ingest/hrrr.py:47) -- no hail mass anywhere -- and real.exe's
+    own QH arm (dyn_em/module_initialize_real.F:1979-1997) runs only under
+    ``flag_qh``, which a source that supplies no QH never raises, so stock
+    real.exe leaves QH at zero for this source too.  The six number
+    moments (scalar:qnc,qnr,qni,qns,qng,qnh, Registry.EM_COMMON:3025) are
+    source-absent exactly like mp=8/10/16/18/28's scalars.  The scheme is
+    defined at that zero: its moment-consistency pass prescribes each
+    number from its own mass wherever Qx>epsQ and Nx<epsN
+    (phys/module_mp_milbrandt2mom.F:1444-1530), so exact zero is the value
+    that hands the scheme its own prescribed size distributions on the
+    first call.
+    """
+    result, _ = _analyzed_hrrr_real_init(9)
+    state = result.state
+    for name in ("qh", "nc", "nr", "ni", "ns", "ng", "nh"):
+        live = _host_array(getattr(state, name))
+        assert live.dtype == np.float32
+        assert live.shape == (8, 2, 3)
+        assert int(live.view(np.uint32).max()) == 0, (
+            f"state.{name} is not exact FP32 zero")
+
+
+def test_mp9_real_ingest_requires_the_analyzed_inventory_by_name():
+    """The required-field gate, exercised for mp=9 rather than asserted.
+
+    Without 9 in the tuple no species was ever declared required and the
+    run proceeded to a condensate-free state; with it, a truncated decode
+    must be named at the required-field check.
+    """
+    with pytest.raises(KeyError, match=r"missing real-data field\(s\).*QI"):
+        _analyzed_hrrr_real_init(9, drop=("QI",))
+
+
+def test_mp9_real_ingest_shape_checks_the_analyzed_inventory():
+    """The mass-shape gate, for a species Milbrandt-Yau retains.
+
+    Without 9 in the tuple a truncated QG reached neither the shape check
+    nor the interpolation for mp=9: nothing looked at it at all.
+    """
+    with pytest.raises(ValueError, match="mass-field shapes do not match"):
+        _analyzed_hrrr_real_init(9, reshape="QG")
+
+
+def test_mp9_reverted_tuple_reproduces_the_condensate_free_start(monkeypatch):
+    """The defect this lane fixed, kept runnable.
+
+    With 9 reverted out of the admission tuple, the identical cloudy
+    snapshot initializes an mp=9 forecast with every mass species
+    identically zero, an empty receipt, and nothing raised -- the exact
+    silent failure the ONE-tuple design exists to prevent, reproduced
+    through the tuple rather than asserted from memory.  If this test ever
+    fails, admission stopped flowing through
+    HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS and the census-visible literal is
+    no longer the single point of truth.
+    """
+    from gpuwm.ingest import real as real_module
+
+    monkeypatch.setattr(
+        real_module, "HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS",
+        tuple(value for value in real_module.HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS
+              if value != 9))
+    result, _ = _analyzed_hrrr_real_init(9)
+    assert result.hydrometeor_initialization == {}
+    for name in ("qc", "qr", "qi", "qs", "qg"):
+        live = _host_array(getattr(result.state, name))
+        assert int(live.view(np.uint32).max()) == 0, (
+            f"state.{name} unexpectedly carried analyzed mass")
 
 
 def test_mp28_real_ingest_zeroes_the_source_absent_number_moments():

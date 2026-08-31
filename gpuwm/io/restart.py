@@ -561,6 +561,19 @@ STATE_INFRA_ATTRS = frozenset({
     # carries -- so a resumed run does not replay P3's first-step
     # saturation adjustment.  Same category as ``elapsed_seconds`` above.
     "p3_itimestep",
+    # mp_physics=50 (P3), the CUDA port's per-process device workspace
+    # (gpuwm/core/p3_device.P3Workspace, cached by gpuwm/core/p3.py::apply).
+    # INFRA: it holds no value of its own -- every array in it is a
+    # DomainState.scratch slot already classified in REBUILT_SCRATCH_SLOTS
+    # below -- and gpuwm/core/p3.py rebuilds it whenever the column count
+    # or level count differs, so a resumed run allocates a fresh one on its
+    # first P3 call.  The concrete breakage its absence caused: the FIRST
+    # mp=50 device step grew this attribute on the state, and
+    # classify_state_attr refuses any attribute it does not know, so
+    # canonical_state_digest() and write_restart() both raised
+    # RestartManifestError and no mp=50 forecast could reach its first
+    # history frame or write any checkpoint at all.
+    "_p3_workspace",
 
     # gpuwm.core.streaming.STREAMED_SCRATCH_ATTR: {slot: array} pointing at
     # the DOMAIN's scratch arrays while they live in a streaming store rather
@@ -772,6 +785,34 @@ REBUILT_SCRATCH_SLOTS = frozenset({
     # and re-diagnosed from the post-update ice state (:4856-4858) on every
     # call.  Serializing them would be the bug it would look like a fix for.
     "p3_vmi", "p3_di", "p3_rhopo",
+    # The CUDA port's device companions (2026-08-29).  Same class and the
+    # same argument as the three diagnostics above, and stated as EXACT
+    # NAMES rather than a "p3_" prefix for the reason the mp=28 block gives:
+    # a prefix rule would silently classify a FUTURE P3 accumulator as
+    # rebuilt and drop it from every checkpoint.
+    #
+    # Every one of these is filled before it is read inside a single call:
+    # the twelve carriers by p3k_prep/p3k_kloop1 before p3k_kloopmain reads
+    # one, the six sedimentation arrays by the zeroing prologue at the top
+    # of each sedimentation step, the flag pair by p3k_prep, nc by the
+    # nccnst/rho respecification (module_mp_p3.F:2350) and ssat by the
+    # adapter (the wrapper's :851) before k_loop_1 diagnoses it.  The
+    # precipitation RATES are likewise zeroed at :2270-2271 every call; the
+    # ACCUMULATORS they feed (mp_rainnc and friends) are serialized, and
+    # they are a different set of names on purpose.
+    #
+    # P3's real cross-step carriers are th_old and qv_old, and they are
+    # DomainState FIELDS this file already serializes -- the diagnosed-ssat
+    # branch reads them on the next call (:2325-2337, :5018-5021).  If a
+    # future build predicts ssat instead of diagnosing it, ssat becomes a
+    # carrier and moves OUT of this set, and the mp=50 contract string
+    # below has to move with it.
+    "p3_rho", "p3_inv_rho", "p3_qvs", "p3_qvi", "p3_sup", "p3_supi",
+    "p3_rhofacr", "p3_rhofaci", "p3_acn", "p3_t", "p3_tmparr1", "p3_qv_cld",
+    "p3_sed_v_q", "p3_sed_v_n", "p3_sed_flux_q", "p3_sed_flux_n",
+    "p3_sed_flux_qir", "p3_sed_flux_bir",
+    "p3_flags", "p3_nc", "p3_ssat", "p3_effc", "p3_effi",
+    "p3_prt_liq", "p3_prt_sol",
     "nssl2_driver_state", "nssl2_driver_surface_export",
     "nssl2_driver_ignored_accumulator",
     "nssl2_fused_temperature", "nssl2_primary_ice_target",
@@ -2908,8 +2949,31 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
             # never infer legacy, never widen.
             stored = RRTMG_VARIANT_RTE_RRTMGP
         if stored is not live and stored != live:
-            differences.append(
-                f"{key}: restart={stored!r} run={live!r}")
+            # Name an ABSENT side rather than repr()-ing the sentinel.
+            # The concrete breakage this replaces: `absent` is a bare
+            # object(), so a key on only one side rendered as
+            # "<object object at 0x7f...>" -- a memory address, which
+            # tells the operator nothing about WHY the checkpoint is
+            # refused and changes between runs.  Measured on the P3 CUDA
+            # port: a 2.5.8 checkpoint meeting a build that has
+            # `p3_backend` is refused correctly and the field IS named,
+            # but the reason (the checkpoint predates the field) was
+            # unreadable.  Every RunConfig field added after a checkpoint
+            # was written inherits this line, so it is fixed for all of
+            # them, not for P3.
+            if stored is absent:
+                differences.append(
+                    f"{key}: absent from the restart file, run={live!r} "
+                    "-- the checkpoint was written by a build that did "
+                    "not have this configuration field")
+            elif live is absent:
+                differences.append(
+                    f"{key}: restart={stored!r}, absent from this build "
+                    "-- the checkpoint was written by a build that had "
+                    "this configuration field and this one does not")
+            else:
+                differences.append(
+                    f"{key}: restart={stored!r} run={live!r}")
     if differences:
         message = (
             f"restart file {path} was written under a different "

@@ -65,6 +65,21 @@ Practicalities:
 - Run the focused tests for the changed surface first, then the broad
   CPU suite it touches. Rust changes must pass locked offline tests
   and strict formatting.
+- A Rust change that touches arithmetic a published number is read off
+  also runs the mutation gate over its own diff:
+
+      python tools/battery/run_mutation_gate.py --since HEAD~1 --jobs 8
+
+  It asks a question the test suites cannot: not "do the tests still
+  pass" but "would they fail if this arithmetic were wrong". It tests
+  only mutations inside the lines the diff changed, so a commit that
+  touches no Rust costs nothing and a normal one costs a couple of
+  minutes. Green means every mutation of the changed code was noticed
+  by some test. Red names the mutation that was not, and the answer is
+  to write that test -- `tools/battery/mutation_survivors.txt` records
+  the holes that predate the gate and is not somewhere to put a new
+  one. `tools/battery/mutation_gates.txt` says which packages are on
+  it and why the expensive ones only report.
 - GPU or real-data evidence should include the exact commit, hardware
   and runtime, argv, manifests, output hashes, timings, and a
   non-finite scan.

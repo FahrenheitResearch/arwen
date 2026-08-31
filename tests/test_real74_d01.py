@@ -510,9 +510,16 @@ def test_identical_wrfout_comparison_and_required_maps(tmp_path):
                     f"{str(refusal).splitlines()[0]}")
     maps = make_task13_maps(paths[-1], paths[0], tmp_path / "maps")
     assert maps, "the renderer resolved and still drew no panel"
-    names = [path.name for path in maps]
+    # The product slug is read from the PRODUCT FOLDER, not the filename:
+    # since 7fdca0d74 (2026-08-23) the delivered name drops the domain and
+    # product tokens its own folders already spell, because the repeated
+    # pair put a measured delivery past the Windows MAX_PATH ceiling.  Its
+    # sweep missed this file for the same reason it missed
+    # test_verify_render_law.py -- the assertion only runs on a tree whose
+    # renderer is usable.
+    products_drawn = [path.parent.parent.name for path in maps]
     for slug in _SYNOPTIC_MAP_SPEC.products:
-        assert any(slug in name for name in names), (slug, names)
+        assert slug in products_drawn, (slug, products_drawn)
     assert all(path.is_file() and path.stat().st_size > 1000 for path in maps)
 
 

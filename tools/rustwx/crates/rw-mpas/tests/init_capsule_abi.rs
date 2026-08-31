@@ -47,6 +47,10 @@ struct CapsuleSpec {
     with_theta_slot: bool,
     /// Declare a Double-typed scalar, which the emitter must refuse to carry.
     with_double_scalar: bool,
+    /// Declare `xCell` as Double, the way a static for a mesh with no native
+    /// MPAS-A counterpart stores it. The emitter must carry it AT ITS OWN
+    /// WIDTH, which is the one exception to the Double refusal above.
+    with_double_coordinate: bool,
     /// Declare an `xtime` char variable the caller does not compute.
     with_unsupplied_char: bool,
     /// Carry a `model_name` of the capsule's own, which the writer must not
@@ -83,6 +87,9 @@ fn write_capsule(path: &PathBuf, spec: &CapsuleSpec) {
     if spec.with_double_scalar {
         vars.push(NcVarDef::new("cf1", NcType::Double, vec![]));
     }
+    if spec.with_double_coordinate {
+        vars.push(NcVarDef::new("xCell", NcType::Double, vec![1]));
+    }
     if spec.with_unsupplied_char {
         vars.push(NcVarDef::new("xtime", NcType::Char, vec![0, 3]));
     }
@@ -110,6 +117,20 @@ fn write_capsule(path: &PathBuf, spec: &CapsuleSpec) {
         writer
             .put("cf1", NcData::Doubles(&[1.5]))
             .expect("cf1");
+    }
+    if spec.with_double_coordinate {
+        // Three values no f32 can hold, so a silent narrowing is visible in
+        // the bytes rather than only in the type.
+        writer
+            .put(
+                "xCell",
+                NcData::Doubles(&[
+                    6_371_229.000_000_001,
+                    -1_234_567.891_011_12,
+                    3_141_592.653_589_79,
+                ]),
+            )
+            .expect("xCell");
     }
     if spec.with_unsupplied_char {
         writer
@@ -142,6 +163,7 @@ fn a_capsule_that_predeclares_the_landing_sites_is_accepted() {
         &CapsuleSpec {
             with_theta_slot: true,
             with_double_scalar: false,
+            with_double_coordinate: false,
             with_unsupplied_char: false,
             carried_model_name: None,
         },
@@ -199,6 +221,7 @@ fn a_computed_value_with_no_landing_site_refuses_and_names_it() {
         &CapsuleSpec {
             with_theta_slot: false,
             with_double_scalar: false,
+            with_double_coordinate: false,
             with_unsupplied_char: false,
             carried_model_name: None,
         },
@@ -235,6 +258,7 @@ fn a_double_typed_capsule_variable_refuses_by_type_name() {
         &CapsuleSpec {
             with_theta_slot: true,
             with_double_scalar: true,
+            with_double_coordinate: false,
             with_unsupplied_char: false,
             carried_model_name: None,
         },
@@ -267,6 +291,7 @@ fn an_unsupplied_char_variable_refuses_as_an_identity_label() {
         &CapsuleSpec {
             with_theta_slot: true,
             with_double_scalar: false,
+            with_double_coordinate: false,
             with_unsupplied_char: true,
             carried_model_name: None,
         },
@@ -310,6 +335,7 @@ fn an_init_carries_the_lineage_a_boundary_producer_reads() {
         &CapsuleSpec {
             with_theta_slot: true,
             with_double_scalar: false,
+            with_double_coordinate: false,
             with_unsupplied_char: false,
             carried_model_name: None,
         },
@@ -366,6 +392,7 @@ fn a_capsule_that_carries_a_lineage_is_not_overwritten() {
         &CapsuleSpec {
             with_theta_slot: true,
             with_double_scalar: false,
+            with_double_coordinate: false,
             with_unsupplied_char: false,
             carried_model_name: Some("the-capsules-own-model"),
         },
@@ -404,4 +431,66 @@ fn a_capsule_that_carries_a_lineage_is_not_overwritten() {
     assert_eq!(read("core_name"), "atmosphere");
     assert_eq!(read("version"), "2.0");
     assert_eq!(read("git_version"), "caller-2.0");
+}
+
+
+/// THE ONE DOUBLE THE EMITTER CARRIES, and it carries it at full width.
+///
+/// A static built for a mesh with no native MPAS-A counterpart stores its
+/// fifteen coordinate arrays as binary64 (`staticfile::coordframe`), because
+/// no byte-identity anchor binds the storage precision of a mesh native
+/// MPAS-A cannot produce. Narrowing those to f32 on the way into the init
+/// file would put the 0.5 m coordinate quantum straight back into the file
+/// the dycore runs -- the whole of what the representation removes -- so this
+/// pins that they arrive as Double and keep every bit.
+#[test]
+fn a_double_coordinate_array_is_carried_at_its_own_width() {
+    let capsule = scratch("coord64.capsule.nc");
+    let out = scratch("coord64.init.nc");
+    write_capsule(
+        &capsule,
+        &CapsuleSpec {
+            with_theta_slot: true,
+            with_double_scalar: false,
+            with_double_coordinate: true,
+            with_unsupplied_char: false,
+            carried_model_name: None,
+        },
+    );
+
+    let ledger = write_init(
+        &out,
+        &capsule,
+        computed_with_theta(),
+        "mintedfile",
+        &["donorabcde".to_string()],
+        "abi pin test",
+        &rw_mpas::init::Lineage::default(),
+    )
+    .unwrap_or_else(|e| panic!("a binary64 coordinate array must be carried: {e}"));
+    assert!(
+        ledger.carried.iter().any(|n| n == "xCell"),
+        "xCell was not carried: {:?}",
+        ledger.carried
+    );
+
+    let file = netcrust::File::open(&out).expect("read the init back");
+    let variable = file.variable("xCell").expect("xCell in the init file");
+    assert!(
+        matches!(variable.dtype(), netcrust::DataType::F64),
+        "xCell was narrowed to {:?}; the coordinate quantum is back in the file",
+        variable.dtype()
+    );
+    let values = file
+        .read_array_f64("xCell")
+        .expect("xCell values")
+        .into_values();
+    let expected = [
+        6_371_229.000_000_001_f64,
+        -1_234_567.891_011_12,
+        3_141_592.653_589_79,
+    ];
+    for (got, want) in values.iter().zip(expected.iter()) {
+        assert_eq!(got, want, "a coordinate lost bits on the way through");
+    }
 }

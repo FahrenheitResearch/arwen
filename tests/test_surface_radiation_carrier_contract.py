@@ -855,6 +855,13 @@ def test_the_per_domain_submit_stamps_carrier_provenance_per_frame():
     writers.start_time = datetime(2000, 1, 1)
     writers._writers = {1: fake}
     writers._metadata_by_grid_id = {1: {}}
+    # The nest-lifecycle landing (6e4c28654, retire/rearm episodes) gave
+    # submit an episode read; empty means episode 0, the un-respawned
+    # domain every prior frame described.
+    writers._episode_by_grid_id = {}
+    # The duplicate-frame guard (0da88f7c2) tracks what THIS run already
+    # published; empty is the state at first submit.
+    writers._published_paths = set()
     node = SimpleNamespace(
         cfg=SimpleNamespace(grid_id=1),
         clock=SimpleNamespace(tick_den=1),

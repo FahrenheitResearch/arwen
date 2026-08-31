@@ -58,7 +58,6 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from gpuwm import stage_timing
-from gpuwm.verify.cases import _repo_config
 
 #: Schema id carried by every capsule this module seals.
 CAPSULE_SCHEMA_ID = "gpuwm.speedrun-capsule/v1"
@@ -242,6 +241,13 @@ def course_assets(course_id: str) -> dict[str, Path]:
     uses (``GPUWM_CONFIGS_ROOT`` then the ``configs/`` beside the
     package), so a wheel install and a checkout find the same files.
     """
+
+    # Imported here, not at module top: gpuwm.cli imports this module to
+    # register the speedrun door, and enumerating cases must not import
+    # anything under gpuwm.verify.cases (tests/test_case_registry.py) --
+    # the property that keeps `gpuwm --help` free of case import side
+    # effects.
+    from gpuwm.verify.cases import _repo_config
 
     row = course(course_id)
     resolved: dict[str, Path] = {}

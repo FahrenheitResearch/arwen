@@ -225,13 +225,23 @@ def _bind_host_arrays(monkeypatch):
     function*, which no attribute patch can reach, so ``sys.modules['cupy']``
     is rebound as well.
 
+    A third route appeared when 431843507 made ``cold_start_on_device`` the
+    default Noah-MP cold-start arm: it compiles the real CUDA driver kernel
+    through ``cp.RawModule``, which no array rebinding can host.  The
+    production escape hatch ``GPUWM_NOAHMP_HOST_COLD_START=1`` selects the
+    paired numpy authority instead -- byte-for-byte equal to the device arm
+    per ``tests/test_noahmp_cold_start_device.py`` -- so the inventory here
+    is still the one a forecast builds.
+
     ``monkeypatch`` undoes all of it, so the ``gpu``-marked test later in the
     same session still gets the real CuPy.
     """
     import sys
 
     import gpuwm.core.physics  # noqa: F401  (imports every runtime module)
+    from gpuwm.core.noahmp_runtime import HOST_COLD_START_ENV
 
+    monkeypatch.setenv(HOST_COLD_START_ENV, "1")
     stub, cuda, runtime = _host_cupy_stub()
     monkeypatch.setitem(sys.modules, "cupy", stub)
     monkeypatch.setitem(sys.modules, "cupy.cuda", cuda)

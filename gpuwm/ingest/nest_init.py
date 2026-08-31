@@ -1264,6 +1264,29 @@ RK_TIME_T_SEED_PAIRS = (
     ("qni", "qni0"), ("qns", "qns0"), ("qng", "qng0"),
     ("qnh", "qnh0"), ("qnn", "qnn0"),
     ("qvolg", "qvolg0"), ("qvolh", "qvolh0"),
+    # mp=50.  P3's registered package is
+    # ``moist:qv,qc,qr,qi;scalar:qni,qnr,qir,qib``
+    # (Registry.EM_COMMON:3038), and the rime MASS / rime VOLUME pair is
+    # declared in the SAME 4-D ``scalar`` array as the two number moments
+    # beside it -- ``qni`` (Registry.EM_COMMON:523), ``qnr`` (:533),
+    # ``qir`` (:555), ``qib`` (:557), all four ``ikjftb  scalar``.  WRF
+    # never enumerates that array by field name: ``dyn_em/solve_em.F``
+    # takes the RK time-t base by INDEX over the whole package
+    # (``DO im = PARAM_FIRST_SCALAR, num_3d_s`` at :1915 and :2769,
+    # passing ``scalar_old(ims,kms,jms,im)`` at :1917 and :2783), so every
+    # member of the active package carries a time-t copy by construction.
+    # A NAME list is equivalent to that index range only while it spells
+    # out every member, and ``gpuwm/core/state.py:496`` allocates ``qir0``
+    # and ``qib0`` beside ``qi0``/``ni0``/``nr0`` for exactly this scheme.
+    # Without these two rows a P3 child carried twelve copies out of
+    # fourteen: ``qir0``/``qib0`` kept the cold-start interpolation while
+    # ``qir``/``qib`` carried the transplant, and
+    # ``gpuwm/verify/cases/nest_relocate.py``'s seed census -- which
+    # iterates THIS tuple -- reported ``pass`` over the twelve it could
+    # see.  No other scheme allocates either field, so the None guard in
+    # :func:`seed_rk_time_t_copies` skips both on every state that is not
+    # P3, exactly as it does for the mp=28 row above.
+    ("qir", "qir0"), ("qib", "qib0"),
 )
 
 
@@ -1335,17 +1358,54 @@ _SINT_ROUNDING_ULPS = 8.0
 _SINT_ABSOLUTE_FLOOR = 1.0e-6
 
 
-def positive_definite_clamp_tolerance(peak: float) -> float:
+def positive_definite_clamp_tolerance(peak: float, *,
+                                      floor_scale: float = 1.0) -> float:
     """How far below zero a SINT of a field peaking at ``peak`` may land.
 
     Anything inside this is float32 arithmetic; anything beyond it is an
     interpolation that is actually wrong, and is left for the health gate
     to refuse.  A clamp with no ceiling would absorb exactly the failure
     the gate exists to catch.
+
+    ``floor_scale`` multiplies the ABSOLUTE floor only, and exists for one
+    caller: the offline lateral-boundary lane SINTs its moments COUPLED
+    (``chm * q``, chm of order 1e5 Pa).  Coupling scales the field and its
+    own peak together, so the relative term is untouched by it, but the
+    floor is an absolute quantity in the field's units and is meaningless
+    at the wrong scale -- left at 1.0 it would sit five decades below the
+    rounding it was measured to cover and clamp nothing.
     """
     eps = float(np.finfo(np.float32).eps)
-    return max(_SINT_ABSOLUTE_FLOOR,
+    return max(_SINT_ABSOLUTE_FLOOR * abs(float(floor_scale)),
                _SINT_ROUNDING_ULPS * eps * abs(float(peak)))
+
+
+def _clamp_one_moment(target, *, floor_scale: float = 1.0):
+    """Clamp one SINT-ed moment in place; return its account or ``None``.
+
+    The single place the tolerance is applied.  Both public entry points
+    below go through it so an online child and an offline child born from
+    the same parent cannot disagree about what counts as rounding.
+    """
+    if target is None or getattr(target, "size", 0) == 0:
+        return None
+    minimum = float(target.min())
+    if minimum >= 0.0:
+        return None
+    peak = float(abs(target).max())
+    tolerance = positive_definite_clamp_tolerance(
+        peak, floor_scale=floor_scale)
+    mask = (target < 0.0) & (target >= -tolerance)
+    cells = int(mask.sum())
+    if not cells:
+        return None
+    target[mask] = 0.0
+    return {
+        "cells": cells,
+        "tolerance": tolerance,
+        "peak": peak,
+        "most_negative": minimum,
+    }
 
 
 def clamp_parent_sint_undershoot(child, *, names=POSITIVE_DEFINITE_MOMENTS):
@@ -1363,25 +1423,34 @@ def clamp_parent_sint_undershoot(child, *, names=POSITIVE_DEFINITE_MOMENTS):
     """
     report: dict[str, dict[str, float | int]] = {}
     for name in names:
-        target = getattr(child, name, None)
-        if target is None or getattr(target, "size", 0) == 0:
-            continue
-        minimum = float(target.min())
-        if minimum >= 0.0:
-            continue
-        peak = float(abs(target).max())
-        tolerance = positive_definite_clamp_tolerance(peak)
-        mask = (target < 0.0) & (target >= -tolerance)
-        cells = int(mask.sum())
-        if not cells:
-            continue
-        target[mask] = 0.0
-        report[name] = {
-            "cells": cells,
-            "tolerance": tolerance,
-            "peak": peak,
-            "most_negative": minimum,
-        }
+        entry = _clamp_one_moment(getattr(child, name, None))
+        if entry is not None:
+            report[name] = entry
+    return report
+
+
+def clamp_sint_undershoot_mapping(fields, *, names=POSITIVE_DEFINITE_MOMENTS,
+                                  floor_scale: float = 1.0):
+    """:func:`clamp_parent_sint_undershoot` for a name->array mapping.
+
+    The offline downscale initializer holds its SINT output in a dict and
+    not in a :class:`DomainState`, so it could not reach the attribute
+    form above.  It went without the fix-up until 2026-08-29, when a
+    ratio-3 downscale of an mp=10 parent was measured aborting at its
+    first radiation call on ``nr must be finite and non-negative:
+    first_value=-3.7252903e-09, negative_count=626`` -- exactly the
+    float32 artefact this clamp was written for, on the one interpolator
+    that never got it.  Same operator, same rounding, so
+    same policy: the shape of the caller's container is not a reason for
+    two children to be born under different rules.
+
+    Mutates the mapping's arrays in place, like the attribute form.
+    """
+    report: dict[str, dict[str, float | int]] = {}
+    for name in names:
+        entry = _clamp_one_moment(fields.get(name), floor_scale=floor_scale)
+        if entry is not None:
+            report[name] = entry
     return report
 
 
@@ -1493,6 +1562,18 @@ def parent_only_init(child_dc: DomainConfig,
                           ("qni", ""), ("qns", ""), ("qng", ""),
                           ("qnh", ""), ("qnn", ""), ("qvolg", ""),
                           ("qvolh", ""),
+                          # mp=50's rime pair.  Registry scalar members
+                          # (Registry.EM_COMMON:555/:557) that nest down
+                          # with the package exactly like the number
+                          # moments above (the RK_TIME_T_SEED_PAIRS comment
+                          # holds the WRF index-walk citation).  On a mixed
+                          # edge INTO P3 they take the transition path (the
+                          # kernel diagnoses them from the parent's frozen
+                          # species); same-scheme P3 children inherit the
+                          # parent's pair through the generic SINT row.
+                          # The None guard skips both on every state that
+                          # is not P3.
+                          ("qir", ""), ("qib", ""),
                           ("h_diabatic", ""),
                           # The dycore's exported advective forcing pair
                           # (WRF RTHFTEN/RQVFTEN).  Mass-stagger, the same

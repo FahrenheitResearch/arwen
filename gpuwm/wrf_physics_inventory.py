@@ -188,6 +188,24 @@ def _aerosol_emission(name: str, netcdf_name: str) -> WrfInputField:
     )
 
 
+#: P3's moist list, and it is a SUBSET of :data:`_ICE_MASS` rather than an
+#: extension of it.  ``Registry.EM_COMMON:3038`` declares
+#: ``moist:qv,qc,qr,qi`` for ``p3_1category`` -- there is no ``qs`` and no
+#: ``qg``, because P3 carries ONE ice category whose rime mass and rime
+#: volume (``qir``/``qib``) span the graupel-to-snow continuum instead of
+#: splitting it into species.  Every other inventoried package so far has
+#: been WSM6's six plus additions, so this is the first row where the
+#: package declares FEWER moist members than the frozen WSM6 contract
+#: carries; see ``gpuwm/wrf_direct.py::_physics_contract_bundle``, which
+#: prunes what the package does not declare.
+_P3_MASS = (
+    _moist("qv", "QVAPOR"),
+    _moist("qc", "QCLOUD"),
+    _moist("qr", "QRAIN"),
+    _moist("qi", "QICE"),
+)
+
+
 _INVENTORIES = {
     # Registry.EM_COMMON:3021
     6: StockWrfPhysicsInventory(
@@ -305,6 +323,62 @@ _INVENTORIES = {
             RuntimeStateField("taod5503d", "TAOD5503D"),
             RuntimeStateField(
                 "taod5502d", "TAOD5502D", dimensions=WRFINPUT_2D_DIMS),
+        ),
+    ),
+    # Registry.EM_COMMON:3038.  P3 one-category, two-moment ice:
+    #
+    #   package p3_1category mp_physics==50 -
+    #     moist:qv,qc,qr,qi;
+    #     scalar:qni,qnr,qir,qib;
+    #     state:re_cloud,re_ice,vmi3d,rhopo3d,di3d,refl_10cm,th_old,qv_old
+    #
+    # THE STATE HALF IS ENTIRELY RUNTIME, and that is measured from the I/O
+    # flags rather than assumed, because this module's own rule ("Package
+    # ``state:`` auxiliaries whose Registry flags contain ``r`` but not
+    # ``i`` are runtime/restart state") is what mp=28's qnwfa2d/qnifa2d
+    # already proved has to be applied case by case.  Not one of P3's eight
+    # state members carries an ``i``: re_cloud (:497) and re_ice (:498) are
+    # bare ``r``; vmi3d (:1600), di3d (:1601), rhopo3d (:1602) and
+    # refl_10cm (:1596) are ``hdu``; th_old (:1598) and qv_old (:1599) are
+    # ``rusd``.  So mp=50 adds NO state member to wrfinput, unlike mp=28.
+    #
+    # re_snow is deliberately absent from the runtime list.  P3's package
+    # does not declare it, which is the same fact WRF acts on when
+    # module_physics_init.F:1027-1033 sets has_reqs=0 for P3 -- and that is
+    # in turn why gpuwm.config.validate_p3_radiation refuses the RTE+RRTMGP
+    # 4/4 pairing for mp=50 by name.  Listing RE_SNOW here would contradict
+    # the refusal.
+    #
+    # Units are WRF's post-reg_parse RESOLVED values, the mp=28 convention
+    # rather than the pre-parse spelling the 6/8/10/18 rows carry: qni is
+    # Registry ``"# kg-1"`` (:523-524) and qnr ``"# kg(-1)"`` (:533-534).
+    # qir (:555-556) and qib (:557-558) carry NO ``#`` at all -- their
+    # Registry text is ``"kg kg(-1)"`` and ``"m(3) kg(-1)"`` -- so for those
+    # two the resolved value and the Registry text are the same string and
+    # there is nothing to resolve.
+    #
+    # mp=51 (p3_1category_nc, :3039) is the same port with qnc added and is
+    # NOT inventoried here: gpuwm.config accepts 50 only.  52 and 53 are
+    # refused by name (gpuwm/config.py:1134-1172).
+    50: StockWrfPhysicsInventory(
+        mp_physics=50,
+        scheme="P3 one-category two-moment ice",
+        registry_package="p3_1category",
+        wrfinput_fields=_P3_MASS + (
+            _scalar("qni", "QNICE", units=WRF_RESOLVED_UNITS_NUMBER_PLAIN),
+            _scalar("qnr", "QNRAIN", units=WRF_RESOLVED_UNITS_NUMBER_PAREN),
+            _scalar("qir", "QIR", units="kg kg(-1)"),
+            _scalar("qib", "QIB", units="m(3) kg(-1)"),
+        ),
+        runtime_state_not_wrfinput=(
+            RuntimeStateField("re_cloud", "RE_CLOUD"),
+            RuntimeStateField("re_ice", "RE_ICE"),
+            RuntimeStateField("vmi3d", "v_ice"),
+            RuntimeStateField("di3d", "d_ice"),
+            RuntimeStateField("rhopo3d", "rho_ice"),
+            RuntimeStateField("refl_10cm", "refl_10cm"),
+            RuntimeStateField("th_old", "TH_OLD"),
+            RuntimeStateField("qv_old", "QV_OLD"),
         ),
     ),
 }

@@ -16,7 +16,9 @@ use crate::error::{MpasError, MpasResult};
 use crate::mesh::density::{DensityField, MeshSpec};
 use crate::mesh::derive::Rings;
 use crate::mesh::geom::{V3, add, arc, circumcenter, scale, tri_area, unit};
-use crate::mesh::hull::delaunay_rings;
+use crate::mesh::hull::{
+    TriangulationMode, delaunay_rings, delaunay_triangulation, repair_or_rebuild,
+};
 
 /// Counter-based PRNG so a mesh is reproducible on every machine without a
 /// crate dependency or global state.
@@ -154,6 +156,10 @@ pub struct LloydOptions {
     /// The mean residual at which the monitor arms. Before the mesh is
     /// near-converged the floor is legitimately in flux.
     pub monitor_arm_mean: f64,
+    /// Which arm keeps the triangulation between sweeps. Defaults to
+    /// [`TriangulationMode::Rebuild`], the class-A arm; see that type for why
+    /// the fast arm cannot be the default.
+    pub triangulation: TriangulationMode,
 }
 
 impl Default for LloydOptions {
@@ -171,6 +177,7 @@ impl Default for LloydOptions {
             monitor_floor: 0.03,
             monitor_consecutive: 5,
             monitor_arm_mean: 3e-3,
+            triangulation: TriangulationMode::Rebuild,
         }
     }
 }
@@ -191,6 +198,76 @@ pub struct LloydOutcome {
     pub min_dv_over_dc_edge: (u32, u32),
     pub wall_seconds: f64,
     pub rings: Rings,
+}
+
+/// One Lawson pass over the PREVIOUS triangulation at the MOVED positions:
+/// how long it takes, and how many ring steps it finds non-Delaunay.
+///
+/// This is a measurement, not a mechanism. The relaxation rebuilds the whole
+/// spherical Delaunay from scratch after every sweep; whether that is
+/// necessary work or redundant work turns on how much the triangulation
+/// actually moves, and this is the cost of finding out the cheap way. Nothing
+/// here feeds back into the mesh.
+///
+/// The test is the hull's own: `(i, ring[k-1], ring[k])` is a Delaunay facet
+/// wound the way `hull::Face` winds one, and `ring[k+1]` lying OUTSIDE its
+/// plane -- which on a set of cospherical points is the empty-circumcircle
+/// condition -- means the facet is no longer locally Delaunay.
+fn lawson_pass_probe(points: &[V3], rings: &Rings) {
+    let t = std::time::Instant::now();
+    let mut tests = 0u64;
+    let mut bad = 0u64;
+    for i in 0..points.len() {
+        let ring = rings.ring(i);
+        let deg = ring.len();
+        if deg < 3 {
+            continue;
+        }
+        for k in 0..deg {
+            let a = points[ring[(k + deg - 1) % deg] as usize];
+            let b = points[ring[k] as usize];
+            let c = points[ring[(k + 1) % deg] as usize];
+            tests += 1;
+            if crate::mesh::geom::orient3d_sign(points[i], a, b, c) > 0.0 {
+                bad += 1;
+            }
+        }
+    }
+    crate::mesh::profile::FLIP_PROBE.add(t.elapsed().as_nanos() as u64, tests);
+    crate::mesh::profile::FLIP_VIOLATIONS.add(0, bad);
+}
+
+/// Cells whose neighbour SET changed between two triangulations of the same
+/// point count, and cells whose set is the same but whose ring START moved.
+///
+/// The second number matters as much as the first: the emitted grid depends
+/// on the ring's starting slot, so a triangulation that is topologically the
+/// same but rotated is a different file.
+fn ring_churn(before: &Rings, after: &Rings) -> (u64, u64) {
+    let n = before.n_cells().min(after.n_cells());
+    let mut changed = 0u64;
+    let mut rotated = 0u64;
+    let mut a: Vec<u32> = Vec::with_capacity(12);
+    let mut b: Vec<u32> = Vec::with_capacity(12);
+    for i in 0..n {
+        let ra = before.ring(i);
+        let rb = after.ring(i);
+        if ra == rb {
+            continue;
+        }
+        a.clear();
+        a.extend_from_slice(ra);
+        a.sort_unstable();
+        b.clear();
+        b.extend_from_slice(rb);
+        b.sort_unstable();
+        if a == b {
+            rotated += 1;
+        } else {
+            changed += 1;
+        }
+    }
+    (changed, rotated)
 }
 
 /// Relax `points` toward the density-weighted centroidal tessellation of the
@@ -216,17 +293,35 @@ pub fn relax<F: DensityField + Sync>(
     let mut history: Vec<f64> = Vec::with_capacity(opts.max_sweeps);
     let mut worst_history: Vec<f64> = Vec::with_capacity(opts.max_sweeps);
     let mut monitor_traj: Vec<f64> = Vec::with_capacity(opts.max_sweeps);
-    let mut rings = delaunay_rings(points)?;
+    // CLASS A vs CLASS B, decided once, here. On the maintained arm the
+    // FIRST rings are still taken from a full build compacted in facet order,
+    // so sweep 1 is bit-identical on both arms; the two only part company at
+    // the first repair.
+    let mut tri = if opts.triangulation.is_maintained() {
+        Some(delaunay_triangulation(points)?)
+    } else {
+        None
+    };
+    let mut rings = match &tri {
+        Some(t) => t.rings()?,
+        None => delaunay_rings(points)?,
+    };
 
     let mut armed = false;
     let mut consecutive_degrading = 0usize;
     let mut previous_mq = f64::INFINITY;
 
     for sweep in 1..=opts.max_sweeps {
-        let step: Vec<(V3, f64)> = (0..points.len())
-            .into_par_iter()
-            .map(|i| cell_step(points, &rings, spec, i))
-            .collect();
+        let step: Vec<(V3, f64)> = crate::mesh::profile::timed(
+            &crate::mesh::profile::LLOYD_STEP,
+            points.len() as u64,
+            || {
+                (0..points.len())
+                    .into_par_iter()
+                    .map(|i| cell_step(points, &rings, spec, i))
+                    .collect()
+            },
+        );
         let worst = step.iter().map(|(_, r)| *r).fold(0.0f64, f64::max);
         let mean = step.iter().map(|(_, r)| *r).sum::<f64>() / step.len() as f64;
         history.push(mean);
@@ -241,11 +336,33 @@ pub fn relax<F: DensityField + Sync>(
             };
             points[i] = moved;
         }
-        rings = delaunay_rings(points)?;
+        if crate::mesh::profile::on() {
+            lawson_pass_probe(points, &rings);
+        }
+        let previous_rings = if crate::mesh::profile::on() {
+            Some(rings.clone())
+        } else {
+            None
+        };
+        rings = match &mut tri {
+            Some(t) => {
+                repair_or_rebuild(points, t)?;
+                t.rings()?
+            }
+            None => delaunay_rings(points)?,
+        };
+        if let Some(prev) = previous_rings {
+            let (changed, rotated) = ring_churn(&prev, &rings);
+            crate::mesh::profile::RING_CHURN.add(rotated, changed);
+        }
 
         // The DEFAULT-ON per-sweep monitor: the admission gate's own metric,
         // O(E) from the rings just rebuilt, sampled EVERY sweep.
-        let (mq, medge) = crate::mesh::surgery::min_dv_over_dc(points, &rings);
+        let (mq, medge) = crate::mesh::profile::timed(
+            &crate::mesh::profile::LLOYD_MONITOR,
+            points.len() as u64,
+            || crate::mesh::surgery::min_dv_over_dc(points, &rings),
+        );
         monitor_traj.push(mq);
 
         if mean < opts.tolerance {
@@ -345,7 +462,18 @@ pub fn relax<F: DensityField + Sync>(
                     "the relaxation is in a limit cycle: mean(delta/h) rose in {ups} of the last {} sweeps and sits at {mean:.4e} (worst cell {worst:.4e}) against a target of {:.1e}. The steepest per-cell spacing change this field asks for is {:.2}%, against 1.53% in the published variable-resolution mesh; generators cannot settle across a ramp that steep, and a mesh emitted from a cycling relaxation is not centroidal anywhere near it",
                     opts.oscillation_window,
                     opts.tolerance,
-                    crate::mesh::density::steepest_gradient_per_cell_of(spec, 20_000) * 100.0
+                    // The same instrument the build gate reads, so the
+                    // number a user is handed when a relaxation limit-cycles
+                    // is the number that judged the request. It used to be
+                    // taken at 20,000 samples -- points 160 km apart, coarser
+                    // still than the gate's own 101 km -- and on a narrow-ramp
+                    // spec it under-reported by the same mechanism, telling a
+                    // user their ramp was five times the published one when it
+                    // was fifty-five times. Not a gate: the branch above is
+                    // the oscillation count, and this is the magnitude of the
+                    // remedy the message points at.
+                    crate::mesh::density::steepest_gradient_reading_of(spec, 20_000).per_cell
+                        * 100.0
                 )));
             }
         }
@@ -376,6 +504,25 @@ fn cell_step<F: DensityField>(points: &[V3], rings: &Rings, spec: &F, i: usize) 
             None => return (centre, 0.0),
         }
     }
+    // THE RADIAL MIDPOINTS ARE EACH ASKED FOR TWICE, and the field is the
+    // most expensive thing in this function. Sub-triangle `j` evaluates the
+    // density at the midpoint of `(centre, verts[j])` and sub-triangle `j-1`
+    // evaluates it at the midpoint of `(verts[j], centre)` -- the same point
+    // to the last bit, because componentwise `f64` addition is commutative
+    // and `unit` is a function. Three evaluations per sub-triangle is
+    // therefore 3*deg calls for 2*deg distinct points: a third of the field
+    // evaluations in the hot loop of the whole generator were duplicates.
+    //
+    // MEASURED SHARE: the centroid sweep is 54.1% of a maintained-arm graded
+    // run's wall, and the field -- a 21-vertex polygon signed distance under
+    // a `tanh` ramp -- is nearly all of it.
+    //
+    // This is a MEMO, not a rewrite: the same points, the same values, the
+    // same accumulation order into `moment`. Nothing about the arithmetic
+    // moves, which is what lets the class-A arm keep it.
+    let radial: Vec<Option<(V3, f64)>> = (0..deg)
+        .map(|j| unit(add(centre, verts[j])).map(|m| (m, spec.density(m))))
+        .collect();
     let mut moment: V3 = [0.0; 3];
     let mut area = 0.0f64;
     for j in 0..deg {
@@ -387,11 +534,15 @@ fn cell_step<F: DensityField>(points: &[V3], rings: &Rings, spec: &F, i: usize) 
         // carries an O(h^2 grad^2 rho) error -- about 1e-3 h at the published
         // mesh's measured 3.1%-per-cell density variation, which is ten times
         // the residual this relaxation is trying to reach.
-        for (p, q) in [(centre, a), (a, b), (b, centre)] {
-            if let Some(m) = unit(add(p, q)) {
-                let w = tri / 3.0 * spec.density(m);
-                moment = add(moment, scale(m, w));
-            }
+        let w3 = tri / 3.0;
+        if let Some((m, d)) = radial[j] {
+            moment = add(moment, scale(m, w3 * d));
+        }
+        if let Some(m) = unit(add(a, b)) {
+            moment = add(moment, scale(m, w3 * spec.density(m)));
+        }
+        if let Some((m, d)) = radial[(j + 1) % deg] {
+            moment = add(moment, scale(m, w3 * d));
         }
     }
     let centroid = match unit(moment) {

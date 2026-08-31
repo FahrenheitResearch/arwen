@@ -35,8 +35,57 @@ _TOTAL_ORDER_OWNERS = {
 #: Third-party sources are not ours to police.  ``work/`` holds frozen
 #: release-snapshot trees -- historical bytes of already-shipped versions,
 #: which no edit here can retroactively fix and which are not importable
-#: live source.
-_VENDORED = ("tools/grib1_bridge/vendor", "work/")
+#: live source.  ``evidence/`` is the same class (added 2026-08-30): capsule
+#: trees that freeze the probe scripts a campaign actually ran on the rented
+#: nodes -- the P3 oracle and ship waves (13ca00491, 86d44160a) landed
+#: harness/receipt scripts carrying their own ULP helpers, and rewriting a
+#: capsule to import this repo's owner would falsify the record of what ran.
+#: Their sign-error copies only ever OVER-report (see gpuwm/core/fp32_ulp.py),
+#: so the bit-exact conclusions those receipts state could not have been
+#: bought by the bug.  New LIVE probes still must import the owner.
+#: ``.worktrees/`` holds OTHER CHECKOUTS (the 2026-07 Codex era left ~130
+#: of them) and their runtime extractions -- not this tree's estate: a copy
+#: of the bit trick inside a different checkout is that checkout's defect,
+#: caught when this gate runs there.  The concrete breakage: a stale
+#: ``.rw-wps-runtime.partial-*`` extraction under it sits past the Windows
+#: MAX_PATH ceiling, where rglob lists a ``.py`` file that ``open()`` then
+#: cannot reach, and the scan died on FileNotFoundError before reading a
+#: single hash (measured 2026-08-31 at 114c920b5).
+#: ``.claude/worktrees/`` is the same class, machine-made: the agent
+#: harness checks out a full worktree per subagent lane, so each one
+#: carries the two OWNER files at a relative path the allow-list cannot
+#: name -- with any worktree present this gate could never be green, and
+#: 31 offender rows measured at 40b9878c0 were exactly those checkouts
+#: (plus one lane venv's vendored pip).  A worktree's own defects are
+#: caught when this gate runs inside it, which every lane's pytest does.
+_VENDORED = ("tools/grib1_bridge/vendor", "work/", "evidence/",
+             ".worktrees/", ".claude/worktrees/")
+
+#: A NESTED CHECKOUT is its own estate wherever it sits, not only under
+#: the two prefixes above: stray worktrees land at arbitrary root-level
+#: names (``wt-self-nesting/`` carried three copies of the owner files,
+#: measured 2026-08-31 at d0b421c22), and a prefix list only ever names
+#: a checkout after it has already broken the gate.  Any directory that
+#: carries a ``.git`` entry is a checkout; every file below it belongs
+#: to THAT tree's copy of this gate, which runs when its lane runs
+#: pytest.
+_NESTED_CHECKOUT_CACHE: dict = {}
+
+
+def _inside_nested_checkout(rel_dir: str) -> bool:
+    """True when rel_dir (posix, relative to the repo root, "" for the
+    root itself) sits at or below a directory that is its own git
+    checkout."""
+    if not rel_dir or rel_dir == ".":
+        return False
+    cached = _NESTED_CHECKOUT_CACHE.get(rel_dir)
+    if cached is not None:
+        return cached
+    parent = rel_dir.rsplit("/", 1)[0] if "/" in rel_dir else ""
+    verdict = (_inside_nested_checkout(parent)
+               or (_REPO_ROOT / rel_dir / ".git").exists())
+    _NESTED_CHECKOUT_CACHE[rel_dir] = verdict
+    return verdict
 
 #: Trees that a packaging run fills with copies of the source tree.  Both are
 #: gitignored (``.gitignore:4-5``) and neither is a second implementation:
@@ -294,6 +343,9 @@ def test_nothing_re_derives_the_total_order():
     for path in sorted(_REPO_ROOT.rglob("*.py")):
         rel = path.relative_to(_REPO_ROOT).as_posix()
         if any(rel.startswith(prefix) for prefix in _VENDORED):
+            continue
+        if _inside_nested_checkout(
+                rel.rsplit("/", 1)[0] if "/" in rel else ""):
             continue
         target = (
             generated

@@ -165,7 +165,7 @@
       "id": "R1",
       "label": "loader RawModule",
       "constructor": "gpuwm.core.kernels.load_module",
-      "site": "gpuwm/core/kernels/__init__.py:78",
+      "site": "gpuwm/core/kernels/__init__.py:84",
       "site_options": [
         "-std=c++17"
       ],
@@ -177,7 +177,7 @@
       "id": "R1-ftztrue",
       "label": "loader RawModule + explicit --ftz=true (control)",
       "constructor": "cupy.RawModule",
-      "site": "gpuwm/core/kernels/__init__.py:78 + control flag",
+      "site": "gpuwm/core/kernels/__init__.py:84 + control flag",
       "site_options": [
         "-std=c++17"
       ],
@@ -190,7 +190,7 @@
       "id": "R2",
       "label": "RawModule with the shortwave option tuple",
       "constructor": "cupy.RawModule",
-      "site": "gpuwm/core/rrtmg_sw.py:2890",
+      "site": "gpuwm/core/rrtmg_sw.py:2906",
       "site_options": [
         "-std=c++17",
         "--ftz=false"
@@ -204,11 +204,10 @@
       "id": "R3",
       "label": "direct NVRTC + cuda.function.Module",
       "constructor": "cupy.cuda.compiler.compile_using_nvrtc",
-      "site": "gpuwm/core/rrtmg_lw.py:3723",
+      "site": "gpuwm/core/rrtmg_lw.py:3733",
       "site_options": [
         "-std=c++17",
-        "--ftz=false",
-        null
+        "--ftz=false"
       ],
       "arm_options": [
         "-std=c++17",
@@ -220,7 +219,7 @@
       "id": "R4",
       "label": "CuPy-generated ReductionKernel",
       "constructor": "cupy.ReductionKernel",
-      "site": "gpuwm/core/mynn_pbl_gpu.py:290",
+      "site": "gpuwm/core/mynn_pbl_gpu.py:296",
       "site_options": null,
       "arm_options": []
     },
@@ -228,7 +227,7 @@
       "id": "R5",
       "label": "inline PTX without .ftz",
       "constructor": "gpuwm.core.kernels.load_module",
-      "site": "gpuwm/core/kernels/__init__.py:78",
+      "site": "gpuwm/core/kernels/__init__.py:84",
       "site_options": [
         "-std=c++17"
       ],

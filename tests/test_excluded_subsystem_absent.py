@@ -351,9 +351,23 @@ def test_the_whole_branch_diff_against_its_clean_base_is_clean():
 
     The two scans above ask about the tree as it stands.  This asks the
     question the release asks: is everything this branch ADDED to its clean
-    base still clean?  It is the stricter form, because it applies the
-    ordinary-English names too -- inside a diff of this branch's own
-    additions there is no innocent-vocabulary trade-off to make.
+    base still clean?
+
+    TIER-1 ONLY, and every path -- shipped or not -- because Tier-1 names
+    identify the subsystem unambiguously and have no innocent use here.
+
+    Tier-2 was originally applied to this diff too, on the premise that
+    "inside a diff of this branch's own additions there is no
+    innocent-vocabulary trade-off to make".  MEASURED FALSE, 2026-08-30,
+    five independent times in one day: mesh receipts print their point
+    placement with the sowing word, the mesh crate's public placement
+    type is named with it, the mutation gate's debt prose used it, the
+    offline-downscale comments used it, and radiation test fixtures
+    describe SUPERCOOLED CLOUD columns with it -- textbook cloud-physics
+    vocabulary.  Ordinary physics English lands in this diff every week,
+    and the file's own design note says what a crying-wolf gate becomes.
+    Tier-2 keeps its PATH ban above; the subsystem's identifying names
+    stay banned here in full.
     """
 
     try:
@@ -372,12 +386,6 @@ def test_the_whole_branch_diff_against_its_clean_base_is_clean():
         if not line.startswith("+") or line.startswith("+++"):
             continue
         token = _tier1_match(line)
-        if token is None:
-            if len(line) > _MINIFIED_LINE:
-                token = _fresh_tier2_on_a_generated_line(line, current)
-            else:
-                found = _TIER2_RE.search(_mask(line))
-                token = found.group(0) if found is not None else None
         if token is not None:
             offenders.append(f"{current}: {token!r} in: {line[:120]}")
             if len(offenders) > 40:
@@ -474,3 +482,9 @@ def test_no_new_commit_MESSAGE_names_the_excluded_subsystem():
         "not.  These must be reworded before this branch is shared, which "
         "rewrites every SHA from the earliest one onward:\n  "
         + "\n  ".join(offenders))
+
+
+def test_the_diff_scans_tier1_pattern_fires_on_a_code_line():
+    """The whole diff rule is now Tier-1; prove the pattern bites raw code."""
+    intruder = "let mass = " + "Ag" + "I" + " * rho;"
+    assert _tier1_match(intruder) is not None

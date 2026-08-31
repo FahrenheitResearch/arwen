@@ -136,7 +136,7 @@ def test_envelope_platform_no_longer_switches_by_card_size():
 
 def test_windows_envelope_is_the_measured_affine_model(monkeypatch,
                                                        tmp_path):
-    """estimate + non-pool + unmodelled + measured WDDM slack.  No 1.75.
+    """estimate + non-pool + unmodelled + lane-priced slack.  No 1.75.
 
     Measured on the 3080 (six whole forecasts): machine-wide peak minus
     the desktop baseline = estimate + itemized non-pool, within
@@ -144,35 +144,74 @@ def test_windows_envelope_is_the_measured_affine_model(monkeypatch,
     retention proportional to the estimate (worst +0.30x, so 0.5 GiB
     unmodelled + 0.20x estimate covers it with margin).  The retired
     multiplicative form predicted 9.91 GiB for a run that measured
-    2.6 GiB -- 3.8x reality.
+    2.6 GiB -- 3.8x reality.  Since task 206 (a490e0ff1) the slack term
+    follows the radiation lane rather than the driver model, so only the
+    legacy-RRTMG emission pays it.
     """
     monkeypatch.setattr(pf.sys, "platform", "win32")
     config = _emit(tmp_path, 110, 88)
     exp = dw.experiment_from_text(
         config.read_text(encoding="utf-8"), source=str(config))
     est = pf.estimate_experiment(exp, profile=_walk_profile())
+    assert est.envelope_family == "windows"
+    # Re-pinned 2026-08-30.  Task 206 (a490e0ff1, 2026-08-20) moved the
+    # pool-slack term from the driver model to the RADIATION LANE: the
+    # rte-rrtmgp pool tracks the itemization (0.88-1.00x) while
+    # legacy-RRTMG runs past it (1.13-1.47x), which is exactly this
+    # calibration's own "positive residual is legacy-RRTMG pool
+    # retention" finding.  The default emission is rte-rrtmgp, so it
+    # stops paying the 20% term this test's original form charged
+    # unconditionally.
+    assert est.uses_legacy_radiation is False
     expected = (est.alloc_estimate_bytes
                 + est.non_pool_device_bytes
-                + pf.ENVELOPE_UNMODELLED_BYTES
-                + math.ceil(pf.WDDM_POOL_SLACK_FRACTION
-                            * est.alloc_estimate_bytes))
-    assert est.envelope_family == "windows"
+                + pf.ENVELOPE_UNMODELLED_BYTES)
     assert est.peak_envelope_bytes == expected
+    # ...and the legacy-RRTMG lane still pays the measured slack, in the
+    # same affine form.
+    legacy_config = _emit(tmp_path, 110, 88,
+                          profile="thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1")
+    legacy_exp = dw.experiment_from_text(
+        legacy_config.read_text(encoding="utf-8"), source=str(legacy_config))
+    legacy = pf.estimate_experiment(legacy_exp, profile=_walk_profile())
+    assert legacy.uses_legacy_radiation is True
+    assert legacy.peak_envelope_bytes == (
+        legacy.alloc_estimate_bytes
+        + legacy.non_pool_device_bytes
+        + pf.ENVELOPE_UNMODELLED_BYTES
+        + math.ceil(pf.WDDM_POOL_SLACK_FRACTION
+                    * legacy.alloc_estimate_bytes))
     # The 5090 zero-step probe constant and the pool-retention constant
     # are display projections, never envelope intercept terms.
     assert est.envelope_intercept_bytes == est.non_pool_device_bytes
     # Bounded from above against the walk's measurement, without the
-    # 71% slop: the walk measured ~2.6 GiB of own contribution.
+    # 71% slop: the walk measured ~2.6 GiB of own contribution -- paid by
+    # the AS-BUILT binary, whose YSU/KF column arrays still lived in the
+    # 9,232 B per-thread frame the 2026-08-21 workspace cuts retired
+    # (2bb15b22f, c0f818ef1), and which charged WDDM slack regardless of
+    # radiation lane.  The bound is therefore priced as built; the live
+    # envelope sits below it by the retired reservation and above nothing
+    # multiplicative.
     measured = int(2.60 * GIB)
-    assert est.peak_envelope_bytes > measured
+    as_built = (est.alloc_estimate_bytes
+                + pf.CUDA_CONTEXT_BYTES
+                + _walk_profile().reservation_bytes(9232)
+                + pf.ENVELOPE_UNMODELLED_BYTES
+                + math.ceil(pf.WDDM_POOL_SLACK_FRACTION
+                            * est.alloc_estimate_bytes))
+    assert as_built > measured
+    assert est.peak_envelope_bytes <= as_built
     assert est.peak_envelope_bytes < int(1.75 * measured), (
         "the envelope must bound the measured peak without the "
         "multiplicative slop class this gate was burned by")
-    # And nothing multiplicative survives on the terms line.
-    terms = est.peak_envelope_terms()
-    assert "1.75" not in terms
-    assert "WDDM floor" not in terms
-    assert "pool slack" in terms
+    # And nothing multiplicative survives on the terms line; the slack
+    # term is named on the lane that pays it and absent from the one
+    # that does not.
+    for terms in (est.peak_envelope_terms(), legacy.peak_envelope_terms()):
+        assert "1.75" not in terms
+        assert "WDDM floor" not in terms
+    assert "pool slack" not in est.peak_envelope_terms()
+    assert "pool slack" in legacy.peak_envelope_terms()
 
 
 def test_wizard_and_check_price_one_envelope_for_one_machine(monkeypatch,
@@ -250,9 +289,16 @@ def test_no_layout_refusal_ranks_profiles_by_priced_envelope(monkeypatch):
     drop any candidate it cannot price cheaper.
     """
     monkeypatch.setattr(pf.sys, "platform", "win32")
+    # 3.0 GiB free, not the walk's 4.5 (moved 2026-08-30): task 206
+    # (a490e0ff1) stopped charging WDDM pool slack on the rte-rrtmgp
+    # default and stopped double-counting the non-pool term, and the
+    # 2026-08-21 frame cuts (2bb15b22f, c0f818ef1) retired the YSU/KF
+    # local-memory reservation, so a 12 km rung now genuinely fits in
+    # 4.5 GiB free on this card and the refusal this test exercises
+    # needs a floor no layout can reach.
     with pytest.raises(dw.DomainFitError) as caught:
         dw.fit_ladder(
-            ladder="12", free_bytes=int(4.5 * GIB), hours=6,
+            ladder="12", free_bytes=int(3.0 * GIB), hours=6,
             start_time=START, projection=PROJECTION, source="gfs",
             name="area_test", profile=dw.DEFAULT_PHYSICS_PROFILE,
             vram_gib=WALK_TOTAL_GIB)

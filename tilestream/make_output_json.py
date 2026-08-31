@@ -216,7 +216,10 @@ def main() -> int:
     blob["breakdown"] = breakdown
     blob["projections"] = projections
     blob["bytes_per_cell"] = BYTES_PER_CELL
-    JSON.write_text(json.dumps(blob, indent=1))
+    # write_bytes, not write_text: on Windows the text-mode writer turns
+    # every "\n" into "\r\n", and tilestream/output-scaling.json is a
+    # tracked file.
+    JSON.write_bytes(json.dumps(blob, indent=1).encode("utf-8"))
 
     print(f"wrote {JSON}")
     print(f"\nframe throughput MEASURED {thr_med:.3f} GB/s "

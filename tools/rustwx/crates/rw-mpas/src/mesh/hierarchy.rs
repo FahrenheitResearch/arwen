@@ -26,8 +26,10 @@
 
 use serde::Serialize;
 
+use rayon::prelude::*;
+
 use crate::error::{MpasError, MpasResult};
-use crate::mesh::density::{DensityField, LevelClamp, MeshSpec};
+use crate::mesh::density::{Coverage, DensityField, LevelClamp, MeshSpec};
 use crate::mesh::derive::Rings;
 use crate::mesh::geom::{EARTH_RADIUS_M, V3, add, arc, unit};
 use crate::mesh::hull::delaunay_rings;
@@ -163,24 +165,37 @@ fn insert_level(
         let rings = delaunay_rings(points)?;
         // Canonical edge order: (i, j) ascending with i < j; ranked
         // worst-first by ratio with the canonical id as the tie-break.
-        let mut qualifying: Vec<(f64, u32, u32)> = Vec::new();
-        for i in 0..points.len() {
-            for &j in rings.ring(i) {
-                let j = j as usize;
-                if j <= i {
-                    continue;
+        // PARALLEL, and the same list. Every edge is independent and the sort
+        // below is a TOTAL order -- `(ratio, i, j)` with `(i, j)` unique per
+        // edge -- so the order the edges are collected in cannot reach the
+        // answer. The per-cell lists are collected by cell index and
+        // concatenated, so even the pre-sort vector is identical to the
+        // serial one; the field evaluation at each midpoint is the cost, and
+        // it is 8.8% of a maintained-arm graded run's wall.
+        let qualifying: Vec<(f64, u32, u32)> = (0..points.len())
+            .into_par_iter()
+            .map(|i| {
+                let mut local: Vec<(f64, u32, u32)> = Vec::new();
+                for &j in rings.ring(i) {
+                    let j = j as usize;
+                    if j <= i {
+                        continue;
+                    }
+                    let Some(mid) = unit(add(points[i], points[j])) else {
+                        continue;
+                    };
+                    let h_bar = field.spacing_m(mid) / EARTH_RADIUS_M;
+                    let a = arc(points[i], points[j]);
+                    let ratio = a / h_bar;
+                    if ratio > beta {
+                        local.push((ratio, i as u32, j as u32));
+                    }
                 }
-                let Some(mid) = unit(add(points[i], points[j])) else {
-                    continue;
-                };
-                let h_bar = field.spacing_m(mid) / EARTH_RADIUS_M;
-                let a = arc(points[i], points[j]);
-                let ratio = a / h_bar;
-                if ratio > beta {
-                    qualifying.push((ratio, i as u32, j as u32));
-                }
-            }
-        }
+                local
+            })
+            .collect::<Vec<_>>()
+            .concat();
+        let mut qualifying = qualifying;
         if qualifying.is_empty() {
             batches_used = batch;
             break;
@@ -227,32 +242,42 @@ fn insert_level(
         // edges, worst-first in canonical order, no two on a shared cell:
         // exactly where the un-served tail lives, and deterministic.
         let rings = delaunay_rings(points)?;
-        let mut ranked: Vec<(f64, u32, u32)> = Vec::new();
-        for i in 0..points.len() {
-            for &j in rings.ring(i) {
-                let j = j as usize;
-                if j <= i {
-                    continue;
+        // Parallel for the same reason and with the same guarantee as the
+        // batch scan above: per-cell lists concatenated in cell order, then a
+        // total-order sort.
+        let ranked: Vec<(f64, u32, u32)> = (0..points.len())
+            .into_par_iter()
+            .map(|i| {
+                let mut local: Vec<(f64, u32, u32)> = Vec::new();
+                for &j in rings.ring(i) {
+                    let j = j as usize;
+                    if j <= i {
+                        continue;
+                    }
+                    let Some(mid) = unit(add(points[i], points[j])) else {
+                        continue;
+                    };
+                    // Only edges where the level field genuinely VARIES: the
+                    // deficit lives in the annulus and the tanh tail, and a
+                    // top-up point dropped into the uniform crystal (where
+                    // the clamp holds the field at exactly h_l) would break
+                    // the GP-doubled interior for a deficit that is not local
+                    // to it.
+                    let h_bar_m = field.spacing_m(mid);
+                    if h_bar_m <= field.level_spacing_m {
+                        continue;
+                    }
+                    let h_bar = h_bar_m / EARTH_RADIUS_M;
+                    let ratio = arc(points[i], points[j]) / h_bar;
+                    if ratio <= beta {
+                        local.push((ratio, i as u32, j as u32));
+                    }
                 }
-                let Some(mid) = unit(add(points[i], points[j])) else {
-                    continue;
-                };
-                // Only edges where the level field genuinely VARIES: the
-                // deficit lives in the annulus and the tanh tail, and a
-                // top-up point dropped into the uniform crystal (where the
-                // clamp holds the field at exactly h_l) would break the
-                // GP-doubled interior for a deficit that is not local to it.
-                let h_bar_m = field.spacing_m(mid);
-                if h_bar_m <= field.level_spacing_m {
-                    continue;
-                }
-                let h_bar = h_bar_m / EARTH_RADIUS_M;
-                let ratio = arc(points[i], points[j]) / h_bar;
-                if ratio <= beta {
-                    ranked.push((ratio, i as u32, j as u32));
-                }
-            }
-        }
+                local
+            })
+            .collect::<Vec<_>>()
+            .concat();
+        let mut ranked = ranked;
         ranked.sort_by(|x, y| {
             y.0.total_cmp(&x.0)
                 .then_with(|| (x.1, x.2).cmp(&(y.1, y.2)))
@@ -313,9 +338,58 @@ pub fn generate_graded(
     }
 
     // ---- pre-run arithmetic gates (the ones a spent run cannot un-spend) --
+    //
+    // G0 -- EVERY REQUEST MUST SIT ON THE LADDER. Refinement here is midpoint
+    // insertion, which changes a spacing by exactly two, so a refined core can
+    // only ever sit at `background / 2^k`. A request off that ladder is not
+    // approximated, it is MISSED, and the level delivery gate cannot see the
+    // miss because it is a median over every cell while the miss is confined
+    // to the core. MEASURED 2026-08-29: background 480 km with a 51.2 km
+    // region delivered 59.49 km, and with a 93.75 km region delivered
+    // 120.02 km; both passed every gate and wrote a grid file naming the
+    // resolution they did not have. `mesh::ladder_snap` moves a request onto
+    // the ladder before this function is reached, so this refusal is what
+    // makes that a contract rather than a courtesy.
+    if let Some((i, requested, levels, delivered)) =
+        crate::mesh::ladder_snap::first_off_ladder(spec)
+    {
+        return Err(MpasError::Refusal(format!(
+            "region {i} asks for {requested:.4} km against a {:.4} km background, a ratio of              {:.4} that is not a power of two. This ladder refines by MIDPOINT INSERTION, which              halves a spacing exactly, so {levels} levels reach {delivered:.4} km and there is no              rung at {requested:.4}: the core would be built at {delivered:.4} km and the file              would name {requested:.4}. The level delivery gate cannot catch it -- it is a median              over every cell and the miss is confined to the core, measured at 1.0070 against a              1.0212 bound while the core ran 16.2% coarse. Snap the request with              mesh::ladder_snap::snap_to_ladder (which delivers {delivered:.4} km, finer than              asked), or set the background to {:.4} km, which puts {requested:.4} km on a rung              exactly",
+            spec.background_km,
+            spec.background_km / requested,
+            requested * 2f64.powi(levels as i32)
+        )));
+    }
     let steps = ladder(spec);
-    let gradient = spec.steepest_gradient_per_cell(50_000);
+    let reading = spec.steepest_gradient_reading(50_000);
+    // AN UNMEASURED GRADIENT REFUSES. THE BREAKAGE THIS PREVENTS: the reading
+    // is a max over a probe set, so a set that never touched a region reports
+    // 0.0, which the band arithmetic below maps to f64::INFINITY -- the most
+    // permissive verdict in this file. MEASURED on the shipped sampler: a
+    // 3 km cap at 0.15 km spacing on a 76.8 km background read exactly
+    // 0.0000 %/cell and the ladder built it, against a true 2200 %/cell and a
+    // band of 0.22 cells. A catastrophic measurement produced the friendliest
+    // answer. These two refusals separate "the field is flat" from "nobody
+    // looked", which used to be spelled the same.
+    if let Coverage::Partial(loci) = &reading.coverage {
+        return Err(MpasError::Refusal(format!(
+            "the steepest per-cell spacing change could not be MEASURED for {}: covering the transition shell of a region that narrow, against a boundary that long, needs more probe points than this gate is allowed to spend. A gradient the gate cannot see is one it cannot refuse, and an unmeasured ramp is not a gentle one. Widen the transition or shrink the region",
+            loci.join(", ")
+        )));
+    }
+    if !reading.saw_the_refinement() {
+        return Err(MpasError::Refusal(format!(
+            "the spec asks for {:.4} km spacing somewhere, but every one of the {} probe points read the {:.4} km background, so the transition between them was never visited and its steepness was not measured. A build seeded from this field would put a resolution jump inside a single surgery neighbourhood with no gate having looked at it",
+            reading.declared_finest_m / 1000.0,
+            reading.probe_points,
+            reading.background_m / 1000.0
+        )));
+    }
+    let gradient = reading.per_cell;
     // Cells across a 2x band at this per-cell gradient: n = ln 2 / ln(1+g).
+    // The INFINITY branch is sound now and was not before: it is reachable
+    // only under complete coverage, where a zero reading means a genuinely
+    // uniform field.
     let band_cells = if gradient > 0.0 {
         (2f64).ln() / (1.0 + gradient).ln()
     } else {
@@ -392,7 +466,11 @@ pub fn generate_graded(
 
     for (l, &h_l) in steps.iter().enumerate().skip(1) {
         let clamp = prepared.clamped(h_l);
-        let (inserted, batches) = insert_level(&mut points, &clamp, beta, sizing_samples)?;
+        let (inserted, batches) = crate::mesh::profile::timed(
+            &crate::mesh::profile::INSERT,
+            points.len() as u64,
+            || insert_level(&mut points, &clamp, beta, sizing_samples),
+        )?;
         progress(&format!("INSERTED\t{l}\t{inserted}\t{batches}"));
         if inserted == 0 {
             // A level with no band (spec never crosses h_l) is a no-op level.
@@ -440,7 +518,11 @@ pub fn generate_graded(
         // Surgery: drain the annuli's near-cocircular tail. Drift bounded at
         // 1% of this level's insertions.
         let drift_budget = (inserted / 100).max(1);
-        let (rings_after, ledger) = surgery::drain(&mut points, &clamp, surgery_opts, drift_budget)?;
+        let (rings_after, ledger) = crate::mesh::profile::timed(
+            &crate::mesh::profile::SURGERY,
+            points.len() as u64,
+            || surgery::drain(&mut points, &clamp, surgery_opts, drift_budget),
+        )?;
         progress(&format!(
             "SURGERY\t{l}\t{}\t{}\t{:.4}",
             ledger.rounds,
@@ -757,6 +839,45 @@ mod tests {
         .to_string();
         assert!(err.contains("surgery locality radius"), "{err}");
         assert!(err.contains("widest_transition_km"), "{err}");
+    }
+
+    /// THE GATE'S BLIND SPOT, closed.
+    ///
+    /// This request is the same shape as the one above and 200 times smaller:
+    /// a 10 km cap refined to 200 m over a 3.253 km ramp, on a 51.2 km
+    /// background. Its true per-cell gradient is far steeper than the one
+    /// above -- a band of a fifth of a cell against the surgery locality's
+    /// six -- and until the gradient was measured where the regions are, this
+    /// ladder BUILT: the 50,000 lattice points the gate sampled sit 101 km
+    /// apart, none of them landed inside the ramp, and the gate was handed the
+    /// flat background instead. It is the geometry the auto-spawned sub-km
+    /// nests are made of, which is why a refusal here is the point of the
+    /// change and not a side effect of it.
+    #[test]
+    fn a_band_narrower_than_the_lattice_that_measures_it_is_refused_too() {
+        let spec = MeshSpec {
+            background_km: 51.2,
+            regions: vec![Region {
+                shape: Shape::Cap {
+                    center_deg: [-60.0, 0.0],
+                    radius_km: 10.0,
+                },
+                spacing_km: 0.2,
+                transition: TransitionField::Km(3.253),
+            }],
+            name: None,
+        };
+        let err = generate_graded(
+            &spec,
+            50_000,
+            &LloydOptions::default(),
+            &SurgeryOptions::default(),
+            DEFAULT_BETA,
+            |_| {},
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("surgery locality radius"), "{err}");
     }
 
     #[test]

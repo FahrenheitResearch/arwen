@@ -7,8 +7,9 @@
 //! mask against the STORED representation first, then
 //! `scale_factor`/`add_offset` — is transcribed here so the numbers are
 //! identical, and the time decode is the same
-//! `"<unit> since <timestamp>"` grammar with the same refusal on a
-//! non-UTC reference.
+//! `"<unit> since <timestamp>"` grammar with the same UTC-offset
+//! handling: a well-formed offset designator folds into the epoch, a
+//! malformed one is refused with a sentence naming what is wrong.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -666,59 +667,194 @@ enum CfUnit {
     Days,
 }
 
+#[derive(Debug)]
 struct CfReference {
     unit: CfUnit,
     epoch: DateTime<Utc>,
 }
 
-/// `rw_netcdf::parse_cf_units` — strict about the unit, forgiving about the
-/// timestamp spelling, and REFUSING a non-UTC offset rather than shifting it.
-fn parse_cf_units(units: &str) -> Option<CfReference> {
+/// `rw_netcdf::parse_cf_units` — strict about the unit, forgiving about
+/// the timestamp spelling, because that is where real files vary:
+/// `1970-01-01`, `1970-01-01 00:00:0.0`, `1970-01-01T00:00:00Z`, and a
+/// trailing `+05:30` or ` UTC` all appear in published archives.  A
+/// well-formed UTC offset is APPLIED — the epoch converts to UTC — so
+/// the decoded instants land where the equivalent UTC-spelled units
+/// would put them.
+///
+/// `Ok(None)` when the units string is not a CF reference time at all
+/// (the common case — `K`, `m s-1`); `Err` when it plainly is one but
+/// its UTC-offset designator is malformed, because decoding such a
+/// source with the designator ignored would silently move every
+/// instant read off the time axis.
+fn parse_cf_units(units: &str) -> Result<Option<CfReference>> {
     let lowered = units.trim().to_ascii_lowercase();
-    let (unit_text, rest) = lowered.split_once(" since ")?;
+    let Some((unit_text, rest)) = lowered.split_once(" since ") else {
+        return Ok(None);
+    };
     let unit = match unit_text.trim() {
         "s" | "sec" | "secs" | "second" | "seconds" => CfUnit::Seconds,
         "min" | "mins" | "minute" | "minutes" => CfUnit::Minutes,
         "h" | "hr" | "hrs" | "hour" | "hours" => CfUnit::Hours,
         "d" | "day" | "days" => CfUnit::Days,
-        _ => return None,
+        _ => return Ok(None),
     };
-    Some(CfReference {
-        unit,
-        epoch: parse_cf_epoch(rest.trim())?,
-    })
+    Ok(parse_cf_epoch(rest.trim())?.map(|epoch| CfReference { unit, epoch }))
 }
 
-fn parse_cf_epoch(text: &str) -> Option<DateTime<Utc>> {
+/// The widest UTC-offset designator accepted, in seconds: 18 hours
+/// either side.  The widest civil offset on Earth is +14:00 (the Line
+/// Islands) and the udunits/`java.time` grammars both cap the field at
+/// +/-18:00; a larger number is a mistyped timestamp, not a timezone,
+/// and applying it would move every decoded instant by most of a day.
+const MAX_UTC_OFFSET_SECONDS: i64 = 18 * 3600;
+
+/// `Ok(None)` when the text is not a timestamp this parser reads;
+/// `Err` when its UTC-offset designator cannot be trusted, saying why.
+fn parse_cf_epoch(text: &str) -> Result<Option<DateTime<Utc>>> {
     let mut stamp = text.trim();
-    for suffix in [" utc", "z", " gmt", "+00:00", "+0000", " +00:00"] {
+    // Textual zone designators, every one of which NAMES the zero
+    // offset.  udunits reads them; so do published archives.
+    let mut named_utc = false;
+    for suffix in [" utc", "z", " gmt"] {
         if let Some(head) = stamp.strip_suffix(suffix) {
             stamp = head.trim();
+            named_utc = true;
         }
     }
     let body = stamp.replace('t', " ");
-    let body = body.trim();
-    if body.len() > 10 {
-        let tail = &body[10..];
-        if tail.contains('+') || tail.contains('-') {
-            return None;
+    let mut tokens = body.split_whitespace();
+    let Some(date_text) = tokens.next() else {
+        return Ok(None);
+    };
+    // A signed token is a numeric UTC offset -- a time of day is never
+    // signed.  The offset may ride attached to the tail of the time
+    // token (`00:00:00+05:30`) or stand alone after the date or time
+    // (`1992-10-8 15:15:42.5 -6:00`, the canonical udunits spelling).
+    // It is never recognised attached to a bare date, whose own `-`
+    // separators make that spelling unreadable without guessing.
+    let (time_text, offset_text) = match (tokens.next(), tokens.next(), tokens.next()) {
+        (None, _, _) => ("", None),
+        (Some(second), None, _) => match second.find(['+', '-']) {
+            Some(at) => (&second[..at], Some(&second[at..])),
+            None => (second, None),
+        },
+        (Some(second), Some(third), None) => {
+            if !third.starts_with(['+', '-']) {
+                return Ok(None);
+            }
+            if second.contains(['+', '-']) {
+                return Err(mapping_invalid(format!(
+                    "reference time {text:?} carries two UTC offsets; \
+                     one epoch cannot be shifted twice"
+                )));
+            }
+            (second, Some(third))
         }
-    }
-    let (date_text, time_text) = match body.split_once(' ') {
-        Some((date, time)) => (date, time.trim()),
-        None => (body, ""),
+        _ => return Ok(None),
     };
-    let date = NaiveDate::parse_from_str(date_text, "%Y-%m-%d")
+    let offset_seconds = match offset_text {
+        Some(token) => {
+            if named_utc {
+                return Err(mapping_invalid(format!(
+                    "reference time {text:?} names UTC and also carries \
+                     the numeric offset {token:?}; an epoch with two zone \
+                     designators cannot be placed on the timeline"
+                )));
+            }
+            parse_utc_offset(token, text)?
+        }
+        None => 0,
+    };
+    let date = match NaiveDate::parse_from_str(date_text, "%Y-%m-%d")
         .or_else(|_| NaiveDate::parse_from_str(date_text, "%Y-%-m-%-d"))
-        .ok()?;
-    let time = if time_text.is_empty() {
-        NaiveTime::from_hms_opt(0, 0, 0)?
-    } else {
-        ["%H:%M:%S%.f", "%H:%M:%S", "%H:%M", "%H"]
-            .iter()
-            .find_map(|format| NaiveTime::parse_from_str(time_text, format).ok())?
+    {
+        Ok(date) => date,
+        Err(_) => return Ok(None),
     };
-    Some(NaiveDateTime::new(date, time).and_utc())
+    let time = if time_text.is_empty() {
+        NaiveTime::from_hms_opt(0, 0, 0).expect("midnight is a valid time")
+    } else {
+        match ["%H:%M:%S%.f", "%H:%M:%S", "%H:%M", "%H"]
+            .iter()
+            .find_map(|format| NaiveTime::parse_from_str(time_text, format).ok())
+        {
+            Some(time) => time,
+            None => return Ok(None),
+        }
+    };
+    // A timestamp at +05:00 reads five hours AHEAD of UTC, so the UTC
+    // instant it names is the naive reading minus the offset.
+    let epoch = NaiveDateTime::new(date, time) - Duration::seconds(offset_seconds);
+    Ok(Some(epoch.and_utc()))
+}
+
+/// One numeric UTC-offset designator -- a sign, then `hh:mm`, `hhmm`,
+/// or a bare hour count `h`/`hh` -- as signed seconds east of UTC.
+/// These are the spellings udunits reads.  Anything else is refused
+/// with the reason, because a mis-read offset does not crash: it
+/// silently moves every instant decoded from the source.
+fn parse_utc_offset(token: &str, timestamp: &str) -> Result<i64> {
+    let malformed = |why: String| {
+        mapping_invalid(format!(
+            "UTC offset {token:?} in reference time {timestamp:?} is \
+             malformed: {why}"
+        ))
+    };
+    let (sign, magnitude) = if let Some(rest) = token.strip_prefix('+') {
+        (1i64, rest)
+    } else if let Some(rest) = token.strip_prefix('-') {
+        (-1i64, rest)
+    } else {
+        return Err(malformed("it does not start with a sign".into()));
+    };
+    if magnitude.is_empty() {
+        return Err(malformed("the sign has no digits behind it".into()));
+    }
+    let digits = |text: &str| text.bytes().all(|byte| byte.is_ascii_digit());
+    let (hour_text, minute_text) = match magnitude.split_once(':') {
+        Some((hours, minutes)) => {
+            if minutes.len() != 2 {
+                return Err(malformed(format!(
+                    "minutes must be exactly two digits, got {minutes:?}; \
+                     an offset carries no seconds field"
+                )));
+            }
+            (hours, minutes)
+        }
+        None => match magnitude.len() {
+            1 | 2 => (magnitude, "0"),
+            4 => magnitude.split_at(2),
+            _ => {
+                return Err(malformed(format!(
+                    "a colonless offset must be one or two hour digits or \
+                     exactly four digits (hhmm); {magnitude:?} cannot be \
+                     split into hours and minutes without guessing"
+                )));
+            }
+        },
+    };
+    if hour_text.is_empty() || hour_text.len() > 2 || !digits(hour_text) || !digits(minute_text) {
+        return Err(malformed(format!(
+            "{hour_text:?} hours and {minute_text:?} minutes are not one- \
+             or two-digit numbers"
+        )));
+    }
+    let hours: i64 = hour_text.parse().expect("checked ascii digits");
+    let minutes: i64 = minute_text.parse().expect("checked ascii digits");
+    if minutes >= 60 {
+        return Err(malformed(format!(
+            "{minutes} is not a minute count below 60"
+        )));
+    }
+    let magnitude_seconds = hours * 3600 + minutes * 60;
+    if magnitude_seconds > MAX_UTC_OFFSET_SECONDS {
+        return Err(malformed(
+            "its magnitude passes 18:00, and no timezone is that far from \
+             UTC (the widest civil offset on Earth is +14:00)"
+            .into(),
+        ));
+    }
+    Ok(sign * magnitude_seconds)
 }
 
 fn decode_times(reference: &CfReference, values: &[f64]) -> Result<Vec<NaiveDateTime>> {
@@ -1180,10 +1316,12 @@ pub fn decode_netcdf(mapping: &Mapping, files: &[String]) -> Result<DecodedColle
                 "calendar '{calendar}' is not supported for WRF initialization"
             )));
         }
-        let reference = parse_cf_units(declared_time_units).ok_or_else(|| {
+        // A malformed UTC-offset designator propagates its own refusal
+        // out of the parse; `None` is the units not being a reference
+        // time at all.
+        let reference = parse_cf_units(declared_time_units)?.ok_or_else(|| {
             mapping_invalid(format!(
-                "time units '{declared_time_units}' are not a CF reference time, \
-                 or declare a non-UTC offset that must not be guessed at"
+                "time units '{declared_time_units}' are not a CF reference time"
             ))
         })?;
         let (_shape, raw_times) = read_values(time_variable)?;
@@ -1655,6 +1793,13 @@ fn take_index(values: &ArrayD<f64>, axis: usize, index: usize) -> ArrayD<f64> {
 mod tests {
     use super::*;
 
+    /// A parsed CF reference, for units that must be well-formed ones.
+    fn reference(units: &str) -> CfReference {
+        parse_cf_units(units)
+            .unwrap_or_else(|refusal| panic!("{units}: {refusal}"))
+            .unwrap_or_else(|| panic!("{units} is a CF reference time"))
+    }
+
     #[test]
     fn cf_units_parse_the_spellings_real_archives_publish() {
         for text in [
@@ -1662,19 +1807,182 @@ mod tests {
             "seconds since 1970-01-01",
             "days since 1800-01-01T00:00:00Z",
         ] {
-            assert!(parse_cf_units(text).is_some(), "{text}");
+            reference(text);
         }
-        assert!(parse_cf_units("K").is_none());
+        assert!(parse_cf_units("K").expect("nothing to malform").is_none());
+    }
+
+    /// The one exact equivalence the offset handling promises: units
+    /// carrying a UTC-offset designator decode to the SAME instants as
+    /// the same epoch respelled in UTC by hand.  Every offset spelling
+    /// udunits reads is here -- `+hh:mm`, `+hhmm`, bare `-h`/`-hh`,
+    /// attached and spaced, and the zero-offset designators.
+    #[test]
+    fn offset_references_decode_like_their_utc_respelling() {
+        for (offset_spelling, utc_respelling) in [
+            // +05:00 reads five hours EAST: the epoch is EARLIER in UTC.
+            (
+                "hours since 2020-01-01 00:00:00 +05:00",
+                "hours since 2019-12-31 19:00:00",
+            ),
+            (
+                "hours since 2020-01-01 00:00:00+0500",
+                "hours since 2019-12-31 19:00:00",
+            ),
+            // Negative forms read WEST: the epoch is LATER in UTC.
+            (
+                "hours since 2020-01-01 00:00:00 -06:00",
+                "hours since 2020-01-01 06:00:00",
+            ),
+            (
+                "hours since 2020-01-01 00:00:00-0600",
+                "hours since 2020-01-01 06:00:00",
+            ),
+            (
+                "hours since 2020-01-01 00:00:00 -6",
+                "hours since 2020-01-01 06:00:00",
+            ),
+            // A half-hour zone exercises both halves of h*3600 + m*60.
+            (
+                "hours since 2020-01-01 00:00:00 +05:30",
+                "hours since 2019-12-31 18:30:00",
+            ),
+            (
+                "hours since 2020-01-01 00:00:00+0530",
+                "hours since 2019-12-31 18:30:00",
+            ),
+            // Zero-offset designators are exactly UTC.
+            (
+                "hours since 2020-01-01 00:00:00Z",
+                "hours since 2020-01-01 00:00:00",
+            ),
+            (
+                "hours since 2020-01-01 00:00:00 +00:00",
+                "hours since 2020-01-01 00:00:00",
+            ),
+            (
+                "hours since 2020-01-01 00:00:00-0000",
+                "hours since 2020-01-01 00:00:00",
+            ),
+            // A date-only stamp still takes a spaced offset (midnight).
+            (
+                "hours since 2020-01-01 +01:00",
+                "hours since 2019-12-31 23:00:00",
+            ),
+        ] {
+            let with_offset = reference(offset_spelling);
+            let respelled = reference(utc_respelling);
+            assert_eq!(
+                with_offset.epoch, respelled.epoch,
+                "{offset_spelling} vs {utc_respelling}"
+            );
+            assert_eq!(
+                decode_times(&with_offset, &[0.0, 1.5]).expect("decoded"),
+                decode_times(&respelled, &[0.0, 1.5]).expect("decoded"),
+                "{offset_spelling}"
+            );
+        }
+    }
+
+    /// Ground truth for the shift direction, pinned as absolute strings
+    /// so a sign error that broke both sides of the equivalence test the
+    /// same way would still be caught.
+    #[test]
+    fn a_positive_offset_epoch_lands_earlier_on_the_utc_timeline() {
+        let reference = reference("hours since 2020-01-01 00:00:00 +05:30");
+        let decoded = decode_times(&reference, &[0.0, 5.5]).expect("decoded");
+        assert_eq!(
+            crate::frames::naive_isoformat(decoded[0]),
+            "2019-12-31T18:30:00"
+        );
+        assert_eq!(
+            crate::frames::naive_isoformat(decoded[1]),
+            "2020-01-01T00:00:00"
+        );
     }
 
     #[test]
-    fn a_non_utc_reference_time_refuses_rather_than_shifting() {
-        assert!(parse_cf_units("hours since 1900-01-01 00:00:00+02:00").is_none());
+    fn a_negative_offset_epoch_lands_later_on_the_utc_timeline() {
+        let reference = reference("seconds since 2020-06-01 12:00:00 -06");
+        let decoded = decode_times(&reference, &[0.0]).expect("decoded");
+        assert_eq!(
+            crate::frames::naive_isoformat(decoded[0]),
+            "2020-06-01T18:00:00"
+        );
+    }
+
+    /// The designator bounds: 59 minutes and 18:00 are the last values
+    /// inside the grammar, and the first value past each is refused by
+    /// name.  udunits and java.time both cap the field at +/-18:00; the
+    /// widest civil offset on Earth is +14:00.
+    #[test]
+    fn offset_bounds_admit_18_hours_and_59_minutes_and_nothing_past_them() {
+        assert_eq!(
+            reference("hours since 2020-01-01 00:00:00 +18:00").epoch,
+            reference("hours since 2019-12-31 06:00:00").epoch,
+        );
+        assert_eq!(
+            reference("hours since 2020-01-01 00:59:00 +00:59").epoch,
+            reference("hours since 2020-01-01 00:00:00").epoch,
+        );
+        for (units, names) in [
+            ("hours since 2020-01-01 00:00:00 +18:01", "18:00"),
+            ("hours since 2020-01-01 00:00:00 -19:00", "18:00"),
+            ("hours since 2020-01-01 00:00:00 +05:60", "below 60"),
+            ("hours since 2020-01-01 00:00:00 +05:61", "below 60"),
+        ] {
+            let refusal = match parse_cf_units(units) {
+                Err(refusal) => refusal,
+                Ok(parsed) => panic!("{units} was not refused: {parsed:?}"),
+            };
+            assert_eq!(refusal.class, crate::refusal::class::MAPPING_INVALID, "{units}");
+            assert!(refusal.message.contains("malformed"), "{units}: {refusal}");
+            assert!(refusal.message.contains(names), "{units}: {refusal}");
+        }
+    }
+
+    /// Every refusal names what is wrong; nothing is guessed at and
+    /// nothing decodes with the designator ignored.  Returning `None`
+    /// was the old behaviour, and at the decode call site it read as
+    /// "not a CF reference time" -- the wrong sentence for units whose
+    /// author plainly wrote one down.
+    #[test]
+    fn malformed_offsets_are_refused_with_the_reason() {
+        for (units, names) in [
+            // Three packed digits cannot be split into hours and
+            // minutes without guessing between 5:30 and 53:0.
+            ("hours since 2020-01-01 00:00:00 +530", "guessing"),
+            ("hours since 2020-01-01 00:00:00 +05300", "guessing"),
+            // udunits offsets carry no seconds field.
+            ("hours since 2020-01-01 00:00:00 +05:30:00", "two digits"),
+            ("hours since 2020-01-01 00:00:00 +05:3", "two digits"),
+            // A sign with nothing behind it, a missing hours field, and
+            // letters where digits go.
+            ("hours since 2020-01-01 00:00:00 +", "no digits"),
+            ("hours since 2020-01-01 00:00:00 +:30", "hours"),
+            ("hours since 2020-01-01 00:00:00 +0a", "hours"),
+            // Two zone designators cannot both place the epoch.
+            ("hours since 2020-01-01 00:00:00+05:00Z", "names utc"),
+            (
+                "hours since 2020-01-01 00:00:00+05:00 +06:00",
+                "two utc offsets",
+            ),
+        ] {
+            let refusal = match parse_cf_units(units) {
+                Err(refusal) => refusal,
+                Ok(parsed) => panic!("{units} was not refused: {parsed:?}"),
+            };
+            assert_eq!(refusal.class, crate::refusal::class::MAPPING_INVALID, "{units}");
+            assert!(
+                refusal.message.to_ascii_lowercase().contains(names),
+                "{units}: {refusal}"
+            );
+        }
     }
 
     #[test]
     fn seconds_since_the_unix_epoch_decode_to_the_expected_instant() {
-        let reference = parse_cf_units("seconds since 1970-01-01").unwrap();
+        let reference = reference("seconds since 1970-01-01");
         let decoded = decode_times(&reference, &[1_768_608_000.0]).unwrap();
         assert_eq!(
             crate::frames::naive_isoformat(decoded[0]),

@@ -2048,46 +2048,28 @@ fn wrf_times_from_netcdf(
             "Times contains {elements} character elements; the safety limit is {MAX_TIME_LABEL_ELEMENTS}"
         )));
     }
-    let array = nc.read_array_f64("Times")?;
-    if array.shape() != shape.as_slice() {
+    // Read the char matrix as text, one string per record.  This used to
+    // go through `read_array_f64` and reassemble bytes from promoted
+    // doubles, which only ever worked on HDF5 tapes (the numeric read
+    // refuses Char; the raw-HDF5 fallback did the promotion).  gpuwm's
+    // product tape is written by the Rust CLASSIC writer by default since
+    // its 1ea745e32, and a classic container has no HDF5 fallback, so a
+    // postprocessed-shaped classic tape failed here with "expected
+    // numeric type, got Char".  `read_strings` answers on both
+    // containers.
+    let raw_labels = nc
+        .read_strings("Times")
+        .map_err(|err| ImportError::TimeAxis(format!("Times could not be read as text: {err}")))?;
+    if raw_labels.len() != record_count {
         return Err(ImportError::TimeAxis(format!(
-            "Times decoded with shape {:?}, expected {shape:?}",
-            array.shape()
+            "Times decoded {} records, expected {record_count}",
+            raw_labels.len()
         )));
     }
-    let mut labels = Vec::with_capacity(record_count);
-    for time_index in 0..record_count {
-        let start = time_index
-            .checked_mul(width)
-            .ok_or_else(|| ImportError::TimeAxis("Times index overflow".to_string()))?;
-        let end = start
-            .checked_add(width)
-            .ok_or_else(|| ImportError::TimeAxis("Times index overflow".to_string()))?;
-        let values = array.values().get(start..end).ok_or_else(|| {
-            ImportError::TimeAxis(format!("Times record {time_index} is truncated"))
-        })?;
-        let mut bytes = Vec::with_capacity(width);
-        for value in values {
-            if !value.is_finite() || value.fract() != 0.0 || *value < 0.0 || *value > u8::MAX as f64
-            {
-                return Err(ImportError::TimeAxis(format!(
-                    "Times record {time_index} contains a non-byte value {value}"
-                )));
-            }
-            bytes.push(*value as u8);
-        }
-        labels.push(
-            String::from_utf8(bytes)
-                .map_err(|err| {
-                    ImportError::TimeAxis(format!(
-                        "Times record {time_index} is not valid UTF-8: {err}"
-                    ))
-                })?
-                .trim_end_matches('\0')
-                .trim()
-                .to_string(),
-        );
-    }
+    let labels = raw_labels
+        .into_iter()
+        .map(|label| label.trim_end_matches('\0').trim().to_string())
+        .collect::<Vec<_>>();
     source_records_from_labels(labels, record_count, "Times").map(Some)
 }
 

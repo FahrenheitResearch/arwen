@@ -144,7 +144,7 @@ AMBIGUOUS: dict[str, str] = {}
 #: bless a drifted citation as correct, which is the failure this table exists
 #: to prevent.
 RESOLVED: dict[str, tuple[str, str]] = {
-    "kernels/ysu.cu:104": (
+    "kernels/ysu.cu:203": (
         "gpuwm/core/kernels/ysu.cu",
         "if (us == 0.0f && hf == 0.0f && qf == 0.0f)"),
     # Shin-Hong: the two guards on WRF's out-of-bounds q2xk(kpbl+1) read --

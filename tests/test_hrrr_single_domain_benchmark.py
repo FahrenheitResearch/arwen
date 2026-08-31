@@ -27,6 +27,7 @@ from gpuwm.physics_compat import (
     NOAHMP_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
+    P3_LEGACY_RRTMG_PROFILE_ID,
     RUC_PROFILE_ID,
     SINGLE_DOMAIN_PHYSICS_PROFILES,
     THOMPSON_LEGACY_RRTMG_PROFILE_ID,
@@ -79,6 +80,7 @@ def test_hrrr_runner_capability_query_is_side_effect_free_without_run_args(
         THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
         MORRISON_PROFILE_ID,
         NSSL2_PROFILE_ID, NSSL2_LEGACY_RRTMG_PROFILE_ID,
+        P3_LEGACY_RRTMG_PROFILE_ID,
         MYNN_PROFILE_ID, MYNN_RTE_RRTMGP_PROFILE_ID,
         RUC_PROFILE_ID,
         MYNN_RUC_PROFILE_ID, MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
@@ -1418,6 +1420,19 @@ def _decoded_native_hrrr_initialization(
         (6, {"QC", "QR", "QI", "QS", "QG"}, set()),
         (18, {"QC", "QR", "QI", "QS", "QG"}, set()),
         (1, {"QC", "QR"}, {"QI", "QS", "QG"}),
+        # P3 one-category (Registry.EM_COMMON:3038, moist:qv,qc,qr,qi) is the
+        # second narrow package on this route and the only one narrow at the
+        # frozen end: it keeps analyzed ice and cannot hold snow or graupel,
+        # so it is the case that proves the partition is read from the
+        # scheme's package and not from "Kessler or everything".
+        (50, {"QC", "QR", "QI"}, {"QS", "QG"}),
+        # Milbrandt-Yau (Registry.EM_COMMON:3025, moist:qv,qc,qr,qi,qs,qg,qh)
+        # is the first package WIDER than the decoded inventory: everything
+        # decoded is retained, nothing is discarded, and the seventh member
+        # (hail) has no decoded source at all -- it stays at the allocator's
+        # zero, which is what real.exe's flag_qh-gated arm
+        # (module_initialize_real.F:1979-1997) leaves for a QH-less source.
+        (9, {"QC", "QR", "QI", "QS", "QG"}, set()),
     ),
 )
 def test_native_hrrr_hydrometeor_admission_is_scheme_aware(
@@ -1435,11 +1450,14 @@ def test_native_hrrr_hydrometeor_admission_is_scheme_aware(
     )
     if mp_physics == 1:
         assert getattr(result.state, "qi", None) is None
-        for policy in evidence["discarded_source_species"].values():
-            assert policy["policy"] == (
-                "discard-source-species-absent-from-active-moist-package")
-            assert policy["wrf_commit"] == (
-                "d66e442fccc04111067e29274c9f9eaccc3cef28")
+    if mp_physics == 50:
+        assert getattr(result.state, "qs", None) is None
+        assert getattr(result.state, "qg", None) is None
+    for policy in evidence["discarded_source_species"].values():
+        assert policy["policy"] == (
+            "discard-source-species-absent-from-active-moist-package")
+        assert policy["wrf_commit"] == (
+            "d66e442fccc04111067e29274c9f9eaccc3cef28")
 
 
 def test_the_retention_receipt_states_when_it_proved_nothing():

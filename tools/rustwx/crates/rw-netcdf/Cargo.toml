@@ -34,3 +34,14 @@ chrono = { version = "0.4", default-features = false, features = ["std", "alloc"
 serde.workspace = true
 serde_json.workspace = true
 netcrust = { path = "../../vendor/netcrust" }
+
+[dev-dependencies]
+# The workspace's own classic-format writer, so the suite BUILDS its
+# classic fixtures at test time instead of checking in bytes nobody can
+# regenerate.  It is an independent implementation from the netcrust
+# read path under test, so a shared misreading of the spec cannot make
+# a broken decode look correct.  The NetCDF-4/HDF5 fixtures cannot be
+# built this way (nothing in the Rust stack writes HDF5, by design) and
+# are checked in under tests/fixtures with the Python script that
+# regenerates them.
+netcdf-writer = { path = "../netcdf-writer" }

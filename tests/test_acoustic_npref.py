@@ -270,6 +270,41 @@ def test_npref_calc_cq_nssl_includes_hail_mass_not_number_moments():
     np.testing.assert_array_equal(cqw, expect_w)
 
 
+def test_npref_calc_cq_mp9_is_the_nssl_seven_mass_sum():
+    """Milbrandt-Yau's moist package is the same seven masses as NSSL's.
+
+    Registry.EM_COMMON:3025 binds moist:qv,qc,qr,qi,qs,qg,qh with all six
+    number moments in ``scalar``, so np_calc_cq(..., 9) must be bit for
+    bit np_calc_cq(..., 18), and WDM6 (:3031, WSM6's six masses plus
+    scalar qnn/qnc/qnr) must be bit for bit WSM6.  Both rows were MISSING
+    while 9 and 16 were accepted selectors -- the mirror raised
+    "unsupported mp_physics" for schemes the device path integrates
+    (gpuwm/core/acoustic.py prepare_moist_cq runs n_mass=7 for 9 and
+    n_mass=6 for 16); found by the widened ACCEPTED_MP_PHYSICS census.
+    """
+    shape = (3, 2, 3)
+    qv = np.linspace(0.001, 0.018, np.prod(shape)).reshape(shape)
+    moisture = {
+        name: scale * qv
+        for name, scale in zip(
+            ("qv", "qc", "qr", "qi", "qs", "qg", "qh"),
+            (1.0, 0.20, 0.10, 0.05, 0.03, 0.02, 0.01),
+            strict=True)
+    }
+    # Present number moments must not enter the sum for either scheme.
+    moisture["nh"] = np.full(shape, 1.0e8)
+    moisture["nn"] = np.full(shape, 1.0e8)
+
+    for reference, mirrored in zip(
+            np_calc_cq(moisture, mp_physics=18),
+            np_calc_cq(moisture, mp_physics=9), strict=True):
+        np.testing.assert_array_equal(reference, mirrored)
+    for reference, mirrored in zip(
+            np_calc_cq(moisture, mp_physics=6),
+            np_calc_cq(moisture, mp_physics=16), strict=True):
+        np.testing.assert_array_equal(reference, mirrored)
+
+
 def test_npref_calc_cq_mp0_uses_passive_vapor_only():
     """WRF Registry package for mp_physics=0 exposes only moist:qv."""
     qv = np.array([[[0.001, 0.002], [0.003, 0.004]],
@@ -295,6 +330,52 @@ def test_npref_calc_cq_mp0_uses_passive_vapor_only():
     np.testing.assert_array_equal(cqw, expect_w)
 
 
+def test_npref_calc_cq_p3_sums_one_ice_category_not_the_rime_pair():
+    """P3 mp=50 registers moist:qv,qc,qr,qi (Registry.EM_COMMON:3038).
+
+    The first ported package with an ice mass and NO snow and NO graupel,
+    so it is the first row that is not a prefix of WSM6's six.  The rime
+    pair is excluded twice over: qir/qib reach the scheme from WRF's
+    ``scalar`` array (solve_em.F:3849) which ``calc_cq`` never traverses
+    (module_big_step_utilities_em.F:822-830), and qir is the rimed
+    COMPONENT of qi -- module_mp_p3.F:2666 forms the rime mass fraction as
+    ``qirim/qitot`` -- while qib is a rime VOLUME in m3 kg-1
+    (module_mp_p3.F:1946), not a mass at all.
+    """
+    shape = (3, 2, 3)
+    qv = np.linspace(0.001, 0.018, int(np.prod(shape))).reshape(shape)
+    moisture = {
+        name: scale * qv
+        for name, scale in zip(("qv", "qc", "qr", "qi"),
+                               (1.0, 0.20, 0.10, 0.05), strict=True)
+    }
+    # Registry ``scalar`` decoys, every one of them large enough to move
+    # the answer if it were summed.
+    moisture["ni"] = np.full(shape, 1.0e8)
+    moisture["nr"] = np.full(shape, 1.0e6)
+    moisture["qir"] = 0.9 * moisture["qi"]
+    moisture["qib"] = np.full(shape, 3.0e-6)
+
+    cqu, cqv, cqw = np_calc_cq(moisture, mp_physics=50)
+
+    qtot = sum(moisture[name] for name in ("qv", "qc", "qr", "qi"))
+    expect_u_core = 1.0 / (1.0 + 0.5 * (qtot + np.roll(qtot, 1, axis=2)))
+    expect_v_core = 1.0 / (1.0 + 0.5 * (qtot + np.roll(qtot, 1, axis=1)))
+    expect_u = np.concatenate([expect_u_core, expect_u_core[:, :, :1]], axis=2)
+    expect_v = np.concatenate([expect_v_core, expect_v_core[:, :1, :]], axis=1)
+    expect_w = np.ones((shape[0] + 1, shape[1], shape[2]))
+    expect_w[1:-1] = 1.0 / (1.0 + 0.5 * (qtot[1:] + qtot[:-1]))
+    np.testing.assert_array_equal(cqu, expect_u)
+    np.testing.assert_array_equal(cqv, expect_v)
+    np.testing.assert_array_equal(cqw, expect_w)
+
+    # And the rime pair is not merely small here: adding it would be
+    # observable, so the equality above is evidence and not a tolerance.
+    polluted = dict(moisture)
+    polluted["qi"] = moisture["qi"] + moisture["qir"] + moisture["qib"]
+    assert np.max(np.abs(np_calc_cq(polluted, 50)[0] - cqu)) > 1.0e-6
+
+
 def test_prepare_moist_cq_mp0_launches_with_one_registry_species(monkeypatch):
     """The device cq sum receives WRF's passive-vapor n_moist count."""
     cfg = replace(_cfg(top_lid=False, nx=2, ny=2), moist=True,
@@ -317,6 +398,57 @@ def test_prepare_moist_cq_mp0_launches_with_one_registry_species(monkeypatch):
 
     assert use_cq
     assert launched["n_mass"] == 1
+
+
+def test_prepare_moist_cq_p3_zero_planes_reproduce_the_reference_row(
+        monkeypatch):
+    """The device's P3 arm and the mp=50 reference row are one number.
+
+    ``prepare_moist_cq`` dispatches P3 on PRESENCE (qi allocated, qs not)
+    and keeps the frozen kernel's six-mass arm, handing the absent qs/qg
+    slots a zero plane.  This pins that construction and then differences
+    it against the reference row, so the arm the acoustic verification lane
+    compares against is the arm the device actually launches.
+    """
+    cfg = replace(_cfg(top_lid=False, nx=3, ny=2), moist=True,
+                  mp_physics=50, moist_cq=True)
+    shape = (cfg.nz, cfg.ny, cfg.nx)
+    qv = np.linspace(0.001, 0.018, int(np.prod(shape))).reshape(shape)
+    state = SimpleNamespace(
+        qv=qv, qc=0.20 * qv, qr=0.10 * qv, qi=0.05 * qv,
+        ni=np.full(shape, 1.0e8), nr=np.full(shape, 1.0e6),
+        qir=0.045 * qv, qib=np.full(shape, 3.0e-6),
+        p=np.zeros(shape),
+        scratch=lambda scratch_shape, _name: np.empty(scratch_shape),
+    )
+    launched = {}
+
+    def kernel(_grid, _block, args):
+        launched["qi"] = np.array(args[3])
+        launched["qs"] = np.array(args[4])
+        launched["qg"] = np.array(args[5])
+        launched["n_mass"] = int(args[10])
+
+    monkeypatch.setattr("gpuwm.core.acoustic.get_kernel",
+                        lambda _module, _name: kernel)
+
+    _cqu, _cqv, _cqw, use_cq = prepare_moist_cq(state, cfg)
+
+    assert use_cq
+    assert launched["n_mass"] == 6
+    np.testing.assert_array_equal(launched["qi"], state.qi)
+    np.testing.assert_array_equal(launched["qs"], np.zeros(shape))
+    np.testing.assert_array_equal(launched["qg"], np.zeros(shape))
+
+    device_package = {
+        "qv": state.qv, "qc": state.qc, "qr": state.qr,
+        "qi": launched["qi"], "qs": launched["qs"], "qg": launched["qg"],
+    }
+    p3_package = {"qv": state.qv, "qc": state.qc, "qr": state.qr,
+                  "qi": state.qi}
+    for reference, device in zip(np_calc_cq(p3_package, 50),
+                                 np_calc_cq(device_package, 6), strict=True):
+        np.testing.assert_array_equal(reference, device)
 
 
 def test_npref_moist_cq_scales_horizontal_acoustic_pgf_not_forcing():

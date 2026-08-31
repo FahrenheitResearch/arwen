@@ -2287,8 +2287,8 @@ def _decode_netcdf(mapping: Mapping[str, object], files: Sequence[Path]) -> _Dec
             # decode: turning "hours since 1970-01-01" and a number into
             # an instant is reading the file's own time convention, and
             # a second implementation of it here is exactly the kind of
-            # duplicate this module no longer keeps.  The bridge refuses
-            # a non-UTC reference time rather than shifting it, so what
+            # duplicate this module no longer keeps.  The bridge folds a
+            # reference time's UTC offset into the epoch itself, so what
             # comes back is already the naive-UTC this module works in.
             times = tuple(
                 _utc_datetime(value, "time coordinate")

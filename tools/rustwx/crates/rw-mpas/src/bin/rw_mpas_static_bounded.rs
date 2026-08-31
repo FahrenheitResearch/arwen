@@ -158,6 +158,11 @@ fn run() -> Result<(), String> {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| "<unknown>".to_string())
         ),
+        // See `rw_mpas_static`: the grid declares what its static must store.
+        coordinates: rw_mpas::staticfile::coordframe::for_static_from_grid(&path(
+            &args, "grid",
+        )?)
+        .map_err(|e| e.to_string())?,
     };
 
     let receipt =

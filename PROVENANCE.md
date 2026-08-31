@@ -157,28 +157,28 @@ bytes are outside the numerical oracle.
   12.0, driver 13.3 (13030), NVRTC 13.0,
   CuPy 14.0.1) by `tools/ftz_receipt/probe.py` over
   6 arithmetic mechanisms:
-  - `R1` loader RawModule (`gpuwm/core/kernels/__init__.py:78`,
+  - `R1` loader RawModule (`gpuwm/core/kernels/__init__.py:84`,
     gpuwm.core.kernels.load_module), effective NVRTC options `-std=c++17`
     `-ftz=true`: `flush-to-zero` on 6 of 6 mechanisms [disassembly
     `tools/ftz_receipt/receipt/sass/r1.sass`]
   - `R1-ftztrue` loader RawModule + explicit --ftz=true (control)
-    (`gpuwm/core/kernels/__init__.py:78 + control flag`, cupy.RawModule),
+    (`gpuwm/core/kernels/__init__.py:84 + control flag`, cupy.RawModule),
     effective NVRTC options `-std=c++17` `--ftz=true` `-ftz=true`:
     `flush-to-zero` on 6 of 6 mechanisms [disassembly
     `tools/ftz_receipt/receipt/sass/r1_ftztrue.sass`]
   - `R2` RawModule with the shortwave option tuple
-    (`gpuwm/core/rrtmg_sw.py:2890`, cupy.RawModule), effective NVRTC options
+    (`gpuwm/core/rrtmg_sw.py:2906`, cupy.RawModule), effective NVRTC options
     `-std=c++17` `--ftz=false` `-ftz=true`: `flush-to-zero` on 6 of 6
     mechanisms [disassembly `tools/ftz_receipt/receipt/sass/r2.sass`]
-  - `R3` direct NVRTC + cuda.function.Module (`gpuwm/core/rrtmg_lw.py:3723`,
+  - `R3` direct NVRTC + cuda.function.Module (`gpuwm/core/rrtmg_lw.py:3733`,
     cupy.cuda.compiler.compile_using_nvrtc), effective NVRTC options
     `-std=c++17` `--ftz=false` `-arch=compute_120`: `ieee-agreement` on 6 of
     6 mechanisms [disassembly `tools/ftz_receipt/receipt/sass/r3.sass`]
-  - `R4` CuPy-generated ReductionKernel (`gpuwm/core/mynn_pbl_gpu.py:290`,
+  - `R4` CuPy-generated ReductionKernel (`gpuwm/core/mynn_pbl_gpu.py:296`,
     cupy.ReductionKernel), effective NVRTC options `--std=c++17`
     `-ftz=true`: `flush-to-zero` on 6 of 6 mechanisms [disassembly of 6
     objects, `tools/ftz_receipt/receipt/sass/r4_0.sass` and siblings]
-  - `R5` inline PTX without .ftz (`gpuwm/core/kernels/__init__.py:78`,
+  - `R5` inline PTX without .ftz (`gpuwm/core/kernels/__init__.py:84`,
     gpuwm.core.kernels.load_module), effective NVRTC options `-std=c++17`
     `-ftz=true` (this route rides `R1`'s compile): `ieee-agreement` on 4 of
     6 mechanisms; `not-applicable` on 2 of 6 mechanisms [disassembly
@@ -188,11 +188,11 @@ bytes are outside the numerical oracle.
   `-ftz=true` to whatever the caller passed, at
   `cupy.cuda.compiler` line 585 (`options += ('-ftz=true',)`), after the
   caller's options, and NVRTC honours the last occurrence.
-  The inventory records 4 distinct caller-supplied option tuples across the 18
+  The inventory records 4 distinct caller-supplied option tuples across the 19
   compile sites in the shipped package, each listed here with a site that
   supplies it:
   - no caller options -- `gpuwm/core/dycore.py:157` (cp.ElementwiseKernel),
-    and 10 other site(s)
+    and 11 other site(s)
   - `-std=c++17` `--ftz=false` -- `gpuwm/core/rrtmg_lw.py:3733`
     (_cc.compile_using_nvrtc), and 2 other site(s)
   - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:84` (cp.RawModule), and

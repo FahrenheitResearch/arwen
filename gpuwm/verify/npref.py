@@ -2474,12 +2474,48 @@ _CQ_MASS_SPECIES_BY_MP = {
     1: _CQ_MASS_SPECIES[:3],
     6: _CQ_MASS_SPECIES,
     8: _CQ_MASS_SPECIES,
+    # Milbrandt-Yau (Registry.EM_COMMON:3025) binds moist:qv,qc,qr,qi,qs,
+    # qg,qh -- hail in the MOIST package exactly like NSSL, all six number
+    # moments in ``scalar`` -- so its calc_cq is the same seven-mass sum,
+    # matching the production arm's n_mass=7 for (9, 18)
+    # (gpuwm/core/acoustic.py prepare_moist_cq).  The row was missing while
+    # 9 was an accepted selector: this mirror refused a scheme the device
+    # path integrates (found by the widened ACCEPTED_MP_PHYSICS census,
+    # tests/test_mp28_runtime_reachability.py, 2026-08-30).
+    9: _CQ_NSSL_MASS_SPECIES,
     10: _CQ_MASS_SPECIES,
+    # WDM6 (Registry.EM_COMMON:3031) carries WSM6's six moist masses with
+    # qnn/qnc/qnr in ``scalar``, so its row is byte-for-byte mp=6's --
+    # missing for the same reason and found by the same census.
+    16: _CQ_MASS_SPECIES,
     18: _CQ_NSSL_MASS_SPECIES,
     # Thompson aerosol-aware (Registry.EM_COMMON:3036) adds qnc/qnwfa/qnifa
     # to the ``scalar`` package only, so its ``moist`` package -- and thus
     # its calc_cq sum -- is byte-for-byte mp=8's.
     28: _CQ_MASS_SPECIES,
+    # P3 one-category (Registry.EM_COMMON:3038):
+    #     moist:qv,qc,qr,qi;scalar:qni,qnr,qir,qib
+    # -- FOUR masses, and the first ported package with qi and no qs/qg.
+    # WRF's calc_cq sums the ``moist`` array alone
+    # (module_big_step_utilities_em.F:822-830 loops
+    # PARAM_FIRST_SCALAR..n_moist over it), so the row is the qv/qc/qr/qi
+    # prefix and nothing else.
+    #
+    # The rime pair stays out for two independent reasons, either alone
+    # sufficient.  It is Registry ``scalar``, reaching the scheme from the
+    # scalar array (solve_em.F:3849 ``QIR_CURR=scalar(...,P_QIR)``) exactly
+    # like every number moment.  And qir is a COMPONENT of qi rather than
+    # extra mass -- module_mp_p3.F:2666/:5099 form the rime mass FRACTION
+    # as ``qirim/qitot`` -- so adding it would double count the rimed ice,
+    # while qib is a rime VOLUME in m3 kg-1 (module_mp_p3.F:1946) and is
+    # not a mass at all.
+    #
+    # This is the reference arm for the device's presence-keyed P3 branch
+    # (gpuwm/core/acoustic.py prepare_moist_cq), which keeps the six-mass
+    # kernel mode and hands the absent qs/qg slots a zero plane: summing
+    # four species here is the same number, and
+    # tests/test_acoustic_npref.py gates the two against each other.
+    50: _CQ_MASS_SPECIES[:4],
 }
 
 
@@ -2487,12 +2523,15 @@ def np_calc_cq(moisture, mp_physics):
     """WRF ``calc_cq`` factors for the configured Registry moist package.
 
     ``mp_physics`` selects qv only for 0, qv/qc/qr for Kessler (1), all six
-    mass species through qg for WSM6 (6), Thompson (8), Morrison (10) or
-    aerosol-aware Thompson (28), and those six plus hail mass qh for NSSL
-    option 18.
+    mass species through qg for WSM6 (6), Thompson (8), Morrison (10),
+    WDM6 (16) or aerosol-aware Thompson (28), those six plus hail mass qh
+    for Milbrandt-Yau (9) and NSSL option 18, and qv/qc/qr/qi -- one ice
+    category, no snow, no graupel -- for P3 (50).
     Number moments deliberately do not participate: WRF registers them as
     ``scalar``, outside
-    the ``moist`` array traversed by ``calc_cq``.  Surface/top cqw entries are
+    the ``moist`` array traversed by ``calc_cq``; P3's rime mass qir and
+    rime volume qib are ``scalar`` too, and qir is a component of qi
+    besides.  Surface/top cqw entries are
     one; only interior w levels are consumed after ``pg_buoy_w`` transforms
     WRF's stored half-sum into ``1/(1+qtot_w)``.
     """
@@ -7731,16 +7770,22 @@ def np_cal_cldfra1(qv, qc, qi, qs, t, p, *, f_qc=True, f_qi=True,
 
     Supported moisture sets mirror the driver's flag dispatch:
     ``f_qc and f_qi and f_qs`` (Morrison-class, lines 3870-3877, QCLD =
-    QI+QC+QS with weight (QI+QS)/QCLD) and ``f_qc`` alone (Kessler-class,
+    QI+QC+QS with weight (QI+QS)/QCLD), ``f_qc and f_qi and not f_qs``
+    (the arm WRF comments "for P3, mp option 50 or 51", lines 3879-3887,
+    QCLD = QI+QC with weight QI/QCLD) and ``f_qc`` alone (Kessler-class,
     lines 3891-3899, QCLD = QC with the 273.15 K phase threshold).
     Rain never enters QCLD (lines 3904-3916).
     """
     qv, qc, qi, qs, t, p = (np.asarray(a, dtype=np.float64)
                             for a in (qv, qc, qi, qs, t, p))
-    if not f_qc or f_qi != f_qs:
+    if not f_qc or (f_qs and not f_qi):
         raise NotImplementedError(
-            "cal_cldfra1 port supports the qc-only (Kessler) and qc+qi+qs "
-            "(Morrison) WRF moisture sets")
+            "cal_cldfra1 port carries WRF's three F_QC arms: qc+qi+qs "
+            "(module_radiation_driver.F:3870-3877), qc+qi with no snow "
+            "species (the P3 arm, :3879-3887) and qc alone (:3891-3899). "
+            f"f_qc={bool(f_qc)}/f_qi={bool(f_qi)}/f_qs={bool(f_qs)} is "
+            "WRF's mp=5 arm at :3902-3922, whose weight is the F_ICE_PHY "
+            "ice fraction this reference does not carry")
     alpha0, gamma, qcldmin, pexp, rhgrid = 100.0, 0.49, 1.0e-12, 0.25, 1.0
     svp1, svp2, svpi2 = 0.61078, 17.2693882, 21.8745584
     svp3, svpi3, svpt0 = 35.86, 7.66, 273.15
@@ -7750,10 +7795,16 @@ def np_cal_cldfra1(qv, qc, qi, qs, t, p, *, f_qc=True, f_qi=True,
     esi = 1000.0 * svp1 * np.exp(svpi2 * tc / (t - svpi3))
     qvsw = ep2 * esw / (p - esw)
     qvsi = ep2 * esi / (p - esi)
-    if f_qi:
+    if f_qi and f_qs:
         qcld = qi + qc + qs
         weight = np.where(qcld < qcldmin, 0.0,
                           (qi + qs) / np.maximum(qcld, qcldmin))
+    elif f_qi:
+        # module_radiation_driver.F:3879-3887, "for P3, mp option 50 or
+        # 51": one ice category, no snow species, so QS never enters QCLD.
+        qcld = qi + qc
+        weight = np.where(qcld < qcldmin, 0.0,
+                          qi / np.maximum(qcld, qcldmin))
     else:
         qcld = qc
         weight = np.where(qcld < qcldmin, 0.0,

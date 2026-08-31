@@ -102,6 +102,7 @@ fn the_written_grid_file_reads_back_through_an_independent_reader() {
             spec_json: serde_json::to_string(&out.spec).unwrap(),
             request: "600 cells, uniform".into(),
             receipt_json: "{}".into(),
+            static_coordinates: None,
         },
         false,
     )
@@ -433,6 +434,7 @@ fn a_graded_request_regenerates_byte_identically() {
                 spec_json: serde_json::to_string(&out.spec).unwrap(),
                 request: "regeneration identity".into(),
                 receipt_json: rw_mpas::mesh::provenance_json(&out.receipt).unwrap(),
+                static_coordinates: None,
             },
             false,
         )
@@ -577,6 +579,7 @@ fn the_binarys_own_provenance_writes_the_same_bytes_twice() {
             g.receipt.background_requested_km
         ),
         receipt_json: rw_mpas::mesh::provenance_json(&g.receipt).expect("provenance"),
+        static_coordinates: None,
     };
 
     let pa = scratch("stamped-a.grid.nc");
@@ -671,6 +674,7 @@ fn the_rebuild_route_names_its_source_by_digest_and_not_by_path() {
             out.mesh.n_cells, sha
         ),
         receipt_json: rw_mpas::mesh::provenance_json(&out.receipt).expect("provenance"),
+        static_coordinates: None,
     };
 
     let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";

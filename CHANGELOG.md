@@ -1,5 +1,95 @@
 # Changelog
 
+## 2.6.0 (2026-08-30)
+
+New:
+- P3 microphysics (`mp_physics = 50`): one ice category carrying a
+  predicted rime mass fraction and rime density. Runs on the card by
+  default; `p3_backend` selects `cuda`, `fused`, or the `reference` CPU
+  transcription, with the two device arms byte-identical on every
+  fixture and -fmad=false because contraction measurably moves the
+  numbers.
+- P3 is measured against WRF's own Fortran: unmodified module_mp_p3.F
+  (v4.5.2) at -O0 over twelve fixtures. 4 of 12 bit-identical, five more
+  within 2-7 ULP; the two long mixed-phase cases bifurcate exactly as
+  the Fortran does against itself under a one-ULP nudge. The executable
+  oracle ships in the tree. Maturity stays implemented-unverified; the
+  open items are named in the registry row.
+- P3 reaches every shipped seam: native namelist import (mp=51/52 stay
+  refused by name), the stock-WRF initialization inventory, real-data
+  starts with analyzed hydrometeors, nest births that seed the rime
+  pair, an mp=50 wrfinput handoff, the RW-WPS support report, and
+  legacy RRTMG's one-category-ice special case.
+- P3 nest edges run in both directions against every ported partner, a
+  defined and documented ArWen extension where WRF forbids mixed
+  selectors outright: mass-conserving merge on entry, rime-state split
+  on exit, with P3's own calc_bulkRhoRime holding qirim <= qitot and
+  the [50, 900] density bound by construction on CPU and CUDA alike.
+- The native-HRRR route admits P3: the microphysics admission is
+  derived from the ported set (minus the named mp=28 aerosol block),
+  and a registered preparation profile
+  (p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1) makes it a template selection.
+- The offline downscale reads an mp=50 parent; the one gap the
+  composition creates (a cross-scheme offline edge) refuses by name.
+- Milbrandt-Yau (mp=9) joins analyzed-hydrometeor initialization: a
+  cloudy analysis starts with its five decoded species instead of
+  condensate-free.
+- A cu_physics=3 import prints a scheme-generation notice (this is WRF
+  v4.6.1's Grell-Freitas, not v4.8.0's Grell-Freitas-Li, and the two
+  namelists are byte-indistinguishable); cugd_avedx != 1 is refused by
+  name.
+- Mesh generation is faster on both arms: the default arm stays
+  byte-identical to every pinned mesh at 1.28x-1.71x, and
+  `gpuwm mesh --triangulation incremental` serves never-built hi-res
+  construction at 4.28x on a 1.7M-cell build. The crate test floor
+  rises to 418.
+- Fine-mesh unlock: generated meshes store binary64 points and the
+  dual-edge floor becomes 400 coordinate quanta, so sub-kilometre
+  meshes generate instead of being refused.
+- rw-netcdf is no longer the weak crate: mutant survival drops 67.8 to
+  4.6 percent, the mutation debt ratchets to 986, and the crate's test
+  floor rises 7 to 43.
+- A mutation-testing leg joins the battery: cargo-mutants runs over the
+  Rust a commit changed. Its first estate run gave up six real defects,
+  all fixed.
+- Dycore symmetry gates (x-reflection, x/y transpose,
+  well-balancedness-at-rest) and five further battery gates for faults
+  nothing had caught, including a listed file that stops collecting now
+  failing the leg.
+
+Fixed:
+- The mesh steepest-gradient gate sampled a lattice too coarse to see
+  refinement transitions and admitted a spec at 7.3x its ceiling.
+  Density fields now declare where they vary, partial probe coverage
+  refuses before a number is read, and 157 re-measured specs moved 5
+  verdicts, all admit-to-refuse.
+- `gpuwm downscale` of an mp=10 parent died at its first radiation call
+  on rounding-scale negative moments; offline children now route
+  through the same positive-definite tolerance policy as online ones.
+- Writers landing on tracked files stop translating newlines, and the
+  line-ending hook reads worktree bytes and arms itself on first use.
+- The RRTM longwave adapter (ra_lw_physics=1) resolved cloud-fraction
+  species flags as a fused pair, so a supercooled Kessler-class cloud
+  radiated as clear sky. The flags now resolve per scheme; P3 is
+  byte-identical before and after.
+- `rw_mpas_mesh --dry-run` prints its JSON record alone again.
+- The registry, manual and public docs stop calling mp=50 CPU-only and
+  oracle-less.
+- Rendering a Rust-written classic history tape no longer dies at the
+  Times variable: the renderer's NetCDF reader gains a real text read
+  for character arrays.
+- A prepared domain tree written by an earlier version binds again
+  after upgrade: five newer experiment fields had joined the identity
+  without tolerance entries and blamed the experiment file.
+- The two-domain HRRR forecast tool runs its own shipped configuration
+  again; its constant downward-longwave guard had refused it since the
+  guard landed.
+- CF time units that declare a real UTC offset (`+05:30`, `-0600`, `Z`)
+  decode to the instant they name in both Rust readers. The dump tool
+  used to drop the calendar silently and the mapped engine refused the
+  file; offsets are bounded at 18 hours and a malformed designator is
+  refused with the reason.
+
 ## 2.5.8 (2026-08-27)
 
 New:

@@ -386,4 +386,88 @@ mod tests {
         let found = tree.nearest([0.5, 0.5, 0.5], 1.0).unwrap();
         assert_eq!(found.index, 0);
     }
+
+    /// The tree is a TREE, and its root box is the cloud.
+    ///
+    /// Every test above this one compares ANSWERS, and the answers are
+    /// the same whether the search prunes or scans every point: break
+    /// the bounding boxes, or the rule that decides when a node stops
+    /// splitting, and `nearest` still returns exactly the right index
+    /// and the right bits -- it just walks the whole cloud to get there.
+    /// So a change that collapses this to one leaf node is invisible to
+    /// the parity suite, and it is not a small thing: a regrid plan
+    /// resolves one query per destination cell against every observation
+    /// in the swath, and linear search turns a few seconds into hours.
+    ///
+    /// This is the structural claim the answers cannot carry: the root
+    /// box is exactly the cloud's extent on each axis, and four thousand
+    /// points do not fit in one leaf of sixteen.
+    #[test]
+    fn the_root_box_is_the_cloud_and_the_tree_really_splits() {
+        let mut rng = Rng(0x9E3779B97F4A7C15);
+        let count = 4000;
+        let points: Vec<[f64; 3]> = (0..count).map(|_| rng.unit()).collect();
+        let tree = KdTree::build(points.clone());
+        let root = tree.root.expect("a non-empty cloud has a root");
+        let node = tree.nodes[root as usize];
+        for axis in 0..3 {
+            let mut lower = f64::INFINITY;
+            let mut upper = f64::NEG_INFINITY;
+            for point in &points {
+                if point[axis] < lower {
+                    lower = point[axis];
+                }
+                if point[axis] > upper {
+                    upper = point[axis];
+                }
+            }
+            assert_eq!(
+                node.lower[axis].to_bits(),
+                lower.to_bits(),
+                "root box lower bound on axis {axis}"
+            );
+            assert_eq!(
+                node.upper[axis].to_bits(),
+                upper.to_bits(),
+                "root box upper bound on axis {axis}"
+            );
+        }
+        let least = count / LEAF_SIZE;
+        assert!(
+            tree.nodes.len() >= least,
+            "{count} points in {} node(s); a leaf holds {LEAF_SIZE}, so a tree \
+             that split has at least {least}.  One node means every query \
+             scans the whole cloud.",
+            tree.nodes.len()
+        );
+    }
+
+    /// The box distance is the thing that decides what is skipped.
+    ///
+    /// Return zero from it and nothing is ever pruned; return a negative
+    /// number and nothing is ever pruned either; accumulate the axis
+    /// shortfalls with the wrong sign and the same.  All three answer
+    /// every query correctly and none of them is a k-d tree any more,
+    /// which is why this asserts the function rather than the search.
+    #[test]
+    fn the_box_distance_is_zero_inside_and_the_axis_shortfall_outside() {
+        // Two points, so the root is a leaf whose box is [0,0,0]..[1,2,3].
+        let tree = KdTree::build(vec![[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]]);
+        let root = tree.root.expect("a non-empty cloud has a root");
+        assert_eq!(
+            tree.box_distance_squared(root, [0.5, 1.0, 1.5]),
+            0.0,
+            "a query inside the box is at no distance from it"
+        );
+        assert_eq!(
+            tree.box_distance_squared(root, [3.0, 1.0, 1.5]),
+            4.0,
+            "two beyond the upper x bound, and nothing on the other axes"
+        );
+        assert_eq!(
+            tree.box_distance_squared(root, [-1.0, 1.0, -2.0]),
+            5.0,
+            "one below the lower x bound and two below the lower z bound"
+        );
+    }
 }

@@ -283,6 +283,17 @@ def test_the_context_charge_follows_the_measured_card():
             "a run loads kernel modules the bare context has not paid for")
 
 
+#: The widest per-thread local frame of the AS-BUILT binary the receipt's
+#: runs launched: ``ysu_column``'s 9,232 B.  The 2026-08-21 column-workspace
+#: cuts (17cf943ef YSU, 48ff6b813 KF, merged by 2bb15b22f and c0f818ef1)
+#: retired that frame -- measured 9,232 -> 0 B on NVRTC 13.0/13.3, sm_86 and
+#: sm_120 -- so the live pricing legitimately dropped below these readings
+#: and the receipt is bounded by the pricing of the binary that PAID it,
+#: exactly as tests/test_preflight.py prices the 2026-07-26 runs against
+#: KF_AS_BUILT_FRAME.
+YSU_AS_BUILT_FRAME_BYTES = 9232
+
+
 @pytest.mark.parametrize("card_name,lo,hi", [
     ("NVIDIA GeForce RTX 5070 Ti", 1.1958, 1.1994),
     ("NVIDIA GeForce RTX 5090", 2.6402, 2.6447),
@@ -292,20 +303,33 @@ def test_the_non_pool_charge_covers_the_measured_run_time_residency(
     """Priced non-pool must bound what the runs actually paid.
 
     The battery's shared 300x300x49 domain, whose widest launched frame
-    is the YSU module's, on both Linux cards.  The charge may exceed the
+    was the YSU module's, on both Linux cards.  The charge may exceed the
     measurement -- it is a bound -- but it may never fall short, which
     is what the flat context constant did on the 5090.
+
+    Re-pinned 2026-08-30: these residencies were paid by the receipt-era
+    binary, before the 2026-08-21 frame cuts moved the YSU and KF column
+    arrays into workspaces (see :data:`YSU_AS_BUILT_FRAME_BYTES`), so the
+    bound is the as-built price -- context plus the reservation of the
+    retired 9,232 B frame -- and the LIVE price is held to the contraction
+    direction: never above the as-built one, never below its own context.
     """
 
     exp = _single_domain(300, 300)
     profile = _profile(card_name)
-    priced = pf.non_pool_device_bytes(exp, profile=profile)
-    assert priced >= int(hi * GIB), (
-        f"{card_name}: priced {priced / GIB:.4f} GiB under a measured "
-        f"{hi:.4f} GiB")
+    as_built = (profile.cuda_context_bytes
+                + profile.reservation_bytes(YSU_AS_BUILT_FRAME_BYTES))
+    assert as_built >= int(hi * GIB), (
+        f"{card_name}: as-built priced {as_built / GIB:.4f} GiB under a "
+        f"measured {hi:.4f} GiB")
     # ...and not absurdly over it: a bound nobody can reach is a refusal
     # machine.  1.6x the worst measurement is the stated ceiling.
-    assert priced <= int(hi * 1.6 * GIB)
+    assert as_built <= int(hi * 1.6 * GIB)
+    # The frame cuts are contractions: the live charge may only sit at or
+    # below what the measured binary paid, and it still carries the whole
+    # measured per-card context.
+    priced = pf.non_pool_device_bytes(exp, profile=profile)
+    assert profile.cuda_context_bytes < priced <= as_built
 
 
 # ---------------------------------------------------------------------------

@@ -556,10 +556,20 @@ def test_host_roundtrip_pinned():
 #: All six are plain 3-D mass-point fields, so their transport is the mass
 #: path the round trip below drives -- but "same path" is an argument, and
 #: the assertion beneath is the measurement.
-NEW_SINCE_41 = ("qir", "qib", "th_old", "qv_old", "nh", "nn")
+#:
+#:   ``rthften``          the dycore's exported advective theta forcing --
+#:   ``rqvften``          and its qv twin -- joined the contract at
+#:                        02ca83316 (the GF forcing-pair export made them
+#:                        checkpoint state) without this gate moving, the
+#:                        exact drift the 41-to-47 note above records.
+#:                        Both are plain 3-D mass-point fields; the round
+#:                        trip below is the measurement that the default
+#:                        stagger is their stagger.
+NEW_SINCE_41 = ("qir", "qib", "th_old", "qv_old", "nh", "nn",
+                "rthften", "rqvften")
 
 
-def test_all_47_names_device_and_host():
+def test_all_49_names_device_and_host():
     """Every name in STATE_SERIALIZED_ATTRS, both memory paths, both specs.
 
     The count is asserted EXACTLY, not as a floor: this suite synthesizes a
@@ -572,8 +582,8 @@ def test_all_47_names_device_and_host():
     set the product no longer serialized.
     """
     names = G.serialized_attrs()
-    assert len(names) == 47, (
-        f"STATE_SERIALIZED_ATTRS has {len(names)} names, this gate knows 47. "
+    assert len(names) == 49, (
+        f"STATE_SERIALIZED_ATTRS has {len(names)} names, this gate knows 49. "
         "A new field joined (or left) the streamed serialization set: extend "
         "NEW_SINCE_41's justification block and this count TOGETHER, and "
         "check the new name's stagger against _synthetic_shapes")
@@ -1079,7 +1089,7 @@ TESTS = [
     test_layered_fields_gather_like_mass_fields,
     test_device_roundtrip_real_state,
     test_host_roundtrip_pinned,
-    test_all_47_names_device_and_host,
+    test_all_49_names_device_and_host,
     test_staggered_u_tile_matches_direct_slice,
     test_wrapped_edge_tile_matches_rolled_reference,
     test_duplicate_invariant_is_load_bearing,

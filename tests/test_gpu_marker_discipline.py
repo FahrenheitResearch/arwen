@@ -338,8 +338,14 @@ def _run_banned(path: pathlib.Path, cwd: pathlib.Path) -> tuple:
     # backstop.
     env = {k: v for k, v in os.environ.items()
            if k != "CUDA_VISIBLE_DEVICES"}
+    # tests/ BEFORE the repository root: d51e5c2f3 (2026-08-29) planted a
+    # root conftest.py (the line-ending hook armer), and with the root
+    # first ``-p conftest`` imported THAT module instead of the ban
+    # plugin under test -- the scratch run then saw the local card and
+    # both ban assertions went red.  The order is what selects which
+    # ``conftest`` the plugin flag names.
     env.update({"GPUWM_NO_LOCAL_GPU": "1",
-                "PYTHONPATH": os.pathsep.join([str(_ROOT), str(_TESTS)])})
+                "PYTHONPATH": os.pathsep.join([str(_TESTS), str(_ROOT)])})
     command = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider"]
     if _TESTS not in path.parents:
         command += ["-p", "conftest"]

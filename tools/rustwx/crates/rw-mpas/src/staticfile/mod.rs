@@ -31,6 +31,7 @@
 //! agrees with where `gpuwm fetch-geog` stages, and the FP32 metric reading.
 
 pub mod compare;
+pub mod coordframe;
 pub mod fp32metrics;
 pub mod geog;
 pub mod schema;

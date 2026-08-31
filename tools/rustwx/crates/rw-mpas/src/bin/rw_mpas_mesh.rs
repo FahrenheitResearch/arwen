@@ -20,6 +20,7 @@ use std::process::ExitCode;
 use rw_mpas::mesh::density::MeshSpec;
 use rw_mpas::mesh::emit::{self, Provenance};
 use rw_mpas::mesh::footprint;
+use rw_mpas::staticfile::coordframe::CoordinateRepresentation;
 use rw_mpas::mesh::{GenerateRequest, Limits, LloydOptions, generate};
 
 /// The literal a bridge contract handshakes on. It spells the argument vector
@@ -33,7 +34,7 @@ use rw_mpas::mesh::{GenerateRequest, Limits, LloydOptions, generate};
 /// the marker exists to catch.
 pub const ABI_MARKER: &str = "rw_mpas_mesh --out GRID.nc [--spec SPEC.json | --background-km KM | --from-centres GRID.nc] \
 [--cells N | --card KEY [--vram-gib X]] [--fit-spacing yes|no] [--sweeps N] [--tolerance X] [--omega X] \
-[--receipt JSON] [--clobber] [--dry-run] [--list-cards]";
+[--receipt JSON] [--triangulation rebuild|incremental] [--clobber] [--dry-run] [--list-cards]";
 
 /// Progress tokens this binary prints, one per stage, tab separated.
 pub const PROGRESS_TOKENS: &str = "SIZED\tSEEDED\tRELAXED\tDERIVED\tVALIDATED\tWROTE\tFINISHED";
@@ -85,7 +86,16 @@ fn usage() -> String {
         \x20                 centroid and h is the local spacing. Reaching --sweeps without\n\
         \x20                 meeting it is a refusal, not a quiet emit.\n\
          --sweeps         relaxation budget (default 300)\n\
-         --omega          over-relaxation factor (default 1.4; 1.0 is plain Lloyd)\n\n\
+         --omega          over-relaxation factor (default 1.4; 1.0 is plain Lloyd)\n\
+         --triangulation  how the Delaunay is kept between relaxation sweeps.\n\
+        \x20                 rebuild (DEFAULT, class A) rebuilds it from scratch every sweep.\n\
+        \x20                 That is what every registered mesh was generated with and the\n\
+        \x20                 only setting that reproduces one byte for byte.\n\
+        \x20                 incremental (class B) keeps the facets and repairs them by Lawson\n\
+        \x20                 flips. SAME triangulation, but each cell keeps the ring ROTATION\n\
+        \x20                 it had where a rebuild re-rolls it for about 27% of cells, so the\n\
+        \x20                 FILE differs. Use it for a mesh that has never existed; never to\n\
+        \x20                 regenerate one with a registered SHA-256.\n\n\
          THE REGIONAL CULL\n\
          --cull-parent    cut a limited-area mesh out of an existing global grid or static\n\
         \x20                 file instead of generating one. Byte-matches the native\n\
@@ -337,6 +347,11 @@ fn run() -> Result<String, String> {
         }
         lloyd.omega = v;
     }
+    // THE CLASS SWITCH. Default `rebuild`; see `hull::TriangulationMode` for
+    // why a faster default would silently lapse every registered mesh digest.
+    if let Some(v) = args.get("triangulation") {
+        lloyd.triangulation = rw_mpas::mesh::hull::TriangulationMode::parse(v)?;
+    }
 
     let request = GenerateRequest {
         spec: spec.clone(),
@@ -345,12 +360,28 @@ fn run() -> Result<String, String> {
         card,
         fit_spacing,
         lloyd,
-        limits: Limits::default(),
+        // Same source as the grid attribute this route stamps below, so the
+        // gate and the file cannot disagree about how precisely this mesh is
+        // stored.
+        limits: Limits::for_storage(CoordinateRepresentation::for_generated_mesh()),
         ..Default::default()
     };
 
     // --- dry run: size and cost, write nothing ------------------------------
     if args.flag("dry-run") {
+        // THE DRY RUN SIZES THE SPEC THE REAL RUN WILL BUILD, not the one that
+        // was typed. `generate` snaps every region onto the background's
+        // power-of-two ladder before it seeds anything, and the snap is finer
+        // (up to 4x the cells in the refined region), so sizing the unsnapped
+        // request would understate the cost of the very run this dry run
+        // exists to price -- the "sizing said fine and generation refused
+        // after 700 seconds" fault, arrived at from the other side.
+        // The snap goes into the RECORD and not onto stdout. A dry run prints
+        // the JSON record ALONE -- `gpuwm.mpas_mesh` and `hexcore.swath` both
+        // parse the whole of stdout as JSON, and a progress line above it is
+        // a `JSONDecodeError` at line 1 column 1 rather than a message anybody
+        // reads.
+        let (spec, dry_snap) = rw_mpas::mesh::ladder_snap::snap_to_ladder(&spec);
         let predicted = spec.predicted_cells(request.sizing_samples);
         let target = match (request.target_cells, budget_mib) {
             (Some(n), _) => n,
@@ -369,11 +400,19 @@ fn run() -> Result<String, String> {
         } else {
             (spec.clone(), 1.0)
         };
+        // The gradient of the SCALED spec, which is the one that would be
+        // built. Read once and reported whole: the number, what it cost, and
+        // whether it is a measurement at all.
+        let gradient = fitted.steepest_gradient_reading(50_000);
         let plan = serde_json::json!({
             "engine": concat!("rw-mpas ", env!("CARGO_PKG_VERSION"), " (rust)"),
             "dry_run": true,
             "spec": fitted,
             "spec_scale_applied": scale,
+            // What the request had to move to reach a rung the ladder builds.
+            // The `spec` above is the SNAPPED one, so a reader comparing it
+            // with what they typed has this beside it to say why.
+            "ladder_snap": dry_snap,
             "target_cells": target,
             "predicted_cells": fitted.predicted_cells(request.sizing_samples),
             // The card is printed BESIDE the footprint, always. A footprint
@@ -411,8 +450,14 @@ fn run() -> Result<String, String> {
             },
             "device_budget_mib": budget_mib,
             "grid_file_bytes_estimate": emit::published_schema_bytes(target),
-            "steepest_requested_gradient_percent_per_cell":
-                fitted.steepest_gradient_per_cell(50_000) * 100.0,
+            "steepest_requested_gradient_percent_per_cell": gradient.per_cell * 100.0,
+            // What the reading cost and whether it is a reading at all. A
+            // consumer that gates on the gradient must refuse a receipt whose
+            // coverage is missing or not "complete": missing means an engine
+            // that measured on a global lattice, which cannot see a transition
+            // narrower than its own point spacing.
+            "gradient_probe_points": gradient.probe_points,
+            "gradient_probe_coverage": gradient.coverage.as_receipt_word(),
             "published_reference_gradient_percent_per_cell": 1.53,
             // What each region's request will ACTUALLY deliver. The ramp is
             // centred on the region boundary, so a region narrower than a few
@@ -446,9 +491,20 @@ fn run() -> Result<String, String> {
         // pins a grid by byte count and SHA-256.
         receipt_json: rw_mpas::mesh::provenance_json(&generated.receipt)
             .map_err(|e| e.to_string())?,
+        // A GENERATED mesh has no native MPAS-A counterpart -- native MPAS-A
+        // cannot produce this point set -- so no dycore byte-identity anchor
+        // binds how precisely its static stores it, and the coordinate quantum
+        // stops being what a fine mesh runs into.  See
+        // `rw_mpas::staticfile::coordframe`.  A published grid, and a cull of
+        // one, carry no such attribute and stay binary32.
+        static_coordinates: Some(CoordinateRepresentation::for_generated_mesh()),
     };
-    let written = emit::write_grid(&generated.mesh, &out, &provenance, args.flag("clobber"))
-        .map_err(|e| e.to_string())?;
+    let written = rw_mpas::mesh::profile::timed(
+        &rw_mpas::mesh::profile::EMIT,
+        generated.mesh.n_cells as u64,
+        || emit::write_grid(&generated.mesh, &out, &provenance, args.flag("clobber")),
+    )
+    .map_err(|e| e.to_string())?;
     println!(
         "WROTE\t{}\t{}\t{}\t{}",
         written.path.display(),
@@ -594,6 +650,26 @@ fn rebuild_from_centres(args: &Args, source: &str) -> Result<String, String> {
         format!("{:x}", hasher.finalize())
     };
 
+    // Inherited, not minted: whether this point set has a native counterpart
+    // is a property of where it came from.  An unknown tag on the source is a
+    // refusal here rather than a silent binary32 default.
+    let source_static_coordinates = {
+        let f = netcrust::File::open(&source_path)
+            .map_err(|e| format!("cannot open the source mesh {source}: {e}"))?;
+        match f
+            .attribute(emit::STATIC_COORDINATES_ATTR)
+            .and_then(|a| a.as_string().map(|t| t.to_string()))
+        {
+            None => None,
+            Some(tag) => Some(CoordinateRepresentation::from_tag(&tag).ok_or_else(|| {
+                format!(
+                    "the source mesh {source} declares {} = {tag:?}, which this build does not                      know. Carrying it forward on a guess would build the rebuilt mesh's static                      at a coordinate quantum the source never asked for, and every storage                      tolerance downstream is derived from that quantum",
+                    emit::STATIC_COORDINATES_ATTR
+                )
+            })?),
+        }
+    };
+
     let src = read_grid_generators(&source_path)?;
     let sphere_radius = src.sphere_radius;
     let nominal_min_dc = src.nominal_min_dc;
@@ -637,7 +713,10 @@ fn rebuild_from_centres(args: &Args, source: &str) -> Result<String, String> {
         cell_xyz,
         mesh_density,
         nominal_min_dc,
-        Limits::default(),
+        // The rebuild is judged by the representation it INHERITED: a
+        // published point set keeps the 200 m binary32 floor, a generated one
+        // keeps the floor its own storage earns.
+        Limits::for_storage(source_static_coordinates.unwrap_or_default()),
         |line| println!("{line}"),
     )
     .map_err(|e| e.to_string())?;
@@ -665,6 +744,12 @@ fn rebuild_from_centres(args: &Args, source: &str) -> Result<String, String> {
         // into the side receipt only.
         receipt_json: rw_mpas::mesh::provenance_json(&rebuilt.receipt)
             .map_err(|e| e.to_string())?,
+        // The rebuild INHERITS its source's declaration rather than minting
+        // one: `--from-centres` takes an existing point set as the request, so
+        // whether that mesh has a native counterpart is a property of where
+        // the centres came from and not of this run.  A published source
+        // declares nothing and the rebuild declares nothing.
+        static_coordinates: source_static_coordinates,
     };
     let written = emit::write_grid(&rebuilt.mesh, &out, &provenance, args.flag("clobber"))
         .map_err(|e| e.to_string())?;
@@ -706,7 +791,19 @@ pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
 
 fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
-    match run() {
+    let started = std::time::Instant::now();
+    let outcome = run();
+    // Stage attribution, off unless GPUWM_MESH_PROFILE is set, and on stderr
+    // so it can never contaminate the receipt JSON on stdout. Printed on the
+    // refusal path too: a run that refuses after four minutes of relaxation
+    // is exactly the one whose profile a caller wants.
+    if rw_mpas::mesh::profile::on() {
+        eprintln!(
+            "{}",
+            rw_mpas::mesh::profile::report(started.elapsed().as_secs_f64())
+        );
+    }
+    match outcome {
         Ok(text) => {
             println!("{text}");
             ExitCode::SUCCESS

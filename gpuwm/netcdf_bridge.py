@@ -522,10 +522,11 @@ class Dataset:
 def _parse_instant(text: str, label: str) -> datetime:
     """One RFC-3339 instant from the bridge, as a naive UTC datetime.
 
-    The bridge emits UTC and only UTC (it refuses a non-UTC reference
-    time rather than shifting it), so the trailing ``Z`` is dropped
-    rather than interpreted -- and the rest of the module keeps working
-    in the naive-UTC datetimes it always used.
+    The bridge emits UTC and only UTC (a reference time spelled with a
+    UTC offset is converted to UTC inside the decoder before any value
+    is decoded), so the trailing ``Z`` is dropped rather than
+    interpreted -- and the rest of the module keeps working in the
+    naive-UTC datetimes it always used.
     """
 
     body = str(text)

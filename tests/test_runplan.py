@@ -893,6 +893,36 @@ def test_the_wizard_writes_every_file_the_hrrr_route_reads(tmp_path):
         assert path.is_file(), role
 
 
+def test_an_hrrr_intent_resolves_a_p3_suite_through_the_wizard(tmp_path):
+    """mp=50 rides the wizard-emitted-config leg like any other suite.
+
+    The reachability proof for the P3 door on the plan route, no network
+    and no GPU: the intent names the registered P3 profile
+    (p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1), the wizard emits the config,
+    and the same emission writes every file the HRRR route reads -- so
+    the route-inputs physics gate (which used to refuse mp_physics=50 by
+    prose) has demonstrably admitted it.
+    """
+
+    from gpuwm.hrrr_route_inputs import route_input_paths
+    from gpuwm.runplan import generate_intent_config
+
+    p3_profile = "p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1"
+    plan = load_plan(_hrrr_plan(
+        tmp_path, tmp_path / "run",
+        intent={"physics_profile": p3_profile}))
+    resolution, exp, data = resolve_plan(plan, require_inputs=False)
+    assert data is None
+    assert exp.domains[0].run.mp_physics == 50
+    assert (exp.domains[0].run.ra_lw_physics,
+            exp.domains[0].run.ra_sw_physics) == (4, 4)
+    assert exp.domains[0].run.ra_rrtmg_variant == "rrtmg_legacy"
+
+    generated, _ = generate_intent_config(plan, destination=tmp_path / "gen")
+    for role, path in route_input_paths(generated).items():
+        assert path.is_file(), role
+
+
 def test_the_prepared_route_now_drives_a_multi_domain_hrrr_plan(tmp_path):
     """This asserted a refusal until the tree chain was wired.
 

@@ -3007,7 +3007,15 @@ def test_the_minimum_layout_refusal_does_not_contradict_itself(
     grid-independent then the grid is exactly what would help."""
 
     out = tmp_path / "tiny.toml"
-    rc = cli_main(["domain", "--point=35.22,-97.44", "--vram-gib", "5",
+    # 4 GiB, not 5: this probe needs a budget the minimum layout cannot
+    # fit, and the fit boundary MOVES when pricing improves -- the RRTMGP
+    # register-derivation drop and the model-top default move carried the
+    # 12-3-1-0.5 ladder's envelope under a 5 GiB card's budget, which
+    # left this test asserting a refusal that correctly no longer fires.
+    # 4 GiB is the probe that still exercises THIS arm: at 3 GiB the
+    # size-independent floor (context + kernel backing store) overflows
+    # first and the no-layout-can-help refusal answers instead.
+    rc = cli_main(["domain", "--point=35.22,-97.44", "--vram-gib", "4",
                    "--ladder", "12-3-1-0.5", "--source", "gfs",
                    "--cycle", "2026-07-28T00", "--out", str(out)])
     assert rc == 2

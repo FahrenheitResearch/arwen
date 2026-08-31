@@ -119,7 +119,8 @@ MESH_ABI_MARKER = (
     "rw_mpas_mesh --out GRID.nc [--spec SPEC.json | --background-km KM | "
     "--from-centres GRID.nc] [--cells N | --card KEY [--vram-gib X]] "
     "[--fit-spacing yes|no] [--sweeps N] [--tolerance X] [--omega X] "
-    "[--receipt JSON] [--clobber] [--dry-run] [--list-cards]")
+    "[--receipt JSON] [--triangulation rebuild|incremental] [--clobber] "
+    "[--dry-run] [--list-cards]")
 
 #: ``rw_mpas_static``'s contract, at the head of its argument vector.
 #: The crate's own literal continues past this into the optional flags
@@ -974,9 +975,24 @@ def plan(*, spec: dict, cells: int, workdir: Path) -> dict:
                       "--cells", str(int(cells)), "--dry-run"])
 
 
+#: The two arms of the generator, and what choosing one costs.
+#:
+#: ``rebuild`` is the DEFAULT and the arm every registered mesh digest was
+#: minted on: the spherical Delaunay is rebuilt from scratch after every
+#: relaxation sweep.  ``incremental`` keeps the facet list and repairs it by
+#: Lawson flips -- the same triangulation, but each cell keeps the neighbour
+#: ring ROTATION it had where a rebuild re-rolls it for about 27 % of cells,
+#: and the grid file records the rotation.  So the fast arm produces a
+#: DIFFERENT FILE from the same request and cannot reproduce a pinned
+#: SHA-256.  It is asked for by name for exactly that reason, and the arm
+#: that ran is stamped into the receipt whenever it is not the default.
+TRIANGULATION_ARMS = ("rebuild", "incremental")
+
+
 def generate(*, spec: dict, cells: int, out: Path, workdir: Path,
              clobber: bool = False, receipt: Path | None = None,
              sweeps: int | None = None, tolerance: float | None = None,
+             triangulation: str | None = None,
              progress=None) -> dict:
     """Generate the mesh and return the binary's receipt."""
 
@@ -990,6 +1006,16 @@ def generate(*, spec: dict, cells: int, out: Path, workdir: Path,
         arguments += ["--sweeps", str(int(sweeps))]
     if tolerance is not None:
         arguments += ["--tolerance", repr(float(tolerance))]
+    if triangulation is not None:
+        if triangulation not in TRIANGULATION_ARMS:
+            raise MeshRequestError(
+                f"--triangulation {triangulation} is not an arm; it is "
+                "`rebuild` (the default, and the arm every registered mesh "
+                "digest was minted on -- the only one that reproduces one "
+                "byte for byte) or `incremental` (the same triangulation "
+                "kept and repaired by Lawson flips, which is faster and "
+                "writes a different file)")
+        arguments += ["--triangulation", triangulation]
     return _run_mesh(arguments, progress=progress)
 
 
@@ -1291,6 +1317,16 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
         "--tolerance", type=float, default=None, metavar="X",
         help="relaxation convergence tolerance passed to the generator")
     parser.add_argument(
+        "--triangulation", choices=TRIANGULATION_ARMS, default=None,
+        help="how the Delaunay is kept between relaxation sweeps.  "
+             "rebuild (the default) rebuilds it every sweep and is the arm "
+             "every registered mesh was generated with -- the only one that "
+             "reproduces a pinned SHA-256.  incremental keeps the facets "
+             "and repairs them by Lawson flips: the same triangulation, "
+             "much faster, and a DIFFERENT FILE, because each cell keeps "
+             "the ring rotation a rebuild re-rolls.  For a mesh that has "
+             "never existed")
+    parser.add_argument(
         "--clobber", action="store_true",
         help="replace an existing --out")
     parser.add_argument(
@@ -1407,6 +1443,45 @@ def _resolve_cells(args, sizing: Sizing) -> tuple[int, str]:
         "the cards with a measured footprint model.")
 
 
+def gradient_gate_reading(proposed) -> float:
+    """The plan's steepest-gradient number, or a named refusal.
+
+    The receipt contract (rw-mpas ``mesh/mod.rs``) says a consumer must
+    refuse a plan whose ``gradient_probe_coverage`` is missing or not
+    ``"complete"`` -- and this door used to read the gradient with
+    ``.get(..., 0.0)``, which hands a MISSING measurement the friendliest
+    possible verdict.  THE BREAKAGE THIS PREVENTS: an engine that sampled
+    the gradient on a sphere-uniform lattice could not see a refinement
+    transition narrower than its own ~101 km point spacing and reported
+    the flat background it landed on; a spec truly at 65.2 %/cell read
+    8.3 and was admitted at 7.3x the build ceiling.  A missing coverage
+    word means an engine from before the repaired meter; ``"partial"``
+    means the probe budget could not cover this spec's own transition
+    shells, and an unmeasured ramp is not a gentle one.
+    """
+
+    gradient = proposed.get("steepest_requested_gradient_percent_per_cell")
+    if gradient is None:
+        raise MeshRequestError(
+            "the plan carries no "
+            "steepest_requested_gradient_percent_per_cell, so the "
+            "smoothness gate cannot be applied and this door will not "
+            "invent a 0.0 for it.  Stage an rw_mpas_mesh binary that "
+            "prints it (gpuwm doctor names the staged binary).")
+    coverage = proposed.get("gradient_probe_coverage")
+    if coverage != "complete":
+        raise MeshRequestError(
+            "the plan reports steepest-gradient probe coverage "
+            f"{coverage!r}, so the number beside it is not a measurement "
+            "of this spec's field: a lattice-only engine stepped over "
+            "every transition narrower than its ~101 km point spacing "
+            "and admitted a 65.2 %/cell spec as 8.3.  Stage an "
+            "rw_mpas_mesh binary that measures the gradient where the "
+            "regions are, or widen the probe budget if the engine "
+            "reported 'partial' for this spec.")
+    return float(gradient)
+
+
 def mesh_main(args) -> int:
     """``gpuwm mesh``: plan, gate, generate."""
 
@@ -1459,8 +1534,7 @@ def mesh_main(args) -> int:
         with tempfile.TemporaryDirectory(prefix="gpuwm-mesh-") as scratch:
             work = Path(scratch)
             proposed = plan(spec=spec, cells=cells, workdir=work)
-            steep = float(proposed.get(
-                "steepest_requested_gradient_percent_per_cell", 0.0))
+            steep = gradient_gate_reading(proposed)
             note = sizing.smoothness.check(
                 steep, allow_rough=args.allow_rough_mesh)
             if args.card:
@@ -1488,6 +1562,7 @@ def mesh_main(args) -> int:
                 spec=spec, cells=cells, out=args.out, workdir=work,
                 clobber=args.clobber, receipt=args.receipt,
                 sweeps=args.sweeps, tolerance=args.tolerance,
+                triangulation=args.triangulation,
                 progress=lambda line: print(f"gpuwm mesh: {line}"))
         # REPORTED, not judged.  See DeliveredSmoothness: this metric is
         # a max over every edge and reads 14.07 % on a mesh with no
@@ -1558,7 +1633,7 @@ def mesh_main(args) -> int:
 __all__ = [
     "BRIDGES", "CONVERT", "CONVERT_ABI_MARKER", "CardCapacity", "INIT",
     "INIT_ABI_MARKER", "LBC", "LBC_ABI_MARKER",
-    "MESH", "MESH_ABI_MARKER", "MeshRequestError",
+    "MESH", "MESH_ABI_MARKER", "MeshRequestError", "TRIANGULATION_ARMS",
     "MeshRoughnessError", "MpasBridge", "SIZING_DATA_PATH", "SIZING_SCHEMA",
     "PORT_BLOCKING_STATIC_FIELDS", "STATIC", "STATIC_ABI_MARKER", "Sizing",
     "Smoothness", "build_parser", "build_spec", "build_static", "crate_dir",

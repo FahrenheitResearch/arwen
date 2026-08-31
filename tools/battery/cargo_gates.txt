@@ -129,8 +129,11 @@ cpu  tools/rustwx  netcdf-writer  32
 # path (crates/obs-regrid/golden, tests/parity.rs), plus the
 # lowest-index-wins tie rule that is this crate's one documented
 # divergence from scipy.  Floor is its first green run in this list,
-# 2026-08-18: 23 lib + 4 parity.
-cpu  tools/rustwx  obs-regrid  27
+# 2026-08-18: 23 lib + 4 parity; raised to 29 when the two structural
+# tests landed (the root bounding box, and the box distance the pruning
+# is decided on), because the parity suite compares only ANSWERS and the
+# answers do not change when the tree stops being a tree.
+cpu  tools/rustwx  obs-regrid  29
 
 # Meteorological arithmetic: derived fields, ECAPE, the severe-weather
 # family, windowed reductions.  Numbers, not looks -- this is the crate
@@ -154,7 +157,9 @@ cpu  tools/rustwx  rustwx-core  26
 # stack whose coverage stamp said two thirds, an NMEP that turned a hit
 # into a miss when the radius grew, a PMM that erased the panel's
 # strongest feature.  A silent change here is a wrong forecast product.
-cpu  tools/rustwx  rustwx-ensemble  21
+# Raised from 21 to 22 when the fail-closed arm of
+# `exceedance_probability` got its first test at all.
+cpu  tools/rustwx  rustwx-ensemble  22
 
 # Field IO and the store-facing readers.
 cpu  tools/rustwx  rustwx-io  59
@@ -207,9 +212,22 @@ cpu  tools/rustwx  rw-nexrad  125
 # this gate is the only thing standing between a broken CF time parse and
 # a wrong initial condition -- and its unit tests are the CF
 # reference-time cases (the unit spellings, the ISO/Zulu variants, and
-# the non-UTC offset that must be REFUSED rather than silently shifted),
-# which is where a calendar bug would otherwise reach a forecast.
-cpu  tools/rustwx  rw-netcdf  5
+# the UTC-offset designators, which convert the epoch to UTC and must
+# land on the same instant as the UTC respelling), which is where a
+# calendar bug would otherwise reach a forecast.
+# Raised from 5 to 7 when `minutes since` and the unpadded `2000-1-1`
+# date spelling got tests; both were claimed by the parser and checked
+# by nothing.  Raised from 7 to 37 when the mutation debt was worked
+# off: the CF unpack order, the dimension-scale recovery, the metadata
+# provenance and the argv contract each gained tests (25 lib + 12 in
+# tests/cli.rs), and a `#[cfg]` that stopped compiling either binary
+# must not leave the leg green.  Raised from 37 to 43 when the held
+# non-UTC-offset refusal was replaced by real offset arithmetic (Drew's
+# 2026-08-31 ruling): the offset/UTC equivalence, both shift directions,
+# the +/-18:00 and 59-minute bounds, the named malformed refusals, and
+# the writer-path round trip each pin what the old refusal left silent
+# (31 lib + 12 in tests/cli.rs).
+cpu  tools/rustwx  rw-netcdf  43
 
 # Surface and upper-air observations.
 cpu  tools/rustwx  rw-obs  53
@@ -255,9 +273,19 @@ cpu  tools/rustwx  rw-wrfbatch  114
 # byte-identical) is about, so this crate is the only thing between a
 # wrong resample weight and an MPAS product plot that is plausible and
 # in the wrong place -- a mesh-to-grid gather that picks the wrong cell
-# does not crash, it draws the storm somewhere else.  Floor is its
-# first green run in this list, 2026-08-20: 61 across the lib.
-cpu  tools/rustwx  rw-mpas  61
+# does not crash, it draws the storm somewhere else.  Floor was its
+# first green run in this list, 2026-08-20: 61 across the lib.  Raised
+# to 399, measured 2026-08-29 across 21 test binaries, because 61 had
+# stopped being a gate: the crate's lib binary alone runs 333 tests, so
+# a `#[cfg]` that stopped compiling the WHOLE of it -- the exact
+# breakage the MIN_TESTS column exists to catch -- would still have left
+# 66 passing and the leg green.  A floor that cannot notice the largest
+# test binary vanishing is not a floor.  Raised to 418, measured
+# 2026-08-30 on the merged mesh-speed tree with the battery's own
+# invocation, when the speed lane's gates joined the crate (the
+# maintained-triangulation arm, the parallel monitor's tie rule, the
+# refusal-by-name doors).
+cpu  tools/rustwx  rw-mpas  418
 
 # static-fields: THIS project's crate too, and the DEFAULT builder of
 # every WPS-geogrid-equivalent static a domain is built on -- projection
@@ -332,14 +360,18 @@ cpu  tools/grib1_bridge  grib-core  162
 # first green run in this list, 61 across the lib and `goldens`; raised
 # to 114 when the hybrid_sigma_pressure closure landed (pv harvest,
 # hybrid pressure, hydrostatic height -- the derivations a hybrid
-# initialization is read off).  The
+# initialization is read off); raised to 121 when its CF time parse got
+# the same offset arithmetic rw-netcdf got under Drew's 2026-08-31
+# ruling -- the offset/UTC equivalence, both shift directions, the
+# +/-18:00 and 59-minute bounds, and the named malformed refusals
+# replace the retired refuses-rather-than-shifting guard.  The
 # goldens target reads the model-gauntlet staging tree when a box has
 # one and runs its cases against nothing when it does not, so this entry
 # is a compile-and-contract leg on a bare runner and a byte-parity leg on
 # a staged one; the Python-side battery
 # (tests/test_mapped_engine_parity.py) is where the cross-engine verdict
 # is read.
-cpu  tools/rw_wps  mapped-engine  114
+cpu  tools/rw_wps  mapped-engine  121
 
 # rw-wps: the donor mapping/composition/namelist engine this snapshot
 # vendors, and the crate the mapped-engine reads its authority files

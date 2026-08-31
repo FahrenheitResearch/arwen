@@ -62,6 +62,11 @@ def _experiment(domain_count: int, *, nz: int = 49, run_seconds: int = 3600,
             # has a target for; the seam refuses the others by name rather
             # than defaulting.
             sf_surface_physics=2,
+            # soil_layer_count(cfg) reads the requested count and checks it
+            # against the scheme's defined geometries; Noah defines exactly
+            # four.  The parametric-soil landing made the count an explicit
+            # config read and this fake never carried it.
+            num_soil_layers=4,
         )
         domains.append(SimpleNamespace(
             grid_id=index + 1, parent_id=0 if index == 0 else index,

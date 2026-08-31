@@ -20,7 +20,9 @@ pub mod gridread;
 pub mod hierarchy;
 pub mod hull;
 pub mod icosa;
+pub mod ladder_snap;
 pub mod lloyd;
+pub mod profile;
 pub mod surgery;
 pub mod validate;
 
@@ -34,6 +36,7 @@ pub use geom::V3;
 pub use emit::{EmittedMesh, Provenance};
 pub use lloyd::LloydOptions;
 pub use validate::{Limits, MeshReport};
+pub use ladder_snap::{LadderSnap, RegionSnap};
 
 /// How the cell count was chosen.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -134,7 +137,16 @@ impl Default for GenerateRequest {
             card: None,
             fit_spacing: false,
             lloyd: LloydOptions::default(),
-            limits: Limits::default(),
+            // A mesh this crate GENERATES has no native MPAS-A counterpart, so
+            // its static is stored at the generated representation and its
+            // dual-edge floor is derived from that same quantum. The two come
+            // from one place (`CoordinateRepresentation::for_generated_mesh`)
+            // so a generator cannot be gated against a precision its file will
+            // not carry. A caller wanting the published representation asks
+            // for `Limits::default()` by name.
+            limits: Limits::for_storage(
+                crate::staticfile::coordframe::CoordinateRepresentation::for_generated_mesh(),
+            ),
             sizing_samples: 200_000,
         }
     }
@@ -163,6 +175,20 @@ pub struct Receipt {
     /// is no card-independent answer, and printing one was the defect.
     pub footprint_mib: Option<f64>,
     pub steepest_requested_gradient_percent_per_cell: f64,
+    /// How many region-targeted probe points that reading spent, and whether
+    /// they covered every locus where the field varies. A reading with no
+    /// coverage word beside it came from an engine that measured the gradient
+    /// on a lattice uniform over the whole sphere, which cannot see a
+    /// transition narrower than its own point spacing; a downstream gate that
+    /// trusts the number should refuse a receipt that does not say
+    /// `"complete"` here.
+    pub gradient_probe_points: usize,
+    pub gradient_probe_coverage: String,
+    /// NOT MEASURED THE SAME WAY, and the receipt says so rather than letting
+    /// three numbers read as agreement: `predicted_cells` and
+    /// `region_attainment` below are still integrals over a global lattice,
+    /// with the resolution limit that implies. Only the gradient follows the
+    /// regions.
     pub published_reference_gradient_percent_per_cell: f64,
     /// What each refinement region's request actually reaches -- see
     /// [`density::RegionAttainment`].  The nominal `spacing_km` of a region is
@@ -189,8 +215,23 @@ pub struct Receipt {
     /// post-surgery reading of the emitted point set.
     pub relaxation_min_dv_over_dc: f64,
     pub relaxation_min_dv_over_dc_trajectory: Vec<f64>,
+    /// The class-B arm's NAME, present only when that arm ran.
+    ///
+    /// OMITTED, not `null`, on the default rebuild arm, and that is the point:
+    /// this receipt is stamped INTO the grid file, so a field that always
+    /// appeared would move the bytes of every mesh with a registered SHA-256
+    /// the day it was added. Absent means `rebuild`, which is what every
+    /// registered digest was minted on; present means the file was produced
+    /// by the maintained triangulation and cannot reproduce one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub triangulation: Option<&'static str>,
     /// Per-level ladder reports on the graded arm; empty on the uniform arm.
     pub graded_levels: Vec<hierarchy::LevelReport>,
+    /// What each region's requested spacing had to move to reach a rung the
+    /// midpoint-insertion ladder can build. A SNAP, recorded rather than
+    /// reconciled, exactly as `Seeding`'s cell-count snap is; see
+    /// [`ladder_snap`] for what an unsnapped request silently delivered.
+    pub ladder_snap: LadderSnap,
     pub mesh: MeshReport,
     pub deliverable_boundary: String,
 }
@@ -299,6 +340,21 @@ pub fn generate(
 ) -> MpasResult<Generated> {
     request.spec.check()?;
 
+    // --- put every request on the ladder the generator can actually build ---
+    //
+    // BEFORE sizing, because the snap changes the cell count, and before
+    // `fitted_to`, because a uniform rescale leaves every ratio alone and so
+    // leaves a snapped spec snapped. See `mesh::ladder_snap` for the two
+    // measured misses this prevents.
+    let (spec_on_ladder, ladder_snap) = ladder_snap::snap_to_ladder(&request.spec);
+    for line in ladder_snap.progress_lines() {
+        progress(&line);
+    }
+    let request = &GenerateRequest {
+        spec: spec_on_ladder,
+        ..request.clone()
+    };
+
     // --- how many cells, and at what spacings -------------------------------
     let predicted_from_spec = request.spec.predicted_cells(request.sizing_samples);
     let (target, sizing) = match (request.target_cells, request.budget_mib) {
@@ -357,11 +413,27 @@ pub fn generate(
     // equilibrium (the recorded v15.150.38857 refusal, 61 edges under the
     // 0.02 admission floor), and the ladder is the mechanism that drains
     // what relaxation re-rolls.
+    // The class is announced, never inferred. Only the maintained arm prints:
+    // the rebuild arm is what every existing receipt and every registered
+    // digest was made on, and adding a line to it would change nothing about
+    // the file but everything about the transcripts pinned against it.
+    if request.lloyd.triangulation.is_maintained() {
+        progress(&format!(
+            "TRIANGULATION	{}	{}",
+            request.lloyd.triangulation.as_str(),
+            hull::Triangulation::CLASS_NOTE
+        ));
+    }
+
     let uniform = spec.regions.is_empty();
     let (points, outcome, seeding, graded_levels) = if uniform {
         let ceiling = matches!(sizing, Sizing::DeviceBudget);
         let choice = icosa::snap_cells(target, ceiling)?;
-        let mut pts = icosa::seed(choice.m, choice.n)?;
+        let mut pts = crate::mesh::profile::timed(
+            &crate::mesh::profile::SEED,
+            0,
+            || icosa::seed(choice.m, choice.n),
+        )?;
         let seeding = Seeding::IcosahedralGoldberg {
             m: choice.m,
             n: choice.n,
@@ -389,7 +461,10 @@ pub fn generate(
             &spec,
             request.sizing_samples,
             &request.lloyd,
-            &surgery::SurgeryOptions::default(),
+            &surgery::SurgeryOptions {
+                triangulation: request.lloyd.triangulation,
+                ..surgery::SurgeryOptions::default()
+            },
             hierarchy::DEFAULT_BETA,
             &mut progress,
         )?;
@@ -415,14 +490,27 @@ pub fn generate(
 
     // --- every field, then the gate -----------------------------------------
     let prepared = spec.prepared();
-    let mesh_density: Vec<f64> = points.iter().map(|&p| prepared.density(p)).collect();
+    let mesh_density: Vec<f64> = crate::mesh::profile::timed(
+        &crate::mesh::profile::DENSITY,
+        points.len() as u64,
+        || points.iter().map(|&p| prepared.density(p)).collect(),
+    );
     let nominal = emit::nominal_min_dc_from_m(spec.finest_km() * 1000.0);
-    let mesh = MpasMesh::derive(points, mesh_density, &outcome.rings, nominal)?;
+    let n_pts = points.len() as u64;
+    let mesh = crate::mesh::profile::timed(
+        &crate::mesh::profile::DERIVE,
+        n_pts,
+        || MpasMesh::derive(points, mesh_density, &outcome.rings, nominal),
+    )?;
     progress(&format!(
         "DERIVED\t{}\t{}\t{}",
         mesh.n_cells, mesh.n_edges, mesh.n_vertices
     ));
-    let report = validate::validate(&mesh, request.limits)?;
+    let report = crate::mesh::profile::timed(
+        &crate::mesh::profile::VALIDATE,
+        mesh.n_cells as u64,
+        || validate::validate(&mesh, request.limits),
+    )?;
     progress(&format!(
         "VALIDATED\t{:.16}\t{:.3e}\t{:.3e}",
         report.sum_area_cell_over_4pi, report.max_nonorthogonality, report.max_weight_antisymmetry
@@ -442,6 +530,7 @@ pub fn generate(
         at(0.95)
     ));
 
+    let gradient = spec.steepest_gradient_reading(50_000);
     let receipt = Receipt {
         engine: concat!("rw-mpas ", env!("CARGO_PKG_VERSION"), " (rust)").to_string(),
         spec: spec.clone(),
@@ -458,7 +547,9 @@ pub fn generate(
         footprint_mib: request
             .card
             .and_then(|c| c.footprint_mib(mesh.n_cells).ok()),
-        steepest_requested_gradient_percent_per_cell: spec.steepest_gradient_per_cell(50_000) * 100.0,
+        steepest_requested_gradient_percent_per_cell: gradient.per_cell * 100.0,
+        gradient_probe_points: gradient.probe_points,
+        gradient_probe_coverage: gradient.coverage.as_receipt_word().to_string(),
         published_reference_gradient_percent_per_cell: 1.53,
         region_attainment: spec.region_attainment(200_000),
         delivered_over_requested_median: at(0.50),
@@ -470,7 +561,13 @@ pub fn generate(
         relaxation_seconds: outcome.wall_seconds,
         relaxation_min_dv_over_dc: outcome.min_dv_over_dc,
         relaxation_min_dv_over_dc_trajectory: outcome.min_dv_over_dc_trajectory.clone(),
+        triangulation: if request.lloyd.triangulation.is_maintained() {
+            Some(request.lloyd.triangulation.as_str())
+        } else {
+            None
+        },
         graded_levels,
+        ladder_snap,
         mesh: report,
         deliverable_boundary:
             "grid file only; running this mesh also needs a matching static file (terrain, land use, soil, nVertLevels=55, nSoilLevels=4, FP32-bit-exact nominalMinDc)"

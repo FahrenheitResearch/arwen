@@ -13,6 +13,58 @@ use std::process::Command;
 
 pub const NAMELIST_SUPPORT_SCHEMA: &str = "rw-wps.namelist-support.v1";
 
+/// Microphysics ids this frontend has an EVIDENCED stock-WRF v4.6.1
+/// initialization inventory for, and will therefore forward.
+///
+/// This is the consuming half of ONE contract whose producing half is
+/// `gpuwm/wrf_physics_inventory.py::_INVENTORIES`, published there as
+/// `supported_stock_wrf_mp_physics()`.  Every producer row is derived from
+/// `Registry/Registry.EM_COMMON` package declarations and field I/O flags,
+/// never from the schemes the gpuwm forecast runtime implements.  When the
+/// two halves disagree the frontend refuses, because a report it cannot
+/// check is not a report it may certify.
+///
+/// What this set does NOT decide, since two sets with the same values can
+/// answer different questions: it is not "schemes gpuwm can forecast".  That
+/// verdict travels separately in `required_state.gpuwm_runtime`, which this
+/// binding deliberately does not gate on -- a stock-WRF export is valid for
+/// a package the gpuwm runtime never runs, and the report says so in two
+/// independent verdicts on purpose.
+///
+/// mp=50, P3 one-category two-moment ice, is admitted.  Its package is
+/// `package p3_1category mp_physics==50 - moist:qv,qc,qr,qi;
+/// scalar:qni,qnr,qir,qib; state:re_cloud,re_ice,vmi3d,rhopo3d,di3d,
+/// refl_10cm,th_old,qv_old` (`Registry.EM_COMMON:3038`).  ONE ice category,
+/// so the moist list carries no `qs` and no `qg`: rime mass `qir` and rime
+/// volume `qib` (`module_mp_p3.F:744`, bound to `qirim`/`birim` at
+/// :1081-1083) span the graupel-to-snow continuum instead of splitting it
+/// into species.  WRF's own dispatch agrees -- `module_microphysics_driver.F`
+/// :1557-1602 calls `mp_p3_wrapper_wrf` with `N_ICECAT=1` and passes no snow
+/// or graupel argument at all, and asks for `diag_effc_3d`/`diag_effi_3d`
+/// with no snow radius.  Every member of that package, eight `wrfinput`
+/// fields and eight runtime-state fields, is float32 on the four 3-D
+/// dimensions, so mp=50 satisfies the field-shape invariant enforced below
+/// as well as the id check here.
+///
+/// Ids the paired engine inventories that this set still refuses.  They are
+/// RECORDED rather than merely absent, so the next reader finds a decision
+/// instead of an omission:
+///
+///   * mp=28, Thompson aerosol-aware.  Its package carries two 2-D
+///     `wrfinput` members, `qnwfa2d`/`qnifa2d` (`Registry.EM_COMMON:492-493`,
+///     dimension spec `ij`, I/O string `i01{17}rhdu` -- an `i` list that
+///     begins with stream 0, so they are initialization-file variables), and
+///     a 2-D runtime diagnostic `taod5502d` (:1739).  The field-shape check
+///     below accepts only `Time,bottom_top,south_north,west_east`, so adding
+///     28 to this id set ALONE would move the refusal one loop iteration
+///     later and leave it just as unnamed.  Admitting mp=28 means teaching
+///     that check WRF's `ij` spec first; it is not a value this constant can
+///     supply on its own.
+///   * mp=18, NSSL 2-moment.  Every member is 3-D float32, so unlike mp=28
+///     there is no structural obstacle -- this frontend has simply never
+///     ruled on it.  Stated as an open question rather than left as a gap.
+const STOCK_WRF_INVENTORIED_MP_PHYSICS: &[u16] = &[6, 8, 10, 50];
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamelistSupportRequest {
     pub wps: PathBuf,
@@ -280,10 +332,22 @@ pub fn validate_namelist_support_report(report: &NamelistSupportReport) -> Resul
         ));
     }
     for domain in &report.required_state.stock_wrf_export.domains {
-        if !matches!(domain.mp_physics, 6 | 8 | 10) {
+        if !STOCK_WRF_INVENTORIED_MP_PHYSICS.contains(&domain.mp_physics) {
             return Err(RwWpsError::Engine(format!(
-                "stock-WRF PASS inventory contains undeclared mp_physics={}",
-                domain.mp_physics
+                concat!(
+                    "stock-WRF export inventories mp_physics={} for ",
+                    "d{:02}, which this frontend has no evidenced WRF ",
+                    "v4.6.1 package contract for. Its exit status is the ",
+                    "documented gate before wrfinput_dNN is built and an ",
+                    "unchanged WRF is launched against it, so it must ",
+                    "not certify a package member list it never checked ",
+                    "against Registry.EM_COMMON. Evidenced here: {:?}. ",
+                    "STOCK_WRF_INVENTORIED_MP_PHYSICS records which ids ",
+                    "the paired engine inventories that this frontend ",
+                    "still refuses, and the breakage each refusal ",
+                    "prevents."
+                ),
+                domain.mp_physics, domain.grid_id, STOCK_WRF_INVENTORIED_MP_PHYSICS
             )));
         }
         for field in domain
@@ -338,6 +402,18 @@ mod tests {
             fields.push(field("QNICE", Some("scalar")));
             fields.push(field("QNRAIN", Some("scalar")));
         }
+        if mp_physics == 50 {
+            // Registry.EM_COMMON:3038, package p3_1category:
+            // moist:qv,qc,qr,qi and scalar:qni,qnr,qir,qib.  QSNOW and
+            // QGRAUP are absent on purpose -- P3 carries one ice category
+            // and spans the graupel-to-snow continuum with the rime pair.
+            for name in ["QCLOUD", "QRAIN", "QICE"] {
+                fields.push(field(name, Some("moist")));
+            }
+            for name in ["QNICE", "QNRAIN", "QIR", "QIB"] {
+                fields.push(field(name, Some("scalar")));
+            }
+        }
         json!({
             "schema": NAMELIST_SUPPORT_SCHEMA,
             "verdict": "PASS",
@@ -365,7 +441,11 @@ mod tests {
             "required_state": {
                 "stock_wrf_export": {"verdict": "PASS", "target": "unchanged WRF v4.6.1", "domains": [{
                     "grid_id": 1, "mp_physics": mp_physics,
-                    "microphysics": if mp_physics == 8 { "Thompson" } else { "WSM6" },
+                    "microphysics": match mp_physics {
+                        8 => "Thompson",
+                        50 => "P3 one-category two-moment ice",
+                        _ => "WSM6",
+                    },
                     "bl_pbl_physics": 1, "sf_sfclay_physics": 91,
                     "sf_surface_physics": 2, "num_soil_layers": 4,
                     "wrfinput_fields": fields,
@@ -401,6 +481,44 @@ mod tests {
         }]);
         let report: NamelistSupportReport = serde_json::from_value(contradiction).unwrap();
         assert!(validate_namelist_support_report(&report).is_err());
+    }
+
+    #[test]
+    fn p3_one_category_stock_export_is_forwarded_not_refused() {
+        // The paired engine inventories mp=50 from Registry.EM_COMMON:3038
+        // and emits it inside a PASS report
+        // (gpuwm/wrf_physics_inventory.py::_INVENTORIES[50]).  Before this
+        // frontend declared the id, that report was refused here, so the
+        // documented step-one preflight could not be completed for a P3
+        // case whose stock-WRF package contract is fully evidenced.
+        let report: NamelistSupportReport = serde_json::from_value(valid_json(50)).unwrap();
+        validate_namelist_support_report(&report).unwrap();
+        let members: Vec<&str> = report.required_state.stock_wrf_export.domains[0]
+            .wrfinput_fields
+            .iter()
+            .map(|entry| entry.netcdf_name.as_str())
+            .collect();
+        assert!(members.contains(&"QIR") && members.contains(&"QIB"));
+        assert!(!members.contains(&"QSNOW") && !members.contains(&"QGRAUP"));
+    }
+
+    #[test]
+    fn undeclared_stock_inventory_refusal_names_its_breakage() {
+        // A refusal stands only if it names the breakage it prevents.  This
+        // holds the line that the message stays a named refusal rather than
+        // decaying back to "not in the list"; mp=16 is an id no producer row
+        // inventories.
+        let report: NamelistSupportReport = serde_json::from_value(valid_json(16)).unwrap();
+        let message = validate_namelist_support_report(&report)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("mp_physics=16"), "{message}");
+        assert!(message.contains("Registry.EM_COMMON"), "{message}");
+        assert!(
+            message.contains("STOCK_WRF_INVENTORIED_MP_PHYSICS"),
+            "{message}"
+        );
+        assert!(message.contains("50"), "{message}");
     }
 
     #[test]

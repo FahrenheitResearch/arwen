@@ -652,7 +652,9 @@ fn dump(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
         };
         let times = units
             .as_deref()
-            .and_then(parse_cf_units)
+            .map(parse_cf_units)
+            .transpose()?
+            .flatten()
             .map(|reference| decode_times(&reference, &values))
             .transpose()?;
 
@@ -691,11 +693,13 @@ fn dump(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
 
 /// A CF reference time: the unit the values are counted in, and the
 /// instant they are counted from.
+#[derive(Debug)]
 struct CfReference {
     unit: CfUnit,
     epoch: DateTime<Utc>,
 }
 
+#[derive(Debug)]
 enum CfUnit {
     Seconds,
     Minutes,
@@ -703,59 +707,188 @@ enum CfUnit {
     Days,
 }
 
-/// Parse `"<unit> since <timestamp>"`, or None when the units string is
-/// not a CF reference time (which is the common case -- `K`, `m s-1`).
+/// Parse `"<unit> since <timestamp>"`.  `Ok(None)` when the units
+/// string is not a CF reference time at all (which is the common case
+/// -- `K`, `m s-1`); `Err` when it plainly is one but its UTC-offset
+/// designator is malformed, because dumping such a variable without its
+/// time axis would silently strip the calendar off a file whose author
+/// wrote one down.
 ///
 /// Deliberately strict about the unit and forgiving about the timestamp
 /// spelling, because that is where real files vary: `1970-01-01`,
 /// `1970-01-01 00:00:0.0`, `1970-01-01T00:00:00Z`, and a trailing
-/// `+00:00` or ` UTC` all appear in published archives.  A non-UTC
-/// offset is REFUSED rather than silently shifted.
-fn parse_cf_units(units: &str) -> Option<CfReference> {
+/// `+05:30` or ` UTC` all appear in published archives.  A well-formed
+/// UTC offset is APPLIED -- the epoch converts to UTC -- so the decoded
+/// instants land where the equivalent UTC-spelled units would put them.
+fn parse_cf_units(units: &str) -> Result<Option<CfReference>, String> {
     let lowered = units.trim().to_ascii_lowercase();
-    let (unit_text, rest) = lowered.split_once(" since ")?;
+    let Some((unit_text, rest)) = lowered.split_once(" since ") else {
+        return Ok(None);
+    };
     let unit = match unit_text.trim() {
         "s" | "sec" | "secs" | "second" | "seconds" => CfUnit::Seconds,
         "min" | "mins" | "minute" | "minutes" => CfUnit::Minutes,
         "h" | "hr" | "hrs" | "hour" | "hours" => CfUnit::Hours,
         "d" | "day" | "days" => CfUnit::Days,
-        _ => return None,
+        _ => return Ok(None),
     };
-    let epoch = parse_cf_epoch(rest.trim())?;
-    Some(CfReference { unit, epoch })
+    Ok(parse_cf_epoch(rest.trim())?.map(|epoch| CfReference { unit, epoch }))
 }
 
-fn parse_cf_epoch(text: &str) -> Option<DateTime<Utc>> {
+/// The widest UTC-offset designator accepted, in seconds: 18 hours
+/// either side.  The widest civil offset on Earth is +14:00 (the Line
+/// Islands) and the udunits/`java.time` grammars both cap the field at
+/// +/-18:00; a larger number is a mistyped timestamp, not a timezone,
+/// and applying it would move every decoded instant by most of a day.
+const MAX_UTC_OFFSET_SECONDS: i64 = 18 * 3600;
+
+/// `Ok(None)` when the text is not a timestamp this parser reads;
+/// `Err` when its UTC-offset designator cannot be trusted, saying why.
+fn parse_cf_epoch(text: &str) -> Result<Option<DateTime<Utc>>, String> {
     let mut stamp = text.trim();
-    for suffix in [" utc", "z", " gmt", "+00:00", "+0000", " +00:00"] {
+    // Textual zone designators, every one of which NAMES the zero
+    // offset.  udunits reads them; so do published archives.
+    let mut named_utc = false;
+    for suffix in [" utc", "z", " gmt"] {
         if let Some(head) = stamp.strip_suffix(suffix) {
             stamp = head.trim();
+            named_utc = true;
         }
     }
-    // A remaining explicit non-UTC offset must not be guessed at.
     let body = stamp.replace('t', " ");
-    let body = body.trim();
-    if body.len() > 10 {
-        let tail = &body[10..];
-        if tail.contains('+') || tail.matches('-').count() > 0 {
-            return None;
+    let mut tokens = body.split_whitespace();
+    let Some(date_text) = tokens.next() else {
+        return Ok(None);
+    };
+    // A signed token is a numeric UTC offset -- a time of day is never
+    // signed.  The offset may ride attached to the tail of the time
+    // token (`00:00:00+05:30`) or stand alone after the date or time
+    // (`1992-10-8 15:15:42.5 -6:00`, the canonical udunits spelling).
+    // It is never recognised attached to a bare date, whose own `-`
+    // separators make that spelling unreadable without guessing.
+    let (time_text, offset_text) = match (tokens.next(), tokens.next(), tokens.next()) {
+        (None, _, _) => ("", None),
+        (Some(second), None, _) => match second.find(['+', '-']) {
+            Some(at) => (&second[..at], Some(&second[at..])),
+            None => (second, None),
+        },
+        (Some(second), Some(third), None) => {
+            if !third.starts_with(['+', '-']) {
+                return Ok(None);
+            }
+            if second.contains(['+', '-']) {
+                return Err(format!(
+                    "reference time {text:?} carries two UTC offsets; \
+                     one epoch cannot be shifted twice"
+                ));
+            }
+            (second, Some(third))
         }
-    }
-    let (date_text, time_text) = match body.split_once(' ') {
-        Some((date, time)) => (date, time.trim()),
-        None => (body, ""),
+        _ => return Ok(None),
     };
-    let date = NaiveDate::parse_from_str(date_text, "%Y-%m-%d")
+    let offset_seconds = match offset_text {
+        Some(token) => {
+            if named_utc {
+                return Err(format!(
+                    "reference time {text:?} names UTC and also carries \
+                     the numeric offset {token:?}; an epoch with two zone \
+                     designators cannot be placed on the timeline"
+                ));
+            }
+            parse_utc_offset(token, text)?
+        }
+        None => 0,
+    };
+    let date = match NaiveDate::parse_from_str(date_text, "%Y-%m-%d")
         .or_else(|_| NaiveDate::parse_from_str(date_text, "%Y-%-m-%-d"))
-        .ok()?;
-    let time = if time_text.is_empty() {
-        NaiveTime::from_hms_opt(0, 0, 0)?
-    } else {
-        ["%H:%M:%S%.f", "%H:%M:%S", "%H:%M", "%H"]
-            .iter()
-            .find_map(|format| NaiveTime::parse_from_str(time_text, format).ok())?
+    {
+        Ok(date) => date,
+        Err(_) => return Ok(None),
     };
-    Some(NaiveDateTime::new(date, time).and_utc())
+    let time = if time_text.is_empty() {
+        NaiveTime::from_hms_opt(0, 0, 0).expect("midnight is a valid time")
+    } else {
+        match ["%H:%M:%S%.f", "%H:%M:%S", "%H:%M", "%H"]
+            .iter()
+            .find_map(|format| NaiveTime::parse_from_str(time_text, format).ok())
+        {
+            Some(time) => time,
+            None => return Ok(None),
+        }
+    };
+    // A timestamp at +05:00 reads five hours AHEAD of UTC, so the UTC
+    // instant it names is the naive reading minus the offset.
+    let epoch = NaiveDateTime::new(date, time) - Duration::seconds(offset_seconds);
+    Ok(Some(epoch.and_utc()))
+}
+
+/// One numeric UTC-offset designator -- a sign, then `hh:mm`, `hhmm`,
+/// or a bare hour count `h`/`hh` -- as signed seconds east of UTC.
+/// These are the spellings udunits reads.  Anything else is refused
+/// with the reason, because a mis-read offset does not crash: it
+/// silently moves every instant decoded from the file.
+fn parse_utc_offset(token: &str, timestamp: &str) -> Result<i64, String> {
+    let malformed = |why: String| {
+        format!(
+            "UTC offset {token:?} in reference time {timestamp:?} is \
+             malformed: {why}"
+        )
+    };
+    let (sign, magnitude) = if let Some(rest) = token.strip_prefix('+') {
+        (1i64, rest)
+    } else if let Some(rest) = token.strip_prefix('-') {
+        (-1i64, rest)
+    } else {
+        return Err(malformed("it does not start with a sign".into()));
+    };
+    if magnitude.is_empty() {
+        return Err(malformed("the sign has no digits behind it".into()));
+    }
+    let digits = |text: &str| text.bytes().all(|byte| byte.is_ascii_digit());
+    let (hour_text, minute_text) = match magnitude.split_once(':') {
+        Some((hours, minutes)) => {
+            if minutes.len() != 2 {
+                return Err(malformed(format!(
+                    "minutes must be exactly two digits, got {minutes:?}; \
+                     an offset carries no seconds field"
+                )));
+            }
+            (hours, minutes)
+        }
+        None => match magnitude.len() {
+            1 | 2 => (magnitude, "0"),
+            4 => magnitude.split_at(2),
+            _ => {
+                return Err(malformed(format!(
+                    "a colonless offset must be one or two hour digits or \
+                     exactly four digits (hhmm); {magnitude:?} cannot be \
+                     split into hours and minutes without guessing"
+                )));
+            }
+        },
+    };
+    if hour_text.is_empty() || hour_text.len() > 2 || !digits(hour_text) || !digits(minute_text) {
+        return Err(malformed(format!(
+            "{hour_text:?} hours and {minute_text:?} minutes are not one- \
+             or two-digit numbers"
+        )));
+    }
+    let hours: i64 = hour_text.parse().expect("checked ascii digits");
+    let minutes: i64 = minute_text.parse().expect("checked ascii digits");
+    if minutes >= 60 {
+        return Err(malformed(format!(
+            "{minutes} is not a minute count below 60"
+        )));
+    }
+    let magnitude_seconds = hours * 3600 + minutes * 60;
+    if magnitude_seconds > MAX_UTC_OFFSET_SECONDS {
+        return Err(malformed(
+            "its magnitude passes 18:00, and no timezone is that far from \
+             UTC (the widest civil offset on Earth is +14:00)"
+            .into(),
+        ));
+    }
+    Ok(sign * magnitude_seconds)
 }
 
 fn decode_times(reference: &CfReference, values: &[f64]) -> Result<Vec<String>, String> {
@@ -789,16 +922,26 @@ fn decode_times(reference: &CfReference, values: &[f64]) -> Result<Vec<String>, 
 mod tests {
     use super::*;
 
+    /// A parsed CF reference, for units that must be well-formed ones.
+    fn reference(units: &str) -> CfReference {
+        parse_cf_units(units)
+            .unwrap_or_else(|error| panic!("{units}: {error}"))
+            .unwrap_or_else(|| panic!("{units} is a CF reference time"))
+    }
+
     #[test]
     fn plain_units_are_not_reference_times() {
-        assert!(parse_cf_units("K").is_none());
-        assert!(parse_cf_units("m s-1").is_none());
-        assert!(parse_cf_units("kg kg-1").is_none());
+        for units in ["K", "m s-1", "kg kg-1"] {
+            assert!(
+                parse_cf_units(units).expect("nothing to malform").is_none(),
+                "{units}"
+            );
+        }
     }
 
     #[test]
     fn hours_since_epoch_decodes() {
-        let reference = parse_cf_units("hours since 1970-01-01 00:00:00").expect("parsed");
+        let reference = reference("hours since 1970-01-01 00:00:00");
         let times = decode_times(&reference, &[0.0, 1.5]).expect("decoded");
         assert_eq!(times[0], "1970-01-01T00:00:00Z");
         assert_eq!(times[1], "1970-01-01T01:30:00Z");
@@ -812,28 +955,826 @@ mod tests {
             "hours since 2024-03-01",
             "hours since 2024-03-01 00:00:0.0",
         ] {
-            let reference = parse_cf_units(spelling).unwrap_or_else(|| panic!("{spelling}"));
+            let reference = reference(spelling);
             let times = decode_times(&reference, &[6.0]).expect("decoded");
             assert_eq!(times[0], "2024-03-01T06:00:00Z", "{spelling}");
         }
     }
 
+    /// The one exact equivalence the offset handling promises: units
+    /// carrying a UTC-offset designator decode to the SAME instants as
+    /// the same epoch respelled in UTC by hand.  Every offset spelling
+    /// udunits reads is here -- `+hh:mm`, `+hhmm`, bare `-h`/`-hh`,
+    /// attached and spaced, and the zero-offset designators.
     #[test]
-    fn non_utc_offsets_are_refused_rather_than_shifted() {
-        assert!(parse_cf_units("hours since 2024-03-01 00:00:00+05:30").is_none());
+    fn offset_references_decode_like_their_utc_respelling() {
+        for (offset_spelling, utc_respelling) in [
+            // +05:00 reads five hours EAST: the epoch is EARLIER in UTC.
+            (
+                "hours since 2020-01-01 00:00:00 +05:00",
+                "hours since 2019-12-31 19:00:00",
+            ),
+            (
+                "hours since 2020-01-01 00:00:00+0500",
+                "hours since 2019-12-31 19:00:00",
+            ),
+            // Negative forms read WEST: the epoch is LATER in UTC.
+            (
+                "hours since 2020-01-01 00:00:00 -06:00",
+                "hours since 2020-01-01 06:00:00",
+            ),
+            (
+                "hours since 2020-01-01 00:00:00-0600",
+                "hours since 2020-01-01 06:00:00",
+            ),
+            (
+                "hours since 2020-01-01 00:00:00 -6",
+                "hours since 2020-01-01 06:00:00",
+            ),
+            // A half-hour zone exercises both halves of h*3600 + m*60.
+            (
+                "hours since 2020-01-01 00:00:00 +05:30",
+                "hours since 2019-12-31 18:30:00",
+            ),
+            (
+                "hours since 2020-01-01 00:00:00+0530",
+                "hours since 2019-12-31 18:30:00",
+            ),
+            // Zero-offset designators are exactly UTC.
+            (
+                "hours since 2020-01-01 00:00:00Z",
+                "hours since 2020-01-01 00:00:00",
+            ),
+            (
+                "hours since 2020-01-01 00:00:00 +00:00",
+                "hours since 2020-01-01 00:00:00",
+            ),
+            (
+                "hours since 2020-01-01 00:00:00-0000",
+                "hours since 2020-01-01 00:00:00",
+            ),
+            // A date-only stamp still takes a spaced offset (midnight).
+            (
+                "hours since 2020-01-01 +01:00",
+                "hours since 2019-12-31 23:00:00",
+            ),
+        ] {
+            let with_offset = reference(offset_spelling);
+            let respelled = reference(utc_respelling);
+            assert_eq!(
+                with_offset.epoch, respelled.epoch,
+                "{offset_spelling} vs {utc_respelling}"
+            );
+            assert_eq!(
+                decode_times(&with_offset, &[0.0, 1.5]).expect("decoded"),
+                decode_times(&respelled, &[0.0, 1.5]).expect("decoded"),
+                "{offset_spelling}"
+            );
+        }
+    }
+
+    /// Ground truth for the shift direction, pinned as absolute strings
+    /// so a sign error that broke both sides of the equivalence test the
+    /// same way would still be caught.
+    #[test]
+    fn a_positive_offset_epoch_lands_earlier_on_the_utc_timeline() {
+        let reference = reference("hours since 2020-01-01 00:00:00 +05:30");
+        assert_eq!(
+            decode_times(&reference, &[0.0, 5.5]).expect("decoded"),
+            vec!["2019-12-31T18:30:00Z", "2020-01-01T00:00:00Z"],
+        );
     }
 
     #[test]
-    fn days_and_seconds_decode() {
-        let days = parse_cf_units("days since 2000-01-01").expect("parsed");
+    fn a_negative_offset_epoch_lands_later_on_the_utc_timeline() {
+        let reference = reference("seconds since 2020-06-01 12:00:00 -06");
+        assert_eq!(
+            decode_times(&reference, &[0.0]).expect("decoded")[0],
+            "2020-06-01T18:00:00Z",
+        );
+    }
+
+    /// The designator bounds: 59 minutes and 18:00 are the last values
+    /// inside the grammar, and the first value past each is refused by
+    /// name.  udunits and java.time both cap the field at +/-18:00; the
+    /// widest civil offset on Earth is +14:00.
+    #[test]
+    fn offset_bounds_admit_18_hours_and_59_minutes_and_nothing_past_them() {
+        assert_eq!(
+            reference("hours since 2020-01-01 00:00:00 +18:00").epoch,
+            reference("hours since 2019-12-31 06:00:00").epoch,
+        );
+        assert_eq!(
+            reference("hours since 2020-01-01 00:59:00 +00:59").epoch,
+            reference("hours since 2020-01-01 00:00:00").epoch,
+        );
+        for (units, names) in [
+            ("hours since 2020-01-01 00:00:00 +18:01", "18:00"),
+            ("hours since 2020-01-01 00:00:00 -19:00", "18:00"),
+            ("hours since 2020-01-01 00:00:00 +05:60", "below 60"),
+            ("hours since 2020-01-01 00:00:00 +05:61", "below 60"),
+        ] {
+            let error = match parse_cf_units(units) {
+                Err(error) => error,
+                Ok(parsed) => panic!("{units} was not refused: {parsed:?}"),
+            };
+            assert!(error.contains("malformed"), "{units}: {error}");
+            assert!(error.contains(names), "{units}: {error}");
+        }
+    }
+
+    /// Every refusal names what is wrong; nothing is guessed at and
+    /// nothing is silently dropped.  Silently dropping was the old
+    /// behaviour, and it stripped the time axis off any file whose
+    /// author spelled a real timezone.
+    #[test]
+    fn malformed_offsets_are_refused_with_the_reason() {
+        for (units, names) in [
+            // Three packed digits cannot be split into hours and
+            // minutes without guessing between 5:30 and 53:0.
+            ("hours since 2020-01-01 00:00:00 +530", "guessing"),
+            ("hours since 2020-01-01 00:00:00 +05300", "guessing"),
+            // udunits offsets carry no seconds field.
+            ("hours since 2020-01-01 00:00:00 +05:30:00", "two digits"),
+            ("hours since 2020-01-01 00:00:00 +05:3", "two digits"),
+            // A sign with nothing behind it, a missing hours field, and
+            // letters where digits go.
+            ("hours since 2020-01-01 00:00:00 +", "no digits"),
+            ("hours since 2020-01-01 00:00:00 +:30", "hours"),
+            ("hours since 2020-01-01 00:00:00 +0a", "hours"),
+            // Two zone designators cannot both place the epoch.
+            ("hours since 2020-01-01 00:00:00+05:00Z", "names utc"),
+            (
+                "hours since 2020-01-01 00:00:00+05:00 +06:00",
+                "two utc offsets",
+            ),
+        ] {
+            let error = match parse_cf_units(units) {
+                Err(error) => error,
+                Ok(parsed) => panic!("{units} was not refused: {parsed:?}"),
+            };
+            assert!(
+                error.to_ascii_lowercase().contains(names),
+                "{units}: {error}"
+            );
+        }
+    }
+
+    /// `minutes since` is a spelling this decoder claimed and never
+    /// checked.
+    ///
+    /// Both halves of `value * 60.0 * 1e9` and the whole
+    /// `"min" | "mins" | "minute" | "minutes"` match arm could be
+    /// deleted or turned into another operator without a single test
+    /// noticing, which is a history file whose valid times are wrong by
+    /// a factor of sixty and an initial condition read off the wrong
+    /// frame.  The 90-minute value is the one that separates them: it
+    /// decodes to 01:30 under a multiply, to 00:01:00.00000009 under an
+    /// add, and to 00:00:00.0000000015 under a divide.
+    #[test]
+    fn minutes_since_decodes_as_minutes_and_not_as_some_other_arithmetic() {
+        let minutes = reference("minutes since 2024-03-01 00:00:00");
+        let times = decode_times(&minutes, &[0.0, 90.0]).expect("decoded");
+        assert_eq!(times[0], "2024-03-01T00:00:00Z");
+        assert_eq!(times[1], "2024-03-01T01:30:00Z");
+        for spelling in ["min", "mins", "minute", "minutes"] {
+            let spelled = reference(&format!("{spelling} since 2024-03-01"));
+            assert_eq!(
+                decode_times(&spelled, &[90.0]).expect("decoded")[0],
+                "2024-03-01T01:30:00Z",
+                "{spelling}"
+            );
+        }
+    }
+
+    /// The unpadded date spelling, which the epoch parser carries a
+    /// second format for and no test ever reached.
+    #[test]
+    fn unpadded_month_and_day_spellings_decode() {
+        let days = reference("days since 2000-1-1");
         assert_eq!(
             decode_times(&days, &[1.5]).expect("decoded")[0],
             "2000-01-02T12:00:00Z"
         );
-        let seconds = parse_cf_units("seconds since 2000-01-01").expect("parsed");
+        let hours = reference("hours since 2000-1-1 6:30");
+        assert_eq!(
+            decode_times(&hours, &[0.0]).expect("decoded")[0],
+            "2000-01-01T06:30:00Z"
+        );
+    }
+
+    #[test]
+    fn days_and_seconds_decode() {
+        let days = reference("days since 2000-01-01");
+        assert_eq!(
+            decode_times(&days, &[1.5]).expect("decoded")[0],
+            "2000-01-02T12:00:00Z"
+        );
+        let seconds = reference("seconds since 2000-01-01");
         assert_eq!(
             decode_times(&seconds, &[90.0]).expect("decoded")[0],
             "2000-01-01T00:01:30Z"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // JSON attribute encoding.  The single/plural distinction below is a
+    // CONTRACT with the Python side: netCDF4-python hands back a scalar
+    // for a one-element attribute and an array otherwise, and selector
+    // resolution compares `units` and `standard_name` against strings.
+    // An attribute that flips shape stops resolving without an error.
+
+    #[test]
+    fn char_and_single_string_attributes_encode_as_json_strings() {
+        use netcrust::AttributeValue as V;
+        assert_eq!(
+            attribute_json(&V::Chars("degrees_east".into())),
+            serde_json::json!("degrees_east")
+        );
+        assert_eq!(
+            attribute_json(&V::Strings(vec!["longitude".into()])),
+            serde_json::json!("longitude")
+        );
+    }
+
+    #[test]
+    fn plural_string_attributes_encode_as_json_arrays() {
+        use netcrust::AttributeValue as V;
+        assert_eq!(
+            attribute_json(&V::Strings(vec!["a".into(), "b".into()])),
+            serde_json::json!(["a", "b"])
+        );
+    }
+
+    #[test]
+    fn single_numbers_are_scalars_and_plural_numbers_are_arrays() {
+        use netcrust::AttributeValue as V;
+        assert_eq!(attribute_json(&V::Ints(vec![7])), serde_json::json!(7.0));
+        assert_eq!(
+            attribute_json(&V::Floats(vec![1.5, 2.5])),
+            serde_json::json!([1.5, 2.5])
+        );
+        assert_eq!(
+            attribute_json(&V::Doubles(vec![0.5])),
+            serde_json::json!(0.5)
+        );
+        // JSON has no NaN; the numeric path must emit null, not panic.
+        assert_eq!(
+            attribute_json(&V::Doubles(vec![f64::NAN])),
+            serde_json::Value::Null
+        );
+    }
+
+    /// i64/u64 take their own arms because f64 rounds them beyond 2^53;
+    /// each arm has the same single/plural guard as the string arm.
+    #[test]
+    fn wide_integers_encode_exactly_with_the_same_shape_rule() {
+        use netcrust::AttributeValue as V;
+        let big = (1i64 << 53) + 1;
+        assert_eq!(
+            attribute_json(&V::Int64s(vec![big])),
+            serde_json::json!(9007199254740993i64)
+        );
+        assert_eq!(
+            attribute_json(&V::Int64s(vec![1, 2])),
+            serde_json::json!([1, 2])
+        );
+        assert_eq!(
+            attribute_json(&V::UInt64s(vec![u64::MAX])),
+            serde_json::json!(18446744073709551615u64)
+        );
+        assert_eq!(
+            attribute_json(&V::UInt64s(vec![3, 4])),
+            serde_json::json!([3, 4])
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // File-backed decode contracts.  The classic fixtures are BUILT here
+    // by the workspace's own writer (an independent implementation from
+    // the netcrust read path under test); the NetCDF-4/HDF5 fixtures are
+    // checked in under tests/fixtures because nothing in the Rust stack
+    // writes HDF5, with tests/fixtures/make_fixtures.py to regenerate.
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join(name)
+    }
+
+    /// A scratch directory unique to one test, wiped at entry so a
+    /// failed earlier run cannot leak state into this one.
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("rw-netcdf-suite-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create scratch dir");
+        dir
+    }
+
+    /// One classic (CDF-1) file carrying the whole CF unpack surface:
+    /// a packed short with both fill markers, a CF time coordinate, a
+    /// char variable (the named refusal), and two global attributes.
+    ///
+    /// Data layout of `packed`, stored as i16:
+    ///   [-32768 (_FillValue), -32767 (missing_value), 4, 6]
+    /// so with scale_factor 0.5 and add_offset 100 the decoded truth is
+    ///   [NaN, NaN, 102.0, 103.0]      (mask on, scale on)
+    ///   [-32768.0, -32767.0, 4.0, 6.0] (raw)
+    ///   [-16284.0, -16283.5, 102.0, 103.0] (mask off, scale on)
+    fn write_packed_classic(path: &Path) {
+        use netcdf_writer::{AttrValue, NcFormat, NcType, NcWriter, Schema, VarData};
+        let mut schema = Schema::new(NcFormat::Classic);
+        let x = schema.def_dim("x", 4, false).expect("dim");
+        schema
+            .put_global_attr("title", AttrValue::Text("packed fixture".into()))
+            .expect("gattr");
+        schema
+            .put_global_attr("version", AttrValue::Ints(vec![3]))
+            .expect("gattr");
+        let packed = schema.def_var("packed", NcType::Short, &[x]).expect("var");
+        schema
+            .put_var_attr(packed, "scale_factor", AttrValue::Doubles(vec![0.5]))
+            .expect("attr");
+        schema
+            .put_var_attr(packed, "add_offset", AttrValue::Doubles(vec![100.0]))
+            .expect("attr");
+        schema
+            .put_var_attr(packed, "_FillValue", AttrValue::Shorts(vec![-32768]))
+            .expect("attr");
+        schema
+            .put_var_attr(packed, "missing_value", AttrValue::Shorts(vec![-32767]))
+            .expect("attr");
+        let hours = schema.def_var("hours", NcType::Double, &[x]).expect("var");
+        schema
+            .put_var_attr(
+                hours,
+                "units",
+                AttrValue::Text("hours since 2024-03-01 00:00:00".into()),
+            )
+            .expect("attr");
+        let label = schema.def_var("label", NcType::Char, &[x]).expect("var");
+        let mut writer = NcWriter::create(path, schema).expect("create");
+        writer
+            .write_var(packed, VarData::I16(&[-32768, -32767, 4, 6]))
+            .expect("write packed");
+        writer
+            .write_var(hours, VarData::F64(&[0.0, 1.5, 24.0, 36.0]))
+            .expect("write hours");
+        writer
+            .write_var(label, VarData::Char(b"abcd"))
+            .expect("write label");
+        writer.finish().expect("finish");
+    }
+
+    fn read_f64_plane(path: &Path) -> Vec<f64> {
+        let bytes = fs::read(path).expect("read plane");
+        assert_eq!(bytes.len() % 8, 0, "not a whole number of f64s");
+        bytes
+            .chunks_exact(8)
+            .map(|chunk| f64::from_le_bytes(chunk.try_into().unwrap()))
+            .collect()
+    }
+
+    fn read_metadata(out_dir: &Path) -> serde_json::Value {
+        let text = fs::read_to_string(out_dir.join("metadata.json"))
+            .expect("read metadata.json");
+        serde_json::from_str(&text).expect("parse metadata.json")
+    }
+
+    fn record<'a>(metadata: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+        metadata["variables"]
+            .as_array()
+            .expect("variables array")
+            .iter()
+            .find(|record| record["name"] == name)
+            .unwrap_or_else(|| panic!("{name} not in metadata"))
+    }
+
+    #[test]
+    fn default_dump_masks_in_stored_space_then_scales() {
+        let dir = scratch("dump-default");
+        let source = dir.join("packed.nc");
+        write_packed_classic(&source);
+        let out = dir.join("out");
+        dump(&source, &out, &["packed".into()], true, true).expect("dump");
+
+        let values = read_f64_plane(&out.join("0000.f64"));
+        assert!(values[0].is_nan(), "fill value must mask to NaN");
+        assert!(values[1].is_nan(), "missing value must mask to NaN");
+        assert_eq!(&values[2..], &[102.0, 103.0]);
+
+        let metadata = read_metadata(&out);
+        assert_eq!(metadata["schema"], "gpuwm-rw-netcdf-dump-v1");
+        let packed = record(&metadata, "packed");
+        assert_eq!(packed["filename"], "0000.f64");
+        assert_eq!(packed["shape"], serde_json::json!([4]));
+        assert_eq!(packed["dimensions"], serde_json::json!(["x"]));
+        assert_eq!(packed["dtype"], "<f8");
+        assert_eq!(packed["cf"]["scale_factor"], 0.5);
+        assert_eq!(packed["cf"]["add_offset"], 100.0);
+        assert_eq!(packed["cf"]["fill_value"], -32768.0);
+        assert_eq!(packed["cf"]["missing_value"], -32767.0);
+        assert_eq!(packed["cf"]["missing_count"], 2);
+        assert_eq!(packed["cf"]["applied"], true);
+        assert!(
+            packed.get("times").is_none(),
+            "a packed physical variable has no time axis"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn raw_dump_preserves_stored_sentinels_and_reports_not_applied() {
+        let dir = scratch("dump-raw");
+        let source = dir.join("packed.nc");
+        write_packed_classic(&source);
+        let out = dir.join("out");
+        dump(&source, &out, &["packed".into()], false, false).expect("dump");
+
+        assert_eq!(
+            read_f64_plane(&out.join("0000.f64")),
+            &[-32768.0, -32767.0, 4.0, 6.0]
+        );
+        let metadata = read_metadata(&out);
+        let packed = record(&metadata, "packed");
+        // The declared attributes still travel; `applied` says nothing
+        // was done about them, and nothing was masked.
+        assert_eq!(packed["cf"]["scale_factor"], 0.5);
+        assert_eq!(packed["cf"]["missing_count"], 0);
+        assert_eq!(packed["cf"]["applied"], false);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_mask_dump_scales_the_surviving_sentinels_like_netcdf4_python() {
+        let dir = scratch("dump-nomask");
+        let source = dir.join("packed.nc");
+        write_packed_classic(&source);
+        let out = dir.join("out");
+        dump(&source, &out, &["packed".into()], false, true).expect("dump");
+
+        assert_eq!(
+            read_f64_plane(&out.join("0000.f64")),
+            &[-16284.0, -16283.5, 102.0, 103.0]
+        );
+        let metadata = read_metadata(&out);
+        let packed = record(&metadata, "packed");
+        assert_eq!(packed["cf"]["missing_count"], 0);
+        assert_eq!(packed["cf"]["applied"], true);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cf_time_variable_gets_decoded_instants_in_the_metadata() {
+        let dir = scratch("dump-times");
+        let source = dir.join("packed.nc");
+        write_packed_classic(&source);
+        let out = dir.join("out");
+        dump(&source, &out, &["hours".into()], true, true).expect("dump");
+
+        assert_eq!(
+            read_f64_plane(&out.join("0000.f64")),
+            &[0.0, 1.5, 24.0, 36.0]
+        );
+        let hours = read_metadata(&out);
+        let hours = record(&hours, "hours");
+        assert_eq!(hours["units"], "hours since 2024-03-01 00:00:00");
+        assert_eq!(
+            hours["times"],
+            serde_json::json!([
+                "2024-03-01T00:00:00Z",
+                "2024-03-01T01:30:00Z",
+                "2024-03-02T00:00:00Z",
+                "2024-03-02T12:00:00Z",
+            ])
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A classic file whose single `hours` variable carries *units*.
+    fn write_hours_classic(path: &Path, units: &str, values: &[f64]) {
+        use netcdf_writer::{AttrValue, NcFormat, NcType, NcWriter, Schema, VarData};
+        let mut schema = Schema::new(NcFormat::Classic);
+        let x = schema.def_dim("x", values.len(), false).expect("dim");
+        let hours = schema.def_var("hours", NcType::Double, &[x]).expect("var");
+        schema
+            .put_var_attr(hours, "units", AttrValue::Text(units.into()))
+            .expect("attr");
+        let mut writer = NcWriter::create(path, schema).expect("create");
+        writer.write_var(hours, VarData::F64(values)).expect("write");
+        writer.finish().expect("finish");
+    }
+
+    /// The writer-path round trip for an offset-bearing reference: the
+    /// units travel through the workspace's own writer, back through
+    /// the netcrust read path, and decode to the same UTC instants the
+    /// UTC respelling of that epoch would give.
+    #[test]
+    fn a_written_offset_reference_dumps_utc_instants() {
+        let dir = scratch("dump-offset");
+        let source = dir.join("offset.nc");
+        write_hours_classic(
+            &source,
+            "hours since 2024-03-01 05:30:00 +05:30",
+            &[0.0, 12.0],
+        );
+        let out = dir.join("out");
+        dump(&source, &out, &["hours".into()], true, true).expect("dump");
+
+        let metadata = read_metadata(&out);
+        let hours = record(&metadata, "hours");
+        assert_eq!(hours["units"], "hours since 2024-03-01 05:30:00 +05:30");
+        assert_eq!(
+            hours["times"],
+            serde_json::json!(["2024-03-01T00:00:00Z", "2024-03-01T12:00:00Z"])
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A malformed offset fails the whole dump with its sentence, so a
+    /// mis-spelled zone can never silently strip a file's time axis.
+    #[test]
+    fn a_malformed_offset_fails_the_dump_by_name() {
+        let dir = scratch("dump-badoffset");
+        let source = dir.join("bad.nc");
+        write_hours_classic(&source, "hours since 2024-03-01 00:00:00 +19:00", &[0.0]);
+        let out = dir.join("out");
+        let error = dump(&source, &out, &["hours".into()], true, true)
+            .expect_err("a malformed offset must fail the dump");
+        assert!(error.contains("+19:00"), "{error}");
+        assert!(error.contains("18:00"), "{error}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn char_variables_are_refused_by_name_and_missing_ones_by_name() {
+        let dir = scratch("dump-refusals");
+        let source = dir.join("packed.nc");
+        write_packed_classic(&source);
+        let out = dir.join("out");
+
+        let refusal = dump(&source, &out, &["label".into()], true, true)
+            .expect_err("char variables cannot be dumped");
+        assert!(refusal.contains("label"), "{refusal}");
+        assert!(refusal.contains("numeric"), "{refusal}");
+
+        let missing = dump(&source, &out, &["absent".into()], true, true)
+            .expect_err("unknown variables are refused");
+        assert!(missing.contains("variable not found"), "{missing}");
+        assert!(missing.contains("absent"), "{missing}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A recovered dimension scale has no entry in the variable table,
+    /// so its dump takes the raw-HDF5 path end to end: existence via
+    /// `has_hdf5_dataset`, units via the by-name attribute read, and an
+    /// empty dimension list rather than an invented one.
+    #[test]
+    fn a_recovered_coordinate_dumps_through_the_raw_hdf5_path() {
+        let dir = scratch("dump-recovered");
+        let out = dir.join("out");
+        dump(&fixture("axes.nc4"), &out, &["time".into()], true, true)
+            .expect("dump recovered scale");
+
+        assert_eq!(read_f64_plane(&out.join("0000.f64")), &[0.0, 1.0, 2.0, 3.0]);
+        let metadata = read_metadata(&out);
+        let time = record(&metadata, "time");
+        assert_eq!(time["units"], "hours since 2024-03-01");
+        assert_eq!(
+            time["times"],
+            serde_json::json!([
+                "2024-03-01T00:00:00Z",
+                "2024-03-01T01:00:00Z",
+                "2024-03-01T02:00:00Z",
+                "2024-03-01T03:00:00Z",
+            ])
+        );
+        assert_eq!(time["dimensions"], serde_json::json!([]));
+
+        let missing = dump(&fixture("axes.nc4"), &out, &["absent".into()], true, true)
+            .expect_err("unknown names are refused on HDF5 files too");
+        assert!(missing.contains("variable not found"), "{missing}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------------------------------
+    // Metadata provenance: strict against size-inferred.
+
+    #[test]
+    fn a_classic_file_opens_strict_with_nothing_to_confess() {
+        let dir = scratch("open-strict");
+        let source = dir.join("packed.nc");
+        write_packed_classic(&source);
+        let (_, provenance) = open(&source).expect("open");
+        assert_eq!(provenance.mode, "strict");
+        assert_eq!(provenance.strict_error, None);
+        assert!(!provenance.dimension_lengths_ambiguous);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// sizes.nc4 is a bare HDF5 file with no DIMENSION_LIST anywhere:
+    /// strict reconstruction must fail, the size-inferred fallback must
+    /// open it, and the provenance must carry the strict error so a
+    /// consumer can refuse the guess.
+    #[test]
+    fn a_bare_hdf5_file_falls_back_to_size_inferred_metadata() {
+        let (file, provenance) = open(&fixture("sizes.nc4")).expect("open");
+        assert_eq!(provenance.mode, "size-inferred");
+        let error = provenance.strict_error.expect("strict error is reported");
+        assert!(error.contains("DIMENSION_LIST"), "{error}");
+        let names: Vec<String> = file
+            .variables()
+            .expect("variables")
+            .into_iter()
+            .map(|variable| variable.name().to_string())
+            .collect();
+        assert!(names.contains(&"first".to_string()), "{names:?}");
+        assert!(names.contains(&"second".to_string()), "{names:?}");
+    }
+
+    /// mixed.nc4 keeps its real dimension table (row and col, both 3)
+    /// into the fallback, so the length collision that can mis-name an
+    /// axis under size inference MUST be confessed.
+    #[test]
+    fn equal_dimension_lengths_are_confessed_as_ambiguous() {
+        let (_, provenance) = open(&fixture("mixed.nc4")).expect("open");
+        assert_eq!(provenance.mode, "size-inferred");
+        assert!(provenance.strict_error.is_some());
+        assert!(
+            provenance.dimension_lengths_ambiguous,
+            "row and col share a length; size inference cannot tell them apart"
+        );
+    }
+
+    #[test]
+    fn duplicate_dimension_lengths_are_detected_and_absence_is_clean() {
+        use netcdf_writer::{NcFormat, NcType, NcWriter, Schema, VarData};
+        let dir = scratch("dup-dims");
+
+        let twins = dir.join("twins.nc");
+        let mut schema = Schema::new(NcFormat::Classic);
+        let a = schema.def_dim("a", 3, false).expect("dim");
+        let b = schema.def_dim("b", 3, false).expect("dim");
+        let va = schema.def_var("va", NcType::Double, &[a]).expect("var");
+        let vb = schema.def_var("vb", NcType::Double, &[b]).expect("var");
+        let mut writer = NcWriter::create(&twins, schema).expect("create");
+        writer.write_var(va, VarData::F64(&[1.0, 2.0, 3.0])).expect("write");
+        writer.write_var(vb, VarData::F64(&[4.0, 5.0, 6.0])).expect("write");
+        writer.finish().expect("finish");
+        let file = netcrust::File::open(&twins).expect("open");
+        assert!(has_duplicate_dimension_lengths(&file));
+
+        let distinct = dir.join("distinct.nc");
+        let mut schema = Schema::new(NcFormat::Classic);
+        let a = schema.def_dim("a", 3, false).expect("dim");
+        let b = schema.def_dim("b", 4, false).expect("dim");
+        let va = schema.def_var("va", NcType::Double, &[a]).expect("var");
+        let vb = schema.def_var("vb", NcType::Double, &[b]).expect("var");
+        let mut writer = NcWriter::create(&distinct, schema).expect("create");
+        writer.write_var(va, VarData::F64(&[1.0, 2.0, 3.0])).expect("write");
+        writer
+            .write_var(vb, VarData::F64(&[4.0, 5.0, 6.0, 7.0]))
+            .expect("write");
+        writer.finish().expect("finish");
+        let file = netcrust::File::open(&distinct).expect("open");
+        assert!(!has_duplicate_dimension_lengths(&file));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn attributes_map_carries_every_attribute_by_its_own_name() {
+        let dir = scratch("attrs-map");
+        let source = dir.join("packed.nc");
+        write_packed_classic(&source);
+        let file = netcrust::File::open(&source).expect("open");
+        let map = attributes_map(&file.attributes().expect("attributes"));
+        assert_eq!(map.len(), 2, "{map:?}");
+        assert_eq!(map["title"], serde_json::json!("packed fixture"));
+        assert_eq!(map["version"], serde_json::json!(3.0));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------------------------------
+    // Dimension-scale recovery against the checked-in NetCDF-4 fixture.
+
+    fn recovered_axes() -> Vec<VariableRecord> {
+        let (file, provenance) = open(&fixture("axes.nc4")).expect("open");
+        assert_eq!(provenance.mode, "strict", "{:?}", provenance.strict_error);
+        let dimensions: Vec<DimensionRecord> = file
+            .dimensions()
+            .expect("dimensions")
+            .into_iter()
+            .map(|dimension| DimensionRecord {
+                name: dimension.name().to_string(),
+                len: dimension.len(),
+                unlimited: dimension.is_unlimited(),
+            })
+            .collect();
+        let mut variables: Vec<VariableRecord> = file
+            .variables()
+            .expect("variables")
+            .into_iter()
+            .map(|variable| VariableRecord {
+                name: variable.name().to_string(),
+                dimensions: Vec::new(),
+                shape: variable.shape(),
+                dtype: String::new(),
+                attributes: BTreeMap::new(),
+                recovered_dimension_scale: false,
+            })
+            .collect();
+        assert_eq!(
+            variables.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
+            vec!["t2"],
+            "the reader's variable table must omit the dimension scales, \
+             or this fixture no longer tests the recovery at all"
+        );
+        recover_dimension_scales(&file, &dimensions, &mut variables);
+        variables
+    }
+
+    #[test]
+    fn coordinate_variables_are_recovered_with_their_own_dimensions() {
+        let variables = recovered_axes();
+        let mut names: Vec<&str> = variables
+            .iter()
+            .filter(|v| v.recovered_dimension_scale)
+            .map(|v| v.name.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["corners", "lat", "lon", "time", "zvals"]);
+
+        // The name rule: lon and lat share length 3, so only the
+        // coordinate-variable convention can attach each scale to its
+        // OWN dimension rather than the first one of matching length.
+        for name in ["time", "lon", "lat", "zvals"] {
+            let record = variables
+                .iter()
+                .find(|v| v.name == name)
+                .unwrap_or_else(|| panic!("{name} not recovered"));
+            assert_eq!(
+                record.dimensions,
+                vec![name.to_string()],
+                "{name} must resolve to its own dimension"
+            );
+            assert_eq!(record.dtype, "Promoted");
+        }
+
+        let time = variables.iter().find(|v| v.name == "time").expect("time");
+        assert_eq!(time.shape, vec![4]);
+        assert_eq!(
+            time.attributes.get("units"),
+            Some(&serde_json::json!("hours since 2024-03-01"))
+        );
+        assert_eq!(
+            time.attributes.get("standard_name"),
+            Some(&serde_json::json!("time"))
+        );
+        assert_eq!(
+            time.attributes.get("calendar"),
+            Some(&serde_json::json!("standard"))
+        );
+        assert_eq!(time.attributes.get("axis"), Some(&serde_json::json!("T")));
+        assert_eq!(
+            time.attributes.get("long_name"),
+            None,
+            "the fixture writes no long_name; inventing one would mean \
+             the probe list stopped being read by name"
+        );
+    }
+
+    /// The unique-length rule: a 2-D dataset can never take the name
+    /// rule, so each axis of `corners` (5 x 6) resolves only because
+    /// exactly one dimension has that length.
+    #[test]
+    fn a_two_dimensional_scale_resolves_axes_by_unique_length() {
+        let variables = recovered_axes();
+        let corners = variables
+            .iter()
+            .find(|v| v.name == "corners")
+            .expect("corners recovered");
+        assert_eq!(corners.shape, vec![5, 6]);
+        assert_eq!(corners.dimensions, vec!["corners", "zvals"]);
+        assert_eq!(
+            corners.attributes.get("long_name"),
+            Some(&serde_json::json!("cell corner offsets"))
+        );
+    }
+
+    #[test]
+    fn phony_dimensions_and_known_variables_are_not_recovered() {
+        let variables = recovered_axes();
+        assert!(
+            !variables.iter().any(|v| v.name == "bnds"),
+            "bnds has no coordinate variable; recovering it would invent \
+             a variable netCDF4-python does not report"
+        );
+        assert_eq!(
+            variables.iter().filter(|v| v.name == "t2").count(),
+            1,
+            "t2 is already in the variable table and must not be doubled"
         );
     }
 }

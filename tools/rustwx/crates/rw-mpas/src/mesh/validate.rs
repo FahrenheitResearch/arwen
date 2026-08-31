@@ -72,19 +72,38 @@ pub struct Limits {
     /// `max |R[e,e'] + R[e',e]|` for the TRiSK weights, absolute, against a
     /// weight scale bounded by 1/2. Published median: 1.67e-16.
     pub weight_antisymmetry: f64,
-    /// Shortest dual edge, in METRES at earth radius. GUARDS: the FP32
-    /// storage atol -- the port's load check (post-#311
-    /// `spherical_arc_tolerance`) tolerates an absolute ~1.732 m between the
-    /// stored `dvEdge` and the arc of the stored f32 vertices, so below a
-    /// couple hundred metres a stored dual length is materially quantisation
-    /// noise and the TRiSK weights would divide by it. RE-ANCHORED from
-    /// 7,500 m by ruling (2026-08-25) after the old anchor's breakage -- the
-    /// retired rtol 2e-5 / atol 0.0 load check -- was measured gone: real
-    /// pairs edited to 50/200/1,000/5,000 m dvEdge ALL pass today's loader
-    /// (gaps 0.06-0.13 m), while the 7,500 m floor refused the published
-    /// x4.163842 itself at its measured 1,170.0 m. Evidence:
-    /// gpuwm-hex `tree/evidence/graded-goldberg-20260825/`.
+    /// Shortest dual edge, in METRES at earth radius. DERIVED, never chosen:
+    /// [`DV_EDGE_FLOOR_QUANTA`] times the coordinate quantum of
+    /// [`Limits::storage`]. See [`Limits::for_storage`] for the measurement it
+    /// rests on and for what it reads in each representation.
+    ///
+    /// GUARDS: the ORTHOGONALITY OF THE STORED POINT SET. Rounding a vertex to
+    /// the storage quantum tilts the dual edge off the primal edge it is
+    /// supposed to be perpendicular to, by `1.935 * q / dvEdge` at the worst
+    /// edge -- MEASURED on both published statics' own bytes. Every operator
+    /// the dycore builds from those points (the edge normal, the tangent
+    /// plane, the reconstruction coefficients the init stage derives) assumes
+    /// that perpendicularity, and the defect grows without bound as the dual
+    /// edge shrinks toward the quantum.
+    ///
+    /// WHAT IT DOES NOT GUARD, corrected 2026-08-29: the sentence this comment
+    /// carried until then -- "the TRiSK weights would divide by it" -- names a
+    /// breakage that does not occur. The stored `weightsOnEdge` is
+    /// `R * dvEdge[e'] / dcEdge[e]`, with dvEdge a NUMERATOR, and the port
+    /// reads that array rather than rebuilding it. The only `1/dvEdge` in the
+    /// shipped port is the momentum-mixing Laplacian, limited to `4/dcEdge` in
+    /// all three arms exactly as MPAS-A limits it, and the v841 PV tangential
+    /// gradient, whose danger is a small `dv/dc` and which
+    /// [`Limits::min_dv_over_dc`] already gates. Measured, on real cells from
+    /// 115 m to 1,600 m of dual edge, the TRiSK coefficient error is FLAT at
+    /// 4.1e-5 to 4.8e-5: it tracks cell spacing, not dvEdge. Evidence:
+    /// gpuwm `evidence/dvedge-floor-20260829/`.
     pub min_dv_edge_m: f64,
+    /// The representation the mesh this run emits will be STORED in. It is
+    /// what [`Limits::min_dv_edge_m`] is derived from, and it is recorded here
+    /// so a receipt carries the assumption its floor was written against
+    /// rather than a bare number whose units a reader has to guess.
+    pub storage: crate::staticfile::coordframe::CoordinateRepresentation,
     /// Smallest `dvEdge / dcEdge`. A near-zero ratio is the signature of a
     /// near-cocircular pentagon-heptagon dislocation quad: two Voronoi
     /// vertices nearly coincide while their cells stay a full spacing apart.
@@ -155,12 +174,15 @@ impl Default for Limits {
             // here has to be as orthogonal as a converged NCAR SCVT.
             orthogonality: 1e-10,
             weight_antisymmetry: 1e-9,
-            // 115x the port's measured 1.732 m absolute load tolerance and
-            // ~2,000x the measured f32 quantisation gaps (0.06-0.13 m), so a
-            // stored dual length is always meaningful to under 1%. Admits
-            // every mesh the port loads and runs (x4.163842 at 1,170 m, the
-            // canonical graded mesh at 925.7 m); ruled 2026-08-25.
-            min_dv_edge_m: 200.0,
+            // DERIVED from the storage representation; see
+            // `Limits::for_storage`. At the binary32 default this is 200.0 m
+            // to the bit -- 400 quanta of 0.5 m -- so the 2026-08-25 ruling's
+            // number is unchanged for every file that has a native
+            // counterpart.
+            min_dv_edge_m: DV_EDGE_FLOOR_QUANTA
+                * crate::staticfile::coordframe::CoordinateRepresentation::default()
+                    .quantum_m(crate::mesh::geom::EARTH_RADIUS_M),
+            storage: crate::staticfile::coordframe::CoordinateRepresentation::default(),
             // Between the published family's floor (0.0336 on x4.163842) and
             // the measured dislocation class (0.0147 and below), anchored to
             // both readings rather than chosen by taste -- and equal to the
@@ -171,7 +193,65 @@ impl Default for Limits {
     }
 }
 
+/// The dual-edge floor, in COORDINATE QUANTA of the representation the mesh
+/// will be stored in.
+///
+/// WHY A MULTIPLE OF THE QUANTUM AND NOT A LENGTH. The breakage the floor
+/// prevents is the orthogonality defect that storage rounding puts into the
+/// point set: `abs(cos(primal, dual)) = 1.935 * q / dvEdge` at the worst edge,
+/// MEASURED 2026-08-29 off the published `x1.40962.static.nc` and
+/// `x4.163842.static.nc` themselves, over 614,400 edges, with the constant
+/// flat across six dual-edge bins from 1 km to 131 km and across a 16x range
+/// of quantum (`evidence/dvedge-floor-20260829/`). The defect is a function of
+/// `q/dvEdge` and of nothing else, so a floor stated in metres is a floor
+/// stated in the wrong units: it has to be re-anchored by hand every time the
+/// storage changes, which is how the 7,500 m anchor came to refuse the
+/// published x4.163842 that the port runs.
+///
+/// WHERE 400 COMES FROM, and it is not a new ruling. The floor in force since
+/// 2026-08-25 is 200.0 m at binary32 Earth-centred storage, whose quantum is
+/// 0.5 m exactly: 400 quanta. Held constant, that is a WORST-EDGE
+/// stored-point orthogonality budget of `1.935/400 = 4.84e-3` (0.28 degrees
+/// off perpendicular). This constant re-expresses the standing ruling in the
+/// units its mechanism has; it does not relax it, and at binary32 it computes
+/// 200.0 m to the bit.
+///
+/// WHAT IT READS, PER REPRESENTATION, at `sphere_radius = 6 371 229 m`:
+///
+/// * `binary32_earth_centred`, q = 0.5 m: **200.0 m** -- unchanged, and this
+///   is what every file with a native MPAS-A counterpart is judged by.
+/// * `binary64_earth_centred`, q = 9.313e-10 m: **3.725e-7 m**. At that
+///   storage the quantum stops being what a fine mesh runs into at all, and
+///   what remains between the generator and a sub-kilometre mesh is
+///   [`Limits::min_dv_over_dc`] -- which is about mesh SHAPE, is equal to the
+///   port's own admission floor, and moves for no representation.
+///
+/// LIMIT, stated because the number depends on it: whether a 4.84e-3
+/// orthogonality defect degrades a FORECAST is NOT MEASURED. 4.84e-3 is what
+/// the standing ruling encodes, carried forward unchanged, not a value
+/// derived from forecast skill. Tightening it is a ruling, not an edit; for
+/// reference a 1e-3 budget would put the binary32 floor at 968 m, i.e. today's
+/// 200 m is nearly five times LOOSER than that, and the published
+/// x4.163842.static.nc's own worst reading is 1.247e-4.
+pub const DV_EDGE_FLOOR_QUANTA: f64 = 400.0;
+
 impl Limits {
+    /// The limits for a mesh that will be STORED in `storage`.
+    ///
+    /// Only [`Limits::min_dv_edge_m`] depends on it, and it depends on nothing
+    /// else. Every other limit here is about the mesh rather than about the
+    /// file, and none of them moves.
+    pub fn for_storage(
+        storage: crate::staticfile::coordframe::CoordinateRepresentation,
+    ) -> Self {
+        Limits {
+            min_dv_edge_m: DV_EDGE_FLOOR_QUANTA
+                * storage.quantum_m(crate::mesh::geom::EARTH_RADIUS_M),
+            storage,
+            ..Limits::default()
+        }
+    }
+
     /// The largest area, on the unit sphere, that the two decompositions of one
     /// cell may enclose differently. An ABSOLUTE area, because the disagreement
     /// is an absolute constant; see [`Limits::area_decomposition_ulps`].
@@ -651,10 +731,16 @@ pub fn validate(mesh: &MpasMesh, limits: Limits) -> MpasResult<MeshReport> {
     }
     if min_dv_m < limits.min_dv_edge_m {
         return Err(MpasError::Refusal(format!(
-            "edge {worst_dv_edge}: the two dual vertices sit {min_dv_m:.1} m apart (dcEdge {:.0} m, dv/dc {:.2e}), under the {:.0} m FP32 storage-length floor. The static that has to accompany this grid stores vertices as f32 at earth-radius magnitude (~0.5 m ULP), and the port's load check tolerates an absolute ~1.732 m disagreement between the stored dvEdge and the arc of those stored vertices -- so below this floor the stored length is materially quantisation noise, and the TRiSK tangential weights divide by it. The floor is 115x that tolerance, anchored to measurement (real pairs edited to 50-5,000 m dvEdge all LOAD; the boundary is the noise fraction, not the loader): published x1.40962 measures 45,016.7 m at its shortest, x4.163842 runs at 1,170.0 m, the canonical graded mesh at 925.7 m. A dual edge this short alongside a healthy dv/dc means cells a few hundred metres apart; check the spec's finest spacing before checking the generator",
+            "edge {worst_dv_edge}: the two dual vertices sit {min_dv_m:.1} m apart (dcEdge {:.0} m, dv/dc {:.2e}), under the {:.4e} m stored-point floor for {} storage ({:.0} coordinate quanta of {:.4e} m). The static that accompanies this grid stores its vertices at that quantum, and rounding them there tilts this dual edge off the primal edge it is meant to be perpendicular to by 1.935*q/dvEdge = {:.3e} at the worst edge -- MEASURED on the published statics' own bytes over 614,400 edges. Every operator the dycore builds from those points (edge normals, cell tangent planes, the reconstruction coefficients the init stage derives) assumes that perpendicularity, and the defect grows without bound as the dual edge approaches the quantum. For scale: published x1.40962 measures 45,016.7 m at its shortest and x4.163842 runs at 1,170.0 m, both carrying under 1.4e-4. What moves this floor is the STORAGE, not the gate: a mesh with no native MPAS-A counterpart may be stored binary64, where the same budget reads 3.7e-7 m. Evidence: evidence/dvedge-floor-20260829/",
             dc_m[worst_dv_edge],
             mesh.dv_edge[worst_dv_edge] / mesh.dc_edge[worst_dv_edge],
-            limits.min_dv_edge_m
+            limits.min_dv_edge_m,
+            limits.storage.tag(),
+            DV_EDGE_FLOOR_QUANTA,
+            limits.storage.quantum_m(r),
+            crate::staticfile::coordframe::ORTHOGONALITY_WORST_CONSTANT
+                * limits.storage.quantum_m(r)
+                / min_dv_m
         )));
     }
     if min_ratio < limits.min_dv_over_dc {
@@ -782,6 +868,82 @@ pub fn displacement(a: V3, b: V3) -> V3 {
             !err.contains("FP32 survival floor") && !err.contains("rtol 2e-5"),
             "the refusal quotes the retired storage premise: {err}"
         );
+    }
+
+    /// THE RULING DID NOT MOVE. Re-expressing the floor as a multiple of the
+    /// coordinate quantum has to reproduce the standing 200.0 m at the
+    /// published representation EXACTLY -- not nearly -- or every file with a
+    /// native MPAS-A counterpart is being judged by a different number than
+    /// the one that was ruled.
+    #[test]
+    fn the_binary32_floor_is_the_ruled_200_m_to_the_bit() {
+        use crate::staticfile::coordframe::CoordinateRepresentation as CR;
+        let d = Limits::default();
+        assert_eq!(
+            d.min_dv_edge_m, 200.0,
+            "the 2026-08-25 ruling is 200.0 m at binary32 and the derivation must land on it"
+        );
+        assert_eq!(d.storage, CR::Binary32EarthCentred);
+        assert_eq!(
+            Limits::for_storage(CR::Binary32EarthCentred).min_dv_edge_m,
+            200.0
+        );
+        // 400 quanta, and the quantum is the file's, not a table's.
+        assert_eq!(
+            DV_EDGE_FLOOR_QUANTA * CR::Binary32EarthCentred.quantum_m(EARTH_RADIUS_M),
+            200.0
+        );
+    }
+
+    /// The same BUDGET at binary64 storage: 400 quanta of 9.313e-10 m. The
+    /// floor stops being what a sub-kilometre mesh runs into, and the shape
+    /// gate (`min_dv_over_dc`, the port's own admission floor) is untouched.
+    #[test]
+    fn binary64_storage_earns_the_same_budget_at_its_own_quantum() {
+        use crate::staticfile::coordframe::CoordinateRepresentation as CR;
+        let l = Limits::for_storage(CR::Binary64EarthCentred);
+        let expect = 400.0 * 9.313225746154785e-10;
+        assert!(
+            (l.min_dv_edge_m - expect).abs() < 1e-18,
+            "binary64 floor {:e}, expected {expect:e}",
+            l.min_dv_edge_m
+        );
+        assert!(l.min_dv_edge_m < 4.0e-7 && l.min_dv_edge_m > 3.0e-7);
+        // The SHAPE gate does not move for a representation.
+        assert_eq!(l.min_dv_over_dc, Limits::default().min_dv_over_dc);
+        assert_eq!(l.orthogonality, Limits::default().orthogonality);
+        assert_eq!(l.area_decomposition_ulps, Limits::default().area_decomposition_ulps);
+        assert_eq!(l.weight_antisymmetry, Limits::default().weight_antisymmetry);
+        assert_eq!(l.kite_partition, Limits::default().kite_partition);
+        assert_eq!(l.sphere_closure, Limits::default().sphere_closure);
+    }
+
+    /// The refusal names the storage it was written against, the quantum, and
+    /// the orthogonality defect -- not the retired claim that the TRiSK
+    /// weights divide by dvEdge.
+    #[test]
+    fn the_length_refusal_names_the_storage_and_the_defect_it_prevents() {
+        let spec = MeshSpec::uniform(120.0);
+        let points = seed_points(&spec, 2_000).expect("seed");
+        let mesh = derive_relaxed(points, &spec);
+        // A floor high enough that this mesh's 7.3 km dual edge trips the
+        // LENGTH clause, with the ratio clause named away so the length
+        // refusal is the one that speaks.
+        let tall = Limits {
+            min_dv_edge_m: 50_000.0,
+            min_dv_over_dc: 0.0,
+            ..Limits::default()
+        };
+        let err = validate(&mesh, tall).expect_err("50 km floor must refuse").to_string();
+        assert!(err.contains("stored-point floor"), "{err}");
+        assert!(err.contains("binary32_earth_centred"), "{err}");
+        assert!(err.contains("coordinate quanta"), "{err}");
+        assert!(err.contains("perpendicular"), "{err}");
+        assert!(
+            !err.contains("TRiSK tangential weights divide by it"),
+            "the refusal repeats the breakage measured not to occur: {err}"
+        );
+        assert!(err.contains("binary64"), "the remedy is not named: {err}");
     }
 
     /// The ruled length floor contributes no refusal to the symptomatic

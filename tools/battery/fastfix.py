@@ -61,6 +61,7 @@ import argparse
 import ast
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -226,8 +227,21 @@ def select(touched: list[str],
                 add(rel, "its own file was touched")
             continue
         if not rel.endswith(".py"):
-            # A .cu, .toml, .json, .md or .txt has no import edge.  Saying
-            # so is the honest answer; the ALWAYS list is the coverage.
+            # A .cu, .toml, .json, .md or .txt has no import edge, so import
+            # analysis genuinely has nothing to say about it.  But "no import
+            # edge" is not "no gate": some gates READ these files.  Saying
+            # only "the ALWAYS list is the coverage" was measured wrong on
+            # 2026-08-29 -- a WSM6 kernel was switched off
+            # (`pracw = 0.0f * fminf(...)`) and the whole 172-file stage-1 leg
+            # ran twice, pristine and injected, with ZERO differing node ids.
+            # The gate that catches it reads .cu bytes, so it is now on the
+            # ALWAYS list, and the extension below selects it BY NAME so the
+            # reason a lane runs it is legible rather than incidental.
+            for suffix, gates in _NON_PYTHON_GATES.items():
+                if rel.endswith(suffix):
+                    for gate in gates:
+                        if (REPO_ROOT / gate).is_file():
+                            add(gate, f"reads {suffix} bytes; {rel} touched")
             continue
         for test_path in sorted(importers.get(rel, ())):
             add(test_path, f"imports {rel}")
@@ -238,6 +252,21 @@ def select(touched: list[str],
 # ---------------------------------------------------------------------------
 # durations
 # ---------------------------------------------------------------------------
+
+
+#: Gates that READ a file type rather than importing it, keyed by suffix.
+#: The selector cannot reach these by import edge -- that is the whole reason
+#: they exist -- so they are named here and are also on ``always_files.txt``.
+#: Belt and braces on purpose: the ALWAYS list makes them run, this table
+#: makes the REASON they ran appear in the selector's output, which is what a
+#: person iterating on a kernel actually needs to see.
+_NON_PYTHON_GATES: dict[str, tuple[str, ...]] = {
+    ".cu": (
+        "tests/test_kernel_source_freeze_per_module.py",
+        "tests/test_cuda_libm_table_copies.py",
+    ),
+    ".rs": ("tests/test_bridge_source_rev_stamp.py",),
+}
 
 
 def load_durations() -> dict[str, float]:
@@ -283,6 +312,115 @@ def record_durations(paths: list[str], python: str | None = None) -> None:
         encoding="utf-8", newline="\n")
 
 
+#: ``  1.23s call     tests/test_x.py::test_y`` -- pytest's ``--durations``
+#: report line.  Setup, call and teardown are three lines per test.
+_DURATION_LINE = re.compile(
+    r"^\s*(?P<seconds>[0-9.]+)s\s+(?:setup|call|teardown)\s+"
+    r"(?P<node>\S+\.py)::")
+
+
+def durations_from_batched_report(text: str) -> dict[str, float]:
+    """Per-file seconds from ONE pytest run's ``--durations=0`` report.
+
+    THE ACCIDENTAL COST THIS REMOVES, measured on this box 2026-08-29.
+    ``record_durations`` above spawns one pytest per file.  The battery runs
+    the files in a SINGLE invocation, and an invocation costs about 2.45 s of
+    interpreter start, plugin load and conftest import before a test runs:
+    172 stage-1 files as 172 processes measured 2,252 s against 1,441.68 s for
+    the same files in one invocation -- 421 s, 29% of the leg, spent on
+    nothing.
+
+    Every row written by ``record_durations`` therefore carries ~2.45 s the
+    battery never pays.  That is a rounding error on a 300 s file and it is
+    50-100% on a 2 s one, and 100 of the 172 stage-1 files are under 5 s --
+    which is exactly the end where ``_ordered``'s cheapest-first decision is
+    made.  A selector that sorts by a systematically wrong number puts the
+    red later than it needs to be.
+
+    This reads the report of a run that already happened, so it costs nothing
+    and it measures the arrangement the battery actually uses.  Sum over
+    setup, call and teardown, because a fixture is part of what a file costs.
+
+    WHAT IT DOES NOT MEASURE, stated rather than hidden: pytest attributes
+    only those three phases, so COLLECTION -- where a module's import cost
+    lands -- is not in the report and a batched row understates an
+    import-heavy file.  It is still the better of the two numbers for the
+    cheapest-first ordering, because the term it omits is smaller and more
+    uniform across files than the ~2.45 s the per-process spelling adds to
+    every row.
+    """
+
+    seconds: dict[str, float] = {}
+    for line in text.splitlines():
+        match = _DURATION_LINE.match(line)
+        if match is None:
+            continue
+        path = match.group("node").replace("\\", "/")
+        seconds[path] = round(seconds.get(path, 0.0)
+                              + float(match.group("seconds")), 2)
+    return seconds
+
+
+def record_durations_batched(report: pathlib.Path) -> int:
+    """Update the tracked receipt from a batched report, and say what moved."""
+
+    raw = report.read_bytes()
+    # A PowerShell redirect writes UTF-16 on this box; decode by BOM
+    # rather than assuming, so a report captured either way parses.
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = raw.decode("utf-16", errors="replace")
+    else:
+        text = raw.decode("utf-8", errors="replace")
+    measured = durations_from_batched_report(text)
+    if not measured:
+        print(f"no --durations lines in {report}; nothing recorded",
+              file=sys.stderr)
+        return 1
+
+    payload = {"seconds": {}}
+    if DURATIONS.is_file():
+        try:
+            payload = json.loads(DURATIONS.read_text(encoding="utf-8"))
+            payload.setdefault("seconds", {})
+        except (OSError, ValueError):
+            payload = {"seconds": {}}
+
+    for path, value in sorted(measured.items()):
+        was = payload["seconds"].get(path)
+        payload["seconds"][path] = value
+        if was is None:
+            print(f"  {value:8.2f} s  {path}  (new)")
+        elif abs(was - value) >= 0.05:
+            print(f"  {value:8.2f} s  {path}  (was {was:.2f} s, "
+                  f"{value - was:+.2f})")
+    stale = sorted(set(payload["seconds"]) - set(measured))
+    payload["seconds"] = dict(sorted(payload["seconds"].items()))
+    payload["_stale_rows"] = (
+        "Rows this batched run did not refresh, still carrying whatever "
+        "method and date _measured describes.  A file lands here either "
+        "because the run did not include it, or because every one of its "
+        "tests was under pytest's 0.005 s reporting floor and so emitted no "
+        "duration line at all -- the second case is a row that is already "
+        "as cheap as the receipt can express: "
+        + (", ".join(stale) if stale else "none") + "."
+    )
+    payload["_how"] = (
+        "One batched pytest invocation with --durations=0, summed per file "
+        "over setup+call+teardown; see fastfix.py "
+        "durations_from_batched_report.  This is the arrangement the battery "
+        "runs.  The earlier spelling of this file measured one pytest process "
+        "per file, which added about 2.45 s of interpreter and conftest start "
+        "to every row -- 421 s across the 172-file stage-1 leg, and 50-100% "
+        "of the recorded cost of the 100 files that are under 5 s."
+    )
+    DURATIONS.write_text(
+        json.dumps(payload, indent=2, sort_keys=False) + chr(10),
+        encoding="utf-8", newline=chr(10))
+    print()
+    print(f"  {len(measured)} file(s) recorded from {report}")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # front door
 # ---------------------------------------------------------------------------
@@ -301,15 +439,28 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="fastfix",
         description="Select the test files a change can break, cheapest first.")
-    parser.add_argument("--base", required=True,
-                        help="the ref the fix branched from (a tag, usually)")
+    parser.add_argument("--base",
+                        help="the ref the fix branched from (a tag, usually); "
+                             "required for a selection, unused by "
+                             "--record-from")
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--format", choices=("report", "pytest", "json"),
                         default="report")
     parser.add_argument(
         "--record", action="store_true",
         help="measure the selection and update tools/battery/durations.json")
+    parser.add_argument(
+        "--record-from", metavar="REPORT", type=pathlib.Path,
+        help="update tools/battery/durations.json from the --durations=0 "
+             "report of a BATCHED run, which is the arrangement the battery "
+             "uses; --record spawns one process per file and inflates every "
+             "row by the interpreter start the battery does not pay")
     args = parser.parse_args(argv)
+
+    if args.record_from is not None:
+        return record_durations_batched(args.record_from)
+    if not args.base:
+        parser.error("--base is required to select tests")
 
     touched = changed_files(args.base, args.head)
     selected = select(touched)

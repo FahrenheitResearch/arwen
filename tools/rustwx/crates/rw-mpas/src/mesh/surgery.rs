@@ -66,7 +66,9 @@ use crate::error::{MpasError, MpasResult};
 use crate::mesh::density::DensityField;
 use crate::mesh::derive::Rings;
 use crate::mesh::geom::{EARTH_RADIUS_M, V3, add, arc, circumcenter, cross, scale, tri_area, unit};
-use crate::mesh::hull::delaunay_rings;
+use crate::mesh::hull::{
+    TriangulationMode, delaunay_rings, delaunay_triangulation, repair_or_rebuild,
+};
 
 use serde::Serialize;
 
@@ -132,37 +134,53 @@ pub struct QuadReading {
 /// `delaunay_rings` has already refused to produce for a valid point set.
 pub fn for_each_quad(points: &[V3], rings: &Rings, mut visit: impl FnMut(QuadReading)) {
     for i in 0..points.len() {
-        let ring = rings.ring(i);
-        let deg = ring.len();
+        let deg = rings.degree(i);
         for k in 0..deg {
-            let j = ring[k] as usize;
-            if j <= i {
-                continue;
+            if let Some(r) = quad_reading(points, rings, i, k) {
+                visit(r);
             }
-            let a = ring[(k + deg - 1) % deg] as usize;
-            let b = ring[(k + 1) % deg] as usize;
-            let (Some(u), Some(v)) = (
-                circumcenter(points[i], points[a], points[j]),
-                circumcenter(points[i], points[j], points[b]),
-            ) else {
-                continue;
-            };
-            let dc = arc(points[i], points[j]);
-            if !(dc > 0.0) {
-                continue;
-            }
-            let dv = arc(u, v);
-            let dev = (arc(u, points[b]) - arc(u, points[i])).abs() * EARTH_RADIUS_M;
-            visit(QuadReading {
-                i: i as u32,
-                j: j as u32,
-                a: a as u32,
-                b: b as u32,
-                q: dv / dc,
-                dev_m: dev,
-            });
         }
     }
+}
+
+/// The reading for cell `i`'s ring slot `k`, or `None` where the serial
+/// [`for_each_quad`] skips.
+///
+/// ONE COPY OF THIS ARITHMETIC, because there are now two readers -- the
+/// serial visitor above and the parallel monitor below -- and two copies of
+/// a quad formula that drifted apart would put the per-sweep monitor and the
+/// surgery detector on different definitions of the same metric while both
+/// printed the same name.
+#[inline]
+fn quad_reading(points: &[V3], rings: &Rings, i: usize, k: usize) -> Option<QuadReading> {
+    let ring = rings.ring(i);
+    let deg = ring.len();
+    let j = ring[k] as usize;
+    if j <= i {
+        return None;
+    }
+    let a = ring[(k + deg - 1) % deg] as usize;
+    let b = ring[(k + 1) % deg] as usize;
+    let (Some(u), Some(v)) = (
+        circumcenter(points[i], points[a], points[j]),
+        circumcenter(points[i], points[j], points[b]),
+    ) else {
+        return None;
+    };
+    let dc = arc(points[i], points[j]);
+    if !(dc > 0.0) {
+        return None;
+    }
+    let dv = arc(u, v);
+    let dev = (arc(u, points[b]) - arc(u, points[i])).abs() * EARTH_RADIUS_M;
+    Some(QuadReading {
+        i: i as u32,
+        j: j as u32,
+        a: a as u32,
+        b: b as u32,
+        q: dv / dc,
+        dev_m: dev,
+    })
 }
 
 /// The worst `dvEdge/dcEdge` on the triangulation, with its edge.
@@ -172,15 +190,55 @@ pub fn for_each_quad(points: &[V3], rings: &Rings, mut visit: impl FnMut(QuadRea
 /// trajectory printed from here can be read directly against the 0.02
 /// admission floor and the recorded failure numbers.
 pub fn min_dv_over_dc(points: &[V3], rings: &Rings) -> (f64, (u32, u32)) {
-    let mut worst = f64::INFINITY;
-    let mut edge = (0u32, 0u32);
-    for_each_quad(points, rings, |r| {
-        if r.q < worst {
-            worst = r.q;
-            edge = (r.i, r.j);
-        }
-    });
-    (worst, edge)
+    // PARALLEL, AND THE SAME ANSWER TO THE BIT. This runs once per Lloyd
+    // sweep over every edge -- 24.6% of a maintained-arm relaxation's wall
+    // and up to 5.6% of a rebuild-arm one -- and every edge's reading is
+    // independent, so the only thing that needed care is WHICH edge is
+    // returned when two read the same worst value.
+    //
+    // The serial loop it replaces kept the FIRST edge, in `(cell, ring slot)`
+    // order, that was strictly better than everything before it. The
+    // reduction below is written to that rule explicitly -- lexicographic
+    // minimum of `(q, cell, slot)`, which is a total order, so it is
+    // associative and rayon's join order cannot reach it. `min_by` on `q`
+    // alone would not be enough: surgery keys its sites off the returned
+    // EDGE, and a different winner on a tie is a different repair and a
+    // different mesh.
+    let best = (0..points.len())
+        .into_par_iter()
+        .map(|i| {
+            let deg = rings.degree(i);
+            let mut b: Option<(f64, u32, u32, u32)> = None;
+            for k in 0..deg {
+                let Some(r) = quad_reading(points, rings, i, k) else {
+                    continue;
+                };
+                // Strictly better, exactly as the serial loop had it, so a
+                // NaN reading never becomes a winner.
+                if b.map_or(true, |(bq, _, _, _)| r.q < bq) {
+                    b = Some((r.q, i as u32, k as u32, r.j));
+                }
+            }
+            b
+        })
+        .reduce(
+            || None,
+            |a, b| match (a, b) {
+                (None, x) => x,
+                (x, None) => x,
+                (Some(x), Some(y)) => {
+                    if y.0 < x.0 || (y.0 == x.0 && (y.1, y.2) < (x.1, x.2)) {
+                        Some(y)
+                    } else {
+                        Some(x)
+                    }
+                }
+            },
+        );
+    match best {
+        Some((q, i, _, j)) => (q, (i, j)),
+        None => (f64::INFINITY, (0, 0)),
+    }
 }
 
 /// Voronoi cell area of cell `i`, in steradians (unit sphere).
@@ -268,6 +326,9 @@ pub struct SurgeryOptions {
     /// Ops a site may receive before its one cavity resample: two chosen by
     /// the fill ratio, then one with the op type FORCED to swap.
     pub site_op_cap: usize,
+    /// Which arm keeps the triangulation across the polish sweeps. Defaults
+    /// to [`TriangulationMode::Rebuild`]; see that type.
+    pub triangulation: TriangulationMode,
 }
 
 /// Rounds of re-anneal a cell below [`MIN_COORDINATION`] gets before the
@@ -289,6 +350,7 @@ impl Default for SurgeryOptions {
             local_radius: 3,
             polish_sweeps: 8,
             site_op_cap: 3,
+            triangulation: TriangulationMode::Rebuild,
         }
     }
 }
@@ -406,6 +468,14 @@ impl SiteTracker {
 /// therefore written to that rule explicitly rather than left to whatever
 /// order rayon happens to join in -- `min_by` alone would not be enough.
 fn nearest_generator(points: &[V3], to: V3) -> usize {
+    crate::mesh::profile::timed(
+        &crate::mesh::profile::NEAREST,
+        points.len() as u64,
+        || nearest_generator_inner(points, to),
+    )
+}
+
+fn nearest_generator_inner(points: &[V3], to: V3) -> usize {
     points
         .par_iter()
         .enumerate()
@@ -433,8 +503,25 @@ fn local_polish<F: DensityField + Sync>(
     seeds: &[V3],
     radius: usize,
     sweeps: usize,
+    mode: TriangulationMode,
 ) -> MpasResult<Rings> {
-    let mut rings = delaunay_rings(points)?;
+    let _polish_timer = crate::mesh::profile::Span::new(
+        &crate::mesh::profile::SURGERY_POLISH,
+        points.len() as u64,
+    );
+    // The point set has just been EDITED by the operators above -- inserted,
+    // deleted, swap-removed -- so the entry triangulation is a build on both
+    // arms. What the maintained arm saves is the `sweeps` rebuilds after it,
+    // and the default `polish_sweeps` is 8: nine builds become one.
+    let mut tri = if mode.is_maintained() {
+        Some(delaunay_triangulation(points)?)
+    } else {
+        None
+    };
+    let mut rings = match &tri {
+        Some(t) => t.rings()?,
+        None => delaunay_rings(points)?,
+    };
     for _ in 0..sweeps {
         // Nearest cell to each seed position, then BFS out `radius` hops.
         let mut active = vec![false; points.len()];
@@ -462,7 +549,13 @@ fn local_polish<F: DensityField + Sync>(
         for (i, c) in moves {
             points[i] = c;
         }
-        rings = delaunay_rings(points)?;
+        rings = match &mut tri {
+            Some(t) => {
+                repair_or_rebuild(points, t)?;
+                t.rings()?
+            }
+            None => delaunay_rings(points)?,
+        };
     }
     Ok(rings)
 }
@@ -482,16 +575,27 @@ fn polish_step<F: DensityField>(points: &[V3], rings: &Rings, field: &F, i: usiz
             None => return centre,
         }
     }
+    // Same memo, same reason, as `lloyd::cell_step`: the radial midpoints are
+    // each asked for by two sub-triangles and are bit-identical between them,
+    // so a third of the field evaluations here were duplicates. Same points,
+    // same values, same accumulation order.
+    let radial: Vec<Option<(V3, f64)>> = (0..deg)
+        .map(|j| unit(add(centre, verts[j])).map(|m| (m, field.density(m))))
+        .collect();
     let mut moment: V3 = [0.0; 3];
     for j in 0..deg {
         let a = verts[j];
         let b = verts[(j + 1) % deg];
         let tri = tri_area(centre, a, b);
-        for (p, q) in [(centre, a), (a, b), (b, centre)] {
-            if let Some(m) = unit(add(p, q)) {
-                let w = tri / 3.0 * field.density(m);
-                moment = add(moment, scale(m, w));
-            }
+        let w3 = tri / 3.0;
+        if let Some((m, d)) = radial[j] {
+            moment = add(moment, scale(m, w3 * d));
+        }
+        if let Some(m) = unit(add(a, b)) {
+            moment = add(moment, scale(m, w3 * field.density(m)));
+        }
+        if let Some((m, d)) = radial[(j + 1) % deg] {
+            moment = add(moment, scale(m, w3 * d));
         }
     }
     unit(moment).unwrap_or(centre)
@@ -574,11 +678,17 @@ pub fn drain<F: DensityField + Sync>(
     for round in 0..opts.max_rounds {
         // ---- detect, worst first, canonical order ------------------------
         let mut flagged: Vec<QuadReading> = Vec::new();
-        for_each_quad(points, &rings, |r| {
-            if r.q < opts.flag_floor {
-                flagged.push(r);
-            }
-        });
+        crate::mesh::profile::timed(
+            &crate::mesh::profile::QUAD_SCAN,
+            points.len() as u64,
+            || {
+                for_each_quad(points, &rings, |r| {
+                    if r.q < opts.flag_floor {
+                        flagged.push(r);
+                    }
+                });
+            },
+        );
         // THE OTHER HALF OF "REPAIRED", AND THE HALF THIS LOOP USED TO MISS.
         // Every operator here is a point-set edit followed by exact
         // re-triangulation, and a single insertion into a locally hexagonal
@@ -906,6 +1016,7 @@ pub fn drain<F: DensityField + Sync>(
             &polish_seeds,
             opts.local_radius,
             opts.polish_sweeps,
+            opts.triangulation,
         )?;
     }
 
@@ -966,6 +1077,87 @@ fn site_quality(points: &[V3], rings: &Rings, site: V3) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THE BREAKAGE: `min_dv_over_dc` is the per-sweep monitor AND the metric
+    /// surgery keys its repair sites off. It used to be a serial scan that
+    /// kept the FIRST edge, in `(cell, ring slot)` order, strictly better than
+    /// everything before it. It is now a parallel reduction, and a reduction
+    /// written as `min_by` on the quality alone would return a different EDGE
+    /// whenever two read the same worst value -- a different repair, a
+    /// different mesh, and a mesh that changes between runs on the same
+    /// machine because rayon's join order is not fixed.
+    ///
+    /// This holds the parallel answer against the serial rule it replaced,
+    /// spelled out here rather than referenced, so a future rewrite of either
+    /// side has something to fail against.
+    #[test]
+    fn the_parallel_monitor_returns_the_edge_the_serial_scan_returned() {
+        for n in [500usize, 2_000, 6_000] {
+            let pts: Vec<V3> = {
+                let ga = std::f64::consts::PI * (3.0 - 5f64.sqrt());
+                (0..n)
+                    .map(|k| {
+                        let z = 1.0 - (2 * k + 1) as f64 / n as f64;
+                        let r = (1.0 - z * z).max(0.0).sqrt();
+                        let t = ga * k as f64;
+                        [r * t.cos(), r * t.sin(), z]
+                    })
+                    .collect()
+            };
+            let rings = delaunay_rings(&pts).expect("delaunay");
+            // The rule the serial loop had, written out.
+            let mut worst = f64::INFINITY;
+            let mut edge = (0u32, 0u32);
+            for_each_quad(&pts, &rings, |r| {
+                if r.q < worst {
+                    worst = r.q;
+                    edge = (r.i, r.j);
+                }
+            });
+            let (q, e) = min_dv_over_dc(&pts, &rings);
+            assert_eq!(
+                q.to_bits(),
+                worst.to_bits(),
+                "{n} generators: the parallel monitor read {q:e} where the serial scan read {worst:e}"
+            );
+            assert_eq!(
+                e, edge,
+                "{n} generators: the parallel monitor named edge {e:?} where the serial scan named {edge:?}; surgery keys its sites off this edge"
+            );
+        }
+    }
+
+    /// The same reduction, forced onto a genuine TIE. A uniform icosahedral
+    /// mesh has whole orbits of exactly equal readings, so this is the case
+    /// where a `min_by` written without the index rule picks a different
+    /// winner on every thread count.
+    #[test]
+    fn a_tied_worst_reading_goes_to_the_lowest_cell_and_slot() {
+        let pts = crate::mesh::icosa::seed(8, 0).expect("icosahedral seed");
+        let rings = delaunay_rings(&pts).expect("delaunay");
+        let mut worst = f64::INFINITY;
+        let mut edge = (0u32, 0u32);
+        let mut ties = 0usize;
+        for_each_quad(&pts, &rings, |r| {
+            if r.q < worst {
+                worst = r.q;
+                edge = (r.i, r.j);
+                ties = 1;
+            } else if r.q == worst {
+                ties += 1;
+            }
+        });
+        assert!(
+            ties > 1,
+            "this fixture was chosen for its ties and produced {ties}; it is not testing what it claims to"
+        );
+        let (q, e) = min_dv_over_dc(&pts, &rings);
+        assert_eq!(q.to_bits(), worst.to_bits());
+        assert_eq!(
+            e, edge,
+            "{ties} edges read the same worst value and the parallel reduction picked {e:?} instead of the lowest-indexed {edge:?}"
+        );
+    }
     use crate::mesh::density::MeshSpec;
     use crate::mesh::lloyd::{LloydOptions, relax};
 

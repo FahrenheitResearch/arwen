@@ -381,7 +381,7 @@ def test_the_runner_refuses_provenance_that_contradicts_the_experiment():
 # ---------------------------------------------------------------------------
 
 def _front_door_case(tmp_path, *, start_hour: int, series_hours,
-                     run_hours: int = 3):
+                     run_hours: int = 3, acks=()):
     """A wizard config at cycle+K, plus the series/manifest pair beside it.
 
     Everything up to the decode is real: the config comes out of the
@@ -389,6 +389,11 @@ def _front_door_case(tmp_path, *, start_hour: int, series_hours,
     front door verifies it.  The bridge is a stand-in, so a case that
     passes the lead gate proceeds to the decode and fails THERE -- which
     is precisely the evidence that admission happened.
+
+    ``acks`` rides through as ``--ack`` flags: a lead that pushes the
+    3 h window past local sunset makes the WSM6 no-longwave suite
+    nocturnally invalid, and the per-source admissible-set gate
+    (4380f1483) refuses the emission unless the night is declared.
     """
 
     from gpuwm.cli import main as cli_main
@@ -396,12 +401,14 @@ def _front_door_case(tmp_path, *, start_hour: int, series_hours,
 
     config = tmp_path / "wizard" / "case.toml"
     config.parent.mkdir(parents=True, exist_ok=True)
+    ack_flags = [flag for ack in acks for flag in ("--ack", ack)]
     assert cli_main([
         "domain", "--point=39.7,-96.6", "--card", "24gb", "--ladder", "12",
         "--source", "gfs", "--cycle", "2026-07-29T18",
         "--physics-profile", WSM6_PROFILE_ID,
         "--hours", str(run_hours),
         "--forecast-start-hour", str(start_hour),
+        *ack_flags,
         "--out", str(config)]) == 0
 
     data = tmp_path / "data"
@@ -469,13 +476,26 @@ def test_a_lead_the_fetch_lacks_is_refused_at_the_door_as_a_sentence(
 
     from gpuwm.gfs_direct import main as gfs_main
 
-    argv = _front_door_case(tmp_path, start_hour=6, series_hours=(0, 3))
+    # start_hour=6 puts the 3 h window at 00-03Z (2026-07-30), past local
+    # sunset at 39.7,-96.6, so the wizard's admissible-set gate
+    # (4380f1483) refuses the WSM6 no-longwave suite unless the night is
+    # declared.  This test is about the LEAD gate, and the night is
+    # accepted, so it is declared -- the sibling at start_hour=3 stays
+    # inside daylight and needs no declaration.
+    argv = _front_door_case(tmp_path, start_hour=6, series_hours=(0, 3),
+                            acks=("asymmetric-radiation-nocturnal-window-v1",))
     capsys.readouterr()
     assert gfs_main(argv) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "Traceback" not in captured.err
-    lines = [line for line in captured.err.splitlines() if line.strip()]
+    # The auto-CPU announcement (54c492a32) is the door's own one-time
+    # "warning: preprocess backend auto: ..." line on every box whose
+    # auto backend falls to CPU (no cupy, or an uncertified cupy/CUDA
+    # family), so deliberate warn() lines are set aside; the refusal
+    # itself must still be exactly one sentence.
+    lines = [line for line in captured.err.splitlines()
+             if line.strip() and not line.startswith("warning: ")]
     assert len(lines) == 1, captured.err
     assert lines[0].startswith("rw-wps --source gfs: ")
     assert "f006" in lines[0] and "f000, f003" in lines[0]

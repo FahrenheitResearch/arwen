@@ -389,17 +389,25 @@ def build_routes(inventory: dict, capture: NvrtcCapture) -> dict:
         "kernels": MODULE_KERNELS,
     }
 
-    # R2 -- the shortwave site's constructor and tuple.
+    # R2 -- the shortwave site's constructor and tuple.  The site left
+    # cupy.RawModule with 2358b3c06: NVRTC 13 rejects the duplicated
+    # --ftz that the RawModule path relied on (CuPy injects -ftz=true and
+    # the last-occurrence-wins behaviour is gone), so rrtmg_sw.py now
+    # compiles through the same direct-NVRTC bypass the longwave site
+    # uses, and this arm rides that constructor.
     r2_site, r2_options = _site_options(
         inventory, file="gpuwm/core/rrtmg_sw.py",
-        constructor_kind="cupy.RawModule")
+        constructor_kind="cupy.cuda.compiler.compile_using_nvrtc",
+        enclosing="__init__")
     capture.label = "R2"
-    r2_module = cp.RawModule(code=source, options=tuple(r2_options))
-    r2_module.compile()
+    r2_ptx, _r2_mapping = cc.compile_using_nvrtc(
+        source, tuple(r2_options), None, "ftz_probe.cu")
+    r2_module = cp.cuda.function.Module()
+    r2_module.load(r2_ptx.encode() if isinstance(r2_ptx, str) else r2_ptx)
     routes["R2"] = {
         "id": "R2",
-        "label": "RawModule with the shortwave option tuple",
-        "constructor": "cupy.RawModule",
+        "label": "direct NVRTC with the shortwave option tuple",
+        "constructor": "cupy.cuda.compiler.compile_using_nvrtc",
         "site": f"{r2_site['file']}:{r2_site['line']}",
         "site_options": r2_options,
         "arm_options": r2_options,

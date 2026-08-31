@@ -812,6 +812,17 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
         # directions, so neither an unpriced slot nor a stale registry row
         # survives.
         ("gpuwm/core/mynn_pbl_scratch.py", "from_state"),
+        # P3's CUDA adapter draws its whole device working set through one
+        # allocator handed to p3_device.make_workspace, plus two dict
+        # comprehensions over the diagnostic and surface slot maps, so the
+        # slot expressions are variables by construction -- the MYNN case
+        # exactly.  What closes the hole is
+        # tests/test_p3_cuda.py::test_the_registry_prices_exactly_the_slots_
+        # p3_asks_for, which runs a real mp=50 step with DomainState.scratch
+        # instrumented and requires the requested slot set to equal
+        # preflight.scratch_slot_registry's P3 rows in BOTH directions, so
+        # neither an unpriced slot nor a stale registry row survives.
+        ("gpuwm/core/p3.py", "apply"),
         ("gpuwm/core/mynn_pbl_runtime.py", "mynn_pbl_step"),
         # The column-batch precipitation report loops over a literal tuple
         # of three mp_* names in the same statement -- every one a registry
@@ -1607,9 +1618,13 @@ def test_mp28_mixed_nest_edge_is_refused_by_name():
             # It must not masquerade as "scheme not ported".
             assert "ported selectors are" not in message
 
-    # And the ratified MP8 -> MP18 edge codes are untouched.
+    # And the ratified MP8 -> MP18 edge codes are untouched.  mp=50's
+    # ratification APPENDED its rime pair at 20/21 (the discipline the
+    # PORTED_MP_PHYSICS comment demands), moving nothing below it.
     assert mt._EDGE_FIELD_CODES["qvolh"] == 19
-    assert len(mt._EDGE_FIELD_CODES) == 20
+    assert mt._EDGE_FIELD_CODES["qir"] == 20
+    assert mt._EDGE_FIELD_CODES["qib"] == 21
+    assert len(mt._EDGE_FIELD_CODES) == 22
     assert 28 not in mt.PORTED_MP_PHYSICS
 
 
@@ -1903,7 +1918,13 @@ def test_estimate_uses_experiment_column_chunk(exp4):
     configured = dataclasses.replace(exp4, column_chunk=6250)
     estimate = pf.estimate_experiment(configured)
     assert estimate.column_chunk == 6250
-    assert estimate.workspace_bytes == pf._workspace_total_bytes(49, 6250)
+    # Same-configuration equality: the reference is priced at the CASE's
+    # own model top, because the estimate honours it (the fix(ptop)
+    # landing).  Pinning the library default's number here would assert
+    # the estimate IGNORES the config's p_top -- the exact defect that
+    # landing removed.
+    assert estimate.workspace_bytes == pf._workspace_total_bytes(
+        49, 6250, configured.vertical.p_top)
 
 
 def test_rrtmgp_chunk_loops_and_mcica_seed_are_column_local():
@@ -2177,10 +2198,11 @@ def test_estimate_experiment_shared_counting(est4, exp4):
         d.transient_bytes for d in est4.domains)
     assert est4.transient_peak_bytes == est4.domains[-1].transient_bytes
     # ONE shared chunk workspace for all four domains (section E policy),
-    # sized by the CASE's configured chunk, not the library default.
+    # sized by the CASE's configured chunk and the CASE's model top, not
+    # the library defaults.
     assert exp4.column_chunk == 6250 != pf.DEFAULT_COLUMN_CHUNK
     assert est4.workspace_bytes == pf._workspace_total_bytes(
-        49, exp4.column_chunk)
+        49, exp4.column_chunk, exp4.vertical.p_top)
 
 
 def test_estimate_4dom_golden_pins(exp4, est4):
@@ -3247,16 +3269,26 @@ def test_legacy_rrtmg_variant_prices_the_lw_chain_local_frame():
                 experiment_from_run_config(modern_run, start))
             == profile.reservation_bytes(5152))
 
-    # Composite bookkeeping: the two measured TU frames cover exactly the
-    # six legacy fragments that cannot compile standalone, so selecting a
-    # fragment without a measurement still refuses (fail-closed), while a
-    # legacy 4/4 request resolves to the composites and never trips it.
+    # Composite bookkeeping: the measured TU frames cover exactly the
+    # fragments that cannot compile standalone, so selecting a fragment
+    # without a measurement still refuses (fail-closed), while a legacy 4/4
+    # request resolves to the composites and never trips it.
+    #
+    # "p3" joined this set with the P3 CUDA port (2026-08-29): p3.cu borrows
+    # the tree's one glibc r_pow/r_exp/r_log from noahmp_leaves.cu instead
+    # of carrying a second copy, so it is a fragment on exactly the
+    # legacy-RRTMG footing and its composite unit is
+    # gpuwm/core/p3_device.p3_source().  The TABLE moved and this list is
+    # the gate's own statement of what the table should hold, so it moves
+    # with it -- the gate is not being loosened, and the two assertions
+    # below (covered is a subset of the unmeasured set, and the legacy
+    # module set never intersects it) still hold unchanged.
     covered = frozenset().union(
         *(tu.covers for tu in pf.CHAINED_TRANSLATION_UNIT_FRAMES.values()))
     assert covered == {
         "rrtmg_sw", "rrtmg_lw_chain", "rrtmg_lw_taugb02_10_11_12",
         "rrtmg_lw_taugb03_05", "rrtmg_lw_taugb06_09",
-        "rrtmg_lw_taugb13_16"}
+        "rrtmg_lw_taugb13_16", "p3"}
     assert covered <= pf.UNMEASURED_KERNEL_MODULES
     assert not modules & pf.UNMEASURED_KERNEL_MODULES
 

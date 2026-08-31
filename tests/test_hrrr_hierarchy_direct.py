@@ -329,6 +329,54 @@ def test_public_gate_admits_explicit_thompson_to_nssl_tree_without_consent():
         _slice(missing_policy, _target())
 
 
+def test_public_gate_admits_a_same_scheme_p3_hierarchy():
+    """mp=50 rides the same plan leg every other admitted scheme rides.
+
+    The scheme's former exclusion from _SUPPORTED_MICROPHYSICS is
+    retired (see the constant's comment); this is the reachability proof
+    for the pure-P3 tree -- the shape a stranger's public config takes.
+    """
+    base = _native()
+    pure = replace(base, domains=(
+        replace(base.domains[0], run=replace(
+            base.domains[0].run, mp_physics=50)),
+        replace(base.domains[1], run=replace(
+            base.domains[1].run, mp_physics=50)),
+    ))
+    _slice(pure, _target())
+
+
+def test_public_gate_admits_mixed_p3_edges_under_the_named_policy():
+    """Both directions of the ratified rime-pair closure, on this route.
+
+    A Thompson root carrying a P3 child (entry closure: qi/qs/qg merge,
+    rime pair diagnosed) and a P3 root carrying a Thompson child (exit
+    closure: split by rime state), each admitted only when the edge
+    policy is NAMED -- the same explicit-policy contract every other
+    mixed edge on this route carries.
+    """
+    base = _native()
+    for root_mp, child_mp in ((8, 50), (50, 8)):
+        root_run = replace(
+            base.domains[0].run, mp_physics=root_mp,
+            moist=True, moist_cq=True)
+        child_run = replace(
+            base.domains[1].run, mp_physics=child_mp,
+            moist=True, moist_cq=True,
+            nest_microphysics_transition="mp-edge-mass-diagnosed-v1")
+        mixed = replace(base, domains=(
+            replace(base.domains[0], run=root_run),
+            replace(base.domains[1], run=child_run)))
+        _slice(mixed, _target())
+
+        unnamed = replace(mixed, domains=(mixed.domains[0], replace(
+            mixed.domains[1], run=replace(
+                mixed.domains[1].run,
+                nest_microphysics_transition="same-scheme-only"))))
+        with pytest.raises(ValueError, match="requires explicit"):
+            _slice(unnamed, _target())
+
+
 def test_public_gate_accepts_short_ohio_z80_sealed_root():
     target = _target(
         name="hrrr_ohio_z80", nx=192, ny=160, nz=80,

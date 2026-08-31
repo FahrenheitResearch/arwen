@@ -104,6 +104,14 @@ MOISTURE_MAP = {
     # ``qnn``, which is the same WRF variable in a different scheme's state
     # and is why the two maps stay separate rather than merging.
     "QNCCN": "nn",
+    # mp_physics=50 (P3 one-category).  QICE/QNICE/QNRAIN are already above
+    # and carry P3's single ice mass and its two number moments unchanged;
+    # QIR and QIB are new here.  They are the rime mass and rime volume P3
+    # carries INSTEAD of a snow/graupel/hail split, so without a name for
+    # them this closed-world importer cannot read a P3 wrfinput at all --
+    # ``read_wrfinput`` rejects the file as carrying "unmapped WRF
+    # variable(s)" before any inventory check is reached.
+    "QIR": "qir", "QIB": "qib",
 }
 
 # NSSL reuses several WRF Registry names carried by Morrison, but the state
@@ -168,6 +176,33 @@ WDM6_NUMBER_WRFINPUT = ("QNCCN", "QNCLOUD", "QNRAIN")
 #: Renamed off the mp28 spelling when 16 joined -- a set with two members
 #: named for one of them is how the next scheme gets forgotten.
 REQUIRED_QNCLOUD_MICROPHYSICS = frozenset({16, 28})
+#: mp_physics=50 (P3 one-category).  ``Registry.EM_COMMON:3038`` declares
+#: the package as ``moist:qv,qc,qr,qi;scalar:qni,qnr,qir,qib`` -- ONE ice
+#: mass, and no snow and no graupel anywhere in the package, because P3
+#: predicts rime mass and rime volume in place of a snow/graupel/hail
+#: split.  QICE is therefore added through this tuple rather than through
+#: ``ICE_MASS_WRFINPUT``: putting 50 in the ice-mass branch would demand a
+#: QSNOW and a QGRAUP that a P3 wrfinput never contains and that a P3
+#: ``DomainState`` has no field to receive (gpuwm/core/state.py:464-478).
+#: All four scalars are transported prognostics, and every one carries the
+#: wrfinput stream in its Registry IO string -- ``i0rhusdf=(bdy_interp:dt)``
+#: on QNICE (Registry.EM_COMMON:523), QNRAIN (:533), QIR (:555) and QIB
+#: (:557) -- so real.exe writes all four exactly as it writes Morrison's
+#: QNRAIN.  None of them is diagnosed, so unlike Morrison there is no
+#: optional member here, and a missing one does not raise inside P3, it
+#: silently rewrites the analysis:
+#:   * a zero QNICE beside a real QICE is clamped to ``nsmall`` = 1.e-16
+#:     (module_mp_p3.F:231, :2573) and the mean-mass ice diameter built
+#:     from it (:2578) then indexes the lookup table (:2582) in its
+#:     largest-particle bin for the whole column;
+#:   * a zero QIR/QIB sends ``calc_bulkRhoRime`` (:6784, called at :2580)
+#:     down its ``bi_rim < 1.e-15`` branch, which hard-zeros both and
+#:     returns rho_rime = 0 (:6812-6814), declaring every ice particle in
+#:     the restored state unrimed -- P3's one distinguishing prognostic,
+#:     silently set to nothing.
+#: Both are finite, bounded and wrong: the mp=28 terminal-clamp hazard in
+#: the note above, in P3's own numbers.
+P3_MOISTURE_WRFINPUT = ("QICE", "QNICE", "QNRAIN", "QIR", "QIB")
 NSSL_MOISTURE_WRFINPUT = (
     "QHAIL", "QNDROP", "QNRAIN", "QNICE", "QNSNOW", "QNGRAUPEL",
     "QNHAIL", "QNCCN", "QVGRAUPEL", "QVHAIL",
@@ -225,6 +260,7 @@ WRFINPUT_DIMENSIONS: dict[str, tuple[str, ...]] = {
         "QRAIN", "QICE", "QSNOW", "QGRAUP", "QNRAIN", "QNICE",
         "QNSNOW", "QNGRAUPEL", "QNCLOUD", "QHAIL", "QNDROP",
         "QNHAIL", "QNCCN", "QVGRAUPEL", "QVHAIL", "H_DIABATIC",
+        "QIR", "QIB",
     )},
     "U": _U_3D_DIMS, "V": _V_3D_DIMS, "W": _W_3D_DIMS,
     "PH": _W_3D_DIMS, "PHB": _W_3D_DIMS,
@@ -427,7 +463,7 @@ def _active_moisture_inventory(cfg) -> tuple[frozenset[str], frozenset[str]]:
         raise TypeError("cfg.mp_physics must be an integer")
     moist = bool(cfg.moist)
     mp_physics = int(cfg.mp_physics)
-    if mp_physics not in (0, 1, 6, 8, 10, 16, 18, 28):
+    if mp_physics not in (0, 1, 6, 8, 10, 16, 18, 28, 50):
         raise ValueError(
             f"unsupported active wrfinput mp_physics={mp_physics}")
     if not moist:
@@ -453,6 +489,15 @@ def _active_moisture_inventory(cfg) -> tuple[frozenset[str], frozenset[str]]:
         required += MORRISON_NUMBER_WRFINPUT
     elif mp_physics == 18:
         required += NSSL_MOISTURE_WRFINPUT
+    elif mp_physics == 50:
+        # P3 one-category.  Its whole inventory beyond the three base
+        # masses arrives in one tuple because its ice mass does NOT come
+        # from ``ICE_MASS_WRFINPUT`` -- see P3_MOISTURE_WRFINPUT above.
+        # QSNOW and QGRAUP therefore stay out of ``allowed`` as well as out
+        # of ``required``, so a six-species wrfinput handed to a P3 config
+        # is refused as carrying inactive moisture rather than restored
+        # with two frozen species dropped on the floor.
+        required += P3_MOISTURE_WRFINPUT
     allowed = frozenset(required)
     if mp_physics == 10:
         allowed |= frozenset(MORRISON_OPTIONAL_MOISTURE_WRFINPUT)

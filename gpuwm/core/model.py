@@ -395,6 +395,15 @@ SCHEME_SCOPED_RUN_FIELDS: dict[int, tuple[str, ...]] = {
     18: ("nssl_2moment_on", "nssl_hail_on", "nssl_ccn_on",
          "nssl_density_on", "nssl_3moment"),
     28: ("wif_climatology_path", "mp28_aerosol_source"),
+    # The mp=50 row was added with the P3 CUDA port.  p3_backend selects
+    # WHICH implementation integrates the column, and the three arms are
+    # byte-identical on every p3-fortref fixture where they have been
+    # compared, so it is not even a trajectory choice -- but it is still a
+    # RunConfig field, and an unscoped RunConfig field moves EVERY
+    # experiment fingerprint whether or not it changes a number.  It is
+    # scoped here, and gpuwm/config.py refuses a non-default value under
+    # any other scheme, which is what makes the scoping lossless.
+    50: ("p3_backend",),
 }
 
 

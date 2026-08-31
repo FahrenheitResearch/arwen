@@ -30,6 +30,7 @@ from gpuwm.physics_compat import (
     NOAHMP_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     NSSL2_PROFILE_ID,
+    P3_LEGACY_RRTMG_PROFILE_ID,
     RUC_PROFILE_ID,
     THOMPSON_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_PROFILE_ID,
@@ -341,6 +342,21 @@ _HRRR_COLD_START_CONTRACT = {
             "qnn": (408163264.0, 1304600734),
             "qvolg": (0.0, 0),
             "qvolh": (0.0, 0),
+        },
+    ),
+    # P3's Registry scalar members (Registry.EM_COMMON:3038): both number
+    # moments and the prognostic rime pair.  HRRR supplies none of them,
+    # all four cold-start at exact FP32 zero, and the scheme is defined at
+    # that zero (nitot floored at nsmall, module_mp_p3.F:2572-2573; an
+    # unsupported rime pair zeroed in calc_bulkRhoRime, :6799-6813) --
+    # the same policy gpuwm/ingest/real.py records for mp=50.
+    P3_LEGACY_RRTMG_PROFILE_ID: (
+        ("QNICE", "QNRAIN", "QIR", "QIB"),
+        {
+            "ni": (0.0, 0),
+            "nr": (0.0, 0),
+            "qir": (0.0, 0),
+            "qib": (0.0, 0),
         },
     ),
 }

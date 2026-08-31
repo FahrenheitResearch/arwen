@@ -54,7 +54,15 @@ tests/test_da_nowcast_presets.py
 tests/test_da_nowcast.py
 tests/test_da_sweep.py
 tests/test_anisotropic_mixing_advisory.py
-tests/test_anisotropic_mixing_w_stability.py
+# tests/test_anisotropic_mixing_w_stability.py is the third of the four
+# and is deliberately NOT on this list.  Every test in it is whole-module
+# GPU-marked, so the CPU leg collected 0 of 2 while the line read as
+# coverage; it was already listed on tools/battery/gpu_shard_files.txt
+# SHARD 1a, which is the leg that actually runs it.  Removed 2026-08-28
+# with tools/battery/no_silent_deselection.py, the guard that fails a leg
+# when a file it was told to run contributes no tests.  This line stays
+# so a reader who finds three of the four here does not conclude the
+# fourth does not exist.
 tests/test_les_tornado_attempt1_config.py
 
 # 2026-08-09, the 1.6.0 exposed-mixing defect: the criterion and its
@@ -901,7 +909,15 @@ tests/test_history_selection.py
 # to.  Untested here, the pair silently reverts to zeros and Grell-Freitas
 # runs on half its forcing -- which is exactly the defect the lane closed,
 # and it would come back invisibly.
-tests/test_dycore_advective_forcing_export.py
+#
+# tests/test_dycore_advective_forcing_export.py IS THAT GATE AND IT WAS NOT
+# RUNNING.  Measured 2026-08-28: every test in it is whole-module GPU-marked,
+# so this leg collected 0 of 9 and the entry above read as coverage that was
+# never taken.  It was on no GPU list either, so those nine tests ran on no
+# leg at all.  Moved to tools/battery/gpu_shard_files.txt SHARD 1a, which is
+# where a whole-module GPU-marked file belongs; the reason text above is kept
+# here because it is the argument for the coverage, and it now points at the
+# leg that takes it.
 
 # The speedrun door and its signed record.  Untested here, a course that
 # no longer runs, or a record whose signature stops verifying, is found by
@@ -1083,3 +1099,99 @@ tests/test_mynn_pbl.py
 tests/test_mp28_runnable.py
 tests/test_real_init.py
 tests/test_config_freeze.py
+
+# The P3 (mp_physics=50) CPU legs.  On NO battery list before this: the
+# CUDA port (commit 2258c85e3) added tests/test_p3_cuda.py and the restart
+# work added tests/test_p3_restart_manifest.py, and neither stage 1 nor the
+# GPU shard named either, so the whole scheme's gates ran nowhere.
+#
+# WHAT THAT COST, measured: the port's own scheme-scoping test and its
+# table-refusal tests were green only when somebody ran them by hand, and
+# the restart defect that killed EVERY mp=50 forecast
+# (state._p3_workspace unclassified) was found by a separate lane rather
+# than by the battery, because the battery was not asking.
+#
+# GPU-bound by measurement (tests/conftest.py::_cupy_scope), so that the
+# split matches the shard rule rather than the filename: both files below
+# report whole=False, functions=empty -- they open no device -- while
+# their _gpu.py twins report GPU-bound and go to gpu_shard_files.txt.
+tests/test_p3_cuda.py
+tests/test_p3_restart_manifest.py
+
+# ---------------------------------------------------------------------------
+# The 2026-08-29 verification audit's gates.  Each names the fault injection it
+# was written against, and each was proved failing before it was allowed to
+# pass; the injections and their measured before/after are in the commit.
+# ---------------------------------------------------------------------------
+
+# Every CUDA translation unit pinned by SHA-256, ONE NODE PER MODULE.  The
+# fault: `pracw = 0.0f * fminf(...)` in gpuwm/core/kernels/wsm6.cu -- WSM6 rain
+# accretion of cloud water switched off -- and the entire stage-1 leg run twice,
+# pristine and injected: zero files differed, zero node ids differed.
+# tests/test_mp8_frozen.py holds the digests, is red, is deliberately off this
+# list because it is red, and even run directly fails with the IDENTICAL two
+# node ids clean and injected, because it asserts once over a dict.  This file
+# is the same claim per module: under the same fault it fails exactly
+# `...[wsm6]`, and a tenth red module is a new node id rather than a longer
+# message.  91 modules, 1.07 s, no compile and no device.
+tests/test_kernel_source_freeze_per_module.py
+
+# The nine hand-written copies of glibc's exp2f/logf/powf tables.  Row 1 of
+# __exp2f_data is transcribed by hand in eight .cu files and once in Python.
+# One ULP in noahmp_soilwater.cu alone is caught today only because
+# noahmp_water.cu carries a verbatim copy of the same section -- a duplication
+# artefact.  The same ULP in BOTH (so the pair agrees) and the same ULP in
+# noahmp_snow.cu were caught by nothing at all.  Cross-copy equality catches one
+# drifted transcription; the Python anchor catches all eight drifting together.
+# 37 nodes, 0.44 s, text only.
+tests/test_cuda_libm_table_copies.py
+
+# The private-material scan, tested in the direction where it goes quiet.
+# Pointing CLEAN_BASE at a SHA this clone does not carry takes three
+# pytest.skips -- including the commit-message scan the module's own docstring
+# calls a release blocker -- and the file still exits 0 (measured: 2 passed, 3
+# skipped, rc=0).  Narrowing the Tier-1 literal set to its first entry leaves 5
+# passed, rc=0, because the module's own falsifiability control exercises one
+# token.  This file drives every literal and every pattern, one node each.
+tests/test_excluded_subsystem_scan_is_armed.py
+
+# The battery lists' census.  Deleting one entry from this file stops a whole
+# suite running and nothing says so: measured at b47a400a5 for
+# tests/test_water_overlay.py, tests/test_doctor.py and tests/test_speedrun.py
+# one at a time, tests/test_stage1_manifest.py went 362 -> 360 passed and stayed
+# GREEN in all three, and test_battery_route.py, test_fastfix_selector.py and
+# test_ci_test_replay.py were green too.  The manifest gate pins four entries by
+# name and counts nothing.  This one is a bijection over every entry, both ways.
+tests/test_battery_list_census.py
+
+# The selector's cost model.  fastfix --record spawns one pytest per file and
+# the battery runs one invocation for all of them, so every recorded row carried
+# ~2.45 s of interpreter start the battery never pays -- 421 s across this leg,
+# and 50-100% of the recorded cost of the 100 files here that are under 5 s,
+# which is the end of the range where cheapest-first ordering is decided.
+# --record-from reads a batched --durations=0 report instead; this gates the
+# parser, including the three ways it can silently measure the wrong thing.
+tests/test_fastfix_batched_durations.py
+
+# The writers that land on a TRACKED file. Twenty-one call sites in ten
+# files write a path this repository tracks, and `Path.write_text` is
+# text mode: one read_text/write_text round trip over
+# gpuwm/core/noahmp_water.py takes it from 0 CR bytes to 352. Five of
+# the ten destinations had already been flipped whole before this
+# landed. It reads ten modules with ast and round-trips their
+# destinations through tmp_path -- no import, no device, 1.4 s.
+tests/test_tracked_file_writers_keep_lf.py
+
+# The 2.6.0 P3 reachability landing: ten sibling fixes merged after their
+# verifying pass was killed, re-reviewed one by one. Their gates go on
+# the leg that runs at every cut, because a gate on no list is asked by
+# nobody -- the exact class SHARD 1i was written about.
+tests/test_p3_legacy_rrtmg_radii.py
+tests/test_p3_legacy_cloud_fraction.py
+tests/test_n5s_toolchain.py
+tests/test_rw_wps_stock_inventory_contract.py
+tests/test_acoustic_npref.py
+
+# The P3 mixed-edge named refusal (2.6.0) lives beside the WDM6 and
+# Thompson-aerosol ones in this module, and no leg ran it at all.
+tests/test_microphysics_transition.py

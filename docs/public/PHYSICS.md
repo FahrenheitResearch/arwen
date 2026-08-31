@@ -184,7 +184,7 @@ even though the loader does not enforce it.
 | WDM6 double-moment warm rain | 16 | implemented-unverified | **no oracle comparison against the WRF Fortran has been run** — the CUDA kernel and `wdm6init` are transcribed line by line from the byte-frozen `phys/module_mp_wdm6.F` with file:line citations, the float64 coefficient block pins the kernel's baked FP32 literals, and a column smoke through the shipped seams asserts finiteness, WDM6's own bounds, water conservation to the surface flux, and that CCN activation actually moves number from `nn` into `nc`; the oracle campaign is the declared next stage. WDM5 (14) and WDM7 (26) are refused by name. Reachable only as a per-domain override |
 | NSSL 2-moment | 18 | **validation-candidate** (default lane) / implemented-unverified (variants) | full CUDA port with fused-process oracles and a ratified 500 m comparison; explicitly not the default. The hail-off and diagnosed-CCN variants below carry column smoke and treatment proofs only, with no oracle comparison |
 | Thompson aerosol-aware | 28 | implemented-unverified | 22 WRF column fixtures end to end, 23 quantities each: 17 clear a flat 2e-6 gate, 4 do not, 1 clears only under two named allowances (numbers below); it runs multi-step and stays bounded; the one matched WRF forecast comparison is idealized only — a single-domain doubly periodic warm bubble, [validation/mp28-matched-trajectory.md](validation/mp28-matched-trajectory.md), which publishes a failed declared condition alongside a control showing that condition fails for WRF against its own recompilation — and no real-data or nested forecast has ever been validated against WRF; reachable only as a per-domain override |
-| P3 one-category | 50 | implemented-unverified | **no oracle has been run** — column smoke only: a 15-step 3-column integration through the shipped seams stays finite and non-negative, conserves total water against surface precipitation to 1e-4 relative, and holds P3's own invariants (rime mass ≤ ice mass, 50 ≤ rime density ≤ 900); WRF's `p3_lookupTable_1.dat-v5.4_2momI` is packaged verbatim and SHA-256-validated at load, but nothing yet checks that gpuwm's interpolation of it reproduces WRF's; CPU-only, no CUDA mirror; reachable only as a per-domain override |
+| P3 one-category | 50 | implemented-unverified | **measured against WRF's own Fortran** — unmodified `phys/module_mp_p3.F` (P3 v4.5.2, byte-identical across WRF v4.6.1/v4.7.1/v4.8.0) compiled at -O0 -ffp-contract=off and driven through `mp_p3_wrapper_wrf` over twelve discriminating fixtures: 4 of 12 bit-identical, F02/F06/F08/F09/F11 within 2–7 ULP, F12 at 829 ULP (6.3e-5 relative); the two long mixed-phase cases (F07, F10) are exact for the first steps and then bifurcate — a property of the system, not the port (a one-ULP nudge to the Fortran's own input diverges it from itself by 100% within ten steps, measured); the parsed lookup table is exact (substituting the Fortran's own generated tables changes nothing); the column smoke still holds through the shipped seams (finite, non-negative, total water closing to 1e-4 against surface precipitation, rime mass ≤ ice mass, 50 ≤ rime density ≤ 900); STILL OPEN: an unexplained 1–6 ULP CUDA-specific `qib` residual on F06/F08/F11, and F09's separate, broader disagreement; no matched WRF forecast run and no comparison against observations — per-step agreement with Fortran is not evidence of forecast skill; reachable through the registered HRRR template `p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1` and as a per-domain override on the tree route |
 
 ### P3 one-category (`mp_physics = 50`) — read this before selecting it
 
@@ -241,17 +241,23 @@ other three are refused by name with the physics each one adds:
 | `52` | two ice categories | inter-category collection, the category-merge pass and lookup table 2 are absent |
 | `53` | three-moment ice | the prognostic reflectivity moment `zitot` and the 3momI table are absent |
 
-**It is CPU-only.** The float32 authority runs on the host and the adapter
-round-trips device state every step. That is correct but slow: mp=50 suits
-column smokes and small-domain verification, not production-domain
-throughput. A CUDA mirror is future work alongside the oracle campaign.
+**It runs on the card by default.** `p3_backend` selects the
+implementation: `cuda` (the default, nine kernel launches), `fused` (the
+same kernels in three), and `reference` (the CPU float32 transcription
+that remains the port's own authority). The two device arms are
+byte-identical to each other on every p3-fortref fixture; the
+decomposition is one thread per column with k sequential inside the
+thread, so the authority's arithmetic order is preserved by construction,
+and the translation unit compiles with `-fmad=false` because contraction
+was measured to move the numbers. `p3_backend` is scoped to mp=50 and
+refused at a non-default value under any other scheme.
 
 **What "implemented-unverified" means here** is exactly what the registry
-row says: the scheme has never been compared against WRF Fortran. No ULP
-measurement, no matched run, no trajectory comparison. Everything asserted
-about it so far is physics (conservation, boundedness, sign) or gpuwm's
-consistency with itself. The WRF-Fortran oracle campaign is the declared
-next stage, as it was for Shin-Hong and Grell-Freitas.
+row says: the per-step oracle campaign has run (the numbers above), and
+that is where the claim stops. No matched WRF forecast run, no
+forecast-trajectory comparison, no comparison against observations.
+Per-step numerical agreement with Fortran is not evidence of forecast
+skill, which is why the maturity rung does not move.
 
 One transcription note worth publishing, because it is visible to anyone
 who instruments the first step: WRF's own first P3 call evaluates `0/0`
@@ -1508,6 +1514,7 @@ same guard.
 | `nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1` | legacy RRTMG / legacy RRTMG | **yes** |
 | `thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** (the wizard's hrrr default) |
 | `thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** |
+| `p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** (legacy is P3's one admissible 4/4 engine -- see the P3 section above) |
 | `wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
 | `wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
 | `wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |

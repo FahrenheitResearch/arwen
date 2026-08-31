@@ -1950,7 +1950,20 @@ def test_rrtmgp_solar_normalization_uses_float64_reduction(monkeypatch):
 @pytest.mark.gpu
 @requires_gpu
 def test_rfmip_clear_sky_full_profile_acceptance():
-    """Ratified gate over all 100 sites by all 18 RFMIP experiments."""
+    """Ratified gate over all 100 sites by all 18 RFMIP experiments.
+
+    sm_86 provenance, measured 2026-08-31: a report circulated that two
+    rfmip tests were red on the desktop RTX 3080 at the RRTMGP
+    optimisation (51819ed0f).  Re-run on that card (sm_86, NVRTC 13.0.48
+    CL-36260728, driver 13030, cupy 14.0.1), the whole of this file is
+    green at the optimisation, at its parent a744904667, and at the
+    2.6.0-era tip 40b9878c0 -- 107/97/109 passed, 0 failed, 1
+    environmental skip each.  The reds do not reproduce on the current
+    desktop stack at any of the three refs, so they were a property of
+    some earlier environment, not of the optimisation and not of this
+    source; nothing here is skipped, pinned, or loosened on their
+    account.
+    """
     import cupy as cp
     from netCDF4 import Dataset
     from gpuwm.core.rrtmgp import rfmip_clear_sky

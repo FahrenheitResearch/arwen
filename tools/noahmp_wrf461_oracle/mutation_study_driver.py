@@ -58,6 +58,32 @@ SCALAR = "f32(0.137)"
 ARG_MUTANTS: list[tuple[str, str, str]] = []
 
 
+def read_source() -> str:
+    """`SOURCE`, decoded from its exact bytes -- no newline translation.
+
+    `Path.read_text()` opens in TEXT mode: universal newlines collapse
+    whatever the file has to "\n", and the matching `Path.write_text()`
+    translates every "\n" back to `os.linesep` on the way out.  On
+    Windows that turns the `finally` at the end of `main()` -- which
+    exists to RESTORE this file untouched -- into a whole-file CRLF
+    rewrite.  Measured on the artifact: gpuwm/core/noahmp_water.py has 0
+    CR bytes, and one `read_text()` / `write_text()` round trip through it
+    leaves 352, one per line, for a study that changed nothing.  The four
+    files these studies mutate are 2,678 lines of tracked core physics,
+    all currently LF and none of them recorded debt, so a single Windows
+    run of a mutation study would land four whole-file diffs.
+
+    tools/build_registry.py made the same fix for the same reason at
+    cdd08f005; `mutation_study_snow.py` uses the `newline=""` spelling.
+    """
+    return SOURCE.read_bytes().decode("utf-8")
+
+
+def write_source(text: str) -> None:
+    """`SOURCE`, written as the exact bytes given.  See `read_source`."""
+    SOURCE.write_bytes(text.encode("utf-8"))
+
+
 def _si(name: str, statement: str) -> None:
     ARG_MUTANTS.append((f"snow_init/{name}", SI_ANCHOR, statement))
 
@@ -316,7 +342,7 @@ def main(argv):
     ap.add_argument("--filter", default="")
     args = ap.parse_args(argv)
 
-    original = SOURCE.read_text()
+    original = read_source()
     if not run_tests(args.quick):
         raise SystemExit("the unmutated port already fails; fix that first")
 
@@ -328,7 +354,7 @@ def main(argv):
             if args.filter and args.filter not in name:
                 continue
             total += 1
-            SOURCE.write_text(build_arg_mutant(original, anchor, statement))
+            write_source(build_arg_mutant(original, anchor, statement))
             if run_tests(args.quick):
                 survivors.append(name)
                 print(f"SURVIVED  {name}")
@@ -340,8 +366,8 @@ def main(argv):
             if args.filter and args.filter not in name:
                 continue
             total += 1
-            SOURCE.write_text(build_struct_mutant(original, needle,
-                                                  replacement))
+            write_source(build_struct_mutant(original, needle,
+                                              replacement))
             if run_tests(args.quick):
                 survivors.append(name)
                 print(f"SURVIVED  {name}")
@@ -353,14 +379,14 @@ def main(argv):
             if args.filter and args.filter not in name:
                 continue
             total += 1
-            SOURCE.write_text(build_const_mutant(original, site))
+            write_source(build_const_mutant(original, site))
             if run_tests(args.quick):
                 survivors.append(name)
                 print(f"SURVIVED  {name}")
             else:
                 print(f"killed    {name}")
     finally:
-        SOURCE.write_text(original)
+        write_source(original)
 
     print(f"\n{total - len(survivors)} of {total} mutants killed")
     unexpected = [s for s in survivors if s not in EXPECTED_SURVIVORS]

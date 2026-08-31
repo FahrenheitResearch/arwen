@@ -67,7 +67,9 @@ from gpuwm.physics_compat import (MORRISON_PROFILE_ID, MYNN_PROFILE_ID,
                                   MYNN_RUC_PROFILE_ID,
                                   MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
                                   NSSL2_LEGACY_RRTMG_PROFILE_ID,
-                                  NSSL2_PROFILE_ID, RUC_PROFILE_ID,
+                                  NSSL2_PROFILE_ID,
+                                  P3_LEGACY_RRTMG_PROFILE_ID,
+                                  RUC_PROFILE_ID,
                                   THOMPSON_LEGACY_RRTMG_PROFILE_ID,
                                   THOMPSON_PROFILE_ID,
                                   THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
@@ -93,12 +95,16 @@ _BOUND_PROBE_LEVELS = 40
 #:
 #: THE ORDER CARRIES MEANING: the nocturnally valid suites come first, so
 #: :func:`default_profile_for` taking the head of an admissible set gets
-#: both radiation streams without knowing what "nocturnal" means.  The two
-#: legacy-RRTMG Thompson entries are the ONLY full-radiation suites the
-#: nested HRRR route's physics gate admits -- every other 4/4 profile
-#: carries ``cu_physics = 1``, which that route refuses because its 3 km
-#: grid is convection permitting -- so a list without them could only
-#: default that route to a shortwave-on/longwave-off suite.
+#: both radiation streams without knowing what "nocturnal" means.  The
+#: legacy-RRTMG Thompson twins and the P3 composition are the only
+#: full-radiation suites the nested HRRR route's physics gate admits --
+#: every other 4/4 profile carries ``cu_physics = 1``, which that route
+#: refuses because its 3 km grid is convection permitting -- so a list
+#: without them could only default that route to a
+#: shortwave-on/longwave-off suite.  P3 sits AFTER the Thompson twins
+#: deliberately: the head of the HRRR-admissible set is that route's
+#: default, and the default stays the Thompson legacy suite (what the
+#: operational HRRR itself runs); P3 is chosen, never inherited.
 #:
 #: IT LIVES HERE, not in the wizard door that used to own it, and the
 #: reason is a wheel: :func:`gpuwm.physics_compat.nocturnal_radiation_refusal`
@@ -118,6 +124,7 @@ WIZARD_PHYSICS_PROFILES = (
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_LEGACY_RRTMG_PROFILE_ID,
     THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID,
+    P3_LEGACY_RRTMG_PROFILE_ID,
     MYNN_RTE_RRTMGP_PROFILE_ID,
     MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
     THOMPSON_PROFILE_ID,

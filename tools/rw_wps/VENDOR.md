@@ -116,6 +116,49 @@ lane 1 added to the superset for exactly this call site, so the sentinel
 test lives inside grib-core and cannot drift from the crate's own
 reading of Code Table 4.5.
 
+## Release-line edit: the consuming half of the stock-WRF inventory contract
+
+`crates/rw-wps/src/namelist.rs` changed, and this is the THIRD donor-side
+edit recorded here, for the same reason as the other two: the "unmodified
+snapshot" claim above is otherwise no longer true.  Its sha256 row in the
+file list below is now stale like the other `crates/rw-wps/*` rows, and is
+left in place on the same terms.
+
+The donor's stock-WRF export check read
+`matches!(domain.mp_physics, 6 | 8 | 10)` -- an unnamed inline literal
+whose refusal said only "contains undeclared mp_physics=N".  gpuwm owns the
+PRODUCING half of that one contract: `gpuwm/wrf_physics_inventory.py`
+derives one `wrfinput` package inventory per scheme from WRF v4.6.1
+`Registry/Registry.EM_COMMON` package declarations and field I/O flags, and
+it has grown rows for mp=18, 28 and 50 since the snapshot.  So the frontend
+refused reports its own paired engine emits.  Measured on this tip: a
+namelist pair with `mp_physics = 50` yields `"verdict": "PASS"` from the
+engine with `mp_physics: 50` in `required_state.stock_wrf_export`, and the
+consumer rejected it.
+
+The edit names the set `STOCK_WRF_INVENTORIED_MP_PHYSICS`; admits mp=50
+(`package p3_1category mp_physics==50`, `Registry.EM_COMMON:3038` -- one ice
+category, so no `qs` and no `qg`, and every one of its sixteen declared
+members is float32 on `Time,bottom_top,south_north,west_east`, which is the
+shape invariant the same loop already enforces); records beside the set why
+mp=18 and mp=28 are still refused; and rewrites the refusal to name the
+breakage it prevents.  Two tests are added in the donor module's own
+`mod tests`, and `tests/test_rw_wps_stock_inventory_contract.py` holds the
+producing and consuming halves equal from the gpuwm side with no Rust
+toolchain installed.
+
+`cargo test -p rw-wps --locked --offline` is 67/67 green (62 lib + 5
+integration) after the edit, replacing the 65/65 recorded above.
+
+KNOWN AND NOT FIXED HERE, so a green `cargo test` is not mistaken for a
+working door: this binding cannot deserialize a current report at all, for
+ANY scheme.  Its structs carry `deny_unknown_fields` and the engine has
+since added three fields they lack -- `timing` (top level),
+`geometry.projection`, and `geometry.domains[].start_time`.  Measured on
+this tip, an mp=6 pair through `rw-wps namelist-support` fails with
+``unknown field `start_time` ``.  That is a separate instance of the same
+snapshot drift and belongs with whoever resyncs the report schema.
+
 ## File list (sha256, path relative to this directory)
 
 2a2a1c232581f4814f45faef3b779dbcc2087e0b2f304f84f954179f5ce299e9 *crates/rw-wps/Cargo.toml

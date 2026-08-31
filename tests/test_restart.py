@@ -2729,10 +2729,20 @@ def _member_names(path) -> list[str]:
 #: RunConfig, so ANY field addition invalidates every checkpoint written
 #: before it; that is this tree's existing behaviour for every
 #: config-surface addition and it is not what these pins measure.
+#:
+#: RE-PINNED 2026-08-29 by the P3 CUDA port, which appended ONE RunConfig
+#: field (`p3_backend`).  The attribution is not this comment: it is
+#: test_the_checkpoint_pins_moved_for_the_two_wif_keys_and_nothing_else
+#: below, which removes the appended config keys, recomputes the two hashes
+#: the writer derives from the echo, and requires the result to be the
+#: pre-lane digest EXACTLY.  It does, so nothing but the config echo moved:
+#: no header key, no array member name, no dtype, no shape, no byte of any
+#: array.  A checkpoint-format change riding in behind a config addition
+#: would leave that reconstruction short and would fail there.
 _LIFECYCLE_FREE_ROOT_DIGEST = \
-    "7d150fce6815011a346a964073f5b411285a5e0ef21aec4d456449a3fcd90b0c"
+    "5431237076a41c391a12fee84526ff9981d3303939c2967b399e6bdec10e6f34"
 _LIFECYCLE_FREE_CHILD_DIGEST = \
-    "1d0fb6fe7550a8969247a54da8fcebaea106f0d4d80fc5250a4217e793305585"
+    "0b9e45449cba685b3c7a167bc648d64a2022aaf4b9edf99adad386c5f41ac08c"
 
 #: The values these pins carried immediately before the two mp=28 aerosol
 #: config keys landed, kept so the reconstruction has something to
@@ -2743,7 +2753,16 @@ _PRE_WIF_CHILD_DIGEST = \
     "6c8b3f3a6f73961d2b8dcddd6f4c93ec0873dd05039c37716d27fef3dcc2c8f4"
 
 #: The two RunConfig fields the mp=28 aerosol lanes appended.
-_WIF_CONFIG_KEYS = ("mp28_aerosol_source", "wif_climatology_path")
+#: The RunConfig keys added SINCE the pre-lane digests below were taken.
+#: Removing them and recomputing the two derived hashes is what separates
+#: "a config field was added" from "the checkpoint FORMAT moved" -- the
+#: second must still fail, and it will, because the reconstruction only
+#: removes these names.  ``p3_backend`` joined with the P3 CUDA port
+#: (2026-08-29); it is scheme-scoped to mp=50 in the restart identity, but
+#: the header CONFIG ECHO carries every RunConfig field regardless, which
+#: is exactly why this reconstruction exists.
+_WIF_CONFIG_KEYS = ("mp28_aerosol_source", "wif_climatology_path",
+                    "p3_backend")
 
 
 def _digest_without_the_wif_config_keys(path) -> str:

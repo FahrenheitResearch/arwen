@@ -165,13 +165,17 @@ def test_the_synoptic_panels_are_drawn_by_the_rust_renderer(series, tmp_path):
                   "qpf_6h"))
     paths = metrics.make_synoptic_maps(final, start, tmp_path / "maps", spec)
     assert paths, "the verify door produced no weather-field imagery"
-    names = [path.name for path in paths]
+    # The product slug is read from the PRODUCT FOLDER, not the filename:
+    # since 7fdca0d74 (2026-08-23) the delivered name drops the domain and
+    # product tokens its own folders already spell, because the repeated
+    # pair put a measured delivery past the Windows MAX_PATH ceiling.
+    products_drawn = [path.parent.parent.name for path in paths]
     for slug in spec.products:
-        assert any(slug in name for name in names), (
-            f"no panel for {slug}; drew {names}")
+        assert slug in products_drawn, (
+            f"no panel for {slug}; drew {products_drawn}")
     # `qpf_6h` is a WINDOWED product: it exists only because both frames
     # reached one store, which is the half a per-file render cannot do.
-    assert any("qpf_6h" in name for name in names)
+    assert "qpf_6h" in products_drawn
     for path in paths:
         assert path.is_file() and path.stat().st_size > 1000
         # The renderer's own filename grammar, filed under the render
@@ -188,7 +192,9 @@ def test_the_reflectivity_panel_is_drawn_by_the_rust_renderer(series,
     path = metrics.make_composite_reflectivity_map(
         final, tmp_path / "refl", metrics.ReflectivityMapSpec())
     assert path.is_file() and path.stat().st_size > 1000
-    assert "composite_reflectivity" in path.name
+    # The product folder spells the product; the delivered filename does
+    # not repeat it since 7fdca0d74 (2026-08-23, the MAX_PATH shortening).
+    assert path.parent.parent.name == "composite_reflectivity", str(path)
 
 
 def test_no_renderer_means_no_imagery_and_a_line_that_says_so(

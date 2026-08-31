@@ -32,6 +32,7 @@ from fractions import Fraction
 import json
 from pathlib import Path
 
+from gpuwm.core.microphysics_transition import PORTED_MP_PHYSICS
 from gpuwm.ingest.hrrr_target import TARGET_DOMAIN_SCHEMA
 
 #: The route's fixed forcing cadence.  HRRR publishes hourly and the
@@ -90,8 +91,38 @@ ADMITTED_PBL_PHYSICS = frozenset({1, 11})
 #: beyond the two named compositions.
 ADMITTED_RADIATION_PAIRS = frozenset({(0, 1), (4, 4)})
 
-#: Microphysics the route's nest-transition resolver knows.
-SUPPORTED_MICROPHYSICS = frozenset({1, 6, 8, 10, 18})
+#: Selectors this route refuses even WITH a ported nest edge, each naming
+#: the concrete breakage (gate law).  28 (aerosol Thompson): the scheme
+#: has no aerosol lateral boundary condition -- the registered mp=28
+#: boundary deviation (gpuwm/core/moist.py) depletes domain-interior
+#: nwfa/nifa without bound with run length, and this route is precisely a
+#: nested, laterally-forced, multi-hour route run by strangers from a
+#: public config, the worst place in the tree for that deviation.
+#: Recorded since 1.4.1 (census row in
+#: tests/test_mp28_runtime_reachability.py); revisit when a QNWFA/QNIFA
+#: ingest lane exists, not before.
+AEROSOL_LATERAL_BC_BLOCKED_MP_PHYSICS = frozenset({28})
+
+#: Microphysics the route admits: DERIVED from the nest-transition
+#: resolver's ported set rather than re-spelled, so this door can never
+#: again sit behind a ratified port.  It did exactly that once -- the set
+#: stayed at the pre-P3 five after mp=50's rime-pair closure was ratified
+#: into ``microphysics_transition.PORTED_MP_PHYSICS``, refusing a scheme
+#: whose ingest (``HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE[50]``), nest
+#: edges (both directions, all ported partners) and history inventory
+#: (presence-guarded QIR/QIB rows in ``gpuwm/io/wrfout.py``; a P3 run
+#: omits QSNOW/QGRAUP exactly as stock WRF's Registry does) were all
+#: already defined -- and the old "receipted-run decision" prose here was
+#: the only thing left refusing it.
+#:
+#: 16 and 28 stay out through the derivation (their mixed edges are
+#: refused by name, ``UNVALIDATED_MIXED_EDGE_SELECTORS``), and 28 is
+#: ADDITIONALLY subtracted on this route's own feet below: if aerosol
+#: Thompson's closures are ever ratified, ``PORTED_MP_PHYSICS`` gaining
+#: 28 must not silently open the one public, laterally-forced, multi-hour
+#: route to the scheme's recorded unbounded-depletion deviation.
+SUPPORTED_MICROPHYSICS = (
+    frozenset(PORTED_MP_PHYSICS) - AEROSOL_LATERAL_BC_BLOCKED_MP_PHYSICS)
 
 #: THE profile every door binds for this source when none is named.
 #:

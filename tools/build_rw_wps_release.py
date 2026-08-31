@@ -238,6 +238,11 @@ _CORE_MODULES = {
     # those two values live in gpuwm/core rather than in the closure's
     # authority module under gpuwm/verify -- that tree is developer
     # verification and this distribution omits it.
+    # The benchmark's mp=50 table-authority arm validates the P3 lookup
+    # table at profile binding -- the same stage and the same reason as
+    # the Thompson arm beside it.  Leaf module: stdlib + numpy at module
+    # scope, no CuPy, no forecast executor.
+    "p3_tables.py",
     "sase_limits.py",
     "state.py",
     "thompson_contract.py",

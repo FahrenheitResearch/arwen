@@ -924,18 +924,25 @@ def test_a_v101_shape_header_still_binds_after_the_upgrade():
 
     live = _live_domain_identity()
     # 11 v1.0.1 keys + start_time (v1.1.0) + spawn (v1.8, dormant
-    # spawn-triggered nests).  Every post-v1.0.1 field must appear in
-    # BOTH the live document and the tolerance table, or this pin moves.
-    assert len(live) == 13
-    assert "start_time" in live and "spawn" in live
+    # spawn-triggered nests) + tiles (df5cf42d0) + output (8d8855a8c) +
+    # retire/rearm/follow (8e663a751/21254c056).  Every post-v1.0.1 field
+    # must appear in BOTH the live document and the tolerance table, or
+    # this pin moves.  The last five landed WITHOUT tolerance entries and
+    # re-opened the V-12 hole; the entries were added when this pin
+    # caught up with them (2026-08-30).
+    post_v101 = ("start_time", "spawn", "tiles", "output",
+                 "retire", "rearm", "follow")
+    assert len(live) == 18
+    for field in post_v101:
+        assert field in live
     cached = {key: value for key, value in live.items()
-              if key not in ("start_time", "spawn")}
+              if key not in post_v101}
     assert len(cached) == 11
 
     tolerated, differing = compare_prepared_domain_config(
         cached, live, not_in_use=_undelayed())
     assert differing == []
-    assert sorted(tolerated) == ["spawn", "start_time"]
+    assert sorted(tolerated) == sorted(post_v101)
 
 
 def test_a_field_absent_from_the_header_but_IN_USE_still_refuses():

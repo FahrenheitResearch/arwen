@@ -37,8 +37,9 @@ assertions now report together instead of one masking the other.
 
 WHAT THE INVENTORY MEANS
 ------------------------
-It is a debt register, not a waiver.  ``mynn_pbl_gpu`` is at zero because the
-solver draws its whole working set from ``MynnPblScratch``; everything else is
+It is a debt register, not a waiver.  ``mynn_pbl_gpu``'s solver draws its
+working set from ``MynnPblScratch`` and its row records only the DMP
+sibling's four mixscalars buffers; everything else is
 recorded at the count it has today and fails on any increase.  The distinction
 that decides whether a recorded row is acceptable is the one YSU's entry
 states: **an allocation the preflight knows about is a cost; an allocation it
@@ -135,7 +136,8 @@ _PER_COLUMN_STRIDE_NAMES = frozenset((
 #: one is a visible diff on this line, and so that the modules nobody has
 #: converted yet are an itemised debt rather than an unexamined blank.
 #:
-#: ``mynn_pbl_gpu`` is empty: the solver draws its whole working set from
+#: ``mynn_pbl_gpu`` records only the DMP sibling's four mixscalars
+#: buffers: the solver itself still draws its whole working set from
 #: ``MynnPblScratch``.  ``mynn_pbl_runtime`` keeps exactly two, both
 #: justified above their call sites -- the six returned tendency fields on
 #: the no-``DomainState`` path used by the standalone harnesses, and the
@@ -204,7 +206,11 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # half-level mean, which is not in ``_ALLOCATORS`` and never was.
     'gpuwm/core/kf.py': {
         'ensure_trigger_history': 1,
-        'launch_kf': 10,
+        # The eleventh is the caller-sized column workspace the frame move
+        # added (48ff6b813): one cp.empty priced by the same commit's
+        # preflight row, replacing per-thread local frames the driver
+        # priced at full residency.
+        'launch_kf': 11,
     },
     'gpuwm/core/microphysics.py': {},
     'gpuwm/core/microphysics_transition.py': {},
@@ -255,11 +261,36 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # driver's own persistent surface fields, so its row is empty and must
     # stay empty.
     'gpuwm/core/myjsfc.py': {},
-    'gpuwm/core/mynn_pbl_gpu.py': {},
+    # No longer zero: the mixscalars landing (4a0bb3f69) gave the DMP
+    # sibling kernel four working buffers -- up_a_pre (ncol, nz+1, nup)
+    # float32, psig_w (ncol,), plume_active (ncol,) int32 and
+    # limiter_adjustment (ncol,) -- allocated once per DMP call on the
+    # bl_mynn_mixscalars=1 lane only.  Recorded here in the sweep that
+    # found the lane had not entered its own row; the bounds are the
+    # shapes above, all ncol-scaled, none nest-persistent.
+    'gpuwm/core/mynn_pbl_gpu.py': {
+        'mynn_dmp_mf_cuda': 4,
+    },
     'gpuwm/core/mynn_pbl_runtime.py': {
         '_validity_flags': 1,
-        'mynn_pbl_step': 1,
+        # One became three with the mixscalars landing (4a0bb3f69): the
+        # qn-family output planes (five (nz, ny, nx) fields on the
+        # bl_mynn_mixscalars=1 lane) and the qnbca zero column mp=28's
+        # Registry package declares absent.  Entered in the same sweep as
+        # the mynn_pbl_gpu row; ncol/plane-scaled, none nest-persistent.
+        'mynn_pbl_step': 3,
     },
+    # Born with the mixscalars landing (4a0bb3f69) and entered in the same
+    # sweep as the mynn_pbl_gpu row above: the qn-family tridiagonal
+    # solves (three per-call buffers) and the plume-edge flux columns
+    # (two).  All (ncol,)- or (ncol, nz)-scaled, none nest-persistent.
+    'gpuwm/core/mynn_scalar_mix_gpu.py': {
+        'mynn_dmp_qn_flux_columns_cuda': 2,
+        'mynn_mix_scalar_columns_cuda': 3,
+    },
+    # The RUC soil-tier module allocates nothing; its columns come from
+    # the caller's batch.
+    'gpuwm/core/ruc_tier.py': {},
     'gpuwm/core/mynn_sfclay.py': {
         '_allocate_result': 1,
         '_surface_array': 1,
@@ -500,7 +531,12 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         # enumerates every one of them by name.  An allocation the preflight
         # knows about is a cost; an allocation it does not is a hazard.
         # MYNN's were the second kind.
-        'launch_ysu': 9,
+        #
+        # The tenth is the column workspace of the frame move (17cf943ef):
+        # ws = cp.empty at gpuwm/core/ysu.py:162, bound
+        # ysu_workspace_floats(nz, tile) * 4 bytes, priced by the same
+        # commit's preflight row.
+        'launch_ysu': 10,
     },
 }
 
@@ -642,8 +678,11 @@ def test_the_ast_gate_catches_a_raw_allocation():
     sites = _allocation_sites(injected, "gpuwm/core/mynn_pbl_gpu.py")
     assert sites, "the scanner did not see an injected cp.empty"
     assert all(site[2] == "empty" for site in sites)
-    # And the same scanner over the real file sees nothing.
-    assert not _allocation_sites(source, "gpuwm/core/mynn_pbl_gpu.py")
+    # And the same scanner over the real file sees exactly the recorded
+    # DMP-sibling buffers (4a0bb3f69), nothing more.
+    real_sites = _allocation_sites(source, "gpuwm/core/mynn_pbl_gpu.py")
+    assert len(real_sites) == 4
+    assert {site[1] for site in real_sites} == {"mynn_dmp_mf_cuda"}
 
     unconverted = ROOT / "gpuwm/core/ysu.py"
     ysu_source = unconverted.read_text(encoding="utf-8")
@@ -690,7 +729,8 @@ def test_no_physics_gpu_module_allocates_outside_its_workspace():
     assert not problems, "\n".join(problems)
     for rel in _CONVERTED:
         assert rel in live, rel
-    assert live["gpuwm/core/mynn_pbl_gpu.py"] == {}
+    assert live["gpuwm/core/mynn_pbl_gpu.py"] == {
+        "mynn_dmp_mf_cuda": 4}
 
 
 def test_the_allocation_allowlist_has_not_rotted():

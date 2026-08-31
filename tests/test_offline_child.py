@@ -68,11 +68,13 @@ def test_offline_child_capabilities_are_warning_only_and_exact(capsys):
     assert capability["explicit_expert_consent_required"] is False
     # 28 (Thompson aerosol-aware) joined the same-scheme list when the lane
     # learned to read its transported nc/nwfa/nifa and its two per-domain
-    # surface-emission constants.  It is deliberately absent from
-    # cross_scheme_transitions, which stays empty: every mixed edge touching
-    # 28 is refused by name (see the two refusal tests below), matching the
-    # online nest lane's UNVALIDATED_MIXED_EDGE_SELECTORS.
-    assert capability["same_scheme_mp_physics"] == [6, 8, 10, 18, 28]
+    # surface-emission constants.  50 (P3) joined the same way, when the
+    # lane learned its qv,qc,qr,qi + ni/nr + qir/qib inventory.  Both are
+    # deliberately absent from cross_scheme_transitions, which stays empty:
+    # every mixed edge touching either is refused by name (see the refusal
+    # tests below), matching the online nest lane's
+    # UNVALIDATED_MIXED_EDGE_SELECTORS.
+    assert capability["same_scheme_mp_physics"] == [6, 8, 10, 18, 28, 50]
     assert capability["cross_scheme_transitions"] == []
     assert capability["vertical_remapping"] is False
     assert capability["output_ownership"] == "create-only"
@@ -89,7 +91,8 @@ def _physics_binding(tmp_path, *, mp=8, morr_rimed_ice=1):
 
 
 def _history(path, valid_time, *, mp=8, hgt_offset=0.0, signal=0.0,
-             ny=3, nx=4, omit_aerosol_surface_emission=False):
+             ny=3, nx=4, omit_aerosol_surface_emission=False,
+             qnrain=None, qir=None):
     nz = 2
     with netCDF4.Dataset(path, "w") as dataset:
         for name, size in (
@@ -119,8 +122,14 @@ def _history(path, valid_time, *, mp=8, hgt_offset=0.0, signal=0.0,
         v3 = ("Time", "bottom_top", "south_north_stag", "west_east")
         w3 = ("Time", "bottom_top_stag", "south_north", "west_east")
         mass2 = ("Time", "south_north", "west_east")
-        for name in ("P", "QVAPOR", "QCLOUD", "QRAIN",
-                     "QICE", "QSNOW", "QGRAUP"):
+        # P3 (mp=50) declares NO qs and NO qg (Registry.EM_COMMON:3038:
+        # ``moist:qv,qc,qr,qi``), so a faithful P3 archive omits both, and
+        # its QICE is written nonzero below so the rime pair has ice to
+        # describe.  Every other fixture keeps the six-species zeros.
+        zero_masses = (("P", "QVAPOR", "QCLOUD", "QRAIN") if mp == 50 else
+                       ("P", "QVAPOR", "QCLOUD", "QRAIN",
+                        "QICE", "QSNOW", "QGRAUP"))
+        for name in zero_masses:
             _variable(dataset, name, mass3, np.zeros((1, nz, ny, nx)))
         pb = np.broadcast_to(
             np.asarray([65000.0, 30000.0], dtype=np.float32)[None, :, None, None],
@@ -167,9 +176,10 @@ def _history(path, valid_time, *, mp=8, hgt_offset=0.0, signal=0.0,
         _variable(dataset, "ZNU", ("Time", "bottom_top"), [[0.75, 0.25]])
         _variable(dataset, "ZNW", ("Time", "bottom_top_stag"),
                   [[1.0, 0.5, 0.0]])
-        if mp in {8, 10}:
+        if mp in {8, 10, 50}:
             _variable(dataset, "QNRAIN", mass3,
-                      np.zeros((1, nz, ny, nx)))
+                      np.full((1, nz, ny, nx),
+                              0.0 if qnrain is None else qnrain))
             _variable(dataset, "QNICE", mass3,
                       np.zeros((1, nz, ny, nx)))
         if mp == 10:
@@ -196,6 +206,19 @@ def _history(path, valid_time, *, mp=8, hgt_offset=0.0, signal=0.0,
                           np.full((1, ny, nx), 4321.0))
                 _variable(dataset, "QNIFA2D", mass2,
                           np.full((1, ny, nx), 0.0))
+        if mp == 50:
+            # P3 one-category.  QNRAIN/QNICE already landed above; the rest
+            # is the ice mass and its prognostic rime pair, with DISTINCT
+            # values so a crossed interpolation would be visible, keeping
+            # qir <= qi and rime density qir/qib = 1.0e-4 / 2.0e-7 =
+            # 500 kg m-3, inside P3's admissible [50, 900] band.
+            _variable(dataset, "QICE", mass3,
+                      np.full((1, nz, ny, nx), 3.0e-4))
+            _variable(dataset, "QIR", mass3,
+                      np.full((1, nz, ny, nx),
+                              1.0e-4 if qir is None else qir))
+            _variable(dataset, "QIB", mass3,
+                      np.full((1, nz, ny, nx), 2.0e-7))
 
 
 def test_parent_history_contract_checks_geometry_cadence_and_scheme(tmp_path):
@@ -671,3 +694,306 @@ def test_wsm6_transports_the_single_moment_set():
 
     assert _transported_source_fields(6) == (
         "qv", "qc", "qr", "qi", "qs", "qg")
+
+
+# The concrete breakage, measured 2026-08-29: a ratio-3 downscale of an
+# mp=10 parent aborts at its first radiation call with
+#   nr must be finite and non-negative: first_index=(161115, 18),
+#   first_value=-3.7252903e-09, negative_count=626, nonfinite_count=0
+# -- 626 cells of float32 SINT rounding out of 22.5 million, in an interior
+# column.  The fix-up for exactly that artefact had existed and been
+# measured since the online nest lane needed it, but reached only children
+# built through a DomainState; the offline downscale initializer holds its
+# SINT output in a dict and silently went without.  These two tests pin
+# both halves: the artefact is cleared, and a real defect still is not.
+_SINT_ROUNDING_UNDERSHOOT = -3.7252903e-09
+
+
+def _mp10_placement():
+    return OfflineChildPlacement(
+        parent_nx=20, parent_ny=18, child_nx=12, child_ny=10,
+        parent_grid_ratio=1, i_parent_start=4, j_parent_start=4)
+
+
+def test_offline_initial_state_clamps_sint_rounding_undershoot(tmp_path):
+    path = tmp_path / "parent.nc"
+    _history(path, datetime(1974, 4, 3, 12), mp=10, ny=18, nx=20,
+             qnrain=_SINT_ROUNDING_UNDERSHOOT)
+    initial = interpolate_parent_initial_state(
+        path, _mp10_placement(),
+        physics_binding=_physics_binding(tmp_path, mp=10), backend="cpu")
+
+    nr = initial.microphysics["nr"]
+    assert nr.min() == 0.0
+    account = initial.receipt["positive_definite_clamp"]["nr"]
+    assert account["cells"] == nr.size
+    assert account["most_negative"] == pytest.approx(
+        _SINT_ROUNDING_UNDERSHOOT, rel=1e-6)
+
+
+def test_offline_initial_state_leaves_a_real_negative_for_the_gate(tmp_path):
+    # A thousand per kilogram is not rounding.  The clamp has a ceiling so
+    # that the engine's own refusal -- the one that caught the real case --
+    # still has something to catch.
+    path = tmp_path / "parent.nc"
+    _history(path, datetime(1974, 4, 3, 12), mp=10, ny=18, nx=20,
+             qnrain=-1.0e3)
+    initial = interpolate_parent_initial_state(
+        path, _mp10_placement(),
+        physics_binding=_physics_binding(tmp_path, mp=10), backend="cpu")
+
+    assert initial.microphysics["nr"].min() < 0.0
+    assert initial.receipt["positive_definite_clamp"] == {}
+
+
+def test_offline_boundary_snapshot_clamps_coupled_undershoot(tmp_path):
+    # The boundary lane SINTs COUPLED moments, so the absolute floor has to
+    # travel with the coupling or it clamps nothing.  Same parent field as
+    # the initial-state case; here it arrives multiplied by chm ~ 8e4.
+    path = tmp_path / "parent.nc"
+    _history(path, datetime(1974, 4, 3, 12), mp=10, ny=18, nx=20,
+             qnrain=_SINT_ROUNDING_UNDERSHOOT)
+    snapshot = interpolate_parent_boundary_snapshot(
+        path, _mp10_placement(),
+        physics_binding=_physics_binding(tmp_path, mp=10), backend="cpu")
+
+    assert snapshot.fields["nr"].min() == 0.0
+    assert snapshot.receipt["positive_definite_clamp"]["nr"]["cells"] > 0
+
+
+def test_offline_boundary_snapshot_leaves_a_real_negative_for_the_gate(tmp_path):
+    path = tmp_path / "parent.nc"
+    _history(path, datetime(1974, 4, 3, 12), mp=10, ny=18, nx=20,
+             qnrain=-1.0e3)
+    snapshot = interpolate_parent_boundary_snapshot(
+        path, _mp10_placement(),
+        physics_binding=_physics_binding(tmp_path, mp=10), backend="cpu")
+
+    assert snapshot.fields["nr"].min() < 0.0
+    assert snapshot.receipt["positive_definite_clamp"] == {}
+
+
+# ---------------------------------------------------------------------------
+# mp_physics=50 (P3, one-category ice with prognostic riming) -- the
+# offline-child lane decision, on mp=28's exact terms: admitted for the
+# SAME-SCHEME case (a 50 parent forcing a 50 child), every cross-scheme
+# edge refused by name through the DERIVED mirror of the online lane's
+# UNVALIDATED_MIXED_EDGE_SELECTORS.  Transported set per
+# Registry.EM_COMMON:3038: moist qv,qc,qr,qi (no qs, no qg) plus scalar
+# qni,qnr,qir,qib.
+# ---------------------------------------------------------------------------
+
+def _p3_placement():
+    return OfflineChildPlacement(
+        parent_nx=20, parent_ny=18, child_nx=12, child_ny=10,
+        parent_grid_ratio=1, i_parent_start=4, j_parent_start=4)
+
+
+def _p3_child_config():
+    return RunConfig(
+        nx=12, ny=10, nz=2, dx=1000.0, dy=1000.0,
+        ztop=9000.0, dt=5.0, run_seconds=300.0,
+        hybrid_opt=2, etac=0.2, moist=True, mp_physics=50,
+        specified=True, nested=False, terrain_opt=1, map_proj=1,
+        hypsometric_opt=2)
+
+
+def test_p3_parent_history_is_inferred_ahead_of_classic_thompson(tmp_path):
+    """A P3 stream must not be advertised as classic Thompson.
+
+    P3's wrfout inventory carries QNRAIN/QNICE beside its rime pair, so
+    the advisory inference has to test QIR/QIB first -- the mp=28-vs-mp=8
+    superset problem again, with a different discriminant: QIR/QIB are
+    declared by no other scheme.
+    """
+    path = tmp_path / "parent-mp50.nc"
+    _history(path, datetime(1974, 4, 3, 12), mp=50, ny=18, nx=20)
+    info = inspect_parent_history_frame(path, source_mp_physics=50)
+    assert info.source_mp_physics == 50
+    assert info.inferred_mp_physics == 50
+
+
+def test_p3_transported_inventory_reaches_the_child_state(tmp_path):
+    """qv,qc,qr,qi + ni/nr + the rime pair land on state, and NOTHING else.
+
+    A P3 state allocates no qs/qg at all (one ice category), so the
+    right assertion is two-sided: the eight transported fields arrive,
+    and the six-species leftovers do not exist to be zero-filled.
+    """
+    path = tmp_path / "parent-mp50.nc"
+    valid_time = datetime(1974, 4, 3, 12)
+    _history(path, valid_time, mp=50, ny=18, nx=20, signal=0.5)
+    initial = interpolate_parent_initial_state(
+        path, _p3_placement(),
+        physics_binding=_physics_binding(tmp_path, mp=50), backend="cpu")
+
+    assert set(initial.microphysics) == {
+        "qv", "qc", "qr", "qi", "ni", "nr", "qir", "qib"}
+
+    state = build_offline_child_domain_state(
+        initial, _p3_child_config(), array_module=np)
+    assert np.all(state.qi == np.float32(3.0e-4))
+    assert np.all(state.qir == np.float32(1.0e-4))
+    assert np.all(state.qib == np.float32(2.0e-7))
+    # One ice category: P3 allocates neither qs nor qg
+    # (gpuwm/core/state.py mp==50 branch), and this route must not have
+    # fabricated them.
+    assert getattr(state, "qs", None) is None
+    assert getattr(state, "qg", None) is None
+    # The RK time-t copies, seeded through the online lane's own table
+    # (gpuwm/ingest/nest_init.py::RK_TIME_T_SEED_PAIRS) so the rime pair's
+    # qir0/qib0 cannot go missing on this birth path the way they once did
+    # on the online one.
+    assert np.array_equal(state.qir0, state.qir)
+    assert np.array_equal(state.qib0, state.qib)
+    assert np.array_equal(state.ni0, state.ni)
+    assert np.array_equal(state.nr0, state.nr)
+
+
+def test_p3_parent_reader_is_scheme_aware(tmp_path):
+    """The bound form reads P3's own inventory; the blind form still
+    holds the six-species closed world it has always promised."""
+    path = tmp_path / "parent-mp50.nc"
+    _history(path, datetime(1974, 4, 3, 12), mp=50)
+    moisture = read_parent_microphysics(path, source_mp_physics=50)
+    assert set(moisture) == {
+        "qv", "qc", "qr", "qi", "ni", "nr", "qir", "qib"}
+    assert np.all(moisture["qir"] == np.float32(1.0e-4))
+    # No scheme evidence means no smaller inventory is honestly complete:
+    # a P3 archive has no QSNOW/QGRAUP, and the blind contract says so.
+    with pytest.raises(OfflineChildContractError, match="mass fields"):
+        read_parent_microphysics(path)
+
+
+def test_p3_boundary_snapshot_carries_the_rime_pair_and_receipts_it(tmp_path):
+    path = tmp_path / "parent-mp50.nc"
+    _history(path, datetime(1974, 4, 3, 12), mp=50, ny=18, nx=20)
+    snapshot = interpolate_parent_boundary_snapshot(
+        path, _p3_placement(), source_mp_physics=50, backend="cpu")
+    assert set(snapshot.fields) == {
+        "u", "v", "w", "theta", "phi", "mu",
+        "qv", "qc", "qr", "qi", "ni", "nr", "qir", "qib"}
+    # The receipt names the scheme's field set the way it names every
+    # other scheme's: the full sorted inventory, rime pair included.
+    assert snapshot.receipt["field_inventory"] == tuple(
+        sorted(snapshot.fields))
+    assert {"qib", "qir"} <= set(snapshot.receipt["field_inventory"])
+
+
+def test_p3_streamed_lateral_intervals_include_the_rime_pair(tmp_path):
+    start = datetime(1974, 4, 3, 12)
+    paths = (tmp_path / "p0.nc", tmp_path / "p1.nc")
+    _history(paths[0], start, mp=50, ny=18, nx=20, signal=0.0)
+    _history(paths[1], start + timedelta(minutes=5), mp=50,
+             ny=18, nx=20, signal=1.0)
+    binding = _physics_binding(tmp_path, mp=50)
+    contract = validate_parent_history(
+        paths, max_boundary_interval_seconds=900, physics_binding=binding)
+    assert contract.source_mp_physics == 50
+    result = build_offline_lateral_boundaries(
+        contract, _p3_placement(), backend="cpu")
+    interval = result.boundaries.intervals[0]
+    assert {"qi", "ni", "nr", "qir", "qib"} <= set(interval.fields)
+    assert np.isfinite(interval.fields["qir"].west.value).all()
+    assert np.all(interval.fields["qir"].west.value != 0.0)
+
+
+def test_p3_cross_scheme_offline_edges_are_refused_by_name(tmp_path):
+    """Both directions, both the initial-state and forcing paths.
+
+    Same shape as mp=28's refusal test, DIFFERENT reason now: the online
+    nest lane RATIFIED 50's rime-pair closure (it left
+    UNVALIDATED_MIXED_EDGE_SELECTORS), so what refuses these edges is no
+    longer the derived closure mirror but this module's own named gate
+    (_P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS): the offline lane has no leg
+    that runs the ratified merge/split maps, and converting without them
+    would zero-fill or invent the rime pair.  Follow-up
+    offline-p3-edge-closure retires the gate.
+    """
+    p3 = tmp_path / "parent-mp50.nc"
+    classic = tmp_path / "parent-mp8.nc"
+    _history(p3, datetime(1974, 4, 3, 12), mp=50, ny=18, nx=20)
+    _history(classic, datetime(1974, 4, 3, 12), mp=8, ny=18, nx=20)
+    placement = _p3_placement()
+
+    # 50 -> 18 (the one cross-scheme target the lane otherwise supports).
+    with pytest.raises(OfflineChildContractError, match="REFUSED"):
+        interpolate_parent_initial_state(
+            p3, placement, source_mp_physics=50, target_mp_physics=18,
+            backend="cpu")
+    with pytest.raises(OfflineChildContractError, match="REFUSED"):
+        interpolate_parent_boundary_snapshot(
+            p3, placement, source_mp_physics=50, target_mp_physics=18,
+            backend="cpu")
+
+    # 8 -> 50 (a child the lane could not seed).
+    with pytest.raises(OfflineChildContractError, match="REFUSED"):
+        interpolate_parent_initial_state(
+            classic, placement, source_mp_physics=8, target_mp_physics=50,
+            backend="cpu")
+    with pytest.raises(OfflineChildContractError, match="REFUSED"):
+        interpolate_parent_boundary_snapshot(
+            classic, placement, source_mp_physics=8, target_mp_physics=50,
+            backend="cpu")
+
+    # And the direct converter names P3's own moments, nobody else's.
+    with pytest.raises(OfflineChildContractError) as caught:
+        map_microphysics_to_nssl18({}, source_mp_physics=50)
+    assert "REFUSED" in str(caught.value)
+    assert "P3" in str(caught.value)
+    assert "qir/qib" in str(caught.value)
+
+
+def test_p3_clamp_membership_matches_the_online_lane(tmp_path):
+    """ni/nr are clamped members; the rime pair is DELIBERATELY not.
+
+    The membership is the online nest lane's
+    (gpuwm/ingest/nest_init.py::POSITIVE_DEFINITE_MOMENTS, imported, not
+    re-spelled): number moments carry 1e3..1e9 per kilogram, so a float32
+    SINT can round one across zero, while qir/qib are O(1e-4) mixing
+    ratios whose absolute rounding error sits decades lower and has never
+    been observed to cross -- clamping them would be a trajectory change
+    with no evidence behind it.  This test pins that the two lanes keep
+    agreeing: the same fabricated undershoot is cleaned off nr and left
+    exactly where it is on qir.
+    """
+    path = tmp_path / "parent-mp50.nc"
+    _history(path, datetime(1974, 4, 3, 12), mp=50, ny=18, nx=20,
+             qnrain=_SINT_ROUNDING_UNDERSHOOT,
+             qir=_SINT_ROUNDING_UNDERSHOOT)
+    initial = interpolate_parent_initial_state(
+        path, _p3_placement(),
+        physics_binding=_physics_binding(tmp_path, mp=50), backend="cpu")
+
+    assert initial.microphysics["nr"].min() == 0.0
+    assert "nr" in initial.receipt["positive_definite_clamp"]
+    assert initial.microphysics["qir"].min() == pytest.approx(
+        _SINT_ROUNDING_UNDERSHOOT, rel=1e-6)
+    assert "qir" not in initial.receipt["positive_definite_clamp"]
+    assert "qib" not in initial.receipt["positive_definite_clamp"]
+
+
+def test_offline_transport_inventory_derives_from_the_online_forcing_table():
+    """Every admitted scheme's offline inventory IS the online one.
+
+    ``_transported_source_fields`` and ``nest_field_kinds`` are two
+    spellings of the same forcing promise; a species present in one and
+    absent from the other is exactly how a scheme becomes half-supported.
+    Pinned for the WHOLE admitted set so the next scheme's landing cannot
+    drift the two lanes apart.
+    """
+    from types import SimpleNamespace
+
+    from gpuwm.core.preflight import nest_field_kinds
+    from gpuwm.offline_child import (
+        OFFLINE_CHILD_MP_PHYSICS,
+        _transported_source_fields,
+    )
+
+    dynamics = {"u", "v", "w", "t", "ph", "mu"}
+    for mp in sorted(OFFLINE_CHILD_MP_PHYSICS):
+        online = set(nest_field_kinds(
+            SimpleNamespace(moist=True, mp_physics=mp))) - dynamics
+        assert set(_transported_source_fields(mp)) == online, (
+            f"mp_physics={mp}: offline transport inventory drifted from "
+            "the online forcing table")

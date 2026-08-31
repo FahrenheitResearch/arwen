@@ -39,6 +39,19 @@ from gpuwm.ingest.lateral_bc import (
     build_lateral_interval_from_sides,
     extract_lateral_side,
 )
+# The SINT positive-definite fix-up, imported rather than re-spelled: the
+# online nest lane owns the tolerance policy and the moment membership, and
+# a second copy here would be free to drift from it.  Membership matters
+# per scheme: P3's number moments ni/nr ARE members while its rime pair
+# qir/qib -- small-magnitude mixing ratios -- is DELIBERATELY not
+# (gpuwm/ingest/nest_init.py::POSITIVE_DEFINITE_MOMENTS and the comment
+# above it), and both lanes get that answer from the one tuple.  The RK
+# time-t seeding table is shared for the same reason: nest_init's pair
+# list is the census the online lane's own gates iterate, and a re-spelled
+# copy here is how NSSL's moment seeds and P3's qir0/qib0 would go
+# missing on exactly one of the two birth paths.
+from gpuwm.ingest.nest_init import (clamp_sint_undershoot_mapping,
+                                    seed_rk_time_t_copies)
 
 
 _TIME_FORMAT = "%Y-%m-%d_%H:%M:%S"
@@ -74,6 +87,16 @@ _WRF_TO_STATE = MappingProxyType({
     # ``_transported_source_fields`` asks for are ever read, so adding rows
     # here cannot change what any other scheme reads.
     "QNWFA": "nwfa", "QNIFA": "nifa",
+    # mp_physics=50 (P3, one-category ice with prognostic riming).  The
+    # rime MASS / rime VOLUME pair rides in the same 4-D ``scalar`` array
+    # as the two number moments beside it (Registry.EM_COMMON:555/:557,
+    # package ``moist:qv,qc,qr,qi;scalar:qni,qnr,qir,qib`` at :3038); its
+    # qi/ni/nr rows are already above under the names Morrison and
+    # Thompson declared first.  No radius rows: this map carries no
+    # re_cloud/re_ice for ANY scheme, because effc/effi are per-call
+    # diagnostics every scheme (P3 included, module_mp_p3.F:2280-2282)
+    # rebuilds before reading, never inherited state.
+    "QIR": "qir", "QIB": "qib",
 })
 
 #: mp_physics=28 surface aerosol emission tendencies (# kg-1 s-1).  NOT
@@ -106,11 +129,12 @@ _NSSL_WRF_TO_STATE = MappingProxyType({
 #: NOT a profile whitelist -- the four checks below are the ordinary
 #: fail-closed kind the 2026-07-31 suite ruling keeps: the child's
 #: hydrometeor mapping is written against the transported species of
-#: WSM6 (6), Thompson (8), Morrison (10), NSSL (18) and Thompson
-#: aerosol-aware (28), and a parent outside that set has no mapping to
-#: refuse or accept with.  Naming the set once keeps the four enforcement
-#: points from ever disagreeing about which parents the mapping actually
-#: implements; each refusal still quotes the exact switch and value.
+#: WSM6 (6), Thompson (8), Morrison (10), NSSL (18), Thompson
+#: aerosol-aware (28) and P3 (50), and a parent outside that set has no
+#: mapping to refuse or accept with.  Naming the set once keeps the four
+#: enforcement points from ever disagreeing about which parents the
+#: mapping actually implements; each refusal still quotes the exact
+#: switch and value.
 #:
 #: 28 is admitted for the SAME-SCHEME case only: a 28 parent forcing a 28
 #: child.  Its transported inventory is classic Thompson's plus
@@ -120,6 +144,17 @@ _NSSL_WRF_TO_STATE = MappingProxyType({
 #: paths this module already runs for ``nr``/``ni``, with no new numerics.
 #: What is DELIBERATELY NOT admitted is any CROSS-scheme edge touching 28 --
 #: see :data:`_CROSS_SCHEME_REFUSED_MP_PHYSICS`.
+#: 50 (P3) is admitted on exactly 28's terms: SAME-SCHEME only.  Its
+#: transported inventory is ``qv,qc,qr,qi`` plus ``ni``/``nr`` and the
+#: prognostic rime pair ``qir``/``qib`` (Registry.EM_COMMON:3038) -- no
+#: qs, no qg -- and all four scalars ride the generic SINT/couple paths
+#: like the moments beside them.  Every CROSS-scheme edge touching 50 is
+#: refused at this module's own gates by
+#: :data:`_P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS` below -- no longer through
+#: the derived closure mirror, because the online nest lane RATIFIED the
+#: rime-pair closure (``microphysics_transition.p3_edge_entry_reference``
+#: / ``p3_edge_exit_reference``) and this offline lane has not wired
+#: either leg.
 #: mp_physics=16 (WDM6) is DELIBERATELY ABSENT, in the same shape mp=28's
 #: cross-scheme refusal takes: the scheme ships and runs, but this module's
 #: wrfout field map has no row for its CCN reservoir.  ``nn`` and NSSL's
@@ -130,7 +165,7 @@ _NSSL_WRF_TO_STATE = MappingProxyType({
 #: microphysics_init hook exists to prevent.  Admitting it means giving the
 #: field map a scheme-qualified QNCCN row and measuring the closure, not
 #: adding 16 to this set.
-OFFLINE_CHILD_MP_PHYSICS = frozenset({6, 8, 10, 18, 28})
+OFFLINE_CHILD_MP_PHYSICS = frozenset({6, 8, 10, 18, 28, 50})
 
 #: Schemes that may not participate in an offline CROSS-physics conversion.
 #: DERIVED from ``gpuwm.core.microphysics_transition.
@@ -148,9 +183,32 @@ OFFLINE_CHILD_MP_PHYSICS = frozenset({6, 8, 10, 18, 28})
 #: read the field", not "this closure is unmeasured" -- and it would silently
 #: stop being a refusal the day the QNCCN field-map row lands.  Keeping the
 #: mirror exact means the closure question is answered on its own terms, at
-#: the site whose job it is.
+#: the site whose job it is.  mp=50 walked that exact path end to end: it
+#: sat in mp=16's shape until the field map learned its qir/qib rows and 50
+#: joined the admitted set (the "unreadable" gate vanished), this derived
+#: set carried the live refusal for a while, and then the online lane
+#: ratified the rime-pair closure and 50 left
+#: ``UNVALIDATED_MIXED_EDGE_SELECTORS`` too -- retiring it from here BY
+#: DERIVATION, with nothing to re-spell.  What still refuses a P3
+#: cross-scheme edge offline is the next constant down, on its own feet.
 _CROSS_SCHEME_REFUSED_MP_PHYSICS = frozenset(
     _mt.UNVALIDATED_MIXED_EDGE_SELECTORS)
+
+#: Selectors whose online cross-scheme closure IS ratified but whose
+#: offline conversion leg is UNBUILT at this module's sites.  mp=50: the
+#: online nest lane closes every P3 mixed edge with the measured rime-pair
+#: pair of maps -- ``p3_edge_entry_reference`` merges qi/qs/qg and
+#: diagnoses qir/qib, ``p3_edge_exit_reference`` splits by rime state --
+#: but nothing here runs either map: :func:`map_microphysics_to_nssl18`
+#: consumes a five-species qi/qs/qg inventory directly, and the forcing
+#: and initial-state paths convert only through it.  Without this named
+#: gate a P3 parent would pass the closure mirror above (50 is not in it
+#: any more) and then die on an incidental "lacks transported fields
+#: ['qg', 'qs']" shape error -- or worse, a caller padding zero qs/qg
+#: would silently drop the parent's rime state.  Wiring the ratified maps
+#: into this lane is the named follow-up ``offline-p3-edge-closure``;
+#: landing it retires this constant (gate law / guard-retirement law).
+_P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS = frozenset({50})
 
 
 def _cross_scheme_refusal_clause(mp: int) -> str:
@@ -165,11 +223,44 @@ def _cross_scheme_refusal_clause(mp: int) -> str:
     moments = "/".join(_mt.UNVALIDATED_MIXED_EDGE_MOMENTS[int(mp)])
     return f"mp_physics={int(mp)} ({scheme}), moments {moments}"
 
+
+def _refuse_unbuilt_p3_offline_edge(source_mp: int, target_mp: int) -> None:
+    """Refuse a P3 cross-scheme edge by name, at every converting site.
+
+    One function for the initial-state path, the forcing path and the
+    direct NSSL converter, so the three sites cannot drift apart the way
+    the three admission literals once did (the mp=28 lesson recorded at
+    ``HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS``).  See
+    :data:`_P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS` for why this is its own
+    refusal and not the retired closure mirror.
+    """
+
+    source_mp, target_mp = int(source_mp), int(target_mp)
+    if source_mp == target_mp:
+        return
+    if not ({source_mp, target_mp}
+            & _P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS):
+        return
+    raise OfflineChildContractError(
+        f"offline cross-physics conversion across the mp_physics="
+        f"{source_mp} -> {target_mp} edge is REFUSED: the online nest "
+        "lane's ratified P3 (mp_physics=50) closure "
+        "(gpuwm/core/microphysics_transition.py::p3_edge_entry_reference/"
+        "p3_edge_exit_reference) has no offline leg at this site -- the "
+        "NSSL mapping consumes a five-species qi/qs/qg inventory and "
+        "nothing here runs the measured merge/split first -- so "
+        "converting would zero-fill or invent the single ice category's "
+        "rime pair qir/qib instead of conserving it; same-scheme "
+        "50 -> 50 downscaling is supported, and wiring the ratified maps "
+        "into this lane is the named follow-up offline-p3-edge-closure")
+
 #: The parents a CROSS-scheme conversion has a measured mapping for: every
-#: admitted parent that is not cross-refused.  Derived, never re-spelled, so
-#: the cross-scheme site cannot drift from the same-scheme sites above.
+#: admitted parent that is neither cross-refused nor waiting on its offline
+#: conversion leg.  Derived, never re-spelled, so the cross-scheme site
+#: cannot drift from the same-scheme sites above.
 PARENT_SCHEME_CONTRACT = (
-    OFFLINE_CHILD_MP_PHYSICS - _CROSS_SCHEME_REFUSED_MP_PHYSICS)
+    OFFLINE_CHILD_MP_PHYSICS - _CROSS_SCHEME_REFUSED_MP_PHYSICS
+    - _P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS)
 
 
 class OfflineChildContractError(ValueError):
@@ -395,6 +486,13 @@ def _infer_mp_physics(inventory: frozenset[str]) -> int | None:
     # misleading in a receipt.
     if {"QNWFA", "QNIFA"} <= inventory:
         return 28
+    # mp=50 next, and before mp=8, for the same superset reason: a P3
+    # stream carries QNRAIN/QNICE beside its rime pair, so the classic-
+    # Thompson arm below would claim it.  QIR/QIB are declared by no other
+    # scheme (Registry.EM_COMMON:555/:557), which makes the pair the
+    # discriminant.
+    if {"QIR", "QIB"} <= inventory:
+        return 50
     if {"QNSNOW", "QNGRAUPEL"} <= inventory:
         return 10
     if {"QNRAIN", "QNICE"} <= inventory:
@@ -578,14 +676,38 @@ def validate_parent_history(
     )
 
 
-def read_parent_microphysics(path: str | Path) -> Mapping[str, np.ndarray]:
-    """Read only transported moisture fields from one WRF history record."""
+def read_parent_microphysics(
+        path: str | Path, *, source_mp_physics: int | None = None,
+) -> Mapping[str, np.ndarray]:
+    """Read only transported moisture fields from one WRF history record.
+
+    With ``source_mp_physics`` bound, the completeness check is the
+    scheme's own transported inventory (``_transported_source_fields``),
+    read through the same WRF-name mapping ``_raw_parent_state`` uses.
+    Without it the historical closed-world contract stands: the six-species
+    mass set is required, because with no scheme evidence there is no
+    smaller inventory this reader could honestly call complete -- a P3
+    archive (no QSNOW/QGRAUP by Registry.EM_COMMON:3038) is readable
+    through the evidence-bearing form, not by weakening the blind one.
+    """
 
     fields: dict[str, np.ndarray] = {}
+    wrf_mapping = _WRF_TO_STATE
+    required = set(_MASS_FIELDS)
+    label = "transported parent mass fields"
+    if source_mp_physics is not None:
+        source_mp = int(source_mp_physics)
+        if source_mp not in OFFLINE_CHILD_MP_PHYSICS:
+            raise OfflineChildContractError(
+                f"unsupported declared parent mp_physics={source_mp}")
+        if source_mp == 18:
+            wrf_mapping = _NSSL_WRF_TO_STATE
+        required = set(_transported_source_fields(source_mp))
+        label = f"mp_physics={source_mp} transported parent fields"
     # Decoded by the Rust bridge: transported moisture is meteorological
     # field data, whoever wrote the tape.
     with netcdf_bridge.open_dataset(path) as dataset:
-        for wrf_name, state_name in _WRF_TO_STATE.items():
+        for wrf_name, state_name in wrf_mapping.items():
             if wrf_name not in dataset.variables:
                 continue
             value = np.asarray(dataset.variables[wrf_name][:])
@@ -593,10 +715,10 @@ def read_parent_microphysics(path: str | Path) -> Mapping[str, np.ndarray]:
                 raise OfflineChildContractError(
                     f"{path}/{wrf_name} must have exactly one Time record")
             fields[state_name] = np.ascontiguousarray(value[0], dtype=np.float32)
-    missing = sorted(set(_MASS_FIELDS) - set(fields))
+    missing = sorted(required - set(fields))
     if missing:
         raise OfflineChildContractError(
-            f"{path} lacks transported parent mass fields {missing}")
+            f"{path} lacks {label} {missing}")
     return MappingProxyType(fields)
 
 
@@ -640,6 +762,7 @@ def map_microphysics_to_nssl18(
             "(gpuwm/core/microphysics_transition.py::"
             f"UNVALIDATED_MIXED_EDGE_SELECTORS); same-scheme {source_mp} -> "
             f"{source_mp} downscaling is supported")
+    _refuse_unbuilt_p3_offline_edge(source_mp, 18)
     if source_mp not in PARENT_SCHEME_CONTRACT:
         raise OfflineChildContractError(
             f"NSSL conversion currently accepts source mp 6/8/10/18, got {source_mp}")
@@ -1299,6 +1422,17 @@ def _transported_source_fields(source_mp_physics: int) -> tuple[str, ...]:
         names += ["nr", "ni", "nc", "nwfa", "nifa"]
     elif source_mp == 10:
         names += ["nr", "ni", "ns", "ng"]
+    elif source_mp == 50:
+        # P3 one-category (Registry.EM_COMMON:3038): moist qv,qc,qr,qi
+        # with NO qs and NO qg -- 50 is deliberately absent from the
+        # six-species branch above -- plus the two number moments and the
+        # prognostic rime mass/volume pair, all four in the same 4-D
+        # scalar array.  Spelled in the online forcing table's own order
+        # (gpuwm/core/preflight.py::nest_field_kinds, mp==50 arm;
+        # gpuwm/core/moist.py::P3_SPECIES), and the offline-inventory
+        # contract test pins this tuple against that table so the two
+        # lanes cannot drift.
+        names += ["qi", "ni", "nr", "qir", "qib"]
     elif source_mp == 18:
         names = list(_NSSL_FIELDS)
     elif source_mp not in {0, 6}:
@@ -1449,7 +1583,14 @@ def interpolate_parent_initial_state(
         name: sint(_backend_array(value, backend), registrations[""])
         for name, value in moisture.items()
     }
+    # The number moments carry magnitudes of 1e3..1e9 per kilogram, so a
+    # float32 SINT can round one across zero.  Applied BEFORE any consumer:
+    # the mp18 mapping below refuses a negative source moment, and the
+    # engine's radiation gate refuses a negative nr at the first radiative
+    # call.  Both of those are correct; the artefact is what has to go.
+    initial_clamp = clamp_sint_undershoot_mapping(source_mixing)
     conversion_receipt = None
+    _refuse_unbuilt_p3_offline_edge(int(source_mp_physics), target_mp)
     if target_mp == 18:
         mapped, conversion_receipt = map_microphysics_to_nssl18(
             {name: _to_host(value) for name, value in source_mixing.items()},
@@ -1485,6 +1626,7 @@ def interpolate_parent_initial_state(
             None if physics_binding is None else dict(physics_binding.receipt())),
         "target_mp_physics": target_mp,
         "backend": backend,
+        "positive_definite_clamp": initial_clamp,
         "terrain_policy": "sint-parent-inherited",
         "spinup_policy": (
             "new-standalone-child; source held physics tendencies and "
@@ -1641,22 +1783,16 @@ def build_offline_child_domain_state(
                     f"{wrf_name}; without it the child would integrate with "
                     "zero surface aerosol emission and nothing would raise")
             assign(state_name, initial.fields[wrf_name])
-    for current, seed in (
-            ("u", "u0"), ("v", "v0"), ("w", "w0"),
-            ("thp", "thp0"), ("php", "php0"), ("mup", "mup0"),
-            ("qv", "qv0"), ("qc", "qc0"), ("qr", "qr0"),
-            ("qi", "qi0"), ("qs", "qs0"), ("qg", "qg0"),
-            ("nr", "nr0"), ("ni", "ni0"), ("ns", "ns0"),
-            ("ng", "ng0"),
-            # mp=28.  ``nc0`` exists only for mp=28 -- Morrison allocates
-            # ``nc`` and deliberately does not transport it, so it has no
-            # ``nc0`` and the None guard below skips it.  Same rule the
-            # online nest lane applies (gpuwm/ingest/nest_init.py).
-            ("nc", "nc0"), ("nwfa", "nwfa0"), ("nifa", "nifa0")):
-        source = getattr(state, current, None)
-        target = getattr(state, seed, None)
-        if source is not None and target is not None:
-            target[...] = source
+    # The online nest lane's own seeding table
+    # (gpuwm/ingest/nest_init.py::RK_TIME_T_SEED_PAIRS), not a local copy.
+    # The local copy this replaced had already drifted: it stopped at the
+    # Morrison moments, so an offline NSSL child's ten moment seeds
+    # (qh0/qndrop0/...) and an offline P3 child's rime seeds (qir0/qib0)
+    # would have started the first substep at zero while the current
+    # fields carried the parent -- the exact twelve-of-fourteen defect the
+    # shared table's comment records for the online lane.  Every pair is
+    # None-guarded, so schemes without a field skip it, as before.
+    seed_rk_time_t_copies(state)
     update_diagnostics(state, cfg.hypsometric_opt)
     return state
 
@@ -1723,7 +1859,8 @@ def interpolate_parent_boundary_snapshot(
     with netcdf_bridge.open_dataset(path) as dataset:
         raw, moisture = _raw_parent_state(dataset, int(source_mp_physics))
         coeffs, hybrid_opt, etac, p_top = _vertical_coefficients(raw, dataset)
-    coupled, raw_device, _ = _couple_parent(raw, moisture, coeffs, backend)
+    coupled, raw_device, parent_chm = _couple_parent(
+        raw, moisture, coeffs, backend)
     registrations = {
         "": placement.registration("", wrapper="bdy"),
         "x": placement.registration("x", wrapper="bdy"),
@@ -1734,8 +1871,20 @@ def interpolate_parent_boundary_snapshot(
         name: sint(value, registrations[stagger.get(name, "")])
         for name, value in coupled.items()
     }
+    # Same fix-up as the initial state, on the COUPLED moments.  Coupling
+    # scales the field and its own peak by the same chm, so the relative
+    # tolerance carries over untouched, but the ABSOLUTE floor is in the
+    # field's units and has to be carried across with it -- hence
+    # floor_scale.  The parent's chm is the right scale for it: it differs
+    # from the child's by interpolation, and this is an order-of-magnitude
+    # floor, not a precision instrument.  The boundary strip feeds the
+    # relaxation zone, so an artefact left here walks into the child's
+    # interior on the first blend.
+    boundary_clamp = clamp_sint_undershoot_mapping(
+        interpolated, floor_scale=float(abs(parent_chm).max()))
     conversion_receipt = None
     if target_mp != int(source_mp_physics):
+        _refuse_unbuilt_p3_offline_edge(int(source_mp_physics), target_mp)
         if (target_mp in _CROSS_SCHEME_REFUSED_MP_PHYSICS
                 or int(source_mp_physics)
                 in _CROSS_SCHEME_REFUSED_MP_PHYSICS):
@@ -1786,6 +1935,7 @@ def interpolate_parent_boundary_snapshot(
             None if physics_binding is None else dict(physics_binding.receipt())),
         "target_mp_physics": target_mp,
         "backend": backend,
+        "positive_definite_clamp": boundary_clamp,
         "hybrid_opt": hybrid_opt,
         "etac": etac,
         "p_top": p_top,

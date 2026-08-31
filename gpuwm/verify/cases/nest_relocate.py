@@ -159,7 +159,7 @@ def rk_seed_consistency(state) -> dict[str, object]:
     """After a move, every RK time-t copy must equal its current field.
 
     NOT "must equal what it was before the move".  The ``*0`` arrays are
-    per-step scratch: ``gpuwm/core/dycore.py:2230-2238`` rewrites every one
+    per-step scratch: ``gpuwm/core/dycore.py:2446-2453`` rewrites every one
     of them from its current field at the top of ``step()``, before
     anything reads them, which is also why the restart-serialised contract
     excludes them and why a checkpoint does not carry them.  Their
@@ -184,7 +184,7 @@ def rk_seed_consistency(state) -> dict[str, object]:
     return {
         "note": ("RK time-t copies equal their current field, per WRF "
                  "start_domain; the pre-move value is per-step scratch "
-                 "(dycore.py:2230-2238 rewrites it) and is not preserved"),
+                 "(dycore.py:2446-2453 rewrites it) and is not preserved"),
         "fields": fields,
         "compared_fields": len(fields),
         "pass": bool(fields and all(item["bit_mismatches"] == 0

@@ -678,6 +678,22 @@ class RunConfig:
     # what an idealized case or a reproduction of a pre-lane/wif-default run
     # wants.  Inert under every other mp_physics.
     mp28_aerosol_source: str = "auto"
+    #: mp_physics=50 (P3): which P3 implementation integrates the column.
+    #: ``"cuda"`` is the DEFAULT and is the shipping path -- the device
+    #: kernels in gpuwm/core/kernels/p3.cu, launched one step at a time
+    #: (``"cuda"`` is the unfused reference arm; ``"fused"`` is the
+    #: three-launch composition proven byte-identical to it on all twelve
+    #: p3-fortref fixtures).  ``"reference"`` selects the CPU float32
+    #: transcription in gpuwm/core/p3.py, which exists so every device
+    #: result stays checkable and so the scheme runs where there is no
+    #: CuPy; it is orders slower and is not a production selection.
+    #:
+    #: SCHEME-SCOPED (gpuwm.core.model.SCHEME_SCOPED_RUN_FIELDS[50]) with an
+    #: off-scheme refusal below, in this same commit, for the reason the
+    #: mp=28 pair records: an unscoped RunConfig field moves EVERY
+    #: experiment fingerprint and makes every existing checkpoint refuse to
+    #: resume, for a field the run never reads.
+    p3_backend: str = "cuda"
 
 
 #: The Noah-MP option identity gpuwm admits, field -> the only accepted
@@ -1274,6 +1290,12 @@ MP28_AEROSOL_SYNTHETIC_FALLBACK = (
     "$GPUWM_WIF_CLIMATOLOGY_ROOT to WRF's QNWFA_QNIFA_SIGMA_MONTHLY.dat, or "
     "run from a directory holding it, to take the default path."
 )
+
+#: The three values of :attr:`RunConfig.p3_backend`.  "cuda" and "fused"
+#: are the same device kernels composed into nine launches and three; they
+#: are byte-identical on every p3-fortref fixture (evidence/
+#: p3-cuda-20260829).  "reference" is the CPU float32 transcription.
+P3_BACKENDS = ("cuda", "fused", "reference")
 
 #: The three values of :attr:`RunConfig.mp28_aerosol_source`.
 #:
@@ -3050,6 +3072,30 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
                     "gpuwm refuses a stray value instead of silently "
                     "dropping it."
                 )
+    if cfg.p3_backend not in P3_BACKENDS:
+        raise ValueError(
+            f"p3_backend={cfg.p3_backend!r} is not one of "
+            f"{sorted(P3_BACKENDS)}: 'cuda' is the shipping device arm "
+            "(gpuwm/core/kernels/p3.cu, one kernel per step of the "
+            "authority), 'fused' is the three-launch composition proven "
+            "byte-identical to it, and 'reference' is the CPU float32 "
+            "transcription kept for verification.  A fourth arm has to be "
+            "byte-compared against 'cuda' before it can be named here.")
+    if cfg.mp_physics != 50 and cfg.p3_backend != "cuda":
+        # The P3 backend selector is scheme-scoped
+        # (gpuwm.core.model.SCHEME_SCOPED_RUN_FIELDS), and this refusal is
+        # what makes that scoping provably lossless: under any other scheme
+        # it can hold ONLY its default, so dropping it from the restart
+        # identity discards no information.  The concrete breakage it
+        # prevents is the one the mp=28 aerosol pair caused for real at the
+        # 2.5.8 integration -- an unscoped field moved every experiment
+        # fingerprint, so every existing checkpoint would have refused to
+        # resume for a knob only P3 reads.
+        raise ValueError(
+            f"p3_backend={cfg.p3_backend!r} selects the P3 implementation "
+            f"and requires mp_physics=50 (got mp_physics={cfg.mp_physics}); "
+            "no other scheme reads it, and gpuwm refuses a stray value "
+            "instead of silently dropping it.")
     if cfg.no_mp_heating not in (0, 1):
         raise ValueError(
             "no_mp_heating must be 0 (microphysics latent heating on, the "

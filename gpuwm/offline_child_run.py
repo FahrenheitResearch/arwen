@@ -67,12 +67,16 @@ _CAPABILITIES = {
     # refused by name (gpuwm/offline_child.py::
     # _CROSS_SCHEME_REFUSED_MP_PHYSICS), matching the online nest lane's
     # refusal in gpuwm/core/microphysics_transition.py.
+    # 50 (P3) is same-scheme only on the same terms: the lane reads its
+    # whole transported set (qv,qc,qr,qi + ni/nr + the rime pair qir/qib,
+    # Registry.EM_COMMON:3038), and every cross-scheme edge touching 50 is
+    # refused by the same derived set.
     # 16 (WDM6) is absent from BOTH lists and from OFFLINE_CHILD_MP_PHYSICS:
     # this runner cannot read a WDM6 parent at all, because nn and NSSL's
     # qnn share the QNCCN wrfout name and the field map has no
     # scheme-qualified row.  It is cross-refused as well, so the mirror with
     # the online lane stays exact.
-    "same_scheme_mp_physics": [6, 8, 10, 18, 28],
+    "same_scheme_mp_physics": [6, 8, 10, 18, 28, 50],
     "cross_scheme_transitions": [],
     "vertical_remapping": False,
     "terrain_policy": "sint-parent-inherited",
@@ -580,6 +584,16 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         backend=args.preprocess_backend,
         spec_bdy_width=cfg.spec_bdy_width,
         spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
+    # A float32 SINT of a number moment can round across zero.  When it
+    # does, say so with the numbers: the cells touched, the tolerance and
+    # the most negative value are what tell a reader whether they watched
+    # rounding get cleaned up or an interpolation start to go wrong.  An
+    # empty account emits nothing, so silence here means it landed clean.
+    initial_clamp = initial.receipt.get("positive_definite_clamp") or {}
+    if initial_clamp:
+        _log("initial_positive_definite_clamp",
+             fields={name: dict(account)
+                     for name, account in initial_clamp.items()})
     child = build_offline_child_domain_state(initial, cfg)
     attach_streaming_lateral_boundaries(child, prepared.boundaries)
     # Davies clock bind (production semantics): boundary consumers take

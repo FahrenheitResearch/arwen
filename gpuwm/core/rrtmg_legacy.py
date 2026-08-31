@@ -217,10 +217,19 @@ def _t8w_columns(t3d, z_at_w, fnm, fnp):
 # VRAM pricing (model preflight + the wiring honesty gate).
 # ---------------------------------------------------------------------------
 
-#: WRF v4.6.1 use_mp_re scheme table (module_physics_init.F:985-1024):
-#: which mp schemes hand their effective radii to RRTMG (has_req* = 1).
+#: WRF v4.6.1 use_mp_re scheme table, FIRST BLOCK: the
+#: ``module_physics_init.F:988-1024`` disjunction, which sets
+#: ``has_reqc = has_reqi = has_reqs = 1`` together for every scheme it
+#: names -- which mp schemes hand their effective radii to RRTMG.
 #: Keyed by mp_physics for every scheme gpuwm can select; None-lookup
-#: fails closed in __call__.  Morrison (10) is deliberately False --
+#: fails closed in __call__.
+#:
+#: THIS DICT IS HALF THE ANSWER.  WRF's SECOND block (:1027-1033) then
+#: re-zeroes ``has_reqs`` for the P3 family and Jensen-Ishmael, so the
+#: has_req triple is NOT uniform for every scheme and cannot be spelled
+#: as one boolean.  That block is :data:`_MP_SNOW_RADII_SUPPRESSED`;
+#: read the two together through :func:`legacy_scheme_has_req`, which is
+#: what the adapter calls.  Morrison (10) is deliberately False --
 #: WRF does NOT couple Morrison radii to RRTMG (its EFFI bound of
 #: 525 um would trip cldprmc's [5,140] fatal); Kessler (1) and the
 #: no-microphysics case (0) have no radii.  NSSL 2-moment (18) is True
@@ -268,11 +277,41 @@ _MP_DECLARES_RADII = {
     # that keep Morrison out of this table (cldprmc's [5,140] um fatal) are
     # satisfied by construction for mp=28 exactly as they are for mp=8.
     28: True,    # Thompson aerosol-aware (THOMPSONAERO)
+    # P3 one-category.  WRF names P3_1CATEGORY in the use_mp_re
+    # disjunction (module_physics_init.F:1017, beside THOMPSON at :1005),
+    # so has_reqc = has_reqi = 1 and P3's OWN predicted radii are what
+    # radiation sees: module_microphysics_driver.F's P3_1CATEGORY arm
+    # (:1557) binds diag_effc_3d -> re_cloud and diag_effi_3d -> re_ice
+    # (:1597-1598) unconditionally, and gpuwm's adapter writes both every
+    # step in the micron convention (gpuwm/core/p3.py:1821-1825 CPU,
+    # :1979-1980 device), over the 10/25 um backgrounds
+    # gpuwm/core/state.py:494-495 seeds from module_mp_p3.F:2279-2281.
+    #
+    # has_reqs is a SEPARATE answer and is 0 -- see
+    # _MP_SNOW_RADII_SUPPRESSED below.  P3 is the first scheme in this
+    # table whose WRF triple is not uniform, which is why the value here
+    # is only the first block's flag and the adapter reads both.
+    #
+    # The ice bound that keeps Morrison out is not in play.  Under the
+    # resulting (1, 1, 0) the wrapper forces reice1d = 10 um and routes
+    # P3's ice radius into the SNOW slot, where WRF clamps it to 130 um
+    # with an area-conserving mass reduction before the optics
+    # (module_ra_rrtmg_lw.F:12519-12522), so cldprmc's [5, 140] fatal is
+    # unreachable however large P3's lookup-table effective radius grows
+    # (the shipped p3_lookupTable_1.dat-v5.4_2momI reaches 2.1e4 um).
+    50: True,    # P3 one-category (P3_1CATEGORY)
 }
 
 
 def legacy_scheme_declares_radii(mp_physics, use_mp_re):
-    """WRF v4.6.1's ``use_mp_re`` gate around its scheme table."""
+    """WRF v4.6.1's ``use_mp_re`` gate around its scheme table.
+
+    FIRST BLOCK ONLY (``module_physics_init.F:988-1024``): True means the
+    scheme is named in the disjunction, i.e. ``has_reqc = has_reqi = 1``.
+    It is NOT the has_reqs answer -- WRF's :1027-1033 override re-zeroes
+    has_reqs for the P3 family, so a caller that needs the flags the
+    wrapper actually takes must use :func:`legacy_scheme_has_req`.
+    """
     table_declares = _MP_DECLARES_RADII.get(int(mp_physics))
     if table_declares is None:
         raise NotImplementedError(
@@ -284,6 +323,50 @@ def legacy_scheme_declares_radii(mp_physics, use_mp_re):
     if value not in (0, 1):
         raise ValueError(f"use_mp_re must be 0 or 1, got {use_mp_re!r}")
     return bool(value) and table_declares
+
+
+#: WRF v4.6.1 use_mp_re scheme table, SECOND BLOCK: the P3 /
+#: Jensen-Ishmael override at ``module_physics_init.F:1027-1033``, which
+#: re-zeroes ``has_reqs`` AFTER the first block set all three flags to 1.
+#: These are the schemes whose ice is ONE category with no separate snow
+#: species, so there is no snow radius for them to declare: the mp=50
+#: package is ``moist:qv,qc,qr,qi`` with ``state:re_cloud,re_ice`` and no
+#: qs and no re_snow (``Registry/Registry.EM_COMMON:3038``).
+#:
+#: The resulting ``(has_reqc, has_reqi, has_reqs) = (1, 1, 0)`` is not a
+#: degenerate corner: it is the SOLE trigger of the wrapper's "special
+#: case for P3 microphysics" (``module_ra_rrtmg_lw.F:12250-12261``,
+#: ``module_ra_rrtmg_sw.F:10853``), which moves the single ice category
+#: into the SNOW optics slot -- resnow1d = MAX(10., re_ice*1e6),
+#: QS1D = raw QI3D, QI1D = 0, reice1d = 10 -- and which this port already
+#: carries at ``gpuwm/core/rrtmg_legacy_prep.py:464-471`` (and its device
+#: twin at :1322-1329).  Until mp=50 entered the table above, no adapter
+#: state could produce that triple and the transcribed branch was
+#: unreachable.
+#:
+#: Of WRF's P3/Jensen-Ishmael family only mp=50 is selectable here:
+#: mp=51 and mp=52 are refused by name in
+#: ``gpuwm.config._P3_UNPORTED_VARIANTS`` and Jensen-Ishmael (mp=55) is
+#: outside ``gpuwm.config.MP_PHYSICS_ACCEPTED`` entirely.
+_MP_SNOW_RADII_SUPPRESSED = frozenset((50,))
+
+
+def legacy_scheme_has_req(mp_physics, use_mp_re):
+    """WRF's ``(has_reqc, has_reqi, has_reqs)`` triple, both blocks.
+
+    Read in WRF's own order (``module_physics_init.F:987-1033``): the
+    flags start at 0, the :988-1024 disjunction sets all three to 1 for
+    the schemes :data:`_MP_DECLARES_RADII` names, then the :1027-1033
+    override re-zeroes has_reqs for the schemes in
+    :data:`_MP_SNOW_RADII_SUPPRESSED`.  The triple is what the wrapper
+    branches on, and it is not uniform for every scheme -- P3 (mp=50) is
+    ``(1, 1, 0)`` -- so the adapter asks for the triple and never for one
+    boolean.
+    """
+    declares = legacy_scheme_declares_radii(mp_physics, use_mp_re)
+    flag = int(bool(declares))
+    has_reqs = 0 if int(mp_physics) in _MP_SNOW_RADII_SUPPRESSED else flag
+    return flag, flag, has_reqs
 
 #: WRF Registry ``F_QI``/``F_QS`` membership: the schemes whose package
 #: declaration carries ``qi`` and ``qs`` in ``moist``, which is what
@@ -300,13 +383,98 @@ def legacy_scheme_declares_radii(mp_physics, use_mp_re):
 #: 16 (WDM6) is a member on the same reading: ``package wdm6scheme`` at
 #: ``Registry/Registry.EM_COMMON:3031`` gives it
 #: ``moist:qv,qc,qr,qi,qs,qg``.
+#:
+#: This set answers ``F_QI AND F_QS``; it is NOT "does the scheme have
+#: ice".  A scheme carrying ice with NO snow species belongs in
+#: :data:`_LEGACY_ICE_ONLY_MICROPHYSICS` below instead -- adding it here
+#: would assert a ``qs`` its Registry package never declares.  Resolve the
+#: pair through :func:`legacy_cloud_fraction_flags`, never by reading one
+#: boolean into both flags.
 _LEGACY_ICE_ACTIVE_MICROPHYSICS = frozenset((6, 8, 9, 10, 16, 18, 28))
+
+#: WRF Registry ``F_QI and not F_QS``: schemes whose package carries ``qi``
+#: in ``moist`` and no ``qs`` at all.  P3 one-category (mp=50) is the
+#: member.  ``Registry/Registry.EM_COMMON:3038`` declares ``package
+#: p3_1category mp_physics==50 - moist:qv,qc,qr,qi;scalar:qni,qnr,qir,qib;
+#: state:re_cloud,re_ice,...`` -- there is a ``qi``, there is no ``qs`` and
+#: no ``qg``, because P3 carries ONE ice category and predicts rime mass
+#: and rime volume (``qir``/``qib``) instead of splitting snow from
+#: graupel.  ``gpuwm/core/state.py`` allocates exactly that inventory and
+#: no ``qs``.
+#:
+#: mp=50's ABSENCE from :data:`_LEGACY_ICE_ACTIVE_MICROPHYSICS` is a
+#: decision, not an omission: admitting it there would hand
+#: ``cal_cldfra1`` ``F_QS = true`` for a scheme with no snow species.  WRF
+#: does not fuse the two flags either -- ``phys/module_radiation_driver.F:
+#: 3879-3887`` gives this case its own arm, commented "for P3, mp option
+#: 50 or 51", with ``QCLD = QI + QC`` and ``weight = QI/QCLD``, distinct
+#: from the ``F_QI .and. F_QC .and. F_QS`` arm at :3870-3877.
+#:
+#: mp=51 (``p3_1category_nc``, Registry.EM_COMMON:3039) is the same WRF
+#: arm and is deliberately NOT listed: ``gpuwm/config.py`` does not accept
+#: 51, so it is refused by name at admission rather than half-answered
+#: here.
+_LEGACY_ICE_ONLY_MICROPHYSICS = frozenset((50,))
+
+#: WRF Registry ``not F_QI and not F_QS``: no frozen species in the package
+#: at all -- ``passiveqv`` (mp=0, Registry.EM_COMMON:3014, ``moist:qv``)
+#: and ``kesslerscheme`` (mp=1, :3015, ``moist:qv,qc,qr``).  These take
+#: ``cal_cldfra1``'s qc-only arm with its 273.15 K phase threshold
+#: (module_radiation_driver.F:3891-3899).
+_LEGACY_NO_ICE_MICROPHYSICS = frozenset((0, 1))
 
 
 def legacy_ice_active(mp_physics: int) -> bool:
-    """WRF Registry ``F_QI``/``F_QS`` membership for ``cal_cldfra1``."""
+    """WRF Registry ``F_QI`` **and** ``F_QS`` membership for ``cal_cldfra1``.
+
+    True only where the Registry package declares BOTH species.  It is not
+    the answer to "is ice active": P3 (mp=50) has ice and no snow and is
+    False here on purpose.  Anything wiring ``cal_cldfra1`` must call
+    :func:`legacy_cloud_fraction_flags` instead.
+    """
 
     return int(mp_physics) in _LEGACY_ICE_ACTIVE_MICROPHYSICS
+
+
+def legacy_cloud_fraction_flags(mp_physics: int) -> tuple[bool, bool]:
+    """``cal_cldfra1``'s ``(F_QI, F_QS)`` pair for one selector.
+
+    WRF hands the radiation driver the Registry ``qi`` and ``qs`` package
+    flags SEPARATELY: ``module_radiation_driver.F:3867`` tests all three of
+    F_QI/F_QC/F_QS for presence, then :3870, :3880 and :3890 branch on
+    their VALUES, and the three arms are different physics --
+    ``QCLD = QI+QC+QS`` weighted ``(QI+QS)/QCLD``, ``QCLD = QI+QC``
+    weighted ``QI/QCLD``, and ``QCLD = QC`` weighted by the freezing point.
+    Reading ONE boolean into both flags can only reach the first and the
+    third, and it silently gives the third -- a temperature-thresholded
+    LIQUID cloud fraction -- to any scheme with ice but no snow.
+
+    MEASURED on this tree for mp=50 before the split: a 258 K / 60 kPa
+    column carrying 3e-5 kg/kg of P3 ice and no cloud water returned
+    CLDFRA 0.0 (clear sky) where WRF's own P3 arm returns 1.0 (overcast).
+
+    FAILS CLOSED.  Every selector ``gpuwm/config.py`` accepts has a row in
+    one of the three sets; an unmapped one raises instead of inheriting
+    Kessler's ice-free arm.
+    """
+
+    selector = int(mp_physics)
+    if selector in _LEGACY_ICE_ACTIVE_MICROPHYSICS:
+        return (True, True)
+    if selector in _LEGACY_ICE_ONLY_MICROPHYSICS:
+        return (True, False)
+    if selector in _LEGACY_NO_ICE_MICROPHYSICS:
+        return (False, False)
+    raise NotImplementedError(
+        f"mp_physics={selector} has no F_QI/F_QS row in the legacy RRTMG "
+        "adapter's Registry membership tables, so cal_cldfra1's arm is "
+        "undecided; read the scheme's ``package`` line in "
+        "Registry/Registry.EM_COMMON and add the selector to "
+        "_LEGACY_ICE_ACTIVE_MICROPHYSICS (moist carries qi and qs), "
+        "_LEGACY_ICE_ONLY_MICROPHYSICS (qi, no qs) or "
+        "_LEGACY_NO_ICE_MICROPHYSICS (neither) rather than letting it "
+        "default to the qc-only arm, which radiates an ice cloud as clear "
+        "sky")
 
 
 def legacy_radius_meters(effective_radius_microns):
@@ -877,7 +1045,10 @@ class RRTMGLegacyRadiation:
 
         mp_physics = int(getattr(cfg, "mp_physics", 0))
         warm_rain = mp_physics == 1
-        ice_active = legacy_ice_active(mp_physics)
+        # cal_cldfra1's two Registry package flags, resolved SEPARATELY.
+        # One fused boolean cannot express P3's F_QI=true/F_QS=false, and
+        # collapsing it sent mp=50 to the qc-only arm.
+        f_qi, f_qs = legacy_cloud_fraction_flags(mp_physics)
         sf_surface_physics = int(getattr(cfg, "sf_surface_physics", 2))
 
         # ---- host column packing (pure data movement) -----------------
@@ -902,7 +1073,7 @@ class RRTMGLegacyRadiation:
 
         # ---- radii: MICRON state contract -> meters for the wrapper ---
         # has_req* follows WRF v4.6.1's SCHEME TABLE, not field presence
-        # (module_physics_init.F:985-1024, gated on use_mp_re=1, the
+        # (module_physics_init.F:987-1033, gated on use_mp_re=1, the
         # Registry default and the campaign setting): Thompson, NSSL
         # 2-moment, the WSM/WDM families, and P3 declare radii; MORRISON
         # DOES NOT -- WRF's Morrison+RRTMG runs has_req*=0 with the
@@ -911,13 +1082,21 @@ class RRTMGLegacyRadiation:
         # reach cldprmc's [5,140] wrf_error_fatal.  Presence-based
         # detection reproduced exactly that fatal on a real Morrison
         # forecast (integration finding, 2026-07-27).
-        scheme_declares = legacy_scheme_declares_radii(
+        #
+        # The three flags are read PER FIELD because WRF's answer is not
+        # uniform: its :1027-1033 override re-zeroes has_reqs for P3, so
+        # mp=50 is (1, 1, 0) -- cloud and ice radii taken from the scheme,
+        # no snow radius asked for and none allocated on P3 state.  A
+        # single boolean here would have to either invent a P3 snow radius
+        # or throw away the two radii P3 does predict.
+        has_reqc, has_reqi, has_reqs = legacy_scheme_has_req(
             mp_physics, getattr(cfg, "use_mp_re", 1))
         radii = {}
         has_req = {}
-        for name, key, q in (("effc", "re_cloud", "qc"),
-                             ("effi", "re_ice", "qi"),
-                             ("effs", "re_snow", "qs")):
+        for name, key, q, scheme_declares in (
+                ("effc", "re_cloud", "qc", has_reqc),
+                ("effi", "re_ice", "qi", has_reqi),
+                ("effs", "re_snow", "qs", has_reqs)):
             value = getattr(state, name, None)
             if not scheme_declares:
                 # WRF semantics: the wrapper never reads scheme radii
@@ -953,7 +1132,7 @@ class RRTMGLegacyRadiation:
             cp.asarray(moist["qv"]), cp.asarray(moist["qc"]),
             cp.asarray(moist["qi"]), cp.asarray(moist["qs"]),
             cp.asarray(t3d), cp.asarray(p3d),
-            f_qc=True, f_qi=ice_active, f_qs=ice_active))
+            f_qc=True, f_qi=f_qi, f_qs=f_qs))
         active_bl = mynn_bl_cloud_active(
             getattr(cfg, "bl_pbl_physics", 0), getattr(cfg, "icloud_bl", 0))
         if active_bl:

@@ -35,7 +35,7 @@ declared one.
 | WDM6 | 16 | implemented-unverified | no oracle comparison has been run; column smoke only. WDM5 (14) and WDM7 (26) refused by name |
 | NSSL 2-moment | 18 | validation-candidate (its default variant) / implemented-unverified (other variants) | full CUDA port with fused-process oracles and a ratified 500 m comparison; explicitly not the default |
 | Thompson aerosol-aware | 28 | implemented-unverified | 22 WRF column fixtures, 23 quantities each, flat 2.0e-6 relative and 2.0e-4 dB gate: 17 clear the flat gate, 4 miss it field by field, 1 clears only under a named allowance. The registry's summary row still says "two named allowances"; the allowance table below it records two of the three retired, leaving one [docs/public/PHYSICS.md:186, 396-414; tests/test_thompson_aerosol_adapter.py] |
-| P3 one-category | 50 | implemented-unverified | no oracle has been run; column smoke only; CPU-only, no CUDA mirror |
+| P3 one-category | 50 | implemented-unverified | twelve-fixture oracle vs unmodified WRF `module_mp_p3.F` (v4.5.2, -O0 -ffp-contract=off): 4/12 bit-identical, five more within 2-7 ULP, F12 at 829 ULP; the two long mixed-phase cases bifurcate after the first steps, a measured property of the system, not the port; runs on the card by default (`p3_backend` = cuda/fused/reference, device arms byte-identical to each other); open: a 1-6 ULP CUDA-specific `qib` residual and F09; no matched WRF forecast run, no obs comparison |
 
 P3 facts a modeller needs: an mp=50 run has no `QSNOW`, no `QGRAUP`, and no
 `GRAUPELNC` accumulator; they are not zero, they do not exist. Its inventory is

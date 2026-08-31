@@ -12,7 +12,7 @@ import os
 
 import ast
 import re
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -718,10 +718,20 @@ def test_run_experiment_threads_experiment_timing_authority(
     authoritative = replace(
         exp, run_seconds=3600.0, restart_interval_s=0.0,
         domains=(authoritative_domain,))
-    prepared = object()
     captured = {}
     from types import SimpleNamespace
     from gpuwm.ingest import preflight
+
+    # The [tiles] single-domain arm (df5cf42d0) reads prepared.cfg for the
+    # streaming decision and prepared.initial_result.state for the stepper
+    # seam, so a bare object() no longer survives run_experiment.  With
+    # [tiles] unconfigured the decision short-circuits off and make_stepper
+    # returns dycore.step without touching the state, so sentinels are the
+    # real shape here.
+    prepared = SimpleNamespace(
+        cfg=compatibility_copy,
+        initial_result=SimpleNamespace(state=object(),
+                                       initial_perturbation=None))
 
     catalog = SimpleNamespace(
         valid_times=(authoritative.start_time,
@@ -741,15 +751,25 @@ def test_run_experiment_threads_experiment_timing_authority(
 
     # The stub stands in for integrate_prepared_case, so it returns what that
     # function returns: a summary the capsule emission on the exit can read.
-    summary = SimpleNamespace(wrfout_paths=(), trajectory_digest=None)
+    # A DATACLASS since the finalization landing (9eeed9edd): the one-domain
+    # route now hashes its frames and returns replace(summary,
+    # frame_records=...), so the stub must be replace()-able and the result
+    # is a copy carrying the records, not the stub itself.
+    @dataclass(frozen=True)
+    class _StubSummary:
+        wrfout_paths: tuple = ()
+        trajectory_digest: object = None
+        frame_records: tuple | None = None
+
+    summary = _StubSummary()
 
     def integrate(*args, **kwargs):
         captured.update(kwargs)
         return summary
 
     monkeypatch.setattr(runtime, "integrate_prepared_case", integrate)
-    assert runtime.run_experiment(
-        authoritative, data, tmp_path / "out") is summary
+    result = runtime.run_experiment(authoritative, data, tmp_path / "out")
+    assert result == replace(summary, frame_records=())
     assert captured["run_seconds"] == authoritative.run_seconds
     assert (captured["history_interval_s"]
             == authoritative_domain.history_interval_s)
@@ -793,8 +813,12 @@ def test_cli_experiment_commands_route_through_runtime(
     exp_sentinel = SimpleNamespace(name="stub")
     data_sentinel = SimpleNamespace()
     calls = []
-    monkeypatch.setattr(case_data_module, "load_experiment_case",
-                        lambda path: (exp_sentinel, data_sentinel))
+    # `require_met_inputs` joined the loader when `static` stopped gating
+    # terrain builds on undownloaded met bytes (d8f79caac, the 2.3.3
+    # documented-install fix); the stub accepts it as the real loader does.
+    monkeypatch.setattr(
+        case_data_module, "load_experiment_case",
+        lambda path, require_met_inputs=True: (exp_sentinel, data_sentinel))
     monkeypatch.setattr(
         runtime, "write_static",
         lambda exp, data, output: calls.append(("static", exp, data))

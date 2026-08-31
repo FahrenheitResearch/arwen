@@ -111,7 +111,22 @@ _ADMITTED_RADIATION_PAIRS = frozenset({(0, 1), (4, 4)})
 #: mature".  Maturity and reachability are the registry's answer, and mp=28
 #: is registered as a per-domain component override with no template, so
 #: adding it here cannot make it a default anywhere.
-_SUPPORTED_MICROPHYSICS = frozenset({1, 6, 8, 10, 16, 18, 28})
+#:
+#: 50 (P3) is admitted on the same footing as every other entry.  Its
+#: former exclusion stood on two legs and both are gone: the ingest
+#: hydrometeor gap is fixed (``HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE``
+#: retains QC/QR/QI for the one-ice-category package and the number
+#: moments and rime pair start at the allocator's defined FP32 zero,
+#: gpuwm/ingest/real.py), and the rime-pair mixed-edge closure is
+#: ratified in microphysics_transition, so a P3 domain sits under or over
+#: any ported partner.  The "six-species output" worry recorded beside
+#: them was never a breakage: gpuwm/io/wrfout.py's history rows are
+#: presence-guarded and carry QIR/QIB, so a P3 run's wrfout omits
+#: QSNOW/QGRAUP exactly as stock WRF's Registry does.  Defined,
+#: documented, unit-tested is the admission bar
+#: (tests/test_hrrr_hierarchy_direct.py drives the mp=50 rows through
+#: the same plan legs every other scheme takes).
+_SUPPORTED_MICROPHYSICS = frozenset({1, 6, 8, 10, 16, 18, 28, 50})
 _DOMAIN_PREPARATION_OVERRIDES = frozenset({
     "cu_physics", "cudt_minutes", "radt", "radt_minutes", "bldt",
     "diff_6th_factor", "epssm", "spec_exp", "mp_physics", "moist",

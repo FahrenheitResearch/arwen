@@ -309,6 +309,7 @@ fn main() {
                     ),
                     request: "measurement fixture, not a production emission".to_string(),
                     receipt_json: "{}".to_string(),
+                    static_coordinates: None,
                 },
                 true,
             )
@@ -399,6 +400,7 @@ fn main() {
                             spec_json: text.clone(),
                             request: "hierarchy probe arm".to_string(),
                             receipt_json: "{}".to_string(),
+                            static_coordinates: None,
                         },
                         true,
                     )

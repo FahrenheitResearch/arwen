@@ -10,6 +10,8 @@ from gpuwm.vertical_contract import (
     validate_explicit_eta_grid,
 )
 from gpuwm.wrf_physics_inventory import (
+    WRF_RESOLVED_UNITS_NUMBER_PAREN,
+    WRF_RESOLVED_UNITS_NUMBER_PLAIN,
     WRFINPUT_2D_DIMS,
     WRFINPUT_3D_DIMS,
     stock_wrf_physics_inventory,
@@ -342,7 +344,10 @@ def test_mp28_is_reachable_through_every_inventory_front_door():
     "unsupported microphysics" for a runtime that implements the scheme.
     """
     assert 28 in supported_stock_wrf_mp_physics()
-    assert supported_stock_wrf_mp_physics() == (6, 8, 10, 18, 28)
+    # 50 joined this tuple with the P3 front-door landing on top of the
+    # mp=50 CUDA merge `b47a400a5`; the pin is extended rather than relaxed,
+    # and the P3 row has its own exact-content gates below.
+    assert supported_stock_wrf_mp_physics() == (6, 8, 10, 18, 28, 50)
 
     report = stock_wrf_physics_inventory(28).as_report()
     assert report["schema"] == "rw-wps.stock-wrf-physics-inventory.v1"
@@ -356,3 +361,142 @@ def test_mp28_is_reachable_through_every_inventory_front_door():
     assert [
         field["netcdf_name"] for field in report["runtime_state_not_wrfinput"]
     ] == ["RE_CLOUD", "RE_ICE", "RE_SNOW", "TAOD5503D", "TAOD5502D"]
+
+
+# ---------------------------------------------------------------------------
+# P3 (mp_physics=50).
+#
+# THE CONCRETE BREAKAGE THESE GATES PREVENT, measured 2026-08-29 before the
+# row existed: a bare default real-data preparation of an mp=50 configuration
+# DIED.  `rw-wps --source gfs` reached
+# `gpuwm/native_hierarchy.py:175` with `stock_wrf_export="required"` (the
+# default), `stock_wrf_physics_inventory(50)` raised "not declared; currently
+# evidenced from WRF v4.6.1: 6, 8, 10, 18, 28", and no `prepared/` tree was
+# written at all -- so mp=50 could integrate on the card and could not be
+# initialized from any real atmosphere.  Every number below is transcribed
+# from WRF v4.6.1 `Registry/Registry.EM_COMMON`
+# (sha256 6a932580fc5077486eb142171120f47de8de0c9401beeb4350369a5358053919).
+
+P3_WRFINPUT_FIELDS = (
+    "QVAPOR", "QCLOUD", "QRAIN", "QICE", "QNICE", "QNRAIN", "QIR", "QIB",
+)
+
+
+def test_p3_inventory_is_the_p3_1category_package():
+    """:3038 verbatim, moist and scalar halves both."""
+
+    inventory = stock_wrf_physics_inventory(50)
+    assert inventory.mp_physics == 50
+    assert inventory.registry_package == "p3_1category"
+    assert inventory.scheme == "P3 one-category two-moment ice"
+    assert inventory.registry_authority == "WRF-v4.6.1 Registry/Registry.EM_COMMON"
+    assert tuple(
+        field.netcdf_name for field in inventory.wrfinput_fields
+    ) == P3_WRFINPUT_FIELDS
+
+
+def test_p3_moist_list_drops_snow_and_graupel():
+    """P3 declares FOUR moist members, not WSM6's six.
+
+    ``moist:qv,qc,qr,qi`` (:3038).  One ice category spans the
+    snow-to-graupel continuum through rime mass and rime volume, so there is
+    no qs and no qg to declare.  This is the first inventoried package that
+    is a SUBSET of the frozen WSM6 contract rather than a superset, which is
+    why `_physics_contract_bundle` had to learn to prune.
+    """
+
+    moist = tuple(
+        field.netcdf_name for field in
+        stock_wrf_physics_inventory(50).wrfinput_fields
+        if field.collection == "moist"
+    )
+    assert moist == ("QVAPOR", "QCLOUD", "QRAIN", "QICE")
+    assert "QSNOW" not in moist
+    assert "QGRAUP" not in moist
+
+
+def test_p3_state_members_are_all_runtime_and_re_snow_is_absent():
+    """None of P3's eight state members carries an input-stream flag.
+
+    re_cloud (:497) and re_ice (:498) are bare ``r``; vmi3d (:1600),
+    di3d (:1601), rhopo3d (:1602) and refl_10cm (:1596) are ``hdu``;
+    th_old (:1598) and qv_old (:1599) are ``rusd``.  RE_SNOW is absent
+    because the package does not declare it -- the same fact WRF acts on
+    when module_physics_init.F:1027-1033 sets has_reqs=0 for P3, and the
+    fact `gpuwm.config.validate_p3_radiation` cites when it refuses the
+    RTE+RRTMGP 4/4 pairing.
+    """
+
+    inventory = stock_wrf_physics_inventory(50)
+    runtime = tuple(
+        field.netcdf_name for field in inventory.runtime_state_not_wrfinput
+    )
+    assert runtime == (
+        "RE_CLOUD", "RE_ICE", "v_ice", "d_ice", "rho_ice", "refl_10cm",
+        "TH_OLD", "QV_OLD",
+    )
+    assert "RE_SNOW" not in runtime
+    input_names = {field.netcdf_name for field in inventory.wrfinput_fields}
+    assert input_names.isdisjoint(set(runtime))
+
+
+def test_p3_units_are_wrfs_resolved_values():
+    """qni/qnr resolve the Registry ``#``; qir/qib have none to resolve."""
+
+    units = {
+        field.netcdf_name: field.units
+        for field in stock_wrf_physics_inventory(50).wrfinput_fields
+    }
+    assert units["QNICE"] == WRF_RESOLVED_UNITS_NUMBER_PLAIN == "  kg-1"
+    assert units["QNRAIN"] == WRF_RESOLVED_UNITS_NUMBER_PAREN == "  kg(-1)"
+    # Registry:555-558 spell these with no '#', so reg_parse leaves them.
+    assert units["QIR"] == "kg kg(-1)"
+    assert units["QIB"] == "m(3) kg(-1)"
+
+
+def test_p3_scalars_survive_the_direct_export_contract():
+    """No P3 scalar is silently dropped on the way to wrfinput.
+
+    `_physics_contract_bundle` extends the frozen contract only for fields
+    `_PACKAGE_FIELD_METADATA` names, and `_write_wrfinput` iterates the
+    contract.  Before QIR/QIB were named there, a P3 export wrote QNICE and
+    QNRAIN and dropped the rime mass and rime volume without a word -- two of
+    P3's four scalars, and the two that carry its ice-density prediction.
+    """
+
+    from gpuwm.wrf_direct import _load_contract, _physics_contract_bundle
+
+    bundle = _physics_contract_bundle(_load_contract(), 50)
+    names = {item["name"] for item in bundle["wrfinput"]["variables"]}
+    for field in stock_wrf_physics_inventory(50).wrfinput_fields:
+        assert field.netcdf_name in names, field.netcdf_name
+    # and the two species P3 has no state for are gone from the file
+    assert "QSNOW" not in names
+    assert "QGRAUP" not in names
+    bdy = {item["name"] for item in bundle["wrfbdy"]["variables"]}
+    assert not any(name.startswith("QSNOW_B") for name in bdy)
+    assert not any(name.startswith("QGRAUP_B") for name in bdy)
+    assert any(name.startswith("QIR_B") for name in bdy)
+    assert any(name.startswith("QIB_B") for name in bdy)
+
+
+def test_the_moist_prune_is_a_measured_no_op_for_every_pre_p3_package():
+    """Pruning must not have moved any package that shipped before P3.
+
+    Measured, not asserted from the declaration: for 6, 8, 10, 18 and 28 the
+    declared moist list covers the frozen contract's six, so the prune
+    removes nothing and those five contracts are variable-for-variable what
+    they were.
+    """
+
+    from gpuwm.wrf_direct import _load_contract, _physics_contract_bundle
+
+    base = _load_contract()
+    frozen_input = [item["name"] for item in base["wrfinput"]["variables"]]
+    frozen_bdy = [item["name"] for item in base["wrfbdy"]["variables"]]
+    for mp_physics in (6, 8, 10, 18, 28):
+        bundle = _physics_contract_bundle(base, mp_physics)
+        names = [item["name"] for item in bundle["wrfinput"]["variables"]]
+        bdy = [item["name"] for item in bundle["wrfbdy"]["variables"]]
+        assert [n for n in frozen_input if n not in names] == [], mp_physics
+        assert [n for n in frozen_bdy if n not in bdy] == [], mp_physics

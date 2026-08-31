@@ -54,8 +54,12 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     # property this test exists to hold.  Reconstructing the old assertion
     # from the new: names[-97:-2] is exactly the list this window held
     # before.
-    assert names[-1] == "mp28_aerosol_source"
-    assert names[-97:] == [
+    # RE-BASELINED AGAIN (lane/p3-cuda-port, commit 2258c85e3): 97 -> 98.
+    # ONE field was appended, ``p3_backend``, and it is last.  Same
+    # reconstruction rule: names[-98:-1] is exactly the window this
+    # assertion held before the P3 CUDA port.
+    assert names[-1] == "p3_backend"
+    assert names[-98:] == [
         "nested", "grid_id", "top_lid", "moist_cq", "morr_rimed_ice",
         "wsm6_hail_opt", "ra_lw_physics", "ra_sw_physics", "icloud",
         "swrad_scat", "wrf_rrtmg_compatibility", "num_soil_layers",
@@ -152,6 +156,20 @@ def test_new_fields_are_reviewed_defaults_appended_last():
         # cannot; every frozen case here is idealized or has no dataset, so
         # each resolves to the same synthetic profile it always did.
         "mp28_aerosol_source",
+        # Which P3 implementation integrates the column (change record:
+        # appended with the P3 CUDA port, commit 2258c85e3 on
+        # lane/p3-cuda-port).  The default "cuda" is the device arm that
+        # port makes the shipping path, and it is read only where
+        # mp_physics = 50, which NO frozen configuration selects -- every
+        # golden entry below is mp_physics 0, 1 or 10 -- so appending it
+        # moves no frozen trajectory.  It is additionally dropped from the
+        # restart identity of every run that is not P3
+        # (gpuwm.core.model.SCHEME_SCOPED_RUN_FIELDS[50]) and
+        # validate_run_config refuses a non-default value off-scheme, so
+        # it moves no fingerprint either: both frozen anchors in
+        # tests/test_water_overlay.py hash exactly as they did before this
+        # field existed, with no re-pin.
+        "p3_backend",
     ]
     # Aerosol-aware Thompson (mp_physics=28) aerosol-source selectors,
     # appended last.  Both defaults are WRF's own Registry defaults
@@ -180,6 +198,19 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     # every mp=28 real-data trajectory while this file stayed green.
     assert RunConfig.__dataclass_fields__[
         "mp28_aerosol_source"].default == "auto"
+    # The P3 implementation selector.  "cuda" is asserted here for the
+    # same reason every default above is: it is the value that makes the
+    # field inert for every frozen configuration (none selects
+    # mp_physics=50), AND it is the value the off-scheme refusal in
+    # validate_run_config pins every non-P3 run to -- so a silent change
+    # to it would both move mp=50 trajectories and make that refusal
+    # reject configurations it is supposed to admit, while this file
+    # stayed green.  The admitted set is checked beside it so a fourth
+    # arm cannot appear without a byte-comparison first
+    # (gpuwm.config.P3_BACKENDS, evidence/p3-cuda-20260829).
+    from gpuwm.config import P3_BACKENDS
+    assert RunConfig.__dataclass_fields__["p3_backend"].default == "cuda"
+    assert P3_BACKENDS == ("cuda", "fused", "reference")
 
     assert RunConfig.__dataclass_fields__["hmix_k_diag"].default is False
     # WRF v4.6.1 Registry.EM_COMMON:2889 declares moist_mix6_off .false.,

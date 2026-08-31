@@ -9,22 +9,22 @@
     "cupy.ReductionKernel",
     "cupy.cuda.compiler.compile_using_nvrtc"
   ],
-  "site_count": 66,
+  "site_count": 70,
   "site_count_by_kind": {
     "cupy.ElementwiseKernel": 3,
     "cupy.RawKernel": 1,
-    "cupy.RawModule": 47,
+    "cupy.RawModule": 50,
     "cupy.ReductionKernel": 5,
-    "cupy.cuda.compiler.compile_using_nvrtc": 10
+    "cupy.cuda.compiler.compile_using_nvrtc": 11
   },
   "site_count_by_surface": {
     "other": {
-      "cupy.RawModule": 1,
+      "cupy.RawModule": 4,
       "cupy.cuda.compiler.compile_using_nvrtc": 1
     },
     "package": {
       "cupy.ElementwiseKernel": 3,
-      "cupy.RawModule": 9,
+      "cupy.RawModule": 10,
       "cupy.ReductionKernel": 3,
       "cupy.cuda.compiler.compile_using_nvrtc": 3
     },
@@ -34,12 +34,16 @@
       "cupy.cuda.compiler.compile_using_nvrtc": 3
     },
     "tools": {
-      "cupy.RawModule": 6,
+      "cupy.RawModule": 5,
       "cupy.ReductionKernel": 2,
-      "cupy.cuda.compiler.compile_using_nvrtc": 3
+      "cupy.cuda.compiler.compile_using_nvrtc": 4
     }
   },
   "distinct_literal_option_tuples": [
+    [
+      "-std=c++14",
+      "--fmad=false"
+    ],
     [
       "-std=c++17",
       "--fmad=false"
@@ -92,6 +96,66 @@
       "options_element_expressions": null,
       "options_are_literal": false,
       "text": "mod = cp.RawModule(path=str(p)); k = mod.get_function('probe')"
+    },
+    {
+      "file": "evidence/p3-ship-20260829/receipts/gam_device.py",
+      "line": 23,
+      "column": 6,
+      "surface": "other",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": null,
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "(\"-std=c++14\", \"--fmad=false\")",
+      "options": [
+        "-std=c++14",
+        "--fmad=false"
+      ],
+      "options_element_expressions": [
+        "\"-std=c++14\"",
+        "\"--fmad=false\""
+      ],
+      "options_are_literal": true,
+      "text": "mod = cp.RawModule(code=src, options=(\"-std=c++14\", \"--fmad=false\"))"
+    },
+    {
+      "file": "evidence/p3-ship-20260829/receipts/pow_probe.py",
+      "line": 31,
+      "column": 6,
+      "surface": "other",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": null,
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "DEFAULT_OPTIONS",
+      "options": null,
+      "options_element_expressions": null,
+      "options_are_literal": false,
+      "text": "mod = cp.RawModule(code=p3_source() + src, options=DEFAULT_OPTIONS)"
+    },
+    {
+      "file": "evidence/p3-ship-20260829/receipts/probe_device_flush.py",
+      "line": 24,
+      "column": 6,
+      "surface": "other",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": null,
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "(\"-std=c++14\", \"--fmad=false\")",
+      "options": [
+        "-std=c++14",
+        "--fmad=false"
+      ],
+      "options_element_expressions": [
+        "\"-std=c++14\"",
+        "\"--fmad=false\""
+      ],
+      "options_are_literal": true,
+      "text": "mod = cp.RawModule(code=src, options=(\"-std=c++14\", \"--fmad=false\"))"
     },
     {
       "file": "gpuwm/core/dycore.py",
@@ -183,7 +247,7 @@
     },
     {
       "file": "gpuwm/core/mynn_pbl_gpu.py",
-      "line": 285,
+      "line": 289,
       "column": 11,
       "surface": "package",
       "constructor": "cp.ReductionKernel",
@@ -199,7 +263,7 @@
     },
     {
       "file": "gpuwm/core/mynn_pbl_gpu.py",
-      "line": 292,
+      "line": 296,
       "column": 11,
       "surface": "package",
       "constructor": "cp.ReductionKernel",
@@ -215,7 +279,7 @@
     },
     {
       "file": "gpuwm/core/mynn_pbl_gpu.py",
-      "line": 299,
+      "line": 303,
       "column": 11,
       "surface": "package",
       "constructor": "cp.ReductionKernel",
@@ -352,6 +416,22 @@
       "text": "module = cp.RawModule("
     },
     {
+      "file": "gpuwm/core/p3_device.py",
+      "line": 165,
+      "column": 13,
+      "surface": "package",
+      "constructor": "cp.RawModule",
+      "constructor_kind": "cupy.RawModule",
+      "enclosing": "p3_module",
+      "takes_caller_options": true,
+      "options_argument_present": true,
+      "options_expression": "options",
+      "options": null,
+      "options_element_expressions": null,
+      "options_are_literal": false,
+      "text": "module = cp.RawModule(code=code, options=options)"
+    },
+    {
       "file": "gpuwm/core/rrtmg_lw.py",
       "line": 3733,
       "column": 24,
@@ -459,7 +539,7 @@
     },
     {
       "file": "tests/test_ftz_receipt.py",
-      "line": 279,
+      "line": 284,
       "column": 13,
       "surface": "tests",
       "constructor": "cp.RawModule",
@@ -1121,11 +1201,11 @@
     },
     {
       "file": "tools/ftz_receipt/probe.py",
-      "line": 397,
-      "column": 16,
+      "line": 403,
+      "column": 26,
       "surface": "tools",
-      "constructor": "cp.RawModule",
-      "constructor_kind": "cupy.RawModule",
+      "constructor": "cc.compile_using_nvrtc",
+      "constructor_kind": "cupy.cuda.compiler.compile_using_nvrtc",
       "enclosing": "build_routes",
       "takes_caller_options": true,
       "options_argument_present": true,
@@ -1133,11 +1213,11 @@
       "options": null,
       "options_element_expressions": null,
       "options_are_literal": false,
-      "text": "r2_module = cp.RawModule(code=source, options=tuple(r2_options))"
+      "text": "r2_ptx, _r2_mapping = cc.compile_using_nvrtc("
     },
     {
       "file": "tools/ftz_receipt/probe.py",
-      "line": 421,
+      "line": 429,
       "column": 20,
       "surface": "tools",
       "constructor": "cc.compile_using_nvrtc",
@@ -1153,7 +1233,7 @@
     },
     {
       "file": "tools/ftz_receipt/probe.py",
-      "line": 473,
+      "line": 481,
       "column": 15,
       "surface": "tools",
       "constructor": "cp.ReductionKernel",
@@ -1169,7 +1249,7 @@
     },
     {
       "file": "tools/ftz_receipt/probe.py",
-      "line": 478,
+      "line": 486,
       "column": 15,
       "surface": "tools",
       "constructor": "cp.ReductionKernel",
@@ -1185,7 +1265,7 @@
     },
     {
       "file": "tools/ftz_receipt/probe.py",
-      "line": 623,
+      "line": 631,
       "column": 29,
       "surface": "tools",
       "constructor": "cc.compile_using_nvrtc",

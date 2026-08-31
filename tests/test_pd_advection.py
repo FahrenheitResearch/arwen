@@ -131,6 +131,48 @@ def test_nested_pd_lbc_is_folded_once_before_advection(monkeypatch):
     monkeypatch.setattr(moist, "launch_pd_renorm_apply",
                         lambda *_args, **_kwargs: None)
 
+    # The fused update kernel is lru_cached, so with cp mocked to numpy
+    # this test was green only when an earlier same-process test had
+    # already built the exact (msft, physics, fixed, clamp) key on the
+    # real device -- a pass that depended on shard ORDER, and the 2.6.0
+    # shard ordering went red on the cold key.  The mirror below is the
+    # kernel's own documented ufunc chain (moist.py:_update_scalar_kernel:
+    # tend*msft, +physics, +fixed, then chm0*q0 + dt*t over chm, clamped),
+    # so the fold-count claim this test makes stays measured against real
+    # arithmetic rather than against a warm cache.
+    def numpy_update_kernel(has_msf, has_physics, has_fixed, clamp):
+        def kern(*args):
+            q0, tend, c1h, c2h, mu0, mu = args[:6]
+            rest = list(args[6:])
+            msft = rest.pop(0) if has_msf else None
+            physics = rest.pop(0) if has_physics else None
+            fixed = rest.pop(0) if has_fixed else None
+            dt_eff, _ncol, q = rest
+            # The kernel takes the column fields FLAT (ny*nx,) and derives
+            # the column ordinal from its linear index; the mirror restores
+            # the (ny, nx) plane from the field shape instead.
+            ny, nx = q0.shape[1], q0.shape[2]
+            plane = lambda a: np.asarray(a, dtype=np.float32).reshape(ny, nx)
+            t = np.array(tend, dtype=np.float32, copy=True)
+            if msft is not None:
+                t *= plane(msft)[None]
+            if physics is not None:
+                t += physics
+            if fixed is not None:
+                t += fixed
+            chm0 = (c1h[:, None, None] * plane(mu0)[None]
+                    + c2h[:, None, None]).astype(np.float32)
+            chm = (c1h[:, None, None] * plane(mu)[None]
+                   + c2h[:, None, None]).astype(np.float32)
+            v = (chm0 * q0 + np.float32(dt_eff) * t) / chm
+            if clamp:
+                v = np.where(np.isnan(v), np.float32("nan"),
+                             np.maximum(v, np.float32(0.0)))
+            q[...] = v
+        return kern
+
+    monkeypatch.setattr(moist, "_update_scalar_kernel", numpy_update_kernel)
+
     state = FakeState()
     cfg = SimpleNamespace(
         nested=True, specified=False, open_x=False, open_y=False,

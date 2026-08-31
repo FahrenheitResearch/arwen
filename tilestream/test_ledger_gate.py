@@ -357,6 +357,16 @@ def test_the_two_vram_models_disagree_and_auto_answers_the_wrong_one():
       were already BELOW their free bytes before the change, so 704 and
       832 are unmoved and this is the first move to touch one card only.
       Lows are now 464/704/832.
+    * 2026-08-30, the model-top default move (fix(ptop), 48d0c43f9,
+      whose pin sweep d380a1d21 missed this file exactly as it missed
+      the two workspace equality pins in tests/test_preflight.py): the
+      chunk workspace at the priced default fell 719,650,000 ->
+      708,750,000 B -- the 12 above-model LW layers -- a size-independent
+      10,900,000 B that is 12.5 MB off the envelope at every n after the
+      1.15 allocator headroom.  A drop that small can only move an edge
+      whose rung sat within it above free, and exactly one did: the 4090
+      at n=704, so its low rose 704 -> 720 and the 5070/5090 edges are
+      unmoved.  Lows are now 464/720/832.
 
     The disagreement is therefore NARROWER again on this line, but it is
     not reconciled, and the defect stands.
@@ -373,7 +383,7 @@ def test_the_two_vram_models_disagree_and_auto_answers_the_wrong_one():
             f"no disagreement band on the {name} -- if the models were "
             "reconciled, delete this test; if the ladder changed, re-derive")
     assert bands["5070"] == (464, 512), bands
-    assert bands["4090"] == (704, 816), bands
+    assert bands["4090"] == (720, 816), bands
     assert bands["5090"] == (832, 976), bands
     return "; ".join(f"{k}: n in [{v[0]}, {v[1]}]" for k, v in bands.items())
 

@@ -3965,6 +3965,67 @@ def build(registry: dict) -> dict:
         declared.insert(
             declared.index(thompson_legacy_id) + 1, shinhong_legacy_id)
 
+    # P3 one-category, on the thompson_legacy idiom: the SAME composition
+    # with one selector moved (microphysics thompson-mp8 -> p3-mp50), so a
+    # paired run of the two isolates the scheme.  Registered because the
+    # native-HRRR doors admit mp_physics=50 now
+    # (gpuwm/hrrr_route_inputs.SUPPORTED_MICROPHYSICS derives from the
+    # ported set) and a scheme no template selects has no root
+    # preparation -- the ship-only-what-users-can-reach rule.  Legacy
+    # RRTMG is a REQUIREMENT for this scheme's 4/4 pair, not a taste:
+    # p3-mp50's own refused_when blocks the RTE+RRTMGP variant (WRF sets
+    # has_reqs=0 for P3, no snow radius exists to hand it), so this
+    # template pins ra_rrtmg_variant=rrtmg_legacy exactly as its sibling
+    # does and is the one full-radiation P3 composition the registry can
+    # admit.  moist_cq is pinned True here because the option row does
+    # not carry it (unlike thompson-mp8/nssl2-mp18): P3's four moist
+    # species feed the same device cq path, and the shipped runtime
+    # switches (gpuwm/physics_compat.py) pin the identical value --
+    # tests/test_physics_registry.py holds the two equal.
+    p3_legacy_id = "p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1"
+    p3_legacy = copy.deepcopy(thompson_legacy)
+    p3_legacy["components"]["microphysics"] = "p3-mp50"
+    p3_legacy["label"] = (
+        "P3 one-category + YSU + classic MM5 + Noah + cumulus off + "
+        "legacy RRTMG")
+    # The composition ceiling: p3-mp50 itself is implemented-unverified
+    # (measured against the unmodified P3 v4.5.2 oracle, no composed
+    # forecast receipt), so the template cannot rank above it.
+    p3_legacy["maturity"] = "implemented-unverified"
+    p3_legacy["parameters"]["moist_cq"] = True
+    p3_legacy["warnings"] = [
+        "Composition candidate: the P3 port is measured against WRF's own "
+        "Fortran oracle (see components.microphysics.options.p3-mp50) and "
+        "the legacy RRTMG engine is the certified WRF v4.6.1 port, but no "
+        "receipt covers the composed suite.  The upgrade payer is named: "
+        "the composition's first stock-WRF-paired t0/case receipt is what "
+        "moves this label.",
+        "This template differs from thompson-mp8-ysu-mm5-noah-rrtmg-"
+        "legacy-v1 in exactly ONE component, the microphysics, so the "
+        "pair is a controlled scheme comparison; every other parameter, "
+        "including the per-domain row, is transcribed from that template.",
+        "P3 has ONE ice category: this suite's history carries QIR/QIB "
+        "and no QSNOW/QGRAUP/GRAUPELNC fields, exactly as stock WRF's "
+        "mp=50 Registry package does.  REFL_10CM is not stashed for "
+        "mp=50 on the native-HRRR runner (its native-reflectivity set "
+        "does not include 50), so history frames omit it.",
+    ]
+    registry["templates"][p3_legacy_id] = p3_legacy
+    registry["components"]["microphysics"]["options"][
+        "p3-mp50"]["reachability"] = {"state": "template"}
+    # HRRR-only, on the Kessler rule: the doors that admit mp=50 are the
+    # native-HRRR routes, and no other source inherits evidence from them.
+    for route in registry["runner_routes"].values():
+        for declared in route.get("source_template_ids", {}).values():
+            if p3_legacy_id in declared:
+                declared.remove(p3_legacy_id)
+    for route_id in (
+            "tools.hrrr_single_domain_benchmark",
+            "tools.prepared_domain_tree_forecast"):
+        declared = registry["runner_routes"][route_id][
+            "source_template_ids"]["hrrr"]
+        declared.insert(declared.index(nssl2_legacy_id) + 1, p3_legacy_id)
+
     # Owner-ratified declaration: the GFS runner has always advertised this
     # profile and retains the existing Noah-MP route acknowledgement.
     gfs_route = registry["runner_routes"][
@@ -4001,11 +4062,21 @@ def build(registry: dict) -> dict:
         (9, MP9_OPTION_ID),
         (10, "morrison-mp10"),
         (18, "nssl2-mp18"),
+        # mp=50 joined when its rime-pair mixed-edge closure was ratified
+        # into microphysics_transition.PORTED_MP_PHYSICS.
+        (50, "p3-mp50"),
     )
     cross_options = []
     for parent_mp, parent_option in mp_options:
         for child_mp, child_option in mp_options:
             if parent_mp == child_mp:
+                continue
+            if 9 in (parent_mp, child_mp) and 50 in (parent_mp, child_mp):
+                # p3-mp50 pairs only with the selectors the runtime
+                # resolver's PORTED_MP_PHYSICS admits (1/6/8/10/18): a
+                # mixed edge touching mp=9 is refused at launch, and a
+                # fresh p3<->mp9 row would repeat the mp=9 rows'
+                # pre-existing over-claim rather than contain it.
                 continue
             ratified = (parent_mp, child_mp) == (8, 18)
             rule = {

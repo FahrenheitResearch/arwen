@@ -57,6 +57,16 @@ pinned value and refused otherwise (``rk_ord = 3``,
 ``momentum_adv_opt = 1``, ``swint_opt = 0``, ``use_mp_re = 1``, the
 MYNN/Noah-MP/RUC option identities, all &stoch selectors off, no FDDA
 nudging) -- never silently reinterpreted.
+
+Scheme-generation hazard (closed 2026-08-30): WRF v4.8.0 rebinds
+``cu_physics = 3`` to Grell-Freitas-Li while adding ZERO namelist options
+and changing ZERO defaults, so a v4.8.0 namelist is byte-indistinguishable
+from a v4.6.1 one at the GF option level and no importer can detect which
+generation was meant.  Every GF import therefore records
+:data:`GF_SCHEME_GENERATION_NOTICE` in the report (rendered by ``format``,
+printed by ``gpuwm import-namelist``); the one namelist spelling that DOES
+reveal spreading-generation intent, ``cugd_avedx`` != 1 beside
+``cu_physics = 3``, is a hard refusal naming the wrong-scheme breakage.
 """
 
 from __future__ import annotations
@@ -158,6 +168,9 @@ class SubstitutionReport:
     ``format`` renders the three explicit knob-parity sections --
     translated / fixed-by-ArWen / not-implemented -- plus the
     gpuwm-supplied-values footnote (the F2 never-silent last mile).
+    ``notices`` carries scheme-generation statements the namelist itself
+    cannot express (:data:`GF_SCHEME_GENERATION_NOTICE`): substitutions
+    the importer CANNOT detect and therefore must declare.
     """
 
     substitutions: tuple[Substitution, ...]
@@ -165,6 +178,7 @@ class SubstitutionReport:
     defaults_applied: tuple[AppliedDefault, ...] = ()
     fixed: tuple[FixedKey, ...] = ()
     translated: tuple[TranslatedKey, ...] = ()
+    notices: tuple[str, ...] = ()
 
     def format(self) -> str:
         lines = []
@@ -176,6 +190,10 @@ class SubstitutionReport:
                 by_section.setdefault(t.section, []).append(t.key)
             for section, keys in by_section.items():
                 lines.append(f"  &{section}: {', '.join(sorted(keys))}")
+        if self.notices:
+            lines.append("Scheme-generation notices:")
+            for notice in self.notices:
+                lines.append(f"  {notice}")
         lines.append("Physics substitutions (ratified):")
         if self.substitutions:
             for s in self.substitutions:
@@ -560,6 +578,38 @@ _SFCLAY_ALLOWED = {0, 1, 2, 5, 91}
 _SFSFC_ALLOWED = {0, 2, 3, 4}
 _CU_ALLOWED = {0, 1, 3}
 
+#: The Grell-Freitas scheme-generation notice, recorded on EVERY import
+#: that selects cu_physics = 3 and printed by ``gpuwm import-namelist``.
+#:
+#: Named breakage it prevents: a SILENT WRONG-SCHEME IMPORT.  WRF v4.8.0
+#: removed Grell-Freitas from its tree and rebound cu_physics = 3 to
+#: Grell-Freitas-Li (GFL, an external submodule adding prognostic cold
+#: pools and G3-style subsidence spreading), while introducing zero new
+#: namelist options and zero changed defaults -- clos_choice and ishallow
+#: keep identical names and identical defaults on both sides while
+#: meaning different schemes.  A v4.8.0 namelist is therefore
+#: byte-indistinguishable from a v4.6.1 one at the GF option level, so a
+#: user bringing one asks for GFL and would otherwise get v4.6.1 GF with
+#: no word said.  No refusal can close that: a refusal that cannot detect
+#: its trigger must not pretend to.  The defined behaviour is this
+#: notice, stated on every GF import rather than only on suspicion,
+#: because the suspicion is undetectable by construction.  The single
+#: namelist spelling that DOES reveal spreading-generation intent,
+#: ``cugd_avedx`` != 1 beside cu_physics = 3, is a hard refusal at its
+#: consumption site in :func:`import_namelists`.
+GF_SCHEME_GENERATION_NOTICE = (
+    "cu_physics = 3 imports as the WRF v4.6.1 Grell-Freitas scheme "
+    "(pinned dicycle = 1 Bechtold diurnal-cycle closure, MSE-launched "
+    "k22 updraft origin searched from start_k22 = 2; "
+    "gpuwm/core/kernels/gf.cu), NOT WRF v4.8.0's Grell-Freitas-Li. "
+    "v4.8.0 rebinds this same selector to GFL (prognostic cold pools, "
+    "G3-style subsidence spreading) with zero new namelist options and "
+    "zero changed defaults, so a v4.8.0-era namelist is "
+    "byte-indistinguishable at the Grell-Freitas option level and the "
+    "importer cannot detect which generation was meant.  It records "
+    "this notice on every Grell-Freitas import instead, so the "
+    "generation substitution is never silent.")
+
 
 def _port_receipt(**selection) -> str:
     """The fail-closed port receipt for an in-port selector, or ``""``."""
@@ -792,6 +842,7 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     substitutions: list[Substitution] = []
     dropped: list[DroppedKey] = []
     fixed: list[FixedKey] = []
+    notices: list[str] = []
     defaults_applied: list[AppliedDefault] = [AppliedDefault(
         key="ztop", value=20000.0,
         reason="gpuwm-only vertical scaffold height (no WRF namelist "
@@ -2221,6 +2272,64 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
              "them either")
         clos_choice = 0
         ishallow = 0
+    if any(value == 3 for value in cu):
+        # The scheme-generation declaration.  A v4.8.0 namelist selecting
+        # GFL is byte-indistinguishable from this one at the GF option
+        # level (GFL added zero namelist options and changed zero
+        # defaults), so the wrong-scheme import cannot be refused -- it is
+        # declared, once, on every GF import.
+        notices.append(GF_SCHEME_GENERATION_NOTICE)
+    # cugd_avedx -- "number of grid boxes over which subsidence is
+    # spread" (Registry.EM_COMMON:2543, integer scalar, default 1) -- is
+    # the ONE Grell-family key whose non-default value reveals a namelist
+    # written for a spreading-generation Grell scheme.  In v4.6.1 the
+    # cumulus driver hands it only to G3 (module_cumulus_driver.F:1250)
+    # and applies the spreading only under `IF (cu_physics .eq. 5)`
+    # (conv_grell_spread3d, :1628); GFDRV never receives it, and gpuwm's
+    # GF port matches GFDRV.  v4.8.0's Grell-Freitas-Li reuses
+    # cu_physics = 3 with subsidence spreading as a headline mechanism
+    # (GF_SCHEME_GENERATION_NOTICE above).  Until now the key had no
+    # import path at all and died in _Section.finish's generic
+    # "unmapped key(s)" sentence -- true, but a sentence about the
+    # importer's map rather than about the scheme generation the user
+    # actually selected.
+    cugd_avedx_values = ph.take("cugd_avedx")
+    if cugd_avedx_values is not None:
+        if any(isinstance(value, bool) or not isinstance(value, int)
+               for value in cugd_avedx_values):
+            raise _err("physics", "cugd_avedx", cugd_avedx_values,
+                       "must be an integer (WRF Registry scalar, "
+                       "Registry.EM_COMMON:2543).")
+        cugd_avedx = int(_uniform(
+            "physics", "cugd_avedx", cugd_avedx_values))
+        if any(value == 3 for value in cu):
+            if cugd_avedx != 1:
+                raise _err(
+                    "physics", "cugd_avedx", [cugd_avedx],
+                    "requests subsidence spreading over a multi-box "
+                    "neighbourhood, which no v4.6.1-generation "
+                    "Grell-Freitas implements: WRF v4.6.1's cumulus "
+                    "driver hands cugd_avedx only to G3 and spreads only "
+                    "when cu_physics = 5 (module_cumulus_driver.F:1250, "
+                    ":1628), and gpuwm's GF port matches GFDRV, which "
+                    "never receives it.  A non-default value beside "
+                    "cu_physics = 3 is the one namelist spelling that "
+                    "reveals a WRF v4.8.0-era Grell-Freitas-Li (or G3) "
+                    "configuration, and importing it as v4.6.1 GF would "
+                    "silently run convection without the requested "
+                    "mechanism.  Remove the key (or set 1, the Registry "
+                    "default) to accept the v4.6.1 Grell-Freitas scheme "
+                    "generation this importer maps.")
+            fix("physics", "cugd_avedx", cugd_avedx_values, 1,
+                "Registry default, inert under v4.6.1 Grell-Freitas: the "
+                "cumulus driver hands cugd_avedx only to G3's "
+                "conv_grell_spread3d (cu_physics = 5), never to GFDRV")
+        else:
+            drop("physics", "cugd_avedx", cugd_avedx_values,
+                 "Grell-family subsidence-spreading key with no Grell "
+                 "scheme selected (cu_physics has no 3); consumed only "
+                 "by G3 (cu_physics = 5, not implemented), and WRF's "
+                 "v4.6.1 cumulus driver would not read it either")
     radt = [float(v) for v in ph.col("radt", max_dom, 0)]
     bldt = float(_uniform("physics", "bldt", ph.col("bldt", max_dom, 0)))
     for key, reason in (
@@ -2957,5 +3066,5 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     report = SubstitutionReport(
         substitutions=tuple(substitutions), dropped=tuple(dropped),
         defaults_applied=tuple(defaults_applied), fixed=tuple(fixed),
-        translated=tuple(translated))
+        translated=tuple(translated), notices=tuple(notices))
     return text, report

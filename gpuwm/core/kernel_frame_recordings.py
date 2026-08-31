@@ -238,7 +238,14 @@ SM120_NVRTC_13_3_33 = KernelFrameRecording(
     nvrtc_build='13.3.33',
     platform_family='linux',
     measured='2026-08-20',
-    complete=True,
+    # INCOMPLETE as of 2026-08-31: mynn_scalar_mix.cu and
+    # mynn_dmp_sibling.cu (4a0bb3f69, the MYNN-EDMF qn-family mixing
+    # wave) postdate this reading, and node-1 has since moved to NVRTC
+    # 13.0.88 -- a different compile platform -- so this table cannot be
+    # extended, only re-taken as a new recording if 13.3.33 ever comes
+    # back.  A reading may not be back-filled with a value nothing
+    # measured.
+    complete=False,
     frames=MappingProxyType({
         'acoustic': 544,
         'advection': 0,
@@ -345,6 +352,8 @@ SM86_NVRTC_13_0_48 = KernelFrameRecording(
     # earlier "off limits, nobody can replace it" note was describing a
     # constraint that no longer holds.  ``gf``, ``ysu`` and ``kf`` were all
     # re-read on that card at the post-workspace source, same NVRTC.
+    # Extended 2026-08-31 with the two MYNN-EDMF modules (see their rows),
+    # so it is the one recording that covers every ``.cu`` in the tree.
     complete=True,
     frames=MappingProxyType({
         'acoustic': 544,
@@ -386,7 +395,15 @@ SM86_NVRTC_13_0_48 = KernelFrameRecording(
         'morrison': 5120,
         'myjpbl': 9232,
         'myjsfc': 0,
+        # MEASURED 2026-08-31 on this card at this NVRTC (13.0.48), the
+        # sm_86 campaign that closed the "no measurement platform in this
+        # lane" declaration the two MYNN-EDMF modules (4a0bb3f69) landed
+        # under: both compile to a 0 B frame, so neither reserves
+        # anything on any card.  node-1 (sm_120, NVRTC 13.0.88 -- a
+        # platform with no recording) read 0 B for both as well.
+        'mynn_dmp_sibling': 0,
         'mynn_pbl': 0,
+        'mynn_scalar_mix': 0,
         'mynn_surface': 0,
         'nest': 0,
         'nest_microphysics': 0,

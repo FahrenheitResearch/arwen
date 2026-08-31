@@ -921,6 +921,48 @@ mod tests {
         assert!((out[1] - 1.0 / 3.0).abs() < 1e-12, "{out:?}");
     }
 
+    /// The fail-closed policy's own arm of the exceedance count.
+    ///
+    /// Every other NMEP test here runs `Mask`, so the `Refuse` branch --
+    /// the one a forecast asks for when it wants a missing member to
+    /// stop the product rather than be worked around -- had no test at
+    /// all.  Inverting its comparison turns every exceedance probability
+    /// into its complement, and it survived the whole suite.
+    ///
+    /// The probe separates all four ways that comparison can be wrong.
+    /// Point 0 has three of four members above the threshold, so the
+    /// answer is 0.75: an inverted comparison reads 0.25 and an equality
+    /// reads 0.  Point 1 has two members sitting EXACTLY on the
+    /// threshold, so the answer is 0: `>=` reads 0.5.  The hit and vote
+    /// accumulators are unsigned, so turning either `+=` into `-=`
+    /// underflows rather than answering.
+    #[test]
+    fn exceedance_under_refuse_counts_what_is_above_the_threshold() {
+        let probe = stack(
+            1,
+            3,
+            &[
+                &[9.0, 5.0, 0.0],
+                &[9.0, 5.0, 0.0],
+                &[9.0, 0.0, 0.0],
+                &[0.0, 0.0, 0.0],
+            ],
+        );
+        let out = exceedance_probability(&probe, 5.0, 0.0, NanPolicy::Refuse).unwrap();
+        assert_eq!(out[0], 0.75, "three of four members exceed 5 here: {out:?}");
+        assert_eq!(
+            out[1], 0.0,
+            "a member sitting exactly on the threshold has not exceeded it: {out:?}"
+        );
+        assert_eq!(out[2], 0.0, "{out:?}");
+
+        // The same threshold rule under Mask, which has its own
+        // comparison a few lines down and its own way of being wrong.
+        let masked = exceedance_probability(&probe, 5.0, 0.0, NanPolicy::Mask).unwrap();
+        assert_eq!(masked[0], 0.75, "{masked:?}");
+        assert_eq!(masked[1], 0.0, "{masked:?}");
+    }
+
     #[test]
     fn the_denominator_is_the_point_roster_not_the_disc_roster() {
         let probe = stack(1, 3, &[&[0.0, f64::NAN, 0.0], &[9.0, 9.0, 0.0]]);

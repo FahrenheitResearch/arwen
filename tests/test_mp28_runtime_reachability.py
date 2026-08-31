@@ -128,37 +128,65 @@ STALE_REFL_ADMISSION = frozenset({1, 6, 8, 10, 18})
 #: admission.
 REFL_ADMISSION = frozenset({1, 6, 8, 9, 10, 16, 18, 28, 50})
 
-#: The deliberate exception.  ``PORTED_MP_PHYSICS`` names the selectors with
-#: a ported MIXED nest edge, and mp=28 has none: every one of its eleven
-#: mixed pairs is refused by name through ``UNVALIDATED_MIXED_EDGE_SELECTORS``
-#: because no cross-scheme entry closure for nc/nwfa/nifa has been measured.
-#: Listing 28 there and then refusing all its pairs would be a
-#: self-contradiction.  Pinned by
-#: ``tests/test_preflight.py`` (``assert 28 not in mt.PORTED_MP_PHYSICS``);
-#: named here so the census below cannot be "fixed" by widening it.
-#: The second entry arrived with the 1.4.1 merge, not with the port: the
-#: public HRRR hierarchy route is new since the port's base (9c9c20cf) and
-#: its gate was written when 28 did not exist.  28 stays out of it, and the
-#: reason is the port's OWN published blocker rather than staleness: mp=28
-#: has no aerosol lateral boundary condition, which is the one deviation
-#: this package records as growing without bound with run length.  The HRRR
-#: route is precisely a nested, laterally-forced, multi-hour route, so it is
-#: the worst place in the tree to admit that deviation -- and it is the one
-#: route a stranger runs from a public config.  Revisit when a QNWFA/QNIFA
-#: ingest lane exists, not before.
-DELIBERATE_STALE_SITES = {
-    ("gpuwm/core/microphysics_transition.py", "PORTED_MP_PHYSICS"),
-    ("gpuwm/hrrr_route_inputs.py", "SUPPORTED_MICROPHYSICS"),
-}
+#: The deliberate exceptions -- NONE remain.  ``PORTED_MP_PHYSICS`` names
+#: the selectors with a ported MIXED nest edge, and mp=28 has none: every
+#: one of its mixed pairs is refused by name through
+#: ``UNVALIDATED_MIXED_EDGE_SELECTORS`` because no cross-scheme entry
+#: closure for nc/nwfa/nifa has been measured.  Listing 28 there and then
+#: refusing all its pairs would be a self-contradiction.  Pinned by
+#: ``tests/test_preflight.py`` (``assert 28 not in mt.PORTED_MP_PHYSICS``).
+#: The tuple itself stopped being a census hit when mp=50's rime-pair
+#: closure was ratified and APPENDED 50 to it, so its row here retired
+#: with the mp=50 refusal.  The last surviving entry was the HRRR route's
+#: ``SUPPORTED_MICROPHYSICS``, and it retired when that door stopped
+#: being a literal at all: it is now DERIVED
+#: (``frozenset(PORTED_MP_PHYSICS) -
+#: AEROSOL_LATERAL_BC_BLOCKED_MP_PHYSICS``), so the census walk cannot
+#: see it -- and does not need to, because 28's route exclusion moved
+#: from this ledger into executable form.  The route-specific reason
+#: lives with the subtraction constant in gpuwm/hrrr_route_inputs.py (no
+#: aerosol lateral boundary condition; unbounded interior depletion on a
+#: laterally-forced multi-hour route; revisit when a QNWFA/QNIFA ingest
+#: lane exists), and
+#: ``test_the_hrrr_route_admission_is_derived_not_respelled`` below pins
+#: the derivation and the exclusion so neither can silently drift.
+DELIBERATE_STALE_SITES: set[tuple[str, str]] = set()
 
-#: Every ``mp_physics`` value ``gpuwm/config.py`` accepts (:1952).  Used to
-#: tell a microphysics scheme table apart from an arbitrary integer-keyed
-#: map -- RRTMG's band and g-point tables are keyed 1..16 and would
-#: otherwise look exactly like one.  Re-derived 2026-08-09 against the same
-#: validator line after mp=16 (WDM6) joined it; the census below is a
-#: shape-detector, so a selector missing here would make the detector blind
-#: to a dict keyed on it rather than fail.
-ACCEPTED_MP_PHYSICS = frozenset({0, 1, 6, 8, 10, 16, 18, 28})
+#: Every ``mp_physics`` value ``gpuwm/config.py`` accepts
+#: (``MP_PHYSICS_ACCEPTED``).  Used to tell a microphysics scheme table
+#: apart from an arbitrary integer-keyed map -- RRTMG's band and g-point
+#: tables are keyed 1..16 and would otherwise look exactly like one.
+#: Re-derived 2026-08-09 against the validator after mp=16 (WDM6) joined
+#: it, and again 2026-08-30 for mp=9 (Milbrandt-Yau) and mp=50 (P3), which
+#: had been accepted selectors since 1.9 while this copy stayed at the
+#: 2026-08-09 census; the census below is a shape-detector, so a selector
+#: missing here would make the detector blind to a dict keyed on it rather
+#: than fail -- any dict keying 9 or 50 flunked the subset test and was
+#: silently outside the census's domain.
+#:
+#: JUDGED at the 2026-08-30 widening -- six dicts entered the census's
+#: domain, none a 28-omission hit, and every selector gap among them was
+#: either fixed or is recorded here so the next reader finds a decision:
+#:
+#: * ``gpuwm/verify/npref.py`` ``_CQ_MASS_SPECIES_BY_MP`` omitted 9 and
+#:   16 (accepted selectors whose device cq path runs,
+#:   gpuwm/core/acoustic.py prepare_moist_cq) -- FIXED in the same lane,
+#:   rows from Registry.EM_COMMON:3025/:3031, gated by
+#:   tests/test_acoustic_npref.py.
+#: * ``gpuwm/io/restart.py`` ``MICROPHYSICS_ALGORITHM_IDENTITIES`` omits
+#:   9: an mp=9 checkpoint write refuses by name (RestartManifestError,
+#:   "cannot identify unsupported microphysics scheme 9").  Fail-loud,
+#:   not silent, and composing Milbrandt-Yau's trajectory-identity
+#:   string needs the mp=16/28/50 rows' level of scheme study --
+#:   NAMED FOLLOW-UP for the restart lane, not a census suppression.
+#: * ``gpuwm/wrf_physics_inventory.py`` ``_INVENTORIES`` omits 9 and 16
+#:   deliberately: it records EVIDENCED stock-WRF export contracts, which
+#:   exist for exactly (6, 8, 10, 18, 28, 50); the rw-wps consuming half
+#:   documents the same decision (tools/rw_wps/crates/rw-wps/src/
+#:   namelist.rs STOCK_WRF_INVENTORIED_MP_PHYSICS).
+#: * ``gpuwm/core/preflight.py`` and ``gpuwm/core/rrtmg_legacy.py`` key
+#:   all ten accepted selectors -- complete, nothing to judge.
+ACCEPTED_MP_PHYSICS = frozenset({0, 1, 6, 8, 9, 10, 16, 18, 28, 50})
 
 #: Scheme-KEYED DICTS that omit 28, and the judgement for each.  A dict is a
 #: third shape the same defect comes in and the AST membership scan cannot
@@ -317,6 +345,9 @@ def test_no_new_scheme_keyed_dict_omits_28():
     # One row per refused selector, and EVERY refused selector has one:
     # 16 joined the selector tuple with the WDM6 port and its moments row
     # was missing, which turned the named refusal into a bare KeyError(16).
+    # 50 (P3) LEFT both tables when its rime-pair closure was ratified into
+    # PORTED_MP_PHYSICS -- the retired refusal died with its defect, per
+    # the guard-retirement law.
     assert (set(mt.UNVALIDATED_MIXED_EDGE_MOMENTS)
             == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS) == {16, 28})
     assert set(mt.UNVALIDATED_MIXED_EDGE_MOMENTS[28]) == {
@@ -352,10 +383,38 @@ def test_no_stale_pre_28_scheme_admission_tuple_survives():
         "site genuinely must exclude 28, add it to DELIBERATE_STALE_SITES "
         "with the reason -- do not delete this assertion.")
 
+
+def test_the_hrrr_route_admission_is_derived_not_respelled():
+    """The door DELIBERATE_STALE_SITES used to carry, in executable form.
+
+    The route's admission is frozenset(PORTED_MP_PHYSICS) minus the named
+    aerosol-lateral-BC block, so a future port widens it without a table
+    edit -- and ratifying mp=28's closures can never silently open the
+    laterally-forced route to the unbounded-depletion deviation this
+    package records.  The census walk is blind to derived sets (by
+    design, it reads literals), so this pin is the census row's
+    replacement, not a duplicate of it.
+    """
+    from gpuwm.core import microphysics_transition as mt
+    from gpuwm.hrrr_route_inputs import (
+        AEROSOL_LATERAL_BC_BLOCKED_MP_PHYSICS, SUPPORTED_MICROPHYSICS)
+
+    assert AEROSOL_LATERAL_BC_BLOCKED_MP_PHYSICS == frozenset({28})
+    assert SUPPORTED_MICROPHYSICS == (
+        frozenset(mt.PORTED_MP_PHYSICS)
+        - AEROSOL_LATERAL_BC_BLOCKED_MP_PHYSICS)
+    assert 50 in SUPPORTED_MICROPHYSICS
+    assert 28 not in SUPPORTED_MICROPHYSICS
+    assert 16 not in SUPPORTED_MICROPHYSICS
+
     # And the deliberate exception must still BE the exception it claims.
+    # PORTED_MP_PHYSICS no longer equals the stale tuple: mp=50 was
+    # APPENDED when its rime-pair closure was ratified, so the census above
+    # cannot match it and its DELIBERATE_STALE_SITES row retired with the
+    # refusal.  28 is still deliberately absent.
     from gpuwm.core import microphysics_transition as mt
 
-    assert set(mt.PORTED_MP_PHYSICS) == STALE_REFL_ADMISSION
+    assert set(mt.PORTED_MP_PHYSICS) == STALE_REFL_ADMISSION | {50}
     assert 28 in mt.UNVALIDATED_MIXED_EDGE_SELECTORS, (
         "mp=28 left PORTED_MP_PHYSICS without joining the NAMED mixed-edge "
         "refusal, so its nest edges now fall through to the generic "
@@ -1323,7 +1382,7 @@ def test_the_offline_child_lane_decision_is_recorded_not_undecided():
     from gpuwm.core import microphysics_transition as mt
 
     assert 28 in OFFLINE_CHILD_MP_PHYSICS
-    assert _CAPABILITIES["same_scheme_mp_physics"] == [6, 8, 10, 18, 28]
+    assert _CAPABILITIES["same_scheme_mp_physics"] == [6, 8, 10, 18, 28, 50]
     assert _CAPABILITIES["cross_scheme_transitions"] == []
     # The offline refusal set must MIRROR the online one, or a downscale
     # could perform a closure the nest lane refuses.  It is now DERIVED from
@@ -1334,6 +1393,17 @@ def test_the_offline_child_lane_decision_is_recorded_not_undecided():
     assert (set(_CROSS_SCHEME_REFUSED_MP_PHYSICS)
             == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS) == {16, 28})
     assert 16 not in OFFLINE_CHILD_MP_PHYSICS
+    # mp=50 no longer mirrors mp=16's shape on either count: the offline
+    # reader learned P3's transported set (same-scheme readable like 28),
+    # AND its closure refusal left the derived mirror when the online
+    # closure was ratified.  What still refuses a P3 cross-scheme edge
+    # offline is the lane's own named gate
+    # (offline_child._P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS, follow-up
+    # offline-p3-edge-closure), pinned with the contract in
+    # test_microphysics_transition.py and exercised end to end in
+    # test_offline_child.py.
+    assert 50 in OFFLINE_CHILD_MP_PHYSICS
+    assert 50 not in _CROSS_SCHEME_REFUSED_MP_PHYSICS
 
 
 # ---------------------------------------------------------------------------

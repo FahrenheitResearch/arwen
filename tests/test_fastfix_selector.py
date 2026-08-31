@@ -134,8 +134,29 @@ def test_a_non_python_change_falls_back_to_the_always_list():
                     ["docs/public/HARDWARE.md"]):
         selected = fastfix.select(touched)
         assert set(selected) == always, (touched, sorted(selected))
-        for entry in selected.values():
-            assert entry == ["always (repo-scanning gate)"], entry
+
+    # A .cu edit must additionally say WHY the kernel gates ran.  Updated
+    # 2026-08-29: this test previously required every reason to read exactly
+    # "always (repo-scanning gate)", which was true and useless.  The
+    # measured defect it could not see: a WSM6 kernel was switched off
+    # (`pracw = 0.0f * fminf(...)`) and the whole 172-file stage-1 leg ran
+    # twice, pristine and injected, with ZERO differing node ids.  The gates
+    # that read .cu bytes are now on the ALWAYS list AND named by suffix, so
+    # a person iterating on a kernel sees the reason rather than inferring
+    # it.  The file SET is unchanged and still pinned above -- this asserts
+    # the reason, which is strictly more than before.
+    kernel_gates = fastfix._NON_PYTHON_GATES[".cu"]
+    selected = fastfix.select(["gpuwm/core/kernels/morrison.cu"])
+    for gate in kernel_gates:
+        assert gate in selected, (gate, sorted(selected))
+        assert any("morrison.cu" in reason for reason in selected[gate]), (
+            gate, selected[gate])
+
+    # And a change of a DIFFERENT non-Python kind must not claim the kernel
+    # gates ran because of it -- otherwise the reason is decoration.
+    selected = fastfix.select(["docs/public/HARDWARE.md"])
+    for gate in kernel_gates:
+        assert selected[gate] == ["always (repo-scanning gate)"], selected[gate]
 
 
 def test_an_empty_change_still_runs_the_always_list():

@@ -14,6 +14,7 @@ from gpuwm.core.dudhia import DudhiaShortwaveRadiation
 from gpuwm.core.rrtmg_legacy import (
     _MP_DECLARES_RADII,
     RRTMGLegacyRadiation,
+    legacy_cloud_fraction_flags,
     legacy_ice_active,
     legacy_radius_meters,
 )
@@ -149,9 +150,13 @@ def test_nssl_legacy_mass_radius_and_cloud_fraction_match_wrf():
     from gpuwm.core.rrtmgp import cal_cldfra1
 
     adapter_source = inspect.getsource(RRTMGLegacyRadiation.__call__)
-    assert "ice_active = legacy_ice_active(mp_physics)" in adapter_source
+    assert ("f_qi, f_qs = legacy_cloud_fraction_flags(mp_physics)"
+            in adapter_source)
     assert "radii[key] = legacy_radius_meters(eff_um)" in adapter_source
-    assert "f_qi=ice_active, f_qs=ice_active" in adapter_source
+    assert "f_qi=f_qi, f_qs=f_qs" in adapter_source
+    # NSSL declares both species, so the pair is (True, True) and this
+    # oracle comparison is unchanged by the P3 split.
+    assert legacy_cloud_fraction_flags(18) == (True, True)
     assert legacy_ice_active(18) is True
     assert _MP_DECLARES_RADII[18] is True
     effective_um = np.asarray([[12.0, 35.0, 90.0]], dtype=np.float32)
@@ -171,8 +176,8 @@ def test_nssl_legacy_mass_radius_and_cloud_fraction_match_wrf():
     got = cp.asnumpy(cal_cldfra1(
         cp.asarray(qv), cp.asarray(qc), cp.asarray(qi), cp.asarray(qs),
         cp.asarray(temperature), cp.asarray(pressure),
-        f_qc=True, f_qi=legacy_ice_active(18),
-        f_qs=legacy_ice_active(18),
+        f_qc=True, f_qi=legacy_cloud_fraction_flags(18)[0],
+        f_qs=legacy_cloud_fraction_flags(18)[1],
     ))
     assert np.max(oracle) > 0.0
     np.testing.assert_allclose(got, oracle, rtol=2.0e-6, atol=2.0e-7)
