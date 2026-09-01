@@ -603,6 +603,32 @@ def _build_perturbation(table, source: str) -> PerturbationConfig:
     return PerturbationConfig(bubbles=tuple(bubbles))
 
 
+def refuse_unrouted_spectral_numerics(exp, route: str) -> None:
+    """Fail loud where an ACTIVE [spectral_numerics] block would be dropped.
+
+    The Level-2 hook is wired at exactly one seam -- the
+    ``execute_experiment`` slow-large-step commit point.  A loop that
+    integrates outside that seam and silently ignores an active block
+    would run the forecast with the operator absent while the config, the
+    restart identity and the capsule all say it was there: receipts the
+    user expects would never be written, and an ``apply`` campaign would
+    be a void arm wearing a treatment label.  ``mode = "off"`` passes --
+    off is defined as the absence of the operator, which every loop
+    provides for free.
+    """
+    config = getattr(exp, "spectral_numerics", None)
+    if config is None or getattr(config, "mode", "off") == "off":
+        return
+    raise RuntimeError(
+        f"the {route} route does not carry [spectral_numerics] "
+        f"(mode = {config.mode!r}) to the wired slow-large-step seam; "
+        "refused rather than ignored, because a forecast integrated with "
+        "the operator silently absent would still be stamped with its "
+        "config identity.  Run this configuration through the "
+        "execute_experiment routes (gpuwm run / the prepared tree "
+        "runners), or set mode = \"off\".")
+
+
 def refuse_unrouted_perturbation(exp, route: str) -> None:
     """Fail loud where a [perturbation] block would otherwise be dropped.
 
@@ -1064,6 +1090,19 @@ class ExperimentConfig:
     #: frozen verify fixtures) on explicit semantics: what its author
     #: set is what runs.
     auto_mix_isotropic: tuple[int, ...] = ()
+    #: The validated [spectral_numerics] block
+    #: (:class:`gpuwm.spectral_ops.config.SpectralNumericsConfig`), or
+    #: ``None`` when the config does not carry one.  ``None`` is the OFF
+    #: contract: no hook is built, the slow-step seam pays one ``is None``
+    #: test, and the restart-identity payload omits the key so
+    #: absent-block fingerprints stay byte-identical to pre-feature ones.
+    #: A PRESENT block binds the restart identity value for value (the
+    #: Level-2 contract: restart/config identity includes the resolved
+    #: operator config) and is honored only at the
+    #: ``execute_experiment`` slow-large-step commit point; every other
+    #: integrating loop refuses an active block
+    #: (:func:`refuse_unrouted_spectral_numerics`).
+    spectral_numerics: object | None = None
 
     def __post_init__(self):
         if self.feedback not in (0, 1):
@@ -2247,7 +2286,8 @@ def _parent_before_child(domain_tables: list, source: str) -> list:
 def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     """Validate a parsed experiment TOML dict and build the config."""
     known_tables = ("experiment", "shared", "projection", "domain",
-                    "relocation", "perturbation", "tiles", "output")
+                    "relocation", "perturbation", "tiles", "output",
+                    "spectral_numerics")
     # [ingest] is INGEST POLICY, and it is validated-and-dropped HERE
     # rather than added to the companion list above.  The companion
     # tables declare INPUTS: dropping one loses a setting, so the caller
@@ -2426,6 +2466,41 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     perturbation = None
     if "perturbation" in raw:
         perturbation = _build_perturbation(raw["perturbation"], source)
+
+    # ---- [spectral_numerics] -----------------------------------------
+    # ABSENT authors nothing (spectral_numerics = None; the restart
+    # identity omits the key so pre-feature fingerprints are preserved).
+    # PRESENT, the block is validated by its owner
+    # (gpuwm.spectral_ops.config.from_mapping, fail-closed on unknown
+    # keys) and then either honored at the one wired seam -- the
+    # execute_experiment slow-large-step commit point -- or refused by
+    # routes that do not thread it (refuse_unrouted_spectral_numerics),
+    # the [perturbation] governance applied unchanged.
+    spectral_numerics = None
+    if "spectral_numerics" in raw:
+        try:
+            from gpuwm.spectral_ops.config import from_mapping as \
+                _spectral_from_mapping
+        except ImportError:
+            # The standalone preprocessing wheel stages none of the
+            # spectral-numerics runtime (tools/build_rw_wps_release.py
+            # excludes it by name); a config that carries the table on
+            # such an install is refused with the remedy rather than a
+            # bare ImportError.  A config without the table never takes
+            # this branch, so preparation-only installs parse everything
+            # they can act on.
+            raise ValueError(
+                f"[spectral_numerics] of {source}: this installation "
+                "carries no spectral-numerics runtime (the standalone "
+                "preprocessing distribution excludes it); run this "
+                "configuration with the full gpuwm distribution, or "
+                "remove the table") from None
+        try:
+            spectral_numerics = _spectral_from_mapping(
+                raw["spectral_numerics"])
+        except (TypeError, ValueError) as err:
+            raise ValueError(
+                f"[spectral_numerics] of {source}: {err}") from None
 
     # ---- [tiles] ---------------------------------------------------
     # ABSENT is the OFF contract, and it is the shared StreamingOptions.OFF
@@ -3293,7 +3368,8 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         relocation=relocation,
         physics_mode=physics_mode,
         perturbation=perturbation,
-        tiles=tiles, output=output)
+        tiles=tiles, output=output,
+        spectral_numerics=spectral_numerics)
     # The mixing-length auto-switch runs HERE, at the one load every
     # front door shares, so run/go/check, both prepared runners and the
     # wizard's candidate loop all execute (and announce) the same

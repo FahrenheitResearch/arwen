@@ -15,10 +15,24 @@ tendencies. Implementation: `gpuwm/core/mpas_column_batch.py`.
 - Cadence and elapsed-time bookkeeping stays exact: integer step counts
   plus float64 scalar seconds. Cadence state never enters a float32
   field array.
-- Species set is the full WSM6 six: `qv/qc/qr/qi/qs/qg`. The MPAS init
-  carries `qv/qc/qr`; the seam's state zero-initializes the frozen
-  categories once at construction and phase 2 evolves all six in the
-  caller's arrays from then on.
+- Species set follows the constructor's `microphysics_scheme`
+  (default `"wsm6"`, everything below unchanged; `"p3"` selects
+  mp_physics=50):
+  - `"wsm6"`: the full WSM6 six, `qv/qc/qr/qi/qs/qg`. The MPAS init
+    carries `qv/qc/qr`; the seam's state zero-initializes the frozen
+    categories once at construction and phase 2 evolves all six in the
+    caller's arrays from then on.
+  - `"p3"` (2026-08-31): WRF's own mp=50 transport, EIGHT scalars --
+    `qv/qc/qr/qi` plus `ni/nr` (ice and rain number) and the rime pair
+    `qir/qib` (rime mass/volume). P3 has one ice category: `qs`/`qg`
+    are refused by name in both phases, phase 2 refuses `rho_dry`
+    (P3 derives density from the EOS pressure in-kernel), receipts are
+    the five-slot set (`rainncv/snowncv/sr`, no graupel key), and the
+    cross-step supersaturation carriers `th_old`/`qv_old` ride the
+    restart payload as seam-owned state. A `"p3"` restart identity
+    carries `"microphysics": "p3"`; the `"wsm6"` identity is unchanged,
+    so stored WSM6 payloads keep restoring and cross-scheme restores
+    refuse on the identity gate.
 
 ## Construction
 
@@ -219,6 +233,12 @@ call counters and the model clock all persist on the seam across calls.
 
 - `seam.export_state()` returns a host-side payload of every persisted
   item. Legal only at a step boundary (before a phase-1 call).
+- Payload schema `mpas-column-batch-v2` (2026-08-31): the scalars carry
+  `"carriers"`, the radiation CarrierContract provenance, beside the
+  held radiation buffers in the array manifest. Without it a restored
+  seam refused its first radiation-not-due step ("GLW has no
+  producer"); the schema string rides the identity, so a v1 payload
+  refuses by name at the identity gate.
 - `seam.restore_state(payload)` on a freshly constructed seam with the
   identical configuration restores everything in place. Identity
   mismatches, unknown keys and missing keys refuse.

@@ -85,11 +85,34 @@ import numpy as np
 
 from gpuwm.obs.superob import (CLEAR_AIR_SOURCE, CLEAR_AIR_SOURCE_CENSOR,
                               CLEAR_AIR_SOURCES, GriddedObservations,
-                              SuperobParams)
+                              MIN_BEAM_COHERENCE, SuperobParams)
 from gpuwm.obs.target_grid import GridMismatchError, TargetGrid
 
-#: The contract string. Consumers pin this exact value.
-RADAR_GRID_SCHEMA = "gpuwm-obs.radar-grid.v1"
+#: The original contract: velocity stored as whole-domain planes, one per
+#: radar.  Still READ, always, and that is not politeness -- receipts
+#: recorded the sha256 of v1 files, and a receipt whose file can no longer
+#: be opened is a dead receipt.  No longer written.
+RADAR_GRID_SCHEMA_V1 = "gpuwm-obs.radar-grid.v1"
+
+#: v2: identical in every field, meaning and unit; the ONLY change is that
+#: each radar's velocity plane covers that radar's reach window instead of
+#: the whole domain, with the window's origin stored beside it.
+#:
+#: The reason is arithmetic.  A radar sees a disc ~250 km across; a
+#: continental grid is ~5000 km across, so a whole-domain plane per radar
+#: is ~99% zeros.  At 49 bytes per cell per radar that is 715 GB for a
+#: 160-radar CONUS analysis and 8.9 GB windowed -- the difference between
+#: a continental system that needs a supercomputer's memory and one that
+#: fits on rentable hardware.  Reflectivity is NOT windowed: it merges
+#: across radars into one field the whole network contributed to, and at
+#: 37 bytes a cell it is 3.4 GB, which was never the problem.
+RADAR_GRID_SCHEMA_V2 = "gpuwm-obs.radar-grid.v2"
+
+#: What the writer emits.  Consumers that pin one value pin this.
+RADAR_GRID_SCHEMA = RADAR_GRID_SCHEMA_V2
+
+#: Every schema this module can read.  Ordered oldest first.
+READABLE_SCHEMAS = (RADAR_GRID_SCHEMA_V1, RADAR_GRID_SCHEMA_V2)
 
 #: Status of a product this lane can honestly claim: the geometry and the
 #: schema are proven by tests, and the observation-error model is a
@@ -116,6 +139,10 @@ _FILL_F4 = np.float32(-9.99e30)
 _PLANE = ("level", "south_north", "west_east")
 _VOLUME = ("radar",) + _PLANE
 _MASS = ("south_north", "west_east")
+#: v2's velocity layout: each radar's plane covers its own reach window,
+#: padded to the widest window in the file, and carries that window's
+#: origin beside it.
+_WINDOW = ("radar", "level", "window_j", "window_i")
 
 #: Every variable this schema defines, with the **dimension tuple** it must
 #: carry, its storage type, and its units.
@@ -185,6 +212,35 @@ CLEAR_AIR_VARIABLES: dict[str, tuple[tuple[str, ...], str, str | None]] = {
 #: than assume either.
 __all_clear_air__ = (CLEAR_AIR_SOURCE, CLEAR_AIR_SOURCE_CENSOR,
                      CLEAR_AIR_SOURCES)
+
+#: v2's table.  Every reflectivity and coordinate entry is v1's, unchanged
+#: -- the diff is exactly the velocity dimension tuple and the four window
+#: variables that make it interpretable.
+CANONICAL_VARIABLES_V2: dict[str, tuple[tuple[str, ...], str, str | None]] = {
+    **{name: spec for name, spec in CANONICAL_VARIABLES.items()
+       if spec[0] != _VOLUME},
+    **{name: (_WINDOW,) + CANONICAL_VARIABLES[name][1:]
+       for name, spec in CANONICAL_VARIABLES.items() if spec[0] == _VOLUME},
+    # The window itself.  Without these the planes are uninterpretable, so
+    # they are canonical rather than optional: a v2 file missing one is a
+    # refusal, not a file to guess about.
+    "radar_j0": (("radar",), "int32", None),
+    "radar_i0": (("radar",), "int32", None),
+    "radar_nj": (("radar",), "int32", None),
+    "radar_ni": (("radar",), "int32", None),
+}
+
+
+def canonical_variables(schema: str) -> dict:
+    """The variable contract for one schema version."""
+    if schema == RADAR_GRID_SCHEMA_V1:
+        return CANONICAL_VARIABLES
+    if schema == RADAR_GRID_SCHEMA_V2:
+        return CANONICAL_VARIABLES_V2
+    raise RadarGridSchemaError(
+        f"unknown radar-grid schema {schema!r}; this module reads "
+        f"{list(READABLE_SCHEMAS)}")
+
 
 #: Fixed-width dimensions, and the width each must have.
 FIXED_DIMENSIONS = {"nchar": ID_WIDTH, "ntime": TIME_WIDTH}
@@ -351,7 +407,37 @@ def write_radar_grid(path: str | Path, observations: GriddedObservations,
             f"z_obs has shape {observations.z_obs.shape}, target grid is "
             f"{shape}")
     n_radar = len(observations.radars)
-    if observations.vr_obs.shape != (n_radar,) + shape:
+    # Which layout this observation set is in decides which schema is
+    # written.  A hand-built whole-domain set still writes v1 and is still
+    # read; nothing that produced a v1 file has to change to keep working.
+    windowed = observations.windowed
+    schema = RADAR_GRID_SCHEMA_V2 if windowed else RADAR_GRID_SCHEMA_V1
+    if windowed:
+        if len(observations.radar_windows) != n_radar:
+            raise GridMismatchError(
+                f"{len(observations.radar_windows)} radar windows for "
+                f"{n_radar} radars")
+        if observations.vr_obs.shape[:2] != (n_radar, grid.nz):
+            raise GridMismatchError(
+                f"vr_obs has shape {observations.vr_obs.shape}, expected "
+                f"{(n_radar, grid.nz)} on its leading axes")
+        for index, (j0, j1, i0, i1) in enumerate(observations.radar_windows):
+            # Fail closed on a window that under-covers its own radar or
+            # runs off the grid: either would make the stored plane
+            # uninterpretable, and a reader cannot tell from the bytes.
+            if not (0 <= j0 <= j1 < grid.ny and 0 <= i0 <= i1 < grid.nx):
+                raise GridMismatchError(
+                    f"radar {index} window j[{j0}..{j1}] i[{i0}..{i1}] "
+                    f"does not fit a grid of {shape}")
+            if (j1 - j0 + 1 > observations.vr_obs.shape[2]
+                    or i1 - i0 + 1 > observations.vr_obs.shape[3]):
+                raise GridMismatchError(
+                    f"radar {index} claims a window of "
+                    f"{j1 - j0 + 1}x{i1 - i0 + 1} cells but the stored "
+                    f"plane is only {observations.vr_obs.shape[2]}x"
+                    f"{observations.vr_obs.shape[3]}: the window "
+                    "under-covers its radar and observations would be lost")
+    elif observations.vr_obs.shape != (n_radar,) + shape:
         raise GridMismatchError(
             f"vr_obs has shape {observations.vr_obs.shape}, expected "
             f"{(n_radar,) + shape}")
@@ -369,9 +455,14 @@ def write_radar_grid(path: str | Path, observations: GriddedObservations,
             dataset.createDimension("radar", n_radar)
             dataset.createDimension("nchar", ID_WIDTH)
             dataset.createDimension("ntime", TIME_WIDTH)
+            if windowed:
+                dataset.createDimension("window_j",
+                                        observations.vr_obs.shape[2])
+                dataset.createDimension("window_i",
+                                        observations.vr_obs.shape[3])
 
             dataset.setncatts({
-                "schema": RADAR_GRID_SCHEMA,
+                "schema": schema,
                 "status": RADAR_GRID_STATUS,
                 "valid_time": valid_time,
                 "grid_identity_sha256": identity,
@@ -402,7 +493,7 @@ def write_radar_grid(path: str | Path, observations: GriddedObservations,
                       grid.terrain_m, "Terrain Height", "m")
 
             plane = ("level", "south_north", "west_east")
-            volume = ("radar",) + plane
+            volume = (_WINDOW if windowed else ("radar",) + plane)
             _obs_var(dataset, "z_obs", plane, observations.z_obs, "dBZ",
                      "superobbed reflectivity (see z_reduce in "
                      "superob_params)")
@@ -466,6 +557,29 @@ def write_radar_grid(path: str | Path, observations: GriddedObservations,
                          f"{axis} component of the beam unit vector; "
                          "Vr = u*east + v*north + w*up")
 
+            if windowed:
+                # Where each plane sits, and how much of it is real.  j0/i0
+                # place it; nj/ni say where the padding to the widest
+                # window begins.  Without all four the planes are bytes
+                # without a coordinate system, which is why the reader
+                # treats them as canonical rather than optional.
+                for name, values, description in (
+                        ("radar_j0", [w[0] for w in observations.radar_windows],
+                         "south_north index of this radar's plane origin"),
+                        ("radar_i0", [w[2] for w in observations.radar_windows],
+                         "west_east index of this radar's plane origin"),
+                        ("radar_nj", [w[1] - w[0] + 1
+                                      for w in observations.radar_windows],
+                         "south_north extent of this radar's reach window; "
+                         "cells beyond it are padding"),
+                        ("radar_ni", [w[3] - w[2] + 1
+                                      for w in observations.radar_windows],
+                         "west_east extent of this radar's reach window; "
+                         "cells beyond it are padding")):
+                    variable = dataset.createVariable(name, "i4", ("radar",))
+                    variable.description = description
+                    variable[:] = np.asarray(values, dtype=np.int32)
+
             ids = dataset.createVariable("radar_id", "S1", ("radar", "nchar"))
             ids.description = "contributing radar site id"
             ids[:] = _char_array(
@@ -497,7 +611,7 @@ def write_radar_grid(path: str | Path, observations: GriddedObservations,
             temp.unlink()
 
     return {
-        "schema": RADAR_GRID_SCHEMA,
+        "schema": schema,
         "status": RADAR_GRID_STATUS,
         "path": str(path),
         "bytes": len(payload),
@@ -566,11 +680,16 @@ def read_radar_grid(path: str | Path, *,
     # deliberately, so handing them NaN would change what the DA side sees.
     with netcdf_bridge.open_dataset(path) as dataset:
         dataset.set_auto_mask(False)
+        # The schema the FILE declares, checked against every schema this
+        # module can read rather than against the one it writes.  A v1 file
+        # stays readable after v2 became the default: its contract did not
+        # change when ours did, and a receipt that recorded a v1 digest
+        # still has a file it can open.
         schema = attributes.get("schema")
-        if schema != RADAR_GRID_SCHEMA:
+        if schema not in READABLE_SCHEMAS:
             raise RadarGridSchemaError(
-                f"{path.name}: schema {schema!r}, expected "
-                f"{RADAR_GRID_SCHEMA!r}")
+                f"{path.name}: schema {schema!r}, this module reads "
+                f"{list(READABLE_SCHEMAS)}")
         identity = attributes.get("grid_identity_sha256")
         if not identity:
             raise RadarGridSchemaError(
@@ -582,7 +701,7 @@ def read_radar_grid(path: str | Path, *,
             raise GridMismatchError(
                 f"{path.name} is bound to grid {identity}, the caller "
                 f"requires {expected_grid_identity}")
-        _require_structure(path, dataset)
+        _require_structure(path, dataset, schema)
         stored = _require_coordinates(path, dataset)
         if expected_grid is not None:
             _require_grid(path.name, expected_grid, stored)
@@ -614,7 +733,46 @@ def read_radar_grid(path: str | Path, *,
                 continue
             result["variables"][name] = np.asarray(dataset.variables[name][:])
         _require_beam_vectors(path, result["variables"])
+        # The velocity planes' coordinate system, read from the arrays the
+        # bridge already decoded above.  v1 files carry no window variables
+        # and their planes ARE the domain, so the window is the domain --
+        # which keeps every consumer on one code path instead of branching
+        # on schema.
+        ny = len(dataset.dimensions["south_north"])
+        nx = len(dataset.dimensions["west_east"])
         n_radar = len(dataset.dimensions["radar"])
+        if schema == RADAR_GRID_SCHEMA_V2:
+            variables = result["variables"]
+            j0 = np.asarray(variables["radar_j0"], dtype=int)
+            i0 = np.asarray(variables["radar_i0"], dtype=int)
+            nj = np.asarray(variables["radar_nj"], dtype=int)
+            ni = np.asarray(variables["radar_ni"], dtype=int)
+            stored_j = len(dataset.dimensions["window_j"])
+            stored_i = len(dataset.dimensions["window_i"])
+            windows = []
+            for index in range(n_radar):
+                if nj[index] > stored_j or ni[index] > stored_i:
+                    raise RadarGridSchemaError(
+                        f"{path.name}: radar {index} declares a window of "
+                        f"{nj[index]}x{ni[index]} cells but the file stores "
+                        f"only {stored_j}x{stored_i}: the window "
+                        "under-covers its radar and observations are "
+                        "missing from this file")
+                jj1 = int(j0[index]) + int(nj[index]) - 1
+                ii1 = int(i0[index]) + int(ni[index]) - 1
+                if not (0 <= j0[index] <= jj1 < ny
+                        and 0 <= i0[index] <= ii1 < nx):
+                    raise RadarGridSchemaError(
+                        f"{path.name}: radar {index} window "
+                        f"j[{int(j0[index])}..{jj1}] "
+                        f"i[{int(i0[index])}..{ii1}] falls outside a "
+                        f"{ny}x{nx} grid")
+                windows.append([int(j0[index]), jj1, int(i0[index]), ii1])
+            result["radar_windows"] = windows
+        else:
+            result["radar_windows"] = [[0, ny - 1, 0, nx - 1]
+                                       for _ in range(n_radar)]
+
 
     if len(ids) != n_radar:
         raise RadarGridSchemaError(
@@ -683,10 +841,53 @@ def _read_metadata(path: Path) -> tuple[dict, list[str], list[str]]:
         return attributes, strings[0], strings[1]
 
 
-def _require_structure(path: Path, dataset) -> None:
-    """Every canonical variable, with its exact dimension tuple and type."""
+def radar_plane(document: dict, name: str, index: int):
+    """One radar's velocity plane from a read document, whole-domain.
 
-    for dimension in ("level", "south_north", "west_east", "radar"):
+    The compatibility path across both schemas, and the reason a consumer
+    does not have to know which one it was handed: on v1 the stored plane
+    already IS the domain and this returns it untouched; on v2 it is
+    expanded from the radar's window, with zero outside -- which is what a
+    v1 file stored there, because that is what a radar that saw nothing
+    contributed.
+
+    Deliberately ONE plane at a time.  Expanding all of them at once would
+    rebuild exactly the whole-domain array v2 exists to avoid; a consumer
+    that needs the dense view of a single radar can have it, and one that
+    loops every radar should be using the window instead.
+    """
+
+    stored = np.asarray(document["variables"][name])
+    windows = document.get("radar_windows")
+    dims = document["dims"]
+    ny, nx = dims["south_north"], dims["west_east"]
+    plane = stored[index]
+    if plane.shape[-2:] == (ny, nx):
+        return plane
+    if not windows:
+        raise RadarGridSchemaError(
+            f"{name} is stored as {plane.shape} on a {ny}x{nx} grid and "
+            "the document carries no radar_windows to place it with")
+    j0, j1, i0, i1 = windows[index]
+    out = np.zeros((plane.shape[0], ny, nx), dtype=plane.dtype)
+    out[:, j0:j1 + 1, i0:i1 + 1] = plane[:, :j1 - j0 + 1, :i1 - i0 + 1]
+    return out
+
+
+def _require_structure(path: Path, dataset, schema: str) -> None:
+    """Every canonical variable, with its exact dimension tuple and type.
+
+    Checked against the schema the FILE declares, not against the one this
+    module writes.  That is what keeps a v1 file readable after v2 became
+    the default: its contract did not change when ours did, and a receipt
+    that recorded a v1 digest still has a file it can open.
+    """
+
+    table = canonical_variables(schema)
+    required = ["level", "south_north", "west_east", "radar"]
+    if schema == RADAR_GRID_SCHEMA_V2:
+        required += ["window_j", "window_i"]
+    for dimension in required:
         if dimension not in dataset.dimensions:
             raise RadarGridSchemaError(
                 f"{path.name}: missing dimension {dimension!r}")
@@ -700,8 +901,7 @@ def _require_structure(path: Path, dataset) -> None:
                 f"{path.name}: dimension {dimension!r} is {actual}, this "
                 f"schema fixes it at {width}")
 
-    missing = [name for name in CANONICAL_VARIABLES
-               if name not in dataset.variables]
+    missing = [name for name in table if name not in dataset.variables]
     if missing:
         raise RadarGridSchemaError(
             f"{path.name}: missing variables {missing}")
@@ -731,7 +931,12 @@ def _require_structure(path: Path, dataset) -> None:
                 "assimilating one as the other misstates both the coverage "
                 "and the error")
 
-    checked = dict(CANONICAL_VARIABLES)
+    # The canonical set for the schema THIS file declares, plus whichever
+    # clear-air variables it carries.  Both halves matter: v1 and v2 differ
+    # in the velocity dimension tuple, and the clear-air extension is
+    # orthogonal to the schema version -- a v2 file may or may not carry it,
+    # exactly as a v1 file may or may not.
+    checked = dict(table)
     checked.update({name: CLEAR_AIR_VARIABLES[name] for name in present})
     for name, (dims, dtype, units) in checked.items():
         variable = dataset.variables[name]
@@ -863,13 +1068,36 @@ def _require_grid(label: str, grid: TargetGrid, stored: dict) -> None:
 
 
 def _require_beam_vectors(path: Path, variables: dict) -> None:
-    """A retained velocity without a unit look vector is not an observation.
+    """A retained velocity without a usable look vector is not an observation.
 
-    ``Vr = u*east + v*north + w*up`` is only that projection if the vector
-    has unit length.  A file whose beams were scaled -- by a regrid, by a
-    well-meant "normalisation" against a different norm, by float16 storage
-    somewhere upstream -- changes every H(x) it touches by that factor, and
-    silently: the innovations stay finite and plausible.
+    ``y`` is the MEAN of the n radial velocities that landed in the cell, so
+    the operator reproducing it is the MEAN of the n beam unit vectors --
+    ``mean_i(b_i . x) = (mean_i b_i) . x`` holds for any x, and only for the
+    unnormalized mean.  So the stored vector is deliberately NOT unit
+    length: its norm is the cell's beam coherence, in ``(0, 1]``, and it is
+    1 exactly when the contributing beams were parallel.
+
+    This check was written when the merge stored a renormalized vector and
+    it required unit length.  That requirement died with the renormalization
+    -- which inflated every modelled radial velocity by 1/c, 15.5% for beams
+    60 degrees apart -- so what is checked here is the invariant the mean
+    actually has, which still catches the breakage the unit check was for.
+    A beam scaled by a regrid, by a "normalisation" against a different
+    norm, or by a lossy storage step leaves this band, and every H(x) it
+    touches is wrong by that factor while the innovations stay finite and
+    plausible.
+
+    The floor is the merge's own :data:`~gpuwm.obs.superob.MIN_BEAM_COHERENCE`:
+    below it the merge masks the cell off, so a true mask over a beam below
+    the floor is a file whose mask and beams disagree about which cells are
+    observations.
+
+    NOTE for a later lane: the merge computes the coherence exactly and
+    ``GriddedObservations`` carries it, but no schema variable stores it, so
+    this can only bound the norm rather than compare it against the value
+    the merge measured.  Carrying ``vr_beam_coherence`` as an optional
+    variable -- the way the clear-air extension is carried -- would make
+    this an equality check.
     """
 
     mask = np.asarray(variables["vr_mask"]).astype(bool)
@@ -889,16 +1117,25 @@ def _require_beam_vectors(path: Path, variables: dict) -> None:
             f"{int(np.count_nonzero(~np.isfinite(components)))} beam "
             "component(s) under a true vr_mask are not finite")
     norm = np.sqrt((components ** 2).sum(axis=0))
-    worst = float(np.max(np.abs(norm - 1.0)))
-    if worst > BEAM_NORM_TOLERANCE:
+    over = norm > 1.0 + BEAM_NORM_TOLERANCE
+    if np.any(over):
         raise RadarGridSchemaError(
-            f"{path.name}: {int(np.count_nonzero(np.abs(norm - 1.0) > BEAM_NORM_TOLERANCE))} "
-            f"beam vector(s) under a true vr_mask are not unit length "
-            f"(worst departure {worst:.3e}, tolerance "
-            f"{BEAM_NORM_TOLERANCE:.0e}). Vr = u*east + v*north + w*up is "
-            "that projection only for a unit look direction; a scaled one "
-            "rescales every innovation it touches without ever going "
-            "non-finite")
+            f"{path.name}: {int(np.count_nonzero(over))} beam vector(s) "
+            f"under a true vr_mask are longer than one (worst "
+            f"{float(norm.max()):.6f}, tolerance "
+            f"{BEAM_NORM_TOLERANCE:.0e}). The stored vector is the mean of "
+            "unit look directions, so its norm cannot exceed 1; a longer "
+            "one has been scaled somewhere, and a scaled beam rescales "
+            "every innovation it touches without ever going non-finite")
+    under = norm < MIN_BEAM_COHERENCE - BEAM_NORM_TOLERANCE
+    if np.any(under):
+        raise RadarGridSchemaError(
+            f"{path.name}: {int(np.count_nonzero(under))} beam vector(s) "
+            f"under a true vr_mask are shorter than the merge's coherence "
+            f"floor (worst {float(norm.min()):.6f}, floor "
+            f"{MIN_BEAM_COHERENCE}). The merge masks a cell off below that "
+            "floor, so a true mask over such a beam is a file whose mask "
+            "and beams disagree about which cells are observations")
 
 
 def _char_array(strings, width: int) -> np.ndarray:

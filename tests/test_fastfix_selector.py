@@ -282,3 +282,109 @@ def test_a_receipt_gate_is_not_reachable_from_the_code_it_inventories():
     assert importers.get("gpuwm/core/moist.py"), (
         "no test imports gpuwm/core/moist.py, so the assertion above passes "
         "vacuously and proves nothing")
+
+
+# ---------------------------------------------------------------------------
+# The two silent-drop defects.  Both were live at the 2026-08-31 sweep and
+# both share one shape: the selector answers "nothing to run" and is WRONG,
+# with no error anywhere, which is the audit's own finding rebuilt inside
+# the tool the audit built.
+# ---------------------------------------------------------------------------
+
+def test_a_deleted_product_module_still_selects_the_tests_that_import_it():
+    """Deleting a module is when import analysis matters MOST.
+
+    THE BREAKAGE.  ``build_index`` walks the working tree as it is now, so
+    a module deleted in the range under test has no entry in ``modules``,
+    ``importers.get(path)`` is empty, and the lane runs NOTHING -- while
+    the tests that still import the deleted name are precisely the ones
+    about to fail at collection.  The selector was silent in the one case
+    it should have been loudest.
+
+    The fix needs no git access, because the evidence is still in the test
+    file: the import statement naming the gone module.  The index keys that
+    edge at the path the module WOULD occupy, which is byte-identical to
+    the path it did occupy, so the lookup answers the same whether or not
+    the file exists.
+
+    Written as a real deletion rather than a mocked index: the whole defect
+    was that the on-disk walk and the lookup disagreed, and a fake index
+    cannot reproduce a disagreement between two things it replaces.
+    """
+
+    product = REPOSITORY_ROOT / "gpuwm" / "_fastfix_deletion_probe.py"
+    test_file = (REPOSITORY_ROOT / "tests"
+                 / "test_fastfix_deletion_probe_importer.py")
+    product.write_text("VALUE = 1\n", encoding="utf-8", newline="\n")
+    test_file.write_text(
+        "from gpuwm import _fastfix_deletion_probe\n\n\n"
+        "def test_probe():\n"
+        "    assert _fastfix_deletion_probe.VALUE == 1\n",
+        encoding="utf-8", newline="\n")
+    rel = "gpuwm/_fastfix_deletion_probe.py"
+    importer = "tests/test_fastfix_deletion_probe_importer.py"
+    try:
+        present = _load_selector().select([rel])
+        assert importer in present, (
+            "the control failed: the selector does not see this edge even "
+            "while the module exists, so the deletion half proves nothing")
+
+        product.unlink()                      # the defect's exact scenario
+        absent = _load_selector().select([rel])
+        assert importer in absent, (
+            "a deleted product module selected nothing; the tests that "
+            "import it are the ones that break")
+    finally:
+        if product.exists():
+            product.unlink()
+        test_file.unlink()
+
+
+def test_an_unparseable_test_file_is_named_rather_than_dropped():
+    """A test file that does not parse is not one that does not matter.
+
+    THE BREAKAGE.  ``_parse`` returns ``None`` on SyntaxError and the index
+    skipped the file, which removes every import edge that file owns.  A
+    lane editing a module only that file imports then selects nothing and
+    reports a green fast-fix leg -- and a file is unparseable exactly when
+    it is mid-edit or broken, which is when its edges matter most.
+
+    Refusing by name, because the alternative is a warning nobody reads on
+    a leg whose entire output is "0 selected".
+    """
+
+    broken = REPOSITORY_ROOT / "tests" / "test_fastfix_unparseable_probe.py"
+    broken.write_text("def test_x(:\n    pass\n",
+                      encoding="utf-8", newline="\n")
+    try:
+        selector = _load_selector()
+        with pytest.raises(selector.UnreadableTestFile) as caught:
+            selector.build_index()
+        message = str(caught.value)
+        assert "tests/test_fastfix_unparseable_probe.py" in message, message
+        # The refusal must name the BREAKAGE, not merely the file.
+        assert "reports green" in message, message
+    finally:
+        broken.unlink()
+
+
+def test_a_rename_still_selects_the_tests_that_import_the_old_name():
+    """Rename detection summarises away the half that breaks things.
+
+    ``git diff --name-only`` detects renames by default and reports only
+    the NEW path.  For test selection that is the wrong summary: a rename
+    breaks the tests importing the OLD name, and they are reachable only
+    from the old path.  ``--no-renames`` reports it as a delete plus an
+    add, so both halves reach the selector and the delete half is answered
+    by the same synthetic-path edge the test above pins.
+
+    Pinned on the flag rather than by staging a rename, because the flag IS
+    the fix and a staged rename would additionally depend on this
+    repository's rename-detection thresholds.
+    """
+
+    source = SELECTOR.read_text(encoding="utf-8")
+    assert '"--no-renames"' in source, (
+        "changed_files no longer passes --no-renames, so a renamed module "
+        "reports only its new path and the tests importing the old name "
+        "are not selected")

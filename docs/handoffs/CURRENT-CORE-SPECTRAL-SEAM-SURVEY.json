@@ -1,0 +1,65 @@
+{
+  "acoustic_containment": {
+    "function": "step",
+    "module": "gpuwm.core.dycore",
+    "statement": "acoustic substeps live entirely inside dycore.step (the stepper the STEP op calls), so a hook that fires after the stepper returns cannot fire inside one",
+    "substeps_inside_step": true
+  },
+  "refusals": {
+    "false_periodic_declaration": "gpuwm.spectral_seam.SpectralSeam.validate_domain: periodic_domain on an open/specified/nested domain",
+    "streamed_domain": "gpuwm.spectral_seam.SpectralSeam.validate_domain: node.state is the t=0 attach snapshot; target planes are not resident at the seam",
+    "unrouted_active_config": "gpuwm.experiment.refuse_unrouted_spectral_numerics"
+  },
+  "routes": {
+    "honored_via_execute_experiment": [
+      "runtime.run_experiment:domain-tree",
+      "prepared_single_domain_forecast",
+      "prepared_domain_tree_forecast"
+    ],
+    "refuse_active_config": [
+      "runtime.run_experiment:single-domain (frozen loop)",
+      "ensemble member (frozen single-domain loop)"
+    ]
+  },
+  "schema": "gpuwm.core-spectral-seam-survey/v2",
+  "seam": {
+    "anchors": [
+      {
+        "anchor": "stepper_call",
+        "breakage_if_missing": "the STEP op no longer steps through the shared stepper binding",
+        "found": true,
+        "line_offset": 38,
+        "marker": "steppers.get(grid_id, step)("
+      },
+      {
+        "anchor": "slow_state_commit",
+        "breakage_if_missing": "the post-step clock refresh (the commit marker) moved or vanished",
+        "found": true,
+        "line_offset": 47,
+        "marker": "after_step=True"
+      },
+      {
+        "anchor": "spectral_hook",
+        "breakage_if_missing": "the Level-2 hook no longer fires at the slow-step commit",
+        "found": true,
+        "line_offset": 57,
+        "marker": "spectral_seam.after_step("
+      },
+      {
+        "anchor": "post_step_observers",
+        "breakage_if_missing": "the hook drifted below the post-step observers",
+        "found": true,
+        "line_offset": 63,
+        "marker": "poison()"
+      }
+    ],
+    "anchors_in_order": true,
+    "attach_before_on_step": true,
+    "closure": "on_step",
+    "found": true,
+    "function": "execute_experiment",
+    "module": "gpuwm.core.model",
+    "statement": "the hook fires once per domain per model time step, immediately after refresh_model_time(after_step=True) -- the slow RK state commit -- inside the STEP op's domain turn, before poison/health/step_observer, before output, nest feedback and the next large step"
+  },
+  "surveyed_utc": "2026-08-18T04:18:09.244179+00:00"
+}

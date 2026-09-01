@@ -3393,6 +3393,151 @@ def test_every_accepted_selector_is_judged():
             mp_physics=mp_physics, ra_lw_physics=0, ra_sw_physics=1))
 
 
+def test_the_uncoupled_selectors_are_a_decision_in_the_module_that_raises():
+    """An omitted selector must read as a RULING, not as a gap.
+
+    THE STATE THIS CLOSES.  ``test_every_accepted_selector_is_judged``
+    above proves the partition is exact and that ``gpuwm/config.py``
+    refuses each uncoupled selector at admission -- but both halves of
+    that record live outside ``gpuwm/core/rrtmgp.py``, and this module is
+    where a reader lands when :func:`cloud_optics_scheme` throws.  What it
+    used to say there, for BOTH uncoupled selectors, was "add a row to
+    ``_MP_CLOUD_OPTICS_SCHEME``".  That is the correct instruction for a
+    scheme nobody has judged and the wrong one for a scheme somebody
+    already ruled out: it sends the next reader to undo the ruling, and
+    for mp=50 it is not even sufficient, because a row alone cannot
+    express P3.
+
+    P3's two blockers:
+
+    * NO SNOW RADIUS, from stock WRF v4.6.1.
+      ``Registry/Registry.EM_COMMON:3038`` declares ``package
+      p3_1category mp_physics==50 - moist:qv,qc,qr,qi`` -- no ``qs``, no
+      ``qg`` -- and ``phys/module_physics_init.F`` puts the P3 family in
+      the ``use_mp_re`` disjunction at :1017-1020 only to override
+      ``has_reqs`` back to 0 at :1026-1033, leaving
+      ``has_reqc = has_reqi = 1``.  Every row in the table resolves to a
+      :func:`hydrometeor_paths` branch that needs a snow radius (the
+      explicit-radius branch raises without ``effc+effi+effs``) or the
+      four Morrison number moments; P3 supplies ``effc``/``effi`` and
+      transports ``ni`` alone.
+    * NO SPELLING FOR ITS MOISTURE SET, in THIS adapter.  P3 is ``F_QI``
+      true with ``F_QS`` false, and :func:`cal_cldfra1` does carry WRF's
+      arm for that pair (``phys/module_radiation_driver.F:3879-3887``,
+      ``QCLD = QI + QC``, ``weight = QI/QCLD``) -- the port resolves the
+      two flags separately and would take the arm if asked.  It is never
+      asked: ``_ICE_ACTIVE_SCHEMES`` is ONE bit and
+      :meth:`RRTMGPRadiation.__call__` hands that one bit to BOTH
+      ``f_qi`` and ``f_qs``, so the pair reaching the routine is always
+      equal and the P3 arm is unreachable from this adapter.  This is the
+      half no scan over integer admission sets can see, so it is asserted
+      here against the two code shapes that carry it -- the fused call
+      site, and the arm that is standing ready behind it -- rather than
+      against the prose that describes them.
+
+    The record must not soften the gate: a selector with neither a row
+    nor a recorded reason still gets the fail-closed message.
+    """
+    import inspect
+
+    from gpuwm.core.rrtmgp import (
+        _CLOUD_OPTICS_REMEDY, _ICE_ACTIVE_SCHEMES,
+        _MP_CLOUD_OPTICS_SCHEME, _NO_CLOUD_OPTICS_COUPLING,
+        RRTMGPRadiation, cal_cldfra1, cloud_optics_scheme)
+
+    # 1. The partition is stated HERE, in the module that raises.
+    coupled = set(_MP_CLOUD_OPTICS_SCHEME)
+    recorded = set(_NO_CLOUD_OPTICS_COUPLING)
+    assert coupled.isdisjoint(recorded)
+    assert coupled | recorded == set(_ACCEPTED_MP_PHYSICS), (
+        "these accepted selectors have neither a cloud-optics row nor a "
+        "recorded reason for not having one: "
+        f"{sorted(set(_ACCEPTED_MP_PHYSICS) - coupled - recorded)}")
+    assert (tuple(sorted(_NO_CLOUD_OPTICS_COUPLING))
+            == tuple(sorted(_NO_RTE_RRTMGP_CLOUD_OPTICS)))
+
+    # 2. The refusal reads as a decision, and names both live adapters.
+    for selector in sorted(_NO_CLOUD_OPTICS_COUPLING):
+        with pytest.raises(NotImplementedError) as caught:
+            cloud_optics_scheme(selector)
+        message = str(caught.value)
+        assert f"mp_physics={selector}" in message
+        assert "cloud-optics" in message
+        assert "deliberately" in message
+        assert "add a row" not in message, (
+            f"mp_physics={selector} is a recorded exclusion but its "
+            "refusal still tells the reader to widen the table")
+        assert _CLOUD_OPTICS_REMEDY in message
+
+    # 3. mp=50 names its WRF authority, both blockers included.
+    p3 = str(pytest.raises(
+        NotImplementedError, cloud_optics_scheme, 50).value)
+    for citation in (
+            "Registry.EM_COMMON:3038",          # moist:qv,qc,qr,qi
+            "module_physics_init.F:1017-1020",  # in the use_mp_re list
+            ":1026-1033",                       # ...then has_reqs = 0
+            "module_radiation_driver.F:3879-3887",  # WRF's own P3 arm
+            "f_qi",                             # ...and the fused flags
+            "f_qs"):
+        assert citation in p3, citation
+
+    # 4. ...and those two code shapes really are what the reason says.
+    #    Asserted against the source because the claim IS structural: one
+    #    bit reaching two flags, over an arm that is already implemented.
+    call = inspect.getsource(RRTMGPRadiation.__call__)
+    assert "f_qi=ice_active, f_qs=ice_active" in call, (
+        "the recorded mp=50 reason rests on _ICE_ACTIVE_SCHEMES supplying "
+        "ONE bit to both cal_cldfra1 flags; the call site changed.  If it "
+        "now resolves them separately, that blocker is GONE and this "
+        "record -- not just this assertion -- has to be re-decided")
+    # The complement, and the reason the blocker is the CALL SITE rather
+    # than the routine: cal_cldfra1 carries WRF's f_qi-and-not-f_qs arm,
+    # and refuses only the mp=5 pair it has no F_ICE_PHY field for.  A
+    # record that blamed the routine would send the next reader to fix
+    # something that is already right.
+    routine = inspect.getsource(cal_cldfra1)
+    assert "3879-3887" in routine, (
+        "the recorded mp=50 reason says WRF's P3 cloud-fraction arm is "
+        "already ported and merely unreachable; that arm is gone")
+    assert "if not f_qc or (f_qs and not f_qi):" in routine, (
+        "cal_cldfra1's refusal is supposed to be the mp=5 F_ICE_PHY pair "
+        "ALONE -- if it once again refuses f_qi != f_qs wholesale, P3's "
+        "second blocker moves back into the routine and the recorded "
+        "reason is wrong about where the work is")
+    assert "p3" not in _ICE_ACTIVE_SCHEMES
+
+    # 5. The record does not soften the gate.  An unjudged selector still
+    #    fails closed, and is told how to make the omission speak.
+    with pytest.raises(NotImplementedError) as unjudged:
+        cloud_optics_scheme(51)
+    assert "add a row" in str(unjudged.value)
+    assert "_NO_CLOUD_OPTICS_COUPLING" in str(unjudged.value)
+
+
+def test_the_module_and_the_registry_builder_refuse_the_same_selectors():
+    """Two authorities, one partition.
+
+    ``tools/build_registry.py`` writes a ``refused_when`` constraint into
+    the shipped registry for every implemented scheme with no
+    cloud-optics row, keyed by its own reason table.  If that table and
+    the module's diverge, the registry refuses a pairing the runtime
+    couples or -- the direction that costs a forecast -- couples one the
+    runtime raises on at the first radiation call.
+    """
+    import sys
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from tools.build_registry import _NO_RTE_RRTMGP_CLOUD_OPTICS_REASON
+
+    from gpuwm.core.rrtmgp import _NO_CLOUD_OPTICS_COUPLING
+
+    assert (sorted(_NO_CLOUD_OPTICS_COUPLING)
+            == sorted(_NO_RTE_RRTMGP_CLOUD_OPTICS_REASON))
+
+
 def test_the_accepted_selector_list_this_module_uses_is_the_real_one():
     """``_ACCEPTED_MP_PHYSICS`` must be exactly what RunConfig admits.
 

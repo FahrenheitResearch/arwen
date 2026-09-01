@@ -58,7 +58,18 @@ import numpy as np
 from gpuwm.da.letkf import GriddedObs, Localization
 
 #: The observation contract this adapter reads.
-OBS_SCHEMA = "gpuwm-obs.radar-grid.v1"
+#: Both radar-grid layouts are assimilable and mean the same thing.  v2
+#: stores each radar's velocity plane on that radar's reach window instead
+#: of the whole domain; this adapter reads the window and hands the filter
+#: exactly the observations v1 would have, so a v1 and a v2 file built from
+#: the same volumes produce the same batches.  v1 stays readable because
+#: receipts recorded v1 digests, and a receipt whose file cannot be opened
+#: is a dead receipt.
+OBS_SCHEMAS = ("gpuwm-obs.radar-grid.v1", "gpuwm-obs.radar-grid.v2")
+
+#: The layout this adapter was written against first, kept as a name for
+#: consumers that pin one string.
+OBS_SCHEMA = OBS_SCHEMAS[0]
 
 #: Provenance stamp for the adaptation itself.
 ADAPTER_SCHEMA = "gpuwm-da.radar-obs-adapter.v1"
@@ -155,10 +166,10 @@ def read_document(source, *, expected_grid,
         raise RadarObsAdapterError(
             f"expected a path or a read_radar_grid document, got "
             f"{type(source).__name__}")
-    if source.get("schema") != OBS_SCHEMA:
+    if source.get("schema") not in OBS_SCHEMAS:
         raise RadarObsAdapterError(
             f"document declares schema {source.get('schema')!r}, this "
-            f"adapter reads {OBS_SCHEMA!r}")
+            f"adapter reads {list(OBS_SCHEMAS)}")
     demanded = expected_grid.identity_sha256()
     if (expected_grid_identity is not None
             and expected_grid_identity != demanded):
@@ -192,7 +203,13 @@ def beam_unit_vectors(document, radar_index: int):
             f"the file carries no {missing}; a radial velocity without its "
             "look direction is not an observation, and this adapter will "
             "not re-derive the beam geometry the writer already computed")
-    return tuple(np.asarray(variables[name][radar_index], dtype=np.float64)
+    # Whole-domain, on both schemas: the beam vectors are the observation
+    # operator's direction and every consumer multiplies them against a
+    # whole-domain wind field.  On v2 they are stored on the radar's
+    # window and expanded here, one radar at a time.
+    from gpuwm.obs.radar_grid import radar_plane      # noqa: PLC0415
+    return tuple(np.asarray(radar_plane(document, name, radar_index),
+                            dtype=np.float64)
                  for name in ("vr_beam_east", "vr_beam_north", "vr_beam_up"))
 
 
@@ -220,8 +237,30 @@ def simulated_radial_velocity(u_east, v_north, w_up, beam):
     return u_east * east + v_north * north + w_up * up
 
 
-def _batch(name, values, errors, mask, simulated, localization, shape):
-    """One validated :class:`GriddedObs`.  Every failure is named."""
+def _radar_window(document, index, shape):
+    """This radar's window, or None when it covers the whole domain.
+
+    None is not a degenerate case, it is the v1 answer and the answer for
+    any radar whose reach happens to span the grid: the batch is then a
+    plain whole-domain batch and every path downstream is the one that ran
+    before windows existed.
+    """
+    windows = document.get("radar_windows")
+    if not windows:
+        return None
+    j0, j1, i0, i1 = (int(v) for v in windows[index])
+    if (j1 - j0 + 1, i1 - i0 + 1) == (shape[1], shape[2]):
+        return None
+    return (j0, j1, i0, i1)
+
+
+def _batch(name, values, errors, mask, simulated, localization, shape, *,
+           window=None):
+    """One validated :class:`GriddedObs`.  Every failure is named.
+
+    ``shape`` is the extent the arrays must have, which for a windowed
+    batch is the window rather than the grid.
+    """
 
     values = np.asarray(values, dtype=np.float64)
     errors = np.asarray(errors, dtype=np.float64)
@@ -241,10 +280,14 @@ def _batch(name, values, errors, mask, simulated, localization, shape):
             f"{shape[2]}), got {simulated.shape}")
     if not mask.any():
         # Legitimate -- a radar that saw nothing this cycle.  The filter
-        # handles an all-False mask as a no-observation type.
+        # handles an all-False mask as a no-observation type.  The window
+        # travels with it regardless: the arrays are still that shape, and
+        # a batch whose declared extent disagreed with its arrays would be
+        # refused by the filter for a reason that has nothing to do with
+        # the radar having been quiet.
         return GriddedObs(name=name, values=values, errors=errors,
                           simulated=simulated, mask=mask,
-                          localization=localization)
+                          localization=localization, window=window)
     bad_value = int(np.count_nonzero(~np.isfinite(values[mask])))
     if bad_value:
         raise RadarObsAdapterError(
@@ -269,7 +312,7 @@ def _batch(name, values, errors, mask, simulated, localization, shape):
             "the filter cannot use")
     return GriddedObs(name=name, values=values, errors=errors,
                       simulated=simulated, mask=mask,
-                      localization=localization)
+                      localization=localization, window=window)
 
 
 def radar_grid_to_gridded_obs(
@@ -318,6 +361,7 @@ def radar_grid_to_gridded_obs(
         expected_grid_identity=expected_grid_identity)
     shape = observation_shape(document)
     variables = document["variables"]
+    from gpuwm.obs.radar_grid import radar_plane      # noqa: PLC0415
 
     batches: list[GriddedObs] = []
     used: list[dict] = []
@@ -453,12 +497,44 @@ def radar_grid_to_gridded_obs(
             site = str(radar["id"])
             if wanted is not None and site not in wanted:
                 continue
-            vr_mask = np.asarray(variables["vr_mask"][index]).astype(bool)
+            # The batch is built on the radar's OWN window where the file
+            # has one.  Expanding to the whole domain here would rebuild
+            # exactly the array v2 exists to avoid -- and then the filter
+            # would keep a second copy of it, which is the term that made
+            # a continental analysis cost ~1.2 TB of host RAM.
+            window = _radar_window(document, index, shape)
+            if window is None:
+                wshape = shape
+                vr_obs = radar_plane(document, "vr_obs", index)
+                vr_err = radar_plane(document, "vr_err", index)
+                vr_mask = np.asarray(
+                    radar_plane(document, "vr_mask", index)).astype(bool)
+            else:
+                j0, j1, i0, i1 = window
+                wshape = (shape[0], j1 - j0 + 1, i1 - i0 + 1)
+                # The stored plane is padded to the widest window in the
+                # file; this radar's own extent is the leading corner.
+                def _stored(name, _i=index, _w=wshape):
+                    return np.asarray(
+                        variables[name][_i])[:, :_w[1], :_w[2]]
+                vr_obs = _stored("vr_obs")
+                vr_err = _stored("vr_err")
+                vr_mask = _stored("vr_mask").astype(bool)
+
+            # H(x_k) may come back on either extent.  A caller that knows
+            # about windows computes the forward operator only where the
+            # observation is -- which is the whole saving, since H is by
+            # far the largest array here -- and one that does not gets its
+            # whole-domain answer cropped, so no existing caller breaks.
+            sim = np.asarray(velocity_simulated(index, radar))
+            if window is not None and sim.ndim == 4 and sim.shape[1:] == shape:
+                # (R, nz, ny, nx) -> (R, nz, nj, ni).  The member and level
+                # axes are untouched; only the horizontal is cropped.
+                sim = sim[:, :, j0:j1 + 1, i0:i1 + 1]
             name = f"{VELOCITY_PREFIX}:{site}"
             batches.append(_batch(
-                name, variables["vr_obs"][index], variables["vr_err"][index],
-                vr_mask, velocity_simulated(index, radar),
-                velocity_localization, shape))
+                name, vr_obs, vr_err, vr_mask, sim,
+                velocity_localization, wshape, window=window))
             rejected = variables.get("vr_rejected")
             used.append({
                 "name": name, "kind": "radial_velocity",
@@ -468,6 +544,10 @@ def radar_grid_to_gridded_obs(
                 "observed_points": int(np.count_nonzero(vr_mask)),
                 "gates_rejected": (None if rejected is None
                                    else int(np.sum(rejected[index]))),
+                # What the file actually stored for this radar.  On v2 it
+                # is the reach window; on v1 it is the whole domain.
+                "window": list(document.get("radar_windows", [])[index])
+                if document.get("radar_windows") else None,
             })
         if wanted is not None:
             found = {entry.get("radar") for entry in used}

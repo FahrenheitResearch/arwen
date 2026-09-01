@@ -268,12 +268,14 @@ def _emit_front_door_capsule(outdir, *, emission_site: str, exp,
                              data: CaseDataConfig, wrfout_paths,
                              trajectory_digest, io_mode: str,
                              frame_records=None,
-                             progress_callback=None) -> Path:
+                             progress_callback=None,
+                             receipts=None) -> Path:
     """Write the front door's certification capsule.
 
     Unconditional: it does not consult ``exp.feedback``, because a receipt
     that appears only on one physics tier is a receipt the other tier cannot
-    be certified from.
+    be certified from.  ``receipts`` is the optional receipts-section
+    mapping (the spectral seam's run receipts arrive through it).
     """
     run_context = {
         "runner_route_and_io_mode": {
@@ -303,7 +305,8 @@ def _emit_front_door_capsule(outdir, *, emission_site: str, exp,
     }
     return emit_run_capsule(
         outdir, emission_site=emission_site, run_context=run_context,
-        run_shape=run_shape, output=output)
+        run_shape=run_shape, output=output,
+        receipts=dict(receipts) if receipts else None)
 
 
 def feedback_provenance(exp: ExperimentConfig) -> Mapping[str, object] | None:
@@ -3252,7 +3255,8 @@ def walk_spawn_legs(model, exp: ExperimentConfig, data: CaseDataConfig, *,
             if target is not None and int(target) not in model.nodes_by_grid_id:
                 runner = None
         execute_experiment(
-            model, relocation_runner=runner, **execute_kwargs)
+            model, relocation_runner=runner, experiment=exp,
+            **execute_kwargs)
         elapsed = float(model.root.clock.elapsed_seconds)
         if elapsed + tol >= total:
             break
@@ -4377,6 +4381,13 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         # and this run is byte-for-byte the run it always was.
         from gpuwm.core import streaming as _streaming
 
+        # The frozen single-domain loop commits its slow steps outside
+        # the execute_experiment seam the Level-2 hook is wired into, so
+        # an active [spectral_numerics] refuses here instead of running
+        # the forecast with the operator silently absent.
+        from gpuwm.experiment import refuse_unrouted_spectral_numerics
+        refuse_unrouted_spectral_numerics(
+            exp, "runtime.run_experiment:single-domain (frozen loop)")
         single_tiles = _streaming.options_for_domain(dc, exp.tiles)
         single_decision = _streaming.decide(prepared.cfg, single_tiles)
         single_stepper = _streaming.make_stepper(
@@ -4561,7 +4572,16 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         streaming_report = _streaming.streaming_receipt(
             exp.tiles, streaming_decisions)
         if streaming_report:
-            print(f"  [tiles] {streaming_report['summary']}")
+            # The summary ALREADY opens with "[tiles] mode=..." -- see
+            # gpuwm.core.streaming.streaming_receipt, which builds that
+            # prefix itself so every consumer of the receipt gets the tag
+            # whether or not it prints one.  Adding a second here rendered
+            # "[tiles] [tiles] mode='auto': ..." on the run door.  The two
+            # sibling printers were never wrong because they open with
+            # their own runner name instead ("prepared tree: ",
+            # "prepared forecast: "), so the receipt's own tag is the one
+            # thing not to repeat.
+            print(f"  {streaming_report['summary']}")
         if already_complete:
             # Not a skipped run: the restore above put the finished state
             # back in memory, and everything below -- drain, digest,
@@ -4579,7 +4599,7 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
                 progress_callback=progress_callback,
                 health_debug=health_debug,
                 relocation_runner=relocation_runner,
-                steppers=steppers)
+                steppers=steppers, experiment=exp)
         else:
             # The leg walk: dormant nests are born mid-run and integrate
             # from their birth boundary onward.
@@ -4635,11 +4655,15 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     # the whole output set was digested twice at the end of every run.
     frame_records = _frame_records(paths, progress_callback=progress_callback)
     _finalizing_progress(progress_callback, "run-capsule")
+    # Spectral run receipts bind into the capsule; a completed apply run
+    # with missing step receipts refuses a clean capsule here.
+    from gpuwm.spectral_seam import seam_capsule_receipts
     _emit_front_door_capsule(
         outdir, emission_site="runtime.run_experiment:domain-tree",
         exp=exp, data=data, wrfout_paths=paths,
         trajectory_digest=trajectory_digest, io_mode="history",
-        frame_records=frame_records)
+        frame_records=frame_records,
+        receipts=seam_capsule_receipts(model))
     return ExperimentRunSummary(
         wrfout_paths=paths,
         completed_seconds=model.root.clock.elapsed_seconds,

@@ -1391,6 +1391,8 @@ _IMPORT_NAME = {
     "psutil": "psutil",
     "huggingface-hub": "huggingface_hub",
     "h5py": "h5py",
+    # The MCP SDK ([mcp] extra): distribution and module share the name.
+    "mcp": "mcp",
     # The companion distribution: pure reference tables (RRTMGP,
     # Thompson), pinned `==` and installed by a bare `pip install
     # gpuwm`.  The probe imports it like any other, which is exactly
@@ -1612,6 +1614,17 @@ class _ExtraFacts:
 #: every door named here must be a real door, and every extra the
 #: installed metadata declares must appear here.
 _EXTRA_FACTS: dict[str, _ExtraFacts] = {
+    # The MCP server dependency (the Model Context Protocol SDK).  Absent
+    # is the normal state of a forecasting install: only a machine that
+    # SERVES agents needs it, and every CLI door works without it.  The
+    # server itself refuses at exit 2 naming `pip install gpuwm[mcp]`.
+    "mcp": _ExtraFacts(
+        doors=("arwen-mcp (the MCP server)", "python -m gpuwm.mcp"),
+        still_works="every gpuwm CLI door; the server is an agent-facing "
+                    "wrapper over them and nothing else imports the SDK",
+        blocking=False, severity=SEVERITY_DEGRADED,
+        deferred_to="mcp (the Model Context Protocol SDK)",
+        expected_absent=True),
     "gpu-cu12": _ExtraFacts(
         doors=_GPU_DOORS, still_works=_GPU_STILL_WORKS,
         blocking=True, severity=SEVERITY_UNREACHABLE,
@@ -3976,6 +3989,67 @@ def _thompson_tables_check() -> Check:
         brief=f"{len(assets)} assets byte-validated")
 
 
+def _p3_table_check() -> Check:
+    """Can an mp_physics=50 run load its ice lookup table, right now?
+
+    Same shape as the Thompson check above and for the same reason: it
+    runs the model's OWN validator, so a green line here means the
+    validation every mp=50 run performs at load has already passed on
+    this install -- not merely that a file of the right name exists.
+
+    Not externalized: at 1.6 MiB the table ships inside the wheel, so its
+    absence means a broken install (or a bad GPUWM_P3_TABLE_ROOT), never
+    a pending download.  There is no `fetch-tables` arm here on purpose.
+
+    Why it needs its own line: P3's process rates ARE this table, the
+    loader refuses without it, and until this check existed the only
+    place that refusal could surface was the first microphysics call of a
+    forecast -- after fetch and preprocessing had been paid for.
+    """
+    from gpuwm.core.p3_tables import (
+        P3_TABLE_ROOT_ENV,
+        P3TableVersionError,
+        TABLE_1_2MOM_ASSET,
+        TABLE_1_2MOM_VERSION,
+        UPSTREAM_WRF_TABLE_1_2MOM_SHA256,
+        _validate_asset_bytes,
+        p3_table_root,
+    )
+
+    root = p3_table_root()
+    path = Path(root) / TABLE_1_2MOM_ASSET.filename
+    try:
+        _validate_asset_bytes(path, TABLE_1_2MOM_ASSET)
+    except P3TableVersionError as error:
+        # A DIFFERENT table, not a damaged one: the fix is to stage the
+        # right version, and "reinstall" alone would be wrong advice.
+        return Check(
+            "p3 table", "missing", str(error),
+            f"# stage p3_lookupTable_1.dat-v{TABLE_1_2MOM_VERSION}, or "
+            f"unset {P3_TABLE_ROOT_ENV}" + "\n" + REINSTALL_HINT,
+            action="pip install -e .",
+            brief=f"table is not v{TABLE_1_2MOM_VERSION}")
+    except (FileNotFoundError, ValueError, OSError) as error:
+        hint = (
+            REINSTALL_HINT
+            + "\n  # if " + P3_TABLE_ROOT_ENV + " is set, point it at a"
+            + "\n  # byte-identical mirror of the packaged table, or unset it"
+            + "\n  # note: WRF's own run/ copy is the SAME table with LF line"
+            + "\n  # endings (sha-256 "
+            + UPSTREAM_WRF_TABLE_1_2MOM_SHA256[:16] + "...), which does not"
+            + "\n  # match this pin; see gpuwm/data/p3/PROVENANCE.md")
+        return Check(
+            "p3 table", "missing", str(error), hint,
+            action="pip install -e .", brief=_short(str(error)))
+    return Check(
+        "p3 table", "verified",
+        f"p3_lookupTable_1.dat-v{TABLE_1_2MOM_VERSION} at {root} "
+        "byte-validated (header version, exact size and SHA-256, "
+        f"{TABLE_1_2MOM_ASSET.size:,} B), the same validation every mp50 "
+        "run performs at load",
+        brief=f"v{TABLE_1_2MOM_VERSION} byte-validated")
+
+
 def _arbitrary_input_check() -> Check:
     """Can this install ingest a data source nobody blessed in advance?
 
@@ -5036,6 +5110,7 @@ def collect_checks(sources: tuple[str, ...] | None = None,
     checks.append(_cpu_library_check())
     phase("physics tables and static inputs")
     checks.append(_thompson_tables_check())
+    checks.append(_p3_table_check())
     checks.append(_noah_tables_check())
     checks.append(_arbitrary_input_check())
     checks.extend(_case_data_root_check())

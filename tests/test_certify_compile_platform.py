@@ -128,6 +128,7 @@ def test_a_capsule_that_recorded_a_module_satisfies_the_manifest_condition(
 # H34 -- NVRTC drift
 # --------------------------------------------------------------------------
 
+@needs_a_witness
 def test_certify_refuses_a_capsule_whose_compile_platform_moved(
         tmp_path, capsys):
     """The pip-NVRTC-shadow failure mode, end to end.
@@ -147,9 +148,17 @@ def test_certify_refuses_a_capsule_whose_compile_platform_moved(
     assert "0.0.0" in message
 
 
+@needs_a_witness
 @pytest.mark.parametrize("item", FINGERPRINT_KEYS)
 def test_every_fingerprint_item_can_refuse_on_its_own(tmp_path, capsys, item):
-    """No item of the fingerprint is carried without being compared."""
+    """No item of the fingerprint is carried without being compared.
+
+    Witness-gated (see certification_fixtures.py): the perturbation
+    fixture matches every OTHER item to the live measurement, so on a
+    process that cannot witness the platform the capsule is born
+    un-witnessed and the refusal collapses to recorded-missing instead
+    of naming the perturbed item.
+    """
     def perturb(capsule):
         stack = capsule["numerical_stack"]
         moved = "moved-by-the-test"

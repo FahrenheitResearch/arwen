@@ -38,7 +38,12 @@ carries that statement; free-forecast panels are stamped
 For how this configuration compares to the Warn-on-Forecast System --
 members, domain, observations, compute, and why the FSS below does not
 sit next to a published WoFS number -- see
-[`da-vs-wofs.md`](da-vs-wofs.md).
+[`da-vs-wofs.md`](da-vs-wofs.md).  That page also scores the demo against
+the **operational HRRR**, the one external baseline that could be scored:
+on one case it wins across the whole 90-minute free forecast, with the
+margin peaking near +45 min and spent by +1:30.  The window is part of the
+result -- quoting the win without it misstates the page -- and the HRRR
+ingests strictly more radar data than this demo does.
 
 Two capabilities live beside this quickstart rather than in it, because
 each is optional and each changes what a run costs:

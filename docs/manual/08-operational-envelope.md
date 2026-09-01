@@ -93,8 +93,10 @@ bare-default with the gate on (section 8.5)
 [receipt:ux-walks-replay/gpu-walk-3080-fixed.html]. The complete cold walk
 around the chain (venv, install, CuPy, the one-time 3 m 07 s WPS_GEOG
 download, wizard, forecast, render) reached its first plot 7 m 03 s after the
-first command. Host memory bounds the largest preparations: the RRFS
-7-valid-time prep peaks near 107 GiB of host RSS (section 5.7).
+first command. Host memory no longer bounds the largest preparations by the
+LENGTH of the forcing window: the mapped engine decodes and writes one valid
+time at a time, so the RRFS 7-valid-time prep that peaked near 107 GiB of host
+RSS now peaks at 26.9 GiB and rises 0.04 GiB per forcing hour (section 5.7).
 
 ## 8.4 Tile streaming and moving nests as capacity tools
 

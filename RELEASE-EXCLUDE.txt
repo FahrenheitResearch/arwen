@@ -213,3 +213,14 @@ configs/superoutbreak_20110427_smoke.namelist.wps
 # pyproject packages configs/ recursively.  It is also case-named, which
 # nothing in configs/ should be.
 configs/real74_morrison_d03_pressure_fix_1h.toml
+# DA-campaign drivers and a node runbook from the 2.6.1 fold wave: each
+# bakes a per-user scratch root or a rented node's home path -- exactly
+# the machine-specific runbook class this manifest exists for.  Their
+# runs of record live in the receipts they wrote; nothing here is
+# needed to use the product.
+tools/cycle_demo_a.py
+tools/cycle_demo_b.py
+tools/cycle_demo_c.py
+tools/da_real_leg.py
+tools/da_real_series.py
+tools/ens_sweep/release_card.sh

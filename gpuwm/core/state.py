@@ -490,7 +490,12 @@ class DomainState:
                 # module_mp_p3.F's own background radii, in gpuwm's
                 # radiation-facing micron convention: p3_main initializes
                 # diag_effc = 10.e-6 m and diag_effi = 25.e-6 m every call
-                # before any condensate test (:2280-2282).
+                # before any condensate test (:2279 and :2281; the :2280
+                # between them is the commented-out diag_effr).  A PAIR, and
+                # only a pair: the string "effs" does not occur anywhere in
+                # module_mp_p3.F, and the driver's P3 call binds
+                # diag_effc_3d=re_cloud and diag_effi_3d=re_ice with no snow
+                # argument at all (module_microphysics_driver.F:1596-1597).
                 self.effc[...] = DTYPE(10.0)
                 self.effi[...] = DTYPE(25.0)
                 for name in ("qi0", "ni0", "nr0", "qir0", "qib0"):
@@ -542,6 +547,39 @@ class DomainState:
                     # Registry default nssl_cccn=0.5e9 m-3; the resulting
                     # dry-mass mixing ratio is exactly this FP32 value.
                     self.qnn[...] = DTYPE(408163264.0)
+                # THE THREE ARMS BELOW ARE A PARTITION OF SIX-SPECIES STATES,
+                # and mp=50 is deliberately in none of them.  What they decide
+                # is not "which schemes declare radii" -- P3 declares two --
+                # but "which writer's background TRIPLE (effc, effi, effs)
+                # does a state that allocated all three receive before the
+                # first microphysics call".  P3 is outside that question by
+                # INVENTORY, decided rather than overlooked:
+                #   * Registry.EM_COMMON:3038 gives mp=50 state:re_cloud,
+                #     re_ice and NO re_snow, where wsm6scheme (:3021),
+                #     thompson (:3024), wdm6scheme (:3031) and thompsonaero
+                #     (:3036) -- this arm's four members -- each register the
+                #     trio;
+                #   * module_physics_init.F names the P3 family in the
+                #     use_mp_re disjunction (:1017) and sets all three flags
+                #     (:1021-1023), then immediately overrides has_reqs = 0
+                #     for that family alone (:1027-1033).  WRF asks P3 for a
+                #     cloud radius and an ice radius and never for a snow one.
+                # So the mp=50 arm at the top of this block allocates effc and
+                # effi and no effs.  Adding 50 to a tuple here is DEAD CODE
+                # today -- P3 leaves this chain 50 lines above -- and an
+                # AttributeError on ``self.effs`` the moment anyone also
+                # folds P3 into the six-species elif, which the comment there
+                # refuses for the same one-ice-category reason.  It would
+                # also seed the state with a snow radius P3
+                # never computes -- its single ice category spans rime
+                # fraction instead of separating snow from graupel -- which
+                # is the same invented number ``validate_p3_radiation``
+                # (gpuwm/config.py) already refuses to hand RRTMGP, decided
+                # there with its WRF authority.  P3's own background pair is
+                # seeded above from module_mp_p3.F, not from
+                # module_model_constants.F.
+                # Gate: tests/test_p3_port.py::
+                # test_the_background_radius_rows_are_a_six_species_partition
                 if cfg.mp_physics in (6, 8, 16, 28):
                     # module_model_constants.F WSM6/Thompson background radii,
                     # stored in gpuwm's radiation-facing micron convention.

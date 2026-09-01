@@ -600,6 +600,81 @@ def test_compute_refl_10cm_dispatches_on_active_scheme():
         compute_refl_10cm(state, cfg)
 
 
+def test_p3_refuses_by_name_rather_than_being_absent_from_the_gate():
+    """mp=50 is CORRECTLY out of the producer gate, and now says so.
+
+    P3 has no standalone reflectivity routine to dispatch to: WRF computes
+    dBZ inside ``p3_main`` (ze_rain from the scheme's own rain PSD,
+    module_mp_p3.F:4755; ze_ice from the lookup-table normalised moment
+    f1pr13, :4789/:4868; diag_ze at :4887) and the driver binds
+    ``diag_zdbz_3d`` straight to ``refl_10cm``.  It also predicts ONE ice
+    category with a rime pair and allocates no qs and no qg, so the only
+    branch here it could reach is Kessler's rain-only form.
+
+    The omission was therefore right and the WORDING was wrong: the refusal
+    told a P3 caller that mp=50 is not "an active microphysics scheme",
+    which is the mp=28 failure mode -- a reachability gap dressed as a
+    not-implemented message.  The radar observation operator
+    (gpuwm/da/obsop.py) sends every scheme except 18 through this function,
+    so that sentence was the whole answer a radar-DA caller got.
+    """
+    from gpuwm.core.refl import (NativeReflectivityScheme,
+                                 SCHEME_NATIVE_REFL_10CM, compute_refl_10cm)
+
+    class _S:
+        qv = np.zeros((4, 3, 2), dtype=np.float32)
+        p = np.zeros((4, 3, 2), dtype=np.float32)
+
+        @staticmethod
+        def scratch(shape, _name):
+            return np.zeros(shape, dtype=np.float32)
+
+    with pytest.raises(NativeReflectivityScheme) as caught:
+        compute_refl_10cm(_S(), SimpleNamespace(mp_physics=50))
+    message = str(caught.value)
+
+    # Still a ValueError, so no caller loses its handler.
+    assert isinstance(caught.value, ValueError)
+    # It names the scheme, why it is out, and where its dBZ actually is.
+    assert "mp_physics=50" in message
+    assert "p3_main" in message and "module_mp_p3.F:4755" in message
+    assert "no qs" in message.lower() and "no qg" in message.lower()
+    assert "refl_10cm" in message
+    # The clear-air floor differs from this dispatcher's family, and a DA
+    # caller differencing H(x) against a clear sky has to know it.
+    assert "-99 dBZ" in message and "-35 dBZ" in message
+    # The sentence the mp=28 audit taught us not to write.
+    assert "active microphysics scheme" not in message
+
+    # And the gate itself is unchanged: naming the refusal is not a licence
+    # to widen it.  50 would fall through to the Kessler arm.
+    assert 50 in SCHEME_NATIVE_REFL_10CM
+    import gpuwm.core.refl as refl_module
+    source = Path(refl_module.__file__).read_text(encoding="utf-8")
+    assert "cfg.mp_physics not in (1, 6, 8, 10, 16, 28)" in source
+
+
+def test_native_reflectivity_table_is_the_consumer_minus_producer_set():
+    """Every scheme that stages REFL_10CM without dispatching here has a
+    RECORDED reason, and the table cannot drift from the consumer census.
+
+    ``tests/test_mp28_runtime_reachability.py`` asserts the arithmetic
+    ``REFL_ADMISSION - {1, 6, 8, 10, 16, 28} == {9, 18, 50}``.  That is the
+    same statement, bound to the constant a reader of gpuwm/core/refl.py
+    actually reaches, so a scheme joining the consumer set without a
+    recorded reason fails here instead of reaching a user as an omission.
+    """
+    from gpuwm import runtime
+    from gpuwm.core.refl import SCHEME_NATIVE_REFL_10CM
+
+    producer = frozenset({1, 6, 8, 10, 16, 28})
+    consumer = frozenset(runtime.REFL_10CM_MICROPHYSICS)
+    assert frozenset(SCHEME_NATIVE_REFL_10CM) == consumer - producer
+    assert not (frozenset(SCHEME_NATIVE_REFL_10CM) & producer)
+    for scheme, reason in SCHEME_NATIVE_REFL_10CM.items():
+        assert len(reason) > 80, f"mp={scheme} has a reason in name only"
+
+
 def test_wrfout_refl_10cm_variable_is_registry_faithful(tmp_path):
     """Opt-in REFL_10CM rides a frame dict into wrfout with the
     Registry.EM_COMMON:1596 attribute strings, unstaggered 3-D layout,

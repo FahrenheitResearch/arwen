@@ -287,7 +287,9 @@ def test_restart_schema_and_lazy_keys_are_pinned():
     The MPAS side stores these payloads; a silent schema or key change
     would restore garbage.  Any deliberate change bumps RESTART_SCHEMA.
     """
-    assert mcb.RESTART_SCHEMA == "mpas-column-batch-v1"
+    # v2: scalars["carriers"] (radiation CarrierContract provenance)
+    # joined the payload -- the RESTART_SCHEMA comment carries the story.
+    assert mcb.RESTART_SCHEMA == "mpas-column-batch-v2"
     assert mcb._LAZY_RESTART_KEYS == ("cumulus/w0avg",
                                       "radiation/o33d_grid")
     assert mcb._OUTPUT_BUFFERS == ("du", "dv", "dtheta", "dqv", "dqc",
@@ -304,3 +306,87 @@ def test_the_tendency_result_carries_the_full_species_set():
                      "elapsed_seconds", "radiation_ran",
                      "surface_pbl_ran", "cumulus_ran"):
         assert required in names
+
+
+def test_the_export_payload_carries_the_carrier_provenance():
+    """Schema v2 coverage: a payload without CarrierContract provenance
+    restores a seam that refuses at its first radiation-not-due step
+    ("GLW has no producer", check_before_consumption) -- the red of
+    tests/test_mpas_column_batch_gpu.py::
+    test_restart_round_trip_continues_bit_identically, latent in shipped
+    2.6.0 because no release list ran that file.  CPU restatement by
+    source inspection, so the coverage cannot silently regress without a
+    card noticing."""
+    import inspect
+    source = inspect.getsource(mcb.MpasColumnBatchPhysics.export_state)
+    assert "carriers.state()" in source
+    restore = inspect.getsource(mcb.MpasColumnBatchPhysics.restore_state)
+    assert "carriers.restore" in restore
+
+
+# ---------------------------------------------------------------------------
+# Microphysics scheme rows (P3, 2026-08-31).
+# ---------------------------------------------------------------------------
+
+def test_the_species_rows_are_pinned_per_scheme():
+    """The transported species sets are cross-program contracts.
+
+    The WSM6 row is the pinned 2026-08-10 counterparty set, unchanged to
+    the byte by the P3 landing (the off-path gate).  The P3 row is WRF's
+    own mp=50 call shape (module_microphysics_driver.F:1569-1602): four
+    moist masses, both number moments, the rime mass/volume pair --
+    EIGHT scalars, no qs, no qg.  A drifted row is a state substitution
+    on whichever side trusted the old one.
+    """
+    assert mcb._SPECIES_BY_SCHEME == {
+        "wsm6": ("qv", "qc", "qr", "qi", "qs", "qg"),
+        "p3": ("qv", "qc", "qr", "qi", "ni", "nr", "qir", "qib"),
+    }
+    assert mcb._SPECIES == mcb._SPECIES_BY_SCHEME["wsm6"]
+
+
+def test_the_restart_state_rows_are_pinned_per_scheme():
+    """P3 restart state adds th_old/qv_old and drops effs.
+
+    th_old/qv_old are P3's cross-step supersaturation carriers
+    (module_mp_p3.F:5018-5021); nothing between a resume and the next
+    microphysics call can refill them, so a row that lost them would
+    resume with a repeated first-step transient and no error anywhere.
+    effs is absent because P3 has no snow species or snow radius (WRF's
+    has_reqs=0 override).  The WSM6 row is unchanged.
+    """
+    assert mcb._STATE_RESTART_FIELDS_BY_SCHEME == {
+        "wsm6": ("effc", "effi", "effs", "h_diabatic"),
+        "p3": ("effc", "effi", "h_diabatic", "th_old", "qv_old"),
+    }
+
+
+def test_an_unknown_microphysics_scheme_refuses_with_the_roster():
+    with pytest.raises(ValueError, match="microphysics_scheme"):
+        mcb.run_mpas_column_batch(**_constructor_kwargs(
+            microphysics_scheme="thompson"))
+
+
+def test_p3_refuses_the_wsm6_hail_knob():
+    """A WSM6 knob on a P3 seam would be silently ignored -- accepted
+    configuration the run does not have, which is the refusal law's
+    exact target."""
+    with pytest.raises(ValueError, match="wsm6_hail_opt"):
+        mcb.run_mpas_column_batch(**_constructor_kwargs(
+            microphysics_scheme="p3", wsm6_hail_opt=1))
+
+
+def test_phase_signatures_carry_the_p3_species_keywords():
+    """Both phase entries accept the P3 four as keywords (scheme-gated
+    at runtime); phase 2's rho_dry is optional because P3 refuses it.
+    Dropping a keyword silently re-welds the seam to WSM6."""
+    import inspect
+    for method in (mcb.MpasColumnBatchPhysics.run_phase1,
+                   mcb.MpasColumnBatchPhysics.run_phase2):
+        parameters = inspect.signature(method).parameters
+        for name in ("ni", "nr", "qir", "qib"):
+            assert name in parameters
+            assert parameters[name].default is None
+    phase2 = inspect.signature(
+        mcb.MpasColumnBatchPhysics.run_phase2).parameters
+    assert phase2["rho_dry"].default is None

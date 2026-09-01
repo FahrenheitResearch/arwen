@@ -686,18 +686,24 @@ _FORMAT_TOOLS = {
 }
 
 
-def _python_tools(source_format: str = "grib2") -> dict[str, Path]:
+def _python_tools(
+        source_format: str | tuple[str, ...] = "grib2") -> dict[str, Path]:
     """The subprocess decoder tools, named EXPLICITLY.
 
     Naming them is also how a caller pins the Python engine, so this
     side of the battery is independent of whichever engine happens to be
     the default -- the reference cannot quietly become the thing being
-    measured.
+    measured.  Accepts one format or several, because a composition's
+    decoder contract is the UNION of its primary and donor formats
+    (see :func:`_composed_formats`).
     """
 
+    formats = ((source_format,) if isinstance(source_format, str)
+               else tuple(source_format))
     tools = {
         name: bridges.find_bridge(name)
-        for name in _FORMAT_TOOLS[source_format]
+        for fmt in formats
+        for name in _FORMAT_TOOLS[fmt]
     }
     if any(path is None for path in tools.values()):
         raise FileNotFoundError("staged decoder executables absent")
@@ -1121,6 +1127,21 @@ COMPOSED_SOURCES: dict[str, dict[str, object]] = {
         "supplement": _SUPPLEMENT_DONOR,
         "donor_files": _files("crosssource", "gdas.t00z.pgrb2.0p25.f000"),
     },
+    # ERA5 native model levels: a 137-hybrid-level GRIB2 primary (t/u/v/q;
+    # pressure and height are DERIVED via the in-band Section-4 pv ladder)
+    # borrowing its ten surface/soil fields from the same hours'
+    # pressure-level/single-level combined file -- the exact donor bytes
+    # the certified `era5` front door produces.  One hour-block,
+    # 2026-05-05 12-15Z, 0.25-degree subset; alignment is
+    # exact_coordinate_subset + valid_time_exact by construction of the
+    # fetch.  Staged 2026-08-31, retiring this source's exemption below.
+    "era5-l137": {
+        "primary": _files("era5-l137",
+                          "era5-ml-l137-20260505-12z-15z.grib2"),
+        "supplement": _SUPPLEMENT_DONOR,
+        "donor_files": _files("era5-l137",
+                              "era5-combined-20260505-12z-15z.grib"),
+    },
 }
 
 
@@ -1252,6 +1273,26 @@ def _python_engine_pinned():
             os.environ[engine_bridge.ENGINE_ENV] = previous
 
 
+def _composed_formats(recipe) -> tuple[str, ...]:
+    """Every format the composition decodes, primary and donors alike.
+
+    ``decode_composed_source`` computes its decoder-inventory contract
+    from the primary mapping's format UNIONED with each contributing
+    donor mapping's (gpuwm/mapped_composition.py), so the reference must
+    hand it the same tool set.  Reading only the profile's primary
+    format under-supplies any cross-format donor: the first GRIB1 donor
+    to arrive (era5-l137's pressure-level/single-level combined file
+    under a GRIB2 model-level primary) refused with
+    ``missing=['grib1_bridge']`` on a fully staged tree.
+    """
+
+    formats = {str(recipe["format"])}
+    for path in recipe["contributing"].values():
+        with open(path, encoding="utf-8") as handle:
+            formats.add(str(json.load(handle)["format"]))
+    return tuple(sorted(formats))
+
+
 def compose_with_python_engine(source: str, work: Path):
     """Compose one registered source on the Python engine of record.
 
@@ -1264,7 +1305,7 @@ def compose_with_python_engine(source: str, work: Path):
     from gpuwm.mapped_composition import decode_composed_source
 
     recipe = composed_recipe(source)
-    tools = _python_tools(str(recipe["format"]))
+    tools = _python_tools(_composed_formats(recipe))
     manifest = Path(work) / "input-manifest.json"
     with _python_engine_pinned():
         author_input_manifest(
@@ -1274,6 +1315,13 @@ def compose_with_python_engine(source: str, work: Path):
             primary_files=recipe["primary"],
             supplement_files=recipe["supplements"],
             provenance_files=recipe["provenance"],
+            # The donor mappings, exactly as `decode_composed_source`
+            # receives them below: authoring computes its decoder
+            # contract from the format UNION they declare, so leaving
+            # them out under-seals any cross-format donor's decoder
+            # (grib2-only donors produce byte-identical manifests with
+            # or without this argument).
+            contributing_mappings=recipe["contributing"] or None,
             **tools)
         digest = _sha256(manifest)
         try:
@@ -2388,14 +2436,6 @@ def test_the_compose_registry_covers_every_registered_composition_source():
         # be permanently skipped rather than covered.  It is reported by
         # `--kind compose --list` the moment the bytes appear.
         "20crv3-cf": "no staged NetCDF-CF corpus",
-        # The ERA5 native-model-level source (registered 960dda063,
-        # 2026-08-20, without a row here): its composition takes a
-        # 137-level model-level series plus the same hour's
-        # pressure-level/single-level donor, and no such pair is in the
-        # staging tree on any box this battery has run on.  Same posture
-        # as 20crv3-cf: stage the pair, extract the golden with
-        # `--kind compose --source era5-l137`, and delete this entry.
-        "era5-l137": "no staged ERA5 model-level + same-hour donor pair",
     }
     registered = {
         adapter.source_id for adapter in source_adapters()

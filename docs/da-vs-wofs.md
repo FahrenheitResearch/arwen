@@ -11,11 +11,20 @@ And no -- three members is the one trade that cannot be made, for a
 reason that is arithmetic rather than aesthetic, and the rest of this
 page is that reason plus what to do instead.
 
+A fourth question arrived later and could actually be answered: **how does
+it compare to something we can score?**  WoFS cannot be -- its gridded
+output is not public.  The operational HRRR can be, and section 3 does it:
+on this one case the nowcast beats HRRR across its 90-minute free forecast,
+with the margin peaking near +45 min and spent by +1:30.  That window is
+the claim; HRRR ingests strictly more radar data than we do, and section 3
+says so.
+
 Everything below about our system is measured on a single run
 (`evidence/da-demo/live-fire-3/`, KDMX, 2026-08-05, six 15-minute cycles
 04:15-05:30Z and a 90-minute free forecast).  Everything about WoFS is
-cited.  Where the two cannot be compared, this says so instead of
-comparing them.
+cited.  Everything about the HRRR is cited to NOAA/NCEP primary sources.
+Where two systems cannot be compared, this says so instead of comparing
+them.
 
 ---
 
@@ -131,7 +140,8 @@ the SFE daily domains ... presumably due to the abundance of easy nulls".
   operational HRRR, which is itself radar-initialised.  Our control is a
   cold GFS start that has never seen an observation -- a far weaker
   baseline, so a far larger gain.  WoFS's own gain over HRRR is near zero
-  deterministically and about +0.10 for eFSS.
+  deterministically and about +0.10 for eFSS.  Section 3 scores us against
+  that same HRRR directly, which is the comparison that does transfer.
 - **The lead time is the easy window.**  90 minutes sits inside the 0-2 h
   band where Skinner et al. find WoFS members and the HRRR statistically
   indistinguishable.  Flat FSS to +90 min is a much weaker claim than
@@ -151,7 +161,144 @@ target, not skill against observed storms.
 
 ---
 
-## 3. Why three members is the wrong trade
+## 3. Against operational HRRR, which we could actually score
+
+WoFS could not be scored.  The HRRR could, and was.  On this one case, on
+six identical valid times, against the same observed composites, with the
+same scorer:
+
+**The nowcast beat operational HRRR across its whole 90-minute free
+forecast, and the margin was spent by the end of it.**
+
+| | mean FSS(30 dBZ, 27 km box) |
+|---|---|
+| ours, ensemble mean of 10 | **0.7403** |
+| ours, single member 0 | **0.7453** |
+| **HRRR t05z**, the closest cycle | **0.6874** |
+| HRRR t05z at equal forecast age | 0.6755 |
+| our never-analysed control | 0.3004 |
+
+The decay is the result, not a caveat on it:
+
+| valid | forecast age | ours (ens) | HRRR t05z | margin |
+|---|---|---|---|---|
+| 05:45Z | +0:15 | 0.7274 | 0.6644 | **+0.063** |
+| 06:00Z | +0:30 | 0.7557 | 0.6523 | **+0.103** |
+| 06:15Z | +0:45 | 0.7655 | 0.6564 | **+0.109** |
+| 06:30Z | +1:00 | 0.7376 | 0.7099 | +0.028 |
+| 06:45Z | +1:15 | 0.7316 | 0.7138 | +0.018 |
+| 07:00Z | +1:30 | 0.7239 | **0.7278** | **-0.004** |
+
+The margin peaks at +45 min, then falls monotonically and has crossed by
+the last scored frame.  **That crossing is the most actionable number on
+this page**: it is the edge of the window this system is for.  Past it, the
+free national product is the better forecast, on this case.
+
+Two clocks run in that table and they must not be conflated.  "Forecast
+age" is *ours*, measured from our last observation at 05:29:32Z, so the
+07:00Z frame is our +1:30.  The same frame is a **2-hour** HRRR forecast,
+because HRRR t05z initialises at 05:00Z.  "Gone by two hours" elsewhere in
+these receipts means two hours of HRRR lead at the crossing frame; in our
+own clock the advantage covers the whole 90-minute free forecast and is
+spent at the end of it.  We have no scored frame beyond +1:30 and make no
+claim about one.
+
+### The margin was attacked before it was reported
+
+Four ways, all in
+`evidence/da-demo/live-fire-3/baseline-comparison/`:
+
+- **The lead handicap runs against HRRR, deliberately.**  Our run
+  assimilated through 05:29:32Z; the closest HRRR cycle's radar intake ends
+  at 05:00Z, so no HRRR cycle can be given our forecast age.  The t04z
+  cycle -- the newest one a forecaster actually had in hand when we stopped
+  ingesting, since t05z did not reach S3 until 05:52:23Z, 23 minutes after
+  our cutoff -- scores 0.5500 and is kept in the receipts precisely because
+  dropping it would flatter us.
+- **The equal-forecast-age construction removes the handicap** the only way
+  it can be removed, by moving the valid times: HRRR t05z at ages 0:15 to
+  1:30 scores 0.6755 against our 0.7403 at ages 0:15:28 to 1:30:28.  The
+  residual 28 s of mismatch favours HRRR.  The margin survives.
+- **25 metric combinations.**  Five neighborhoods (9 to 99 km) x five
+  thresholds (25 to 45 dBZ).  Our ensemble mean wins **all 25**, by +0.030
+  to +0.092.  The published 27 km / 30 dBZ point is not a lucky corner.
+- **The regrid was quantified, and it runs in HRRR's favour.**  Nearest,
+  bilinear and parabolic donors span 0.0024 FSS; pushing our own field onto
+  the HRRR grid and back -- two regrids, twice what HRRR receives --
+  *raises* our score by 0.0025.  Worth about 5 % of the margin, in the
+  direction that costs us.
+
+**It is not an ensemble-averaging artefact.**  FSS rewards smoothing, so an
+ensemble mean against a deterministic run is not automatically fair.  The
+like-for-like line is the single member, and single members score *higher*
+than the mean (0.7453 vs 0.7403).  Even the worst of the ten (0.7334) beats
+HRRR's 0.6874.
+
+### What HRRR assimilates, and what that does to the claim
+
+The first cut of this comparison refused to claim the two systems consume
+the same observations, because it had not checked whether HRRR takes
+NEXRAD radial velocity -- which is exactly what we ingested.  That refusal
+was right, and settling it moved the claim **against us**:
+
+**HRRR assimilates radar radial velocity.**  NWS Service Change Notice
+18-58 (effective 11 July 2018): *"The assimilation of radar radial velocity
+and lightning data will be added to the HRRR."*  VAD wind retrievals are a
+separate line in the same notice, so this is not loose wording for VAD.
+Nothing in the HRRR v4 notice removes it.
+
+**HRRR also assimilates reflectivity, which we do not** -- twice over.  The
+deterministic HRRR converts 3D MRMS reflectivity plus lightning into
+specified latent heating across a 1-h pre-forecast, at four times, 15 min
+apart (Dowell et al. 2022, §3c).  HRRRDAS, the 36-member 3-km ensemble that
+supplies HRRR v4's background, does *direct* reflectivity assimilation with
+an EnKF (SCN 20-46).
+
+So the accurate statement is the unflattering one.  **HRRR consumes a
+strict superset of our radar information** -- the national mosaic, two
+ways, plus network-wide radial velocity, plus conventional and satellite
+data -- against our single radar, velocity only, into two analysis
+variables.  This result is **not** evidence that we extract more from the
+same observations, and it is not "same information, better model".
+
+What we had instead was **currency and cadence**: 15-minute cycling with
+observations to 05:29:32Z, against hourly cycling whose radar ends at
+05:00Z.  That is also the only reading consistent with the shape of the
+result -- an edge built on recency and update rate should decay as the
+forecast ages, and this one decays monotonically to zero by two hours.  A
+model-quality edge would not.
+
+One correction in the same direction, for the record: an HRRR cycle's
+observation cutoff is *not* simply its analysis time.  Its window is the
+RAP's (Dowell et al. 2022, §3a), and the RAP's runs *"from 45 min before
+analysis time to 15 min after"* (Benjamin et al. 2016, §2a).  For
+conventional data HRRR t05z sees observations to about 05:15Z, so our
+currency edge on those types is nearer 15 minutes than 30.  For radar,
+which is what matters here, the intake still ends at 05:00Z.
+
+Not established from any primary source, and therefore not asserted: the
+operational clock time at which the HRRR job stops waiting for data, and
+the QC and error weighting applied to radial velocity inside the analysis.
+Dowell et al. (2022) is the refereed HRRR v4 system description and it
+never uses the word "radial"; two NCEP/NWS implementation notices say the
+HRRR assimilates it.  That disagreement is reported rather than resolved.
+No number above depends on it.
+
+### What this still is not
+
+- **Still no WoFS number.**  Nothing in this section changes section 2.  No
+  WoFS domain was run over this case, WoFS gridded output is not public,
+  and no WoFS value has been invented to sit in these tables.
+- **One case, six frames, one radar, one metric, one card.**  This is a
+  demonstration that the machinery beats a strong public baseline in a
+  narrow window.  It is not a verification study, it carries no error bar,
+  and a single draw cannot state a skill level.
+- **The window is the claim.**  "Beats HRRR" without "for about 90 minutes"
+  is a misquotation of this page.
+
+---
+
+## 4. Why three members is the wrong trade
 
 ### The arithmetic
 
@@ -254,7 +401,7 @@ binding, to relieve one that is.
 
 ---
 
-## 4. What to buy instead, and what it costs
+## 5. What to buy instead, and what it costs
 
 All figures below come from a three-term model -- advance, solve,
 staging -- calibrated on this run and reproducing its total to **0.6%**
@@ -279,7 +426,7 @@ analysis ensemble size.  The one soft spot: the `R x R` eigendecomposition
 is invisible at `N = 10` but is the same order as the gather term at
 `N = 36`, so the solve could run up to 1.7x the modelled 24.4 s/cycle.
 Even then the answer is ~30 min.  **This is the cheapest large improvement
-available and it is the one the sweep in section 6 measures first.**
+available and it is the one the sweep in section 7 measures first.**
 
 ### (b) 1 km at the current 396 km footprint -- do not
 
@@ -341,7 +488,7 @@ measure.
 
 ---
 
-## 5. What this is
+## 6. What this is
 
 **A demo-grade system with one verified case.  Not a verified forecast
 system.**
@@ -353,9 +500,11 @@ EXERCISE, NOT CAMPAIGN EVIDENCE, and that stamp is accurate:
   with no error bar.  WoFS's numbers aggregate 95 cases x 8 forecasts with
   bootstrap confidence intervals.  This can show the machinery works.  It
   cannot state a skill level.
-- **The baseline is doing nothing.**  FSS 0.72-0.77 against 0.24-0.34 says
-  DA beat a never-analysed cold start.  Not persistence, not optical-flow
-  nowcasting, not WRFDA, not the HRRR.
+- **The cold-start baseline is doing nothing.**  FSS 0.72-0.77 against
+  0.24-0.34 says DA beat a never-analysed cold start.  Not persistence, not
+  optical-flow nowcasting, not WRFDA.  It *is* now also scored against the
+  operational HRRR (section 3), which is a real baseline -- but on one
+  case, and only inside a 90-minute window.
 - **No dual-run byte comparison was done for any DA run**, so the standing
   no-ECC corruption screen has not been applied to these numbers.  Each is
   one sample on a card with no ECC.
@@ -368,15 +517,18 @@ EXERCISE, NOT CAMPAIGN EVIDENCE, and that stamp is accurate:
   counted, which is not the same as unwrapping.
 - **The cycling legs write no `wrfout`**, so none of these timings include
   the per-member history a real product would have to write.
-- **Only 2 of the 6 scored frames have their observation volumes hashed
-  into the lane.**  The other four are graded in the gallery but their
-  provenance is not committed here.
+- **All 6 scored frames now carry their observation provenance in the
+  lane** (`evidence/da-demo/live-fire-3/verification-addendum.json`, six
+  volume records with volume, gridded-observation and wrfout digests, plus
+  the per-frame `build-verify-*.json`).  Until 2026-08-05 only the first
+  two were committed and every number above the +30 min frame was real but
+  unbacked in the repo.
 
 ---
 
-## 6. The staged sweep
+## 7. The staged sweep
 
-The cost figures in section 4 are a model.  `evidence/da-demo/sweep/`
+The cost figures in section 5 are a model.  `evidence/da-demo/sweep/`
 stages the experiment that replaces them with measurements, on this same
 KDMX case, scored with the same FSS so the results land directly beside
 the 0.72-0.77 already published:
@@ -469,6 +621,32 @@ stronger than a cold-start control.
 - Flora et al., 2025: WoFSCast. *GRL*. doi:10.1029/2024GL112383
 - HWT Spring Forecasting Experiment 2025 Operations Plan, sec. 2c and
   Table 14 (cb-WoFS configuration)
+
+### HRRR (section 3), NOAA/NCEP primary sources
+
+- Dowell et al., 2022: The High-Resolution Rapid Refresh (HRRR). Part I:
+  Motivation and System Description. *Wea. Forecasting* **37**, 1371-1395.
+  doi:10.1175/WAF-D-21-0151.1 -- §3a observations and assimilation window,
+  §3c the 1-h pre-forecast latent heating, §3d HRRRDAS
+- Benjamin et al., 2016: A North American Hourly Assimilation and Model
+  Forecast Cycle: The Rapid Refresh. *Mon. Wea. Rev.* **144**, 1669-1694.
+  doi:10.1175/MWR-D-15-0242.1 -- §2a, the observation time window the HRRR
+  inherits
+- NWS Service Change Notice **18-58**, 31 May 2018 (RAP v4 / HRRR v3,
+  effective 11 July 2018) -- the radar radial velocity and lightning
+  addition, with VAD listed separately
+- NWS Service Change Notice **20-46 Updated**, 2 November 2020 (RAP v5 /
+  HRRR v4, effective 2 December 2020) -- HRRRDAS and direct reflectivity
+  assimilation
+- EMC Change Configuration Board deck, RAP v4.0.0 / HRRR v3.0.0, 26 January
+  2018 updated 10 July 2018 -- corroborates the radial velocity addition
+- NOAA GSL HRRR FAQ, "How is the HRRR initialized?" -- the 1-h pre-forecast
+  with radar assimilated every 15 min
+
+**Version caveat on the HRRR column.**  HRRR v4 (December 2020) is the
+operational version scored here and at the time of writing.  RRFS v1
+replaces NAM, SREF, HREF and HiresW; the HRRR remains in operations, with
+RRFS v2 named as its eventual successor.
 
 **Dating caveat on the WoFS column.** The most recent published WoFS
 specification found is the SFE 2025 operations plan (May 2025), which

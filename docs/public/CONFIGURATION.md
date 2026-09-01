@@ -333,6 +333,19 @@ refuse it by name rather than dropping it. What was actually written
 directory (the tree runner's `evidence/`), written before integration
 starts.
 
+### `[spectral_numerics]` -- Level-2 regional spectral operators (ArWen-only)
+
+Optional, default off, and off is bitwise inert.  Scale-selective
+spectral hyperdiffusion of chosen scalars and divergent-mode wind
+damping, fired once per completed slow large step in `off` / `shadow`
+(receipts only, state-bitwise inert) / `apply` (opt-in) modes, with
+hash-bound step receipts feeding the run capsule.  Full schema, the
+boundary and streamed-domain refusals, and the CLI evidence door
+(`gpuwm spectral-op`) are documented in
+[LEVEL2_SPECTRAL_NUMERICS.md](LEVEL2_SPECTRAL_NUMERICS.md).  A present
+table binds the restart identity; an absent table leaves every existing
+fingerprint untouched.
+
 ### `[ingest]` -- soil-state ingest policy (ArWen-only)
 
 One key, and the only reason to write it is to turn a correctness

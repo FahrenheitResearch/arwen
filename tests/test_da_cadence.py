@@ -149,6 +149,48 @@ def test_observation_error_inflates_so_information_per_unit_time_holds():
     assert block["applied"]["error_inflation"] == pytest.approx(2.0, rel=1e-9)
 
 
+def test_observation_error_never_deflates_below_the_tuned_value():
+    """The one that took an arm down.
+
+    The first per-volume leg on the proven case is 1080 s -- LONGER than
+    the 900 s baseline, because the window opens between two volumes.
+    A two-sided sqrt(dt/dt') gives 0.9129, and the filter refuses an
+    observation-error inflation below 1 because deflating a stated error
+    is a claim of skill nobody measured. The filter is right: the
+    correlation argument only ever justifies inflating.
+    """
+
+    block = scaled_settings(cycle_interval_s=1080.0, rtps_alpha=0.9,
+                            error_inflation=1.0, horizontal_loc_m=12000.0,
+                            vertical_loc_m=3000.0)
+    assert block["applied"]["error_inflation"] == pytest.approx(1.0)
+    assert "ONE-SIDED" in block["reasoning"]["error_inflation"]
+
+
+@pytest.mark.parametrize("interval_s", [901.0, 1080.0, 1800.0, 5400.0])
+def test_no_cadence_slower_than_baseline_can_deflate(interval_s):
+    block = scaled_settings(cycle_interval_s=interval_s, rtps_alpha=0.9,
+                            error_inflation=1.0, horizontal_loc_m=12000.0,
+                            vertical_loc_m=3000.0)
+    assert block["applied"]["error_inflation"] >= 1.0
+
+
+def test_a_longer_leg_still_relaxes_less_because_alpha_is_two_sided():
+    """Inflation is clamped; alpha is not, and the asymmetry is meant.
+
+    More error growth between analyses genuinely does license more
+    contraction at the next one, so alpha below the tuned value is a
+    statement about the ensemble and is allowed. A smaller sigma_o would
+    have been a statement about the radar and is not.
+    """
+
+    block = scaled_settings(cycle_interval_s=1080.0, rtps_alpha=0.9,
+                            error_inflation=1.0, horizontal_loc_m=12000.0,
+                            vertical_loc_m=3000.0)
+    assert block["applied"]["rtps_alpha"] == pytest.approx(0.88, abs=1e-6)
+    assert 0.0 <= block["applied"]["rtps_alpha"] <= 1.0
+
+
 def test_localization_is_left_alone_and_says_so():
     block = scaled_settings(cycle_interval_s=340.0, rtps_alpha=0.9,
                             error_inflation=1.0, horizontal_loc_m=12000.0,

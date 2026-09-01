@@ -836,6 +836,78 @@ def test_an_unsupported_scheme_is_refused_by_number():
         obsop.simulated_reflectivity(state, cfg)
 
 
+def test_p3_is_refused_by_name_and_not_as_an_unknown_scheme():
+    """mp_physics=50 must not read the way mp_physics=99 reads.
+
+    P3 ships, runs on the card and writes REFL_10CM; what it cannot hand a
+    DA operator is a Z that is a PURE function of the state, because WRF
+    computes it inside ``p3_main``'s final diagnostics loop, which is
+    simultaneously a state update (module_mp_p3.F:4722-4895).  Before this
+    refusal the host fallback answered a P3 state with the same "has no
+    reflectivity formulation" sentence it gives a selector that does not
+    exist, and the device path fell through to
+    ``gpuwm.core.refl.compute_refl_10cm``, whose gate told the user P3 is
+    not an active microphysics scheme.  Both readings are false, and a
+    shipped scheme reading identically to a typo is the reachability
+    defect this test pins.
+    """
+    state = _state(nz=1, ny=1, nx=1)
+    with pytest.raises(NotImplementedError) as p3:
+        obsop.simulated_reflectivity(state, SimpleNamespace(mp_physics=50))
+    with pytest.raises(NotImplementedError) as unknown:
+        obsop.simulated_reflectivity(state, SimpleNamespace(mp_physics=99))
+
+    message = str(p3.value)
+    assert message != str(unknown.value)
+    assert "P3" in message
+    assert "p3_main" in message
+    assert "module_mp_p3.F" in message
+    # The refusal has to say the scheme HAS reflectivity, or it repeats
+    # the claim it was written to stop.
+    assert "DOES produce reflectivity" in message
+
+
+def test_a_glaciated_p3_column_is_refused_rather_than_read_as_clear_air():
+    """The concrete breakage the refusal prevents, on a P3-shaped state.
+
+    P3 has ONE ice category and allocates no qs and no qg at all
+    (gpuwm/core/state.py:464-478), so of the six branches in
+    ``compute_refl_10cm`` the only one whose field list a P3 state
+    satisfies is the mp=1 Kessler rain-only fallback.  This column carries
+    1 g/kg of ice and no rain -- a glaciated updraft -- and that fallback
+    would report the clear-air floor for it.
+    """
+    state = _state(nz=1, ny=1, nx=1)
+    for absent in ("qs", "ns", "qg", "ng"):
+        setattr(state, absent, None)
+    for present in ("qi", "ni", "qir", "qib"):
+        setattr(state, present, np.zeros((1, 1, 1), np.float32))
+    state.qr[...] = 0.0
+    state.qi[...] = 1.0e-3
+
+    with pytest.raises(NotImplementedError, match="Kessler rain-only"):
+        obsop.simulated_reflectivity(state, SimpleNamespace(mp_physics=50))
+
+
+def test_every_native_z_refusal_carries_a_reason_and_its_authority():
+    """The table is a record of decisions, in the DELIBERATE_STALE_SITES
+    pattern: a selector may only be excluded WITH its reason.
+
+    ``mp_physics=18`` is deliberately absent from it.  NSSL's ``radardd02``
+    is a separate, pure Fortran diagnostic, so it earns a real arm; the
+    criterion for this table is separability from the scheme's own state
+    update, not membership of the 1/6/8/10/16/28 family.
+    """
+    table = obsop.NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP
+    assert table, "an empty table is an omission, not a decision"
+    for mp, reason in table.items():
+        assert f"mp_physics={mp}" in reason, (
+            f"the reason for mp_physics={mp} does not name it")
+        assert ".F:" in reason, (
+            f"the reason for mp_physics={mp} cites no WRF authority line")
+    assert 18 not in table
+
+
 def test_reflectivity_requires_a_moist_state():
     state = _state(nz=1, ny=1, nx=1)
     state.qv = None

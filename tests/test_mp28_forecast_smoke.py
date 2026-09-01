@@ -1101,11 +1101,13 @@ def test_the_runtime_history_lane_admits_28_for_refl_10cm():
     # prices the shared ``refl`` translation unit for exactly the schemes
     # that LOAD it, while the history lane consumes the stash for every
     # moist scheme.  mp=9 fills REFL_10CM inside its own milbrandt2
-    # diagnostics kernel and mp=50 inside its host pass, so both consume
-    # without loading ``refl`` (gpuwm/core/preflight.py, the deliberate
-    # absences beside _REFLECTIVITY_MICROPHYSICS).  Every priced scheme
-    # must still be consumed, or a computed field strands at the next
-    # history frame.
+    # diagnostics kernel and mp=50 inside p3_main -- on the device for the
+    # default CUDA backend, on the host only for the reference arm -- so
+    # both consume without loading ``refl``.  Both absences carry their
+    # reason in gpuwm/core/preflight.py's _SELF_REFLECTIVITY_MICROPHYSICS,
+    # which domain_kernel_modules now requires an entry in.  Every priced
+    # scheme must still be consumed, or a computed field strands at the
+    # next history frame.
     from gpuwm.core import preflight as pf
 
     assert (set(pf._REFLECTIVITY_MICROPHYSICS)

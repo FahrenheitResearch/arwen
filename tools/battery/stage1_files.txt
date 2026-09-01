@@ -870,6 +870,32 @@ tests/test_noahmp_glacier.py
 tests/test_spectral_compare_v2.py
 tests/test_spectral_receipt_v2.py
 
+# The other two suites the same pin owner wrote, found on no leg's list by
+# the 2.6.1 spectral salvage -- the identical miss this file already
+# records for tests/test_case_token_leakage.py, and neither was even
+# priced in durations.json to leave the trace that one did.
+#
+# io_rust_only holds the Python boundary AT a shipped door: `gpuwm
+# spectral score`/`run` decodes a whole gridded plane out of a forecast
+# history file, and until the 2026-08-18 boundary audit it did that with
+# netCDF4.Dataset while the rest of the estate had moved to rw_netcdf.
+# The breakage it prevents is TWO DECODERS reading one wrfout, so a
+# spectral receipt and the renderer can disagree about the same field --
+# and a Python-routed data path is a release gate in its own right, which
+# makes an unrun gate here a cut-blocker nobody would see.  4 tests,
+# 0.54 s, CPU-only.
+tests/test_spectral_io_rust_only.py
+
+# pins_backlog is six MEASURED guards over the v2 comparison class, its
+# receipt gate surface and its reader -- band-edge rounding, a constant
+# plane scoring as perfect correlation, leakage bounds, the float32
+# quantization limit, and the registration policy hash surviving a move
+# between boxes.  Every threshold in it was measured before it was
+# written, which is exactly the kind of constant that moves silently: the
+# suite is the only thing standing between a re-tuned margin and a
+# spectral verdict that is confidently wrong.  35 tests, 2.16 s, CPU-only.
+tests/test_spectral_pins_backlog.py
+
 # The 2.5.0 RC verify (2026-08-18) found this suite priced in
 # tools/battery/durations.json but on no leg's list, so "no case names in
 # generic code" -- one of the project's binding laws -- had no stage-1
@@ -1195,3 +1221,62 @@ tests/test_acoustic_npref.py
 # The P3 mixed-edge named refusal (2.6.0) lives beside the WDM6 and
 # Thompson-aerosol ones in this module, and no leg ran it at all.
 tests/test_microphysics_transition.py
+
+# ARWEN-MCP: the MCP-over-stdio demo proof.  Speaks the real protocol to
+# the real server process, which shells out to the real CLI doors --
+# initialize/list-tools, doctor, sources, estimate on the shipped
+# quickstart config, the full job lifecycle on a cardless render, and
+# the GPU-lock refusal.  CPU-only; needs the mcp SDK (importorskip) and
+# skips honestly without it -- which the census deselection floor then
+# names instead of letting the leg shrink.
+tests/test_mcp_server.py
+
+# Level-2 regional spectral numerics (2.6.1 salvage): the operator suite
+# (transforms, filters, budgets, receipts), the slow-step seam in its
+# off/shadow/apply modes with the streamed-domain and unrouted-config
+# refusals, and the `gpuwm spectral-op` door.  The subsystem shipped as
+# 83 tests on no leg's list, which is the exact breakage this list's
+# discipline names: a mode knob whose "off" stops being bitwise inert,
+# or a receipt that stops binding, reaches a user before it reaches a
+# test.  CPU-only (the GPU parity rows importorskip cupy).
+tests/test_spectral_operators.py
+tests/test_spectral_seam.py
+tests/test_spectral_operator_cli.py
+
+# THE 2.6.1 FOLD WAVE (five rider merges). Every file below arrived with a
+# rider carrying its own green run, and every one was on NO list at the
+# assembly tip -- the "a test file on no list never runs" class this very
+# release exists to end, found by scoping every added file against the
+# three lists at the close. CPU-bound by conftest's detector except
+# test_p3_front_door.py, whose five device functions ride the GPU shard
+# while its CPU half runs here.
+tests/test_branch_dispositions.py
+tests/test_check_nested_mixed_road.py
+tests/test_cycle_anchor.py
+tests/test_cycle_children.py
+tests/test_cycle_cli.py
+tests/test_cycle_cli_frontdoor.py
+tests/test_cycle_clock.py
+tests/test_cycle_consistency.py
+tests/test_cycle_ingestion.py
+tests/test_cycle_ledger.py
+tests/test_cycle_mpas_bridge.py
+tests/test_cycle_mpas_leg.py
+tests/test_cycle_placement.py
+tests/test_cycle_receipt_ingestion.py
+tests/test_cycle_supervisor.py
+tests/test_da_external_baseline_score.py
+tests/test_da_member_pool_dispatch.py
+tests/test_da_nowcast_daemon_argv.py
+tests/test_da_structure_metrics.py
+tests/test_letkf_all_radar.py
+tests/test_mapped_nested_streaming.py
+tests/test_obs_allradar.py
+tests/test_obs_path_bundle10.py
+tests/test_obs_radar_grid_v2.py
+tests/test_obs_superob_window.py
+tests/test_p3_front_door.py
+tests/test_p3_identity_contract.py
+tests/test_p3_table_refusals.py
+tests/test_streaming_refused_door.py
+tests/test_tree_under_test.py

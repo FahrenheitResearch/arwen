@@ -210,9 +210,51 @@ def _register_silent_deselection_guard(config):
         print(f"no_silent_deselection guard NOT LOADED: {error!r}")
 
 
+def _tree_under_test():
+    """Load ``tools/tree_under_test`` BY PATH, never by name.
+
+    ``import tools.tree_under_test`` would be resolved by the same broken
+    machinery the module exists to detect, and would happily hand back the
+    OTHER checkout's copy -- a detector that answers from the tree it is
+    supposed to be accusing.  So it is loaded from this file's own
+    location, which is the only thing in the process that is certainly
+    part of the tree pytest collected.
+    """
+
+    import importlib.util
+
+    path = pathlib.Path(__file__).resolve().parents[1] / "tools" \
+        / "tree_under_test.py"
+    spec = importlib.util.spec_from_file_location(
+        "_gpuwm_tree_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def pytest_configure(config):
+    # WHICH TREE IS THIS, before anything else has a chance to report a
+    # verdict about it.  An editable install binds `gpuwm` and `tools` to
+    # the main checkout through a sys.meta_path finder, which answers
+    # ahead of sys.path, so a lane worktree's suite silently imports the
+    # main checkout and reports green about edits it never executed.
+    # Found the hard way: a committed fix to tools/check_negation_invariant
+    # .py failed its own tests in the worktree holding the fix, because
+    # the worktree was running the unfixed copy from the main checkout.
+    # UsageError rather than a warning -- a run that measured the wrong
+    # tree has no result worth printing, and every previous lane on this
+    # box was one variable away from believing one.
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    refusal = _tree_under_test().check(repo_root)
+    if refusal is not None:
+        raise pytest.UsageError(refusal)
+
+    # AFTER the tree check and not before it: this guard reports on the
+    # suite that is about to run, and reporting on a suite collected from
+    # the wrong checkout is the thing the check above refuses.
     if not config.pluginmanager.hasplugin("no_silent_deselection_guard"):
         _register_silent_deselection_guard(config)
+
     config.addinivalue_line(
         "markers",
         "slow_acceptance: multi-minute end-to-end acceptance runs; excluded "

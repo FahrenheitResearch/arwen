@@ -469,27 +469,44 @@ def test_an_ice_supersaturated_column_nucleates_ice():
     assert float(qv_sat(np.float32(250.0), np.float32(50000.0), 1)) > 0.0
 
 
-def test_the_first_step_nan_in_sup_is_contained_to_comparisons():
-    """WRF's own first P3 step evaluates 0.0/0.0 for sup and supi.
+def test_the_first_step_qvs_floor_pins_sup_at_minus_one():
+    """The cold-start qvs/qvi floor, DEFAULT-ON (2026-08-31).
 
-    th_old/qv_old are plain state that nothing initialises
-    (Registry.EM_COMMON:1598-1599), so on call 1 they are zero; the
-    ``max(t_old,1.)`` guard at :2329 keeps polysvp1's argument finite but
-    polysvp1(1 K) underflows, leaving qvs == qvi == 0.  The port keeps that
-    NaN deliberately -- see the comment at the divide -- because every
-    consumer is a comparison and no finite value makes all of them false
-    the way NaN does.
+    WRF's own first P3 step evaluated 0.0/0.0 for sup and supi: th_old/
+    qv_old are plain state that nothing initialises (Registry.EM_COMMON:
+    1598-1599), so on call 1 they are zero; the ``max(t_old,1.)`` guard
+    at :2329 keeps polysvp1's argument finite but polysvp1(1 K)
+    underflows, leaving stock qvs == qvi == 0.  This port used to
+    TRANSCRIBE that NaN deliberately, with a containment proof
+    (test_the_first_step_nan_in_sup_is_contained_to_comparisons, this
+    node's ancestor).  The floor -- ``max(qvs, 1.e-20)`` after both
+    qv_sat calls, the remedy later P3 releases carry themselves -- now
+    lands in all three arms, default-on: "fixed means default", and
+    never bit-exact to a bug (implement defined behaviour where the
+    reference computes an undefined 0/0, document the divergence).  It
+    pins step-1 sup/supi at exactly -1 (fully subsaturated, the intended
+    meaning) and is inert from step 2 on.
 
-    What must NEVER happen is the NaN reaching a prognostic field.  This
-    test is the containment proof, and it is the reason the divergence note
-    in gpuwm/core/p3.py is allowed to say "contained" rather than "assumed
-    contained".
+    What this pins: (a) no NaN anywhere on step 1, now by construction
+    rather than by containment; (b) the floored diagnosis itself, so a
+    revert to the stock NaN -- or a floor on one arm only, the rejected
+    fork -- fails this node by name.  The declared step-1 delta (the
+    trace-condensate clip becomes reachable) is documented at the floor
+    site in gpuwm/core/p3.py.
     """
     f = _sounding()
     assert (f["th_old"] != 0.0).any()
     # Force WRF's genuine first-call state: both carriers exactly zero.
     f["th_old"][...] = 0.0
     f["qv_old"][...] = 0.0
+
+    # The floored diagnosis, checked at the leaf before the integration:
+    # qvs floors to exactly 1e-20 and sup to exactly -1.
+    from gpuwm.core.p3 import f32, qv_sat
+    qvs_cold = max(qv_sat(np.float32(1.0), np.float32(85000.0), 0),
+                   f32(1.0e-20))
+    assert qvs_cold == np.float32(1.0e-20)
+    assert np.float32(0.0) / qvs_cold - np.float32(1.0) == np.float32(-1.0)
 
     surf, vol = _integrate(f, steps=1)
 
@@ -499,7 +516,8 @@ def test_the_first_step_nan_in_sup_is_contained_to_comparisons():
         assert np.isfinite(array).all(), f"first-step NaN leaked into {name}"
     for name, array in surf.items():
         assert np.isfinite(array).all(), f"first-step NaN leaked into {name}"
-    # and the carriers were written for the next step, killing the NaN
+    # and the carriers were written for the next step, ending the floor's
+    # authority after exactly one step
     assert (f["qv_old"] > 0.0).any()
     assert (f["th_old"] > 0.0).all()
 
@@ -583,6 +601,115 @@ def test_the_state_allocates_p3s_inventory_and_not_the_six_species_one():
     # P3's own background radii, in gpuwm's micron convention (:2279-2281)
     assert float(state.effc.min()) == pytest.approx(10.0)
     assert float(state.effi.min()) == pytest.approx(25.0)
+
+
+def _background_radius_arms():
+    """The scheme tuples of the ``effc/effi/effs`` seeding chain in state.py.
+
+    Read from the source rather than from a constant because the chain IS an
+    if/elif ladder: there is no table to import, and the whole point of this
+    gate is that a tuple edit there must be visible to a test.
+    """
+    import ast
+    import pathlib
+
+    import gpuwm.core.state as state_module
+
+    tree = ast.parse(
+        pathlib.Path(state_module.__file__).read_text(encoding="utf-8"))
+    arms = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        seeds_effs = any(
+            isinstance(inner, ast.Assign)
+            and any(isinstance(target, ast.Subscript)
+                    and isinstance(target.value, ast.Attribute)
+                    and target.value.attr == "effs"
+                    for target in inner.targets)
+            for inner in node.body)
+        if not seeds_effs:
+            continue
+        test = node.test
+        assert (isinstance(test, ast.Compare)
+                and len(test.ops) == 1
+                and isinstance(test.ops[0], ast.In)
+                and isinstance(test.comparators[0], ast.Tuple)), (
+            "the background-radius chain stopped being a membership ladder; "
+            "re-derive this gate against the new shape")
+        arms.append(tuple(element.value
+                          for element in test.comparators[0].elts))
+    return arms
+
+
+def test_the_background_radius_rows_are_a_six_species_partition():
+    """mp=50 is absent from every background-radius row, and that is the call.
+
+    The three arms in ``DomainState.__init__`` (WSM6/Thompson 2.49/4.99/9.99
+    from module_model_constants.F:62-64, Morrison's 2.5/5.0/10.0, NSSL's
+    2.51/10.01/25.0) do not decide "which schemes declare effective radii" --
+    P3 declares two of them.  They decide which writer's background TRIPLE a
+    state that allocated effc AND effi AND effs receives before the first
+    microphysics call, and P3 never allocates the third.
+
+    WRF says so three times over: Registry.EM_COMMON:3038 gives mp=50
+    ``state:re_cloud,re_ice`` and no ``re_snow`` where all four members of
+    the first arm (:3021, :3024, :3031, :3036) register the trio;
+    module_physics_init.F names the P3 family in the use_mp_re disjunction
+    (:1017), sets has_reqc/has_reqi/has_reqs (:1021-1023), then overrides
+    ``has_reqs = 0`` for that family alone (:1027-1033); and the driver's P3
+    call binds ``diag_effc_3d=re_cloud`` and ``diag_effi_3d=re_ice`` with no
+    snow argument (module_microphysics_driver.F:1596-1597).  The string
+    "effs" does not occur in module_mp_p3.F at all.
+
+    So this is a recorded exclusion, not an omission: adding 50 to either
+    tuple below is dead code today (P3 leaves the chain 50 lines earlier) and
+    an ``AttributeError`` on ``self.effs`` the moment anyone also folds P3
+    into the six-species branch -- and a snow radius published for a scheme
+    whose snow is a rime mass fraction on one ice category is the
+    invented-radius mistake, not a rounding one.
+
+    CPU-only by construction (``array_module=np``), so the decision is pinned
+    on every run rather than only where a card is present.
+    """
+    for arm in _background_radius_arms():
+        assert 50 not in arm, (
+            f"mp_physics=50 was added to the background-radius row {arm}: "
+            "P3 allocates no effs (Registry.EM_COMMON:3038, "
+            "module_physics_init.F:1027-1033), so this row would seed a snow "
+            "radius the scheme never computes")
+
+    from gpuwm.core.state import DomainState
+
+    rows = {}
+    for mp in (6, 8, 16, 28, 9, 10, 18, 50):
+        state = DomainState(_cfg(mp_physics=mp), array_module=np)
+        rows[mp] = tuple(
+            None if getattr(state, name, None) is None
+            else float(np.asarray(getattr(state, name)).min())
+            for name in ("effc", "effi", "effs"))
+        # The species inventory the row keys on, measured not assumed.
+        has_snow_species = getattr(state, "qs", None) is not None
+        assert has_snow_species is (mp != 50)
+
+    for mp in (6, 8, 16, 28):
+        assert rows[mp] == pytest.approx((2.49, 4.99, 9.99), rel=1e-6)
+    for mp in (9, 10):
+        assert rows[mp] == pytest.approx((2.5, 5.0, 10.0), rel=1e-6)
+    assert rows[18] == pytest.approx((2.51, 10.01, 25.0), rel=1e-6)
+
+    # P3: its own pair from module_mp_p3.F:2279/:2281, and no third slot.
+    assert rows[50][:2] == pytest.approx((10.0, 25.0), rel=1e-6)
+    assert rows[50][2] is None
+    p3_state = DomainState(_cfg(), array_module=np)
+    assert not hasattr(p3_state, "effs"), (
+        "effs is ABSENT on an mp=50 state, not None: an attribute that "
+        "exists reads as a legitimate zero to every consumer that walks it")
+    # And P3 did not silently land on a six-species row.
+    assert rows[50][:2] not in (
+        pytest.approx((2.49, 4.99), rel=1e-6),
+        pytest.approx((2.5, 5.0), rel=1e-6),
+        pytest.approx((2.51, 10.01), rel=1e-6))
 
 
 def test_p3_takes_kfs_melting_level_closure_not_a_refusal():

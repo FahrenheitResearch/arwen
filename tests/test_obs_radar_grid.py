@@ -299,13 +299,14 @@ def test_the_dimension_tuple_is_checked_for_order_type_and_units(tmp_path):
         read_radar_grid(tmp_path / "swapped.nc")
 
     def wrong_units(src, dst):
+        # The source file's own velocity dimensions: this case is about
+        # UNITS, so it must not accidentally trip the dimension check.
         out = dst.createVariable("vr_err", "f4",
-                                 ("radar", "level", "south_north",
-                                  "west_east"))
+                                 src.variables["vr_err"].dimensions)
         # Variances, not standard deviations -- still positive, still
         # finite, and a different quantity.
         out.units = "m2 s-2"
-        out[:] = np.zeros((1, 2, 3, 3), dtype=np.float32)
+        out[:] = np.zeros(src.variables["vr_err"].shape, dtype=np.float32)
         return {"vr_err"}
 
     _rewrite(source, tmp_path / "variance.nc", mutate=wrong_units)
@@ -489,9 +490,11 @@ def test_a_scaled_beam_vector_is_refused_under_a_true_mask(tmp_path):
     source, _ = _square_grid_file(tmp_path)
 
     def scale_the_beam(src, dst):
+        # As above: this case is about beam MAGNITUDE, so it follows the
+        # source's velocity layout rather than pinning one schema's.
         out = dst.createVariable(
             "vr_beam_east", "f4",
-            ("radar", "level", "south_north", "west_east"),
+            src.variables["vr_beam_east"].dimensions,
             fill_value=np.float32(-9.99e30))
         out.units = "1"
         out[:] = np.asarray(src.variables["vr_beam_east"][:],
@@ -499,7 +502,12 @@ def test_a_scaled_beam_vector_is_refused_under_a_true_mask(tmp_path):
         return {"vr_beam_east"}
 
     _rewrite(source, tmp_path / "scaled.nc", mutate=scale_the_beam)
-    with pytest.raises(RadarGridSchemaError, match="not unit length"):
+    # "longer than one", not "not unit length": the stored vector is the
+    # MEAN of the contributing unit look directions, whose norm is the
+    # cell's beam coherence and is 1 only when those beams were parallel.
+    # The doubling is still caught, and by the invariant the mean actually
+    # has rather than by one the merge stopped honouring.
+    with pytest.raises(RadarGridSchemaError, match="longer than one"):
         read_radar_grid(tmp_path / "scaled.nc")
 
 

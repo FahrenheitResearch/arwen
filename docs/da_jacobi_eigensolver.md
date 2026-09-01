@@ -209,55 +209,174 @@ changes.  Measured at `3.6e-16` relative, and **identical under
 
 ## Performance
 
-Float64, `(R-1)I + C Yb` with `C Yb` of realistic observational rank, min of
-five launches after a warm-up, RTX 5090 (sm_120, 170 SMs).
+### The headline: four members on the wrong side of a boundary
+
+cuSOLVER's batched symmetric eigensolver has a **fast-path boundary at
+n = 32** on sm_120.  WoFS runs **36** members.  The near side of the cliff is
+32.
+
+So dropping four members cuts the solve by roughly **8x**, and switching
+eigensolver removes the boundary altogether.  What has looked like the price
+of a large ensemble is substantially the accident of landing four columns on
+the wrong side of a vendor library's fast path.  That is the difference
+between *large ensembles are expensive* and *large ensembles are cheap if you
+avoid one specific number, or use this kernel*.
+
+A boundary at n = 32 is **what** happens.  It is not **why**, and this
+document does not claim to know why.
+
+### Measured, quiet card
+
+Float64, `(R-1)I + C Yb` with `C Yb` of realistic observational rank, RTX
+5090 (sm_120, 170 SMs), card exclusivity verified.
 
 | `k` | `G` | `cupy.linalg.eigh` | this kernel | ratio |
 |---|---|---|---|---|
-| 10 | 220,000 | 164.2 ms | 96.1 ms | **1.7x** |
-| 10 | 170,000 | 145.6 ms | 76.2 ms | **1.9x** |
-| 20 | 200,000 | 700.7 ms | 341.1 ms | **2.0x** |
-| 36 | 200,000 | **69,727 ms** | 1,106 ms | **63x** |
+| 36 | 200,000 | **26.6 s** | **2.16 s** | **12.3x** |
 
-`k = 64` was not measured; the run did not reach it.
+### Superseded: the same point, measured under contention
 
-**Read these as lower bounds on the kernel and treat the absolute numbers as
-soft.**  The card was shared throughout with several other lanes -- an
-ensemble sweep, a live nowcast daemon, a cycling forecast and a test session
--- sitting at 94% utilisation and 31 of 32 GiB.  Both solvers took the same
-contention on the same inputs in the same process, so the ratios are the
-robust part; the milliseconds are inflated for both.
+| `k` | `G` | `cupy.linalg.eigh` | this kernel | ratio |
+|---|---|---|---|---|
+| ~~36~~ | ~~200,000~~ | ~~69.7 s~~ | ~~1.11 s~~ | ~~63x~~ |
 
-### The `k = 36` result is UNEXPLAINED and must not be relied on
+**Do not quote the 63x, the 69.7 s or the 1.11 s.**  They were taken with the
+card at 94% utilisation and 31 of 32 GiB, shared with an ensemble sweep, a
+live nowcast daemon, a cycling forecast and a test session.  The quiet-card
+ratio is still large and still real, but it is under a fifth of the contended
+one, and the contended figure circulated before it was corrected.
 
-The 70-second cuSOLVER figure above is a real measurement, and I do not know
-what it means.  My first explanation -- that `cusolverDn<t>syevjBatched` caps
-at `n = 32`, so `k = 36` falls back to one call per matrix -- is **refuted**.
-Measured on a rented Ada node (sm_89, cupy 14.1.1, `G = 10,000`, float64,
-light load), sweeping straight through the supposed boundary:
+One thing the correction does NOT tidy away, because it is a caution worth
+keeping: this kernel measured 1.11 s contended and 2.16 s quiet -- *slower on
+the quieter card*, which is the wrong direction for a contention effect.  So
+the two figures are not measuring quite the same thing, and at least one of
+the harnesses differs in reps, matrix family or what it counts.  **The 12.3x
+is citable because both of its halves come from one harness on one quiet
+card.  Absolute numbers must not be compared across harnesses.**
+
+### Provisional: the smaller sizes, contended only
+
+| `k` | `G` | `cupy.linalg.eigh` | this kernel | ratio |
+|---|---|---|---|---|
+| 10 | 220,000 | 164.2 ms | 96.1 ms | 1.7x |
+| 10 | 170,000 | 145.6 ms | 76.2 ms | 1.9x |
+| 20 | 200,000 | 700.7 ms | 341.1 ms | 2.0x |
+
+These have no quiet-card replacement yet.  Since contention is now known to
+have inflated the two sides unevenly at `k = 36`, treat these ratios as
+provisional too -- they sit below the boundary, where the honest expectation
+is a modest win, but they have not been confirmed on a quiet card.
+
+### The cost of an ensemble, as the sweep measured it
+
+The ensemble-size sweep, a different codepath and harness, timed the
+per-cycle CUDA solve on an uncontended sm_120 node:
+
+| ensemble `N` | 10 | 20 | 36 | 64 |
+|---|---|---|---|---|
+| whole solve phase per cycle | 6.3 s | 10.1 s | **71.9 s** | ~109 s |
+
+**A retraction of my own arithmetic.**  An earlier revision of this section
+divided the contended `eigh` timings into these solve phases and concluded
+that the eigendecomposition was "~97% of the solve phase" at `N = 36`.  That
+was built on the superseded 69.7 s.  With the quiet-card 26.6 s the same
+division gives roughly a third, and even that is not trustworthy: the 200,000
+patches in this document are a synthetic stand-in for the sweep's own
+active-point count, which was never recorded alongside these timings, and the
+two numbers come from different harnesses.  **Dividing one harness's number by
+another's was not sound and the percentages are withdrawn.**
+
+What survives is the qualitative statement, which is enough: the
+eigendecomposition is a minor part of the solve at `N = 10` and `N = 20`, and
+a large part of a much larger solve at `N = 36`.
+
+### A step, not a curve: the discontinuity is CONFIRMED on sm_120
+
+Extending the sweep to `N = 64` makes the shape of the cost visible, and it
+is not the shape of a cubic:
+
+| `k` | 10 | 20 | 36 | 64 |
+|---|---|---|---|---|
+| solve phase | 6.3 s | 10.1 s | 71.9 s | ~109 s |
+| ratio to previous | -- | 1.60x | **7.12x** | 1.52x |
+| `O(k^3)` would predict | -- | 8.0x | 5.8x | 5.6x |
+
+Mild, then violent, then mild again.  No smooth power law does that.  The
+implied local exponent runs 0.68, 3.33, 0.73 -- a **step between `k = 20` and
+`k = 36` with ordinary scaling on either side**, which is the signature the
+original hypothesis proposed.  (The comparison is sound because the sweep's
+active-point count is set by the observations and the localisation, not by
+the ensemble size, so it is the same in every arm.)
+
+A fine `k` sweep on a quiet, exclusively held sm_120 card then found the
+boundary exactly where it was first proposed, at **n = 32**.  The history of
+that claim is worth keeping straight, because it was right, then wrongly
+withdrawn, then restored:
+
+* **Proposed** here: a batched fast-path boundary at `k = 32`.
+* **Withdrawn** by me, on a fine `k = 16..40` sweep that found nothing -- run
+  on **sm_89**.  Sound reasoning from that evidence, wrong conclusion: an
+  sm_89 sweep is simply not evidence about Blackwell.
+* **Restored as a live question** by restating it as "falsified on sm_89,
+  never tested at fine resolution on sm_120" rather than falsified outright.
+* **CONFIRMED on sm_120** by the fine sweep on the quiet card.
+
+The boundary is therefore **architecture-specific: present on sm_120, absent
+on sm_89**, which is also what the large cross-architecture gap suggested all
+along.  The sm_89 sweep that found nothing (cupy 14.1.1, `G = 10,000`,
+float64, light load):
 
 | `k` | 16 | 24 | 30 | 31 | 32 | 33 | 34 | 36 | 40 |
 |---|---|---|---|---|---|---|---|---|---|
 | cuSOLVER (ms) | 36 | 149 | 194 | 211 | 264 | 218 | 214 | 222 | 294 |
 | this kernel (ms) | 18 | 31 | 89 | 154 | 144 | 90 | 157 | 151 | 194 |
 
-There is no discontinuity at 32/33 at all.  Scaling the Ada `k = 36` cuSOLVER
-number to 200,000 patches gives roughly 4.4 s, not 70 s.
+No discontinuity at 32/33 there; scaled to 200,000 patches that `k = 36`
+column is about 4.4 s.  The batch-size confound that hung over that
+comparison is also closed: the confirming sm_120 sweep ran at **20,000**
+patches, not 200,000, so the step is not an artefact of large batches.
+Architecture is what distinguishes the two.
 
-So the two measurements disagree by about 16x on cuSOLVER while agreeing on
-this kernel, and contention does not explain that asymmetry -- a busy card
-slows both sides.  Candidates not yet separated: the cupy version (14.0.1
-locally against 14.1.1 on the node), a workspace or memory threshold crossed
-somewhere between `G = 10,000` and `G = 200,000`, or an sm_120-specific
-cuSOLVER path.  **Re-measure on a quiet sm_120 card before quoting the 70-second
-number or planning around it.**
+The mechanism is still unidentified and this document will not name one.  A
+fast-path boundary at `n = 32` is *what* happens; *why* cuSOLVER has one
+there on Blackwell and not on Ada is not established here.  Recorded only as
+an observation to be checked, never as a claim: the `36 -> 64` ratio of 1.52x
+is far below cubic, which is how a regime dominated by a per-matrix fixed
+cost would look, since such a cost barely moves with `k`.  A pattern, not an
+explanation.
 
-What survives both measurements: `cupy.linalg.eigh` on a stacked array routes
-to `cupyx.cusolver.syevj`, cuSOLVER's own cyclic Jacobi, so this is a
-like-for-like ALGORITHM comparison throughout, and this kernel is ahead at
-every size tried on both architectures -- by 1.5-2.0x on the Ada node across
-`k = 16..40`, and by 1.7-2.0x locally at `k = 10` and `k = 20`.  The
-dependency-removal case does not rest on the outlier.
+### What this means for ensemble size
+
+`N = 36` sits four columns past the boundary.  Two ways out, and the project
+now has both:
+
+* **Drop to 32 members** and the solve falls by roughly **8x**, at the cost of
+  four members of ensemble spread.
+* **Use this kernel** and the boundary does not exist -- `k = 36` is simply
+  the tier that puts one matrix on a 128-thread block, with no discontinuity
+  anywhere in the supported range.
+
+The second is obviously preferable, but the first is worth stating because it
+reframes the problem: WaH's apparent ensemble-cost wall was substantially the
+accident of landing on the wrong side of one vendor-library threshold, not
+the price of the science.
+
+### The comparison is like for like
+
+`cupy.linalg.eigh` on a stacked array routes to `cupyx.cusolver.syevj`, which
+is cuSOLVER's own cyclic Jacobi.  This is therefore the same algorithm
+implemented two ways, not one algorithm against another, and that holds at
+every size in every table above.
+
+Below the boundary the honest margin is modest: roughly **1.5-2.0x** on sm_89
+across `k = 16..40`, and a provisional **1.7-2.0x** on sm_120 at `k = 10` and
+`k = 20` that still wants a quiet-card confirmation.  Above it, on sm_120,
+the quiet-card measurement is **12.3x** at `k = 36`.
+
+The dependency-removal case rests on the correctness evidence and on the two
+field failures.  The `k = 36` result is what makes the work matter at the
+ensemble size the owner is heading for -- not because the kernel is
+extraordinary there, but because it does not have the defect.
 
 ### Still outstanding
 

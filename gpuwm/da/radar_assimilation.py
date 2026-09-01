@@ -61,6 +61,7 @@ Nothing here is wired into a default route.  EXPERIMENTAL.
 
 from __future__ import annotations
 
+import os
 import time
 import types
 from dataclasses import dataclass
@@ -100,6 +101,11 @@ CHECKPOINT_STATE_PREFIX = "state/"
 #: air-motion-only simplification.  There is no default-by-omission: the
 #: config names one or the other.
 FALL_SPEED_POLICIES = ("none", "reflectivity")
+
+#: Where the batched LETKF may be asked to run.  "auto" is a REQUEST, not
+#: a device: it resolves to one of the other two before the solve, and the
+#: resolution is recorded.  See :func:`resolve_solve_device`.
+SOLVE_DEVICES = ("auto", "host", "cuda")
 
 
 class RadarAssimilationError(ValueError):
@@ -278,9 +284,23 @@ class RadarAssimilationConfig:
     #: ``None`` detects the pairs from the checkpoint's own spellings,
     #: which is weaker but never wrong about a state it can see.
     mp_physics: int | None = None
-    #: "host" solves on numpy; "cuda" moves the prior and the observation
-    #: batches to CuPy for the batched LETKF and brings increments back.
-    solve_device: str = "host"
+    #: Where the batched LETKF runs.  "host" solves on numpy; "cuda"
+    #: moves the prior and the observation batches to CuPy for the batched
+    #: LETKF and brings the increments back; "auto", the DEFAULT, takes
+    #: cuda when this process can reach a device and host when it cannot,
+    #: and records which it took.
+    #:
+    #: auto is the default because the alternative is a workaround.  The
+    #: analysis is the majority of a DA cycle's wall clock, the device
+    #: path has been reachable the whole time, and a bare run that gets
+    #: the slow one is a run that shows the defect at its defaults.  A
+    #: host-only box still works, unchanged, and says so in the receipt
+    #: rather than silently.  Naming "host" or "cuda" explicitly is
+    #: honoured verbatim and never second-guessed -- a run pinned to host
+    #: for reproducibility must stay on host even beside a working card,
+    #: and a run that asked for cuda must fail loudly if the card is gone
+    #: rather than quietly becoming a different, slower experiment.
+    solve_device: str = "auto"
     #: Threaded to :class:`gpuwm.da.letkf.LetkfConfig` unchanged.
     solve_dtype: str = "float64"
     #: Also threaded unchanged; see
@@ -413,9 +433,9 @@ class RadarAssimilationConfig:
                 "is noise. Analyse the scheme's moisture and hydrometeor "
                 "set -- gpuwm.da.moments.analysis_fields derives it -- or "
                 "turn cwp off")
-        if self.solve_device not in ("host", "cuda"):
+        if self.solve_device not in SOLVE_DEVICES:
             raise RadarAssimilationError(
-                f"solve_device must be 'host' or 'cuda', got "
+                f"solve_device must be one of {SOLVE_DEVICES}, got "
                 f"{self.solve_device!r}")
         object.__setattr__(self, "analysis_fields",
                            tuple(self.analysis_fields))
@@ -892,6 +912,55 @@ def _thinned_velocity_document(document, cfg: RadarAssimilationConfig):
 # ---------------------------------------------------------------------------
 
 
+def resolve_solve_device(requested: str) -> tuple[str, str]:
+    """``(device, reason)`` -- what "auto" becomes, and why.
+
+    "host" and "cuda" are returned verbatim.  A caller that named a device
+    named it for a reason this function cannot see: a run pinned to host
+    for reproducibility must stay on host beside a working card, and a run
+    that asked for cuda must meet the card's absence as an error where it
+    happens, not as a silent demotion to a slower and differently-rounded
+    experiment.
+
+    "auto" is answered by IMPORTING cupy and asking the runtime for a
+    device count, which is the only question whose answer is the one that
+    matters.  An installed cupy that cannot reach a driver, a wheel built
+    against the wrong CUDA major, a box with the libraries and no card:
+    all three present as an exception here and all three resolve to host
+    with the exception's type in the reason.  The reason is a sentence
+    because it is going into a receipt, where "why is this run on the
+    host" has to be answerable months later.
+    """
+
+    if requested in ("host", "cuda"):
+        return requested, f"requested explicitly as {requested!r}"
+    if requested != "auto":
+        raise RadarAssimilationError(
+            f"solve_device must be one of {SOLVE_DEVICES}, got "
+            f"{requested!r}")
+    # The project-wide "keep off the local card" switch outranks the
+    # probe.  A CPU-only suite run, or a box whose card belongs to another
+    # run, must not have a default quietly open a CUDA context on it --
+    # which is exactly what a probe that only asked "is a device visible"
+    # would do.
+    if os.environ.get("GPUWM_NO_LOCAL_GPU", "") not in ("", "0"):
+        return "host", ("auto: GPUWM_NO_LOCAL_GPU is set, so the analysis "
+                        "runs on numpy and never opens a device context")
+    try:
+        import cupy as cp                                 # noqa: PLC0415
+
+        count = int(cp.cuda.runtime.getDeviceCount())
+    except Exception as exc:
+        return "host", (
+            "auto: no usable CUDA device from this process "
+            f"({type(exc).__name__}: {exc}); the analysis runs on numpy")
+    if count < 1:
+        return "host", ("auto: cupy imported but the runtime reports zero "
+                        "devices; the analysis runs on numpy")
+    return "cuda", (f"auto: {count} CUDA device(s) visible; the analysis "
+                    "runs the batched device solve")
+
+
 def innovation_summary(batches: Sequence[GriddedObs]) -> list[dict]:
     """Observation-space statistics per batch, JSON-serialisable.
 
@@ -1257,8 +1326,12 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
     solve_prior, solve_batches = prior, batches
     stage_seconds = 0.0
     unstage_seconds = 0.0
+    # Resolved ONCE, here, and used everywhere below.  Asking the question
+    # twice is how a receipt comes to name a device the solve did not use.
+    solve_device, solve_device_reason = resolve_solve_device(
+        cfg.solve_device)
     t_stage = time.perf_counter()
-    if cfg.solve_device == "cuda":
+    if solve_device == "cuda":
         import cupy as cp  # noqa: PLC0415
 
         solve_prior = {name: cp.asarray(values)
@@ -1286,7 +1359,7 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
         stage_seconds = time.perf_counter() - t_stage
     increments = analyze(solve_prior, solve_batches,
                          letkf_grid_geometry(grid), letkf_cfg, diagnostics)
-    if cfg.solve_device == "cuda":
+    if solve_device == "cuda":
         import cupy as cp  # noqa: PLC0415
 
         t_unstage = time.perf_counter()
@@ -1372,7 +1445,15 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
         "cwp_observations": cwp_provenance,
         "moment_policy": moment_receipt,
         "positivity": positivity_receipt,
+        # What was ASKED for, and what RAN.  The two differ whenever the
+        # default "auto" is in effect, and a receipt that recorded only
+        # the request could not tell a cycle that used the card from one
+        # that fell back to numpy on a box whose cupy was broken -- which
+        # is a 20x difference in the leg's wall clock and a different set
+        # of last bits in the increments.
         "solve_device": cfg.solve_device,
+        "solve_device_resolved": solve_device,
+        "solve_device_reason": solve_device_reason,
         # Host-to-device staging of the prior and the observation batches,
         # and the copy of the increments back.  Both are exactly zero on
         # the host arm, which is what makes them comparable.

@@ -428,6 +428,15 @@ def restart_identity_payload(exp) -> dict:
     # configured block binds, value for value.
     if experiment.get("perturbation") is None:
         experiment.pop("perturbation", None)
+    # Same convention for [spectral_numerics]: ABSENT stays absent, so
+    # every pre-feature fingerprint and checkpoint is preserved.  A
+    # PRESENT block binds value for value -- the Level-2 contract makes
+    # the resolved operator config part of what the run IS, because a
+    # resume across a changed operator (an applied filter appearing,
+    # disappearing, or retuned mid-trajectory) is not the same
+    # experiment and must refuse.
+    if experiment.get("spectral_numerics") is None:
+        experiment.pop("spectral_numerics", None)
     # The mixing-length provenance label leaves the identity
     # UNCONDITIONALLY, on the [tiles] convention: it records WHO chose
     # each domain's mix_isotropic, while the chosen value itself sits on
@@ -825,7 +834,8 @@ def execute_experiment(
         arena_nan_poison: bool = False,
         skip_feedback_path: bool = False,
         pool_trim_per_period: bool = True,
-        relocation_runner=None, steppers=None, step_observer=None):
+        relocation_runner=None, steppers=None, step_observer=None,
+        experiment=None):
     """Wire one :class:`ExperimentState` into ``execute_schedule``.
 
     STEP calls the domain's existing dycore, FORCE calls its node-facing
@@ -929,6 +939,28 @@ def execute_experiment(
     # that joins the tree later falls back to the dycore's own step rather
     # than to whatever the last domain happened to bind.
     steppers = dict(steppers or {})
+    # THE LEVEL-2 SPECTRAL SEAM (gpuwm.spectral_seam).  ``None`` -- every
+    # experiment without an active [spectral_numerics] -- costs the STEP
+    # op one ``is not None`` test and nothing else.  Active, it refuses a
+    # streamed domain and a false periodic declaration HERE, at start,
+    # and the STEP op below calls it once per domain immediately after
+    # the slow RK state commit.  Attached to the model so leg walks
+    # (spawn, restart) that re-enter this function keep one receipt
+    # ledger for the whole run.
+    # ``experiment`` is the AUTHORITY here and the activation context is
+    # only the fallback, because the two prepared routes -- the ones the
+    # Level-2 contract names as honoring the config -- build their own
+    # ``ExperimentState`` and therefore have no activation context at
+    # all.  Reading the context alone made an active [spectral_numerics]
+    # invisible on exactly those routes: a shadow tree run on real HRRR
+    # bytes wrote zero receipts and still emitted a clean PASS capsule
+    # (2026-08-18), which is the silently-absent operator the
+    # honored-or-refused governance exists to forbid.
+    from gpuwm.spectral_seam import attach_seam
+    seam_experiment = experiment
+    if seam_experiment is None and context is not None:
+        seam_experiment = context.get("experiment")
+    spectral_seam = attach_seam(model, seam_experiment, steppers)
     feedback_scratch = {
         node.cfg.grid_id: FeedbackScratch()
         for node in model.walk_parent_first() if node.parent is not None}
@@ -1156,6 +1188,21 @@ def execute_experiment(
                     history_handler is not None
                     and clock.history_rings_within_step()))
             refresh_model_time(node.state, clock, after_step=True)
+            if spectral_seam is not None:
+                # THE Level-2 slow-large-step hook seam.  The RK slow-mode
+                # state above is committed and the acoustic substeps are
+                # over; output, nest feedback and the next large step have
+                # not happened.  Fires once per domain per model time
+                # step.  The step is numbered the way step_observer below
+                # numbers it -- the clock still holds pre-step ticks, so
+                # the committed step is step_count + 1 -- and shadow/apply
+                # receipts land in the seam's ledger for the run capsule.
+                spectral_seam.after_step(
+                    node.state, grid_id, node.cfg.run,
+                    step_count=clock.step_count + 1,
+                    model_seconds=((clock.ticks + clock.spec.step_ticks)
+                                   / clock.tick_den),
+                    streamed=streamed_here is not None)
             poison()
             if validators and health_debug:
                 validators[grid_id].require_healthy(

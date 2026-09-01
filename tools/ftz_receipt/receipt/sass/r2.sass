@@ -49,11 +49,11 @@
         /*00a0*/                   LDC.64 R4, c[0x0][0x388] ;
         /*00b0*/                   LDC.64 R6, c[0x0][0x390] ;
         /*00c0*/                   IMAD.WIDE R2, R9, 0x4, R2 ;
-        /*00d0*/                   LDG.E R2, desc[UR4][R2.64] ;
+        /*00d0*/                   LDG.E R3, desc[UR4][R2.64] ;
         /*00e0*/                   IMAD.WIDE R4, R9, 0x4, R4 ;
-        /*00f0*/                   LDG.E R5, desc[UR4][R4.64] ;
+        /*00f0*/                   LDG.E R4, desc[UR4][R4.64] ;
         /*0100*/                   IMAD.WIDE R6, R9, 0x4, R6 ;
-        /*0110*/                   FSET.BF.NE.AND R9, R2, R5, PT ;
+        /*0110*/                   FSET.BF.NE.AND R9, R3, R4, PT ;
         /*0120*/                   STG.E desc[UR4][R6.64], R9 ;
         /*0130*/                   EXIT ;
         /*0140*/                   BRA 0x140;
@@ -84,11 +84,11 @@
         /*00a0*/                   LDC.64 R4, c[0x0][0x388] ;
         /*00b0*/                   LDC.64 R6, c[0x0][0x390] ;
         /*00c0*/                   IMAD.WIDE R2, R9, 0x4, R2 ;
-        /*00d0*/                   LDG.E R2, desc[UR4][R2.64] ;
+        /*00d0*/                   LDG.E R3, desc[UR4][R2.64] ;
         /*00e0*/                   IMAD.WIDE R4, R9, 0x4, R4 ;
-        /*00f0*/                   LDG.E R5, desc[UR4][R4.64] ;
+        /*00f0*/                   LDG.E R4, desc[UR4][R4.64] ;
         /*0100*/                   IMAD.WIDE R6, R9, 0x4, R6 ;
-        /*0110*/                   FMNMX R9, R2, R5, PT ;
+        /*0110*/                   FMNMX R9, R4, R3, PT ;
         /*0120*/                   STG.E desc[UR4][R6.64], R9 ;
         /*0130*/                   EXIT ;
         /*0140*/                   BRA 0x140;
@@ -119,11 +119,11 @@
         /*00a0*/                   LDC.64 R4, c[0x0][0x388] ;
         /*00b0*/                   LDC.64 R6, c[0x0][0x390] ;
         /*00c0*/                   IMAD.WIDE R2, R9, 0x4, R2 ;
-        /*00d0*/                   LDG.E R2, desc[UR4][R2.64] ;
+        /*00d0*/                   LDG.E R3, desc[UR4][R2.64] ;
         /*00e0*/                   IMAD.WIDE R4, R9, 0x4, R4 ;
-        /*00f0*/                   LDG.E R5, desc[UR4][R4.64] ;
+        /*00f0*/                   LDG.E R4, desc[UR4][R4.64] ;
         /*0100*/                   IMAD.WIDE R6, R9, 0x4, R6 ;
-        /*0110*/                   FMUL R9, R2, R5 ;
+        /*0110*/                   FMUL R9, R4, R3 ;
         /*0120*/                   STG.E desc[UR4][R6.64], R9 ;
         /*0130*/                   EXIT ;
         /*0140*/                   BRA 0x140;
@@ -154,18 +154,18 @@
         /*00a0*/                   LDC.64 R4, c[0x0][0x388] ;
         /*00b0*/                   IMAD.WIDE R2, R7, 0x8, R2 ;
         /*00c0*/                   LDG.E.64 R2, desc[UR4][R2.64] ;
-        /*00d0*/                   UMOV.64 UR6, 0x380ffffff0000000 ;
-        /*00e0*/                   IMAD.WIDE R4, R7, 0x4, R4 ;
-        /*00f0*/                   DSETP.GEU.AND P0, PT, |R2|, UR6, PT ;
-        /*0100*/                   NOP ;
-        /*0110*/                   NOP ;
-        /*0120*/                   NOP ;
-        /*0130*/                   NOP ;
-        /*0140*/                   F2F.F32.F64 R9, R2 ;
-        /*0150*/              @!P0 FMUL R9, R9, 1.175494350822287508e-38 ;
-        /*0160*/                   STG.E desc[UR4][R4.64], R9 ;
-        /*0170*/                   EXIT ;
-        /*0180*/                   BRA 0x180;
+        /*00d0*/                   IMAD.WIDE R4, R7, 0x4, R4 ;
+        /*00e0*/                   F2F.F32.F64 R7, R2 ;
+        /*00f0*/                   STG.E desc[UR4][R4.64], R7 ;
+        /*0100*/                   EXIT ;
+        /*0110*/                   BRA 0x110;
+        /*0120*/                   NOP;
+        /*0130*/                   NOP;
+        /*0140*/                   NOP;
+        /*0150*/                   NOP;
+        /*0160*/                   NOP;
+        /*0170*/                   NOP;
+        /*0180*/                   NOP;
         /*0190*/                   NOP;
         /*01a0*/                   NOP;
         /*01b0*/                   NOP;
@@ -173,14 +173,6 @@
         /*01d0*/                   NOP;
         /*01e0*/                   NOP;
         /*01f0*/                   NOP;
-        /*0200*/                   NOP;
-        /*0210*/                   NOP;
-        /*0220*/                   NOP;
-        /*0230*/                   NOP;
-        /*0240*/                   NOP;
-        /*0250*/                   NOP;
-        /*0260*/                   NOP;
-        /*0270*/                   NOP;
 // .text.ftz_probe_d2f_rn
 	.headerflags	@"EF_CUDA_64BIT_ADDRESS EF_CUDA_SM120 EF_CUDA_VIRTUAL_SM(EF_CUDA_SM120)"
 	.headerflags	@"EF_CUDA_64BIT_ADDRESS EF_CUDA_SM120 EF_CUDA_VIRTUAL_SM(EF_CUDA_SM120)"
@@ -197,18 +189,18 @@
         /*00a0*/                   LDC.64 R4, c[0x0][0x388] ;
         /*00b0*/                   IMAD.WIDE R2, R7, 0x8, R2 ;
         /*00c0*/                   LDG.E.64 R2, desc[UR4][R2.64] ;
-        /*00d0*/                   UMOV.64 UR6, 0x380ffffff0000000 ;
-        /*00e0*/                   IMAD.WIDE R4, R7, 0x4, R4 ;
-        /*00f0*/                   DSETP.GEU.AND P0, PT, |R2|, UR6, PT ;
-        /*0100*/                   NOP ;
-        /*0110*/                   NOP ;
-        /*0120*/                   NOP ;
-        /*0130*/                   NOP ;
-        /*0140*/                   F2F.F32.F64 R9, R2 ;
-        /*0150*/              @!P0 FMUL R9, R9, 1.175494350822287508e-38 ;
-        /*0160*/                   STG.E desc[UR4][R4.64], R9 ;
-        /*0170*/                   EXIT ;
-        /*0180*/                   BRA 0x180;
+        /*00d0*/                   IMAD.WIDE R4, R7, 0x4, R4 ;
+        /*00e0*/                   F2F.F32.F64 R7, R2 ;
+        /*00f0*/                   STG.E desc[UR4][R4.64], R7 ;
+        /*0100*/                   EXIT ;
+        /*0110*/                   BRA 0x110;
+        /*0120*/                   NOP;
+        /*0130*/                   NOP;
+        /*0140*/                   NOP;
+        /*0150*/                   NOP;
+        /*0160*/                   NOP;
+        /*0170*/                   NOP;
+        /*0180*/                   NOP;
         /*0190*/                   NOP;
         /*01a0*/                   NOP;
         /*01b0*/                   NOP;
@@ -216,14 +208,6 @@
         /*01d0*/                   NOP;
         /*01e0*/                   NOP;
         /*01f0*/                   NOP;
-        /*0200*/                   NOP;
-        /*0210*/                   NOP;
-        /*0220*/                   NOP;
-        /*0230*/                   NOP;
-        /*0240*/                   NOP;
-        /*0250*/                   NOP;
-        /*0260*/                   NOP;
-        /*0270*/                   NOP;
 // .text.ftz_probe_compare
 	.headerflags	@"EF_CUDA_64BIT_ADDRESS EF_CUDA_SM120 EF_CUDA_VIRTUAL_SM(EF_CUDA_SM120)"
 	.headerflags	@"EF_CUDA_64BIT_ADDRESS EF_CUDA_SM120 EF_CUDA_VIRTUAL_SM(EF_CUDA_SM120)"
@@ -244,7 +228,7 @@
         /*00e0*/                   IMAD.WIDE R4, R9, 0x4, R4 ;
         /*00f0*/                   LDG.E R5, desc[UR4][R4.64] ;
         /*0100*/                   IMAD.WIDE R6, R9, 0x4, R6 ;
-        /*0110*/                   FSET.BF.NEU.FTZ.AND R9, R2, R5, PT ;
+        /*0110*/                   FSET.BF.NEU.AND R9, R2, R5, PT ;
         /*0120*/                   STG.E desc[UR4][R6.64], R9 ;
         /*0130*/                   EXIT ;
         /*0140*/                   BRA 0x140;
@@ -279,7 +263,7 @@
         /*00e0*/                   IMAD.WIDE R4, R9, 0x4, R4 ;
         /*00f0*/                   LDG.E R5, desc[UR4][R4.64] ;
         /*0100*/                   IMAD.WIDE R6, R9, 0x4, R6 ;
-        /*0110*/                   FMNMX.FTZ R9, R2, R5, PT ;
+        /*0110*/                   FMNMX R9, R2, R5, PT ;
         /*0120*/                   STG.E desc[UR4][R6.64], R9 ;
         /*0130*/                   EXIT ;
         /*0140*/                   BRA 0x140;
@@ -314,7 +298,7 @@
         /*00e0*/                   IMAD.WIDE R4, R9, 0x4, R4 ;
         /*00f0*/                   LDG.E R5, desc[UR4][R4.64] ;
         /*0100*/                   IMAD.WIDE R6, R9, 0x4, R6 ;
-        /*0110*/                   FMUL.FTZ R9, R2, R5 ;
+        /*0110*/                   FMUL R9, R2, R5 ;
         /*0120*/                   STG.E desc[UR4][R6.64], R9 ;
         /*0130*/                   EXIT ;
         /*0140*/                   BRA 0x140;
@@ -349,7 +333,7 @@
         /*00e0*/                   IMAD.WIDE R4, R9, 0x4, R4 ;
         /*00f0*/                   LDG.E R5, desc[UR4][R4.64] ;
         /*0100*/                   IMAD.WIDE R6, R9, 0x4, R6 ;
-        /*0110*/                   FMUL.FTZ R9, R2, R5 ;
+        /*0110*/                   FMUL R9, R2, R5 ;
         /*0120*/                   STG.E desc[UR4][R6.64], R9 ;
         /*0130*/                   EXIT ;
         /*0140*/                   BRA 0x140;

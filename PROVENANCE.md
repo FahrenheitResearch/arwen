@@ -154,7 +154,7 @@ bytes are outside the numerical oracle.
   use round-to-nearest-even.  FP32 subnormal handling is not one policy: it
   differs between the compile routes this codebase uses, so it is recorded
   per route, as measured on NVIDIA GeForce RTX 5090 (compute capability
-  12.0, driver 13.3 (13030), NVRTC 13.0,
+  12.0, driver 13.3 (13030), NVRTC 13.3,
   CuPy 14.0.1) by `tools/ftz_receipt/probe.py` over
   6 arithmetic mechanisms:
   - `R1` loader RawModule (`gpuwm/core/kernels/__init__.py:84`,
@@ -166,14 +166,14 @@ bytes are outside the numerical oracle.
     effective NVRTC options `-std=c++17` `--ftz=true` `-ftz=true`:
     `flush-to-zero` on 6 of 6 mechanisms [disassembly
     `tools/ftz_receipt/receipt/sass/r1_ftztrue.sass`]
-  - `R2` RawModule with the shortwave option tuple
-    (`gpuwm/core/rrtmg_sw.py:2906`, cupy.RawModule), effective NVRTC options
-    `-std=c++17` `--ftz=false` `-ftz=true`: `flush-to-zero` on 6 of 6
-    mechanisms [disassembly `tools/ftz_receipt/receipt/sass/r2.sass`]
+  - `R2` direct NVRTC with the shortwave option tuple
+    (`gpuwm/core/rrtmg_sw.py:2906`, cupy.cuda.compiler.compile_using_nvrtc),
+    effective NVRTC options `-std=c++17` `--ftz=false`: `ieee-agreement` on
+    6 of 6 mechanisms [disassembly `tools/ftz_receipt/receipt/sass/r2.sass`]
   - `R3` direct NVRTC + cuda.function.Module (`gpuwm/core/rrtmg_lw.py:3733`,
     cupy.cuda.compiler.compile_using_nvrtc), effective NVRTC options
-    `-std=c++17` `--ftz=false` `-arch=compute_120`: `ieee-agreement` on 6 of
-    6 mechanisms [disassembly `tools/ftz_receipt/receipt/sass/r3.sass`]
+    `-std=c++17` `--ftz=false`: `ieee-agreement` on 6 of 6 mechanisms
+    [disassembly `tools/ftz_receipt/receipt/sass/r3.sass`]
   - `R4` CuPy-generated ReductionKernel (`gpuwm/core/mynn_pbl_gpu.py:296`,
     cupy.ReductionKernel), effective NVRTC options `--std=c++17`
     `-ftz=true`: `flush-to-zero` on 6 of 6 mechanisms [disassembly of 6

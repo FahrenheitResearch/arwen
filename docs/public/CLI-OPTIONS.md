@@ -6,6 +6,10 @@ The complete command-line surface, read off the parsers themselves.  It exists b
 
 Everything is listed with the help text the tool itself prints.  A door's positional arguments come first, in the order they are written on the command line and under the names its `--help` usage line gives them: `[NAME]` is optional, `NAME [NAME ...]` repeats.  Where an argument is restricted to a fixed set of values, run that door with `--help` for the list -- it is read from the tree at run time rather than pinned here.  `--help` itself is omitted.
 
+## `arwen-mcp`
+
+Takes no options of its own.
+
 ## `gpuwm adapt`
 
 | option | what it does |
@@ -76,6 +80,45 @@ Everything is listed with the help text the tool itself prints.  A door's positi
 | `--rail-mib MIB` | whole-machine device residency ceiling: the budget is additionally capped at RAIL minus what every other process on the card already holds (read from NVML before this process touches CUDA). A property of the host, so there is no default |
 | `--reserve-gib GIB` | override the calibrated reserve policy with a flat reserve |
 | `--vram-gib GIB` | physical VRAM total of the card being sized for. A CEILING on the free figure, never a source of one: a declared --budget-gib plus the reserve can otherwise synthesise more free VRAM than the card physically has |
+
+## `gpuwm cycle`
+
+| option | what it does |
+|---|---|
+| `--accept-snap-offset-seconds` | largest analysis-time offset from the parent-step lattice this run will accept by name (default 0.0: the time must land on a step) |
+| `--allow-placement-clamp` | accept a placement clamped into the parent instead of refusing it (default off; a clamp is always receipted either way) |
+| `--analysis-increment CYCLE=PATH` | the analysis increment applied at CYCLE, as an npz keyed by PROGNOSTIC FIELD NAME. Repeatable. Use CYCLE=null for an explicit NULL ARM (a zero increment that must be bit-stable through the anchor). The three-hash ingestion gate needs both arms to mean anything |
+| `--child-dt-seconds` | child model step; must divide the parent step exactly (default: the parent step) |
+| `--child-dx-m` | child grid spacing in metres (default 1000.0); must divide --parent-dx-m exactly |
+| `--child-nx` | child grid points west-east (default 199) |
+| `--child-ny` | child grid points south-north (default 199) |
+| `--child-slots` | identically shaped dormant nests reserved at t=0 (default 0). The RESERVATION is fixed and the PLACEMENT is arbitrary: that is what keeps VRAM deterministic while a child can be anywhere |
+| `--cycle-seconds` | model seconds between cycle boundaries; must be a whole number of parent steps |
+| `--cycles` | how many cycles to run |
+| `--dry-run` | print the boundary lattice and the resolved child ratios, refuse invalid combinations, and write nothing |
+| `--epoch-anchor ISO8601` | the parent init's config_start_time (UTC); the ONLY datetime in the cycling spine, every other time is an integer tick from it |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--max-forecast-only-cycles` | consecutive cycles allowed with no analysis before the run halts STALE_ANALYSIS_BUDGET_EXHAUSTED (default 3): forecast-only is legitimate, forecast-only forever is a run that stopped being a DA cycle |
+| `--min-separation-km` | two children are never planted on one storm (default 40.0). A request inside this radius of an assigned child is REFUSED by name, never silently dropped |
+| `--no-resume` | start again at cycle 1 |
+| `--parent-dt-seconds` | parent model step; must be a whole number of milliseconds (default 120.0) |
+| `--parent-dx-m` | the parent's grid spacing in metres. Required with a placement provider: the child/parent refinement ratio is derived from it and a guessed spacing silently changes every placement |
+| `--parent-geo-file PATH` | XLAT/XLONG for the parent's mass grid: a radar-grid NetCDF or an npz carrying both. Defaults to the first --placement-obs-file, whose grid IS the target model grid by contract |
+| `--parent-kind {mpas-cuda,mpas-cuda-frames,arwen,replay}` | which engine advances the parent |
+| `--parent-mesh-id ID` | the mesh identity written into every anchor. No default: an identity the spine guessed is an identity no downstream reader can trust |
+| `--parent-state GLOB` | the parent's state series: a glob of npz frames in the SAME on-disk shape tools/cycle_mpas_leg.py --history reads (flat npz: prognostic fields, time_seconds, and the derived diagnostics beside them). Required for a real run; --dry-run does not need it |
+| `--placement-obs-field NAME` | which observation plane the obs provider places on (default z_obs). The radar-grid contract ships z_obs, z_max and z_mean side by side and calls the choice the consumer's; an absent name is refused naming what the file does carry |
+| `--placement-obs-file PATH` | radar-grid observation file the obs provider places on. Repeatable, ONE PER CYCLE in order; a single file is reused for every cycle. A storm that never moves between cycles is the defect that hid child retirement for a week |
+| `--placement-provider {tracker,schedule,obs,none}` | where each cycle's child placements come from (default none: parent-only cycling) |
+| `--placement-threshold` | trigger value a peak must reach to earn a child, in the placement field's own units (default 40.0) |
+| `--placement-tracker-field NAME` | which PARENT plane the tracker provider places on (default composite_reflectivity) |
+| `--port-config PATH` | the port's case configuration JSON. Required for a model parent kind |
+| `--port-root PATH` | the MPAS port checkout the forecast worker runs from. Required for a model parent kind |
+| `--port-steps` | dycore steps per cycle boundary. Required for a model parent kind; the step RECEIPTS the worker returns are counted against this number, and a leg that ran fewer steps than asked cannot earn the mpas-cuda stamp |
+| `--port-timeout` | seconds to wait for one forecast segment (default: no timeout) |
+| `--resume` | continue after the last completed cycle in the ledger (default) |
+| `--retire-below-strength` | a child with less than this much signal under it is retired and its reservation returns to the pool. Required with a placement provider and deliberately has NO default: its units are the trigger field's, so a default would be a hardcoded threshold for somebody else's field |
+| `--root` | cycle root; the ledger, anchors and per-cycle receipts all live here |
 
 ## `gpuwm doctor`
 
@@ -729,6 +772,62 @@ Takes no options of its own.
 |---|---|
 | `--output RECEIPT.json` | _(the parser declares no help text for this option)_ |
 | `--plot-dir DIR` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm spectral-op`
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+
+## `gpuwm spectral-op benchmark`
+
+| option | what it does |
+|---|---|
+| `--backend {numpy,cupy}` | _(the parser declares no help text for this option)_ |
+| `--dx-m` | _(the parser declares no help text for this option)_ |
+| `--dy-m` | _(the parser declares no help text for this option)_ |
+| `--levels` | _(the parser declares no help text for this option)_ |
+| `--nx` | _(the parser declares no help text for this option)_ |
+| `--ny` | _(the parser declares no help text for this option)_ |
+| `--output` | _(the parser declares no help text for this option)_ |
+| `--repeats` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm spectral-op calibrate`
+
+| option | what it does |
+|---|---|
+| `--dt-s` | _(the parser declares no help text for this option)_ |
+| `--input` | _(the parser declares no help text for this option)_ |
+| `--output` | _(the parser declares no help text for this option)_ |
+| `--protect-wavelength-m` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm spectral-op check`
+
+| argument | what it does |
+|---|---|
+| `receipt` | _(the parser declares no help text for this option)_ |
+
+Takes no options of its own.
+
+## `gpuwm spectral-op pins`
+
+Takes no options of its own.
+
+## `gpuwm spectral-op response`
+
+| option | what it does |
+|---|---|
+| `--dt-s` | _(the parser declares no help text for this option)_ |
+| `--e-fold-time-s` | _(the parser declares no help text for this option)_ |
+| `--maximum-damping-fraction` | _(the parser declares no help text for this option)_ |
+| `--maximum-wavelength-m` | _(the parser declares no help text for this option)_ |
+| `--minimum-wavelength-m` | _(the parser declares no help text for this option)_ |
+| `--order` | _(the parser declares no help text for this option)_ |
+| `--output` | _(the parser declares no help text for this option)_ |
+| `--protect-wavelength-m` | _(the parser declares no help text for this option)_ |
+| `--reference-wavelength-m` | _(the parser declares no help text for this option)_ |
+| `--samples` | _(the parser declares no help text for this option)_ |
+| `--wavelength-m` | _(the parser declares no help text for this option)_ |
 
 ## `gpuwm speedrun`
 

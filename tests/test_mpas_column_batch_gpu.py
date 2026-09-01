@@ -383,3 +383,170 @@ def test_grell_freitas_variant_runs_and_reports_every_step():
             assert np.isfinite(
                 cp.asnumpy(getattr(result, name))).all(), name
     assert seam.call_counts["cumulus"] == 2
+
+
+# ---------------------------------------------------------------------------
+# P3 arm (microphysics_scheme="p3", mp_physics=50; 2026-08-31).
+# The same seam, the eight-scalar transport: qv/qc/qr/qi + ni/nr/qir/qib.
+# ---------------------------------------------------------------------------
+
+P3_SPECIES = ("qv", "qc", "qr", "qi", "ni", "nr", "qir", "qib")
+
+
+def _p3_profile(seed=0):
+    """The WSM6 profile re-drawn onto P3's species set.
+
+    qr carries a consistent rain number moment (~1e5 kg^-1 per 1e-5
+    kg/kg, a plausible marine drop spectrum); ice starts cold at zero
+    exactly as a DomainState mp=50 allocation does, so the first steps
+    exercise P3's own nucleation rather than an invented ice state.
+    """
+    base = _profile(seed)
+    inputs = {name: base[name] for name in
+              ("u", "v", "theta", "pressure", "pressure_interface",
+               "z_interface", "w", "rho_dry", "qv", "qc", "qr", "qi")}
+    inputs["nr"] = cp.asarray(
+        cp.asnumpy(base["qr"]) * np.float32(1.0e10), dtype=cp.float32)
+    for name in ("ni", "qir", "qib"):
+        inputs[name] = cp.zeros((NZ, NCOL), dtype=cp.float32)
+    return inputs
+
+
+def _p3_seam(cumulus_scheme="kf", cumulus_seconds=600.0):
+    return mcb.run_mpas_column_batch(
+        n_levels=NZ, n_columns=NCOL, dt=DT,
+        microphysics_scheme="p3",
+        radiation_seconds=600.0, surface_pbl_seconds=120.0,
+        cumulus_seconds=cumulus_seconds, cumulus_scheme=cumulus_scheme,
+        start_time=START,
+        latitude_deg=np.full(NCOL, 35.0),
+        longitude_deg=np.full(NCOL, -97.0),
+        terrain_height_m=np.zeros(NCOL),
+        z_interface_nominal_m=np.linspace(0.0, 16000.0, NZ + 1),
+        p_top_pa=float(101325.0 * np.exp(-2.0)), dx_m=15000.0)
+
+
+def _p3_phase2_state(inputs):
+    return {name: inputs[name].copy()
+            for name in ("theta", "pressure", "z_interface") + P3_SPECIES}
+
+
+def test_p3_phase1_leaves_every_input_byte_identical():
+    seam = _p3_seam()
+    inputs = _p3_profile()
+    before = {name: cp.asnumpy(value).tobytes()
+              for name, value in inputs.items()}
+    assert float(cp.asnumpy(inputs["qv"]).min()) < 0.0  # the qv law
+    result = seam.run_phase1(dt=DT, **inputs)
+    for name, value in inputs.items():
+        assert cp.asnumpy(value).tobytes() == before[name], (
+            f"phase 1 mutated caller input {name}")
+    for name in mcb._OUTPUT_BUFFERS:
+        assert np.isfinite(cp.asnumpy(getattr(result, name))).all(), name
+    # No phase-1 scheme forces snow or graupel on a P3 state.
+    assert not cp.asnumpy(result.dqs).any()
+    assert not cp.asnumpy(result.dqg).any()
+
+
+def test_p3_phase2_updates_the_eight_species_and_theta_in_place():
+    seam = _p3_seam()
+    inputs = _p3_profile(seed=11)
+    state2 = _p3_phase2_state(inputs)
+    before = {name: cp.asnumpy(state2[name]).copy() for name in state2}
+    receipts = []
+    for step in range(3):
+        seam.run_phase1(dt=DT, **inputs)
+        receipts.append(seam.run_phase2(
+            **state2, refl_10cm_due=(step == 2)))
+    assert (cp.asnumpy(state2["theta"]) != before["theta"]).any()
+    assert (cp.asnumpy(state2["qv"]) != before["qv"]).any()
+    # The P3 receipt shape: five-slot scheme, no graupel key, and the
+    # due step's own call computed REFL_10CM (WRF diagflag semantics).
+    for receipt in receipts:
+        assert "graupelncv" not in receipt
+    assert set(receipts[0]) == {"rainncv", "snowncv", "sr"}
+    assert set(receipts[2]) == {"rainncv", "snowncv", "sr", "refl_10cm"}
+    assert receipts[2]["refl_10cm"].shape == (NZ, NCOL)
+    buckets = seam.accumulated_precipitation()
+    assert set(buckets) == {"RAINNC", "SNOWNC", "RAINC"}, (
+        "P3 has no graupel accumulator (physics_inventory mp=50 row)")
+
+
+def test_p3_species_direction_refusals():
+    seam = _p3_seam()
+    inputs = _p3_profile()
+    with pytest.raises(ValueError, match="qs"):
+        seam.run_phase1(dt=DT, **inputs,
+                        qs=cp.zeros((NZ, NCOL), dtype=cp.float32))
+    incomplete = {name: value for name, value in inputs.items()
+                  if name != "qir"}
+    with pytest.raises(ValueError, match="qir"):
+        seam.run_phase1(dt=DT, **incomplete)
+    # Phase 2: rho_dry is WSM6 state, refused on a P3 seam.
+    seam.run_phase1(dt=DT, **inputs)
+    state2 = _p3_phase2_state(inputs)
+    with pytest.raises(ValueError, match="rho_dry"):
+        seam.run_phase2(**state2, rho_dry=inputs["rho_dry"])
+    seam.run_phase2(**state2)   # leave the seam at a clean boundary
+
+
+def test_p3_restart_round_trip_continues_bit_identically():
+    """THE CARD GATE: a restored P3 seam continues bit-identically.
+
+    Covers the P3 additions end to end: th_old/qv_old (the cross-step
+    supersaturation carriers) and the P3 radii ride the payload; the
+    five-slot buckets restore; the held tendencies keep returning.
+    """
+    inputs = _p3_profile(seed=7)
+    reference = _p3_seam()
+    ref_state2 = _p3_phase2_state(inputs)
+    for _ in range(3):
+        reference.run_phase1(dt=DT, **inputs)
+        reference.run_phase2(**ref_state2)
+    payload = reference.export_state()
+    assert payload["identity"]["microphysics"] == "p3"
+    for name in ("state/th_old", "state/qv_old"):
+        assert name in payload["arrays"], (
+            f"{name} missing: a resumed run would repeat P3's "
+            "first-step supersaturation transient")
+    assert "state/effs" not in payload["arrays"]
+    resumed_state2 = {name: value.copy()
+                      for name, value in ref_state2.items()}
+    resumed = _p3_seam()
+    resumed.restore_state(payload)
+    for step in range(4):
+        ref_result = reference.run_phase1(dt=DT, **inputs)
+        res_result = resumed.run_phase1(dt=DT, **inputs)
+        reference.run_phase2(**ref_state2)
+        resumed.run_phase2(**resumed_state2)
+        for name in mcb._OUTPUT_BUFFERS:
+            assert cp.asnumpy(getattr(ref_result, name)).tobytes() \
+                == cp.asnumpy(getattr(res_result, name)).tobytes(), (
+                    f"{name} diverged on post-restore step {step}")
+        for name in ("theta",) + P3_SPECIES:
+            assert cp.asnumpy(ref_state2[name]).tobytes() \
+                == cp.asnumpy(resumed_state2[name]).tobytes(), (
+                    f"phase-2 {name} diverged on post-restore "
+                    f"step {step}")
+    assert resumed.step_index == reference.step_index
+    assert resumed.call_counts == reference.call_counts
+
+
+def test_p3_and_wsm6_payloads_refuse_each_other():
+    p3_seam = _p3_seam()
+    p3_inputs = _p3_profile()
+    p3_seam.run_phase1(dt=DT, **p3_inputs)
+    p3_seam.run_phase2(**_p3_phase2_state(p3_inputs))
+    p3_payload = p3_seam.export_state()
+    wsm6_seam = _seam()
+    wsm6_inputs = _profile()
+    wsm6_seam.run_phase1(dt=DT, **wsm6_inputs)
+    wsm6_seam.run_phase2(**_phase2_state(wsm6_inputs))
+    wsm6_payload = wsm6_seam.export_state()
+    assert "microphysics" not in wsm6_payload["identity"], (
+        "the wsm6 identity must stay byte-identical to pre-P3 schema "
+        "v2 so stored payloads keep restoring")
+    with pytest.raises(ValueError, match="identity"):
+        _p3_seam().restore_state(wsm6_payload)
+    with pytest.raises(ValueError, match="identity"):
+        _seam().restore_state(p3_payload)

@@ -61,6 +61,11 @@ const MAX_INSERT_BATCHES: usize = 4;
 /// cannot contain its own repairs and is refused up front.
 const SURGERY_LOCALITY_CELLS: f64 = 3.0;
 
+/// The quad reading below which G4 asks where a dislocation is. Unchanged by
+/// the 2026-08-31 re-aiming: what moved was WHERE such a reading is allowed
+/// to sit, never how bad a reading has to be to be asked about.
+const Q_DISLOCATION: f64 = 0.10;
+
 /// What one level measured, for the receipt.
 #[derive(Debug, Clone, Serialize)]
 pub struct LevelReport {
@@ -68,6 +73,11 @@ pub struct LevelReport {
     pub level_spacing_km: f64,
     pub inserted: usize,
     pub insert_batches: usize,
+    /// The coarsest field spacing the ladder had inserted at once this level
+    /// finished -- its refinement front, and the yardstick G4 classifies
+    /// dislocations against. Stamped so the front is a receipt number rather
+    /// than an in-flight one nobody can check afterwards.
+    pub insert_front_spacing_km: f64,
     pub relaxation_sweeps: usize,
     pub relaxation_mean_delta_over_h: f64,
     pub min_dv_over_dc_after_anneal: f64,
@@ -123,10 +133,24 @@ fn delivered_spacing_m(points: &[V3], rings: &Rings) -> Vec<f64> {
         .collect()
 }
 
+/// What one level's insertion pass did.
+///
+/// `front_spacing_m` is the load-bearing addition: the COARSEST level-field
+/// spacing at any midpoint this level actually inserted at. It is the
+/// ladder's own measurement of how far outward its refinement reached, and
+/// G4 below classifies dislocations against it instead of against a
+/// hard-coded fraction of the background. Nothing else can answer that
+/// question: the top-up's reach is set by the level's cell DEFICIT against
+/// a ratio ranking, which is a property of the run, not of the spec.
+struct InsertOutcome {
+    inserted: usize,
+    batches: usize,
+    front_spacing_m: f64,
+}
+
 /// One level's insertion pass: split every Delaunay edge longer than
 /// `beta * h_bar_l` at its spacing-true point, batch by batch, until no
-/// edge qualifies; then a COUNT-EXACT top-up. Returns (inserted count,
-/// batches used).
+/// edge qualifies; then a COUNT-EXACT top-up.
 ///
 /// The top-up exists because a threshold cannot serve sub-threshold density:
 /// a tanh spec's far tail asks for a few percent more cells than any edge
@@ -141,7 +165,7 @@ fn insert_level(
     field: &LevelClamp<'_>,
     beta: f64,
     sizing_samples: usize,
-) -> MpasResult<(usize, usize)> {
+) -> MpasResult<InsertOutcome> {
     // COUNT-TARGETED splitting. The threshold alone cannot count: in a wide
     // gentle annulus every parent edge sits in the split band and thresholded
     // doubling over-delivers (MEASURED: +9.8% on a 30-in-120 case whose ramp
@@ -156,6 +180,8 @@ fn insert_level(
     let n_target = crate::mesh::density::predicted_cells_of(field, sizing_samples).round() as i64;
     let mut inserted_total = 0usize;
     let mut batches_used = 0usize;
+    // The outermost field value this level inserted at; 0.0 until it does.
+    let mut front_spacing_m = 0.0f64;
     for batch in 0..=MAX_INSERT_BATCHES {
         let need = n_target - points.len() as i64;
         if need <= 0 {
@@ -212,6 +238,15 @@ fn insert_level(
                 .then_with(|| (x.1, x.2).cmp(&(y.1, y.2)))
         });
         qualifying.truncate(need as usize);
+        // The accepted set's outermost field value, measured on the same
+        // midpoints the splitting criterion read. One evaluation per ACCEPTED
+        // edge against the ~3N the scan above already spent, so the ladder
+        // learns where its own front is for a rounding error of its cost.
+        for &(_, i, j) in &qualifying {
+            if let Some(mid) = unit(add(points[i as usize], points[j as usize])) {
+                front_spacing_m = front_spacing_m.max(field.spacing_m(mid));
+            }
+        }
         let new_points: Vec<V3> = qualifying
             .iter()
             .map(|&(_, i, j)| {
@@ -226,7 +261,11 @@ fn insert_level(
     // Nothing to do on a level that inserted nothing: the field never
     // crossed this level's spacing and the count belongs to level 0's snap.
     if inserted_total == 0 {
-        return Ok((0, batches_used));
+        return Ok(InsertOutcome {
+            inserted: 0,
+            batches: batches_used,
+            front_spacing_m: 0.0,
+        });
     }
     let predicted = n_target as f64;
     let deficit = predicted.round() as i64 - points.len() as i64;
@@ -294,6 +333,9 @@ fn insert_level(
             }
             used[i as usize] = true;
             used[j as usize] = true;
+            if let Some(mid) = unit(add(points[i as usize], points[j as usize])) {
+                front_spacing_m = front_spacing_m.max(field.spacing_m(mid));
+            }
             top_up.push(surgery::spacing_true_point(
                 field,
                 points[i as usize],
@@ -306,7 +348,129 @@ fn insert_level(
     }
     // A surplus is left to the anneal: sqrt(2) splitting runs count-light by
     // construction, and deleting seeds here would un-double crystal interior.
-    Ok((inserted_total, batches_used))
+    Ok(InsertOutcome {
+        inserted: inserted_total,
+        batches: batches_used,
+        front_spacing_m,
+    })
+}
+
+/// G4's classification, as a pure function of three measured numbers so it
+/// can be tested against readings from real runs rather than only through a
+/// whole build.
+///
+/// TWO MECHANISMS MAKE IRREGULARITY IN THIS LADDER, and a dislocation is
+/// explained if EITHER of them operates where it sits. They are separate
+/// answers and neither one covers the other's cases; a single test was the
+/// defect.
+///
+/// 1. GRADING. A hexagonal crystal cannot tile a spatially varying density:
+///    wherever the field has a slope, the packing owes geometrically
+///    necessary dislocations. `local_variation_m` is the field's spread over
+///    the quad's own surgery-locality neighbourhood, so ANY variation there
+///    -- however gentle -- means the relaxation was solving a graded problem
+///    at this site and a dislocation is its expected output.
+///
+/// 2. INSERTION. `front_m` is the coarsest field value the ladder actually
+///    inserted at. Inside a PLATEAU (a region's flat core, or a mid-ladder
+///    rung) the field has no slope at all, so mechanism 1 says nothing --
+///    but the level split every edge there, and the dislocations are its
+///    own. Everything the ladder refined is finer than its front, so
+///    `h_here <= front` is exactly "insertion reached this spacing".
+///
+/// What is left over is the case G4 exists for: the field is bit-for-bit
+/// FLAT across the whole neighbourhood -- so the relaxation there ran the
+/// identical arithmetic it runs on a uniform sphere, grading cannot have
+/// produced anything -- and the spacing is coarser than anything the ladder
+/// inserted at, so insertion cannot have either. A near-cocircular quad
+/// there has no mechanism behind it.
+fn on_band(h_here_m: f64, front_m: f64, local_variation_m: f64) -> bool {
+    local_variation_m > 0.0 || h_here_m <= front_m
+}
+
+/// A dislocation G4 could not explain, with every number its refusal quotes.
+struct OffBand {
+    mid: V3,
+    q: f64,
+    h_here_m: f64,
+    variation_m: f64,
+    ball_cells: usize,
+}
+
+/// The field's spread over the ball of `hops` ring-steps around cells
+/// `seed_a` and `seed_b`: `max - min` of the spacing every generator in it
+/// reads, and the count of cells that were read.
+///
+/// The ball is the SURGERY LOCALITY, in the same cells the rest of this file
+/// measures locality in, because that is how far a repair reaches and how
+/// far a defect can have been carried from the graded field that made it.
+fn local_field_variation<F: DensityField>(
+    points: &[V3],
+    rings: &Rings,
+    field: &F,
+    seed_a: usize,
+    seed_b: usize,
+    hops: usize,
+) -> (f64, usize) {
+    let mut seen = vec![seed_a, seed_b];
+    let mut frontier = seen.clone();
+    for _ in 0..hops {
+        let mut next = Vec::new();
+        for &c in &frontier {
+            for &n in rings.ring(c) {
+                let n = n as usize;
+                if !seen.contains(&n) {
+                    seen.push(n);
+                    next.push(n);
+                }
+            }
+        }
+        frontier = next;
+    }
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for &c in &seen {
+        let h = field.spacing_m(points[c]);
+        lo = lo.min(h);
+        hi = hi.max(h);
+    }
+    (hi - lo, seen.len())
+}
+
+/// The first quad reading under `Q_DISLOCATION` that neither mechanism in
+/// [`on_band`] accounts for, in canonical edge order.
+fn first_off_band_dislocation<F: DensityField>(
+    points: &[V3],
+    rings: &Rings,
+    field: &F,
+    front_m: f64,
+) -> Option<OffBand> {
+    let mut found: Option<OffBand> = None;
+    surgery::for_each_quad(points, rings, |r| {
+        if r.q >= Q_DISLOCATION || found.is_some() {
+            return;
+        }
+        let (a, b) = (points[r.i as usize], points[r.j as usize]);
+        let mid = unit(add(a, b)).unwrap_or(a);
+        let h_here_m = field.spacing_m(mid);
+        let (variation_m, ball_cells) = local_field_variation(
+            points,
+            rings,
+            field,
+            r.i as usize,
+            r.j as usize,
+            SURGERY_LOCALITY_CELLS as usize,
+        );
+        if !on_band(h_here_m, front_m, variation_m) {
+            found = Some(OffBand {
+                mid,
+                q: r.q,
+                h_here_m,
+                variation_m,
+                ball_cells,
+            });
+        }
+    });
+    found
 }
 
 /// Generate a graded mesh by hierarchical refinement.
@@ -436,7 +600,7 @@ pub fn generate_graded(
     let clamp0 = prepared.clamped(steps[0]);
     let mut outcome = relax(&mut points, &clamp0, lloyd)?;
     progress(&format!(
-        "ANNEALED\t0\t{}\t{:.4e}\t{:.4}",
+        "ANNEALED\t0\t{}\t{:.4e}\t{:.4e}",
         outcome.sweeps, outcome.mean_delta_over_h, outcome.min_dv_over_dc
     ));
 
@@ -464,9 +628,18 @@ pub fn generate_graded(
         ..*lloyd
     };
 
+    // The ladder's own insertion front, in field units: the coarsest spacing
+    // any level has inserted at so far. It only ever grows, because a level
+    // that reached further out does not un-reach it at the next one.
+    let mut front_m = 0.0f64;
+
     for (l, &h_l) in steps.iter().enumerate().skip(1) {
         let clamp = prepared.clamped(h_l);
-        let (inserted, batches) = crate::mesh::profile::timed(
+        let InsertOutcome {
+            inserted,
+            batches,
+            front_spacing_m,
+        } = crate::mesh::profile::timed(
             &crate::mesh::profile::INSERT,
             points.len() as u64,
             || insert_level(&mut points, &clamp, beta, sizing_samples),
@@ -476,42 +649,116 @@ pub fn generate_graded(
             // A level with no band (spec never crosses h_l) is a no-op level.
             continue;
         }
+        front_m = front_m.max(front_spacing_m);
+        progress(&format!("FRONT\t{l}\t{:.4}", front_m / 1000.0));
 
         outcome = relax(&mut points, &clamp, &level_lloyd)?;
         progress(&format!(
-            "ANNEALED\t{l}\t{}\t{:.4e}\t{:.4}",
+            "ANNEALED\t{l}\t{}\t{:.4e}\t{:.4e}",
             outcome.sweeps, outcome.mean_delta_over_h, outcome.min_dv_over_dc
         ));
 
         // G4 -- LOCATION FALSIFICATION, refuse-don't-repair, BEFORE surgery.
-        // Every quad reading under 0.10 must sit where the ladder predicts
-        // irregularity: somewhere the spec is genuinely graded (inside some
-        // level band, dilated), never out in the uniform crystal. Repairing
-        // an off-band offender would mask a systemic ladder defect, so it is
-        // a refusal that names its coordinates and reading.
+        // Every quad reading under Q_DISLOCATION must sit where the ladder
+        // has actually refined; a dislocation out in crystal the ladder never
+        // touched means the ladder itself is wrong, and repairing it would
+        // mask that. Refusal names its coordinates and reading.
+        //
+        // RE-AIMED 2026-08-31, against a reproduction that made the old
+        // predicate's misalignment measurable. It read
+        //
+        //     h_here < 0.99 * h_bg && h_here > h_l * 0.95
+        //
+        // and both halves were wrong by CONSTRUCTION rather than by tuning.
+        //
+        // The upper half asked whether the spec's spacing here is at least
+        // 1% below the background, as a stand-in for "the field is graded
+        // here". A tanh approaches the background ASYMPTOTICALLY, so its
+        // crossing of 0.99 * h_bg sits INSIDE genuinely graded field, at a
+        // radius that is a property of the outermost ramp's width and of
+        // nothing else. The relaxation past that crossing is still solving a
+        // graded problem -- the field there is a different number from cell
+        // to cell -- while the check called it uniform crystal and refused
+        // the dislocations grading owes.
+        //
+        // MEASURED on a 200 m Hong Kong reproduction (work/cpas-bench):
+        // refusals at 2,996 km and 2,004 km from the refinement centre, in
+        // two runs whose 0.99 crossings sat 1,000 km apart at 2,992 km and
+        // 1,997 km. Each dislocation sat 4 to 8 km outside a cutoff that
+        // moved a thousand kilometres WITH it -- a boundary tracking the
+        // ramp it was cutting, not an incident. The field at the first site
+        // reads 50.6963 km against a 51.2 km background: 8.3 m of 51,200
+        // above the cutoff, and still sloping. A 1% stand-in cannot be
+        // right, because no fraction of the background is where a tanh stops
+        // being graded.
+        //
+        // AND THE LADDER'S OWN FRONT NOW SAYS WHERE ITS WORK REACHED, which
+        // is the census the reproduction could not run. On that spec the
+        // front holds at a 37.1548 km field value through levels 1 to 6 and
+        // then JUMPS to 50.9427 km at level 7 -- past the 50.688 km cutoff,
+        // past the 50.6963 km site that was refused, and 0.26 km short of
+        // the background itself. The deep level's count-exact top-up ranks
+        // sub-threshold edges by delivered-over-requested, and the largest
+        // such ratios left on the sphere are in the tanh tail, where the
+        // mesh still sits at background and the field asks for a hair less.
+        // So at the level that refused, BOTH mechanisms reach the site: the
+        // field is still sloping there, and the ladder inserted out past it.
+        // The retired check was refusing work the ladder had just done.
+        //
+        // The lower half asked that the site not be finer than this level's
+        // own band. At level l the core is clamped to h_l while the mesh
+        // there is still at steps[l-1], a ratio of exactly 2 against
+        // beta = sqrt(2), so the core splits at EVERY level by construction.
+        // Irregularity finer than the level's band is the level's own work,
+        // and refusing it was refusing the ladder for functioning.
+        //
+        // What replaces both is [`on_band`]: the two mechanisms that
+        // actually make irregularity here, each asked directly. GRADING --
+        // the field's spread over the quad's own surgery-locality
+        // neighbourhood, so any slope at all means the relaxation was
+        // solving a graded problem at this site. INSERTION -- `front_m`, the
+        // coarsest field value the ladder actually inserted at, which is
+        // what covers the flat PLATEAUS (a region's core, a mid-ladder rung)
+        // where grading says nothing but every edge was split.
+        //
+        // THE BREAKAGE THIS STILL CATCHES, and it is the same one: a
+        // near-cocircular quad out in undisturbed crystal. There the field
+        // is bit-for-bit identical across the whole neighbourhood -- the
+        // relaxation ran the arithmetic it runs on a uniform sphere, so
+        // grading produced nothing -- and the spacing is coarser than
+        // anything the ladder inserted at, so insertion produced nothing
+        // either. The published quasi-uniform x1.40962 reads 0.394 in such
+        // crystal; a reading under 0.10 there has no mechanism behind it,
+        // and localization -- the ladder's one load-bearing claim -- would
+        // be false. Refuse, never repair: repairing it would mask a
+        // systemic ladder defect.
         let rings_check = outcome.rings.clone();
-        let mut off_band: Option<(V3, f64)> = None;
         let h_bg_m = spec.background_km * 1000.0;
-        surgery::for_each_quad(&points, &rings_check, |r| {
-            if r.q < 0.10 && off_band.is_none() {
-                let mid = unit(add(points[r.i as usize], points[r.j as usize]))
-                    .unwrap_or(points[r.i as usize]);
-                let h_here = prepared.spacing_m(mid);
-                let inside_bands = h_here < 0.99 * h_bg_m && h_here > h_l * 0.95;
-                if !inside_bands {
-                    off_band = Some((mid, r.q));
-                }
-            }
-        });
-        if let Some((m, q)) = off_band {
-            let (lat, lon) = crate::mesh::geom::lat_lon(m);
+        // A front that has reached the background itself means the top-up
+        // spilled out of the graded field and into the uniform crystal, which
+        // breaks the GP-doubled interior insertion is built to preserve AND
+        // leaves G4 with no crystal to falsify against. That is a defect in
+        // the insertion, not in the mesh, and it is refused here rather than
+        // silently disarming the check below.
+        if front_m >= h_bg_m {
             return Err(MpasError::Refusal(format!(
-                "level {l} carries a dislocation OUTSIDE the predicted transition annuli: dv/dc = {q:.3e} at lat/lon ({:.3}, {:.3}) deg, where the spec's spacing is {:.1} km against a level band of ({:.1}, {:.1}) km. Localization is the ladder's one load-bearing claim -- irregularity is confined to the annuli by construction -- so an off-band defect means the ladder itself is wrong and repairing it would mask that. Refused, never repaired",
+                "level {l} inserted out at {:.4} km, the {:.4} km background spacing itself: the count-exact top-up has spilled past the graded field into the uniform crystal. Insertion there breaks the GP-doubled interior it is built to preserve, and it leaves the location check with no undisturbed crystal to falsify a dislocation against -- every reading would classify as explained. Refused: a check that cannot fail is not a check",
+                front_m / 1000.0,
+                h_bg_m / 1000.0
+            )));
+        }
+        if let Some(off) = first_off_band_dislocation(&points, &rings_check, &prepared, front_m) {
+            let (lat, lon) = crate::mesh::geom::lat_lon(off.mid);
+            return Err(MpasError::Refusal(format!(
+                "level {l} carries a dislocation in undisturbed crystal: dv/dc = {:.3e} at lat/lon ({:.3}, {:.3}) deg, where the spec asks for {:.4} km. NEITHER mechanism that makes irregularity here operates at that site. Grading did not: the field's spread over the {} cells within {SURGERY_LOCALITY_CELLS:.0} of it is {:.6} km, so the relaxation ran the same arithmetic there that it runs on a uniform sphere. Insertion did not: the ladder's front reached {:.4} km, finer than the {:.4} km asked for here, so no level ever split an edge at this spacing. Localization is the ladder's one load-bearing claim -- irregularity is confined to where a mechanism put it -- so a dislocation with no mechanism means the ladder itself is wrong, and repairing it would mask that. Refused, never repaired",
+                off.q,
                 lat.to_degrees(),
                 lon.to_degrees(),
-                prepared.spacing_m(m) / 1000.0,
-                h_l / 1000.0,
-                steps[l - 1] / 1000.0
+                off.h_here_m / 1000.0,
+                off.ball_cells,
+                off.variation_m / 1000.0,
+                front_m / 1000.0,
+                off.h_here_m / 1000.0
             )));
         }
 
@@ -524,7 +771,7 @@ pub fn generate_graded(
             || surgery::drain(&mut points, &clamp, surgery_opts, drift_budget),
         )?;
         progress(&format!(
-            "SURGERY\t{l}\t{}\t{}\t{:.4}",
+            "SURGERY\t{l}\t{}\t{}\t{:.4e}",
             ledger.rounds,
             ledger.ops.len(),
             ledger.min_q_after
@@ -604,6 +851,7 @@ pub fn generate_graded(
             level_spacing_km: h_l / 1000.0,
             inserted,
             insert_batches: batches,
+            insert_front_spacing_km: front_m / 1000.0,
             relaxation_sweeps: outcome.sweeps,
             relaxation_mean_delta_over_h: outcome.mean_delta_over_h,
             min_dv_over_dc_after_anneal: outcome.min_dv_over_dc,
@@ -717,7 +965,9 @@ mod tests {
         let uniform_half = MeshSpec::uniform(mean_arc * EARTH_RADIUS_M / 2.0 / 1000.0);
         let prepared_half = uniform_half.prepared();
         let clamp = prepared_half.clamped(mean_arc * EARTH_RADIUS_M / 2.0);
-        let (inserted, batches) = insert_level(&mut pts, &clamp, DEFAULT_BETA, 50_000).unwrap();
+        let InsertOutcome {
+            inserted, batches, ..
+        } = insert_level(&mut pts, &clamp, DEFAULT_BETA, 50_000).unwrap();
         assert_eq!(
             pts.len(),
             crate::mesh::icosa::goldberg_cells(2 * m, 2 * n),
@@ -880,6 +1130,321 @@ mod tests {
         assert!(err.contains("surgery locality radius"), "{err}");
     }
 
+    /// The outermost rung of the 200 m Hong Kong reproduction
+    /// (`work/cpas-bench/cpas-hk200m.json`), as its own spec: a 25.6 km rung
+    /// capped at 2,030 km under a 419.8 km ramp on a 51.2 km background.
+    /// Nothing inside 2,000 km matters to the tail this reproduces, so the
+    /// inner seven rungs are left off.
+    fn cpas_outer_rung() -> MeshSpec {
+        cpas_rung(2030.0, 25.6, 419.8)
+    }
+
+    /// Either reproduction's outermost rung. Run 1 kept the inferred 25.6 km
+    /// rung (cap 2,030 km, ramp 419.8 km) and refused at 2,996 km; run 2
+    /// removed it, leaving 12.8 km at cap 1,400 km under a 209.9 km ramp,
+    /// and refused at 2,004 km.
+    fn cpas_rung(radius_km: f64, spacing_km: f64, transition_km: f64) -> MeshSpec {
+        MeshSpec {
+            background_km: 51.2,
+            regions: vec![Region {
+                shape: Shape::Cap {
+                    center_deg: [90.0, 0.0],
+                    radius_km,
+                },
+                spacing_km,
+                transition: TransitionField::Km(transition_km),
+            }],
+            name: None,
+        }
+    }
+
+    /// A point `r_km` from the north pole along the prime meridian.
+    fn out_from_pole(r_km: f64) -> V3 {
+        let theta = r_km * 1000.0 / EARTH_RADIUS_M;
+        [theta.sin(), 0.0, theta.cos()]
+    }
+
+    /// THE DEFECT THIS FILE'S G4 CARRIED, measured on the geometry that
+    /// exposed it, and the re-aimed check's verdict on the same three sites.
+    ///
+    /// `work/cpas-bench` refused two 200 m Hong Kong builds at 2,996 km and
+    /// 2,004 km from the refinement centre, each 4 to 8 km outside a
+    /// `0.99 * background` crossing that itself moved 1,000 km between the
+    /// two runs when the outermost rung changed. This test re-derives the
+    /// field readings from the spec rather than quoting that write-up, and
+    /// pins all three verdicts.
+    #[test]
+    fn the_retired_location_check_called_a_live_tanh_tail_uniform_crystal() {
+        // BOTH reproductions, each at the radius it actually refused at.
+        for (radius_km, rung_km, ramp_km, r_refused) in [
+            (2030.0, 25.6, 419.8, 2996.0),
+            (1400.0, 12.8, 209.9, 2004.0),
+        ] {
+            let spec = cpas_rung(radius_km, rung_km, ramp_km);
+            let prepared = spec.prepared();
+            let h_bg = spec.background_km * 1000.0;
+            let retired_cutoff = 0.99 * h_bg;
+
+            // The refusal site: still sloping, but above 99% of the background.
+            let h_here = prepared.spacing_m(out_from_pole(r_refused));
+            assert!(
+                h_here > retired_cutoff,
+                "the retired predicate would not have refused {h_here:.1} m against {retired_cutoff:.1} m at {r_refused} km -- the reproduction does not reproduce"
+            );
+            assert!(
+                h_here < h_bg,
+                "{h_here:.4} m is not below the {h_bg:.1} m background, so this site is not in the tail at all"
+            );
+            // ... and the field is genuinely varying there: one background
+            // cell either side reads a different number, so the relaxation
+            // was solving a graded problem at this site.
+            let step = prepared.spacing_m(out_from_pole(r_refused + 51.2))
+                - prepared.spacing_m(out_from_pole(r_refused - 51.2));
+            assert!(
+                step > 0.0,
+                "the tail is flat at {r_refused} km, which would make this a genuine dislocation site"
+            );
+            // GRADING ALONE MUST CARRY THESE SITES. The reproduction's own
+            // front holds at a 37.1548 km field value through levels 1 to 6
+            // before the deep level's top-up pushes it out to 50.9427 km, so
+            // the levels-1-to-6 value is used here deliberately: it puts both
+            // sites OUTSIDE the front and leaves grading as the only
+            // mechanism available, which is the half the retired check could
+            // not credit.
+            let front_before_the_deep_level = 37_154.8;
+            assert!(
+                h_here > front_before_the_deep_level,
+                "this site sits inside the front, so it does not isolate grading"
+            );
+            assert!(
+                on_band(h_here, front_before_the_deep_level, step),
+                "the re-aimed check still refuses the reproduction's site at {r_refused} km"
+            );
+            assert!(
+                !on_band(h_here, front_before_the_deep_level, 0.0),
+                "with no variation and no front reaching it, this site must still be refused"
+            );
+        }
+
+        let spec = cpas_outer_rung();
+        let prepared = spec.prepared();
+        let h_bg = spec.background_km * 1000.0;
+
+        // THE CHECK STILL HAS TEETH ON THE SAME SPEC. Beyond
+        // SHELL_SATURATION_WIDTHS = 19.07 ramp widths the tanh saturates and
+        // the field is BIT IDENTICAL to the background -- density.rs's own
+        // definition of outside. 2030 + 19.07 * 419.8 = 10,036 km.
+        let r_flat = 12_000.0;
+        let h_flat = prepared.spacing_m(out_from_pole(r_flat));
+        assert_eq!(
+            h_flat, h_bg,
+            "the field at {r_flat} km is not bit-identical to the background, so this site is still inside the ramp"
+        );
+        let flat_step = prepared.spacing_m(out_from_pole(r_flat + 51.2))
+            - prepared.spacing_m(out_from_pole(r_flat - 51.2));
+        assert_eq!(flat_step, 0.0, "the far field is not flat to the last bit");
+        // Every front the ladder can have is finer than the background, so
+        // neither mechanism reaches here and the dislocation is refused.
+        assert!(
+            !on_band(h_flat, h_bg - 1.0, flat_step),
+            "a dislocation in saturated crystal is no longer refused -- the re-aiming loosened the check"
+        );
+    }
+
+    /// A PLATEAU is not uniform crystal, and the insertion front is what
+    /// says so: inside a region's flat core the field has no slope at all,
+    /// but every level split every edge there.
+    #[test]
+    fn a_flat_plateau_inside_the_refinement_is_explained_by_the_front() {
+        // A cap wide enough to hold one: the tanh saturates 19.07 widths
+        // inside the boundary, so 3,000 km of cap under a 100 km ramp leaves
+        // a flat core out to 1,093 km.
+        let spec = MeshSpec {
+            background_km: 51.2,
+            regions: vec![Region {
+                shape: Shape::Cap {
+                    center_deg: [90.0, 0.0],
+                    radius_km: 3000.0,
+                },
+                spacing_km: 25.6,
+                transition: TransitionField::Km(100.0),
+            }],
+            name: None,
+        };
+        let prepared = spec.prepared();
+        // Deep inside the cap: the field reads the rung's own spacing and is
+        // flat to the last bit.
+        let h_core = prepared.spacing_m(out_from_pole(10.0));
+        let core_step =
+            prepared.spacing_m(out_from_pole(20.0)) - prepared.spacing_m(out_from_pole(10.0));
+        assert_eq!(core_step, 0.0, "the core is not a plateau");
+        assert_eq!(h_core, 25_600.0, "the plateau does not read the rung");
+        assert!(h_core < spec.background_km * 1000.0);
+        // The retired check refused exactly this: `h_here > h_l * 0.95` reads
+        // the core as "finer than this level's band" at every level above the
+        // last one. The front explains it instead.
+        assert!(
+            on_band(h_core, 45_000.0, core_step),
+            "a plateau inside the ladder's own front is not explained"
+        );
+        assert!(
+            !on_band(h_core, h_core * 0.5, core_step),
+            "a plateau the ladder never refined down to must still be refused"
+        );
+    }
+
+    /// A relaxed uniform crystal, and a spec whose refinement is a small cap
+    /// at the north pole under a ramp that SATURATES: beyond
+    /// `300 + 19.07 * 200 = 4,114 km` the field is bit-identical to the
+    /// background, so the southern hemisphere is undisturbed crystal by
+    /// density.rs's own definition of the word.
+    fn crystal_and_spec() -> (Vec<V3>, MeshSpec) {
+        let spec = MeshSpec {
+            background_km: 120.0,
+            regions: vec![Region {
+                shape: Shape::Cap {
+                    center_deg: [90.0, 0.0],
+                    radius_km: 300.0,
+                },
+                spacing_km: 60.0,
+                transition: TransitionField::Km(200.0),
+            }],
+            name: None,
+        };
+        let mut points = crate::mesh::icosa::seed(16, 0).unwrap();
+        let uniform = MeshSpec::uniform(120.0);
+        let prepared = uniform.prepared();
+        let clamp = prepared.clamped(120_000.0);
+        relax(&mut points, &clamp, &LloydOptions::default()).unwrap();
+        (points, spec)
+    }
+
+    /// Push cell `b` of the quad nearest `target` towards the circumcircle
+    /// through `(i, a, j)` until that edge's `dv/dc` lands under
+    /// `Q_DISLOCATION` -- four near-cocircular sites, which IS the defect
+    /// surgery exists to drain. Returns the site and the reading it reached.
+    fn inject_cocircular_quad(points: &mut [V3], target: V3) -> (V3, f64) {
+        use crate::mesh::geom::circumcenter;
+        let rings = delaunay_rings(points).unwrap();
+        let mut best: Option<(f64, u32, u32, u32, u32)> = None;
+        surgery::for_each_quad(points, &rings, |r| {
+            let mid = unit(add(points[r.i as usize], points[r.j as usize])).unwrap();
+            let d = arc(mid, target);
+            if best.is_none_or(|(bd, ..)| d < bd) {
+                best = Some((d, r.i, r.j, r.a, r.b));
+            }
+        });
+        let (_, i, j, a, b) = best.expect("a quad near the target");
+        let (pi, pj, pa) = (
+            points[i as usize],
+            points[j as usize],
+            points[a as usize],
+        );
+        let origin = points[b as usize];
+        let centre = circumcenter(pi, pa, pj).expect("circumcircle");
+        let radius = arc(centre, pi);
+        let out = arc(centre, origin);
+        let slerp = |t: f64| -> V3 {
+            let omega = arc(centre, origin);
+            let so = omega.sin();
+            unit(add(
+                crate::mesh::geom::scale(centre, ((1.0 - t) * omega).sin() / so),
+                crate::mesh::geom::scale(origin, (t * omega).sin() / so),
+            ))
+            .unwrap()
+        };
+        // t = 1 leaves b where it was; t = radius/out puts it exactly on the
+        // circumcircle, where the quad is perfectly cocircular. Bisect
+        // between them for a reading just inside the flag.
+        let (mut lo, mut hi) = (radius / out, 1.0);
+        let mut reached = f64::NAN;
+        for _ in 0..40 {
+            let t = 0.5 * (lo + hi);
+            points[b as usize] = slerp(t);
+            let r2 = delaunay_rings(points).unwrap();
+            let mut q = f64::NAN;
+            surgery::for_each_quad(points, &r2, |r| {
+                if r.i == i && r.j == j {
+                    q = r.q;
+                }
+            });
+            if !q.is_finite() {
+                // The edge flipped away: back off towards the original.
+                lo = t;
+                continue;
+            }
+            reached = q;
+            if q < 0.04 {
+                lo = t;
+            } else if q > 0.08 {
+                hi = t;
+            } else {
+                break;
+            }
+        }
+        let mid = unit(add(points[i as usize], points[j as usize])).unwrap();
+        (mid, reached)
+    }
+
+    /// THE BREAKAGE G4 EXISTS FOR, still caught after the re-aiming: a
+    /// near-cocircular quad in crystal no mechanism disturbed.
+    ///
+    /// The same injected defect, at two places on one sphere, gets opposite
+    /// verdicts -- which is what makes this a re-aiming and not a loosening.
+    #[test]
+    fn an_injected_dislocation_is_refused_in_flat_crystal_and_allowed_in_the_ramp() {
+        // The ladder's finest rung as the front: fine enough that insertion
+        // explains nothing at either site, so GRADING is the only mechanism
+        // in play and the two verdicts differ on it alone.
+        let front_m = 60_000.0;
+
+        // ---- the clean crystal answers nothing ---------------------------
+        let (points, spec) = crystal_and_spec();
+        let prepared = spec.prepared();
+        let rings = delaunay_rings(&points).unwrap();
+        assert!(
+            first_off_band_dislocation(&points, &rings, &prepared, front_m).is_none(),
+            "the relaxed crystal already carries an unexplained dislocation"
+        );
+
+        // ---- inject one in the saturated far field: REFUSED --------------
+        let (mut flat_points, _) = crystal_and_spec();
+        let (site, q) = inject_cocircular_quad(&mut flat_points, [0.0, 0.0, -1.0]);
+        assert!(
+            q < Q_DISLOCATION,
+            "the injection did not reach the flag: dv/dc = {q:.4e}"
+        );
+        let flat_rings = delaunay_rings(&flat_points).unwrap();
+        let caught = first_off_band_dislocation(&flat_points, &flat_rings, &prepared, front_m)
+            .expect("a dislocation in undisturbed crystal was NOT refused");
+        assert_eq!(
+            caught.variation_m, 0.0,
+            "the site G4 refused is not bit-flat, so it was not the injected one"
+        );
+        assert!(
+            arc(caught.mid, site) < 4.0 * 120_000.0 / EARTH_RADIUS_M,
+            "G4 refused somewhere other than the injection site"
+        );
+        assert_eq!(caught.h_here_m, spec.background_km * 1000.0);
+
+        // ---- the same injection inside the live ramp: ALLOWED ------------
+        // 400 km from the pole is 100 km outside the 300 km cap, one ramp
+        // half-width into a transition that is 200 km wide -- the steepest
+        // part of the field this spec has.
+        let (mut ramp_points, _) = crystal_and_spec();
+        let ramp_target = out_from_pole(400.0);
+        let (_, q_ramp) = inject_cocircular_quad(&mut ramp_points, ramp_target);
+        assert!(
+            q_ramp < Q_DISLOCATION,
+            "the ramp injection did not reach the flag: dv/dc = {q_ramp:.4e}"
+        );
+        let ramp_rings = delaunay_rings(&ramp_points).unwrap();
+        assert!(
+            first_off_band_dislocation(&ramp_points, &ramp_rings, &prepared, front_m).is_none(),
+            "an identical dislocation inside a live ramp is refused -- grading is not being credited"
+        );
+    }
+
     #[test]
     fn a_uniform_request_does_not_take_the_graded_arm() {
         let err = generate_graded(
@@ -909,12 +1474,14 @@ mod tests {
         )
         .unwrap_or_else(|e| panic!("graded generation refused: {e}"));
         eprintln!(
-            "graded 240->480: GP({},{}) level 0, {} cells final, {} level reports, final min dv/dc {:.4}",
+            "graded 240->480: GP({},{}) level 0, {} cells final, {} level reports, final min dv/dc {:.4e}, front {:.4} km vs 0.99*bg {:.4} km",
             choice.m,
             choice.n,
             points.len(),
             reports.len(),
-            outcome.min_dv_over_dc
+            outcome.min_dv_over_dc,
+            reports[0].insert_front_spacing_km,
+            0.99 * spec.background_km,
         );
         assert_eq!(rings.n_cells(), points.len());
         // No cell below the Goldberg coordination floor. This is the ladder's

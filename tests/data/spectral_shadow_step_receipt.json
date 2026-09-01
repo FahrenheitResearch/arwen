@@ -1,0 +1,52 @@
+{
+  "applied": false,
+  "backend": "numpy",
+  "config_sha256": "4d65548c0312bcdbd33ab441d6cb415563dcd635431f5e329c4252461c32d02e",
+  "dt_s": 15.0,
+  "dx_m": 3000.0,
+  "dy_m": 3000.0,
+  "generated_utc": "2026-08-18T03:09:11.215533+00:00",
+  "metrics": {
+    "scalar": {
+      "QVAPOR": {
+        "max_abs_increment": 2.7585774660110474e-06,
+        "mean_after": 0.012031695945249036,
+        "mean_before": 0.012031697444702635,
+        "minimum_after": 0.010344291105866432,
+        "minimum_before": 0.010344277136027813,
+        "rms_increment": 4.394089177153923e-07,
+        "space": "log"
+      },
+      "T": {
+        "max_abs_increment": 0.028533935546875,
+        "mean_after": 300.4999997119109,
+        "mean_before": 300.5,
+        "minimum_after": 297.99993896484375,
+        "minimum_before": 298.0,
+        "rms_increment": 0.007013458491464803,
+        "space": "linear"
+      }
+    },
+    "wind": {
+      "divergence_rms_after": 0.00042137353162071496,
+      "divergence_rms_before": 0.0004237832465294201,
+      "kinetic_energy_after": 37.69125876637796,
+      "kinetic_energy_before": 37.704363364726305,
+      "max_abs_increment": 0.036409735679626465,
+      "rms_increment": 0.010568060341438139,
+      "staggering": "cgrid",
+      "u_field": "U",
+      "v_field": "V"
+    }
+  },
+  "mode": "shadow",
+  "operator_pins_sha256": "549502b5f1b66fff4dda949ba5a16cfb9ed71bb52877c2ef2f395d36c031c2ad",
+  "operator_schema": "gpuwm.regional-spectral-operators/v1",
+  "receipt_sha256": "940b80d1f49ac3ae252601cfdaf988af8853d4b6cca231d4e68d34d4153b9571",
+  "schema": "gpuwm.regional-spectral-step-receipt/v1",
+  "source": {
+    "domain": "d02",
+    "npz": "/mnt/data/arwen-level2-build/docs/public/receipts/spectral-level2/synthetic-state.npz"
+  },
+  "step": 1
+}

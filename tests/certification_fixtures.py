@@ -104,7 +104,16 @@ def this_process_can_witness_the_compile_platform() -> bool:
     answer is a refusal naming the condition".  So a *matched* fixture, which
     is by definition one certify has no reason to refuse, only exists on a
     process that can make that measurement.  Tests that need the passing
-    direction ask this first; the refusing directions need no card.
+    direction ask this first.  So do the PERTURBATION refusals: their
+    fixture matches every other item to the live measurement so exactly
+    one drifts, and on a witness-less process the capsule is born
+    un-witnessed and every refusal collapses to the same
+    recorded-missing sentence (measured 2026-08-31, the first honest
+    clean-venv run: conftest's CUDA_VISIBLE_DEVICES=-1 backstop leaves
+    the fixture's compute-capability probe empty; the box of record only
+    resolved it because a third-party plugin initialises CUDA before
+    conftest runs).  Refusing directions that never read the live
+    fingerprint still need no card.
     """
     return not unresolved_fingerprint_items(compile_platform_fingerprint())
 

@@ -107,6 +107,15 @@ class _OffGrid:
     """A grid every gate misses. Reaching it at all is the point."""
 
     nz, ny, nx = 1, 3, 3
+    # The accumulators now cover only the cells the radar can reach, and
+    # that window is measured against the grid's own mass-point
+    # coordinates.  Sitting these on the pack's antenna keeps the window
+    # the whole 3x3 -- the dense case this fixture has always exercised --
+    # so what the test measures is unchanged; putting them elsewhere would
+    # shrink the window and quietly change the subject.
+    dx_m = dy_m = 3000.0
+    lat = np.full((3, 3), 52.95)
+    lon = np.full((3, 3), 4.79)
 
     def mass_index(self, lat, lon):
         return np.full(lat.shape, -5.0), np.full(lat.shape, -5.0)

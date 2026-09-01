@@ -158,6 +158,7 @@ import numpy as np
 from gpuwm import perf_timing
 from gpuwm.obs import coarse_cost
 from gpuwm.obs.dealias_region import ENGINE_REGION_GLOBAL
+from gpuwm.obs.geometry import beam_geometry
 
 #: The VAD-referenced, abstaining engine implemented in this module.
 ENGINE_VAD_REGION = "vad-region"
@@ -1285,13 +1286,28 @@ def volume_wind_profile(cuts, params: DealiasParams) -> "WindProfile | None":
                        v_ms=np.asarray(vs, dtype=np.float64))
 
 
-def _beam_height_m(slant_range_m: float, elevation_rad: float,
-                   effective_radius_m: float = 1.21 * 6371000.0) -> float:
-    """Beam centre height above the antenna, four-thirds earth."""
+def _beam_height_m(slant_range_m: float, elevation_rad: float) -> float:
+    """Beam centre height above the antenna, four-thirds earth.
 
-    return float(np.sqrt(slant_range_m ** 2 + effective_radius_m ** 2
-                         + 2.0 * slant_range_m * effective_radius_m
-                         * np.sin(elevation_rad)) - effective_radius_m)
+    Routed through :func:`gpuwm.obs.geometry.beam_geometry` -- the one
+    authority for where a gate is -- rather than repeating the triangle here.
+    The repeated copy carried ``1.21 * 6371000.0`` while its own docstring
+    said four-thirds: 1.21 is the *height* coefficient from the small-angle
+    form ``h = r sin(el) + r^2 / (2 k a)`` with ``k = 4/3`` folded together
+    with a unit change, not an effective radius, and using it as one put the
+    beam centre 60 m low at 100 km and 375 m low at 250 km.  Against 500 m
+    pooling layers that is up to three-quarters of a layer, which moves band
+    fits into the wrong height bin and so corrupts the volume profile every
+    anchor in the sweep is judged against.
+
+    The shared authority also uses WRF's 6370 km sphere rather than 6371,
+    which is what keeps this height in the same georeference as the model
+    grid the profile is eventually compared with.
+    """
+
+    height_msl, _arc, _local_el = beam_geometry(
+        float(slant_range_m), np.degrees(float(elevation_rad)), 0.0)
+    return float(height_msl)
 
 
 def _adjacent_pairs(shape: tuple[int, int], wraps: bool):
@@ -1374,8 +1390,12 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
                   *, reference: np.ndarray | None = None,
                   wraps: bool | None = None,
                   first_gate_m: float | None = None,
-                  gate_spacing_m: float | None = None) -> SweepDealiasResult:
-    """Unfold one sweep with the engine ``params`` selects.
+                  gate_spacing_m: float | None = None,
+                  nyquist_by_radial: np.ndarray | None = None,
+                  nyquist_radials_disagree: bool = False
+                  ) -> SweepDealiasResult:
+    """Unfold one sweep with the engine ``params`` selects, rejecting every
+    gate the evidence cannot resolve.
 
     ``velocity`` is ``(radial, gate)`` raw radial velocity with NaN for no
     data; ``nyquist`` is the sweep's Nyquist velocity, or None when the sweep
@@ -1383,6 +1403,26 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
     gate is rejected with :data:`REASON_NO_NYQUIST`, which is the same
     refusal :mod:`gpuwm.obs.superob` already makes.  Both engines make that
     same refusal, so a caller cannot change it by changing solver.
+
+    ``nyquist_by_radial`` is the per-radial Nyquist velocity, one value per
+    row of ``velocity``, with NaN (or a nonpositive value) for a radial whose
+    Nyquist is unknown.  **This, not the scalar, is what the fold arithmetic
+    uses when it is supplied.**  A VCP that splits a cut between PRFs gives
+    different radials different Nyquist intervals -- 32 m/s beside 25.51 m/s
+    is ordinary -- and collapsing them to the sweep minimum means a one-fold
+    correction on the 32 m/s radial is applied as 51.02 m/s instead of 64.0:
+    a 12.98 m/s error that is finite, smooth, well inside ``max_speed_ms``,
+    and therefore invisible to every downstream guard.  With the array
+    supplied each correction is an exact integer multiple of *that radial's
+    own* ``2 * Vn``.
+
+    ``nyquist_radials_disagree`` is the sweep's own statement that its
+    radials did not all report the same Nyquist.  Passing it True without
+    ``nyquist_by_radial`` is refused: it is a pack that knows it is
+    nonuniform and cannot say how, which is exactly the case the scalar
+    cannot represent.  The refusal is the point -- a legacy pack must not be
+    dealiased on a summary minimum just because the originals were dropped
+    before Python saw them.
 
     ``reference`` is an optional externally supplied ``(radial, gate)``
     environmental field -- e.g. :meth:`WindProfile.radial_reference` on the
@@ -1397,6 +1437,11 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
     geometry.  They are needed only by the region-global refinement pass,
     which fits a wrapped vortex in real space and cannot do that on gate
     indices.
+
+    Both engines are handed the per-radial array; they do different things
+    with it, and :func:`~gpuwm.obs.dealias_region.dealias_sweep_region`
+    documents its own limit rather than being handed a screened copy that
+    hides it.
     """
 
     if getattr(params, "engine", ENGINE_VAD_REGION) == ENGINE_REGION_GLOBAL:
@@ -1407,7 +1452,9 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
 
         return dealias_sweep_region(
             velocity, azimuth_deg, nyquist, params,
-            first_gate_m=first_gate_m, gate_spacing_m=gate_spacing_m)
+            first_gate_m=first_gate_m, gate_spacing_m=gate_spacing_m,
+            nyquist_by_radial=nyquist_by_radial,
+            nyquist_radials_disagree=nyquist_radials_disagree)
 
     velocity = np.asarray(velocity, dtype=np.float64)
     if velocity.ndim != 2:
@@ -1415,6 +1462,15 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
             f"dealias_sweep needs a (radial, gate) plane, got shape "
             f"{velocity.shape}")
     params = params.validate()
+    if nyquist_radials_disagree and nyquist_by_radial is None:
+        raise DealiasParamsError(
+            "this sweep reports nyquist_radials_disagree=True but carries no "
+            "nyquist_velocity_ms_by_radial, so the only Nyquist available is "
+            "the sweep minimum -- and unfolding a nonuniform cut in the "
+            "minimum's interval mis-corrects every radial above it by a whole "
+            "fold difference, finite and plausible and undetectable "
+            "downstream.  Re-decode the volume with a decoder that emits the "
+            "per-radial Nyquist array, or run this volume without dealiasing")
     state = np.zeros(velocity.shape, dtype=np.int8)
     reason = np.full(velocity.shape, REASON_NONFINITE, dtype=np.int8)
     fold_plane = np.zeros(velocity.shape, dtype=np.int16)
@@ -1442,19 +1498,66 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
         "nyquist_ms": None if nyquist is None else float(nyquist),
     }
 
-    if nyquist is None or not np.isfinite(nyquist) or nyquist <= 0.0:
-        reason[finite] = REASON_NO_NYQUIST
-        stats["gates_rejected"] = int(finite.sum())
-        stats["rejected"]["no_nyquist"] = int(finite.sum())
+    rows, gates = velocity.shape
+    # ---- 0. per-radial Nyquist ------------------------------------------
+    # One value per row from here on.  The scalar survives only as the
+    # summary a receipt reports; nothing below divides by it.
+    if nyquist_by_radial is None:
+        scalar = (np.nan if nyquist is None else float(nyquist))
+        nyquist_row = np.full(rows, scalar, dtype=np.float64)
+        stats["nyquist_by_radial"] = False
+    else:
+        nyquist_row = np.asarray(nyquist_by_radial, dtype=np.float64).ravel()
+        if nyquist_row.size != rows:
+            raise ValueError(
+                f"nyquist_by_radial has {nyquist_row.size} entries, the sweep "
+                f"has {rows} radials")
+        nyquist_row = nyquist_row.copy()
+        stats["nyquist_by_radial"] = True
+    valid_row = np.isfinite(nyquist_row) & (nyquist_row > 0.0)
+    nyquist_row = np.where(valid_row, nyquist_row, np.nan)
+
+    # A radial with no believable Nyquist is not a radial with the sweep's
+    # Nyquist.  Its gates are refused here, individually, instead of being
+    # carried on a borrowed interval.
+    no_nyquist_rows = ~valid_row
+    if no_nyquist_rows.any():
+        refused = finite & no_nyquist_rows[:, None]
+        reason[refused] = REASON_NO_NYQUIST
+        stats["rejected"]["no_nyquist"] = int(refused.sum())
+        finite = finite & ~no_nyquist_rows[:, None]
+
+    distinct = np.unique(nyquist_row[valid_row]) if valid_row.any() \
+        else np.empty(0, dtype=np.float64)
+    stats["nyquist_distinct"] = [float(v) for v in distinct]
+    stats["nyquist_min_ms"] = float(distinct.min()) if distinct.size else None
+    stats["nyquist_max_ms"] = float(distinct.max()) if distinct.size else None
+    stats["nyquist_radials_no_value"] = int(no_nyquist_rows.sum())
+    stats["nyquist_transition_pairs"] = 0
+    if distinct.size:
+        # The scalar summary is the minimum, unchanged in meaning: it never
+        # licenses a gate its own radial would have rejected.  It is now
+        # reported rather than used.
+        stats["nyquist_ms"] = float(distinct.min())
+
+    if not distinct.size:
+        reason[np.isfinite(velocity)] = REASON_NO_NYQUIST
+        total = int(np.isfinite(velocity).sum())
+        stats["gates_rejected"] = total
+        stats["rejected"]["no_nyquist"] = total
         return SweepDealiasResult(output, state, reason, fold_plane,
                                   reference_plane, stats)
     if not finite.any():
+        stats["gates_rejected"] = int(stats["rejected"]["no_nyquist"])
         return SweepDealiasResult(output, state, reason, fold_plane,
                                   reference_plane, stats)
 
-    nyquist = float(nyquist)
-    interval = 2.0 * nyquist
-    rows, gates = velocity.shape
+    uniform = bool(distinct.size == 1 and not no_nyquist_rows.any())
+    # Placeholder on refused rows so no NaN reaches a comparison; those
+    # gates are already out of ``finite`` and can never be indexed into a
+    # kept result.
+    nyquist_flat = np.repeat(np.where(valid_row, nyquist_row, 1.0), gates)
+    interval_flat = 2.0 * nyquist_flat
     if wraps is None:
         wraps = _sweep_wraps(azimuth_deg)
 
@@ -1463,8 +1566,41 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
     # ---- reference -------------------------------------------------------
     timing.mark("reference", gates_finite=int(finite.sum()),
                 gates_total=velocity.size)
-    vad, vad_stats = vad_reference(velocity, azimuth_deg, nyquist, params,
-                                   prior=reference)
+    # A VAD fit reasons in one Nyquist interval: its wrapped cost, its coarse
+    # seeds and its inlier band are all expressed in Vn.  A nonuniform cut
+    # therefore gets one fit per constant-Nyquist sector rather than one fit
+    # over the mixture, and a sector too thin in azimuth simply fails to fit
+    # and anchors nothing.  Sectors do not exchange gates, and step 1 below
+    # refuses to place a graph edge across a transition, so no region -- and
+    # so no fold -- ever spans two intervals.
+    if uniform:
+        vad, vad_stats = vad_reference(velocity, azimuth_deg,
+                                       float(distinct[0]), params,
+                                       prior=reference)
+    else:
+        vad = np.full(velocity.shape, np.nan, dtype=np.float64)
+        azimuth_all = np.asarray(azimuth_deg, dtype=np.float64).ravel()
+        sector_stats = []
+        bands = bands_valid = 0
+        for value in distinct:
+            rows_sel = np.flatnonzero(valid_row & (nyquist_row == value))
+            prior_sel = (None if reference is None
+                         else np.asarray(reference,
+                                         dtype=np.float64)[rows_sel])
+            plane, sector = vad_reference(
+                velocity[rows_sel], azimuth_all[rows_sel], float(value),
+                params, prior=prior_sel)
+            vad[rows_sel] = plane
+            bands += int(sector.get("bands", 0))
+            bands_valid += int(sector.get("bands_valid", 0))
+            sector_stats.append({
+                "nyquist_ms": float(value),
+                "radials": int(rows_sel.size),
+                "bands": int(sector.get("bands", 0)),
+                "bands_valid": int(sector.get("bands_valid", 0)),
+            })
+        vad_stats = {"bands": bands, "bands_valid": bands_valid,
+                     "band_fits": [], "nyquist_sectors": sector_stats}
     if reference is not None:
         external = np.asarray(reference, dtype=np.float64)
         if external.shape != velocity.shape:
@@ -1488,8 +1624,18 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
     flat = velocity.ravel()
     flat_finite = finite.ravel()
     comparable = flat_finite[left] & flat_finite[right]
+    # A pair straddling a Nyquist transition is not evidence about anything.
+    # The two gates are quantised on different lattices, so their difference
+    # is neither a shear measurement nor a fold count, and both readings of
+    # it are wrong in the same direction: joined, it welds two intervals into
+    # one region; voted on, it manufactures a fold edge out of a PRF change.
+    # It is dropped from both, and counted so the drop is visible.
+    same_nyquist = nyquist_flat[left] == nyquist_flat[right]
+    stats["nyquist_transition_pairs"] = int((comparable & ~same_nyquist).sum())
+    comparable = comparable & same_nyquist
     delta = np.abs(flat[left] - flat[right])
-    joined = comparable & (delta <= params.region_join_fraction * nyquist)
+    joined = comparable & (delta
+                           <= params.region_join_fraction * nyquist_flat[left])
 
     nodes = rows * gates
     adjacency = coo_matrix(
@@ -1511,7 +1657,8 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
     label_a = label_flat[left[boundary]]
     label_b = label_flat[right[boundary]]
     different = label_a != label_b
-    jump = (flat[left[boundary]] - flat[right[boundary]]) / interval
+    jump = ((flat[left[boundary]] - flat[right[boundary]])
+            / interval_flat[left[boundary]])
     edges = _edge_table(label_a[different], label_b[different],
                         jump[different], params)
     stats["edges"] = len(edges)
@@ -1557,14 +1704,16 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
         with_reference = members[ref_ok_flat[members]]
         if with_reference.size < params.anchor_min_gates:
             continue
-        ratio = (vad_flat[with_reference] - flat[with_reference]) / interval
+        member_interval = interval_flat[with_reference]
+        ratio = ((vad_flat[with_reference] - flat[with_reference])
+                 / member_interval)
         estimate = float(np.median(ratio))
         candidate = int(np.rint(estimate))
         if abs(estimate - candidate) > params.anchor_max_offset:
             continue
         if abs(candidate) > params.max_fold:
             continue
-        residual = np.abs(flat[with_reference] + interval * candidate
+        residual = np.abs(flat[with_reference] + member_interval * candidate
                           - vad_flat[with_reference])
         if float(np.median(residual)) > params.anchor_max_residual_ms:
             continue
@@ -1590,10 +1739,18 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
             heapq.heappush(heap, (-entry["total"], other, counter, region,
                                   entry))
 
+    # Which growth pass -- which connected component of the confident-edge
+    # graph -- each resolved region belongs to.  Recorded during the walk
+    # because the anchor cross-check below rejects by component, and a
+    # component is exactly "the set of regions whose folds were derived from
+    # one seed": if two anchors inside it disagree, every fold in it rests on
+    # an arbitrary choice between them.
+    component: dict[int, int] = {}
     for seed in anchor_order:
         if seed in resolved:
             continue
         resolved[seed] = anchor_fold[seed]
+        component[seed] = seed
         push(seed)
         while heap:
             _priority, target, _tie, source, entry = heapq.heappop(heap)
@@ -1605,6 +1762,7 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
                 resolved[target] = resolved[source] + entry["fold"]
             else:
                 resolved[target] = resolved[source] - entry["fold"]
+            component[target] = seed
             linked += 1
             push(target)
     stats["regions_linked"] = linked
@@ -1622,6 +1780,33 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
             conflicted.add(lo)
             conflicted.add(hi)
     stats["edges_violated"] = violated
+
+    # Every anchored region must still hold its own anchor after the growth
+    # walk.  It need not: the walk seeds from the largest anchored region and
+    # then propagates folds across confident edges, so a second anchored
+    # region reached over those edges is *overwritten* by whatever the edge
+    # chain implies, and until now nothing compared the two.  First anchor
+    # wins, silently, and the losing anchor -- an independent measurement
+    # against the environmental reference -- is discarded without a count.
+    #
+    # A disagreement is not a tie to be broken.  It says the edge chain and
+    # the reference field give different answers for the same gates, and
+    # there is no evidence here for preferring either, so the whole component
+    # is rejected rather than resolved on a coin toss.
+    anchors_disagreed = 0
+    disagreeing_components: set[int] = set()
+    for region, expected in anchor_fold.items():
+        if region not in resolved:
+            continue
+        if resolved[region] != expected:
+            anchors_disagreed += 1
+            disagreeing_components.add(component.get(region, region))
+    if disagreeing_components:
+        for region, seed in component.items():
+            if seed in disagreeing_components:
+                conflicted.add(region)
+    stats["anchors_disagreed"] = anchors_disagreed
+    stats["components_anchor_conflict"] = len(disagreeing_components)
     stats["regions_conflict"] = len(conflicted)
 
     # ---- assign ----------------------------------------------------------
@@ -1643,7 +1828,10 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
     gate_fold = region_fold[labels]
     gate_state = region_state[labels]
     gate_reason = region_reason[labels]
-    unfolded = flat[flat_finite] + interval * gate_fold
+    # The modular identity the whole stage rests on: the correction applied
+    # to a gate is an integer multiple of ITS OWN radial's Nyquist interval,
+    # never of a sweep-wide summary.
+    unfolded = flat[flat_finite] + interval_flat[flat_finite] * gate_fold
     speed_bounded(unfolded, gate_state, gate_reason,
                   max_speed_ms=params.max_speed_ms)
     # The bound that actually holds the line.  A fold error displaces a gate
@@ -1669,13 +1857,19 @@ def dealias_sweep(velocity: np.ndarray, azimuth_deg: np.ndarray,
     fold_flat[flat_finite] = np.where(gate_state == STATE_REJECTED, 0,
                                       gate_fold)
 
+    # Gates on radials that had no Nyquist at all never entered ``finite``,
+    # so they are not in ``gate_state``; they are still rejections and the
+    # offered/unchanged/unfolded/rejected identity has to close over them.
+    rows_refused = int(stats["rejected"].get("no_nyquist", 0))
     stats["gates_unchanged"] = int((gate_state == STATE_UNCHANGED).sum())
     stats["gates_unfolded"] = int((gate_state == STATE_UNFOLDED).sum())
-    stats["gates_rejected"] = int((gate_state == STATE_REJECTED).sum())
+    stats["gates_rejected"] = int(
+        (gate_state == STATE_REJECTED).sum()) + rows_refused
     for code, name in REASON_NAMES.items():
         if name in stats["rejected"]:
             stats["rejected"][name] = int(
                 ((gate_state == STATE_REJECTED) & (gate_reason == code)).sum())
+    stats["rejected"]["no_nyquist"] += rows_refused
     applied = gate_fold[gate_state != STATE_REJECTED]
     if applied.size:
         values, counts = np.unique(applied, return_counts=True)

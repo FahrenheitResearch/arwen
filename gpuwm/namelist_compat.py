@@ -928,25 +928,13 @@ def analyze_namelists(
                 _column(physics, "sf_surface_mosaic", max_dom, default=0),
                 "&physics/sf_surface_mosaic",
             )
-            # Radiation columns are read ONLY when a domain selects P3.
-            # This report evaluates no radiation selector for any other
-            # scheme, and reading these unconditionally would let a
-            # malformed radiation column fail a stock-WRF export verdict
-            # that no rule here has ever gated on radiation.  P3 is the one
-            # reachable scheme whose runtime refusal is microphysics-COUPLED
-            # (see the mp=50 arm below), so it is the one scheme that has to
-            # look.
-            ra_lw: list[int] = []
-            ra_sw: list[int] = []
-            if 50 in mp:
-                ra_lw = _integers(
-                    _column(physics, "ra_lw_physics", max_dom, default=0),
-                    "&physics/ra_lw_physics",
-                )
-                ra_sw = _integers(
-                    _column(physics, "ra_sw_physics", max_dom, default=0),
-                    "&physics/ra_sw_physics",
-                )
+            # This report evaluates no radiation selector for any scheme.
+            # It briefly read ra_lw/ra_sw for mp=50 alone, to mirror
+            # gpuwm.config.validate_p3_radiation's refusal of P3 on the
+            # RTE+RRTMGP pair; that refusal was retired with its defect
+            # (rrtmgp._MP_CLOUD_OPTICS_SCHEME now carries ``50: "p3"``,
+            # WRF's own has_reqs=0 coupling), so the mirror and its
+            # radiation-column read retired with it.
             monalb = _column(physics, "usemonalb", max_dom, default=False)
             lai2d = _column(physics, "rdlai2d", max_dom, default=False)
             if any(not isinstance(value, bool)
@@ -1064,46 +1052,12 @@ def analyze_namelists(
                         f"implement mp_physics={mp[index]} ({inventory.scheme}); "
                         "stock-WRF export inventory is independent and supported."
                     )
-                elif (mp[index] == 50
-                        and (ra_lw[index], ra_sw[index]) == (4, 4)):
-                    # Admitting the SCHEME does not admit one PAIRING, and
-                    # this is the pairing.  P3 supplies cloud and ice radii
-                    # (state.effc/state.effi) but no snow radius at all: WRF
-                    # sets has_reqs = 0 for the P3 family
-                    # (phys/module_physics_init.F:1027-1033) because the
-                    # single ice category spans rime mass fraction instead of
-                    # separating snow from graupel.  So
-                    # gpuwm.config.validate_p3_radiation refuses
-                    # ra_lw_physics=4/ra_sw_physics=4 by name at the head's
-                    # config door, and it is default-on: ra_rrtmg_variant
-                    # defaults to "rte-rrtmgp" (config.py:259), which is the
-                    # reading a WRF namelist's bare 4/4 gets.
-                    #
-                    # The concrete breakage naming it here prevents: a green
-                    # report, a full six-domain WPS export, and only then a
-                    # NotImplementedError at config load, before the first
-                    # step.  Both ways through that refusal are gpuwm
-                    # RunConfig choices with no WRF namelist spelling, so
-                    # this namelist-only report cannot read them and does not
-                    # assume either -- it reads the default and refuses.
-                    gpuwm_reasons.append(
-                        f"d{index + 1:02d}: gpuwm forecast runtime implements "
-                        f"mp_physics=50 ({inventory.scheme}) but refuses it "
-                        "with ra_lw_physics=4/ra_sw_physics=4: WRF sets "
-                        "has_reqs=0 for P3 "
-                        "(phys/module_physics_init.F:1027-1033) and P3's "
-                        "single ice category carries no separate snow "
-                        "species, so the RTE+RRTMGP cloud-optics adapter has "
-                        "no snow radius to bind and inventing one would be "
-                        "inventing physics "
-                        "(gpuwm.config.validate_p3_radiation). A bare 4/4 "
-                        "namelist resolves to the RTE+RRTMGP variant, which "
-                        "is the paired head's default. Choose the P3 "
-                        "radiation pairing at the head, where "
-                        "validate_p3_radiation names both ways through; a "
-                        "WRF namelist cannot express either. Stock-WRF "
-                        "export inventory is independent and supported."
-                    )
+                # The mp=50 + ra 4/4 arm that stood here mirrored
+                # gpuwm.config.validate_p3_radiation and retired with it:
+                # rrtmgp._MP_CLOUD_OPTICS_SCHEME carries ``50: "p3"`` now
+                # (WRF's own has_reqs=0 remap coupling), so a bare 4/4
+                # namelist resolves to a pairing that runs and there is
+                # no refusal left to mirror.
         except (KeyError, TypeError, ValueError) as error:
             issues.append(_issue(
                 "UNSUPPORTED_MICROPHYSICS_INVENTORY", "&physics/mp_physics",

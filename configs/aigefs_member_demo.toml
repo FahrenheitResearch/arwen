@@ -1,3 +1,45 @@
+# AIGEFS v1.0 pres+sfc 0.25 deg, one ensemble member
+#
+# PROVEN END TO END, NOT REASONED ABOUT.  This file was taken from
+# `gpuwm fetch` (or its named staged-bytes door) through `gpuwm prep`,
+# `gpuwm sim` and the Rust renderer `rw_wrfbatch` before it was
+# written down, and every number in this header is a measurement of
+# THIS file's own run.
+#
+# EXECUTION CARD: NVIDIA GeForce RTX 5070 Ti, 16 GiB, Linux (weather-node-1)
+#   The BUDGET is 10 GiB.  `gpuwm check --vram-gib 10` gated this
+#   config, and the peak below is the forecast PROCESS's own device
+#   memory, polled back-to-back off the driver for the whole run.
+#   The silicon underneath is a 16 GiB card, so read the peak against
+#   the 10 GiB BUDGET, never against the card.
+#
+# MEASURED 2026-08-20:
+#   grid                 50 x 50 x 49 at 30 km  1500 x 1500 km
+#   window               6 h, boundary interval 21600 s
+#   gpuwm check          rc 0 at --vram-gib 10
+#   gpuwm prep           rc 0, 10.6 s
+#   forecast             rc 0, 8.0 s, report status PASS, health.final.ok True
+#   PEAK DEVICE MEMORY   4.17 GiB of the 10.00 GiB budget (5.83 GiB unused)
+#                        308 samples over 8.0 s (38 Hz)
+#   render               rc 0, 5.4 s, 98 product images through rw_wrfbatch
+#
+# ACQUISITION: gpuwm fetch --source aigefs --cycle 2026-08-17T00 --hours
+#   12 --member mem000 --transport aws
+#
+# PHYSICS: morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1 -- this source's own computed default
+# (`gpuwm run-plan --physics-profiles`).  Both radiation streams run,
+# so the window may cross local night.
+#
+# AIGEFS member identity lives in the PATH, not the filename, so
+# `gpuwm-member-prep --member-set aigefs-ensemble-grib2-members-v1
+# --member mem000 --cycle 2026-08-17T00 --steps 0,6,12` runs FIRST and
+# publishes the verified member tree this config's prep reads.
+# THE CYCLE IS NOT ARBITRARY.  On 2026-08-20 00Z bytes the member door
+# refuses: the grammar declares typeOfEnsembleForecast 3 and those
+# bytes carry 6.  Measured on this box, same engine, both directions:
+# the committed 2026-08-17 fixture reads 3, the live 2026-08-20 files
+# read 6 on all 248 records of the control and on mem001 as well.
+#
 [experiment]
 name = "aigefs_member_demo"
 start_time = 2026-08-17T00:00:00
@@ -7,9 +49,6 @@ smooth_option = 0
 blend_width = 5
 spec_bdy_width = 5
 restart_interval_s = 0.0
-# The smallest honest AI-ensemble member demo: one 30 km Lambert domain
-# inside one member's global 0.25-degree state, one six-hour boundary
-# interval, both radiation streams on.  Nothing here is declared away.
 
 [projection]
 map_proj = "lambert"
@@ -22,9 +61,6 @@ stand_lon = -92.5
 [shared]
 nz = 49
 ztop = 20000.0
-# The member product publishes every mapped field on the declared
-# 13-level ladder up to 50 hPa, so a 100 hPa model top sits inside the
-# source coverage and no level is extrapolated.
 p_top = 10000.0
 eta_levels = [
     1.0, 0.9978, 0.99519, 0.99212, 0.98849,

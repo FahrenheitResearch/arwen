@@ -121,13 +121,13 @@ undefined read, refusing with the Fortran line named where reproduction is refus
 
 [PROVENANCE.md:250-1345]
 
-Where the rule points the other way, because a repair would silently change WRF's
-control flow, both instances are published rather than hidden: P3's first-step 0/0
-supersaturation NaN is kept (every consumer is a comparison and no finite value makes
-them all false the way a NaN does; its containment is tested, not assumed)
-[docs/public/PHYSICS.md:256-264], and Shin-Hong reproduces WRF's own `prfac2 = 0/0`
-NaN while deliberately not performing WRF's `q2xk(kpbl+1)` out-of-bounds read
-[docs/public/PHYSICS.md:876-878].
+Where WRF's own arithmetic is undefined, each case is decided on its consumers and
+published rather than hidden: P3's first-step 0/0 supersaturation is floored to
+exactly -1 (fully subsaturated, the intended meaning; default-on in all three arms,
+inert from step 2 onward, the step-1 delta declared)
+[docs/public/PHYSICS.md:256-264], while Shin-Hong reproduces WRF's own
+`prfac2 = 0/0` NaN — every consumer tolerates it — and deliberately does not
+perform WRF's `q2xk(kpbl+1)` out-of-bounds read [docs/public/PHYSICS.md:876-878].
 
 Two schema extensions leave WRF-expressible territory on purpose and are named as
 such: per-domain `isfflx` (a scalar in the WRF Registry, per-domain in ArWen's TOML,

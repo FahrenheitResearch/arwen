@@ -78,7 +78,12 @@ _SELF = "gpuwm"
 #: Packages that live in this repository.  A bare import of one of these is a
 #: cross-import question, not a dependency question (see
 #: ``test_no_shipped_module_imports_a_sibling_by_bare_name``).
-_FIRST_PARTY = frozenset({"gpuwm", "tools", "tilestream"})
+_FIRST_PARTY = frozenset({"gpuwm", "tools", "tilestream",
+                          # The cycle spine's port-facing seam, top-level
+                          # on purpose (pyproject includes it and says
+                          # why): the forecast worker must reach it
+                          # without the gpuwm name.
+                          "mpas_cycle_bridge"})
 
 #: Every third-party top-level module the shipped code is allowed to name,
 #: mapped to the distribution(s) that can provide it.  A module that reaches
@@ -94,6 +99,7 @@ _PROVIDERS: dict[str, tuple[str, ...]] = {
     "huggingface_hub": ("huggingface_hub",),
     "jsonschema": ("jsonschema",),
     "matplotlib": ("matplotlib",),
+    "mcp": ("mcp",),
     "netCDF4": ("netCDF4",),
     "numpy": ("numpy",),
     "packaging": ("packaging",),
@@ -114,6 +120,10 @@ _PROVIDERS: dict[str, tuple[str, ...]] = {
     # not ship.  The two decode instruments that import it are
     # checkout-only by construction -- see _OPTIONAL_BY_DESIGN.
     "test_mapped_engine_parity": (),
+    # NO distribution provides this either: the MPAS GPU port, loaded BY
+    # PATH from a bound checkout by mpas_cycle_bridge/portbind.py -- see
+    # _OPTIONAL_BY_DESIGN for the full reason.
+    "mpas_port": (),
 }
 
 #: Modules this project deliberately never declares, because a *declared*
@@ -186,6 +196,16 @@ _OPTIONAL_BY_DESIGN: dict[str, str] = {
         "command is correct without it. matplotlib happens to bring it, but "
         "the code does not rely on that."
     ),
+    "mpas_port": (
+        "mpas_cycle_bridge/portbind.py's function-local imports of the MPAS "
+        "GPU port. The package is not a distribution anywhere: it exists "
+        "only after PortBinding loads a port checkout BY PATH onto "
+        "sys.path, and every function that imports it is reachable only "
+        "through a binding that has already done so -- without a checkout "
+        "the binding itself refuses first, with PortBindingError naming "
+        "what is missing. Declaring it would declare a package pip cannot "
+        "install."
+    ),
 }
 
 #: Modules whose distribution is allowed to sit in an extra rather than in the
@@ -240,6 +260,15 @@ _EXTRA_GATED: dict[str, tuple[tuple[str, ...], str]] = {
         "wrf-rust is the mandated science core for derived quantities. The "
         "default rust render engine does not need it -- it renders from the "
         "rw_wrfbatch bridge -- so a base install still draws maps.",
+    ),
+    "mcp": (
+        ("mcp",),
+        "The MCP SDK is what the arwen-mcp stdio server speaks the "
+        "protocol with. The server is an agent integration surface, not "
+        "a forecast capability: no gpuwm door and no data path imports "
+        "it, so a person's install does not carry it. The import is "
+        "guarded in gpuwm/mcp/__init__.py with a one-sentence remedy "
+        "naming `pip install gpuwm[mcp]`.",
     ),
     "huggingface_hub": (
         ("publish",),
@@ -620,6 +649,13 @@ def test_all_covers_every_extra_a_forecast_user_needs(declaration, pyproject):
                 "aggregate but tests/test_static_highres_warp_routing.py, "
                 "which makes rasterio/pyproj/affine unimportable and "
                 "requires the default terrain build to still answer.",
+        "mcp": "the arwen-mcp server's protocol stack, an agent "
+               "integration surface rather than a forecast capability; "
+               "a person following the quickstart runs forecasts from "
+               "their shell and never speaks MCP, so [all] carrying it "
+               "would be dead weight in the one-liner. The agent that "
+               "does need it is told the extra by name in the guarded "
+               "import's remedy sentence and in docs/mcp-server.md.",
     }
     for major, other in (("cu12", "cu13"), ("cu13", "cu12")):
         covered = declaration["extras"][f"all-{major}"]
@@ -639,6 +675,42 @@ def test_all_covers_every_extra_a_forecast_user_needs(declaration, pyproject):
 # --------------------------------------------------------------------------
 # The built artifact must agree with the source of truth
 # --------------------------------------------------------------------------
+def _installed_metadata_is_this_tree() -> bool:
+    """False when the INSTALLED gpuwm distribution's recorded origin is
+    a different checkout -- the borrowed-install case the provenance
+    banner names.  The metadata then describes the OTHER tree, and
+    comparing it against this tree's pyproject measures the wrong
+    artifact (a dev box holds one editable install and many worktrees;
+    exactly one can be current).  The probe reads the distribution's
+    own recorded origin (direct_url.json for an editable install),
+    NOT the import resolution -- pytest runs put this tree first on
+    sys.path, so the import always resolves here even when the
+    metadata belongs elsewhere.  Where the installed gpuwm IS this
+    tree, the gate runs at full strength -- nothing loosened, scope
+    corrected the way the ULP gate scopes out other checkouts."""
+    import json
+    from importlib import metadata as _md
+    from pathlib import Path
+    here = Path(__file__).resolve().parents[1]
+    try:
+        dist = _md.distribution("gpuwm")
+    except _md.PackageNotFoundError:
+        return False
+    try:
+        raw = dist.read_text("direct_url.json")
+        if raw:
+            url = json.loads(raw).get("url", "")
+            if url.startswith("file://"):
+                from urllib.request import url2pathname
+                origin = Path(url2pathname(url[len("file://"):])).resolve()
+                return origin == here
+    except (OSError, ValueError, KeyError):
+        pass
+    # No recorded origin (a real wheel install): the metadata governs
+    # whatever is installed; run the gate.
+    return True
+
+
 def test_installed_metadata_agrees_with_pyproject(pyproject, declaration):
     """A stale install cannot report green.
 
@@ -652,6 +724,18 @@ def test_installed_metadata_agrees_with_pyproject(pyproject, declaration):
     is the authority anyway.  A real site-packages install gets no such
     excuse.
     """
+    # No function-local `import pytest` here: the module already imports
+    # it, and a local import would make `pytest` function-local
+    # everywhere in this body -- on the branch where the gate RUNS, the
+    # first later `pytest` reference then dies UnboundLocalError.  Found
+    # at the first execution on a box where the installed gpuwm IS the
+    # tree under test (the borrowed-install skip had hidden the arm).
+    if not _installed_metadata_is_this_tree():
+        pytest.skip(
+            "the installed gpuwm resolves outside this checkout "
+            "(borrowed install); its metadata describes that tree, "
+            "not this one -- the gate runs where this tree is the "
+            "installed one")
 
     from importlib.metadata import PackageNotFoundError, distribution
 
@@ -790,7 +874,7 @@ def test_the_shipped_surface_matches_the_packaging_declaration(pyproject):
     # .py, stay out of the wheel; a bare name means `docs/*.py` only, and
     # the assertion below holds that at none.
     assert include == ["gpuwm", "gpuwm.*", "tools", "tilestream*",
-                       "configs*", "docs"], (
+                       "configs*", "docs", "mpas_cycle_bridge*"], (
         f"packages.find include is {include}; _shipped_sources understands "
         "a trailing '.*' as 'this package's subpackages', a trailing '*' as "
         "'this package tree' and a bare name as 'this package's top level "

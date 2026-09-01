@@ -150,3 +150,65 @@ def test_an_over_wide_frame_is_reported_with_the_bytes_it_under_charges():
     assert over["thompson"].unpriced_device_bytes == 8 * 68 * 1536
     assert pf.under_priced_kernel_frames(
         dict(pf.KERNEL_MAX_LOCAL_SIZE_BYTES), profile=profile) == {}
+
+
+def test_every_chained_translation_unit_says_why_it_has_no_recording():
+    """A launched translation unit outside these tables must be a DECISION.
+
+    The recordings key on ``.cu`` files that compile ALONE, because that is
+    what both readers enumerate -- ``tools/vram_reserve_probe.py``
+    (``mode_frames``) and ``tests/test_preflight.py::
+    test_the_recorded_local_frames_match_the_driver`` glob
+    ``gpuwm/core/kernels/*.cu`` and drop whatever NVRTC refuses standalone.
+    Three units the model really launches are composed rather than
+    standalone -- the two legacy-RRTMG chains and ``p3_composed``, which is
+    what an ``mp_physics = 50`` domain loads -- so each is priced on EVERY
+    platform from ONE reading, and ``under_priced_kernel_frames`` cannot
+    report a drifting one, because its ``observed`` argument comes from
+    that same glob.
+
+    The breakage this prevents is a fourth composed unit arriving with no
+    sentence anywhere: an unrecorded single-platform price reads exactly
+    like a measured cross-platform one, and the difference is a
+    reservation the fit gate never charged.  P3 is the case that opened
+    it -- ``p3_composed`` shipped priced at 0 B off one sm_120 reading with
+    nothing in this module mentioning that it existed.
+    """
+    from gpuwm.core import kernel_frame_recordings as kfr
+
+    chained = set(pf.CHAINED_TRANSLATION_UNIT_FRAMES)
+    assert chained, "no composed units at all means this gate measures air"
+
+    # A composed unit may not live in a recording, and that is enforced
+    # upstream rather than here: a chained-unit key in a frames mapping
+    # makes frame_ceiling() disagree with KERNEL_MAX_LOCAL_SIZE_BYTES and
+    # gpuwm.core.preflight raises at import (preflight.py:1663).
+    for row in pf.KERNEL_LOCAL_FRAME_RECORDINGS:
+        assert chained.isdisjoint(row.frames), (
+            f"{row.box}: {sorted(chained & set(row.frames))} is a composed "
+            "translation unit and cannot carry a standalone frame row")
+
+    recorded = kfr.CHAINED_UNITS_WITHOUT_A_PER_PLATFORM_ROW
+    assert set(recorded) == chained, (
+        "every composed translation unit must say why it has no recording, "
+        "and nothing else may claim to be one; unexplained "
+        f"{sorted(chained - set(recorded))}, stale "
+        f"{sorted(set(recorded) - chained)}.  Add the reason to "
+        "CHAINED_UNITS_WITHOUT_A_PER_PLATFORM_ROW in "
+        "gpuwm/core/kernel_frame_recordings.py -- do not delete this "
+        "assertion")
+    for unit, reason in recorded.items():
+        assert len(reason.split()) >= 15, f"{unit}: {reason!r} is a label"
+        assert ".cu" in reason or ".py" in reason, (
+            f"{unit}: the reason must point at the source that composes the "
+            f"unit or at the gate that re-audits its frame, got {reason!r}")
+
+    # P3's own fragment, spelled out: it is UNMEASURABLE rather than
+    # unmeasured -- p3.cu borrows the tree's one glibc r_pow/r_exp/r_log
+    # from noahmp_leaves.cu and fails NVRTC alone -- so no recording may
+    # ever grow a row for it, and a row would be a value nothing measured.
+    assert "p3" in pf.UNMEASURED_KERNEL_MODULES
+    assert (pf.CHAINED_TRANSLATION_UNIT_FRAMES["p3_composed"].covers
+            == frozenset({"p3"}))
+    for row in pf.KERNEL_LOCAL_FRAME_RECORDINGS:
+        assert "p3" not in row.frames, row.box

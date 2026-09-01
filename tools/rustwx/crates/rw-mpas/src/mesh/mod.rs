@@ -314,6 +314,14 @@ pub fn rebuild(
         report.max_weight_antisymmetry,
         validate_seconds
     ));
+    // The published well-centredness reading, on its own line so nobody has
+    // to open a receipt to see the metric other people's papers lead with.
+    progress(&format!(
+        "WELLCENTRED\t{}\t{}\t{:.4}",
+        report.well_centredness.obtuse_triangles,
+        report.well_centredness.non_crossing_dual_edges,
+        report.well_centredness.max_delaunay_angle_deg
+    ));
 
     let receipt = RebuildReceipt {
         engine: concat!("rw-mpas ", env!("CARGO_PKG_VERSION"), " (rust)").to_string(),
@@ -514,6 +522,12 @@ pub fn generate(
     progress(&format!(
         "VALIDATED\t{:.16}\t{:.3e}\t{:.3e}",
         report.sum_area_cell_over_4pi, report.max_nonorthogonality, report.max_weight_antisymmetry
+    ));
+    progress(&format!(
+        "WELLCENTRED\t{}\t{}\t{:.4}",
+        report.well_centredness.obtuse_triangles,
+        report.well_centredness.non_crossing_dual_edges,
+        report.well_centredness.max_delaunay_angle_deg
     ));
 
     // Delivered against requested, cell by cell.

@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "2.6.0"
+version = "2.6.1"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 # The SPDX expression (PEP 639), not `{ file = "LICENSE" }`: the file
@@ -137,7 +137,7 @@ requires-python = ">=3.11"
 # tests/test_companion_distribution.py fails if the two ever disagree.
 dependencies = ["numpy>=2.0", "netCDF4>=1.6", "matplotlib>=3.8",
                 "jsonschema>=4.0",
-                "scipy>=1.11", "pyshp>=2.3", "gpuwm-data==2.6.0"]
+                "scipy>=1.11", "pyshp>=2.3", "gpuwm-data==2.6.1"]
 keywords = ["WRF", "WPS", "GRIB", "NetCDF", "weather", "CUDA"]
 # No `License ::` classifier: PEP 639 deprecates them outright and
 # setuptools >=77 refuses to combine one with the SPDX expression above.
@@ -361,6 +361,27 @@ publish = ["huggingface_hub>=0.23", "h5py>=3.10"]
 all-cu12 = ["gpuwm[gpu-cu12]", "gpuwm[render]"]
 all-cu13 = ["gpuwm[gpu-cu13]", "gpuwm[render]"]
 all = ["gpuwm[all-cu12]"]
+# The MCP server (`arwen-mcp` / `python -m gpuwm.mcp`): ArWen's doors
+# spoken over the Model Context Protocol so an LLM agent can drive
+# plan/price/fetch/prep/forecast/render as tools.  The SDK is an extra
+# rather than a base dependency because the server is an AGENT
+# integration surface, not a forecast capability: no `gpuwm` door and
+# no data path imports it, and a person's install should not carry a
+# protocol stack their shell never speaks.  The import is guarded in
+# gpuwm/mcp/__init__.py with a one-sentence remedy naming this extra.
+# Floor 1.26: the FastMCP structured-output surface the server returns
+# dicts through; built and tested against mcp 1.26.0 (2026-08-31).
+# Ceiling <2, EXCLUSIVE, because a floor with no ceiling always
+# resolves to the newest SDK and the newest SDK is by definition the
+# one this server has never run on: measured 2026-08-31, a fresh
+# `pip install gpuwm[mcp]` resolved mcp 2.x, where FastMCP is renamed
+# MCPServer, and `arwen-mcp` died at import on a green install.
+# Admitting 2.x is a deliberate act that ports the server to the
+# renamed API and moves this ceiling, not a resolver accident.
+# Deliberately outside [all]: the quickstart one-liner serves a person
+# running a forecast, and the excuse is recorded where the invariant is
+# enforced (tests/test_dependency_declaration_parity.py).
+mcp = ["mcp>=1.26,<2"]
 
 [project.scripts]
 gpuwm = "gpuwm.cli:main"
@@ -381,6 +402,11 @@ gpuwm-prepared-tree-forecast = "gpuwm.prepared_domain_tree_forecast:main"
 # by filename but verified at decode on the GRIB ensemble identity, and
 # ensemble means/spreads that share the member namespace refuse by name.
 gpuwm-member-prep = "gpuwm.member_prep:main"
+# The MCP stdio server ([mcp] extra).  The script installs with the base
+# wheel -- a console script cannot be extra-gated -- and running it
+# without the SDK prints the one-sentence remedy naming
+# `pip install gpuwm[mcp]` instead of a traceback.
+arwen-mcp = "gpuwm.mcp.server:main"
 
 # `tilestream*` is not optional and not a convenience: it is the streamed
 # transport, and gpuwm/core/streaming.py -- which DOES ship -- imports it at
@@ -472,7 +498,15 @@ gpuwm-member-prep = "gpuwm.member_prep:main"
 # claim a reader cannot follow without a git checkout is a claim nobody
 # can reach.
 [tool.setuptools.packages.find]
-include = ["gpuwm", "gpuwm.*", "tools", "tilestream*", "configs*", "docs"]
+# mpas_cycle_bridge is TOP-LEVEL on purpose and must ship. It is the far
+# side of the MPAS port seam, and it is deliberately gpuwm-free: the port
+# pins its own gpuwm checkout and installs an import guard, so the bridge
+# package cannot live under gpuwm/ and cannot import it. gpuwm.cycle.anchor
+# imports FROM it at module scope, so leaving it out of this list does not
+# degrade a feature -- it makes `import gpuwm.cycle.anchor` fail outright on
+# any installed copy, while every in-tree test keeps passing because
+# PYTHONPATH=<worktree> finds it either way.
+include = ["gpuwm", "gpuwm.*", "tools", "tilestream*", "configs*", "docs", "mpas_cycle_bridge*"]
 # rescued-tools is development record that FORKED live modules; shipping the
 # forks put a diverging driver.py/rings.py inside the wheel.  See the note
 # above `include`; the files stay in the repository, only the wheel loses

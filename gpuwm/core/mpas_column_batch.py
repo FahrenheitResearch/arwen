@@ -99,11 +99,47 @@ driver manifest gpuwm/io/restart.py builds (fields, held tendency
 stacks, raw radiation rates, pending RAINBL, KF ``w0avg``, legacy-RRTMG
 ``o33d``), every serialized scratch bucket (``mp_*``, ``cu_*``), the
 seam's held raw-output buffers, ``h_diabatic``, the WSM6 radii, and the
-exact-integer step/cadence bookkeeping.  ``restore_state()`` on a
+exact-integer step/cadence bookkeeping.  Since schema v2 the payload's
+scalars also carry ``"carriers"``, the radiation CarrierContract
+provenance (see the RESTART_SCHEMA comment).  ``restore_state()`` on a
 freshly constructed seam with the identical configuration copies
 everything back in place; a restored seam continues bit-identically
-(GPU-gated test).  The six transported species and theta live on the
+(GPU-gated test).  The transported species and theta live on the
 MPAS side and restart with the caller's own state.
+
+MICROPHYSICS SCHEMES (2026-08-31)
+---------------------------------
+``microphysics_scheme`` selects the phase-2 scheme and, with it, the
+transported species set (:data:`_SPECIES_BY_SCHEME`):
+
+* ``"wsm6"`` (the default, and the pinned 2026-08-10 counterparty
+  contract above, unchanged to the byte): the six mass species
+  ``qv/qc/qr/qi/qs/qg``, hail-mode knob ``wsm6_hail_opt``, WSM6
+  background radii, seven precipitation buckets.
+* ``"p3"`` (mp_physics=50, P3 one-category two-moment ice): the EIGHT
+  scalars WRF's own mp=50 driver arm transports
+  (module_microphysics_driver.F:1569-1602 into mp_p3_wrapper_wrf) --
+  the four moist masses ``qv/qc/qr/qi`` plus ``ni`` (ice number),
+  ``nr`` (rain number) and the rime pair ``qir`` (rime mass) / ``qib``
+  (rime volume).  P3 has ONE ice category: it writes neither ``qs``
+  nor ``qg``, so the seam refuses them by name instead of carrying two
+  frozen species the scheme never touches (the silent-zero-field
+  substitution gpuwm/core/state.py's mp=50 arm documents).  The P3
+  cross-step supersaturation carriers ``th_old``/``qv_old``
+  (module_mp_p3.F:5018-5021) are seam-owned state and ride the restart
+  payload beside the radii; the diagnostic trio vmi/di/rhopo stays in
+  rebuild-class adapter scratch and is not transported.  Phase-1 is the
+  same ARW chain either way; no phase-1 scheme produces a snow, graupel
+  or number-moment tendency, so the raw-rate result keeps its fixed ten
+  buffers with ``dqs``/``dqg`` structurally zero under P3 (exactly the
+  standing ``dqg`` convention).  Phase-2 P3 consumes the EOS pressure
+  and ``z_interface`` only -- its kernels derive density from pressure
+  where the authority does -- so ``rho_dry`` is refused there rather
+  than accepted and silently dropped.  A ``"p3"`` seam's restart
+  identity carries ``"microphysics": "p3"``; a ``"wsm6"`` identity is
+  byte-identical to schema v2 before this arm existed, so stored WSM6
+  payloads keep restoring and a cross-scheme restore refuses on the
+  identity gate.
 """
 
 from __future__ import annotations
@@ -126,14 +162,48 @@ __all__ = [
 ]
 
 #: Export payload schema version.  Bump on any key-layout change.
-RESTART_SCHEMA = "mpas-column-batch-v1"
+#: v2 (2026-08-31): ``scalars["carriers"]`` joined the payload -- the
+#: radiation CarrierContract's provenance (``state()``/``restore()``,
+#: gpuwm/core/radiation_carriers.py, whose own words are "what a restart
+#: has to carry").  Without it a restored seam held the exported
+#: GLW/SWDOWN/GSW/COSZEN buffers with no record of who produced them, so
+#: its first radiation-not-due step refused at
+#: ``check_before_consumption`` ("GLW has no producer") -- the red of
+#: tests/test_mpas_column_batch_gpu.py::
+#: test_restart_round_trip_continues_bit_identically, latent in shipped
+#: 2.6.0 because the release GPU shard never listed that file (it does
+#: now; tools/battery/gpu_shard_files.txt names this gap).  No usable v1
+#: payload can exist: a restored v1 seam could never get past its first
+#: consuming step, and the identity gate (``identity["schema"]``)
+#: refuses v1 payloads by name.
+RESTART_SCHEMA = "mpas-column-batch-v2"
 
 #: Phase markers for the strict phase1 -> phase2 alternation.
 _PHASE1, _PHASE2 = 1, 2
 
-_LEVEL_FIELDS_P1 = ("u", "v", "theta", "pressure", "rho_dry",
-                    "qv", "qc", "qr", "qi", "qs", "qg")
-_SPECIES = ("qv", "qc", "qr", "qi", "qs", "qg")
+#: Transported species by microphysics scheme.  The WSM6 row is the
+#: pinned 2026-08-10 counterparty set; the P3 row is WRF's own mp=50
+#: call shape (module_microphysics_driver.F:1569-1602): the four moist
+#: masses, both number moments, and the rime mass/volume pair.  The
+#: rows are deliberately NOT shared or derived from each other -- the
+#: same regression argument as gpuwm/core/state.py's mp tuples.
+_SPECIES_BY_SCHEME = {
+    "wsm6": ("qv", "qc", "qr", "qi", "qs", "qg"),
+    "p3": ("qv", "qc", "qr", "qi", "ni", "nr", "qir", "qib"),
+}
+_SPECIES = _SPECIES_BY_SCHEME["wsm6"]
+
+#: Persistent state fields the restart manifest serializes per scheme,
+#: beside the driver manifest and the serialized scratch buckets.  The
+#: WSM6 row is unchanged from schema v2's introduction.  P3 has no
+#: ``effs`` (single ice category, no snow radius -- WRF's has_reqs=0
+#: override, module_physics_init.F:1027-1033) and adds the cross-step
+#: supersaturation carriers ``th_old``/``qv_old``, which nothing
+#: between a resume and the next microphysics call can refill.
+_STATE_RESTART_FIELDS_BY_SCHEME = {
+    "wsm6": ("effc", "effi", "effs", "h_diabatic"),
+    "p3": ("effc", "effi", "h_diabatic", "th_old", "qv_old"),
+}
 
 #: Seam-held raw output buffers, serialized so a restored seam keeps
 #: returning the held du/dv on non-due steps (``last_ysu`` is a
@@ -273,7 +343,9 @@ class MpasColumnPhysicsTendencies:
     are the held raw YSU momentum rates; ``dtheta`` (K s-1) is the
     composed PBL + radiation + cumulus rate; ``dq*`` (kg kg-1 s-1) are
     the composed moisture rates (``dqg`` is identically zero: no phase-1
-    scheme produces a graupel tendency).  ``h_diabatic`` (K s-1) is the
+    scheme produces a graupel tendency; under ``microphysics_scheme=
+    "p3"`` ``dqs`` is structurally zero too -- P3 state has no snow
+    species for any phase-1 scheme to force).  ``h_diabatic`` (K s-1) is the
     retained previous-step microphysics heating ARW adds to every RK
     theta tendency (gpuwm/core/dycore.py:2396); it is NOT folded into
     ``dtheta`` so the MPAS side applies or declines it explicitly.
@@ -309,7 +381,7 @@ class _ColumnBatchState:
     """
 
     def __init__(self, cfg, fnm: np.ndarray, fnp: np.ndarray,
-                 p_top: float, terrain_height, xp):
+                 p_top: float, terrain_height, xp, species=_SPECIES):
         nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
         shape3 = (nz, ny, nx)
 
@@ -318,7 +390,7 @@ class _ColumnBatchState:
 
         # Thermodynamic carriers.  thb = 0 makes total theta == thp, so
         # a phase-2 binding of thp to the caller's theta view IS the
-        # full theta WSM6 updates in place.
+        # full theta the phase-2 scheme updates in place.
         self.p = zeros(*shape3)
         self.thp = zeros(*shape3)
         self.thb = zeros(nz)
@@ -326,13 +398,36 @@ class _ColumnBatchState:
         self.php = zeros(nz + 1, ny, nx)
         self.alt = zeros(*shape3)
         self.w = zeros(nz + 1, ny, nx)
-        for name in _SPECIES:
+        for name in species:
             setattr(self, name, zeros(*shape3))
-        # WSM6 scheme-native radii (microns), the mp=6 cold start of
-        # gpuwm/core/state.py (module_model_constants.F RE_*_BG).
-        self.effc = xp.full(shape3, np.float32(2.49), dtype=np.float32)
-        self.effi = xp.full(shape3, np.float32(4.99), dtype=np.float32)
-        self.effs = xp.full(shape3, np.float32(9.99), dtype=np.float32)
+        if cfg.mp_physics == 50:
+            # Mirror DomainState's mp=50 arm exactly (gpuwm/core/
+            # state.py): qs/qg/effs stay None -- P3's single ice
+            # category has no snow or graupel species and WRF's
+            # has_reqs=0 override means no snow radius either; every
+            # consumer (legacy RRTMG, _prepare_atmosphere) is
+            # presence-based.  The radii cold-start at p3_main's own
+            # backgrounds (diag_effc=10e-6 m / diag_effi=25e-6 m,
+            # module_mp_p3.F:2280-2282) in the state's micron
+            # convention, and th_old/qv_old are the scheme's cross-step
+            # supersaturation carriers, zero at allocation exactly as
+            # WRF's allocator leaves them.
+            self.qs = self.qg = self.effs = None
+            self.effc = xp.full(shape3, np.float32(10.0),
+                                dtype=np.float32)
+            self.effi = xp.full(shape3, np.float32(25.0),
+                                dtype=np.float32)
+            self.th_old = zeros(*shape3)
+            self.qv_old = zeros(*shape3)
+        else:
+            # WSM6 scheme-native radii (microns), the mp=6 cold start of
+            # gpuwm/core/state.py (module_model_constants.F RE_*_BG).
+            self.effc = xp.full(shape3, np.float32(2.49),
+                                dtype=np.float32)
+            self.effi = xp.full(shape3, np.float32(4.99),
+                                dtype=np.float32)
+            self.effs = xp.full(shape3, np.float32(9.99),
+                                dtype=np.float32)
         # Retained microphysics heating (WRF h_diabatic, K/s); zero at
         # init exactly as WRF start_em, one-step lag by construction.
         self.h_diabatic = zeros(*shape3)
@@ -393,9 +488,10 @@ class MpasColumnBatchPhysics:
     """Persistent two-phase physics seam for one MPAS column batch.
 
     Construct once (``run_mpas_column_batch``), then per model step call
-    ``run_phase1`` (pre-RK tendencies) and ``run_phase2`` (post-RK WSM6
-    in place), strictly alternating.  See the module docstring for the
-    full contract.
+    ``run_phase1`` (pre-RK tendencies) and ``run_phase2`` (post-RK
+    microphysics in place -- WSM6 or P3 per ``microphysics_scheme``),
+    strictly alternating.  See the module docstring for the full
+    contract.
     """
 
     #: The phase-1 orchestration IS the ARW step's physics entry: the
@@ -409,6 +505,7 @@ class MpasColumnBatchPhysics:
     def __init__(self, *, n_levels, n_columns, dt,
                  radiation_seconds, surface_pbl_seconds,
                  cumulus_seconds=None, cumulus_scheme=None,
+                 microphysics_scheme="wsm6",
                  start_time, latitude_deg, longitude_deg,
                  terrain_height_m, z_interface_nominal_m,
                  p_top_pa, dx_m, gf_ishallow=None, dx_column_m=None,
@@ -428,6 +525,13 @@ class MpasColumnBatchPhysics:
                 f"n_columns must be a positive integer, got {n_columns!r}")
         if not isinstance(start_time, datetime):
             raise TypeError("start_time must be a datetime (UTC)")
+        if microphysics_scheme not in _SPECIES_BY_SCHEME:
+            raise ValueError(
+                f"microphysics_scheme must be one of "
+                f"{sorted(_SPECIES_BY_SCHEME)}, got "
+                f"{microphysics_scheme!r}: each row names the exact "
+                "transported species set, and a scheme without a row "
+                "would run on substituted state")
         cadences = resolve_column_batch_cadences(
             dt=dt, radiation_seconds=radiation_seconds,
             surface_pbl_seconds=surface_pbl_seconds,
@@ -438,6 +542,12 @@ class MpasColumnBatchPhysics:
         if int(wsm6_hail_opt) not in (0, 1):
             raise ValueError(
                 f"wsm6_hail_opt must be 0 or 1, got {wsm6_hail_opt!r}")
+        if microphysics_scheme == "p3" and int(wsm6_hail_opt) != 0:
+            raise ValueError(
+                "wsm6_hail_opt is a WSM6 hail-mode knob; on a "
+                "microphysics_scheme='p3' seam it would be silently "
+                "ignored, which reads as configuration the run does not "
+                "have.  Leave it 0 (the default)")
         threshold = float(xice_threshold)
         if not np.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
             raise ValueError(
@@ -490,10 +600,11 @@ class MpasColumnBatchPhysics:
 
         from gpuwm.config import RunConfig
         from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY
+        mp_physics = {"wsm6": 6, "p3": 50}[microphysics_scheme]
         cfg = RunConfig(
             nx=ncol, ny=1, nz=nz, dx=dx, dy=dx,
             ztop=top_nominal, dt=float(cadences["dt"]),
-            run_seconds=0.0, moist=True, mp_physics=6,
+            run_seconds=0.0, moist=True, mp_physics=mp_physics,
             wsm6_hail_opt=int(wsm6_hail_opt),
             ra_physics=4, ra_rrtmg_variant=RRTMG_VARIANT_LEGACY,
             sf_sfclay_physics=1, sf_surface_physics=4,
@@ -509,6 +620,10 @@ class MpasColumnBatchPhysics:
         self._dt = float(cadences["dt"])
         self._nz, self._ncol = nz, ncol
         self._start_time = start_time
+        self._microphysics_scheme = microphysics_scheme
+        self._species = _SPECIES_BY_SCHEME[microphysics_scheme]
+        self._state_restart_fields = (
+            _STATE_RESTART_FIELDS_BY_SCHEME[microphysics_scheme])
         self._identity = {
             "schema": RESTART_SCHEMA,
             "n_levels": nz, "n_columns": ncol, "dt": self._dt,
@@ -530,17 +645,25 @@ class MpasColumnBatchPhysics:
             "xland_source": ("native" if xland is not None
                              else "derived-from-landmask"),
         }
+        if microphysics_scheme != "wsm6":
+            # Scheme-asymmetric ON PURPOSE: the wsm6 identity stays
+            # byte-identical to schema v2 before the P3 arm existed, so
+            # stored WSM6 payloads keep restoring, while a cross-scheme
+            # restore refuses on the identity comparison (the key is
+            # present on one side only).
+            self._identity["microphysics"] = microphysics_scheme
 
         # ---- device construction from here on --------------------------
         import cupy as cp
         self._cp = cp
 
-        state = _ColumnBatchState(cfg, fnm, fnp, p_top, terrain, cp)
+        state = _ColumnBatchState(cfg, fnm, fnp, p_top, terrain, cp,
+                                  species=self._species)
         self._state = state
         #: The species arrays the state was born with; phase 2 rebinds
         #: the state onto caller views and this map is how it comes back.
         self._species_buffers = {
-            name: getattr(state, name) for name in _SPECIES}
+            name: getattr(state, name) for name in self._species}
 
         def surface(values):
             if np.ndim(values) == 0:
@@ -629,6 +752,36 @@ class MpasColumnBatchPhysics:
             raise ValueError(f"{name} must be C-contiguous")
         return value
 
+    def _require_species(self, phase: str, **candidates) -> dict:
+        """The scheme's exact species set, both directions refused.
+
+        Returns ``{name: array}`` for exactly ``self._species``.  A
+        required species passed as ``None`` refuses (a defaulted zero
+        field is the state substitution the hex seam's mp=50 refusal
+        existed to stop), and a species OUTSIDE the scheme's row refuses
+        too (accepting it would silently drop caller state -- P3 writes
+        neither qs nor qg, and WSM6 has no number or rime moments).
+        """
+        scheme = self._microphysics_scheme
+        missing = [name for name in self._species
+                   if candidates.get(name) is None]
+        if missing:
+            raise ValueError(
+                f"{phase}: microphysics_scheme={scheme!r} transports "
+                f"{self._species} and {missing} were not supplied; a "
+                "zero-defaulted species is substituted state, not an "
+                "optional input")
+        extra = sorted(name for name, value in candidates.items()
+                       if value is not None and name not in self._species)
+        if extra:
+            raise ValueError(
+                f"{phase}: microphysics_scheme={scheme!r} transports "
+                f"{self._species}; {extra} are not state of this scheme "
+                "and accepting them would silently drop caller fields "
+                "(P3 has one ice category and writes neither qs nor qg; "
+                "WSM6 carries no number or rime moments)")
+        return {name: candidates[name] for name in self._species}
+
     def _rebind_species_buffers(self):
         """Point the state carriers back at persistent seam memory.
 
@@ -644,7 +797,8 @@ class MpasColumnBatchPhysics:
 
     # ------------------------------------------------------------------
     def run_phase1(self, *, dt, u, v, theta, pressure, pressure_interface,
-                   z_interface, w, rho_dry, qv, qc, qr, qi, qs, qg,
+                   z_interface, w, rho_dry, qv, qc, qr, qi, qs=None,
+                   qg=None, ni=None, nr=None, qir=None, qib=None,
                    exner=None, rthdynten=None,
                    rqvdynten=None) -> MpasColumnPhysicsTendencies:
         """Run the due phase-1 chain; return the held raw tendency set.
@@ -652,6 +806,14 @@ class MpasColumnBatchPhysics:
         Read-only guarantee: every input array is byte-identical after
         this call (negative qv included -- the clamp happens in seam
         scratch).  ``dt`` must equal the constructor model step.
+
+        The species keywords follow the constructor's
+        ``microphysics_scheme`` row (:data:`_SPECIES_BY_SCHEME`):
+        ``"wsm6"`` requires ``qs``/``qg`` and refuses the P3 four;
+        ``"p3"`` requires ``ni``/``nr``/``qir``/``qib`` and refuses
+        ``qs``/``qg``.  Either direction of slack -- a missing species
+        or an extra one -- is a state substitution, so both refuse by
+        name instead of defaulting to zeros or dropping the array.
 
         ``rthdynten``/``rqvdynten`` ([nz, ncol] float32, K/s dry theta
         and kg/kg/s) are the caller's dynamics forcing for GF's
@@ -673,9 +835,12 @@ class MpasColumnBatchPhysics:
         nz, ncol = self._nz, self._ncol
         level, iface = (nz, ncol), (nz + 1, ncol)
         inputs = {"u": u, "v": v, "theta": theta, "pressure": pressure,
-                  "rho_dry": rho_dry, "qv": qv, "qc": qc, "qr": qr,
-                  "qi": qi, "qs": qs, "qg": qg}
-        for name in _LEVEL_FIELDS_P1:
+                  "rho_dry": rho_dry}
+        inputs.update(self._require_species(
+            "run_phase1", qv=qv, qc=qc, qr=qr, qi=qi, qs=qs, qg=qg,
+            ni=ni, nr=nr, qir=qir, qib=qib))
+        for name in ("u", "v", "theta", "pressure",
+                     "rho_dry") + self._species:
             self._require_input(name, inputs[name], level)
         for name, value in (("pressure_interface", pressure_interface),
                             ("z_interface", z_interface), ("w", w)):
@@ -705,7 +870,7 @@ class MpasColumnBatchPhysics:
         # MPAS bulk physics applies max(qv, 0) before its schemes.  The
         # caller's array is never touched.
         cp.maximum(v3(qv), cp.float32(0.0), out=state.qv)
-        for name in ("qc", "qr", "qi", "qs", "qg"):
+        for name in self._species[1:]:
             getattr(state, name)[...] = v3(inputs[name])
         # The same derivations _prepare_atmosphere applies, on the
         # caller's own fields: exner from the EOS pressure,
@@ -733,6 +898,15 @@ class MpasColumnBatchPhysics:
         else:
             self._gf_rqvdynten[...] = v3(rqvdynten)
 
+        if state.qs is not None:
+            atmosphere_qs = state.qs
+        else:
+            # P3 carries no snow species; hand the dict WRF's zero
+            # semantics exactly as the mainline ``_prepare_atmosphere``
+            # dry/absent branch does (same scratch slot, zero-filled
+            # per call, never written by any consumer).
+            atmosphere_qs = state.scratch((nz, 1, ncol), "physics_qs")
+            atmosphere_qs[...] = 0.0
         self._atmosphere = {
             "theta": buf["theta"], "temperature": buf["temperature"],
             "pressure": buf["pressure"],
@@ -740,7 +914,7 @@ class MpasColumnBatchPhysics:
             "u": buf["u"], "v": buf["v"],
             "z_interface": buf["z_interface"], "dz": buf["dz"],
             "qv": state.qv, "qc": state.qc, "qi": state.qi,
-            "qs": state.qs, "rho": buf["rho"],
+            "qs": atmosphere_qs, "rho": buf["rho"],
         }
         state.elapsed_seconds = float(
             np.float64(self._step_index) * np.float64(self._dt))
@@ -790,16 +964,28 @@ class MpasColumnBatchPhysics:
         return result
 
     # ------------------------------------------------------------------
-    def run_phase2(self, *, theta, qv, qc, qr, qi, qs, qg, pressure,
-                   rho_dry, z_interface, refl_10cm_due: bool = False) -> dict:
-        """Run WSM6 in place on the caller's post-transport arrays.
+    def run_phase2(self, *, theta, qv, qc, qr, qi, qs=None, qg=None,
+                   ni=None, nr=None, qir=None, qib=None, pressure,
+                   rho_dry=None, z_interface,
+                   refl_10cm_due: bool = False) -> dict:
+        """Run the phase-2 scheme in place on the caller's arrays.
 
-        ``theta`` and all six species are updated IN the caller's memory
-        (zero-copy views); ``pressure``/``rho_dry``/``z_interface`` are
-        read-only.  The caller's integrator clamps scalar state before
-        this call (pinned contract), so no clamp is applied here.
-        Returns per-call surface diagnostics as ``[column]`` copies:
-        rainncv/snowncv/graupelncv (mm) and sr.
+        ``theta`` and every transported species (the constructor's
+        ``microphysics_scheme`` row) are updated IN the caller's memory
+        (zero-copy views); the remaining inputs are read-only.  The
+        caller's integrator clamps scalar state before this call (pinned
+        contract), so no clamp is applied here.
+
+        WSM6 additionally requires ``rho_dry``; a P3 seam REFUSES it,
+        because P3's kernels derive density from the EOS pressure
+        exactly where the authority does (module_mp_p3.F:2293 region)
+        and an accepted-but-unread input reads as configuration the run
+        does not have.  Returns per-call surface diagnostics as
+        ``[column]`` copies: ``rainncv``/``snowncv`` (mm) and ``sr``
+        for both schemes, plus ``graupelncv`` for WSM6 only -- P3's one
+        ice category has no graupel species, and a permanent zero key
+        would let a consumer claim a field the scheme never has (the
+        mp=50 five-slot argument in gpuwm/core/physics_inventory.py).
 
         ``refl_10cm_due`` is WRF's history-step ``diagflag``: when True the
         scheme adapter computes REFL_10CM inside the same microphysics call
@@ -817,11 +1003,27 @@ class MpasColumnBatchPhysics:
         cp = self._cp
         nz, ncol = self._nz, self._ncol
         level, iface = (nz, ncol), (nz + 1, ncol)
-        for name, value in (("theta", theta), ("qv", qv), ("qc", qc),
-                            ("qr", qr), ("qi", qi), ("qs", qs),
-                            ("qg", qg), ("pressure", pressure),
-                            ("rho_dry", rho_dry)):
+        wsm6 = self._microphysics_scheme == "wsm6"
+        species = self._require_species(
+            "run_phase2", qv=qv, qc=qc, qr=qr, qi=qi, qs=qs, qg=qg,
+            ni=ni, nr=nr, qir=qir, qib=qib)
+        if wsm6 and rho_dry is None:
+            raise ValueError(
+                "run_phase2: microphysics_scheme='wsm6' requires "
+                "rho_dry (WSM6's adapter derives rho = 1/alt, "
+                "gpuwm/core/wsm6.py:109-112)")
+        if not wsm6 and rho_dry is not None:
+            raise ValueError(
+                "run_phase2: microphysics_scheme='p3' does not consume "
+                "rho_dry -- P3's kernels derive density from the EOS "
+                "pressure where the authority does (module_mp_p3.F), "
+                "and an accepted-but-unread input reads as "
+                "configuration the run does not have")
+        for name, value in (("theta", theta), ("pressure", pressure),
+                            *species.items()):
             self._require_input(name, value, level)
+        if wsm6:
+            self._require_input("rho_dry", rho_dry, level)
         self._require_input("z_interface", z_interface, iface)
 
         state, cfg, driver = self._state, self._cfg, self._driver
@@ -831,16 +1033,19 @@ class MpasColumnBatchPhysics:
 
         # Zero-copy in-place binding: thb == 0, so thp IS full theta.
         state.thp = v3(theta)
-        for name, value in (("qv", qv), ("qc", qc), ("qr", qr),
-                            ("qi", qi), ("qs", qs), ("qg", qg)):
+        for name, value in species.items():
             setattr(state, name, v3(value))
         state.p = v3(pressure)
-        # Documented 1-ULP round trips: WSM6's adapter derives
-        # rho = 1/alt and z = (phb + php)/g (gpuwm/core/wsm6.py:109-112),
-        # so alt = 1/rho_dry and php = z_interface*g here.
-        alt = state.scratch((nz, 1, ncol), "physics_column_alt")
-        cp.divide(cp.float32(1.0), v3(rho_dry), out=alt)
-        state.alt = alt
+        if wsm6:
+            # Documented 1-ULP round trips: WSM6's adapter derives
+            # rho = 1/alt and z = (phb + php)/g (gpuwm/core/
+            # wsm6.py:109-112), so alt = 1/rho_dry and
+            # php = z_interface*g here.
+            alt = state.scratch((nz, 1, ncol), "physics_column_alt")
+            cp.divide(cp.float32(1.0), v3(rho_dry), out=alt)
+            state.alt = alt
+        # P3 reads php/phb for z8w only (gpuwm/core/p3.py mp_z8w) and
+        # never touches state.alt; the php binding below serves both.
         php = state.scratch((nz + 1, 1, ncol), "physics_column_php")
         cp.multiply(v3(z_interface), cp.float32(_constants.G), out=php)
         state.php = php
@@ -854,10 +1059,11 @@ class MpasColumnBatchPhysics:
             receipt = {
                 "rainncv": diagnostics.rainncv.reshape(ncol).copy(),
                 "snowncv": diagnostics.snowncv.reshape(ncol).copy(),
-                "graupelncv":
-                    diagnostics.graupelncv.reshape(ncol).copy(),
                 "sr": diagnostics.sr.reshape(ncol).copy(),
             }
+            if wsm6:
+                receipt["graupelncv"] = (
+                    diagnostics.graupelncv.reshape(ncol).copy())
             if refl_10cm_due:
                 # Consume the one-frame D2 handoff here, inside the same
                 # transaction: an unconsumed stash is a cadence bug the
@@ -879,19 +1085,24 @@ class MpasColumnBatchPhysics:
 
     # ------------------------------------------------------------------
     def accumulated_precipitation(self) -> dict:
-        """Host-visible bucket copies: RAINNC/SNOWNC/GRAUPELNC/RAINC (mm).
+        """Host-visible bucket copies: RAINNC/SNOWNC[/GRAUPELNC]/RAINC (mm).
 
         The buckets accumulate in the seam across phase-2 calls (the
         RAINNC family) and phase-1 cumulus steps (RAINC); a batch with
         no cumulus scheme reports RAINC as zeros, WRF's own convention.
+        GRAUPELNC is reported for WSM6 only: P3's driver arm binds five
+        slots and no graupel accumulator (gpuwm/core/
+        physics_inventory.py mp=50 row), and reporting a permanent zero
+        would let output claim a graupel field P3 never has.
         """
         cp = self._cp
         ncol = self._ncol
         state, driver = self._state, self._driver
+        buckets = [("RAINNC", "mp_rainnc"), ("SNOWNC", "mp_snownc")]
+        if self._microphysics_scheme == "wsm6":
+            buckets.append(("GRAUPELNC", "mp_graupelnc"))
         out = {}
-        for name, slot in (("RAINNC", "mp_rainnc"),
-                           ("SNOWNC", "mp_snownc"),
-                           ("GRAUPELNC", "mp_graupelnc")):
+        for name, slot in buckets:
             out[name] = state.scratch(
                 (1, ncol), slot).reshape(ncol).copy()
         rainc = driver.rainc
@@ -946,7 +1157,7 @@ class MpasColumnBatchPhysics:
         for slot in sorted(state._scratch):
             if classify_scratch_slot(slot) == "serialize":
                 manifest[f"scratch/{slot}"] = state._scratch[slot]
-        for name in ("effc", "effi", "effs", "h_diabatic"):
+        for name in self._state_restart_fields:
             manifest[f"state/{name}"] = getattr(state, name)
         for name in _OUTPUT_BUFFERS:
             manifest[f"seam/{name}"] = self._out[name]
@@ -975,6 +1186,10 @@ class MpasColumnBatchPhysics:
                 "ysu_nan_guard_fires": int(driver.ysu_nan_guard_fires),
                 "kf_history_time": (None if kf_time is None
                                     else float(kf_time)),
+                # Carrier provenance (schema v2, see RESTART_SCHEMA):
+                # the buffers ride the array manifest; who wrote them
+                # and when rides here.
+                "carriers": driver.carriers.state(),
             },
         }
 
@@ -1048,6 +1263,13 @@ class MpasColumnBatchPhysics:
         adapter = driver.cumulus_callable
         if adapter is not None and hasattr(adapter, "_history_time"):
             adapter._history_time = scalars["kf_history_time"]
+        # Carrier provenance (schema v2): the held radiation buffers were
+        # restored as driver arrays above; this restores WHO wrote them
+        # and WHEN, so the first radiation-not-due step's LSM consumption
+        # passes check_before_consumption instead of refusing "GLW has no
+        # producer".  KeyError on a payload without it is the right
+        # refusal (a v1 payload already refuses at the identity gate).
+        driver.carriers.restore(scalars["carriers"])
         self._pending_phase = _PHASE1
 
 

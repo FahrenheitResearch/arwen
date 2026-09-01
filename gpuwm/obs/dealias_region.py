@@ -580,12 +580,89 @@ def region_engine_available() -> bool:
         return False
 
 
+def _uniform_nyquist_or_refuse(rows: int, nyquist_by_radial, disagree: bool):
+    """The believable per-radial mask, once the sweep is known uniform.
+
+    Returns ``(believable_row, distinct)`` -- a boolean per radial and the
+    distinct believable values -- or raises when this engine must not run.
+
+    **Why this engine refuses a nonuniform cut instead of serving it.**
+    The native solver takes a per-ray Nyquist pointer, which reads as
+    though it solves per ray.  It does not.  ``region_folds``
+    (``solver.rs``) reduces the array with ``sweep_nyquist`` -- *the first
+    usable element*, not the median and not the minimum -- and every
+    cross-ray fold decision divides by that one interval, while
+    ``apply_folds`` then applies the chosen integer at each ray's *own*
+    interval.  On a cut split between 25.51 m/s and 32.0 m/s that decide/
+    apply mismatch puts every corrected gate on the 32.0 m/s half 12.98 m/s
+    out per fold, and multi-fold seams pick the wrong integer outright
+    (a true 2-fold step reads as 2.509 and rounds to 3).  The error is
+    finite, smooth, inside ``max_speed_ms``, and reported as a clean
+    integer fold, so nothing downstream can see it.  Worse, because the
+    scalar is the *first* usable element, rotating the same sweep changes
+    the answer.
+
+    So: this engine runs a uniform sweep, and a nonuniform sweep is the
+    VAD-referenced engine's, which carries the array into its own
+    arithmetic.  A radial with no believable value is a narrower case and
+    is refused radial by radial rather than costing the sweep -- the
+    remaining radials still share one interval, which is the only thing
+    this solver needed.
+    """
+
+    from gpuwm.obs.dealias import DealiasParamsError  # noqa: PLC0415
+
+    if nyquist_by_radial is None:
+        if disagree:
+            raise DealiasParamsError(
+                "this sweep reports nyquist_radials_disagree=True and carries "
+                "no nyquist_velocity_ms_by_radial, so the only Nyquist "
+                "available is the sweep summary -- and unfolding a nonuniform "
+                "cut in one interval mis-corrects every radial above it by a "
+                "whole fold difference, finite and plausible and undetectable "
+                "downstream.  Re-decode the volume with a decoder that emits "
+                "the per-radial Nyquist array, or run this volume without "
+                "dealiasing")
+        return np.ones(rows, dtype=bool), None
+
+    row_nyquist = np.asarray(nyquist_by_radial, dtype=np.float64).ravel()
+    if row_nyquist.size != rows:
+        raise ValueError(
+            f"nyquist_by_radial has {row_nyquist.size} entries, the sweep "
+            f"has {rows} radials")
+    believable = np.isfinite(row_nyquist) & (row_nyquist > 0.0)
+    distinct = np.unique(row_nyquist[believable])
+    if disagree or distinct.size > 1:
+        raise DealiasParamsError(
+            f"engine={ENGINE_REGION_GLOBAL!r} decides every fold in ONE "
+            f"Nyquist interval for the whole sweep -- the native solver "
+            f"reduces the per-ray array to its first usable element -- and "
+            f"this sweep is nonuniform: {[float(v) for v in distinct]} m/s "
+            f"across its radials.  Unfolding it here mis-corrects the radials "
+            f"whose interval differs from that one by a whole fold, an error "
+            f"that is finite, inside every speed bound, reported as a clean "
+            f"integer fold, and dependent on which radial happens to be "
+            f"first.  Select engine='vad-region', which unfolds each radial "
+            f"in its own interval")
+    return believable, distinct
+
+
 def dealias_sweep_region(velocity: np.ndarray, azimuth_deg: np.ndarray,
                          nyquist: float | None, params,
                          *, first_gate_m: float | None = None,
                          gate_spacing_m: float | None = None,
+                         nyquist_by_radial: np.ndarray | None = None,
+                         nyquist_radials_disagree: bool = False,
                          library: Path | str | None = None):
     """Unfold one sweep with the region-global engine.
+
+    ``nyquist_by_radial`` is the sweep's per-radial Nyquist velocity, NaN
+    where a radial reports none.  This engine uses it for exactly two
+    things -- refusing a nonuniform sweep, and refusing the individual
+    radials that carry no believable value -- because that is the whole of
+    what it can do with it correctly.  See
+    :func:`_uniform_nyquist_or_refuse` for the measurement behind that
+    sentence.
 
     Returns the same :class:`~gpuwm.obs.dealias.SweepDealiasResult` the
     VAD-referenced engine returns, so :mod:`gpuwm.obs.superob` consumes
@@ -637,6 +714,39 @@ def dealias_sweep_region(velocity: np.ndarray, azimuth_deg: np.ndarray,
                       "bands_valid": 0},
         "nyquist_ms": None if nyquist is None else float(nyquist),
     }
+
+    # Raises before any work when this sweep is not one this engine can
+    # solve; otherwise tells us which radials carry a believable value.
+    believable_row, distinct_row = _uniform_nyquist_or_refuse(
+        rows, nyquist_by_radial, bool(nyquist_radials_disagree))
+    stats["nyquist_by_radial"] = nyquist_by_radial is not None
+    stats["nyquist_radials_no_value"] = int((~believable_row).sum())
+    if distinct_row is not None and distinct_row.size:
+        # The array is uniform here by construction, so this is the same
+        # number the scalar carries -- recorded because a receipt that
+        # says which radials were dropped has to say what the kept ones
+        # agreed on.
+        stats["nyquist_distinct"] = [float(v) for v in distinct_row]
+
+    # A radial with no believable Nyquist is not a radial with the sweep's
+    # Nyquist.  The native solver would substitute the sweep median for it
+    # silently, with no reason bit and no stat; a gate whose Nyquist is
+    # unknown has an unknown fold state, so it is refused here instead --
+    # the same refusal this function already makes for a whole sweep, and
+    # the same one the VAD-referenced engine makes radial by radial.
+    if not believable_row.all():
+        refused = finite & ~believable_row[:, None]
+        reason[refused] = REASON_NO_NYQUIST
+        stats["rejected"]["no_nyquist"] = int(refused.sum())
+        # ``gates_finite`` is left alone: it is what this sweep OFFERED,
+        # and the volume account balances offered against unchanged +
+        # unfolded + rejected.  The VAD-referenced engine leaves it alone
+        # across the same refusal for the same reason.
+        finite = finite & believable_row[:, None]
+        if not finite.any():
+            stats["gates_rejected"] = int(refused.sum())
+            return SweepDealiasResult(output, state, reason, fold_plane,
+                                      reference_plane, stats)
 
     if nyquist is None or not np.isfinite(nyquist) or float(nyquist) <= 0.0:
         # The same refusal gpuwm.obs.superob and the VAD engine already
@@ -728,7 +838,12 @@ def dealias_sweep_region(velocity: np.ndarray, azimuth_deg: np.ndarray,
     finite_state = state[finite]
     stats["gates_unchanged"] = int((finite_state == STATE_UNCHANGED).sum())
     stats["gates_unfolded"] = int((finite_state == STATE_UNFOLDED).sum())
-    stats["gates_rejected"] = int((finite_state == STATE_REJECTED).sum())
+    # Plus the gates already refused above for carrying no believable
+    # Nyquist: they were taken out of ``finite`` so the solver never saw
+    # them, and counting only over ``finite`` would report them as
+    # observations nobody was ever handed rather than as refusals.
+    stats["gates_rejected"] = (int((finite_state == STATE_REJECTED).sum())
+                               + int(stats["rejected"]["no_nyquist"]))
     stats["rejected"][REASON_NAMES[REASON_SPEED]] = int(beyond.sum())
     applied = fold_plane[finite & ~beyond]
     if applied.size:

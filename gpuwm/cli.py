@@ -69,6 +69,7 @@ from gpuwm.config import load_config
 from gpuwm.core.preflight import check_main
 from gpuwm.core.preflight import register_cli as preflight_register_cli
 from gpuwm.da.enprod import register_cli as enprod_register_cli
+from gpuwm.cycle.cli import register_cli as cycle_register_cli
 from gpuwm.doctor import register_cli as doctor_register_cli
 from gpuwm.domain_wizard import register_cli as domain_register_cli
 from gpuwm.downscale import register_cli as downscale_register_cli
@@ -90,6 +91,7 @@ from gpuwm.report_bundle import register_cli as report_register_cli
 from gpuwm.runplan import register_cli as run_plan_register_cli
 from gpuwm.setup_cli import register_cli as setup_register_cli
 from gpuwm.sources_cli import register_cli as sources_register_cli
+from gpuwm.spectral_ops.cli import register_cli as spectral_op_register_cli
 from gpuwm.stage_cli import register_cli as stage_register_cli
 from gpuwm.stream import register_cli as stream_register_cli
 from gpuwm.table_assets import register_cli as table_assets_register_cli
@@ -360,6 +362,7 @@ def build_parser() -> argparse.ArgumentParser:
     # which by this project's rule means it was not shipped.
     mesh_register_cli(sub)
     certify_register_cli(sub)
+    spectral_op_register_cli(sub)
     multi_run_register_cli(sub)
     report_register_cli(sub)
     run_plan_register_cli(sub)
@@ -368,6 +371,7 @@ def build_parser() -> argparse.ArgumentParser:
     # the help listing, and because every no-route refusal in
     # `gpuwm.fetch_routes` now points at this one by name.
     sources_register_cli(sub)
+    cycle_register_cli(sub)
     update_register_cli(sub)
     version_register_cli(sub)
     spectral_register_cli(sub)
@@ -678,6 +682,24 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
         print(f"gpuwm {args.command}: " + str(error), file=sys.stderr)
         return 2
     except RuntimeError as error:
+        # StreamingRefused subclasses RuntimeError, so it lands in this
+        # clause -- and used to fall through to the bare ``raise`` below:
+        # a [tiles] configuration the config loader refuses (mode = 'on'
+        # over a nested tree, an unrouted chain) escaped as a ~20-line
+        # traceback out of ``build_experiment`` with the remedy paragraph
+        # buried at the bottom, on every door except run-plan (which
+        # already translates it to PlanError).  It is a documented
+        # refusal with a stated remedy, so it gets the refusal boundary:
+        # one message, exit 2, no traceback.  Imported HERE, inside the
+        # handler, because gpuwm.core.streaming must stay a thing a
+        # resident run never pays for -- this import only runs once a
+        # RuntimeError has already been raised.
+        from gpuwm.core.streaming import StreamingRefused
+
+        if isinstance(error, StreamingRefused):
+            print(f"gpuwm {args.command}: "
+                  + _layer(error, args), file=sys.stderr)
+            return 2
         if args.command in ("fetch", "stream", "fetch-geog", "fetch-tables",
                             "fetch-bridges", "obs", "report"):
             # fetch-family RuntimeErrors are operational outcomes
@@ -746,8 +768,8 @@ def _dispatch(args) -> int:
                         "enprod", "downscale", "doctor", "fetch-tables",
                         "fetch-bridges", "setup", "prep", "sim", "go", "adapt",
                         "certify", "dual-run", "multi-run", "obs", "report",
-                        "run-plan", "sources", "update", "version",
-                        "spectral") or getattr(args, "func", None) is not None:
+                        "run-plan", "sources", "cycle", "update", "version",
+                        "spectral", "spectral-op") or getattr(args, "func", None) is not None:
         # The `or` clause is not decoration.  The tuple is a transcribed
         # list of subcommand names, and a subcommand added without a
         # line here did not get "unrouted" -- it fell through to the

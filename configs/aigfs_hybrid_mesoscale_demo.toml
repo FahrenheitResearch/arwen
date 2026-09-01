@@ -1,0 +1,176 @@
+# AIGFS hybrid, 12 km mesoscale -- the widest single 12 km domain a
+# 10 GiB BUDGET holds, driven by NOAA's AI forecast.
+# One 12 km Lambert domain, 344 x 274 cells (4128 x 3288 km), twelve
+# forecast hours off one cycle, thirteen hourly history frames.  This
+# is the size `gpuwm domain --vram-gib 10` fits to a 10 GiB budget, so
+# it is the large half of the pair: it wants that whole budget with
+# nothing else in it.
+#
+# NOT REPLAYED.  This file has never been run end to end.  Its sizing
+# is COMPUTED by `gpuwm check --vram-gib 10` and nothing below is a
+# measurement of this configuration's own run.  It is published as a
+# sized, source-correct starting point, which is a weaker claim than
+# every sibling config in this directory makes, and the difference is
+# deliberate rather than an omission: an earlier draft of this header
+# carried a full MEASURED block whose residency and wall numbers were
+# the AIFS mesoscale file's, copied across.  Those numbers were about
+# a different source and they are gone.  If you run this, record what
+# you measured here and delete this paragraph.
+#
+# SOURCE    aigfs -- NOAA's GraphCast-based 0.25 degree AI forecast,
+#           NOMADS only, no credentials.  The product publishes an
+#           atmosphere and nothing else, so the packaged hybrid
+#           profile borrows soil, land mask, orography, skin
+#           temperature, surface pressure and 2 m humidity from the
+#           SAME cycle's GDAS 0.25 degree analysis.  `gpuwm fetch
+#           --source aigfs` downloads that donor with the primary
+#           and names it in the prep command it writes out.
+# BUDGET    a COMPUTED 10 GiB budget, not a 10 GiB card.
+#           `gpuwm check --vram-gib 10`: estimate 5.05 GiB, forecast
+#           peak envelope 6.78 GiB, reserve 1.88 GiB, budget
+#           8.12 GiB -- PASS.  This is the only number in this header
+#           that was actually produced, and it is a computation, not
+#           a run.
+# MEASURED  nothing.  See NOT REPLAYED above.
+# PHYSICS   morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1, the suite
+#           `gpuwm run-plan --physics-profiles` reports as this
+#           source's own default.  Both radiation streams run, so
+#           the window may cross local night.
+# CYCLE     The dates here name the cycle this file was measured on.
+#           NOMADS keeps a ten-day rolling window and there is no
+#           archive behind it, so move [experiment].start_time and
+#           the companion namelist.wps dates onto a cycle inside
+#           that window.  The GDAS donor must be the SAME cycle:
+#           a donor from another cycle refuses by name.
+# WINTER    The borrowed GDAS surface is one analysis record carried to
+#           every lead, so the land state is frozen across the
+#           window.  The carried valid time is named in the receipt.
+#
+# RUN, four commands, from the repository root.  $GEOG is a WPS_GEOG
+# root and $OUT is anywhere you want the run to land.
+#
+#   1. gpuwm fetch --source aigfs --cycle 2026-08-20T00 --hours 12
+#        --out data/aigfs
+#      This writes data/aigfs/prep-command.txt with step 2's
+#      --input-list and --supplement already bound to the files it
+#      downloaded; the four arguments below are the ones it leaves to
+#      you.
+#
+#   2. gpuwm prep --source aigfs   ...the bound half from step 1...
+#        --wps-namelist configs/aigfs_hybrid_mesoscale_demo.namelist.wps
+#        --experiment-config configs/aigfs_hybrid_mesoscale_demo.toml
+#        --geog-root $GEOG --output-root $OUT/prepared
+#
+#   3. gpuwm sim $OUT/prepared
+#        --experiment-config configs/aigfs_hybrid_mesoscale_demo.toml
+#        --wps-namelist configs/aigfs_hybrid_mesoscale_demo.namelist.wps
+#        --outdir $OUT/run
+#
+#   4. gpuwm render --engine rust --timeidx all --layout nested
+#        --products 2m_temperature,10m_wind_speed_and_direction,mslp_10m_winds,composite_reflectivity
+#        --out $OUT/png $OUT/run/<run-stamp>/wrfout/*
+#
+# No decoder-tool flag is needed at any step: the measurements above
+# were taken with none passed.
+
+[experiment]
+name = "aigfs_hybrid_mesoscale_demo"
+start_time = 2026-08-20T00:00:00
+run_seconds = 43200.0
+feedback = 0
+smooth_option = 0
+blend_width = 5
+spec_bdy_width = 5
+restart_interval_s = 0.0
+
+[projection]
+map_proj = "lambert"
+ref_lat = 40.0
+ref_lon = -92.5
+truelat1 = 30.0
+truelat2 = 50.0
+stand_lon = -92.5
+
+[shared]
+nz = 49
+ztop = 20000.0
+p_top = 10000.0
+eta_levels = [
+    1.0, 0.9978, 0.99519, 0.99212, 0.98849,
+    0.98422, 0.97918, 0.97325, 0.96627, 0.95808,
+    0.94846, 0.93719, 0.92402, 0.90866, 0.89079,
+    0.87006, 0.84612, 0.81857, 0.78706, 0.75124,
+    0.7108, 0.66556, 0.61547, 0.56067, 0.50519,
+    0.45474, 0.40886, 0.36713, 0.32918, 0.29466,
+    0.26328, 0.23473, 0.20877, 0.18516, 0.16369,
+    0.14417, 0.12641, 0.11026, 0.09557, 0.08222,
+    0.07007, 0.05902, 0.04898, 0.03984, 0.03153,
+    0.02398, 0.0171, 0.01085, 0.00517, 0.0,
+]
+hybrid_opt = 2
+etac = 0.2
+base_temp = 290.0
+time_step_sound = 4
+emdiv = 0.01
+hypsometric_opt = 2
+h_sca_adv_order = 5
+smdiv = 0.1
+moist_adv_opt = 1
+w_damping = 1
+damp_opt = 3
+zdamp = 5000.0
+dampcoef = 0.2
+khdif = 0.0
+kvdif = 0.0
+spec_zone = 1
+relax_zone = 4
+bldt = 0.0
+nwp_diagnostics = 1
+moist = true
+moist_cq = true
+mp_physics = 10
+top_lid = false
+epssm = 0.5
+morr_rimed_ice = 1
+wsm6_hail_opt = 0
+ra_physics = 0
+ra_lw_physics = 4
+ra_sw_physics = 4
+wrf_rrtmg_compatibility = "wrf-rrtmg-4-4-to-rte-rrtmgp-v2"
+ra_rrtmg_variant = "rte-rrtmgp"
+sf_sfclay_physics = 91
+sf_surface_physics = 2
+bl_pbl_physics = 1
+num_soil_layers = 4
+terrain_opt = 1
+km_opt = 4
+diff_6th_opt = 2
+diff_6th_slopeopt = 1
+map_proj = 1
+
+[[domain]]
+grid_id = 1
+parent_id = 0
+i_parent_start = 1
+j_parent_start = 1
+parent_grid_ratio = 1
+parent_time_step_ratio = 1
+nx = 344
+ny = 274
+time_step = 60
+dx = 12000.0
+specified = true
+nested = false
+history_interval_s = 3600.0
+radt = 12.0
+cu_physics = 1
+cudt_minutes = 5.0
+diff_6th_factor = 0.12
+
+# Advisory data-acquisition hints (validated, not executed); keys mirror `gpuwm fetch` flags.
+[fetch]
+source = "aigfs"
+cycle = "2026-08-20T00"
+hours = 12
+out = "data/aigfs"
+cadence = 6

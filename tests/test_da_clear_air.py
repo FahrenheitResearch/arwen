@@ -705,6 +705,87 @@ def test_the_clear_air_floor_is_per_scheme_and_never_guessed():
         obsop.clear_air_floor_dbz(99)
 
 
+def test_p3s_clear_air_floor_is_refused_by_name_and_not_by_absence():
+    """mp=50 is OUT of the table on purpose, and says so.
+
+    P3 is a shipped, front-doored scheme, so its absence from a scalar
+    lookup has to read as a decision rather than as a scheme nobody got
+    to.  ``-36.9897`` is what its H(x) reads at a clear LEVEL and
+    ``-99.0`` is what it reads through a column that holds no hydrometeor
+    anywhere; both are in the same field, so no entry in a
+    ``dict[int, float]`` can be right for P3 and the refusal has to say
+    which two numbers it is between.
+    """
+    assert 50 not in obsop.CLEAR_AIR_FLOOR_DBZ
+    assert 50 in obsop.CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER
+
+    with pytest.raises(ValueError) as excinfo:
+        obsop.clear_air_floor_dbz(50)
+    message = str(excinfo.value)
+    # Not the generic "nobody read this one yet" refusal.
+    assert "no clear-air reflectivity floor is recorded" not in message
+    assert "no single clear-air reflectivity floor" in message
+    # The scheme, the two values, and what each wrong choice costs.
+    assert "P3" in message
+    assert "-36.9897" in message
+    assert "-99.0" in message
+    assert "+64 dB" in message and "-62 dB" in message
+    assert "module_mp_p3.F" in message
+
+    # And the front door carries it: the config refuses at construction,
+    # not mid-cycle.
+    with pytest.raises(ValueError, match="no single clear-air"):
+        _config(clear_air=True, mp_physics=50,
+                analysis_fields=("thp", "qv", "qr", "u", "v"))
+
+
+def test_p3s_two_clear_air_values_are_measured_and_not_asserted():
+    """Derive the refusal's two numbers from P3 itself.
+
+    The reason paragraph is only worth having if it cannot rot, so run the
+    scheme rather than restate it: adjacent columns, one carrying rain and
+    two bone dry, must come back with -36.9897 dBZ in the cloudy column's
+    clear levels and -99.0 dBZ throughout the dry ones.
+    """
+    from gpuwm.core.p3 import p3_main
+
+    ni, nk = 3, 6
+    zeros = lambda: np.zeros((ni, nk), np.float32)  # noqa: E731
+    qc, nc, qr, nr = zeros(), zeros(), zeros(), zeros()
+    qi, qir, nitot, qib, ssat = (zeros() for _ in range(5))
+    pres = np.tile(np.linspace(100000.0, 50000.0, nk, dtype=np.float32),
+                   (ni, 1))
+    dzq = np.full((ni, nk), 500.0, np.float32)
+    # Bone dry and warm: no level is within 5% of saturation over water or
+    # ice, so p3_main's entry test finds neither hydrometeors nor possible
+    # nucleation in the two clear columns.
+    th = np.full((ni, nk), 320.0, np.float32)
+    qv = np.full((ni, nk), 1.0e-8, np.float32)
+    qr[1, 1] = np.float32(1.0e-3)
+    nr[1, 1] = np.float32(1.0e4)
+    ze, effc, effi = zeros(), zeros(), zeros()
+    vmi, di, rhoi = zeros(), zeros(), zeros()
+
+    p3_main(qc, nc, qr, nr, th.copy(), th, qv.copy(), qv, 30.0,
+            qi, qir, nitot, qib, ssat, pres, dzq, 1,
+            np.zeros(ni, np.float32), np.zeros(ni, np.float32),
+            ze, effc, effi, vmi, di, rhoi)
+
+    dry_column_value = np.float32(-99.0)
+    clear_level_value = np.float32(-36.9897)
+    assert np.all(ze[0] == dry_column_value)
+    assert np.all(ze[2] == dry_column_value)
+    # The cloudy column's own clear levels take the OTHER value, in the
+    # same field, one grid cell away.
+    assert np.all(ze[1, 2:] == clear_level_value)
+    assert ze[1, 0] > 0.0 and ze[1, 1] > 0.0
+
+    # Which is the whole point: 62 dB apart, and -35 is neither of them.
+    assert float(dry_column_value) != -35.0
+    assert float(clear_level_value) != -35.0
+    assert float(clear_level_value) - float(dry_column_value) > 60.0
+
+
 # ---------------------------------------------------------------------------
 # configuration
 # ---------------------------------------------------------------------------

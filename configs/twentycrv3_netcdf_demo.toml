@@ -1,15 +1,53 @@
+# 20CRv3 NOAA PSL NetCDF, the ENSEMBLE MEAN analysis, 3-hourly
+#
+# PROVEN END TO END, NOT REASONED ABOUT.  This file was taken from
+# `gpuwm fetch` (or its named staged-bytes door) through `gpuwm prep`,
+# `gpuwm sim` and the Rust renderer `rw_wrfbatch` before it was
+# written down, and every number in this header is a measurement of
+# THIS file's own run.
+#
+# EXECUTION CARD: NVIDIA GeForce RTX 5070 Ti, 16 GiB, Linux (weather-node-1)
+#   The BUDGET is 10 GiB.  `gpuwm check --vram-gib 10` gated this
+#   config, and the peak below is the forecast PROCESS's own device
+#   memory, polled back-to-back off the driver for the whole run.
+#   The silicon underneath is a 16 GiB card, so read the peak against
+#   the 10 GiB BUDGET, never against the card.
+#
+# MEASURED 2026-08-20:
+#   grid                 50 x 50 x 49 at 30 km  1500 x 1500 km
+#   window               3 h, boundary interval 10800 s
+#   gpuwm check          rc 0 at --vram-gib 10
+#   gpuwm prep           rc 0, 2.9 s
+#   forecast             rc 0, 7.7 s, report status PASS, health.final.ok True
+#   PEAK DEVICE MEMORY   4.18 GiB of the 10.00 GiB budget (5.82 GiB unused)
+#                        285 samples over 7.7 s (37 Hz)
+#   render               rc 0, 3.3 s, 56 product images through rw_wrfbatch
+#
+# ACQUISITION: no cycle-shaped fetch door -- the PSL distribution is a
+#   per-year, per-variable archive;
+#   `tools/download_20crv3_native_subset.py` cuts a window out of it
+#   server-side
+#
+# PHYSICS: morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1 -- this source's own computed default
+# (`gpuwm run-plan --physics-profiles`).  Both radiation streams run,
+# so the window may cross local night.
+#
+# This is the ENSEMBLE MEAN, not a member: every variable carries
+# statistic = "Ensemble Mean" and the packaged mapping binds that
+# attribute, so a member file cannot enter this profile by accident.
+# PSL publishes NO orography and NO land mask for 20CRv3; both are
+# rebuilt by tools/build_pressure_level_invariant_supplement.py, which
+# writes a receipt naming the method and the divergence.
+#
 [experiment]
 name = "twentycrv3_netcdf_demo"
-start_time = 1974-04-03T18:00:00
+start_time = 1974-04-03T12:00:00
 run_seconds = 10800.0
 feedback = 0
 smooth_option = 0
 blend_width = 5
 spec_bdy_width = 5
 restart_interval_s = 0.0
-# The smallest honest 20CRv3 demo: one 30 km Lambert domain well inside a
-# NOAA PSL NetCDF-subset window, three hours, both radiation streams on.
-# Nothing here is declared away.
 
 [projection]
 map_proj = "lambert"
@@ -22,9 +60,6 @@ stand_lon = -92.5
 [shared]
 nz = 49
 ztop = 20000.0
-# 20CRv3's SI pressure-level series is complete to 100 hPa on every field
-# the mapping needs (its humidity file stops there while the others reach
-# 1 hPa), so the model top is the source top and no level is extrapolated.
 p_top = 10000.0
 eta_levels = [
     1.0, 0.9978, 0.99519, 0.99212, 0.98849,

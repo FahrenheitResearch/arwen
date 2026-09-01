@@ -6,9 +6,10 @@ had no row for mp=50, so ``legacy_scheme_declares_radii(50, 1)`` raised
 NotImplementedError.  The adapter calls it unconditionally on every
 radiation step (``gpuwm/core/rrtmg_legacy.py`` __call__), so a P3
 forecast on ``ra_rrtmg_variant="rrtmg_legacy"`` died at its FIRST
-radiation call -- and that variant is the way through that
-``gpuwm.config.validate_p3_radiation`` names when it refuses P3 on the
-4/4 RTE+RRTMGP pair, and the one ``configs/p3_mp50_shared.toml`` and
+radiation call -- and that variant was the way through that
+``gpuwm.config.validate_p3_radiation`` named while it still refused P3 on
+the 4/4 RTE+RRTMGP pair (both retired once rrtmgp's ``50: "p3"`` row
+coupled that pair), and the one ``configs/p3_mp50_shared.toml`` and
 ``configs/p3_mp50_domain.toml`` deliberately take.
 
 WHY THE ROW IS NOT A BOOLEAN.  WRF builds the flags in two blocks

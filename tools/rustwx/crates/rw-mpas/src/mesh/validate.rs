@@ -260,6 +260,114 @@ impl Limits {
     }
 }
 
+/// WELL-CENTREDNESS, the quality claim this crate could not answer until
+/// 2026-08-31.
+///
+/// Published unstructured-mesh work leads with two numbers -- the count of
+/// OBTUSE Delaunay triangles, and whether every Voronoi edge crosses exactly
+/// one Delaunay edge -- and nothing in this file measured either. The checks
+/// that live closest, `min_edge_orientation` and `max_nonorthogonality`, do
+/// not see one: an obtuse triangle keeps its handedness, because
+/// `(n x t).r > 0` is a sign on the edge's own frame and an obtuse triangle
+/// does not flip it, and it can sit inside the orthogonality bound too. So a
+/// mesh could carry hundreds and validate clean.
+///
+/// The two counts are ONE geometric fact and this reports both: a triangle is
+/// obtuse exactly when its circumcentre falls outside it, which is exactly
+/// when the dual edge on the far side fails to cross its primal edge. They
+/// therefore agree on every mesh, ours and the published ones, and a
+/// disagreement is an instrument fault rather than a mesh property.
+///
+/// REPORTED, NOT GATED, and that is measurement rather than leniency: NCAR's
+/// own published variable-resolution x4.163842 carries THREE, so a gate at
+/// zero would refuse a reference mesh this crate validates against. The
+/// baseline is pinned in `tests/mesh_well_centredness.rs` against both
+/// published meshes.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct WellCentredness {
+    /// Delaunay triangles with an interior angle over 90 degrees.
+    pub obtuse_triangles: usize,
+    /// Edges whose dual segment does not cross its primal segment.
+    pub non_crossing_dual_edges: usize,
+    /// The largest interior angle anywhere in the triangulation.
+    pub max_delaunay_angle_deg: f64,
+    /// Which triangle carries it.
+    pub worst_triangle: usize,
+}
+
+/// Unit tangent at `p` pointing towards `q`, or `None` when the two are
+/// parallel and no direction exists.
+fn tangent_towards(p: V3, q: V3) -> Option<V3> {
+    let d = dot(p, q);
+    crate::mesh::geom::unit(sub(q, [p[0] * d, p[1] * d, p[2] * d]))
+}
+
+/// Do the primal segment `(c0, c1)` and the dual segment `(v0, v1)` cross, as
+/// great-circle SEGMENTS? Each must straddle the other's plane.
+fn segments_cross(c0: V3, c1: V3, v0: V3, v1: V3) -> bool {
+    let (Some(n_p), Some(n_d)) = (
+        crate::mesh::geom::unit(cross(c0, c1)),
+        crate::mesh::geom::unit(cross(v0, v1)),
+    ) else {
+        return false;
+    };
+    dot(n_p, v0) * dot(n_p, v1) < 0.0 && dot(n_d, c0) * dot(n_d, c1) < 0.0
+}
+
+/// Measure [`WellCentredness`] on a derived mesh.
+pub fn well_centredness(mesh: &MpasMesh) -> WellCentredness {
+    let right = std::f64::consts::FRAC_PI_2;
+    let mut obtuse = 0usize;
+    let mut worst_angle = 0.0f64;
+    let mut worst_triangle = 0usize;
+    for v in 0..mesh.n_vertices {
+        let c: Vec<V3> = (0..mesh.vertex_degree)
+            .map(|k| mesh.cell_xyz[mesh.cells_on_vertex[v * mesh.vertex_degree + k] as usize])
+            .collect();
+        let angle = |p: V3, q: V3, r: V3| -> f64 {
+            match (tangent_towards(p, q), tangent_towards(p, r)) {
+                (Some(u), Some(w)) => {
+                    let s = cross(u, w);
+                    (s[0] * s[0] + s[1] * s[1] + s[2] * s[2])
+                        .sqrt()
+                        .atan2(dot(u, w))
+                }
+                _ => 0.0,
+            }
+        };
+        let largest = [
+            angle(c[0], c[1], c[2]),
+            angle(c[1], c[2], c[0]),
+            angle(c[2], c[0], c[1]),
+        ]
+        .into_iter()
+        .fold(0.0f64, f64::max);
+        if largest > worst_angle {
+            worst_angle = largest;
+            worst_triangle = v;
+        }
+        if largest > right {
+            obtuse += 1;
+        }
+    }
+    let mut non_crossing = 0usize;
+    for e in 0..mesh.n_edges {
+        let c0 = mesh.cell_xyz[mesh.cells_on_edge[e * 2] as usize];
+        let c1 = mesh.cell_xyz[mesh.cells_on_edge[e * 2 + 1] as usize];
+        let v0 = mesh.vertex_xyz[mesh.vertices_on_edge[e * 2] as usize];
+        let v1 = mesh.vertex_xyz[mesh.vertices_on_edge[e * 2 + 1] as usize];
+        if !segments_cross(c0, c1, v0, v1) {
+            non_crossing += 1;
+        }
+    }
+    WellCentredness {
+        obtuse_triangles: obtuse,
+        non_crossing_dual_edges: non_crossing,
+        max_delaunay_angle_deg: worst_angle.to_degrees(),
+        worst_triangle,
+    }
+}
+
 /// The numbers a validation run measured, whether or not it passed. These go
 /// into the receipt so a mesh carries its own evidence.
 #[derive(Debug, Clone, Serialize)]
@@ -288,6 +396,9 @@ pub struct MeshReport {
     pub max_area_decomposition_ulps: f64,
     pub max_nonorthogonality: f64,
     pub min_edge_orientation: f64,
+    /// The published well-centredness metrics, measured on every mesh this
+    /// gate sees. Reported; see [`WellCentredness`] for why not gated.
+    pub well_centredness: WellCentredness,
     pub max_weight_antisymmetry: f64,
     pub weight_pairs_checked: usize,
     pub nonzero_weight_padding_slots: usize,
@@ -786,6 +897,7 @@ pub fn validate(mesh: &MpasMesh, limits: Limits) -> MpasResult<MeshReport> {
         max_area_decomposition_ulps: max_gap / f64::EPSILON,
         max_nonorthogonality: max_nonorth,
         min_edge_orientation: min_orient,
+        well_centredness: well_centredness(mesh),
         max_weight_antisymmetry: max_anti,
         weight_pairs_checked: pairs,
         nonzero_weight_padding_slots: bad_padding,

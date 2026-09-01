@@ -152,6 +152,48 @@ def _grid_binding_problems(namespace, where: str) -> list[str]:
     return problems
 
 
+def _filter_config_problems(namespace, where: str) -> list[str]:
+    """Would the FILTER accept the knobs this step is about to pass it?
+
+    Built by constructing the real ``RadarAssimilationConfig`` rather than
+    re-stating its rules, so the plan is checked against the constraint
+    that will actually run and not against a copy of it that can drift.
+
+    This is the check that would have caught a scaled observation-error
+    inflation of 0.9129 on a per-volume leg longer than the tuned
+    baseline: the filter refuses anything below 1 because deflating a
+    stated observation error is a claim of skill nobody measured, and it
+    refused it forty-nine seconds into the arm rather than here.
+    """
+
+    try:
+        from gpuwm.da.letkf import Localization
+        from gpuwm.da.radar_assimilation import (RadarAssimilationConfig,
+                                                 RadarAssimilationError)
+    except Exception:                               # pragma: no cover
+        return []
+    try:
+        RadarAssimilationConfig(
+            localization=Localization(
+                horizontal_m=namespace.horizontal_loc_m,
+                vertical_m=namespace.vertical_loc_m),
+            rtps_alpha=namespace.rtps_alpha,
+            relaxation=namespace.relaxation,
+            analysis_fields=("u", "v"),
+            velocity=True, reflectivity=False, fall_speed="none",
+            velocity_thinning_cells=namespace.thin_cells,
+            velocity_error_inflation=namespace.err_inflation,
+            reflectivity_thinning_cells=namespace.z_thin_cells,
+            reflectivity_error_inflation=namespace.z_err_inflation,
+            positivity_policy=namespace.positivity_policy,
+            solve_device=namespace.solve_device,
+            memory_budget_mib=namespace.memory_budget_mib)
+    except (RadarAssimilationError, ValueError) as refusal:
+        return [f"{where}: the filter would refuse this configuration: "
+                f"{refusal}"]
+    return []
+
+
 _GRID_IDENTITY_CACHE: dict[str, str] = {}
 
 
@@ -199,6 +241,8 @@ def validate_plan(plan: dict) -> list[str]:
                         f" --obs against {len(namespace.grid_wrfout)} "
                         "--grid-wrfout; the driver pairs them by position")
                 problems += _grid_binding_problems(
+                    namespace, f"{arm['name']}/{step['name']}")
+                problems += _filter_config_problems(
                     namespace, f"{arm['name']}/{step['name']}")
             if module == "tools.obs_radar_grid_build":
                 built[(arm["name"], namespace.out)] = namespace.grid_wrfout
@@ -518,6 +562,44 @@ def build_arm(*, name, family, what, plan, common, case, scaling,
     }
 
 
+def release_gate_arm(*, status_file, restore, name="Z0-release-gate",
+                     quiet_seconds=180.0, max_hours=8.0) -> dict:
+    """A wait, stated in the plan instead of hidden in a launcher.
+
+    Another lane's GPU suite has priority on the card, and both queues
+    were waiting on the SAME handover file -- so whichever noticed first
+    would start while the other was still arming, which is the contention
+    trap that turns a release suite red for reasons that have nothing to
+    do with the release.
+
+    Declaring it as an arm rather than as a sleep inside a launcher buys
+    three things: it is visible to anyone reading the plan, it is
+    validated with every other step before the plan is emitted, and it
+    writes the same .done marker as any arm so a rerun skips it. It
+    declares needs_gpu false, so it never holds the card while waiting
+    for the card.
+    """
+
+    argv = ["${PYTHON}", "-m", "tools.da_release_gate",
+            "--status-file", str(status_file),
+            "--quiet-seconds", f"{float(quiet_seconds):g}",
+            "--max-hours", f"{float(max_hours):g}",
+            "--poll-seconds", "30",
+            "--log", "${RUN_DIR}/release-gate.log"]
+    for spec in restore:
+        argv += ["--restore-if-missing", spec]
+    return {
+        "name": name,
+        "family": "sequencing",
+        "needs_gpu": False,
+        "what": ("hold every GPU arm below until the release cut's own "
+                 "status trail reaches a terminal marker and stops "
+                 "changing; the card order is the owner's, not this "
+                 "queue's"),
+        "steps": [{"name": "wait", "argv": argv}],
+    }
+
+
 def baseline_arm(*, name, common, case, obs_paths, georef) -> dict:
     """Tonight's configuration, in tonight's shape: ONE process.
 
@@ -642,6 +724,16 @@ def main(argv=None) -> int:
     parser.add_argument("--max-radar-time-spread-seconds", type=float,
                         default=420.0)
     parser.add_argument("--bucket", default=None)
+    parser.add_argument("--release-gate-status", type=Path, default=None,
+                        help="another lane's status trail that must reach "
+                             "a terminal marker before any GPU arm here "
+                             "starts. Emits a needs_gpu=false first arm "
+                             "that waits for it")
+    parser.add_argument("--release-gate-restore", action="append",
+                        default=[], metavar="SRC=DST",
+                        help="passed to the gate arm: restore a handover "
+                             "file a sibling queue renamed while another "
+                             "lane was still waiting on it")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
 
@@ -738,6 +830,12 @@ def main(argv=None) -> int:
     multi_case = dict(case, obs_extra=multi_extra)
 
     arms = []
+    if args.release_gate_status is not None:
+        # FIRST in the list, because da_sweep_run walks arms in plan
+        # order: whatever --only names, this one runs before any of them.
+        arms.append(release_gate_arm(
+            status_file=args.release_gate_status,
+            restore=list(args.release_gate_restore)))
     if existing:
         # The baseline reuses the PUBLISHED observation files, so its
         # georeferences are not a choice: each file is already bound to

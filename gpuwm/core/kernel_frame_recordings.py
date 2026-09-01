@@ -55,6 +55,27 @@ rather than left as holes or back-filled from another platform.  They
 agree with sm_120: 88 B, 0 B and 512 B.  This recording is COMPLETE
 again.
 
+COMPLETE is a claim about the ``.cu`` files that compile ALONE, and those
+are the whole key domain of a ``frames`` mapping: both readers --
+``tools/vram_reserve_probe.py`` (``mode_frames``) and
+``tests/test_preflight.py::test_the_recorded_local_frames_match_the_driver``
+-- enumerate ``gpuwm/core/kernels/*.cu`` and drop whatever NVRTC refuses
+standalone.  Three translation units the model actually LAUNCHES are
+therefore outside every table here, because they exist only as
+compositions: ``rrtmg_lw_legacy_chain``, ``rrtmg_sw_legacy`` and
+``p3_composed`` (P3 one-category, ``mp_physics = 50``).  They are priced
+from ``preflight.CHAINED_TRANSLATION_UNIT_FRAMES`` instead, and they may
+not be moved here: a chained-unit key in a ``frames`` mapping raises at
+import, because :func:`frame_ceiling` is checked for EXACT equality against
+``preflight.KERNEL_MAX_LOCAL_SIZE_BYTES``
+(``gpuwm/core/preflight.py:1663``) and a chained unit is barred from that
+table by construction (``:2002``).  So the absence is structural rather
+than an oversight -- and it has a price, which is why
+:data:`CHAINED_UNITS_WITHOUT_A_PER_PLATFORM_ROW` records it per unit: each
+is priced on EVERY platform from ONE reading, and
+``under_priced_kernel_frames`` cannot report a drifting one, because its
+``observed`` argument comes from that same ``.cu`` enumeration.
+
 The platform-independent claims still live in tests, because a box with no
 row here at all is the case those protect:
 ``tests/test_gf_workspace.py``, ``tests/test_ysu_workspace.py`` and
@@ -484,6 +505,77 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
     SM120_NVRTC_13_3_33,
     SM86_NVRTC_13_0_48,
 )
+
+
+#: Translation units that LAUNCH and deliberately have no row in any
+#: recording above, each with the reason -- so the next reader finds a
+#: decision instead of an absence.  Keys must be exactly
+#: ``preflight.CHAINED_TRANSLATION_UNIT_FRAMES``; the gate is
+#: ``tests/test_kernel_frame_recordings.py::
+#: test_every_chained_translation_unit_says_why_it_has_no_recording``,
+#: which fails on a fourth composed unit that arrives without a sentence
+#: here.  What every entry has in common, and what the reasons are for:
+#: a composed unit is priced on every platform from ONE reading, and the
+#: cross-platform drift check (``preflight.under_priced_kernel_frames``,
+#: driven from the ``.cu`` enumeration) is structurally unable to see it.
+CHAINED_UNITS_WITHOUT_A_PER_PLATFORM_ROW = MappingProxyType({
+    # P3 one-category (mp_physics = 50), priced at 0 B.
+    #
+    # WHY IT CANNOT HAVE A ROW: the unit is ``noahmp_leaves.cu`` +
+    # ``p3.cu`` assembled by ``gpuwm/core/p3_device.p3_source()``.
+    # ``p3.cu`` borrows the tree's single audited glibc r_pow/r_exp/r_log
+    # from ``noahmp_leaves.cu`` rather than carrying a second copy that
+    # could drift, so it fails NVRTC standalone, sits in
+    # ``preflight.UNMEASURED_KERNEL_MODULES``, and no ``*.cu`` glob can
+    # reach it.  ``p3`` therefore has no measurable frame at all and a row
+    # for it would be a value nothing measured, which is exactly what the
+    # ``complete`` flag above exists to refuse.
+    #
+    # WHY THE 0 B IS STRUCTURAL, not lucky: ``p3.cu`` declares no
+    # per-thread column array anywhere.  All eighteen ``(nk, ncol)``
+    # companions -- twelve carriers and six of shared sedimentation
+    # workspace, 72 B per grid cell -- live in the global workspace
+    # ``gpuwm/core/p3_device.make_workspace()`` allocates, which is the
+    # move ``gf.cu``, ``ysu.cu`` and ``kf.cu`` each made to get their own
+    # frames to nothing.  P3's state inventory is what makes that cheap:
+    # ONE ice category with a rime pair (qir mass, qib volume) and no qs
+    # and no qg at all, so there is no snow or graupel column to carry.
+    #
+    # WHAT IS NOT STRUCTURAL: spilling.  The widest kernel of the unit,
+    # ``p3k_kloopmain``, sits at 244 registers and the fused
+    # ``p3k_fused_process`` at 250, against a 255-register ceiling, so a
+    # different architecture or NVRTC build can spill where sm_120 /
+    # 13.x did not.  A spill would make the priced 0 B under-charge by the
+    # whole frame times the resident-thread capacity, and nothing in the
+    # ``.cu`` enumeration would notice.  The leg that does notice, on any
+    # box with a device, is ``tests/test_p3_cuda_gpu.py::
+    # test_the_composed_unit_compiles_to_the_frame_it_is_priced_at``.
+    "p3_composed":
+        "noahmp_leaves.cu + p3.cu, assembled by "
+        "gpuwm/core/p3_device.p3_source(); p3.cu cannot compile standalone "
+        "(it borrows the tree's one glibc r_pow/r_exp/r_log), so no *.cu "
+        "enumeration reaches it.  Priced 0 B from a single sm_120 / cupy "
+        "14.2.0 reading, 2026-08-29; re-audited on any device by "
+        "tests/test_p3_cuda_gpu.py::"
+        "test_the_composed_unit_compiles_to_the_frame_it_is_priced_at.",
+    # The legacy-RRTMG pair.  Not this lane's site: their provenance,
+    # their 2026-07-27 reading and their drift bound are recorded where
+    # they are priced (gpuwm/core/preflight.py
+    # CHAINED_TRANSLATION_UNIT_FRAMES) and in
+    # docs/rrtmg_legacy_integration.md section 6.  They are named here
+    # because the gate is "every composed unit says why", and a gate that
+    # covered only the newest one would let the fourth hide.
+    "rrtmg_lw_legacy_chain":
+        "rrtmg_lw.cu + rrtmg_lw_chain.cu + the four rrtmg_lw_taugb* band "
+        "fragments as one unit (gpuwm/core/rrtmg_lw.py section 10); the "
+        "fragments fail NVRTC standalone.  Priced 2,048 B from a single "
+        "sm_120 / cupy 14.0.1 reading, 2026-07-27; bounded on a device by "
+        "tests/test_rrtmg_lw_cuda.py (LOCAL_FRAME_BOUNDS).",
+    "rrtmg_sw_legacy":
+        "rrtmg_sw.cu through its own unit (gpuwm/core/rrtmg_sw.py); the "
+        "fragment fails NVRTC standalone.  Priced 0 B from the same "
+        "sm_120 / cupy 14.0.1 reading, 2026-07-27.",
+})
 
 
 def frame_ceiling() -> dict[str, int]:

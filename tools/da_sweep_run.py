@@ -183,6 +183,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-wait-hours", type=float, default=10.0)
     parser.add_argument("--only", action="append", default=[],
                         help="run only these arm names")
+    parser.add_argument("--step-retries", type=int, default=1,
+                        help="retries for a failed step of a GPU arm, each "
+                             "one after re-checking the card (default 1). "
+                             "A chained arm is exposed to the shared card "
+                             "once per step but gated only before the "
+                             "first, so a transient out-of-memory five "
+                             "minutes in used to cost the whole arm. Set 0 "
+                             "to fail on the first refusal")
     args = parser.parse_args(argv)
 
     run_dir = args.run_dir
@@ -264,9 +272,49 @@ def main(argv: list[str] | None = None) -> int:
             code = run_step(status, step, run_dir=run_dir, repo=args.repo,
                             case_root=case_root, env=env, arm=name,
                             index=index)
+            # A one-step arm is exposed to the card once; a chained arm is
+            # exposed once per step, over minutes, on a gate that was
+            # checked before the first one.  That is how a cycle five
+            # minutes into an arm met a card another lane had taken since,
+            # and died with cudaErrorMemoryAllocation.  Re-gate and retry
+            # rather than lose the whole arm to a transient -- and wait,
+            # never kill, exactly as the first gate does.
+            attempt = 0
+            while (code != 0 and attempt < args.step_retries
+                   and arm.get("needs_gpu", True)):
+                attempt += 1
+                status.say(f"{name}: step {step['name']} failed; "
+                           f"re-checking the card before retry {attempt} of "
+                           f"{args.step_retries}")
+                if not wait_for_card(status, args.gate, gate_log,
+                                     label=f"{name}/{step['name']}/retry",
+                                     poll_seconds=args.poll_seconds,
+                                     deadline=deadline):
+                    status.say(f"{name}: card held to the deadline; not "
+                               "retrying, and nothing was stopped")
+                    break
+                code = run_step(status, step, run_dir=run_dir,
+                                repo=args.repo, env=env, arm=name,
+                                index=index)
+                if code == 0:
+                    status.say(f"{name}: step {step['name']} passed on "
+                               f"retry {attempt} - the first failure was "
+                               "transient, most likely the shared card")
             if code != 0:
                 failed = f"{step['name']} exit {code}"
                 break
+            # Between steps of a multi-step GPU arm, ask again.  A step
+            # that would be refused a launch should wait for the card, not
+            # discover it mid-solve.
+            if (arm.get("needs_gpu", True)
+                    and index + 1 < len(arm["steps"])):
+                if not wait_for_card(status, args.gate, gate_log,
+                                     label=f"{name}/before "
+                                           f"{arm['steps'][index + 1]['name']}",
+                                     poll_seconds=args.poll_seconds,
+                                     deadline=deadline):
+                    failed = "card held to the deadline mid-arm"
+                    break
         elapsed = time.monotonic() - started
         if failed is None:
             marker.write_text(f"DONE after {elapsed:.1f} s\n",

@@ -92,3 +92,11 @@ tools/rustwx/vendor/**/__pycache__/
 # 2026-08-01.  It is now committed and shipped: it is WRF v4.6.1's own
 # run/CCN_ACTIVATE.BIN under WRF's public-domain dedication, and the notice
 # travels with it in LICENSE-WRF.txt.  See gpuwm/data/thompson/PROVENANCE.md.
+
+# rw-store golden NetCDF fixtures are SOURCE, not output.  netcdf_classic.rs
+# include_bytes!() them, so the repo-wide *.nc rule above does not just hide
+# them -- it makes `cargo test -p rw-store` fail to COMPILE from a clean
+# checkout.  That has now happened twice (see 4dd3e82).  Negated, not
+# force-added, so it cannot silently regress a third time.
+!tools/rustwx/crates/rw-store/tests/goldens/*.nc
+docs/branch-dispositions-private.md

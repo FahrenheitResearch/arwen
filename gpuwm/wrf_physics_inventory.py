@@ -345,9 +345,10 @@ _INVENTORIES = {
     # re_snow is deliberately absent from the runtime list.  P3's package
     # does not declare it, which is the same fact WRF acts on when
     # module_physics_init.F:1027-1033 sets has_reqs=0 for P3 -- and that is
-    # in turn why gpuwm.config.validate_p3_radiation refuses the RTE+RRTMGP
-    # 4/4 pairing for mp=50 by name.  Listing RE_SNOW here would contradict
-    # the refusal.
+    # in turn why the RTE+RRTMGP coupling for mp=50 (rrtmgp's ``50: "p3"``
+    # row) remaps the single ice category onto the snow species at P3's own
+    # ice radius instead of consuming a snow radius.  Listing RE_SNOW here
+    # would invent the field that remap exists to do without.
     #
     # Units are WRF's post-reg_parse RESOLVED values, the mp=28 convention
     # rather than the pre-parse spelling the 6/8/10/18 rows carry: qni is

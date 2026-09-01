@@ -68,11 +68,18 @@ def _contribution(site_id, valid_time, vr_cells,
     """A superob contribution carrying `vr_cells` usable velocity cells."""
 
     zeros = np.zeros(SHAPE)
+    gates_per_cell = 3
     vr_count = np.zeros(SHAPE, dtype=np.int64)
     flat = vr_count.reshape(-1)
-    flat[:vr_cells] = 3
+    flat[:vr_cells] = gates_per_cell
     beam = np.zeros(SHAPE)
-    beam.reshape(-1)[:vr_cells] = 1.0
+    # The SUM of the contributing beam unit vectors, not their mean: a
+    # contribution accumulates one unit vector per gate, so a cell whose
+    # three gates all look east sums to 3.0 east.  Writing 1.0 here while
+    # claiming three gates states a cell whose beams cancel to a third of a
+    # look direction -- coherence 1/3, under MIN_BEAM_COHERENCE -- which the
+    # merge is right to reject and no real radar produces.
+    beam.reshape(-1)[:vr_cells] = float(gates_per_cell)
     counts = SimpleNamespace(
         to_payload=lambda: {"gates_considered": 100 * vr_cells})
     return SimpleNamespace(
@@ -87,7 +94,13 @@ def _contribution(site_id, valid_time, vr_cells,
         vr_rejected=np.zeros(SHAPE, dtype=np.int64),
         z0_count=np.zeros(SHAPE, dtype=np.int64),
         clear_air_source=clear_air_source,
-        counts=counts, provenance={}, fold_suspicion=[])
+        counts=counts, provenance={}, fold_suspicion=[],
+        # The merge composes each radar's window into the domain instead of
+        # summing full-domain arrays, so a contribution has to say where its
+        # arrays sit.  These cover the whole grid, which is what this
+        # fixture has always meant and what the real dense case is.
+        j0=0, i0=0,
+        window=(0, SHAPE[1] - 1, 0, SHAPE[2] - 1))
 
 
 def _install(monkeypatch, tmp_path, *, volumes, failing=(), cells=None):

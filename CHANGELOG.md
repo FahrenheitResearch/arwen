@@ -1,5 +1,125 @@
 # Changelog
 
+## 2.6.1 (2026-08-31)
+
+New:
+- An MCP server: `arwen-mcp` (also `python -m gpuwm.mcp`) serves the
+  CLI doors as tools over stdio, so an LLM agent can plan, price,
+  fetch, prep, forecast and render. Every tool runs the real command
+  line or reads a receipt a door already wrote; refusals arrive as the
+  CLI's own sentences, verbatim. Long work runs as detached jobs that
+  survive a server restart, with one GPU job at a time per card. The
+  SDK is the new `[mcp]` extra (`pip install gpuwm[mcp]`); see
+  docs/mcp-server.md.
+- The MPAS column-batch seam carries P3: `microphysics_scheme = "p3"`
+  selects it and the seam transports P3's eight species scalars
+  (rimed-ice pair included) through both phases, beside the unchanged
+  WSM6 default. Restored P3 seams continue bit-identically under the
+  same v2 payload; the scheme rides the payload identity, so a payload
+  restored under the wrong scheme refuses by name.
+- Level-2 regional spectral numerics: an optional `[spectral_numerics]`
+  table runs scale-selective spectral hyperdiffusion and divergent-mode
+  wind damping once per completed slow large step, in `off` (bitwise
+  inert, the default) / `shadow` (hash-bound receipts, state untouched)
+  / `apply` (opt-in, budget-gated) modes, with per-step receipts bound
+  into the run capsule, a `gpuwm spectral-op` evidence door that stays
+  CPU-reachable without CuPy, and loud refusals on streamed domains,
+  false periodic declarations and the loops that cannot honor the hook.
+  See [LEVEL2_SPECTRAL_NUMERICS.md](docs/public/LEVEL2_SPECTRAL_NUMERICS.md).
+- `gpuwm cycle`: continuous assimilation cycling as a door. A cycle
+  clock schedules analyses, a ledger records every cycle's inputs and
+  verdicts, a supervisor drives fetch, assimilation and forecast legs,
+  and anchored child domains follow the feature being cycled.
+- Nowcast skill is scored against an operational baseline, with
+  structure metrics beside the existing point verification.
+- Windowed all-radar ingest: assimilation cost follows the sites in
+  the active window, not the domain.
+- Overlap handover: successive nest windows hand their interior over
+  during the overlap instead of restarting the child cold.
+- Static builds below a 1,310 m pixel diagonal no longer refuse: the
+  static builder derives categorical fields by supersampling, keyed to
+  each mesh's measured minimum edge. Demonstrated end to end with a
+  937.5 m mesh generated, static-built, and run.
+- Nineteen measured sizing configurations land for sources the
+  configuration wave had not covered, ensemble members and reanalyses
+  included, with headers stating what was actually measured.
+
+Fixed:
+- `gpuwm prep` no longer grows its host memory with the length of the
+  forcing window. The mapped engine reads, decodes, composes, writes and
+  drops one valid time before asking for the next, so the peak follows
+  one valid time rather than the number of them, and the identity pass
+  admits objects in bounded parallel batches under a 64 MiB staged-byte
+  budget instead of one at a time. Measured on public DWD ICON-EU
+  bytes, a 3 h and a 6 h window both peak at 2.32 GiB against 7.21 and
+  12.68 GiB before, memory stays flat at both windows, and the frames
+  are byte-identical on compressed and uncompressed sources alike.
+  Most of the per-time wall cost is recovered (the inventory pass runs
+  2.9x faster); a compressed field-per-file source still pays roughly a
+  quarter over its pre-fix wall, because each record is decompressed
+  once for identity and once for decode. Uncompressed multi-message
+  sources are unaffected.
+- `gpuwm check` on a nested tree with `[tiles]` prices the mixed road the
+  run door actually takes (child streamed, parent resident) instead of
+  only the fully resident tree. It used to exit 1 against trees that fit
+  and complete. The report now names each domain's road, tiling and
+  claim, prints that plan on a refusal too, and publishes it as
+  `tree_road` in `--json`.
+- A `[tiles]` configuration the loader refuses now reaches the terminal
+  as a refusal with its remedy intact, on every door, instead of a
+  twenty-line Python traceback.
+- A restored MPAS column-batch seam no longer refuses its first
+  radiation-not-due step ("GLW has no producer"): the restart payload
+  now carries the radiation carrier provenance (restart schema v2), and
+  the seam's GPU round-trip suite joins the release battery so the
+  question is asked at every cut.
+- P3 (mp_physics = 50) no longer computes NaN supersaturation ratios on
+  its first step: the cold-start saturation mixing ratios are floored
+  at 1e-20 (the remedy newer P3 releases carry themselves), pinning the
+  step-1 ratios at exactly -1, fully subsaturated. Default-on in all
+  three arms and inert from step 2 onward; runs are bit-identical to
+  2.6.0 from step 2 on, and the documented step-1 delta is that the
+  trace-condensate clip can now fire where NaN made every comparison
+  false.
+- A cycling DA run no longer analyses on the CPU by default while the
+  device solve sits behind a flag. `RadarAssimilationConfig.solve_device`
+  and `tools/da_cycle_prepared.py --solve-device` both default to `auto`,
+  which takes the card when the process can reach one and numpy when it
+  cannot. `host` and `cuda` are still honoured verbatim -- pin `host` to
+  reproduce a receipt banked on numpy, pin `cuda` to make a missing card
+  an error rather than a silent slower run -- and `GPUWM_NO_LOCAL_GPU`
+  outranks the probe, so a CPU-only run never opens a device context.
+  Every analysis receipt now carries the request, the device that ran,
+  and the sentence explaining the resolution.
+- Velocity dealiasing uses each radial's own Nyquist velocity. The
+  reader already detected per-radial disagreement, then dealiased
+  against one scalar anyway.
+- A radar with no innovations no longer reports the whole network's
+  residual as its own.
+- The continuous nowcast daemon no longer crashes at the first
+  observation stage of every cycle: its observation command now passes
+  the dealiasing choice the stage requires, and a test binds the call.
+- Data assimilation reads P3's own 10 cm reflectivity instead of
+  refusing an mp=50 background as having no reflectivity formulation.
+- Clear-air reflectivity carries one floor value; a P3 field could
+  previously hold two different clear-air sentinels at once.
+- mp=50 composes with RTE+RRTMGP radiation: the adapter couples P3's
+  own two-radius cloud optics (no snow radius, matching the scheme's
+  own inventory), the refusal that outlived the gap is retired, and
+  the accepted composition set grows by exactly those pairings.
+- A P3 lookup table with the wrong version is refused as a version
+  mismatch instead of being reported as byte corruption, and `gpuwm
+  doctor` now checks the P3 table.
+- The P3 oracle suite fails when physical processes are switched off:
+  the previous fixture set stayed green with five processes disabled,
+  and the new fixture plus per-process checks close that blindness.
+- Mesh generation receipts print small trace values in scientific
+  notation instead of rendering them as 0.0000.
+- The mesh ladder's location check credits grading and insertion
+  instead of a fixed one-percent band, so it stops refusing meshes it
+  graded correctly seconds earlier; the re-aimed check is proven in
+  both directions.
+
 ## 2.6.0 (2026-08-30)
 
 New:

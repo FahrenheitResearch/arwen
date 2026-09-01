@@ -52,6 +52,12 @@ count by ``dt / dt'``.  Inflating sigma_o by ``sqrt(dt / dt')`` restores
 the information content per unit time to the tuned value, so a
 shorter-cadence arm can only win through the *timeliness* of its
 corrections and never through quietly counting the same radar twice.
+The scaling is **one-sided**: ``max(1, sqrt(dt / dt'))``.  Run backwards
+it would say a slower cadence makes each observation more accurate,
+which is a claim about the radar rather than about the cadence -- and
+the filter refuses an observation-error inflation below 1 for that exact
+reason, which is how a first per-volume leg longer than the baseline
+took an arm down.
 This is deliberately conservative.  If the A/B shows the scaled arm losing
 to the unscaled one, the correlation assumption is too strong and the
 exponent belongs somewhere between 0 and 0.5 -- which is a measurement
@@ -442,7 +448,17 @@ def scaled_settings(*, cycle_interval_s: float,
             "outside [0, 1]. The linear per-unit-time relaxation argument "
             "does not reach this far; state an alpha for this cadence "
             "directly rather than having a clamp invent one")
-    inflation_new = float(error_inflation) * math.sqrt(dt_ref / dt_new)
+    # ONE-SIDED, and the asymmetry is the point.  The correlation
+    # argument says that assimilating the same radar more often counts
+    # one atmosphere several times, so sigma_o must go UP as the cadence
+    # shortens.  Run it backwards and it claims that cycling more slowly
+    # makes each observation more accurate -- which is a statement about
+    # the radar, not about the cadence, and nobody measured it.  The
+    # filter refuses a velocity_error_inflation below 1 for exactly that
+    # reason, so a leg longer than the baseline holds the tuned value
+    # instead of deflating below it.
+    inflation_new = float(error_inflation) * max(
+        1.0, math.sqrt(dt_ref / dt_new))
 
     block["applied"] = {
         "rtps_alpha": round(alpha_new, 6),
@@ -452,7 +468,7 @@ def scaled_settings(*, cycle_interval_s: float,
     }
     block["formulae"] = {
         "rtps_alpha": "alpha' = 1 - (1 - alpha) * dt' / dt",
-        "error_inflation": "infl' = infl * sqrt(dt / dt')",
+        "error_inflation": "infl' = infl * max(1, sqrt(dt / dt'))",
         "localization": "unchanged",
     }
     block["reasoning"] = {
@@ -474,7 +490,11 @@ def scaled_settings(*, cycle_interval_s: float,
             "arm can only win on the timeliness of its corrections. This "
             "is deliberately conservative -- if the scaled arm loses to "
             "the unscaled one the exponent belongs below 0.5, and only "
-            "the A/B can say"),
+            "the A/B can say. The scaling is ONE-SIDED: run backwards it "
+            "would claim a slower cadence makes each observation more "
+            "accurate, which is a statement about the radar and not "
+            "about the cadence, so a leg longer than the baseline holds "
+            "the tuned value rather than deflating below it"),
         "localization": (
             "NOT SCALED, and no scaling is offered. The radius is set by "
             "ensemble sampling error and the physical correlation length "

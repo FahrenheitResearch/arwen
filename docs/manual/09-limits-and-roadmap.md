@@ -14,9 +14,21 @@ hunt for them.
 - **Certification is not uniform across sources.** `hrrr`, `gfs`, `era5` are
   certified; the other 13 runnable model rows, plus the generic `mapped` row,
   are runnable-not-certified (section 5.1).
-- **The RRFS preparation carries a host-memory scale bound**: the 3 km CONUS
-  7-valid-time prep peaks near 107 GiB of host RSS; it passes on 123 GiB
-  nodes and would exhaust smaller boxes (section 5.7).
+- **Only GRIB2 preparations are sliced per valid time.** The host-memory scale
+  bound that stood here -- the 3 km CONUS 7-valid-time prep peaking near 107
+  GiB of host RSS, passing on 123 GiB nodes and exhausting smaller boxes -- is
+  RETIRED: that prep now peaks at 26.9 GiB, rising 0.04 GiB per forcing hour
+  (section 5.7). What remains is narrower. Every declared format other than
+  GRIB2 is decoded whole and then carved, so a NetCDF or GRIB1 series still
+  holds one whole decode; a composition's donors and terrain supplements stay
+  resident for the whole compose; and `inspect` decodes the whole series.
+- **A compressed field-per-file source pays wall clock for that slicing.** The
+  per-valid-time road inventories every object before decoding any, so a source
+  that ships one bz2-compressed message per file decompresses twice and the
+  inventory half is serial: measured on ICON-EU, a 6 h window (876 objects)
+  takes 99.8 s against 27.6 s whole-decode, of which 37.5 s is the inventory
+  pass alone. An uncompressed multi-message source shows no such cost (RAP, 6
+  valid times: 13.34 s against 13.33 s).
 - **No vertical nesting; explicit eta levels only; nz above 128 admitted but
   unrun** (section 2.2). Sub-km children run their parents' level count, which
   makes the nested 250 m capability coarse LES at the gray-zone edge (effective

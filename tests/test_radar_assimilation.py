@@ -218,7 +218,13 @@ def world(grid, tmp_path_factory):
 
 
 def _config(**overrides):
-    kwargs = dict(localization=Localization(horizontal_m=H_LOC_M,
+    # solve_device is PINNED here rather than left to the shipped default,
+    # which is "auto".  This module's first line says CPU only, and a
+    # default that reads the box would make that claim true on some
+    # machines and false on others -- including by opening a CUDA context
+    # on a card another run owns.
+    kwargs = dict(solve_device="host",
+                  localization=Localization(horizontal_m=H_LOC_M,
                                             vertical_m=V_LOC_M),
                   rtps_alpha=0.9, analysis_fields=("u", "v"))
     kwargs.update(overrides)
@@ -589,6 +595,73 @@ def test_config_refuses_bad_thinning_inflation_device():
         _config(velocity_error_inflation=0.5)
     with pytest.raises(RadarAssimilationError, match="solve_device"):
         _config(solve_device="gpu")
+
+
+def test_the_shipped_solve_device_default_is_auto():
+    """The default is the fast path where a card exists, not the slow one.
+
+    Pinned as a fact about the SHIPPED config rather than about any CLI,
+    because the config is what every caller that does not type a flag
+    gets, and the flag's default is only one of them.
+    """
+
+    from gpuwm.da.radar_assimilation import (RadarAssimilationConfig,
+                                             SOLVE_DEVICES)
+
+    cfg = RadarAssimilationConfig(
+        localization=Localization(horizontal_m=H_LOC_M,
+                                  vertical_m=V_LOC_M),
+        rtps_alpha=0.9, analysis_fields=("u", "v"))
+    assert cfg.solve_device == "auto"
+    assert SOLVE_DEVICES == ("auto", "host", "cuda")
+
+
+def test_auto_resolves_and_explicit_devices_are_honoured(monkeypatch):
+    """auto answers the box; host and cuda are never second-guessed.
+
+    The explicit half matters as much as the automatic one.  A run pinned
+    to host to reproduce a banked receipt must stay on host beside a
+    working card, and a run that asked for cuda must meet a missing card
+    as an error where it happens rather than as a silent demotion to a
+    slower arm with different last bits.
+    """
+
+    from gpuwm.da.radar_assimilation import resolve_solve_device
+
+    monkeypatch.delenv("GPUWM_NO_LOCAL_GPU", raising=False)
+    for named in ("host", "cuda"):
+        device, reason = resolve_solve_device(named)
+        assert device == named
+        assert "explicitly" in reason
+
+    # The project-wide keep-off-the-card switch outranks the probe, and
+    # says so in the reason a receipt will carry.
+    monkeypatch.setenv("GPUWM_NO_LOCAL_GPU", "1")
+    device, reason = resolve_solve_device("auto")
+    assert device == "host"
+    assert "GPUWM_NO_LOCAL_GPU" in reason
+    # ... and it does not silence an explicit request.
+    assert resolve_solve_device("cuda")[0] == "cuda"
+
+    # A box with no reachable device resolves to host and records why,
+    # rather than raising: "auto" is a request to work, not to insist.
+    monkeypatch.delenv("GPUWM_NO_LOCAL_GPU", raising=False)
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_cupy(name, *args, **kwargs):
+        if name == "cupy":
+            raise ImportError("no cupy on this box")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_cupy)
+    device, reason = resolve_solve_device("auto")
+    assert device == "host"
+    assert "ImportError" in reason
+
+    with pytest.raises(RadarAssimilationError, match="solve_device"):
+        resolve_solve_device("gpu")
 
 
 def test_thinned_inflated_analysis_end_to_end(world, grid):

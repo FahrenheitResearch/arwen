@@ -201,17 +201,85 @@ fn axis_digest(values: &[f64]) -> String {
     crate::digest::array_sha256(&[values.len()], values)
 }
 
-/// The `(valid_time, member)` keys of a collection, in Python's order.
-fn primary_keys(primary: &DecodedCollection) -> Vec<TimeKey> {
-    primary.source_cycles.keys().cloned().collect()
+/// Everything a join reads about the primary decode that is NOT one of
+/// its arrays: the grid, the vertical ladder, the series clock and the
+/// field inventory.
+///
+/// Split out so a composition can be RESOLVED -- every refusal made,
+/// every receipt written -- against a primary that is being decoded one
+/// valid time at a time.  Both joins below turned out to read the
+/// primary's arrays nowhere: they only insert into it.
+pub struct PrimaryHeader<'a> {
+    pub latitude: &'a [f64],
+    pub longitude: &'a [f64],
+    pub vertical_values: &'a [f64],
+    pub source_cycles: &'a BTreeMap<TimeKey, NaiveDateTime>,
+    pub direct_names: &'a BTreeSet<String>,
 }
 
-/// `mapped_composition._compose_terrain`.
-pub fn compose_terrain(
-    mut primary: DecodedCollection,
+impl PrimaryHeader<'_> {
+    /// The `(valid_time, member)` keys, in Python's order.
+    fn keys(&self) -> Vec<TimeKey> {
+        self.source_cycles.keys().cloned().collect()
+    }
+}
+
+/// What one valid time inherits from the terrain supplement.
+struct TerrainEntry {
+    source_cycle: NaiveDateTime,
+    axes: Vec<String>,
+    missing_count: usize,
+    references: Vec<String>,
+}
+
+/// The terrain join, resolved before a primary valid time is read.
+///
+/// One array, not one per valid time: the join refuses a terrain subset
+/// that changes across the series, so the series it accepts has exactly
+/// one array to insert.
+pub struct TerrainPlan {
+    values: ArrayD<f64>,
+    entries: BTreeMap<TimeKey, TerrainEntry>,
+}
+
+/// Insert this valid time's terrain into the slice being composed.
+pub fn apply_terrain(
+    plan: &TerrainPlan,
+    slice: &mut DecodedCollection,
+    key: &TimeKey,
+) -> Result<()> {
+    let entry = plan.entries.get(key).ok_or_else(|| {
+        frame_invalid(format!(
+            "terrain composition has no binding for {}",
+            naive_isoformat(key.0)
+        ))
+    })?;
+    slice.direct.insert(
+        (key.0, key.1.clone(), EXTERNAL_FIELD.to_owned()),
+        DirectValue {
+            name: EXTERNAL_FIELD.to_owned(),
+            valid_time: key.0,
+            member: key.1.clone(),
+            source_cycle: entry.source_cycle,
+            axes: entry.axes.clone(),
+            values: plan.values.clone(),
+            // INHERITED, not recomputed.  The bound-field path a few
+            // hundred lines down recomputes its own on the subset; the
+            // two are deliberately different, and unifying them would
+            // move `missing_count` in every terrain receipt ever written.
+            missing_count: entry.missing_count,
+            references: entry.references.clone(),
+        },
+    );
+    Ok(())
+}
+
+/// `mapped_composition._compose_terrain`, resolved against the header.
+pub fn plan_terrain(
+    primary: &PrimaryHeader,
     terrain: &DecodedCollection,
     time_alignment: &str,
-) -> Result<(DecodedCollection, Value)> {
+) -> Result<(TerrainPlan, Value)> {
     if !TERRAIN_TIME_ALIGNMENTS.contains(&time_alignment) {
         let allowed: Vec<&str> = {
             let mut names = TERRAIN_TIME_ALIGNMENTS.to_vec();
@@ -224,11 +292,7 @@ pub fn compose_terrain(
             crate::refusal::python_repr(time_alignment)
         )));
     }
-    if primary
-        .direct
-        .keys()
-        .any(|(_time, _member, name)| name == EXTERNAL_FIELD)
-    {
+    if primary.direct_names.iter().any(|name| name == EXTERNAL_FIELD) {
         return Err(frame_invalid(
             "terrain has two providers: the primary source and the declared supplement",
         ));
@@ -247,13 +311,13 @@ pub fn compose_terrain(
     }
     let latitude_indices = exact_subset_indices(
         &terrain.latitude,
-        &primary.latitude,
+        primary.latitude,
         "latitude",
         false,
     )?;
     let longitude_indices = exact_subset_indices(
         &terrain.longitude,
-        &primary.longitude,
+        primary.longitude,
         "longitude",
         true,
     )?;
@@ -278,7 +342,7 @@ pub fn compose_terrain(
             "terrain supplement changes across supplied valid times",
         ));
     }
-    let keys = primary_keys(&primary);
+    let keys = primary.keys();
     let terrain_by_time: BTreeMap<TimeKey, &DirectValue> = terrain_items
         .iter()
         .map(|(time, member, value)| ((**time, (*member).clone()), *value))
@@ -311,18 +375,16 @@ pub fn compose_terrain(
         }
     }
     let carrier = terrain_items[0].2;
-    // TAKEN from the primary, not cloned out of it.  The caller hands
-    // its collection over and replaces it with the composed one, so the
-    // clone made a full second copy of every valid time's arrays live
-    // at once: 4.2 GiB per forcing time on a 3 km CONUS source, which is
-    // what a seven-time compose was carrying twice.
-    let mut direct = std::mem::take(&mut primary.direct);
+    // ONE subset is kept, not one per valid time: the equality check
+    // below is what makes that sound, and it is the check the join
+    // already made.
     let mut subset_reference: Option<ArrayD<f64>> = None;
+    let mut entries: BTreeMap<TimeKey, TerrainEntry> = BTreeMap::new();
     for key in &keys {
         let supplied = terrain_by_time.get(key).copied().unwrap_or(carrier);
         let values = take_grid(&supplied.values, &latitude_indices, &longitude_indices);
         match &subset_reference {
-            None => subset_reference = Some(values.clone()),
+            None => subset_reference = Some(values),
             Some(reference) => {
                 if reference != &values {
                     return Err(frame_invalid(
@@ -331,20 +393,11 @@ pub fn compose_terrain(
                 }
             }
         }
-        direct.insert(
-            (key.0, key.1.clone(), EXTERNAL_FIELD.to_owned()),
-            DirectValue {
-                name: EXTERNAL_FIELD.to_owned(),
-                valid_time: key.0,
-                member: key.1.clone(),
+        entries.insert(
+            key.clone(),
+            TerrainEntry {
                 source_cycle: supplied.source_cycle,
                 axes: supplied.axes.clone(),
-                values,
-                // INHERITED, not recomputed.  The bound-field path a few
-                // hundred lines down recomputes its own on the subset;
-                // the two are deliberately different, and unifying them
-                // would move `missing_count` in every terrain receipt
-                // ever written.
                 missing_count: supplied.missing_count,
                 references: supplied.references.clone(),
             },
@@ -440,19 +493,13 @@ pub fn compose_terrain(
     );
     receipt.insert("longitude_equivalence".into(), json!("modulo_360_exact"));
     Ok((
-        DecodedCollection {
-            latitude: primary.latitude,
-            longitude: primary.longitude,
-            vertical_values: primary.vertical_values,
-            direct,
-            source_cycles: primary.source_cycles,
-            grid_fingerprint: primary.grid_fingerprint,
-            // The composed frame keeps the PRIMARY's vertical identity,
-            // its hybrid coefficient ladder included.  TAKEN, not cloned:
-            // the current line hands the whole primary over rather than
-            // duplicating it, and the ladder follows that same rule.
-            hybrid_a: primary.hybrid_a,
-            hybrid_b: primary.hybrid_b,
+        // The composed frame keeps the PRIMARY's vertical identity, its
+        // hybrid coefficient ladder included: the slice `apply_terrain`
+        // inserts into IS the primary's own decode of that valid time,
+        // so the ladder rides the slice and the plan holds none of it.
+        TerrainPlan {
+            values: subset_reference,
+            entries,
         },
         Value::Object(receipt),
     ))
@@ -461,7 +508,7 @@ pub fn compose_terrain(
 /// `mapped_composition._binding_subset_indices`: the same solve, with the
 /// refusal that names the missing regrid capability.
 fn binding_subset_indices(
-    primary: &DecodedCollection,
+    primary: &PrimaryHeader,
     donor: &DecodedCollection,
     binding_name: &str,
 ) -> Result<(Vec<usize>, Vec<usize>)> {
@@ -475,19 +522,79 @@ fn binding_subset_indices(
             error.message
         ))
     };
-    let latitude = exact_subset_indices(&donor.latitude, &primary.latitude, "latitude", false)
+    let latitude = exact_subset_indices(&donor.latitude, primary.latitude, "latitude", false)
         .map_err(wrap)?;
     let longitude =
-        exact_subset_indices(&donor.longitude, &primary.longitude, "longitude", true).map_err(wrap)?;
+        exact_subset_indices(&donor.longitude, primary.longitude, "longitude", true).map_err(wrap)?;
     Ok((latitude, longitude))
 }
 
-/// `mapped_composition._compose_bound_fields`.
-pub fn compose_bound_fields(
-    mut primary: DecodedCollection,
+/// One contributing-source borrow, resolved before a primary valid time
+/// is read.
+///
+/// The donor RECORD each primary valid time borrows is named here; the
+/// subset itself is taken when that valid time is composed, so the plan
+/// costs a key per field per time rather than an array.
+pub struct BindingPlan {
+    latitude_indices: Vec<usize>,
+    longitude_indices: Vec<usize>,
+    chosen: BTreeMap<(String, NaiveDateTime), crate::assemble::DirectKey>,
+}
+
+/// Insert this valid time's borrowed fields into the slice being composed.
+pub fn apply_bound_fields(
+    plan: &BindingPlan,
+    donor: &DecodedCollection,
+    slice: &mut DecodedCollection,
+    key: &TimeKey,
+) -> Result<()> {
+    for ((name, time), donor_key) in &plan.chosen {
+        if *time != key.0 {
+            continue;
+        }
+        let value = donor.direct.get(donor_key).ok_or_else(|| {
+            frame_invalid(format!(
+                "the contributing source no longer carries {} at {}",
+                crate::refusal::python_repr(name),
+                naive_isoformat(donor_key.0)
+            ))
+        })?;
+        let values = take_subset(
+            &value.values,
+            &value.axes,
+            &plan.latitude_indices,
+            &plan.longitude_indices,
+        )?;
+        let missing_count = crate::array::contiguous(&values)
+            .iter()
+            .filter(|item| item.is_nan())
+            .count();
+        slice.direct.insert(
+            (key.0, key.1.clone(), name.clone()),
+            DirectValue {
+                name: name.clone(),
+                valid_time: key.0,
+                member: key.1.clone(),
+                source_cycle: value.source_cycle,
+                axes: value.axes.clone(),
+                values,
+                // RECOMPUTED on the subset, unlike the terrain path's
+                // inherited count: a donor grid's missing cells need not
+                // fall inside the borrowed window.
+                missing_count,
+                references: value.references.clone(),
+            },
+        );
+    }
+    Ok(())
+}
+
+/// `mapped_composition._compose_bound_fields`, resolved against the header.
+pub fn plan_bound_fields(
+    primary: &PrimaryHeader,
     donor: &DecodedCollection,
     binding: &Binding,
-) -> Result<(DecodedCollection, Value)> {
+) -> Result<(BindingPlan, Value)> {
     let binding_name = binding.name.as_str();
     let quoted = crate::refusal::python_repr(binding_name);
     let alignment = binding.time_alignment.as_str();
@@ -529,9 +636,9 @@ pub fn compose_bound_fields(
         )));
     }
     let provided_twice: BTreeSet<&str> = primary
-        .direct
-        .keys()
-        .map(|(_time, _member, name)| name.as_str())
+        .direct_names
+        .iter()
+        .map(String::as_str)
         .filter(|name| binding.fields.iter().any(|field| field == name))
         .collect();
     if let Some(name) = provided_twice.into_iter().next() {
@@ -547,6 +654,7 @@ pub fn compose_bound_fields(
         .any(|value| value.axes.iter().any(|axis| axis == "vertical"))
         && donor.vertical_values != primary.vertical_values
     {
+        // The primary's declared ladder, read from the header.
         return Err(frame_invalid(format!(
             "contributing source binding {quoted} borrows a vertical-bearing \
              field on a different vertical ladder; cross-ladder borrowing \
@@ -554,8 +662,8 @@ pub fn compose_bound_fields(
              does not declare"
         )));
     }
-    let (latitude_indices, longitude_indices) = binding_subset_indices(&primary, donor, binding_name)?;
-    let keys = primary_keys(&primary);
+    let (latitude_indices, longitude_indices) = binding_subset_indices(primary, donor, binding_name)?;
+    let keys = primary.keys();
     let primary_cycles: Vec<NaiveDateTime> = primary
         .source_cycles
         .values()
@@ -563,21 +671,22 @@ pub fn compose_bound_fields(
         .collect::<BTreeSet<NaiveDateTime>>()
         .into_iter()
         .collect();
-    let mut by_field: BTreeMap<&str, BTreeMap<NaiveDateTime, &DirectValue>> = BTreeMap::new();
-    for ((time, _member, name), value) in &donor.direct {
-        by_field.entry(name.as_str()).or_default().insert(*time, value);
+    let mut by_field: BTreeMap<&str, BTreeMap<NaiveDateTime, (&DirectValue, &crate::assemble::DirectKey)>> =
+        BTreeMap::new();
+    for (entry, value) in &donor.direct {
+        by_field
+            .entry(entry.2.as_str())
+            .or_default()
+            .insert(entry.0, (value, entry));
     }
 
-    // TAKEN from the primary for the same reason the terrain join takes
-    // it: the caller replaces its collection with the composed one, so a
-    // clone held every valid time's arrays twice.
-    let mut direct = std::mem::take(&mut primary.direct);
+    let mut chosen: BTreeMap<(String, NaiveDateTime), crate::assemble::DirectKey> = BTreeMap::new();
     let mut matched_times: BTreeSet<NaiveDateTime> = BTreeSet::new();
     let mut broadcast_times: BTreeSet<NaiveDateTime> = BTreeSet::new();
     let mut subset_hashes: BTreeMap<&str, String> = BTreeMap::new();
     for name in &binding.fields {
         let supplied = &by_field[name.as_str()];
-        let carrier: Option<&DirectValue> = match alignment {
+        let carrier: Option<(&DirectValue, &crate::assemble::DirectKey)> = match alignment {
             "valid_time_exact" => {
                 let missing: Vec<NaiveDateTime> = keys
                     .iter()
@@ -611,7 +720,7 @@ pub fn compose_bound_fields(
                         supplied.len()
                     )));
                 }
-                let (analysis_time, value) = supplied.iter().next().expect("one record");
+                let (analysis_time, entry) = supplied.iter().next().expect("one record");
                 if *analysis_time != primary_cycles[0] {
                     return Err(frame_invalid(format!(
                         "contributing source binding {quoted} supplies {} at {}, \
@@ -623,17 +732,18 @@ pub fn compose_bound_fields(
                         naive_isoformat(primary_cycles[0])
                     )));
                 }
-                Some(*value)
+                Some(*entry)
             }
             _ => {
                 if primary_cycles.len() != 1 {
                     return Err(mixed_cycles("cycle-invariant broadcast", &primary_cycles));
                 }
-                let ordered: Vec<&DirectValue> = supplied.values().copied().collect();
+                let ordered: Vec<(&DirectValue, &crate::assemble::DirectKey)> =
+                    supplied.values().copied().collect();
                 let reference = ordered[0];
                 if ordered[1..]
                     .iter()
-                    .any(|value| value.values != reference.values)
+                    .any(|(value, _entry)| value.values != reference.0.values)
                 {
                     return Err(frame_invalid(format!(
                         "contributing source binding {quoted} field {} changes \
@@ -645,12 +755,12 @@ pub fn compose_bound_fields(
                 Some(reference)
             }
         };
-        let mut subset_reference: Option<ArrayD<f64>> = None;
+        let mut hashed = false;
         for key in &keys {
-            let value = match supplied.get(&key.0) {
-                Some(value) => {
+            let (value, entry) = match supplied.get(&key.0) {
+                Some(entry) => {
                     matched_times.insert(key.0);
-                    *value
+                    *entry
                 }
                 None => {
                     broadcast_times.insert(key.0);
@@ -674,36 +784,20 @@ pub fn compose_bound_fields(
                     carrier
                 }
             };
-            let values = take_subset(
-                &value.values,
-                &value.axes,
-                &latitude_indices,
-                &longitude_indices,
-            )?;
-            if subset_reference.is_none() {
+            // The receipt hashes the FIRST valid time's subset, exactly
+            // as it always did; the rest are taken when their valid time
+            // is composed, so the plan holds keys rather than arrays.
+            if !hashed {
+                let values = take_subset(
+                    &value.values,
+                    &value.axes,
+                    &latitude_indices,
+                    &longitude_indices,
+                )?;
                 subset_hashes.insert(name.as_str(), array_digest(&values));
-                subset_reference = Some(values.clone());
+                hashed = true;
             }
-            let missing_count = crate::array::contiguous(&values)
-                .iter()
-                .filter(|item| item.is_nan())
-                .count();
-            direct.insert(
-                (key.0, key.1.clone(), name.clone()),
-                DirectValue {
-                    name: name.clone(),
-                    valid_time: key.0,
-                    member: key.1.clone(),
-                    source_cycle: value.source_cycle,
-                    axes: value.axes.clone(),
-                    values,
-                    // RECOMPUTED on the subset, unlike the terrain path's
-                    // inherited count: a donor grid's missing cells need
-                    // not fall inside the borrowed window.
-                    missing_count,
-                    references: value.references.clone(),
-                },
-            );
+            chosen.insert((name.clone(), key.0), entry.clone());
         }
     }
     let donor_cycles: BTreeSet<NaiveDateTime> = donor
@@ -757,19 +851,15 @@ pub fn compose_bound_fields(
         "field_subset_sha256": subset_hashes,
     });
     Ok((
-        DecodedCollection {
-            latitude: primary.latitude,
-            longitude: primary.longitude,
-            vertical_values: primary.vertical_values,
-            direct,
-            source_cycles: primary.source_cycles,
-            grid_fingerprint: primary.grid_fingerprint,
-            // The composed frame keeps the PRIMARY's vertical identity,
-            // its hybrid coefficient ladder included.  TAKEN, not cloned:
-            // the current line hands the whole primary over rather than
-            // duplicating it, and the ladder follows that same rule.
-            hybrid_a: primary.hybrid_a,
-            hybrid_b: primary.hybrid_b,
+        // The composed frame keeps the PRIMARY's vertical identity, its
+        // hybrid coefficient ladder included: the slice
+        // `apply_bound_fields` inserts into IS the primary's own decode
+        // of that valid time, so the ladder rides the slice and the plan
+        // holds none of it.
+        BindingPlan {
+            latitude_indices,
+            longitude_indices,
+            chosen,
         },
         receipt,
     ))

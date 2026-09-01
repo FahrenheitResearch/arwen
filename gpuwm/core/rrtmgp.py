@@ -82,6 +82,86 @@ EFFECTIVE_RADIUS_PLAUSIBLE_UM = {
     "effs": (1.0, 5000.0),
 }
 
+#: ``itab`` column (1-based, as WRF spells it) that IS P3's ice effective
+#: radius: ``f1pr06 = access_lookup_table(itab, ..., 6, ...)`` and
+#: ``diag_effi = f1pr06`` (module_mp_p3.F:1595/:1610, gpuwm/core/p3.py and
+#: gpuwm/core/kernels/p3.cu:1813/:1830), in METRES.
+P3_ICE_RADIUS_TABLE_COLUMN = 6
+
+
+@lru_cache(maxsize=None)
+def p3_ice_radius_band_um(root: str | None = None) -> tuple[float, float]:
+    """P3's ice-radius band, READ OFF the shipped lookup table.
+
+    THE BREAKAGE THIS CLOSES, measured on a real forecast.  A 6 h GFS run
+    on the shipped ``p3-mp50-...`` suite died at its FIRST radiation call
+    (12 steps in, radt = 12 min) with "effi is outside the
+    physical-plausibility band [1.0, 600.0] microns; the state contract is
+    microns -- a radii writer probably emitted another unit".  The writer
+    had emitted microns and the values were physical: over 5.59 M cells the
+    field ran ``min 1.3832, max 21495`` microns, and those two numbers are
+    EXACTLY the minimum and maximum of the shipped table's own column 6.
+    P3 is a lookup-table scheme; ``diag_effi`` is that column and nothing
+    else, so the attainable set is the column's range.
+
+    Why P3 needs its own band while nothing else does: every other shipped
+    scheme clamps its ice radius inside its own microphysics (Thompson's
+    ``MIN(re, 125.E-6)``, WSM6's equivalent), so a value outside a generic
+    band really is a unit mistake there.  WRF applies NO clamp to P3 --
+    ``module_microphysics_driver.F:1597-1598`` passes ``re_ice`` straight
+    out of the scheme -- and caps it in RADIATION instead, at
+    ``resnow1d = 130`` with the mass discount ``MIN(0.99, (130/res)^2)``
+    (module_ra_rrtmg_lw.F:12515-12532, _sw.F:11055-11067), which
+    :func:`hydrometeor_paths`' p3 branch already transcribes.  A generic
+    600 um band therefore refused the scheme for being itself, three cells
+    in a thousand, and named a unit error that had not happened -- a
+    refusal that misnames its breakage.
+
+    NOT A WIDENED TOLERANCE.  The band is DERIVED from the table this
+    install ships (sha256-pinned by
+    :data:`gpuwm.core.p3_tables.TABLE_1_2MOM_ASSET`), so it cannot drift
+    from the scheme, and it keeps the whole point of the check: P3 returns
+    metres and gpuwm converts to microns, so an unconverted metres emission
+    reads about 1.4e-6 and is still refused by the lower bound.
+    """
+
+    from gpuwm.core.p3_tables import load_lookup_table_1, p3_table_root
+
+    itab, _ = load_lookup_table_1(p3_table_root() if root is None else root)
+    column = itab[:, :, :, P3_ICE_RADIUS_TABLE_COLUMN - 1]
+    # The metres -> microns conversion is done HERE the way the writer does
+    # it (gpuwm/core/p3.py: ``diag["effi"] * cp.float32(1.0e6)``), in
+    # float32.  A float64 multiply of the same table entry can land one ULP
+    # away, and at the endpoint that difference is the whole answer: the
+    # cell holding the table maximum would test one ULP ABOVE its own band
+    # and the run would die on the value the band was derived from.
+    scale = np.float32(1.0e6)
+    return (float(np.float32(column.min()) * scale),
+            float(np.float32(column.max()) * scale))
+
+
+def effective_radius_bands(scheme: str) -> dict[str, tuple[float, float]]:
+    """The micron bands to gate THIS scheme's radiation-facing radii with.
+
+    Every scheme but P3 answers with :data:`EFFECTIVE_RADIUS_PLAUSIBLE_UM`
+    unchanged.  P3's ice band is the shipped lookup table's own range, and
+    its SNOW band is the same one for the reason the coupling exists: WRF
+    radiates P3's single ice category as the snow species at P3's own ice
+    radius (``resnow1D = MAX(10., re_ice*1.E6)``,
+    module_ra_rrtmg_lw.F:12256, _sw.F:10857), so the value in the snow slot
+    IS the ice radius and must be judged by the ice radius's range.
+    """
+
+    if scheme != "p3":
+        return dict(EFFECTIVE_RADIUS_PLAUSIBLE_UM)
+    lower, upper = p3_ice_radius_band_um()
+    bands = dict(EFFECTIVE_RADIUS_PLAUSIBLE_UM)
+    generic_i = EFFECTIVE_RADIUS_PLAUSIBLE_UM["effi"]
+    generic_s = EFFECTIVE_RADIUS_PLAUSIBLE_UM["effs"]
+    bands["effi"] = (min(lower, generic_i[0]), max(upper, generic_i[1]))
+    bands["effs"] = (min(lower, generic_s[0]), max(upper, generic_s[1]))
+    return bands
+
 # Snow treatment in the radiative ice path for schemes that provide an
 # explicit snow effective radius (the WSM6/Thompson coupling surface).
 #   full-snow-mass-into-ice: the adapter's original coupling -- snow joins
@@ -216,14 +296,139 @@ _MP_CLOUD_OPTICS_SCHEME = {
     16: "wsm6",      # Registry.EM_COMMON:3031, wdm6scheme
     18: "nssl",      # Registry.EM_COMMON:3033, nssl_2mom
     28: "thompson",  # Registry.EM_COMMON:3036, thompsonaero
+    # P3 one-category.  The VALUE is its own coupling name and not a
+    # borrowed one, because P3 is the only scheme in this table whose
+    # has_req* triple is not all-ones -- and WRF's RRTMG wrappers carry a
+    # named branch for exactly that case.  Read on a stock WRF v4.7.1 tree
+    # (phys/module_mp_p3.F there hashes to the same
+    # 716950a3081ec4e338c9a918d26ec80f7ee0e40b3e284283f070423237f6a3c6 the
+    # Fortran oracle pins); v4.6.1 line numbers, the tree the rows above
+    # cite, are given second where the text moved.
+    #
+    #  * ``Registry/Registry.EM_COMMON:3043`` (v4.6.1 :3038) declares
+    #    ``package p3_1category mp_physics==50 -
+    #    moist:qv,qc,qr,qi;scalar:qni,qnr,qir,qib;
+    #    state:re_cloud,re_ice,vmi3d,rhopo3d,di3d,refl_10cm,th_old,qv_old``.
+    #    ``moist`` carries qi and NO qs, so cal_cldfra1's ``F_QI`` is true
+    #    and its ``F_QS`` is FALSE; ``state`` carries re_cloud and re_ice
+    #    and NO re_snow.  Both absences are the same physical fact: P3 has
+    #    ONE ice category spanning the snow-to-graupel continuum through
+    #    rime mass and rime volume, so there is no snow species to have a
+    #    mixing ratio or an effective radius.
+    #  * ``phys/module_physics_init.F:1018`` (v4.6.1 :1017) names
+    #    P3_1CATEGORY in the ``use_mp_re`` disjunction that sets
+    #    ``has_reqc = has_reqi = has_reqs = 1`` at :1022-1024 (v4.6.1
+    #    :1021-1023) -- and then :1027-1034 (v4.6.1 :1026-1033), under the
+    #    comment "for P3, to ensure correct coupling with predicted
+    #    effective radii", sets ``has_reqs = 0`` for P3_1CATEGORY,
+    #    P3_1CATEGORY_NC, P3_1CAT_3MOM, P3_2CATEGORY and JENSEN_ISHMAEL.
+    #    THE ROW IS has_reqc=1, has_reqi=1, has_reqs=0.  Cloud and ice
+    #    effective radii come from the scheme -- WRF's diag_effc_3d and
+    #    diag_effi_3d (module_mp_p3.F:757-758, written at :1557 and :1610)
+    #    are gpuwm's ``state.effc``/``state.effi`` (gpuwm/core/p3.py) --
+    #    and no snow radius exists to be supplied.
+    #  * ``phys/module_radiation_driver.F:3879-3887`` (same lines in
+    #    v4.6.1) is cal_cldfra1's OWN P3 arm, comment "for P3, mp option
+    #    50 or 51": ``IF (F_QI .and. F_QC .and. .not. F_QS)`` gives
+    #    QCLD = QI + QC and weight = QI/QCLD, distinct from the
+    #    :3870-3877 arm every other row here takes.
+    #  * ``phys/module_ra_rrtmg_lw.F:12250-12261`` and
+    #    ``phys/module_ra_rrtmg_sw.F:10851-10863`` (same lines in v4.6.1)
+    #    are the radiative half, and they are why this row is not merely
+    #    "ice, without snow": under
+    #    ``has_reqs == 0 .and. has_reqi /= 0 .and. has_reqc /= 0`` WRF
+    #    sets inflg = iceflg = 5 and REMAPS the species --
+    #    ``resnow1D = MAX(10., re_ice*1.E6)``, ``QS1D = QI3D``,
+    #    ``QI1D = 0.``, ``reice1D = 10.`` -- so P3's ice mass is radiated
+    #    through the SNOW (Fu) parameterisation at P3's own ice radius and
+    #    the cloud-ice path is left empty.  :func:`hydrometeor_paths`
+    #    transcribes that remap; no snow radius is invented, and none is
+    #    accepted.
+    50: "p3",
 }
+
+# WHY A SELECTOR THIS BUILD ACCEPTS HAS NO ROW ABOVE.  One entry per such
+# selector, stating the reason a row would be WRONG -- not a note that one
+# is missing.  A set that merely omits a scheme is an omission, and the
+# next reader cannot tell an omission from an oversight; the tree's other
+# deliberate exclusions (microphysics_transition's
+# UNVALIDATED_MIXED_EDGE_SELECTORS) are recorded the same way.
+#
+# THE RECORD LIVES IN THE MODULE THAT RAISES.  Both pairings are already
+# refused at admission by ``gpuwm/config.py``
+# (validate_milbrandt2_options, validate_p3_radiation), and
+# ``tools/build_registry.py`` writes the same refusal into the shipped
+# registry.  Neither is where a reader lands when
+# :func:`cloud_optics_scheme` throws, and until this record existed that
+# exception told them to "add a row" -- the one instruction that is wrong
+# for a selector deliberately left out, and, for mp=50, an instruction
+# that does not even work: the row alone is not the missing piece (see
+# the last paragraph of its entry).
+#
+# A selector with NEITHER a row NOR an entry here still gets the
+# fail-closed "add a row" message, which is the right message for a
+# scheme nobody has judged yet.
+_NO_CLOUD_OPTICS_COUPLING = {
+    9: (
+        "MILBRANDT2MOM is absent from WRF's use_mp_re disjunction "
+        "(phys/module_physics_init.F:1004-1023) and its own "
+        "effective-radius block is commented out "
+        "(phys/module_mp_milbrandt2mom.F:3351-3378), so the scheme hands "
+        "radiation no radii at all; Kessler's row would radiate an "
+        "overcast ice cloud as clear sky and Morrison's would derive the "
+        "radii from a gamma distribution that is not this scheme's."),
+    50: (
+        "P3 has ONE ice category and no snow species: "
+        "Registry.EM_COMMON:3038 declares p3_1category as "
+        "moist:qv,qc,qr,qi -- no qs and no qg -- and WRF, having put the "
+        "P3 family in the use_mp_re disjunction at "
+        "phys/module_physics_init.F:1017-1020, overrides has_reqs back "
+        "to 0 at :1026-1033 while leaving has_reqc=has_reqi=1.  So P3 "
+        "supplies a cloud and an ice radius (gpuwm/core/state.py seeds "
+        "effc/effi from module_mp_p3.F:2280-2282) and never a snow "
+        "radius, and it allocates no qs at all.  EVERY row above "
+        "resolves to a hydrometeor_paths branch that requires one: "
+        "'wsm6'/'thompson'/'nssl' raise without effc+effi+effs, and "
+        "'morrison' reconstructs from the four number moments "
+        "nc/nr/ni/ns, of which P3 transports ni alone.  Picking any of "
+        "them hands RRTMGP a snow radius P3 never computed. "
+        "AND THE ROW IS NOT THE ONLY MISSING PIECE: P3's moisture set is "
+        "F_QI true with F_QS false, and while cal_cldfra1 already "
+        "carries WRF's arm for exactly that "
+        "(module_radiation_driver.F:3879-3887, QCLD = QI + QC, "
+        "weight = QI/QCLD), THIS ADAPTER CANNOT ASK FOR IT: "
+        "_ICE_ACTIVE_SCHEMES is one bit and "
+        "RRTMGPRadiation.__call__ hands that one bit to BOTH f_qi and "
+        "f_qs, so no scheme name it can resolve produces the unequal "
+        "pair the arm is selected by.  A P3 coupling is therefore a "
+        "radii branch consuming effc/effi alone PLUS a call site that "
+        "resolves f_qi and f_qs separately, each with its own WRF "
+        "authority and its own evidence, not a value added to a table."),
+}
+
+#: The two adapters that DO serve these selectors, named by every refusal
+#: so none of them is a dead end.  One copy: a user told different things
+#: about the same door stops trusting either.
+_CLOUD_OPTICS_REMEDY = (
+    "Set ra_rrtmg_variant='rrtmg_legacy' (which computes its own radii "
+    "the way WRF does), or select ra_lw_physics=0/ra_sw_physics=1 "
+    "(Dudhia).")
 
 #: Schemes whose Registry package carries ``qi`` and ``qs`` in ``moist``,
 #: i.e. the ones for which the radiation driver's ``F_QI``/``F_QS`` are
 #: true and :func:`cal_cldfra1` takes its QCLD = QI + QC + QS arm
 #: (module_radiation_driver.F:3870-3877).  Derived from the table above so
 #: the two can never disagree; Kessler's package has neither species.
-_ICE_ACTIVE_SCHEMES = ("wsm6", "thompson", "morrison", "nssl")
+_ICE_ACTIVE_SCHEMES = ("wsm6", "thompson", "morrison", "nssl", "p3")
+
+#: The subset of the above whose Registry package ALSO carries ``qs`` in
+#: ``moist``, i.e. the ones for which the driver's ``F_QS`` is true.  P3 is
+#: the one member of this table that is ice-active WITHOUT a snow species:
+#: ``Registry.EM_COMMON:3043`` gives mp=50 ``moist:qv,qc,qr,qi`` and no qs,
+#: which is what selects cal_cldfra1's own P3 arm
+#: (module_radiation_driver.F:3879-3887) instead of the :3870-3877 arm.
+#: Kessler's package has neither species and is in neither tuple.
+_SNOW_SPECIES_SCHEMES = ("wsm6", "thompson", "morrison", "nssl")
 
 
 def cloud_optics_scheme(mp_physics) -> str:
@@ -237,20 +442,44 @@ def cloud_optics_scheme(mp_physics) -> str:
     try:
         return _MP_CLOUD_OPTICS_SCHEME[selector]
     except KeyError:
+        pass
+    recorded = _NO_CLOUD_OPTICS_COUPLING.get(selector)
+    if recorded is not None:
+        # A JUDGED exclusion, not a gap.  Say what was decided and why,
+        # and name the two adapters that do serve the scheme -- never
+        # "add a row", which sends the reader to undo the decision.
         raise NotImplementedError(
-            f"mp_physics={selector} has no RTE+RRTMGP cloud-optics coupling; "
-            "add a row to gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME with its "
-            "Registry package (which fixes F_QI/F_QS for cal_cldfra1) and "
-            "its module_physics_init.F use_mp_re membership (which fixes "
-            "whether its effective radii reach cloud optics) rather than "
-            "letting it fall through to Kessler's constant 10 um / 50 um "
-            "radii") from None
+            f"mp_physics={selector} has no RTE+RRTMGP cloud-optics "
+            f"coupling, deliberately: {recorded} {_CLOUD_OPTICS_REMEDY}"
+        ) from None
+    raise NotImplementedError(
+        f"mp_physics={selector} has no RTE+RRTMGP cloud-optics coupling; "
+        "add a row to gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME with its "
+        "Registry package (which fixes F_QI/F_QS for cal_cldfra1) and "
+        "its module_physics_init.F use_mp_re membership (which fixes "
+        "whether its effective radii reach cloud optics) rather than "
+        "letting it fall through to Kessler's constant 10 um / 50 um "
+        "radii -- or, if the omission is deliberate, record the reason in "
+        "gpuwm.core.rrtmgp._NO_CLOUD_OPTICS_COUPLING so the next reader "
+        "finds a decision instead of a gap") from None
 
 
 def scheme_is_ice_active(scheme: str) -> bool:
-    """``F_QI``/``F_QS`` for a resolved cloud-optics scheme name."""
+    """``F_QI`` for a resolved cloud-optics scheme name.
+
+    This used to answer ``F_QI`` and ``F_QS`` together, which was true of
+    every scheme in the table until P3: mp=50 is ice-active and has no
+    snow species at all, so the two flags separate.  Ask
+    :func:`scheme_has_snow_species` for ``F_QS``.
+    """
 
     return scheme in _ICE_ACTIVE_SCHEMES
+
+
+def scheme_has_snow_species(scheme: str) -> bool:
+    """``F_QS`` for a resolved cloud-optics scheme name."""
+
+    return scheme in _SNOW_SPECIES_SCHEMES
 
 
 # RRTMGP v1.9's lowest reference pressure.  WRF's wrappers use 0/1e-5 mb
@@ -1419,6 +1648,12 @@ def hydrometeor_paths(plev, qc, qr=None, qi=None, qs=None, *,
     explicit-snow-radius (WSM6/Thompson/NSSL) coupling: WRF discounts snow
     only when the scheme supplies re_snow (iceflg=5); Morrison and Kessler
     keep WRF's merged path (_lw.F:12488-12493).
+    ``"p3"`` is mp_physics=50 and takes neither of those: WRF remaps P3's
+    single ice category ONTO the snow species and empties the ice path
+    (_lw.F:12250-12261, _sw.F:10851-10863), so the branch consumes effc and
+    effi, refuses an effs, and applies WRF's iceflg=5 discount at P3's own
+    ice radius unconditionally -- see the branch for why the compatibility
+    token does not gate it.
     Morrison liquid size is the cloud-droplet gamma radius alone -- rain
     carries no radiative mass, so it contributes no radius either
     (``effr`` is accepted for interface parity with Morrison's
@@ -1514,10 +1749,87 @@ def hydrometeor_paths(plev, qc, qr=None, qi=None, qs=None, *,
             cp.ascontiguousarray(cp.clip(reliq, DTYPE(2.5), DTYPE(21.5))),
             cp.ascontiguousarray(cp.clip(DTYPE(2.0) * reice,
                                          DTYPE(10.0), DTYPE(180.0))))
+    if scheme == "p3":
+        # WRF's own P3 remap, transcribed: module_ra_rrtmg_lw.F:12250-12261
+        # and module_ra_rrtmg_sw.F:10851-10863 (same lines in v4.6.1 and
+        # v4.7.1).  Under has_reqs == 0 with has_reqc and has_reqi set --
+        # which module_physics_init.F:1022-1024 then :1033 makes exactly
+        # the P3/Jensen-Ishmael case -- both wrappers do
+        #     inflg = iceflg = 5
+        #     resnow1D = MAX(10., re_ice*1.E6)
+        #     QS1D = QI3D ;  QI1D = 0. ;  reice1D = 10.
+        # so P3's single ice category is radiated as the SNOW species at
+        # P3's own ice radius and the cloud-ice path is emptied.  The
+        # iceflg == 5 snow discount then applies to it (_lw.F:12515-12532,
+        # _sw.F:11055-11067) exactly as it does for WSM6/Thompson/NSSL.
+        #
+        # WHY THE DISCOUNT IS UNCONDITIONAL HERE, unlike the branch above.
+        # There, ``snow_treatment`` exists to keep already-issued receipts
+        # on the behaviour they were issued under.  mp=50 has no issued
+        # receipts -- it had no cloud-optics row at all until this one --
+        # and WRF reaches iceflg = 5 for P3 through the remap regardless of
+        # any compatibility choice, so the WRF answer is the only answer
+        # and is the default.  ``snow_treatment`` is still validated at the
+        # top of this function; it simply does not select anything here.
+        if any(x is None for x in (effc, effi)):
+            raise ValueError("p3 radii require effc and effi")
+        if effs is not None:
+            raise ValueError(
+                "p3 supplies no snow effective radius: mp_physics=50 "
+                "declares state:re_cloud,re_ice and no re_snow "
+                "(Registry.EM_COMMON:3043) because its one ice category "
+                "spans the snow-to-graupel continuum through rime mass "
+                "and rime volume. Passing effs here would radiate a "
+                "radius the scheme never computed")
+        re_c, re_i = (field(value, name) for value, name in
+                      ((effc, "effc"), (effi, "effi")))
+        if validate:
+            _require_finite_nonnegative(effc=re_c, effi=re_i)
+            _require_plausible_radii_um(
+                bands=effective_radius_bands("p3"), effc=re_c, effi=re_i)
+            if bool(cp.any(qs > DTYPE(0.0))):
+                raise ValueError(
+                    "p3 was handed a nonzero snow mixing ratio; "
+                    "mp_physics=50 declares moist:qv,qc,qr,qi "
+                    "(Registry.EM_COMMON:3043) and allocates no qs, so a "
+                    "nonzero one means the caller mixed schemes")
+        tiny = DTYPE(1.0e-20)
+        # resnow1D = MAX(10., re_ice) -- the state contract is microns, so
+        # WRF's *1.E6 has already happened.
+        re_s = cp.maximum(DTYPE(10.0), re_i)
+        quotient = DTYPE(130.0) / re_s
+        factor = cp.where(
+            re_s > DTYPE(130.0),
+            cp.minimum(DTYPE(0.99), quotient * quotient),
+            DTYPE(0.99))
+        re_s_eff = cp.minimum(re_s, DTYPE(130.0))
+        # QS1D = QI3D, QI1D = 0: the frozen path is the discounted P3 ice
+        # mass alone.  WRF's dead ``gicewp`` accumulation of the 1%
+        # remainder (_lw.F:12518, _sw.F:11058 -- computed, never stored to
+        # ``cicewp``) is not reproduced, the same call the branch above
+        # makes; and here WRF's cicewp is a literal zero, because
+        # iceflg >= 4 rebuilds it from QI1D (_lw.F:12500-12505) which the
+        # remap set to zero.
+        qs_eff = qi * factor
+        ciwp = qs_eff * mass_path
+        if cldfra is not None:
+            ciwp = ciwp / incloud
+        ciwp = cp.ascontiguousarray(ciwp)
+        # reice1D = 10. rides an empty ice path, so the merged
+        # single-species radius is the snow radius wherever there is any
+        # frozen mass; 25 um is this adapter's clear-sky placeholder, as in
+        # the explicit-radius branch above.
+        reice = cp.where(qs_eff > tiny, re_s_eff, DTYPE(25.0))
+        reliq = cp.where(qc > tiny, re_c, DTYPE(10.0))
+        return HydrometeorPaths(
+            clwp, ciwp,
+            cp.ascontiguousarray(cp.clip(reliq, DTYPE(2.5), DTYPE(21.5))),
+            cp.ascontiguousarray(cp.clip(DTYPE(2.0) * reice,
+                                         DTYPE(10.0), DTYPE(180.0))))
     if scheme != "morrison":
         raise ValueError(
             "microphysics must be 'kessler', 'wsm6', 'thompson', 'nssl', "
-            "or 'morrison'")
+            "'p3', or 'morrison'")
     if play is None or tlay is None or any(x is None for x in (nc, nr, ni, ns)):
         raise ValueError("Morrison radii require play, tlay, nc, nr, ni, ns")
     play = _device_profile(play, qc.shape, "play")
@@ -2049,7 +2361,7 @@ def _validate_device_call_shapes(*, play, plev, tlay, tlev, tsfc, exner,
 def _validation_flags_device(*, play, plev, tlay, tlev, tsfc, exner, qv,
                              qc, qr, qi, qs, cldfra, emiss,
                              numbers, effective, tables_lw, tables_sw,
-                             describe=None):
+                             radii_bands=None, describe=None):
     """Run the production predicate scan and return its host bitset.
 
     ``describe`` opts the readback into :mod:`gpuwm.core.health_ledger`; see
@@ -2082,7 +2394,8 @@ def _validation_flags_device(*, play, plev, tlay, tlev, tsfc, exner, qv,
                      float(np.min(tables_sw.temp_ref)))
     temp_upper = min(float(np.max(tables_lw.temp_ref)),
                      float(np.max(tables_sw.temp_ref)))
-    radii_bands = EFFECTIVE_RADIUS_PLAUSIBLE_UM
+    if radii_bands is None:
+        radii_bands = EFFECTIVE_RADIUS_PLAUSIBLE_UM
     get_kernel("rrtmgp_validation", "rrtmgp_validate_call")(
         ((n + threads - 1) // threads,), (threads,), (
             play, plev, tlay, tlev, tsfc, exner, qv, qc, qr, qi, qs,
@@ -2137,7 +2450,8 @@ def _validate_device_call(*, diagnose=None, **profiles):
 def _raise_full_call_validation_error(*, play, plev, tlay, tlev, tsfc,
                                       exner, qv, qc, qr, qi, qs, cldfra,
                                       emiss, numbers, effective, tables_lw,
-                                      tables_sw, column_chunk):
+                                      tables_sw, column_chunk,
+                                      radii_bands=None):
     """Replay the former validators in their observable failure order."""
     import cupy as cp
 
@@ -2156,9 +2470,11 @@ def _raise_full_call_validation_error(*, play, plev, tlay, tlev, tsfc,
         if effective:
             _require_finite_nonnegative(**effective)
     if effective:
-        _require_plausible_radii_um(**{
+        bands = (EFFECTIVE_RADIUS_PLAUSIBLE_UM if radii_bands is None
+                 else radii_bands)
+        _require_plausible_radii_um(bands=bands, **{
             name: value for name, value in effective.items()
-            if name in EFFECTIVE_RADIUS_PLAUSIBLE_UM})
+            if name in bands})
     if (bool(cp.any(~cp.isfinite(emiss)))
             or bool(cp.any(emiss < 0.0))
             or bool(cp.any(emiss > 1.0))):
@@ -2563,6 +2879,31 @@ class RRTMGPRadiation:
                                for name, value in effective.items()})
                 effective_fields = {
                     name: kwargs[name] for name in effective}
+        elif scheme == "p3":
+            # state.effc/state.effi ARE WRF's diag_effc_3d/diag_effi_3d in
+            # gpuwm's micron convention (gpuwm/core/p3.py writes them from
+            # module_mp_p3.F:1557 and :1610).  There is no state.effs to
+            # ask for: mp=50 allocates none (gpuwm/core/state.py), which is
+            # the same fact as Registry.EM_COMMON:3043's missing re_snow.
+            effective = {
+                name: self._field_from_state(state, (name,), None)
+                for name in ("effc", "effi")}
+            if any(value is None for value in effective.values()):
+                raise ValueError(
+                    "p3 radiation coupling requires state.effc/effi")
+            kwargs.update({name: self._columns(value)
+                           for name, value in effective.items()})
+            # The VALIDATION view carries a third entry the PATH view does
+            # not.  WRF hands its wrappers a resnow1D for P3 and its value
+            # is MAX(10., re_ice*1.E6) (module_ra_rrtmg_lw.F:12256,
+            # module_ra_rrtmg_sw.F:10857) -- the snow radius the coupling
+            # uses IS the ice radius, so the plausibility band belongs on
+            # it.  Leaving the slot empty would not skip the check: the
+            # fused validator has one has-radii flag for all four slots and
+            # substitutes qc for a missing one, which is a mixing ratio and
+            # fails the micron band every time.
+            effective_fields = {name: kwargs[name] for name in effective}
+            effective_fields["effs"] = kwargs["effi"]
         elif scheme in ("wsm6", "thompson", "nssl"):
             effective = {
                 name: self._field_from_state(state, (name,), None)
@@ -2582,9 +2923,16 @@ class RRTMGPRadiation:
         # (module_radiation_driver.F:1320-1332), grid-box paths divided by
         # max(0.01, CLDFRA) into in-cloud paths, and McICA subcolumn masks
         # per g-point in the chunk loops below.
+        # F_QI and F_QS are read separately because P3 separates them:
+        # mp=50 is ice-active with no snow species at all
+        # (Registry.EM_COMMON:3043), which is what selects cal_cldfra1's
+        # own P3 arm (module_radiation_driver.F:3879-3887).  Every other
+        # scheme in the table answers the same to both, so nothing else
+        # moves.
         ice_active = scheme_is_ice_active(scheme)
+        snow_species = scheme_has_snow_species(scheme)
         cldfra = cal_cldfra1(qv, qc_cols, qi_cols, qs_cols, tlay, play,
-                             f_qc=True, f_qi=ice_active, f_qs=ice_active)
+                             f_qc=True, f_qi=ice_active, f_qs=snow_species)
         active_bl = mynn_bl_cloud_active(
             getattr(cfg, "bl_pbl_physics", 0), getattr(cfg, "icloud_bl", 0))
         qc_bl = self._columns(fields["qc_bl"]) if active_bl else None
@@ -2630,7 +2978,8 @@ class RRTMGPRadiation:
                 emiss=emiss_bands, numbers=numbers,
                 effective=effective_fields, tables_lw=self.lw_tables,
                 tables_sw=self.sw_tables,
-                column_chunk=self.column_chunk)
+                column_chunk=self.column_chunk,
+                radii_bands=effective_radius_bands(scheme))
             paths = hydrometeor_paths(
                 plev, qc_cols, qr_cols, qi_cols, qs_cols,
                 microphysics=scheme, cldfra=cldfra, validate=False,
@@ -2644,6 +2993,7 @@ class RRTMGPRadiation:
                 qs=qs_cols, cldfra=cldfra, emiss=emiss_bands,
                 numbers=numbers, effective=effective_fields,
                 tables_lw=self.lw_tables, tables_sw=self.sw_tables,
+                radii_bands=effective_radius_bands(scheme),
                 diagnose=lambda: _raise_full_call_validation_error(
                     play=play, plev=plev, tlay=tlay, tlev=tlev,
                     tsfc=tsfc, exner=exner, qv=qv, qc=qc_cols,
@@ -2651,7 +3001,8 @@ class RRTMGPRadiation:
                     emiss=emiss_bands, numbers=numbers,
                     effective=effective_fields, tables_lw=self.lw_tables,
                     tables_sw=self.sw_tables,
-                    column_chunk=self.column_chunk))
+                    column_chunk=self.column_chunk,
+                    radii_bands=effective_radius_bands(scheme)))
             # Invalid hydrometeors are rejected above, before these path/radius
             # allocations and arithmetic.
             paths = hydrometeor_paths(
@@ -3011,18 +3362,22 @@ def _require_finite_nonnegative(**fields):
                 f"nonfinite_count={nonfinite_count}")
 
 
-def _require_plausible_radii_um(**fields):
+def _require_plausible_radii_um(*, bands=None, **fields):
     """Gate the micron contract of every radiation-facing radii writer.
 
-    Keyword names select the band from :data:`EFFECTIVE_RADIUS_PLAUSIBLE_UM`.
-    A writer that emits metres (or any other metric prefix) lands outside
-    its band on background-filled cells alone and fails here instead of
-    silently radiating at a clip floor.
+    Keyword names select the band from ``bands``, which defaults to
+    :data:`EFFECTIVE_RADIUS_PLAUSIBLE_UM`; a scheme whose declared range
+    is wider than the generic one passes its own map from
+    :func:`effective_radius_bands`.  A writer that emits metres (or any
+    other metric prefix) lands outside its band on background-filled cells
+    alone and fails here instead of silently radiating at a clip floor.
     """
     import cupy as cp
 
+    if bands is None:
+        bands = EFFECTIVE_RADIUS_PLAUSIBLE_UM
     for name, value in fields.items():
-        lower, upper = EFFECTIVE_RADIUS_PLAUSIBLE_UM[name]
+        lower, upper = bands[name]
         if bool(cp.any(value < DTYPE(lower))) \
                 or bool(cp.any(value > DTYPE(upper))):
             raise ValueError(

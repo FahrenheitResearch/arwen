@@ -303,14 +303,28 @@ not a decode failure (all 1,752 ICON-EU objects decoded before the geographic
 check). A representative ICON-EU forecast needs a European domain, a run nobody
 has made yet.
 
-One scale bound rides the RRFS arm and is stated here because the released
-2.4.1 cannot decode this source at all: a 3 km CONUS preparation carrying 7
-valid times peaks near 107 GiB of host RSS (the preparation holds the decoded
-frame set resident; GEM, the receipt's comparison point, peaks near 55 GiB).
-It passes on the
-123 GiB nodes and would exhaust smaller boxes; the registered fix direction is
-streaming per-valid-time composition
-[receipt:RELEASE-CANDIDATE-2P5-2026-08-18.md].
+The host-memory scale bound this section used to carry is RETIRED. It read: a
+3 km CONUS RRFS preparation carrying 7 valid times peaks near 107 GiB of host
+RSS, passes on the 123 GiB nodes and would exhaust smaller boxes, with the
+registered fix direction being streaming per-valid-time composition
+[receipt:RELEASE-CANDIDATE-2P5-2026-08-18.md]. That fix has landed: the mapped
+engine now inventories the messages first and then reads, decodes, assembles,
+composes, materializes, writes and DROPS one valid time before asking for the
+next, so the peak follows one valid time rather than the number of them. The
+same RRFS preparation re-measured end to end peaks at 26.9 GiB at 7 valid
+times, rising 0.04 GiB per forcing hour [work/plot_rss_curve.py]. Measured
+again on ICON-EU public DWD bytes, decoded and composed through the same
+engine, a 3 h window (4 valid times) peaks at 2.32 GiB and a 6 h window (7
+valid times) at 2.32 GiB, against 7.21 and 12.68 GiB before the change: the
+per-lead-hour slope falls from 1.82 GiB to 0.0003 GiB, and both windows write
+byte-identical `frames.json` and `frames.f64`.
+
+What still scales with the series, and is a smaller bound rather than none:
+only GRIB2 is sliced per valid time -- every other declared format is decoded
+whole and then carved, so a NetCDF or GRIB1 series still holds its whole decode
+once; a composition's contributing donors and terrain supplements stay resident
+for the whole compose, because the frames borrow from them one valid time at a
+time; and `inspect` decodes the whole series by design.
 
 One timestamp caveat: the battery's limitation list is dated: its "no
 fetch door for six sources", "wizard accepts only gfs/hrrr/era5", and "`--source

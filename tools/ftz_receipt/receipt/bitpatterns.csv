@@ -108,29 +108,29 @@ R1-ftztrue,(float) cast,smallest_normal_control,ftz_probe_cast,0x00800000,0x0080
 R1-ftztrue,(float) cast,subnormal_vs_zero,ftz_probe_cast,0x00000000,0x00000000,0x00000000,0x00000000
 R1-ftztrue,(float) cast,min_subnormal_vs_zero,ftz_probe_cast,0x00000000,0x00000000,0x00000000,0x00000000
 R2,plain-operator arithmetic,normal_control,ftz_probe_mul_op,0x40400000,0x40400000,0x40400000,0x40400000
-R2,plain-operator arithmetic,subnormal_product,ftz_probe_mul_op,0x00000000,0x000116c2,0x00000000,0x00000000
-R2,plain-operator arithmetic,deep_underflow,ftz_probe_mul_op,0x00000000,0x00000001,0x00000000,0x00000000
-R2,plain-operator arithmetic,subnormal_operand,ftz_probe_mul_op,0x00000000,0x000116c2,0x00000000,0x00000000
-R2,plain-operator arithmetic,min_subnormal_operand,ftz_probe_mul_op,0x00000000,0x00000001,0x00000000,0x00000000
-R2,plain-operator arithmetic,negative_subnormal_operand,ftz_probe_mul_op,0x80000000,0x800116c2,0x80000000,0x80000000
+R2,plain-operator arithmetic,subnormal_product,ftz_probe_mul_op,0x000116c2,0x000116c2,0x00000000,0x00000000
+R2,plain-operator arithmetic,deep_underflow,ftz_probe_mul_op,0x00000001,0x00000001,0x00000000,0x00000000
+R2,plain-operator arithmetic,subnormal_operand,ftz_probe_mul_op,0x000116c2,0x000116c2,0x00000000,0x00000000
+R2,plain-operator arithmetic,min_subnormal_operand,ftz_probe_mul_op,0x00000001,0x00000001,0x00000000,0x00000000
+R2,plain-operator arithmetic,negative_subnormal_operand,ftz_probe_mul_op,0x800116c2,0x800116c2,0x80000000,0x80000000
 R2,plain-operator arithmetic,smallest_normal_control,ftz_probe_mul_op,0x00800000,0x00800000,0x00800000,0x00800000
 R2,plain-operator arithmetic,subnormal_vs_zero,ftz_probe_mul_op,0x00000000,0x00000000,0x00000000,0x00000000
 R2,plain-operator arithmetic,min_subnormal_vs_zero,ftz_probe_mul_op,0x00000000,0x00000000,0x00000000,0x00000000
 R2,__f*_rn intrinsic,normal_control,ftz_probe_mul_rn,0x40400000,0x40400000,0x40400000,0x40400000
-R2,__f*_rn intrinsic,subnormal_product,ftz_probe_mul_rn,0x00000000,0x000116c2,0x00000000,0x00000000
-R2,__f*_rn intrinsic,deep_underflow,ftz_probe_mul_rn,0x00000000,0x00000001,0x00000000,0x00000000
-R2,__f*_rn intrinsic,subnormal_operand,ftz_probe_mul_rn,0x00000000,0x000116c2,0x00000000,0x00000000
-R2,__f*_rn intrinsic,min_subnormal_operand,ftz_probe_mul_rn,0x00000000,0x00000001,0x00000000,0x00000000
-R2,__f*_rn intrinsic,negative_subnormal_operand,ftz_probe_mul_rn,0x80000000,0x800116c2,0x80000000,0x80000000
+R2,__f*_rn intrinsic,subnormal_product,ftz_probe_mul_rn,0x000116c2,0x000116c2,0x00000000,0x00000000
+R2,__f*_rn intrinsic,deep_underflow,ftz_probe_mul_rn,0x00000001,0x00000001,0x00000000,0x00000000
+R2,__f*_rn intrinsic,subnormal_operand,ftz_probe_mul_rn,0x000116c2,0x000116c2,0x00000000,0x00000000
+R2,__f*_rn intrinsic,min_subnormal_operand,ftz_probe_mul_rn,0x00000001,0x00000001,0x00000000,0x00000000
+R2,__f*_rn intrinsic,negative_subnormal_operand,ftz_probe_mul_rn,0x800116c2,0x800116c2,0x80000000,0x80000000
 R2,__f*_rn intrinsic,smallest_normal_control,ftz_probe_mul_rn,0x00800000,0x00800000,0x00800000,0x00800000
 R2,__f*_rn intrinsic,subnormal_vs_zero,ftz_probe_mul_rn,0x00000000,0x00000000,0x00000000,0x00000000
 R2,__f*_rn intrinsic,min_subnormal_vs_zero,ftz_probe_mul_rn,0x00000000,0x00000000,0x00000000,0x00000000
 R2,fminf/fmaxf,normal_control,ftz_probe_minmax,0x3fc00000,0x3fc00000,0x3fc00000,0x3fc00000
 R2,fminf/fmaxf,subnormal_product,ftz_probe_minmax,0x1e3ce508,0x1e3ce508,0x1e3ce508,0x1e3ce508
 R2,fminf/fmaxf,deep_underflow,ftz_probe_minmax,0x0da24260,0x0da24260,0x0da24260,0x0da24260
-R2,fminf/fmaxf,subnormal_operand,ftz_probe_minmax,0x00000000,0x000116c2,0x00000000,0x00000000
-R2,fminf/fmaxf,min_subnormal_operand,ftz_probe_minmax,0x00000000,0x00000001,0x00000000,0x00000000
-R2,fminf/fmaxf,negative_subnormal_operand,ftz_probe_minmax,0x80000000,0x800116c2,0x80000000,0x80000000
+R2,fminf/fmaxf,subnormal_operand,ftz_probe_minmax,0x000116c2,0x000116c2,0x00000000,0x00000000
+R2,fminf/fmaxf,min_subnormal_operand,ftz_probe_minmax,0x00000001,0x00000001,0x00000000,0x00000000
+R2,fminf/fmaxf,negative_subnormal_operand,ftz_probe_minmax,0x800116c2,0x800116c2,0x80000000,0x80000000
 R2,fminf/fmaxf,smallest_normal_control,ftz_probe_minmax,0x00800000,0x00800000,0x00800000,0x00800000
 R2,fminf/fmaxf,subnormal_vs_zero,ftz_probe_minmax,0x00000000,0x00000000,0x00000000,0x00000000
 R2,fminf/fmaxf,min_subnormal_vs_zero,ftz_probe_minmax,0x00000000,0x00000000,0x00000000,0x00000000
@@ -141,23 +141,23 @@ R2,float compare,subnormal_operand,ftz_probe_compare,0x3f800000,0x3f800000,0x3f8
 R2,float compare,min_subnormal_operand,ftz_probe_compare,0x3f800000,0x3f800000,0x3f800000,0x3f800000
 R2,float compare,negative_subnormal_operand,ftz_probe_compare,0x3f800000,0x3f800000,0x3f800000,0x3f800000
 R2,float compare,smallest_normal_control,ftz_probe_compare,0x3f800000,0x3f800000,0x3f800000,0x3f800000
-R2,float compare,subnormal_vs_zero,ftz_probe_compare,0x00000000,0x3f800000,0x00000000,0x00000000
-R2,float compare,min_subnormal_vs_zero,ftz_probe_compare,0x00000000,0x3f800000,0x00000000,0x00000000
+R2,float compare,subnormal_vs_zero,ftz_probe_compare,0x3f800000,0x3f800000,0x00000000,0x00000000
+R2,float compare,min_subnormal_vs_zero,ftz_probe_compare,0x3f800000,0x3f800000,0x00000000,0x00000000
 R2,__double2float_rn,normal_control,ftz_probe_d2f_rn,0x40600000,0x40600000,0x40600000,0x40600000
-R2,__double2float_rn,subnormal_product,ftz_probe_d2f_rn,0x00000000,0x000116c2,0x00000000,0x00000000
-R2,__double2float_rn,deep_underflow,ftz_probe_d2f_rn,0x00000000,0x00000001,0x00000000,0x00000000
-R2,__double2float_rn,subnormal_operand,ftz_probe_d2f_rn,0x00000000,0x000116c2,0x00000000,0x00000000
-R2,__double2float_rn,min_subnormal_operand,ftz_probe_d2f_rn,0x00000000,0x00000001,0x00000000,0x00000000
-R2,__double2float_rn,negative_subnormal_operand,ftz_probe_d2f_rn,0x80000000,0x800116c2,0x80000000,0x80000000
+R2,__double2float_rn,subnormal_product,ftz_probe_d2f_rn,0x000116c2,0x000116c2,0x00000000,0x00000000
+R2,__double2float_rn,deep_underflow,ftz_probe_d2f_rn,0x00000001,0x00000001,0x00000000,0x00000000
+R2,__double2float_rn,subnormal_operand,ftz_probe_d2f_rn,0x000116c2,0x000116c2,0x00000000,0x00000000
+R2,__double2float_rn,min_subnormal_operand,ftz_probe_d2f_rn,0x00000001,0x00000001,0x00000000,0x00000000
+R2,__double2float_rn,negative_subnormal_operand,ftz_probe_d2f_rn,0x800116c2,0x800116c2,0x80000000,0x80000000
 R2,__double2float_rn,smallest_normal_control,ftz_probe_d2f_rn,0x00800000,0x00800000,0x00800000,0x00800000
 R2,__double2float_rn,subnormal_vs_zero,ftz_probe_d2f_rn,0x00000000,0x00000000,0x00000000,0x00000000
 R2,__double2float_rn,min_subnormal_vs_zero,ftz_probe_d2f_rn,0x00000000,0x00000000,0x00000000,0x00000000
 R2,(float) cast,normal_control,ftz_probe_cast,0x40600000,0x40600000,0x40600000,0x40600000
-R2,(float) cast,subnormal_product,ftz_probe_cast,0x00000000,0x000116c2,0x00000000,0x00000000
-R2,(float) cast,deep_underflow,ftz_probe_cast,0x00000000,0x00000001,0x00000000,0x00000000
-R2,(float) cast,subnormal_operand,ftz_probe_cast,0x00000000,0x000116c2,0x00000000,0x00000000
-R2,(float) cast,min_subnormal_operand,ftz_probe_cast,0x00000000,0x00000001,0x00000000,0x00000000
-R2,(float) cast,negative_subnormal_operand,ftz_probe_cast,0x80000000,0x800116c2,0x80000000,0x80000000
+R2,(float) cast,subnormal_product,ftz_probe_cast,0x000116c2,0x000116c2,0x00000000,0x00000000
+R2,(float) cast,deep_underflow,ftz_probe_cast,0x00000001,0x00000001,0x00000000,0x00000000
+R2,(float) cast,subnormal_operand,ftz_probe_cast,0x000116c2,0x000116c2,0x00000000,0x00000000
+R2,(float) cast,min_subnormal_operand,ftz_probe_cast,0x00000001,0x00000001,0x00000000,0x00000000
+R2,(float) cast,negative_subnormal_operand,ftz_probe_cast,0x800116c2,0x800116c2,0x80000000,0x80000000
 R2,(float) cast,smallest_normal_control,ftz_probe_cast,0x00800000,0x00800000,0x00800000,0x00800000
 R2,(float) cast,subnormal_vs_zero,ftz_probe_cast,0x00000000,0x00000000,0x00000000,0x00000000
 R2,(float) cast,min_subnormal_vs_zero,ftz_probe_cast,0x00000000,0x00000000,0x00000000,0x00000000

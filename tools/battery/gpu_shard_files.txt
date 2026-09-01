@@ -295,6 +295,30 @@ tests/test_p3_restart_manifest_gpu.py
 # against package files hash-matched to the worktree, before listing.
 tests/test_p3_port.py
 
+# SHARD 1j: the MPAS column-batch seam's device half.  Same rule as 1f-1i
+# -- a device file on no list is asked by nobody -- and the fourth time the
+# rule found a defect already shipped.
+#
+# WHAT HAPPENED.  tests/test_mpas_column_batch_gpu.py gates the seam's
+# restart law (read-only phase-1, held radiation, buckets, and the restart
+# round-trip's bit-identical continuation) and was on NO list, so 2.6.0
+# shipped with test_restart_round_trip_continues_bit_identically red: the
+# export payload carried the held radiation buffers but not the
+# CarrierContract provenance, and every restored seam refused at its first
+# radiation-not-due step ("GLW has no producer").  Fixed by restart schema
+# v2 (scalars["carriers"], see the RESTART_SCHEMA comment in
+# gpuwm/core/mpas_column_batch.py); this line is the other half of that
+# fix, so the round-trip question is asked at every cut from now on.
+# Whole-module GPU by conftest's detector (module-scope importorskip).
+tests/test_mpas_column_batch_gpu.py
+
+# SHARD 1k: the 2.6.1 fold wave's one function-marked device file, found by
+# the same scope-every-added-file pass that listed the CPU wave on stage 1.
+# tests/test_p3_front_door.py carries five device functions (the mp=50
+# campaign gate's on-card half); its CPU half runs on stage 1, exactly the
+# shard-1b shape.
+tests/test_p3_front_door.py
+
 # ---------------------------------------------------------------------------
 # SHARD 2 (WEEKLY, not per-cut): the GF cumulus family.
 #

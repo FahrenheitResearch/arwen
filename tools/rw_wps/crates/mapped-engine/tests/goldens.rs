@@ -384,3 +384,281 @@ fn netcdf_matches_the_python_engine() {
         None,
     );
 }
+
+/// The two decodes of the same bytes must write the SAME frameset.
+///
+/// The engine decodes a valid time, writes it and drops it before it
+/// reads the next -- the whole remedy for a preparation whose host
+/// memory grew with the number of forcing times.  A remedy on the decode
+/// path that moved a number would be the worst kind of defect, so the
+/// gate is byte equality of the written frameset (`frames.json` and
+/// every byte of `frames.f64`) between:
+///
+///   * the WHOLE-SERIES decode, assembled at once and carved per valid
+///     time as the writer asks for it, and
+///   * the STREAMED decode, which reads one valid time's messages when
+///     that valid time is written.
+///
+/// Both arms go through the shipped writer, so this compares the two
+/// decode strategies and nothing else.
+fn compare_streamed_against_whole(
+    name: &str,
+    directory: PathBuf,
+    prefix: &str,
+    suffix: &str,
+    limit: Option<usize>,
+) {
+    let golden_path = goldens().join(format!("{name}.json"));
+    let golden: Value = serde_json::from_slice(
+        &std::fs::read(&golden_path).expect("golden is committed beside this test"),
+    )
+    .expect("golden is JSON");
+    let files = inputs(&directory, prefix, suffix, limit);
+    let expected: Vec<&str> = golden["input_names"]
+        .as_array()
+        .expect("golden names its inputs")
+        .iter()
+        .map(|value| value.as_str().expect("input names are strings"))
+        .collect();
+    let observed: Vec<String> = files
+        .iter()
+        .map(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    if observed != expected {
+        println!(
+            "SKIP {name}: the staged inputs are not present at {}",
+            directory.display()
+        );
+        return;
+    }
+    let mapping_path =
+        repository().join(golden["mapping"].as_str().expect("golden names its mapping"));
+    let mapping = mapped_engine::model::Mapping::load(&mapping_path.display().to_string())
+        .expect("the golden names a mapping the engine loads");
+    let names: Vec<String> = files.iter().map(|file| file.display().to_string()).collect();
+    let digests = mapped_engine::engine::input_digests(&names).expect("inputs hash");
+
+    let scratch = std::env::temp_dir().join(format!("gpuwm-mapped-engine-stream-{name}"));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let whole_out = scratch.join("whole");
+    let streamed_out = scratch.join("streamed");
+
+    let collection = mapped_engine::engine::decode_collection(&mapping, &names, &mut |_| {})
+        .unwrap_or_else(|refusal| panic!("{name}: whole decode refused: {refusal}"));
+    let series = mapped_engine::frames::SeriesSummary {
+        source_cycles: collection.source_cycles.clone(),
+        grid_fingerprint: collection.grid_fingerprint.clone(),
+    };
+    let mut carved = collection;
+    mapped_engine::frames::write_frameset(&whole_out, &mapping, &series, &digests, |key| {
+        Ok(mapped_engine::engine::carve_valid_time(&mut carved, key))
+    })
+    .unwrap_or_else(|refusal| panic!("{name}: whole frameset refused: {refusal}"));
+
+    let mut stream = mapped_engine::engine::DecodeStream::open(&mapping, &names, &mut |_| {})
+        .unwrap_or_else(|refusal| panic!("{name}: streamed decode refused: {refusal}"));
+    let streamed_series = stream.summary().clone();
+    mapped_engine::frames::write_frameset(
+        &streamed_out,
+        &mapping,
+        &streamed_series,
+        &digests,
+        |key| stream.slice(key),
+    )
+    .unwrap_or_else(|refusal| panic!("{name}: streamed frameset refused: {refusal}"));
+
+    for file in ["frames.json", "frames.f64"] {
+        let left = std::fs::read(whole_out.join(file)).expect("the whole arm wrote it");
+        let right = std::fs::read(streamed_out.join(file)).expect("the streamed arm wrote it");
+        assert_eq!(
+            left.len(),
+            right.len(),
+            "{name}: {file} length differs between the whole and streamed decodes"
+        );
+        assert!(
+            left == right,
+            "{name}: {file} differs between the whole and streamed decodes"
+        );
+    }
+    let document: Value = serde_json::from_slice(
+        &std::fs::read(streamed_out.join("frames.json")).expect("frames.json"),
+    )
+    .expect("frames.json is JSON");
+    let frames = document["frames"]
+        .as_array()
+        .expect("frames is an array")
+        .len();
+    assert!(
+        frames > 1,
+        "{name}: a one-frame case cannot prove per-valid-time streaming"
+    );
+    println!("PASS {name}: {frames} frames byte-identical, streamed against whole");
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// Multi-object GRIB2 on a declared Lambert grid, three valid times.
+#[test]
+fn streamed_grib2_writes_the_same_frameset_as_the_whole_decode() {
+    compare_streamed_against_whole(
+        "lambert-awips",
+        staging().join("rap"),
+        "rap.t00z.awip32f0",
+        ".grib2",
+        Some(3),
+    );
+}
+
+/// The same equality one level lower, on the DECODED COLLECTION.
+///
+/// For a mapping whose frames cannot materialize alone -- a composed
+/// source's primary carries no terrain, so the bare decode is
+/// deliberately incomplete -- the frameset cannot be the subject, and
+/// the decode itself is compared instead: every key, every array, every
+/// missing count, every source reference, per valid time.
+fn compare_streamed_collections(
+    name: &str,
+    directory: PathBuf,
+    prefix: &str,
+    suffix: &str,
+    limit: Option<usize>,
+) {
+    let golden_path = goldens().join(format!("{name}.json"));
+    let golden: Value = serde_json::from_slice(
+        &std::fs::read(&golden_path).expect("golden is committed beside this test"),
+    )
+    .expect("golden is JSON");
+    let files = inputs(&directory, prefix, suffix, limit);
+    let expected: Vec<&str> = golden["input_names"]
+        .as_array()
+        .expect("golden names its inputs")
+        .iter()
+        .map(|value| value.as_str().expect("input names are strings"))
+        .collect();
+    let observed: Vec<String> = files
+        .iter()
+        .map(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    if observed != expected {
+        println!(
+            "SKIP {name}: the staged inputs are not present at {}",
+            directory.display()
+        );
+        return;
+    }
+    let mapping_path =
+        repository().join(golden["mapping"].as_str().expect("golden names its mapping"));
+    let mapping = mapped_engine::model::Mapping::load(&mapping_path.display().to_string())
+        .expect("the golden names a mapping the engine loads");
+    let names: Vec<String> = files.iter().map(|file| file.display().to_string()).collect();
+
+    let whole = mapped_engine::engine::decode_collection(&mapping, &names, &mut |_| {})
+        .unwrap_or_else(|refusal| panic!("{name}: whole decode refused: {refusal}"));
+    let mut stream = mapped_engine::engine::DecodeStream::open(&mapping, &names, &mut |_| {})
+        .unwrap_or_else(|refusal| panic!("{name}: streamed decode refused: {refusal}"));
+    let keys: Vec<(chrono::NaiveDateTime, Option<String>)> = stream.keys().to_vec();
+    assert_eq!(
+        keys,
+        whole.source_cycles.keys().cloned().collect::<Vec<_>>(),
+        "{name}: the streamed and whole decodes disagree about the forcing axis"
+    );
+    let mut compared = 0usize;
+    for key in &keys {
+        let slice = stream
+            .slice(key)
+            .unwrap_or_else(|refusal| panic!("{name}: streamed slice refused: {refusal}"));
+        assert_eq!(
+            slice.source_cycles.get(key),
+            whole.source_cycles.get(key),
+            "{name}: source cycle at {key:?}"
+        );
+        assert_eq!(
+            slice.latitude, whole.latitude,
+            "{name}: latitude axis at {key:?}"
+        );
+        assert_eq!(
+            slice.longitude, whole.longitude,
+            "{name}: longitude axis at {key:?}"
+        );
+        assert_eq!(
+            slice.vertical_values, whole.vertical_values,
+            "{name}: vertical ladder at {key:?}"
+        );
+        assert_eq!(
+            slice.grid_fingerprint, whole.grid_fingerprint,
+            "{name}: grid fingerprint at {key:?}"
+        );
+        let mine: Vec<&String> = whole
+            .direct
+            .keys()
+            .filter(|(time, member, _field)| (*time, member.clone()) == *key)
+            .map(|(_time, _member, field)| field)
+            .collect();
+        let streamed: Vec<&String> = slice
+            .direct
+            .keys()
+            .filter(|(time, member, _field)| (*time, member.clone()) == *key)
+            .map(|(_time, _member, field)| field)
+            .collect();
+        assert_eq!(mine, streamed, "{name}: field inventory at {key:?}");
+        for field in mine {
+            let entry = (key.0, key.1.clone(), field.clone());
+            let left = &whole.direct[&entry];
+            let right = &slice.direct[&entry];
+            assert_eq!(left.axes, right.axes, "{name}: {field} axes at {key:?}");
+            assert_eq!(
+                left.source_cycle, right.source_cycle,
+                "{name}: {field} source cycle at {key:?}"
+            );
+            assert_eq!(
+                left.missing_count, right.missing_count,
+                "{name}: {field} missing count at {key:?}"
+            );
+            assert_eq!(
+                left.references, right.references,
+                "{name}: {field} source references at {key:?}"
+            );
+            assert_eq!(
+                mapped_engine::digest::array_sha256(
+                    left.values.shape(),
+                    &mapped_engine::array::contiguous(&left.values)
+                ),
+                mapped_engine::digest::array_sha256(
+                    right.values.shape(),
+                    &mapped_engine::array::contiguous(&right.values)
+                ),
+                "{name}: {field} array bytes at {key:?}"
+            );
+            compared += 1;
+        }
+    }
+    assert!(
+        keys.len() > 1,
+        "{name}: a one-time case cannot prove per-valid-time streaming"
+    );
+    println!("PASS {name}: {compared} decoded field identities, streamed against whole");
+}
+
+/// The same equality on a mapping that declares a `cycle_invariant`
+/// field: one broadcast record answers every valid time, so a streamed
+/// decode that read only its own valid time's messages would drop it
+/// from every frame but one.
+#[test]
+fn streamed_cycle_invariant_grib2_decodes_the_same_collection() {
+    compare_streamed_collections(
+        "icon-eu",
+        staging().join("icon").join("eu-regular-latlon"),
+        "",
+        ".grib2.bz2",
+        None,
+    );
+}

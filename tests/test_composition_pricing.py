@@ -256,10 +256,10 @@ def test_the_walk_priced_a_meaningful_share_of_its_accepted_set(priced,
     "label,combination,expected_modules",
     [
         # P3 one-category on the shipped YSU/MM5/Noah anchor with the
-        # Dudhia radiation pair.  NOT RTE+RRTMGP: P3 supplies no snow
-        # radius, so gpuwm.config.validate_p3_radiation refuses that
-        # pairing at the door (the alternative, found at this gate, was
-        # dying at the first radiation call).
+        # Dudhia radiation pair -- kept on Dudhia so this row prices the
+        # microphysics alone.  (The RTE+RRTMGP pairing is coupled now via
+        # rrtmgp's ``50: "p3"`` row; the refusal this comment used to cite
+        # retired with that fix.)
         #
         # P3 is a HOST transcription and launches no kernel of its own, so
         # what its row must produce is the shared moisture validator -- and

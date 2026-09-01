@@ -1146,6 +1146,62 @@ def test_mp28_smag_held_tendencies_cover_every_transported_species():
     assert "smag_rnc" not in mp10
 
 
+def test_mp50_smag_held_tendencies_are_exactly_p3s_species():
+    """The held-tendency row for the one scheme with qi and NO qs/qg.
+
+    The ice-mass admission tuple in ``scratch_slot_registry`` (the
+    ``(6, 8, 9, 10, 16, 18, 28)`` arm) prices ``smag_rqi``/``rqs``/``rqg``
+    together, because until P3 every scheme with cloud ice also had snow
+    and graupel.  mp=50 is deliberately absent from it and takes its own
+    arm instead: Registry.EM_COMMON:3038 declares P3's package as
+    ``moist:qv,qc,qr,qi;scalar:qni,qnr,qir,qib``, so WRF's moist array has
+    no snow or graupel index under P3 and the loop that produces these
+    tendencies (``do im = PARAM_FIRST_SCALAR, n_moist``,
+    module_diffusion_em.F:3036) never reaches one.
+
+    Asserted in BOTH directions, because each direction is a different
+    defect.  Widening the ice-mass tuple to 50 would price two full
+    (nz, ny, nx) fields no mp=50 state allocates -- a headroom estimate
+    that overstates the run on the card it exists to protect.  Dropping
+    P3's own arm would silently stop pricing the transported rime pair,
+    which is the estimate understating a run that then meets the arena
+    short.  The equality below fails on either.
+
+    ``tests/test_p3_port.py`` makes the same claim, but that whole module
+    imports cupy and is therefore marked ``gpu`` and skipped on every
+    CPU-only invocation (tests/conftest.py:228-259).  This registry is
+    priced on CPU-only installs, so its gate has to run there too.
+    """
+    from gpuwm.core import moist
+
+    cfg = RunConfig(**_TINY, moist=True, mp_physics=50, km_opt=4)
+    slots = pf.scratch_slot_registry(cfg)
+    import gpuwm.core.state as state_mod
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(state_mod, "cp", np)
+        state = state_mod.DomainState(cfg)
+    finally:
+        monkey.undo()
+
+    # The four dynamics rows of _smag2d_specs carry no species name.
+    dynamics = {"smag_ru", "smag_rv", "smag_rw", "smag_rth", "smag_rtke"}
+    priced = {slot[len("smag_r"):] for slot in slots
+              if slot.startswith("smag_r") and slot not in dynamics}
+    assert priced == set(moist.moist_species(state))
+    assert moist.extra_moist_species(state) == moist.P3_SPECIES
+
+    # Named rather than left to the set equality: these are the two
+    # fields the ice-mass tuple would add if 50 joined it, and P3 has
+    # neither on the state at all.
+    for absent in ("qs", "qg"):
+        assert "smag_r" + absent not in slots, absent
+        assert getattr(state, absent, None) is None, absent
+    # ...and the rime pair, which only P3's own arm prices.
+    for present in ("qi", "qir", "qib"):
+        assert "smag_r" + present in slots, present
+
+
 def test_mp28_nest_field_kinds_and_pricing():
     cfg = RunConfig(**_TINY, **_MP28)
     assert pf.nest_field_kinds(cfg) == (
@@ -1222,6 +1278,113 @@ def test_mp9_is_priced_and_never_falls_through_to_a_guess():
     # header says these rows mean.
     assert frames["milbrandt2"] == 2048
     assert pf.kernel_local_memory_bytes(exp) >= 0
+
+
+def test_every_moist_scheme_has_a_written_reflectivity_rail_decision():
+    """Out of ``_REFLECTIVITY_MICROPHYSICS`` must be a RULING, not a gap.
+
+    The set decides one thing: does this selector reserve the shared
+    reflectivity translation unit's per-thread frame.  Two answers are
+    correct and they fail in opposite directions -- an over-priced rail
+    refuses a run that would have fit, an under-priced one lets a run
+    breach the budget ``gpuwm check`` cleared it against.  So a moist
+    selector that is in neither set is not "excluded", it is undecided,
+    and ``domain_kernel_modules`` now refuses it by name.
+    """
+    priced = set(pf._MICROPHYSICS_KERNEL_MODULES) - {0}
+    decided = (set(pf._REFLECTIVITY_MICROPHYSICS)
+               | set(pf._SELF_REFLECTIVITY_MICROPHYSICS))
+    assert priced - decided == set(), (
+        "these moist selectors are priced for microphysics kernels but "
+        "have no reflectivity-rail decision: "
+        f"{sorted(priced - decided)}")
+    assert (set(pf._REFLECTIVITY_MICROPHYSICS)
+            & set(pf._SELF_REFLECTIVITY_MICROPHYSICS)) == set(), (
+        "a selector cannot both load refl.cu and fill REFL_10CM from its "
+        "own kernels")
+    for scheme, reason in pf._SELF_REFLECTIVITY_MICROPHYSICS.items():
+        assert "stash_refl_10cm" in reason, (
+            f"mp={scheme}'s recorded reason must name the seam it uses "
+            "instead of refl.cu")
+
+
+def test_p3_is_out_of_the_reflectivity_rail_by_a_named_decision():
+    """mp=50 is CORRECTLY out, and the tree says so instead of omitting it.
+
+    P3 computes REFL_10CM inside ``p3_main``'s own final-checks-and-
+    diagnostics loop (phys/module_mp_p3.F:4722-4895 -- ``ze_rain`` from the
+    rain gamma moment, ``ze_ice`` from ice lookup-table column 9) and hands
+    the finished array to ``stash_refl_10cm`` from both arms
+    (gpuwm/core/p3.py:1831-1835 reference, :1982-1984 device), never to
+    ``compute_and_stash_refl_10cm``.  It could not use refl.cu even if the
+    rail priced it: those kernels transcribe the ``calc_refl10cm`` family,
+    whose Rayleigh sums read qs and qg, and P3 is ONE ice category with a
+    rime pair (qir/qib) and neither species.
+
+    WHAT ADMITTING IT WOULD COST, measured below rather than asserted: on
+    an mp=50 domain ``refl`` is the WIDEST frame in the configuration, so
+    pricing a kernel the run never launches moves the local-memory
+    reservation off zero and shrinks the envelope every other rail is
+    checked against.
+    """
+    from datetime import datetime as _dt
+
+    from gpuwm.experiment import experiment_from_run_config
+
+    assert 50 not in pf._REFLECTIVITY_MICROPHYSICS
+    assert 50 in pf._SELF_REFLECTIVITY_MICROPHYSICS
+    reason = pf._SELF_REFLECTIVITY_MICROPHYSICS[50]
+    assert "module_mp_p3.F" in reason and "qs and qg" in reason
+
+    big = dict(nx=200, ny=200, nz=50, dx=3000.0, dy=3000.0, ztop=20000.0,
+               dt=15.0, run_seconds=3600.0)
+    cfg = RunConfig(**big, moist=True, mp_physics=50,
+                    output_interval_s=900.0)
+    exp = experiment_from_run_config(cfg, _dt(1974, 4, 3, 12))
+    modules = pf.physics_kernel_modules(exp)
+    assert "p3_composed" in modules
+    assert "refl" not in modules and "wdm6_refl" not in modules
+    priced = pf.kernel_local_memory_bytes(exp)
+
+    original = pf._REFLECTIVITY_MICROPHYSICS
+    try:
+        pf._REFLECTIVITY_MICROPHYSICS = original | {50}
+        overpriced = pf.kernel_local_memory_bytes(exp)
+    finally:
+        pf._REFLECTIVITY_MICROPHYSICS = original
+    assert overpriced > priced, (
+        "admitting mp=50 must be measurably more expensive, or this "
+        "ruling has no consequence to record")
+
+
+def test_a_moist_scheme_in_neither_reflectivity_set_is_refused_by_name():
+    """The rail fails CLOSED, so the next scheme's omission cannot be silent.
+
+    Before this refusal existed, a selector added to
+    ``_MICROPHYSICS_KERNEL_MODULES`` and to nothing else priced zero
+    reflectivity frame and said nothing: ``gpuwm check`` passed against a
+    budget that never counted refl.cu, and the run breached it at the first
+    history step.
+    """
+    from datetime import datetime as _dt
+
+    from gpuwm.experiment import experiment_from_run_config
+
+    cfg = RunConfig(**_TINY, moist=True, mp_physics=50,
+                    output_interval_s=1.0)
+    exp = experiment_from_run_config(cfg, _dt(1974, 4, 3, 12))
+    recorded = dict(pf._SELF_REFLECTIVITY_MICROPHYSICS)
+    try:
+        pf._SELF_REFLECTIVITY_MICROPHYSICS = {
+            k: v for k, v in recorded.items() if k != 50}
+        with pytest.raises(ValueError) as excinfo:
+            pf.physics_kernel_modules(exp)
+    finally:
+        pf._SELF_REFLECTIVITY_MICROPHYSICS = recorded
+    message = str(excinfo.value)
+    assert "mp_physics=50" in message
+    assert "_SELF_REFLECTIVITY_MICROPHYSICS" in message
+    assert "under-prices" in message
 
 
 # ---------------------------------------------------------------------------
@@ -1350,6 +1513,57 @@ def test_mp28_rrtmgp_column_inventory_carries_the_effective_radii():
         RunConfig(**_TINY, moist=True, mp_physics=1, ra_physics=4)))
 
 
+def test_p3_prices_its_two_rrtmgp_radius_columns_and_no_third():
+    """mp=50's two-radius pricing is a decision the site states and holds.
+
+    ``rrtmgp_column_shapes``'s radii tuple ``(6, 8, 16, 18, 28)`` omitted
+    mp=50 with nothing anywhere saying whether that was right.  It is
+    right, for a reason that is P3's state inventory rather than an
+    accident: ``phys/module_physics_init.F:1027-1033`` overrides
+    ``has_reqs = 0`` for the P3 family while leaving
+    ``has_reqc = has_reqi = 1``, because ``Registry.EM_COMMON:3038`` gives
+    mp=50 ONE ice category with rime mass and rime volume and NO qs and no
+    qg, and ``phys/module_mp_p3.F:2280-2282`` initialises diag_effc and
+    diag_effi with no diag_effs to initialise.  A three-radius row would
+    price a column P3 cannot have.
+
+    THE TRIPWIRE THIS TEST USED TO BE HAS FIRED AND RETIRED (2.6.1).
+    Its earlier body pinned "mp=50 has no _MP_CLOUD_OPTICS_SCHEME row,
+    prices zero radii, and refuses the moment a row lands" -- and the
+    row landed with the RTE+RRTMGP cloud-optics coupling.  Per the
+    tripwire's own retirement instruction, the pin flips: mp=50 now
+    prices EXACTLY effc and effi, and never effs, so the rail can
+    neither under-price the two columns the adapter copies nor price a
+    third column the scheme cannot allocate.
+    """
+    from gpuwm.core.rrtmgp import _MP_CLOUD_OPTICS_SCHEME
+
+    # The premise the old refusal enforced, now landed and enforced in
+    # the other direction.
+    assert _MP_CLOUD_OPTICS_SCHEME.get(50) == "p3"
+
+    cfg = RunConfig(**_TINY, moist=True, mp_physics=50, ra_physics=4)
+    shapes = pf.rrtmgp_column_shapes(cfg)
+    assert "columns/play" in shapes
+    ncol, nz = cfg.ny * cfg.nx, cfg.nz
+    for name in ("effc", "effi"):
+        assert shapes[f"columns/{name}"] == ((ncol, nz), 4), name
+    assert "columns/effs" not in shapes
+    assert "columns/effr" not in shapes
+
+    # P3's state has no effs to copy, so a third radius column could
+    # never be the right pricing for it (gpuwm/core/state.py, mp==50).
+    state = pf.state_array_shapes(cfg)
+    assert "effc" in state and "effi" in state
+    assert "effs" not in state and "qs" not in state and "qg" not in state
+
+    # The arm prices its two columns unconditionally, exactly as the
+    # adapter's p3 branch copies them unconditionally (P3 seeds valid
+    # radii at construction; there is no first-call phase to gate on).
+    # The membership assert at the top is what keeps the pair honest:
+    # the row and this pricing landed together and retire together.
+
+
 # ---------------------------------------------------------------------------
 # mp_physics=28 -- the rest of the WP-10 infrastructure surface.
 #
@@ -1367,7 +1581,14 @@ def _host_mp28_state(**overrides):
     monkey = pytest.MonkeyPatch()
     try:
         monkey.setattr(state_mod, "cp", np)
-        return state_mod.DomainState(cfg), cfg
+        # array_module=np is the DOCUMENTED host-state interface: it
+        # records _host_setup_state so LATER calls (state.scratch during
+        # the test body, after this monkeypatch is undone) stay on numpy.
+        # The cp shim alone stopped being enough the day scratch() began
+        # resolving the array module per call -- on a box with a card the
+        # old spelling silently opened the device, and on a CPU leg it
+        # died cudaErrorNoDevice.
+        return state_mod.DomainState(cfg, array_module=np), cfg
     finally:
         monkey.undo()
 
@@ -1405,6 +1626,97 @@ def test_mp28_acoustic_cq_sums_six_masses_and_no_number_moment():
     assert captured["fields"][6] is state.qv
     for moment in (state.nc, state.nwfa, state.nifa):
         assert not any(moment is arg for arg in captured["fields"])
+
+
+def test_mp50_is_deliberately_out_of_the_six_mass_shape_package():
+    """``state_array_shapes`` -- the mp=50 / six-mass arm split, by name.
+
+    The tuple that prices qi/qs/qg + their RK time-t copies + the three
+    effective radii is WRF's SIX-MASS moist package transcribed, not "the
+    schemes with ice": every member declares moist:qv,qc,qr,qi,qs,qg in
+    Registry.EM_COMMON (:3021 WSM6, :3024 Thompson, :3025 Milbrandt-Yau,
+    :3026 Morrison, :3031 WDM6, :3033 NSSL, :3036 Thompson aerosol-aware).
+    P3's row is moist:qv,qc,qr,qi with no qs and no qg, and
+    state:re_cloud,re_ice with no re_snow (:3038), and WRF's driver binds
+    it with N_ICECAT=1 and no QS/QG dummy at all
+    (module_microphysics_driver.F:1569-1602).  So mp=50 is out of that
+    tuple ON PURPOSE.
+
+    This pins the DECISION so a later reader cannot mistake it for an
+    omission and "fix" it.  Adding 50 declares five arrays the state
+    builder never allocates, and -- the quieter half -- silently drops the
+    shared absent-mass plane from the scratch projection, because that
+    slot's predicate is "qi declared and qs NOT declared".  The arena
+    would then be one (nz, ny, nx) FP32 plane short of what
+    gpuwm/core/moist.py allocates on every P3 step.
+    """
+    m = (_TINY["nz"], _TINY["ny"], _TINY["nx"])
+    six_mass = ("qi", "qs", "qg", "qi0", "qs0", "qg0",
+                "effc", "effi", "effs")
+    members = (6, 8, 9, 10, 16, 18, 28)
+
+    p3 = pf.state_array_shapes(RunConfig(**_TINY, moist=True,
+                                         mp_physics=50))
+    # P3's own package is priced by its own arm...
+    for name in ("qi", "ni", "nr", "qir", "qib", "effc", "effi",
+                 "th_old", "qv_old", "qi0", "ni0", "nr0", "qir0", "qib0"):
+        assert p3[name] == m, name
+    # ...and the three frozen species it never writes are absent, not
+    # zero: allocating them would hand advection, output and the nest
+    # transition fields that read as a legitimate zero everywhere.
+    for name in ("qs", "qg", "effs", "qs0", "qg0"):
+        assert name not in p3, name
+
+    # State what the tuple IS, so the exclusion has something to be an
+    # exclusion from: every member really does carry all nine names.
+    for mp in members:
+        shapes = pf.state_array_shapes(RunConfig(**_TINY, moist=True,
+                                                 mp_physics=mp))
+        for name in six_mass:
+            assert name in shapes, (mp, name)
+
+    # And the consequence the exclusion buys, measured through the real
+    # registry: the shared absent-mass plane is priced for the one-ice
+    # scheme and for no member of the six-mass package.
+    def priced(mp: int) -> bool:
+        return "moist_absent_mass" in pf.scratch_slot_registry(
+            RunConfig(**_TINY, moist=True, moist_cq=True, mp_physics=mp))
+
+    assert priced(50) is True
+    for mp in members:
+        assert priced(mp) is False, mp
+
+    # The STRUCTURAL half, so the comment at the site is a checkable claim
+    # and not decoration: the six-mass arm is chained to the mp==50 arm as
+    # an ``elif``, exactly the way gpuwm/core/state.py's allocator spells
+    # the same split.  Un-chaining it is what would let a widened tuple
+    # hand P3 both packages, so the chain is pinned here rather than left
+    # to a reader noticing the keyword.
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(pf.state_array_shapes))
+    p3_arms = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and isinstance(node.test.ops[0], ast.Eq)
+        and isinstance(node.test.comparators[0], ast.Constant)
+        and node.test.comparators[0].value == 50]
+    assert len(p3_arms) == 1, "the mp==50 shape arm moved or was duplicated"
+    orelse = p3_arms[0].orelse
+    assert len(orelse) == 1 and isinstance(orelse[0], ast.If), (
+        "the six-mass arm is no longer chained to the mp==50 arm; an "
+        "unchained sibling lets a widened tuple price qs/qg/effs on top "
+        "of P3's own package")
+    chained = orelse[0].test
+    assert isinstance(chained, ast.Compare)
+    assert isinstance(chained.ops[0], ast.In)
+    assert [element.value for element in chained.comparators[0].elts] == [
+        6, 8, 9, 10, 16, 18, 28], (
+        "the six-mass membership tuple moved; see Registry.EM_COMMON "
+        ":3021/:3024/:3025/:3026/:3031/:3033/:3036 for its members and "
+        ":3038 for why 50 is not one of them")
 
 
 def test_mp50_acoustic_cq_takes_its_one_ice_category_arm():
@@ -1490,6 +1802,98 @@ def test_mp50_acoustic_cq_takes_its_one_ice_category_arm():
     # The rime pair is not mass loading and must not enter the sum.
     for extra in (state.qir, state.qib):
         assert not any(extra is arg for arg in captured["fields"])
+
+
+def test_mp50_prices_the_absent_snow_plane_and_not_the_present_ice_one():
+    """gpuwm/core/preflight.py:3812-3815 -- the SPLIT physics_qi/physics_qs
+    conditions, pinned by what the physics prep actually asks for.
+
+    Both conditions are NEGATED membership tests, so mp=50's presence in
+    one and absence from the other is the OPPOSITE of what a scheme-set
+    scan reads off them.  ``_prepare_atmosphere`` substitutes a zero-filled
+    scratch plane PER FIELD, only when the state has no field of its own
+    (gpuwm/core/physics.py:1541-1550), and P3 is the one scheme that
+    allocates exactly one of the pair: gpuwm/core/state.py:464-476 gives an
+    mp=50 state ``qi``/``ni``/``nr``/``qir``/``qib`` and NO ``qs``, because
+    P3 carries one ice category with a rime mass/volume pair instead of
+    splitting snow and graupel.  WRF agrees on both halves:
+    Registry.EM_COMMON:3038 registers the mp=50 package as
+    ``moist:qv,qc,qr,qi``, and module_microphysics_driver.F:1569-1602 binds
+    no snow array at all in the ``mp_p3_wrapper_wrf`` call, because
+    one-category ``p3_main`` has no snow mixing ratio to return.  So an
+    mp=50 run substitutes ``qs`` and only ``qs``.
+
+    THE BREAKAGE THIS PREVENTS, both ways.  Adding 50 to the ``physics_qs``
+    condition -- which is exactly what a mechanical "this scheme set omits
+    50" sweep would do -- stops pricing a full nz*ny*nx float32 plane that
+    every physics-enabled mp=50 step allocates, turning the preflight
+    envelope into an under-estimate on a card with no ECC.  Removing 50
+    from the ``physics_qi`` condition prices a second such plane the run
+    never asks for.  MEASURED before this test existed: adding 50 to the
+    ``physics_qs`` condition left the whole preflight module green.
+
+    The producer side is measured, not assumed: the prep is run on a real
+    mp=50 ``DomainState`` and its scratch requests recorded, with mp=28 --
+    which owns both fields -- as the control.
+    """
+    import gpuwm.core.physics as physics_mod
+    import gpuwm.core.state as state_mod
+
+    def prep_scratch_requests(mp: int):
+        cfg = RunConfig(**_TINY, moist=True, mp_physics=mp)
+        monkey = pytest.MonkeyPatch()
+        try:
+            # numpy for the whole call, so this runs in the CPU shard.
+            monkey.setattr(state_mod, "cp", np)
+            monkey.setattr(physics_mod, "cp", np)
+            state = state_mod.DomainState(cfg)
+            requested: list[str] = []
+            allocate = state.scratch
+
+            def spy(shape, name):
+                requested.append(name)
+                return allocate(shape, name)
+
+            state.scratch = spy
+            with np.errstate(divide="ignore", invalid="ignore"):
+                prepared = physics_mod._prepare_atmosphere(state)
+        finally:
+            monkey.undo()
+        # The seam the substitution exists for: whatever the prep hands the
+        # radiation/PBL drivers under "qi"/"qs" must be a real array either
+        # way, so a missing field can never reach them as None.
+        assert prepared["qi"] is not None and prepared["qs"] is not None
+        return requested, state
+
+    p3_requests, p3_state = prep_scratch_requests(50)
+    thompson_requests, thompson_state = prep_scratch_requests(28)
+
+    # The premise, stated rather than assumed.
+    assert getattr(p3_state, "qi", None) is not None
+    assert getattr(p3_state, "qs", None) is None
+    assert getattr(thompson_state, "qi", None) is not None
+    assert getattr(thompson_state, "qs", None) is not None
+
+    assert "physics_qs" in p3_requests
+    assert "physics_qi" not in p3_requests
+    assert "physics_qi" not in thompson_requests
+    assert "physics_qs" not in thompson_requests
+
+    # And the registry prices exactly that, for a physics-enabled config.
+    mass = (_TINY["nz"], _TINY["ny"], _TINY["nx"])
+    p3_slots = pf.scratch_slot_registry(
+        RunConfig(**_TINY, moist=True, mp_physics=50, sf_sfclay_physics=1))
+    assert p3_slots.get("physics_qs") == mass, (
+        "mp=50 (P3) has no qs of its own, so gpuwm/core/physics.py "
+        "substitutes a zero plane on every physics step; dropping it from "
+        "the registry under-prices the run by one full mass field")
+    assert "physics_qi" not in p3_slots, (
+        "mp=50 (P3) allocates prognostic cloud ice, so no zero plane is "
+        "substituted for it and none may be priced")
+    thompson_slots = pf.scratch_slot_registry(
+        RunConfig(**_TINY, moist=True, mp_physics=28, sf_sfclay_physics=1))
+    assert "physics_qi" not in thompson_slots
+    assert "physics_qs" not in thompson_slots
 
 
 def test_mp28_npref_cq_species_match_mp8_exactly():
@@ -1838,6 +2242,53 @@ def test_nest_field_kinds_by_scheme(exp4):
     assert pf.nest_field_kinds(exp4.domain(2).run) == (
         "u", "v", "w", "t", "ph", "mu", "qv", "qc", "qr",
         "qi", "qs", "qg", "nr", "ni", "ns", "ng")
+
+
+def test_p3_nest_forcing_excludes_snow_and_graupel(exp4):
+    """mp=50 is OUT of the qi/qs/qg block, and the exclusion is the answer.
+
+    ``nest_field_kinds`` decides which of WRF's boundary-forced Registry
+    members a scheme activates, not which schemes have ice.  P3's package
+    is ``moist:qv,qc,qr,qi;scalar:qni,qnr,qir,qib``
+    (Registry.EM_COMMON:3038) -- one ice mass, no ``qs``, no ``qg`` -- and
+    WRF's own ``P3_1CATEGORY`` driver arm passes no snow and no graupel
+    array (module_microphysics_driver.F:1557-1602).  Both directions are
+    pinned so neither edit can land unargued: folding 50 into the
+    three-ice-mass tuple would name ``qi`` twice and price sixteen rolling
+    boundary tables for species an mp=50 child never allocates, and
+    dropping the rime pair would decouple qir/qib from the ice they
+    describe.
+    """
+    p3 = RunConfig(**_TINY, moist=True, mp_physics=50)
+    kinds = pf.nest_field_kinds(p3)
+    assert kinds == (
+        "u", "v", "w", "t", "ph", "mu", "qv", "qc", "qr",
+        "qi", "ni", "nr", "qir", "qib")
+    assert len(kinds) == len(set(kinds)), f"duplicate nest field kind: {kinds}"
+    for absent in ("qs", "qg", "qh"):
+        assert absent not in kinds, absent
+
+    # The block itself is unchanged: exactly the schemes whose Registry
+    # moist package carries all three ice masses (Registry.EM_COMMON:
+    # 3021, 3024-3026, 3031, 3033, 3036).
+    for mp in (6, 8, 9, 10, 16, 18, 28):
+        block = pf.nest_field_kinds(
+            RunConfig(**_TINY, moist=True, mp_physics=mp))
+        assert {"qi", "qs", "qg"} <= set(block), mp
+
+    # The manifest consequence, not just the list: no rolling boundary
+    # table is priced for a species P3 does not carry, and the rime pair
+    # gets the same four sides x value/tendency treatment as the moments.
+    d02 = exp4.domain(2)
+    child = dataclasses.replace(
+        d02, run=dataclasses.replace(d02.run, mp_physics=50))
+    slots = pf.nest_slot_shapes(child, exp4.spec_bdy_width, exp4.domain(1))
+    assert not [name for name in slots
+                if name.startswith(("nest_qs_", "nest_qg_"))]
+    for name in ("nest_qir_bxs", "nest_qir_btye", "nest_qib_bys",
+                 "nest_qib_btxe"):
+        assert name in slots, name
+    assert len(slots) == 14 * 4 * 2 + 3 * 6 + 2 == 132
 
 
 def test_nest_allocation_manifest_inventory(exp4):
@@ -3567,6 +4018,94 @@ def test_the_rqi_budget_shapes_materialization_and_physics_name_one_set():
             continue          # not an admitted selector; nothing to price
         shapes = pf.physics_array_shapes(cfg)
         assert ("pbl_tendencies/rqi" in shapes) is expects_rqi, mp_physics
+
+
+def test_the_alloc_counter_advance_records_why_p3_is_out():
+    """mp=50's absence from the counter advance is a DECISION, and checkable.
+
+    ``_materialize_physics`` advances ``microphysics_updates`` for the
+    selectors that reach a counter-gated allocation, so ``--alloc``
+    measures the run's steady state rather than its construction state.
+    The set was a bare ``(6, 10)`` literal with no statement of what it
+    decides, so mp=50's absence read as an omission.  It is not one:
+    ``ALLOC_COUNTER_INERT_MICROPHYSICS[50]`` records the reason, and every
+    clause of that reason is asserted below.  The day the legacy adapter
+    grows a first-call gate, or the RTE+RRTMGP p3 arm starts reading the
+    counter, this fails instead of the measurement quietly understating a
+    P3 run's radiation call.  (The tripwire's other arm -- "the day P3
+    gains an RTE+RRTMGP cloud-optics row" -- fired at 2.6.1: the row
+    landed, and mp=50 stays INERT because the p3 adapter arm copies its
+    two radii unconditionally; P3 seeds valid radii at construction and
+    has no first-call phase for a counter gate to express.)
+    """
+    from gpuwm.config import validate_run_config
+    from gpuwm.core.physics_inventory import microphysics_scratch_slots
+    from gpuwm.core.rrtmgp import cloud_optics_scheme
+
+    assert 50 not in pf.ALLOC_COUNTER_ADVANCED_MICROPHYSICS
+    assert pf.ALLOC_COUNTER_INERT_MICROPHYSICS[50].strip()
+    assert not (set(pf.ALLOC_COUNTER_ADVANCED_MICROPHYSICS)
+                & set(pf.ALLOC_COUNTER_INERT_MICROPHYSICS))
+    source = (ROOT / "gpuwm/core/preflight.py").read_text(encoding="utf-8")
+    assert source.count(
+        "cfg.mp_physics in ALLOC_COUNTER_ADVANCED_MICROPHYSICS") == 1, (
+        "the counter advance must read the named set, or the reason above "
+        "it stops describing the code")
+
+    p3 = dict(_TINY, moist=True, moist_cq=True, mp_physics=50)
+    # Clause 1.  A P3 run DOES reach the RRTMGP adapter now (the
+    # cloud-optics coupling landed at 2.6.1), and the p3 arm copies its
+    # two radii UNCONDITIONALLY -- the counter's one allocation gate
+    # stays inside the morrison arm, so advancing the counter for mp=50
+    # would still move zero measured bytes.
+    assert cloud_optics_scheme(50) == "p3"
+    rte_p3 = validate_run_config(RunConfig(
+        **p3, ra_lw_physics=4, ra_sw_physics=4,
+        ra_rrtmg_variant="rte-rrtmgp"))
+    rte_shapes = pf.rrtmgp_column_shapes(rte_p3, 10000.0, column_chunk=4)
+    assert {"columns/effc", "columns/effi"} <= set(rte_shapes)
+    assert "columns/effs" not in rte_shapes and \
+        "columns/effr" not in rte_shapes
+    # The pairings that price no RTE+RRTMGP columns still price none:
+    # legacy RRTMG 4/4 and Dudhia 0/1 never construct the adapter.
+    for lw, sw, variant in ((4, 4, "rrtmg_legacy"), (0, 1, "rte-rrtmgp")):
+        cfg = validate_run_config(RunConfig(
+            **p3, ra_lw_physics=lw, ra_sw_physics=sw,
+            ra_rrtmg_variant=variant))
+        assert pf.rrtmgp_column_shapes(cfg, 10000.0, column_chunk=4) == {}
+    # The p3 adapter arm reads the counter nowhere: the one
+    # microphysics_updates read in the RTE+RRTMGP adapter lives in the
+    # morrison arm's first-call gate.
+    rrtmgp_source = (ROOT / "gpuwm/core/rrtmgp.py").read_text(
+        encoding="utf-8")
+    assert rrtmgp_source.count("microphysics_updates") == 1
+    # ... and the set is not vacuous: mp=10 really does price the four
+    # Morrison radii packs that rrtmgp.py:2535 withholds until the counter
+    # has accepted one update.
+    morrison = validate_run_config(RunConfig(
+        **dict(_TINY, moist=True, moist_cq=True, mp_physics=10),
+        ra_lw_physics=4, ra_sw_physics=4))
+    assert {"columns/effc", "columns/effr", "columns/effi",
+            "columns/effs"} <= set(
+                pf.rrtmgp_column_shapes(morrison, 10000.0, column_chunk=4))
+
+    # Clause 2.  The legacy RRTMG adapter is P3's only 4/4 pairing and it
+    # has no counter read for anything to be gated on.
+    assert "microphysics_updates" not in (
+        ROOT / "gpuwm/core/rrtmg_legacy.py").read_text(encoding="utf-8")
+
+    # Clause 4.  P3's persistent set is already whole when
+    # _materialize_physics runs: every slot it needs is in the registry
+    # run_alloc_preflight prewarms, and the accumulator row is the FIVE
+    # of CASE (P3_1CATEGORY), with no graupel.
+    legacy_p3 = validate_run_config(RunConfig(
+        **p3, ra_lw_physics=4, ra_sw_physics=4,
+        ra_rrtmg_variant="rrtmg_legacy"))
+    registry = pf.scratch_slot_registry(legacy_p3, n_lbc_intervals=0)
+    slots = {slot for _component, slot in microphysics_scratch_slots(50)}
+    assert len(slots) == 5 and "mp_graupelnc" not in slots
+    assert slots <= set(registry)
+    assert any(slot.startswith("p3_") for slot in registry)
 
 
 def test_wsm6_is_priced_at_the_tier_its_launcher_compiles_not_at_a_flat_row():

@@ -35,6 +35,12 @@ from gpuwm.native_wrf_distribution import (  # noqa: E402
 
 _TOP_LEVEL_EXCLUDES = {
     "cli.py",
+    # The spectral-numerics seam: the hook the MODEL LOOP calls once per
+    # completed slow large step, plus receipt binding into the run
+    # capsule.  Pure runtime -- a preprocessing wheel completes no model
+    # step, so nothing here is reachable from any staged door -- and it
+    # imports gpuwm.spectral_ops, which this wheel does not stage.
+    "spectral_seam.py",
     # gpuwm-product front doors (CUDA forecast side): the domain wizard
     # imports the memory preflight + gpuwm.cli, and the downscale front
     # door drives the offline CUDA child.  Neither belongs in the
@@ -379,6 +385,14 @@ _FORBIDDEN_STAGED_FILES = {
 }
 
 _OPTIONAL_STAGED_IMPORTS = {
+    ("gpuwm/experiment.py", "gpuwm.spectral_ops.config"):
+        "the [spectral_numerics] TABLE PARSER, imported function-locally "
+        "and only when a config actually carries the table.  The "
+        "subsystem is model runtime and this wheel stages none of it; "
+        "experiment.py guards the import and refuses such a config by "
+        "name (install the full gpuwm distribution to run spectral "
+        "numerics), so a preparation-only install parses every config "
+        "it can act on and refuses the one table it cannot.",
     ("gpuwm/physics_menu.py", "gpuwm.domain_wizard"):
         "the WIZARD'S PROSE, and only that: physics_summary() inside "
         "profile_facts() and _radiation_words() inside "

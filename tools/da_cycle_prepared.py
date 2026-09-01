@@ -363,8 +363,14 @@ def main() -> int:
     parser.add_argument("--thin-cells", type=int, default=2)
     parser.add_argument("--err-inflation", type=float, default=1.0)
     parser.add_argument("--memory-budget-mib", type=float, default=6144.0)
-    parser.add_argument("--solve-device", default="host",
-                        choices=("host", "cuda"))
+    parser.add_argument(
+        "--solve-device", default="auto", choices=("auto", "host", "cuda"),
+        help=("where the LETKF analysis solves.  'auto' (default) takes "
+              "the card when this process can reach one and numpy when it "
+              "cannot, and the receipt records which and why.  'host' and "
+              "'cuda' are honoured verbatim: pin host to reproduce a "
+              "receipt banked on numpy, pin cuda to make a missing card "
+              "an error instead of a silent 20x slower run"))
     parser.add_argument(
         "--dump-analysis-bundle", type=Path, default=None,
         help=("copy each leg's ANALYSIS INPUTS -- the staged member "
@@ -1673,17 +1679,51 @@ def main() -> int:
                 where="control snapshot")
             from gpuwm.da.obs_radar import (beam_unit_vectors,
                                             simulated_radial_velocity)
-            vr_mask = np.asarray(
-                document["variables"]["vr_mask"][0]).astype(bool)
-            vr_obs = np.asarray(document["variables"]["vr_obs"][0],
-                                np.float64)
-            sim = simulated_radial_velocity(
-                u_e, v_n, w_m, beam_unit_vectors(document, 0))
-            d = vr_obs[vr_mask] - sim[vr_mask]
+            # Every radar in the file, not radar 0.  Each antenna has its
+            # own beam geometry, so a radial-velocity innovation is only
+            # defined per radar; indexing [0] and calling the answer "the"
+            # control innovation was harmless while every file held one
+            # radar and silently wrong the moment one held twenty.  The
+            # aggregate below pools the residuals, which is the same
+            # statistic when there is one radar -- so single-radar
+            # receipts keep the numbers they had.
+            radars = list(document["radars"])
+            per_radar = []
+            pooled = []
+            from gpuwm.obs.radar_grid import radar_plane
+            for index, radar in enumerate(radars):
+                # radar_plane, not variables[...][index]: on a v2 file the
+                # stored plane covers only this radar's reach window, and
+                # the control innovation is computed against a whole-domain
+                # wind field.  On v1 it is the same array it always was.
+                vr_mask = np.asarray(
+                    radar_plane(document, "vr_mask", index)).astype(bool)
+                points = int(vr_mask.sum())
+                row = {"radar": str(radar["id"]), "points": points}
+                if points:
+                    vr_obs = np.asarray(
+                        radar_plane(document, "vr_obs", index), np.float64)
+                    sim = simulated_radial_velocity(
+                        u_e, v_n, w_m, beam_unit_vectors(document, index))
+                    d = vr_obs[vr_mask] - sim[vr_mask]
+                    pooled.append(d)
+                    row["innovation_mean_ms"] = float(d.mean())
+                    row["innovation_rms_ms"] = float(
+                        np.sqrt(np.mean(d ** 2)))
+                per_radar.append(row)
+            alld = (np.concatenate(pooled) if pooled
+                    else np.zeros(0, np.float64))
             leg_record["analysis"]["control_vr"] = {
-                "points": int(vr_mask.sum()),
-                "innovation_mean_ms": float(d.mean()),
-                "innovation_rms_ms": float(np.sqrt(np.mean(d ** 2))),
+                # The count that says how much of the network this leg
+                # actually saw, beside the innovation it produced.
+                "radars": len(radars),
+                "radars_with_points": len(pooled),
+                "points": int(alld.size),
+                "innovation_mean_ms": (float(alld.mean()) if alld.size
+                                       else None),
+                "innovation_rms_ms": (float(np.sqrt(np.mean(alld ** 2)))
+                                      if alld.size else None),
+                "per_radar": per_radar,
             }
 
             if analysis_due:

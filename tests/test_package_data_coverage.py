@@ -921,7 +921,12 @@ def test_license_metadata_is_an_spdx_expression_not_the_pasted_text() -> None:
 #: the reasoning in pyproject.toml's ``find`` block.  Written out rather
 #: than derived from the include patterns, because a pattern that has
 #: started matching something new is exactly what this pins.
-_DECLARED_TOP_LEVEL = {"gpuwm", "tools", "tilestream", "configs", "docs"}
+#: ``mpas_cycle_bridge`` is deliberate: it is the far side of the MPAS
+#: port seam and must be importable from an installed copy because
+#: ``gpuwm.cycle.anchor`` imports from it at module scope -- see the
+#: ``find`` block's own comment.
+_DECLARED_TOP_LEVEL = {"gpuwm", "tools", "tilestream", "configs", "docs",
+                       "mpas_cycle_bridge"}
 
 
 def _find_declaration(pyproject: Path = PYPROJECT) -> dict[str, list[str]]:

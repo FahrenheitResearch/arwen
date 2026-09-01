@@ -597,6 +597,24 @@ class GriddedObs:
     simulated: object
     mask: object
     localization: Localization | None = None
+    #: Optional inclusive ``(j0, j1, i0, i1)`` sub-box of the analysis grid
+    #: this batch's arrays cover.  ``None`` means the whole domain, which is
+    #: what every array above is documented as and what a hand-built batch
+    #: gets; the shapes then read ``(nz, ny, nx)`` exactly as stated.
+    #:
+    #: A window exists for one reason: radial velocity cannot merge across
+    #: radars, so a continental network arrives as ~160 separate batches,
+    #: and a batch's ``simulated`` alone is ``(R, nz, ny, nx)`` -- 7.3 GB
+    #: per radar on a CONUS 3 km grid with ten members, 1.2 TB for the
+    #: network.  A radar sees a ~250 km disc, so ~99% of that is a forward
+    #: operator evaluated where the instrument cannot see.  With a window
+    #: the caller computes H only where the observation exists, and the
+    #: filter gathers from the smaller array.
+    #:
+    #: The window must COVER the mask: an observation outside it would be
+    #: silently unassimilated, so :func:`analyze` refuses rather than
+    #: trimming.
+    window: tuple[int, int, int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -882,6 +900,27 @@ class LetkfDiagnostics:
     #: would be inventing a number, so it stays visible as the gap.
     weights_seconds: float = 0.0
     transform_seconds: float = 0.0
+    #: Slots the worst single grid row can actually reach, as opposed to
+    #: ``stencil_slots``, which sums every batch in the domain whether or
+    #: not any one gridpoint can see it.  These are equal for a single
+    #: radar and diverge with radar count; the ratio is how much of the
+    #: nominal cost the reach reject removes, and it is what chunk sizing
+    #: is done against.
+    reachable_stencil_slots: int = 0
+    #: Batch-chunk pairs the reach reject skipped, and the pairs it kept.
+    #: ``skipped / (skipped + evaluated)`` is the wasted fraction that
+    #: would have been paid without it -- at CONUS radar counts, most of
+    #: the solve.
+    reach_batches_skipped: int = 0
+    reach_batches_evaluated: int = 0
+    #: Chunks in which NO batch could reach any gridpoint, solved by not
+    #: solving them.  Over a domain wider than its radar coverage this is
+    #: the majority of the grid.
+    reach_chunks_skipped: int = 0
+    #: Times a chunk spanning several grid rows reached more slots than the
+    #: per-row sizing estimate and was halved before allocating.  Cheap
+    #: (host arithmetic, no dead attempt), unlike ``chunk_oom_shrinks``.
+    reach_span_splits: int = 0
     #: Per field, the RMS of the ensemble-mean increment.
     mean_increment_rms: dict = field(default_factory=dict)
     #: Per field, the domain-mean prior and posterior ensemble spread.
@@ -998,6 +1037,146 @@ def chunk_points_for_budget(total_slots: int, members: int,
 
     per_point = solve_bytes_per_point(total_slots, members, solve_itemsize)
     return max(0, min(int(npts), int(budget_bytes) // per_point))
+
+
+# ---------------------------------------------------------------------------
+# Spatial reach: which observation batches can touch which gridpoints.
+#
+# A radar is a local instrument.  Its observations occupy a disc about
+# 250 km across; a CONUS analysis grid is some 5000 km across.  The batched
+# transform above, left to itself, does not know that: every gridpoint
+# gathers, weights and matrix-multiplies EVERY batch's stencil slots,
+# including the 159 radars whose nearest observation is a thousand
+# kilometres away and whose Gaspari-Cohn weight is therefore exactly zero.
+# Total work then grows linearly with the radar count while useful work
+# stays flat, so the wasted fraction is (B-1)/B -- 99.4% at 160 radars.
+#
+# The remedy is a conservative index-space reject, computed once per batch
+# and tested once per chunk.  It is a REJECT, not an approximation: a batch
+# is skipped only when every weight it could contribute is identically
+# zero, so the analysis it produces is the analysis it would have produced
+# anyway.  On numpy that is bitwise (adding 0.0 is exact); on the device it
+# is the same few-ulp story the chunk-degradation path already documents,
+# because dropping terms changes the extent cuBLAS partitions on.
+# ---------------------------------------------------------------------------
+
+
+def _index_box_overlaps(a, b) -> bool:
+    """True when two inclusive ``(k0,k1,j0,j1,i0,i1)`` boxes intersect."""
+
+    if a is None or b is None:
+        return False
+    return (a[0] <= b[1] and b[0] <= a[1]
+            and a[2] <= b[3] and b[2] <= a[3]
+            and a[4] <= b[5] and b[4] <= a[5])
+
+
+def _chunk_index_box(start: int, stop: int, ny: int, nx: int):
+    """The inclusive ``(k,j,i)`` box a flat gridpoint span occupies.
+
+    Exact, not a bound.  The flat layout is ``(k*ny + j)*nx + i``, so a
+    contiguous span collapses to a single row only when it stays inside
+    one; the moment it crosses a row boundary the ``i`` extent is the full
+    width, and the moment it crosses a level the ``j`` extent is too.
+    """
+
+    plane = ny * nx
+    last = stop - 1
+    k0, k1 = start // plane, last // plane
+    if k0 != k1:
+        return (k0, k1, 0, ny - 1, 0, nx - 1)
+    r0, r1 = start - k0 * plane, last - k1 * plane
+    j0, j1 = r0 // nx, r1 // nx
+    if j0 != j1:
+        return (k0, k1, j0, j1, 0, nx - 1)
+    return (k0, k1, j0, j1, r0 - j0 * nx, r1 - j1 * nx)
+
+
+def _batch_reach_box(mask_flat, nz: int, nj: int, ni: int,
+                     dk, dj, di, xp, *, j0: int = 0, i0: int = 0,
+                     grid_ny: int | None = None, grid_nx: int | None = None):
+    """Inclusive ``(k,j,i)`` box of gridpoints this batch can influence.
+
+    ``mask_flat`` is over the batch's OWN extent ``(nz, nj, ni)``, which for
+    a windowed batch is its window and for a whole-domain batch is the
+    grid.  The box returned is always in GRID coordinates -- the chunk loop
+    compares it against gridpoint spans, so a box in window coordinates
+    would silently reject the wrong chunks.  ``j0``/``i0`` are the window's
+    origin; ``grid_ny``/``grid_nx`` bound the clamp and default to the
+    batch's own extent, which is right when there is no window.
+
+    The support of the mask, dilated by the stencil's half-widths.  A
+    gridpoint outside it cannot see an observation in this batch: every
+    slot it would gather is either off-grid or unobserved, and both are
+    forced to zero weight.  ``None`` means the batch observes nothing at
+    all, which is a legitimate state -- a radar in the domain that returned
+    an empty volume -- and skips the batch everywhere.
+
+    The dilation uses each axis's largest absolute offset independently.
+    That is a superset of the pruned Gaspari-Cohn disc, which is the safe
+    direction: it can only keep a batch that would have contributed
+    nothing, never drop one that would have contributed something.
+    """
+
+    grid_ny = nj if grid_ny is None else grid_ny
+    grid_nx = ni if grid_nx is None else grid_nx
+    idx = xp.nonzero(mask_flat)[0]
+    if int(idx.size) == 0:
+        return None
+    plane = nj * ni
+    kk = idx // plane
+    rem = idx - kk * plane
+    jj = rem // ni
+    ii = rem - jj * ni
+    pad_k = int(abs(xp.asarray(dk)).max()) if int(xp.asarray(dk).size) else 0
+    pad_j = int(abs(xp.asarray(dj)).max()) if int(xp.asarray(dj).size) else 0
+    pad_i = int(abs(xp.asarray(di)).max()) if int(xp.asarray(di).size) else 0
+    return (
+        max(0, int(kk.min()) - pad_k),
+        min(nz - 1, int(kk.max()) + pad_k),
+        max(0, int(jj.min()) + j0 - pad_j),
+        min(grid_ny - 1, int(jj.max()) + j0 + pad_j),
+        max(0, int(ii.min()) + i0 - pad_i),
+        min(grid_nx - 1, int(ii.max()) + i0 + pad_i),
+    )
+
+
+def reachable_slots_estimate(stencils, nz: int, ny: int, nx: int) -> int:
+    """Largest slot count any ONE gridpoint can actually see.
+
+    Chunk sizing asks what a gridpoint costs.  Summing every batch answers
+    a question no gridpoint asks once the reach reject is in place, and at
+    CONUS radar counts the difference is two orders of magnitude -- a chunk
+    of 19 points instead of thousands, which trades the saved FLOPs
+    straight back for lost occupancy.
+
+    The answer is the deepest overlap of the batches' reach boxes, computed
+    exactly by rasterising them one level at a time.  Overlap is real cost
+    and is counted: a gridpoint between two radars genuinely sees both, and
+    that is the case sizing must survive.  Radars that merely coexist in
+    the domain without overlapping cost one radar, not two.
+
+    One ``(ny, nx)`` accumulator is reused across levels, so this is
+    megabytes and a few thousand slice additions even on a CONUS grid --
+    paid once per analysis, against a chunk loop that runs thousands of
+    times.
+    """
+
+    boxes = [(st.get("reach"), int(st["nslots"])) for st in stencils]
+    boxes = [(b, n) for b, n in boxes if b is not None]
+    if not boxes:
+        return 0
+    best = 0
+    acc = np.zeros((ny, nx), dtype=np.int64)
+    for k in range(nz):
+        active = [(b, n) for b, n in boxes if b[0] <= k <= b[1]]
+        if not active:
+            continue
+        acc[:] = 0
+        for b, n in active:
+            acc[b[2]:b[3] + 1, b[4]:b[5] + 1] += n
+        best = max(best, int(acc.max()))
+    return int(best)
 
 
 def _device_free_bytes(xp):
@@ -1319,22 +1498,40 @@ def _validate_prior(xp, prior, fields, work_dtype):
 
 def _validate_obs(xp, obs, members, shape, work_dtype):
     checked = []
+    nz, ny, nx = shape
     for k, o in enumerate(obs):
         tag = f"observation batch {k} ({o.name!r})"
-        mask = _as_grid(xp, o.mask, shape, f"{tag} mask").astype(bool)
-        values = _as_grid(xp, o.values, shape, f"{tag} values").astype(
+        window = getattr(o, "window", None)
+        if window is None:
+            wshape = shape
+        else:
+            j0, j1, i0, i1 = (int(v) for v in window)
+            # Fail closed on a window that runs off the grid.  The gather
+            # would otherwise read a neighbouring row, which is a wrong
+            # observation rather than a missing one.
+            if not (0 <= j0 <= j1 < ny and 0 <= i0 <= i1 < nx):
+                raise LetkfError(
+                    f"{tag} declares window j[{j0}..{j1}] i[{i0}..{i1}],"
+                    f" which does not fit a {ny}x{nx} grid."
+                )
+            window = (j0, j1, i0, i1)
+            wshape = (nz, j1 - j0 + 1, i1 - i0 + 1)
+        mask = _as_grid(xp, o.mask, wshape, f"{tag} mask").astype(bool)
+        values = _as_grid(xp, o.values, wshape, f"{tag} values").astype(
             work_dtype)
         err = xp.asarray(o.errors, dtype=work_dtype)
         if err.ndim == 0:
-            err = xp.broadcast_to(err, shape).copy()
+            err = xp.broadcast_to(err, wshape).copy()
         else:
-            err = _as_grid(xp, err, shape, f"{tag} errors").astype(work_dtype)
+            err = _as_grid(xp, err, wshape, f"{tag} errors").astype(work_dtype)
         sim = xp.asarray(o.simulated, dtype=work_dtype)
-        if sim.shape != (members,) + shape:
+        if sim.shape != (members,) + wshape:
             raise LetkfError(
                 f"{tag} simulated has shape {sim.shape}, expected"
-                f" {(members,) + shape} -- H(x_k) for every member on the"
-                " model grid."
+                f" {(members,) + wshape} -- H(x_k) for every member on"
+                + (" the model grid." if window is None else
+                   f" this batch's window j[{window[0]}..{window[1]}]"
+                   f" i[{window[2]}..{window[3]}].")
             )
         if bool(xp.any(mask)):
             if not bool(xp.all(xp.isfinite(values[mask]))):
@@ -1370,7 +1567,7 @@ def _validate_obs(xp, obs, members, shape, work_dtype):
         values = xp.where(mask, values, xp.zeros_like(values))
         err = xp.where(mask, err, xp.ones_like(err))
         sim = xp.where(mask[None], sim, xp.zeros_like(sim))
-        checked.append((o.name, values, err, sim, mask, loc))
+        checked.append((o.name, values, err, sim, mask, loc, window))
     return checked
 
 
@@ -1585,7 +1782,7 @@ def analyze(
     # ---- stencils, one per distinct localisation spec -----------------
     stencils = []
     total_slots = 0
-    for (name, values, err, sim, mask, loc) in checked:
+    for (name, values, err, sim, mask, loc, window) in checked:
         spec = loc if loc is not None else config.localization
         dj, di = _horizontal_stencil(spec, grid, nx, ny)
         dk = _vertical_stencil(spec, grid)
@@ -1628,25 +1825,47 @@ def analyze(
                 " (the default), or express the observation in units that"
                 " do not need a standard deviation this small."
             )
+        # The batch's own horizontal extent: its window, or the grid.
+        wj0, wi0 = (window[0], window[2]) if window is not None else (0, 0)
+        wnj, wni = mask.shape[1], mask.shape[2]
         stencils.append({
             "name": name,
             "values": values.reshape(-1),
             "err2": err2,
             "sim": sim.reshape(members, -1),
-            "mask": mask.reshape(-1),
+            "mask": mflat,
             "dk": xp.asarray(dk),
             "dj": xp.asarray(dj),
             "di": xp.asarray(di),
             "hcut": float(spec.horizontal_m),
             "vcut": float(spec.vertical_m),
             "nslots": int(dj.size) * int(dk.size),
+            # The batch's storage extent, so the gather can turn a grid
+            # index into an index into THESE arrays.  For an unwindowed
+            # batch these are the grid's own numbers and every expression
+            # below reduces to the one it replaced.
+            "j0": wj0, "i0": wi0, "nj": wnj, "ni": wni,
+            "windowed": window is not None,
+            # Where this batch can reach, in GRID index space.  One
+            # reduction over the mask, paid once per batch, so the chunk
+            # loop can reject it with six integer comparisons.
+            "reach": _batch_reach_box(mflat, nz, wnj, wni, dk, dj, di, xp,
+                                      j0=wj0, i0=wi0,
+                                      grid_ny=ny, grid_nx=nx),
         })
         total_slots += int(dj.size) * int(dk.size)
     diagnostics.stencil_slots = total_slots
+    # The slot count that actually governs the arrays: the worst single row,
+    # not the sum over batches.  With one radar these are equal and nothing
+    # below changes behaviour; the gap opens exactly when the domain holds
+    # more radars than any one gridpoint can see.
+    reach_slots = reachable_slots_estimate(stencils, nz, ny, nx)
+    diagnostics.reachable_stencil_slots = reach_slots
+    sizing_slots = reach_slots if 0 < reach_slots < total_slots else total_slots
 
     npts = nz * ny * nx
     per_point = solve_bytes_per_point(
-        total_slots, members, int(solve_dtype.itemsize))
+        sizing_slots, members, int(solve_dtype.itemsize))
     diagnostics.solve_bytes_per_point = per_point
     if config.chunk_points is not None:
         chunk = int(config.chunk_points)
@@ -1669,12 +1888,12 @@ def analyze(
                            f" of which {int(_DEVICE_FREE_FRACTION * 100)}%"
                            " may be promised to the solve)")
         chunk = chunk_points_for_budget(
-            total_slots, members, int(solve_dtype.itemsize), ceiling, npts)
+            sizing_slots, members, int(solve_dtype.itemsize), ceiling, npts)
         if chunk < 1:
             need_mib = -(-per_point // (1 << 20))
             raise LetkfError(
                 "the batched solve cannot fit even ONE gridpoint under its"
-                f" memory ceiling: {total_slots} stencil slots x {members}"
+                f" memory ceiling: {sizing_slots} stencil slots x {members}"
                 f" members in {config.solve_dtype} costs {need_mib} MiB per"
                 f" gridpoint at peak, and the ceiling is"
                 f" {ceiling // (1 << 20)} MiB, set by {limiter}."
@@ -1702,8 +1921,16 @@ def analyze(
     weights_seconds = 0.0
     transform_seconds = 0.0
 
-    def _solve_chunk(start, stop):
+    def _solve_chunk(start, stop, stencils):
         """One chunk's analysis: ``(active_points, max_local_obs, sweeps)``.
+
+        ``stencils`` is the subset of observation batches that can reach
+        this span -- see :func:`_batch_reach_box`.  Shadowing the enclosing
+        name is deliberate: every use inside this function must go through
+        the filtered list, and shadowing makes an accidental use of the
+        full one impossible rather than merely discouraged.  The batches it
+        leaves out contribute identically zero weight, so the arithmetic
+        below is the same arithmetic on a shorter concatenation.
 
         Idempotent by construction: everything it writes is a plain
         assignment into ``incr_flat`` at the chunk's own gridpoints, and
@@ -1768,6 +1995,29 @@ def analyze(
                 + i2[:, None, :]
             shape3 = flat.shape
             flat = flat.reshape(shape3[0], -1)
+            # Two index spaces from here, and keeping them apart is the
+            # whole correctness question.  ``flat`` addresses the GRID and
+            # is what the terrain heights below are read with -- a column's
+            # height is a property of the column, not of any batch's
+            # window.  ``local`` addresses THIS BATCH'S arrays, which for a
+            # windowed batch cover only its window.
+            if st["windowed"]:
+                jw = j2 - st["j0"]
+                iw = i2 - st["i0"]
+                # A stencil neighbour outside this batch's window holds no
+                # observation by construction -- the window covers the mask
+                # -- so it is treated exactly like a neighbour outside the
+                # grid: excluded from `inside`, and its index clamped to a
+                # valid slot that the zero weight then discards.  Clamping
+                # rather than branching keeps the gather rectangular.
+                inside_h = (inside_h & (jw >= 0) & (jw < st["nj"])
+                            & (iw >= 0) & (iw < st["ni"]))
+                jw = xp.clip(jw, 0, st["nj"] - 1)
+                iw = xp.clip(iw, 0, st["ni"] - 1)
+                local = ((k2[:, :, None] * st["nj"] + jw[:, None, :])
+                         * st["ni"] + iw[:, None, :]).reshape(flat.shape)
+            else:
+                local = flat
             inside = (inside_k[:, :, None] & inside_h[:, None, :]).reshape(
                 flat.shape)
             wh = gaspari_cohn(
@@ -1775,9 +2025,10 @@ def analyze(
             dz = xp.abs(zflat[flat] - zflat[pts][:, None])
             w = (xp.asarray(gaspari_cohn(dz, st["vcut"])).reshape(shape3)
                  * xp.asarray(wh)[:, None, :]).reshape(flat.shape)
-            w = xp.where(inside & st["mask"][flat], w, 0)
+            w = xp.where(inside & st["mask"][local], w, 0)
             w_parts.append(w.astype(solve_dtype))
-            idx_parts.append(flat)
+            # The batch-local index is what phase 2 gathers with.
+            idx_parts.append(local)
 
         wloc = xp.concatenate(w_parts, axis=1) if len(w_parts) > 1 \
             else w_parts[0]
@@ -1937,6 +2188,14 @@ def analyze(
             pool_cap = pool.used_bytes() + per_point * chunk
         except Exception:
             pool = None
+    def _reaching(lo: int, hi: int):
+        """The batches whose reach box meets this span, in batch order."""
+        box = _chunk_index_box(lo, hi, ny, nx)
+        return [st for st in stencils
+                if _index_box_overlaps(st["reach"], box)]
+
+    # After the reachability helper is built, so setup_seconds covers the
+    # whole of setup and the solve clock starts where the solve does.
     _sync_namespace(xp)
     t_solve = time.perf_counter()
     diagnostics.setup_seconds = t_solve - t_enter
@@ -1945,8 +2204,40 @@ def analyze(
         if pool_cap is not None and pool.total_bytes() > pool_cap:
             pool.free_all_blocks()
         stop = min(start + chunk, npts)
+        # Which radars can touch this span at all.  Host-side integer
+        # comparisons against boxes computed once per batch, so the reject
+        # costs nothing next to the gather it prevents.
+        span = _reaching(start, stop)
+        # What the budget actually bought: a number of (gridpoint, slot)
+        # pairs.  The arrays are (points x slots-reached-by-the-SPAN), not
+        # (points x slots-seen-by-a-POINT), so a span crossing from one
+        # radar's footprint into another's costs both for all its points.
+        # Bounding the product rather than the slot count keeps the real
+        # invariant -- a short span may reach several radars, a long one
+        # may reach a single radar, and both fit -- instead of forcing
+        # every span down to one radar's width and wasting the budget.
+        #
+        # Halving until it fits is free next to discovering the same fact
+        # as an allocation failure: it is host integer arithmetic and,
+        # unlike the OOM path, it costs no dead attempt.
+        budget_pairs = chunk * max(1, sizing_slots)
+        while (stop - start > 1
+               and (stop - start) * sum(st["nslots"] for st in span)
+               > budget_pairs):
+            stop = start + max(1, (stop - start) // 2)
+            span = _reaching(start, stop)
+            diagnostics.reach_span_splits += 1
+        if not span:
+            # No observation in the domain can influence any gridpoint in
+            # this span.  Over a CONUS grid that is most of the grid, and
+            # skipping it here is the whole point of the reach box.
+            diagnostics.reach_chunks_skipped += 1
+            start = stop
+            continue
+        diagnostics.reach_batches_evaluated += len(span)
+        diagnostics.reach_batches_skipped += len(stencils) - len(span)
         try:
-            ng, local_max, sweeps = _solve_chunk(start, stop)
+            ng, local_max, sweeps = _solve_chunk(start, stop, span)
         except Exception as exc:
             if not _is_device_memory_error(exc):
                 raise

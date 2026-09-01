@@ -429,15 +429,16 @@ NSSL2_LEGACY_RRTMG_PROFILE_ID = (
 #: The P3 one-category composition: the Thompson legacy-RRTMG suite with
 #: exactly ONE selector moved (``mp_physics`` 8 -> 50), transcribed switch
 #: for switch so a paired run of the two isolates the microphysics.
-#: Legacy RRTMG rather than RTE+RRTMGP because that is the one 4/4 engine
-#: P3 can couple to: WRF sets ``has_reqs = 0`` for P3
-#: (phys/module_physics_init.F:1027-1033) and the single ice category
-#: carries no separate snow species, so RTE+RRTMGP has no snow radius to
-#: consume and ``gpuwm.config.validate_p3_radiation`` refuses that
-#: pairing by name; the legacy port computes its own radii the way WRF
-#: does.  ``cu_physics`` stays 0 (its sibling's value), which also keeps
-#: the suite admissible on the nested HRRR route's own physics gate.
-#: Registered HRRR-only on the Kessler rule.
+#: Legacy RRTMG is this profile's composition of record.  It was chosen
+#: when it was the one 4/4 engine P3 could couple to; the RTE+RRTMGP
+#: cloud-optics row for mp=50 exists now (``50: "p3"`` in
+#: ``gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME``, WRF's own has_reqs=0
+#: remap coupling), so that pairing is selectable by config -- but this
+#: shipped id keeps the composition it was issued under rather than
+#: relabeling an already-published row.  ``cu_physics`` stays 0 (its
+#: sibling's value), which also keeps the suite admissible on the nested
+#: HRRR route's own physics gate.  Registered HRRR-only on the Kessler
+#: rule.
 P3_LEGACY_RRTMG_PROFILE_ID = (
     "p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1"
 )
@@ -539,10 +540,12 @@ SINGLE_DOMAIN_PHYSICS_PROFILES = (
     MORRISON_PROFILE_ID,
     NSSL2_PROFILE_ID,
     NSSL2_LEGACY_RRTMG_PROFILE_ID,
-    # P3 closes the scheme-family block: one composition, legacy RRTMG
-    # only (validate_p3_radiation refuses the RTE+RRTMGP pairing), placed
-    # here so the discovery order keeps microphysics families together
-    # ahead of the PBL/land-surface families below.
+    # P3 closes the scheme-family block: one shipped composition, on the
+    # legacy RRTMG arm it was issued under (the RTE+RRTMGP pairing is
+    # coupled and config-selectable now, but no second profile row is
+    # invented for it), placed here so the discovery order keeps
+    # microphysics families together ahead of the PBL/land-surface
+    # families below.
     P3_LEGACY_RRTMG_PROFILE_ID,
     MYNN_PROFILE_ID,
     # Each radiation-bearing twin sits immediately after the row it
@@ -744,9 +747,10 @@ _SINGLE_DOMAIN_RUNTIME_SWITCHES = MappingProxyType({
     # device cq path (gpuwm/core/acoustic.py prepare_moist_cq keys a
     # mass-species row for 50), and a mixed P3 nest edge requires
     # moist_cq=true on both sides.  ra_rrtmg_variant stays the legacy
-    # engine, which for mp=50 is a REQUIREMENT rather than a taste:
-    # validate_p3_radiation (gpuwm/config.py) refuses P3 on RTE+RRTMGP
-    # because WRF's has_reqs=0 leaves no snow radius to hand it.
+    # engine because that is the composition this id was issued under;
+    # the RTE+RRTMGP pairing carries P3's coupling now (rrtmgp's
+    # ``50: "p3"`` row) and is selectable by config, without relabeling
+    # this row.
     P3_LEGACY_RRTMG_PROFILE_ID: MappingProxyType({
         "moist": True, "moist_cq": True, "mp_physics": 50,
         "top_lid": False, "epssm": 0.5, "morr_rimed_ice": 1,

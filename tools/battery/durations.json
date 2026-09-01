@@ -134,6 +134,8 @@
     "tests/test_soil_layer_geometry.py": 0.1,
     "tests/test_source_adapters.py": 0.49,
     "tests/test_spectral_compare_v2.py": 0.01,
+    "tests/test_spectral_io_rust_only.py": 0.54,
+    "tests/test_spectral_pins_backlog.py": 2.16,
     "tests/test_spectral_receipt_v2.py": 1.98,
     "tests/test_speedrun.py": 8.88,
     "tests/test_stage1_manifest.py": 0.3,

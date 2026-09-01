@@ -203,10 +203,28 @@ def native_static_export_fields(
     generated["F"], generated["E"] = grid.coriolis_m()
     generated["SINALPHA"], generated["COSALPHA"] = grid.rotation_m()
     for name, value in generated.items():
-        if name in result and not np.array_equal(
-                np.asarray(result[name]), np.asarray(value)):
-            raise ValueError(
-                f"native static {name} differs from regenerated grid geometry")
+        if name in result:
+            stored = np.asarray(result[name], dtype=np.float64)
+            regen = np.asarray(value, dtype=np.float64)
+            # Bitwise equality held while every producer and consumer ran
+            # on one machine.  Replaying a prepared cache on another OS
+            # re-derives these trig fields through a different libm, whose
+            # correctly-rounded-to-a-few-ulp answers differ in the last
+            # bits (measured: 4 ulp worst case, MAPFAC_M, Windows-written
+            # cache replayed on glibc).  16 ulps tells those apart from a
+            # genuinely different geometry, which differs by orders of
+            # magnitude more; and the regenerated value still wins below,
+            # so nothing downstream ever sees the stored copy.
+            tol = 16.0 * np.spacing(np.maximum(np.abs(stored),
+                                               np.abs(regen)))
+            if stored.shape != regen.shape or not bool(
+                    np.all(np.abs(stored - regen) <= tol)):
+                d = np.abs(stored - regen)
+                raise ValueError(
+                    f"native static {name} differs from regenerated grid"
+                    f" geometry beyond libm rounding: max_abs"
+                    f" {float(d.max())!r} at {int(np.count_nonzero(d))}"
+                    f" of {d.size} points")
         result[name] = value
     return result
 

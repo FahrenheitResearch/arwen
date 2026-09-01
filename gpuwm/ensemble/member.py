@@ -282,6 +282,13 @@ def run_member(*, base_config, member_dir, index: int, seed: int,
         clock_what = "its own clock before the leg"
     initial_sha = baseline_sha
 
+    # The member leg integrates through the frozen single-domain loop,
+    # which commits slow steps outside the execute_experiment seam the
+    # Level-2 hook is wired into; an active [spectral_numerics] refuses
+    # instead of silently running the member without the operator.
+    from gpuwm.experiment import refuse_unrouted_spectral_numerics
+    refuse_unrouted_spectral_numerics(
+        exp, "ensemble member (frozen single-domain loop)")
     summary = runtime.integrate_prepared_case(
         outdir, prepared, start_time=exp.start_time,
         output_title=data.output_title, domain_id=data.output_domain,

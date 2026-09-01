@@ -2973,11 +2973,15 @@ _NO_RTE_RRTMGP_CLOUD_OPTICS_REASON = {
         "effective-radius block is commented out "
         "(phys/module_mp_milbrandt2mom.F:3351-3378), so it hands radiation "
         "no radii at all."),
-    50: ("mp_physics=50 has no RTE+RRTMGP cloud-optics coupling. WRF sets "
-         "has_reqs=0 for P3 (phys/module_physics_init.F:1027-1033) and "
-         "P3's single ice category carries no separate snow species, so "
-         "there is no snow radius to hand RRTMGP; every existing row in "
-         "gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME assumes one."),
+    # mp=50's entry RETIRED 2026-08-31 with the defect it described.  P3
+    # now HAS a cloud-optics row (``50: "p3"`` in
+    # gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME), transcribed from WRF's
+    # own coupling: has_reqc=1, has_reqi=1, has_reqs=0, and the wrappers'
+    # P3 species remap that hands the single ice category to the snow slot
+    # at P3's own ice radius rather than consuming a snow radius that does
+    # not exist.  Membership below is DERIVED from that dict, so the
+    # selector no longer reaches this table and an entry left here would
+    # be a reason for a refusal nothing emits.
 }
 
 #: The remedy sentence both refusals end on.  One copy, because it is the
@@ -3044,7 +3048,34 @@ def _rte_rrtmgp_cloud_optics_constraints(registry: dict) -> None:
         if option.get("implemented") is not True:
             continue
         selector = option.get("selectors", {}).get("mp_physics")
-        if selector is None or selector in _MP_CLOUD_OPTICS_SCHEME:
+        if selector is None:
+            continue
+        if selector in _MP_CLOUD_OPTICS_SCHEME:
+            # DERIVED MEANS DERIVED IN BOTH DIRECTIONS.  This builder is a
+            # transform over the TRACKED registry, not a render from
+            # scratch: everything these passes do not touch is carried
+            # through from the file on disk.  So a scheme that GAINS a
+            # cloud-optics row -- which is what retiring the defect looks
+            # like -- kept publishing the refusal it was fixed out of,
+            # because the pass only ever wrote rows and never removed
+            # them.  MEASURED at mp=50: the row ``50: "p3"`` landed, the
+            # config-door and namelist-report guards were retired with it,
+            # and the registry still told every reader P3 "has no
+            # RTE+RRTMGP cloud-optics coupling" through a full rebuild.
+            # A refusal the engine no longer makes is a refusal that
+            # refuses working configurations, so this pass drops the
+            # entries it owns once their reason is gone.
+            constraints = option.get("constraints")
+            if not constraints:
+                continue
+            kept = [entry for entry in constraints.get("refused_when", [])
+                    if "ra_rrtmg_variant" not in entry.get("settings", {})]
+            if kept:
+                constraints["refused_when"] = kept
+            else:
+                constraints.pop("refused_when", None)
+                if not constraints:
+                    option.pop("constraints", None)
             continue
         reason = _NO_RTE_RRTMGP_CLOUD_OPTICS_REASON.get(selector)
         if reason is None:

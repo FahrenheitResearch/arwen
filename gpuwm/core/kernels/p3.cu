@@ -676,6 +676,15 @@ __device__ void p3_step_kloop1_col(P3_ARGS)
         float t_old = AT(th_old, k) * tm;
         float qvs = p3_qv_sat(fmaxf(t_old, 1.0f), AT(pres, k), 0);
         float qvi = p3_qv_sat(fmaxf(t_old, 1.0f), AT(pres, k), 1);
+        // Cold-start qvs/qvi floor, DEFAULT-ON in all three arms
+        // (2026-08-31): polysvp1(1 K) underflows, so the stock step-1
+        // sup/supi diagnoses below were 0/0 NaN; the floor pins them at
+        // exactly -1 and is inert from step 2 on.  The full rationale,
+        // the declared step-1 clip delta and the flipped pin test live
+        // at the CPU authority's floor site (gpuwm/core/p3.py); the
+        // three arms move together or not at all.
+        qvs = fmaxf(qvs, 1.0e-20f);
+        qvi = fmaxf(qvi, 1.0e-20f);
         AT(S[S_QVS], k) = qvs;
         AT(S[S_QVI], k) = qvi;
         // SEAM 1 -- log_predictSsat is .false. (:2252) so ssat is DIAGNOSED
@@ -1036,13 +1045,52 @@ __device__ void p3_step_kloopmain_col(P3_ARGS)
             }
 
             // immersion freezing of droplets (:2984-3015)
+            //
+            // OVERFLOW RESCUE, and the divergence is exactly the overflowing
+            // case.  WRF's left-to-right single-precision chain
+            // cons6*gamma*tmp1*dum**2 reaches 4.8e45 on the partial product
+            // at t = 198.99 K / cdist1 = 3.394e5 / mu_c = 12.576 /
+            // lamc = 1.6846e4 -- MEASURED, in the cell that took a real 6 h
+            // forecast non-finite at step 284 -- while the mathematical
+            // result 4.4e19 is an ordinary float.  The +Inf then meets the
+            // conservation limiter at :3571-3583, ratio = sources/sinks is
+            // 0, and Inf*0 is the NaN that reached theta and vapour.
+            // Fortran does not fix the association of a*b*c*d, so WRF is
+            // UNDEFINED here rather than authoritative; P3's own authors
+            // left the double form commented out at :2999-3002.  The float
+            // chain runs first and unchanged, so every representable value
+            // is still WRF's bit for bit.  Mirrors
+            // gpuwm/core/p3.py _rescue_overflowed_product exactly.
             if (AT(qc, k) >= P3_QSMALL && t <= 269.15f) {
                 float d = 1.0f / lamc;
                 dum = (d * d) * d;                                   // :2988 int **3
                 tmp1 = cdist1 * r_exp(P3_AIMM * (273.15f - t));
-                float Q_nuc = P3_CONS6 * p3_gam(7.0f + mu_c) * tmp1
+                float gam_q = p3_gam(7.0f + mu_c);
+                float gam_n = p3_gam(mu_c + 4.0f);
+                float Q_nuc = P3_CONS6 * gam_q * tmp1
                               * (dum * dum);                         // :2995 int **2
-                float N_nuc = P3_CONS5 * p3_gam(mu_c + 4.0f) * tmp1 * dum;
+                float N_nuc = P3_CONS5 * gam_n * tmp1 * dum;
+                if (!isfinite(Q_nuc) || !isfinite(N_nuc)) {
+                    // The argument is built in FLOAT32 and only the exp is
+                    // double -- exactly the authority's own commented-out
+                    // form, dexp(dble(aimm*(273.15-t(i,k)))) at :2999, and
+                    // exactly what the rain branch below already does.  A
+                    // bare `273.15` here would also be an unsuffixed double
+                    // literal, which tests/test_p3_cuda.py refuses in this
+                    // file on purpose.
+                    double exp_aimm =
+                        exp((double)(P3_AIMM * (273.15f - t)));
+                    double dcdist1 = (double)cdist1;
+                    double ddum = (double)dum;
+                    if (!isfinite(Q_nuc)) {
+                        Q_nuc = (float)((double)P3_CONS6 * (double)gam_q
+                                        * dcdist1 * exp_aimm * ddum * ddum);
+                    }
+                    if (!isfinite(N_nuc)) {
+                        N_nuc = (float)((double)P3_CONS5 * (double)gam_n
+                                        * dcdist1 * exp_aimm * ddum);
+                    }
+                }
                 qcheti = Q_nuc;
                 ncheti = N_nuc;
             }
@@ -1059,6 +1107,19 @@ __device__ void p3_step_kloopmain_col(P3_ARGS)
                 double tmpdbl3 = exp((double)(P3_AIMM * (273.15f - t)));
                 qrheti = P3_CONS6 * (float)(tmpdbl1 * tmpdbl3) * spf;
                 nrheti = P3_CONS5 * (float)(tmpdbl2 * tmpdbl3) * spf;
+                // Same class as the droplet branch above: WRF's
+                // sngl(tmpdbl1*tmpdbl3) (:3037-3038) can round a double to
+                // +Inf for the same cold-cloud reason and reach the same
+                // limiter.  The double product is in hand, so the rescue is
+                // one more multiply.
+                if (!isfinite(qrheti)) {
+                    qrheti = (float)((double)P3_CONS6 * tmpdbl1 * tmpdbl3
+                                     * (double)spf);
+                }
+                if (!isfinite(nrheti)) {
+                    nrheti = (float)((double)P3_CONS5 * tmpdbl2 * tmpdbl3
+                                     * (double)spf);
+                }
             }
 
             // condensation / evaporation / deposition / sublimation

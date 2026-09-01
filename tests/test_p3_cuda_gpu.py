@@ -284,3 +284,77 @@ def test_the_registry_prices_exactly_the_slots_p3_asks_for():
     p3_asked = {n for n in asked if n.startswith("p3_") or n.startswith("mp_")}
     assert p3_asked - p3_rows == set(), sorted(p3_asked - p3_rows)
     assert p3_rows - p3_asked == set(), sorted(p3_rows - p3_asked)
+
+
+def test_the_composed_unit_compiles_to_the_frame_it_is_priced_at():
+    """The one platform check the ``.cu`` enumeration cannot reach.
+
+    ``preflight.KERNEL_MAX_LOCAL_SIZE_BYTES`` is a CEILING over named
+    compile platforms, re-read per platform in
+    ``gpuwm/core/kernel_frame_recordings.py`` and compared against the
+    driver by ``tests/test_preflight.py::
+    test_the_recorded_local_frames_match_the_driver``.  Both of those walk
+    ``gpuwm/core/kernels/*.cu`` and drop whatever NVRTC refuses standalone,
+    and ``p3.cu`` is refused: it borrows the tree's single audited glibc
+    r_pow/r_exp/r_log from ``noahmp_leaves.cu`` rather than carrying a
+    second copy that could drift.  So an ``mp_physics = 50`` domain is
+    priced from ``CHAINED_TRANSLATION_UNIT_FRAMES["p3_composed"]``, one
+    reading taken on sm_120 / cupy 14.2.0, and
+    ``under_priced_kernel_frames`` is structurally unable to notice it
+    drifting -- the composed unit is not in the ``observed`` dict it is
+    handed.
+
+    THE BREAKAGE THIS PREVENTS, in the unit that breaks: the priced row is
+    0 B, and 0 B is structural rather than lucky -- ``p3.cu`` declares no
+    per-thread column array at all, because P3 carries ONE ice category
+    with a rime pair (qir mass, qib volume) and no qs and no qg, and all
+    eighteen ``(nk, ncol)`` companions live in the global workspace
+    ``p3_device.make_workspace()`` allocates.  What is NOT structural is
+    SPILLING: ``p3k_kloopmain`` sits at 244 registers and the fused
+    ``p3k_fused_process`` at 250, against a 255-register ceiling, so
+    another architecture or NVRTC build can spill where the recorded one
+    did not.  A spilled frame would make the local-memory reservation
+    under-charge by the frame times the whole resident-thread capacity,
+    and a run this card cannot hold would be admitted by ``gpuwm check``
+    and OOM later with nothing pointing back here.  This gate is what
+    turns that into a red test on any box with a device.
+    """
+    import re
+    from pathlib import Path
+
+    import cupy as cp
+
+    import gpuwm.core.kernels as K
+    from gpuwm.core import p3_device as PD
+    from gpuwm.core import preflight as pf
+
+    row = pf.CHAINED_TRANSLATION_UNIT_FRAMES["p3_composed"]
+    # The kernels the UNIT launches are p3.cu's own; noahmp_leaves.cu is in
+    # the same translation unit but P3 launches none of it, and it already
+    # has a standalone row in every recording.
+    p3_cu = Path(K.__file__).resolve().parent / "p3.cu"
+    symbol = re.compile(
+        r'extern\s+"C"\s+__global__\s+void\s+([A-Za-z_][A-Za-z0-9_]*)')
+    names = sorted(set(symbol.findall(p3_cu.read_text(encoding="utf-8"))))
+    assert len(names) >= 12, names
+
+    module = PD.p3_module(PD.DEFAULT_OPTIONS)
+    frames = {name: int(module.get_function(name)
+                        .attributes["local_size_bytes"])
+              for name in names}
+    widest = max(frames.values())
+    profile = pf.local_memory_profile_from_device(cp)
+    unpriced = ((widest - row.max_local_size_bytes)
+                * profile.resident_thread_capacity)
+    assert widest <= row.max_local_size_bytes, (
+        f"the P3 composed unit compiles to {widest} B per thread on this "
+        f"platform ({profile.name}) against the {row.max_local_size_bytes} "
+        "B gpuwm/core/preflight.py CHAINED_TRANSLATION_UNIT_FRAMES prices "
+        f"it at, so every mp_physics=50 run under-charges the local-memory "
+        f"reservation by {unpriced / 1024 ** 3:.3f} GiB and can be admitted "
+        "on a card that cannot hold it.  Widest kernels: "
+        + ", ".join(f"{n} {b} B" for n, b in
+                    sorted(frames.items(), key=lambda kv: -kv[1])[:3])
+        + ".  Remedy: move the row to this reading and record the platform "
+        "in CHAINED_UNITS_WITHOUT_A_PER_PLATFORM_ROW "
+        "(gpuwm/core/kernel_frame_recordings.py)")

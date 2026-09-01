@@ -67,7 +67,15 @@ pub struct FramePlan {
 }
 
 /// Every check a frameset can make before reading a valid time's arrays.
-pub fn plan_frames(mapping: &Mapping, collection: &DecodedCollection) -> Result<FramePlan> {
+///
+/// Takes the SERIES CLOCK rather than a decoded collection: every check
+/// below reads `source_cycles` and the mapping, and a streamed decode
+/// knows its whole clock from the inventory octets before it has
+/// assembled one valid time's arrays.
+pub fn plan_frames(
+    mapping: &Mapping,
+    source_cycles: &BTreeMap<(NaiveDateTime, Option<String>), NaiveDateTime>,
+) -> Result<FramePlan> {
     let declared_names = mapping.field_names()?;
     let mut unbound: Vec<String> = Vec::new();
     for field in mapping.fields()? {
@@ -85,7 +93,7 @@ pub fn plan_frames(mapping: &Mapping, collection: &DecodedCollection) -> Result<
              them to a contributing source"
         )));
     }
-    let keys: Vec<&(NaiveDateTime, Option<String>)> = collection.source_cycles.keys().collect();
+    let keys: Vec<&(NaiveDateTime, Option<String>)> = source_cycles.keys().collect();
     if keys.is_empty() {
         return Err(frame_invalid("mapped source has no valid times"));
     }
@@ -346,7 +354,7 @@ pub fn materialize_frames(
     mapping: &Mapping,
     collection: &DecodedCollection,
 ) -> Result<Vec<MappedSourceFrame>> {
-    let plan = plan_frames(mapping, collection)?;
+    let plan = plan_frames(mapping, &collection.source_cycles)?;
     let mut frames = Vec::with_capacity(plan.keys.len());
     let mut inventories: BTreeSet<Vec<String>> = BTreeSet::new();
     for (valid_time, member) in &plan.keys {
@@ -726,21 +734,39 @@ fn axis_document(values: &[f64]) -> Value {
     })
 }
 
-/// Write `frames.json` + `frames.f64` into `directory`.
+/// The series facts a frameset states once, above its frames.
+///
+/// A streamed decode knows all of them before it has assembled a single
+/// valid time: the clock comes from the inventory octets and the grid
+/// fingerprint from the first slice.
+#[derive(Debug, Clone)]
+pub struct SeriesSummary {
+    pub source_cycles: BTreeMap<(NaiveDateTime, Option<String>), NaiveDateTime>,
+    pub grid_fingerprint: String,
+}
+
+/// Write `frames.json` + `frames.f64` into `directory`, PULLING one valid
+/// time at a time from `slice`.
+///
+/// The writer never sees the whole series.  `slice` is handed one
+/// `(valid_time, member)` key at a time, in the order the frameset writes
+/// them, and returns a collection carrying THAT key alone; the frame is
+/// materialized from it, written, and both are dropped before the next
+/// key is asked for.  Named breakage, measured on real RRFS bytes (3 km
+/// CONUS, 45 pressure levels): a writer handed the assembled series held
+/// every valid time's arrays at once, so a seven-time preparation needed
+/// about 65 GiB of host memory and was killed by the OOM reaper on
+/// anything smaller.  Nothing about the frameset needs two valid times
+/// resident -- the stream is written sequentially and each frame's
+/// digests cover only its own arrays.
 pub fn write_frameset(
     directory: &std::path::Path,
     mapping: &Mapping,
-    collection: &DecodedCollection,
+    series: &SeriesSummary,
     input_sha256: &BTreeMap<String, String>,
+    mut slice: impl FnMut(&(NaiveDateTime, Option<String>)) -> Result<DecodedCollection>,
 ) -> Result<Value> {
-    // ONE valid time is materialized at a time, written, and dropped.
-    // Building every frame first held a full second copy of the whole
-    // forcing series beside the decoded collection: on a 3 km CONUS
-    // source with a 45-level ladder that is 9.0 GiB per forcing time,
-    // and a seven-time compose peaked at 67 GiB.  The stream is written
-    // sequentially and each frame's digests cover only its own arrays,
-    // so nothing here ever needed two frames at once.
-    let plan = plan_frames(mapping, collection)?;
+    let plan = plan_frames(mapping, &series.source_cycles)?;
     let mut inventories: BTreeSet<Vec<String>> = BTreeSet::new();
     std::fs::create_dir_all(directory).map_err(|error| {
         crate::refusal::missing_input(format!(
@@ -762,7 +788,12 @@ pub fn write_frameset(
     // re-reading the file: a real frameset is multi-gigabyte.
     let mut stream_digest = <sha2::Sha256 as sha2::Digest>::new();
     let mut frame_documents = Vec::with_capacity(plan.keys.len());
-    for (valid_time, member) in &plan.keys {
+    for key in &plan.keys {
+        let (valid_time, member) = key;
+        // ONE valid time, pulled, materialized, written and dropped
+        // before the next key is asked for.
+        let collection = slice(key)?;
+        let collection = &collection;
         let frame = materialize_frame(mapping, collection, &plan, *valid_time, member)?;
         let frame = &frame;
         inventories.insert(frame.fields.iter().map(|f| f.name.clone()).collect());
@@ -842,7 +873,7 @@ pub fn write_frameset(
             "vertical_kind": frame.vertical_kind,
             "vertical_units": frame.vertical_units,
             "vertical_values": axis_document(&frame.vertical_values),
-            "grid_fingerprint": collection.grid_fingerprint,
+            "grid_fingerprint": series.grid_fingerprint,
             "mapping_sha256": mapping.sha256,
             "input_sha256": input_sha256,
             "fields": field_documents,
@@ -873,7 +904,7 @@ pub fn write_frameset(
         "mapping_sha256": mapping.sha256,
         "mapping_path": mapping.path,
         "input_sha256": input_sha256,
-        "grid_fingerprint": collection.grid_fingerprint,
+        "grid_fingerprint": series.grid_fingerprint,
         "frames": frame_documents,
     });
     let manifest_path = directory.join("frames.json");

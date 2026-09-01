@@ -530,6 +530,78 @@ def launch_refl10cm_thompson(
          refl, np.int32(nz), np.int32(ny), np.int32(nx)))
 
 
+class NativeReflectivityScheme(ValueError):
+    """The active scheme produces REFL_10CM, but not through this module.
+
+    A ``ValueError`` subclass so every existing caller keeps catching it,
+    and a NAMED type so a caller that can use the scheme's own field --
+    a radar observation operator, say -- can tell "this scheme has no dBZ"
+    apart from "this scheme's dBZ is on the state already".
+    """
+
+
+#: Schemes deliberately OUTSIDE :func:`compute_refl_10cm`'s dispatch even
+#: though every one of them produces REFL_10CM, with the reason each is out.
+#:
+#: The PRODUCER set below (1, 6, 8, 10, 16, 28) and the CONSUMER set
+#: ``REFL_10CM_MICROPHYSICS`` (1, 6, 8, 9, 10, 16, 18, 28, 50) differ on
+#: purpose, and these keys are exactly the difference: WRF computes their
+#: dBZ inside the scheme call and gpuwm stashes the SCHEME's own field, so
+#: there is no generic operator call to make.  The asymmetry was already
+#: asserted arithmetically in
+#: ``tests/test_mp28_runtime_reachability.py::
+#: test_every_refl_10cm_admission_constant_admits_28``; it is recorded HERE,
+#: at the gate, because a decision that lives only in a test reaches the
+#: user as an omission -- which is what the mp=28 reachability audit found
+#: and what this table exists to stop repeating.
+#:
+#: Adding any of these keys to the gate tuple is a DEFECT, not a widening:
+#: none of them has a routine here to dispatch to, and the fall-through arm
+#: is Kessler's rain-only Marshall-Palmer form.
+SCHEME_NATIVE_REFL_10CM: dict[int, str] = {
+    9: (
+        "Milbrandt-Yau two-moment carries Zet as an INOUT dummy that WRF's "
+        "driver binds straight to refl_10cm (module_microphysics_driver.F:"
+        "1878), so the scheme writes the slot on every call and "
+        "gpuwm/core/milbrandt2.py stashes that array rather than calling a "
+        "generic operator."
+    ),
+    18: (
+        "NSSL two-moment has its own S-band diagnostic, radardd02 "
+        "(module_mp_nssl_2mom.F), reading five ice categories, five number "
+        "moments and two volume moments; gpuwm ports it in "
+        "gpuwm.core.nssl2_diagnostics and dispatches to it directly "
+        "(gpuwm/da/obsop.py routes mp=18 there before reaching this "
+        "module).  It also floors at 0 dBZ, not -35."
+    ),
+    50: (
+        "P3 one-category has no standalone reflectivity routine anywhere "
+        "to dispatch to: WRF computes dBZ INSIDE p3_main -- ze_rain from "
+        "the scheme's own mu_r/lamr rain PSD (module_mp_p3.F:4755), ze_ice "
+        "from the lookup-table normalised reflectivity moment f1pr13 read "
+        "at the ice-PSD indices (:4789, accumulated :4868), and diag_ze = "
+        "10*log10((ze_rain+ze_ice)*1e18) (:4887) -- and the driver binds "
+        "diag_zdbz_3d straight to refl_10cm in CASE(P3_1CATEGORY), passing "
+        "no do_radar_ref argument at all "
+        "(module_microphysics_driver.F:1557-1602).  P3 predicts ONE ice "
+        "category with a rime pair (qir rime mass, qib rime volume) and "
+        "allocates NO qs and NO qg, so every branch this dispatcher owns "
+        "except Kessler would ask the state for fields P3 never has, and "
+        "the Kessler fall-through would report rain-only Rayleigh Z for an "
+        "ice-bearing column -- the mp=28-on-Kessler class of defect, in "
+        "the reflectivity field this time.  gpuwm mirrors WRF: "
+        "gpuwm/core/p3.py stashes the scheme's own zdbz into this module's "
+        "refl_10cm slot on every output-due step.  Note the floor: P3's "
+        "clear-air value is -99 dBZ (module_mp_p3.F:2273, left standing by "
+        "the hydrometeor-free skip at :2439/:3972; mirrored at "
+        "gpuwm/core/p3.py:513 and gpuwm/core/kernels/p3.cu:626), NOT the "
+        "-35 dBZ this dispatcher's family floors at, so a caller "
+        "differencing H(x) against a clear-air observation must take the "
+        "floor from the scheme and not from here."
+    ),
+}
+
+
 def compute_refl_10cm(
         state, cfg, *, temperature=None, pressure=None,
         thompson_graupel_number=None):
@@ -549,6 +621,12 @@ def compute_refl_10cm(
     graupel-number scratch through ``thompson_graupel_number``.  Results
     land in the persistent
     ``refl_10cm`` scratch slot and are returned.
+
+    The admitted set is NARROWER than the set of schemes that produce
+    REFL_10CM, and the difference is recorded rather than implied: 9, 18
+    and 50 compute their own dBZ inside the scheme call and refuse here BY
+    NAME through :data:`SCHEME_NATIVE_REFL_10CM`, which also says where
+    their field actually is.
 
     mp=28 shares the mp=8 branch VERBATIM, and that is WRF's own structure,
     not a convenience.  ``calc_refl10cm``
@@ -576,6 +654,19 @@ def compute_refl_10cm(
     from gpuwm.core.state import DTYPE
 
     if cfg.mp_physics not in (1, 6, 8, 10, 16, 28):
+        native = SCHEME_NATIVE_REFL_10CM.get(int(cfg.mp_physics))
+        if native is not None:
+            # NOT "no reflectivity": the scheme already produced its own,
+            # and saying otherwise is how a reachability gap reads as a
+            # missing feature.  Name it, and name where the field is.
+            raise NativeReflectivityScheme(
+                f"mp_physics={int(cfg.mp_physics)} computes REFL_10CM "
+                "itself and is deliberately not dispatched here. "
+                + native + "  Read the scheme's own dBZ out of the "
+                "DomainState 'refl_10cm' scratch slot, which its adapter "
+                "fills on every output-due microphysics step, instead of "
+                "recomputing it from another scheme's particle-size "
+                "distributions.")
         raise ValueError("do_radar_ref needs an active microphysics scheme "
                          f"(mp_physics 1, 6, 8, 10, 16, or 28), got "
                          f"{cfg.mp_physics}")

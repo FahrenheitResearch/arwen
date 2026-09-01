@@ -882,6 +882,11 @@ class Gallery:
 
     def verify_numbers(self, leg: int) -> dict:
         from gpuwm.verify.field_metrics import fss_distance
+        # Imported inside the method, not at module scope: this module is
+        # the CONSTANTS SOURCE that tools.da_sweep_score reads back, and a
+        # module-level import in both directions is a cycle waiting for
+        # somebody to change one line.
+        from tools.da_sweep_score import structure_block
         np = self.np
         ds = self.verify[leg]
         z = np.asarray(ds["z_obs"][:], float)
@@ -890,7 +895,9 @@ class Gallery:
         obs_comp = np.where(zm, z, -np.inf).max(axis=0)
         obs_comp = np.where(np.isfinite(obs_comp), obs_comp,
                             MISSING_OBS_FILL_DBZ)
-        fcst = self.mean_comp(leg)
+        members = {str(m): self.load_comp(leg, str(m))
+                   for m in range(self.members)}
+        fcst = np.mean(list(members.values()), axis=0)
         ctrl = self.load_comp(leg, "control")
         hw = max(1, round(FSS_BOX_KM / 2.0 / self.dx_km))
         return {
@@ -911,7 +918,129 @@ class Gallery:
                 ctrl, obs_comp, threshold=FSS_THRESHOLD_DBZ,
                 half_width=hw), 4),
             "fss_half_width_cells": hw,
+            # FSS says whether the area landed in about the right place.
+            # It cannot say whether the field looks like weather, and a
+            # field that has diffused its storms into one smooth patch
+            # scores well on it.  The members are carried separately from
+            # their own mean because averaging is a spatial filter.
+            "structure": structure_block(
+                observed=obs_comp, dx_km=self.dx_km, ensemble_mean=fcst,
+                members=members, extra={"control": ctrl}),
         }
+
+    def fig_structure(self, rows):
+        """Objects, scales and intensity, per frame.
+
+        Three panels, one question each: does the forecast make as many
+        storms as the radar sees, does it hold variance at storm scales,
+        and does it reach the intensities the radar reaches.  The member
+        envelope is drawn beside the ensemble mean throughout, because a
+        mean's structure is a property of the averaging and reading it as
+        the model's structure is the error this panel exists to prevent.
+
+        Diagnostic only.  Nothing on this figure is a score and no FSS
+        number depends on it.
+        """
+
+        import matplotlib.pyplot as plt
+        np = self.np
+        rows = [r for r in rows or [] if "structure" in r]
+        if len(rows) < 2:
+            return
+        x = np.arange(len(rows))
+        labels = [self.leg_label(r["leg"]) for r in rows]
+        blocks = [r["structure"] for r in rows]
+        mean_color, member_color, obs_color = "#0b5c2e", "#1f4e79", "0.15"
+
+        def observed(group, key):
+            return [b["observed"][group].get(key) for b in blocks]
+
+        def mean(group, key):
+            return [b["ensemble_mean"][group].get(key) for b in blocks]
+
+        def envelope(group, key):
+            low, high, mid = [], [], []
+            for block in blocks:
+                values = [m[group].get(key)
+                          for m in block["members"].values()]
+                values = [v for v in values if v is not None]
+                low.append(min(values) if values else np.nan)
+                high.append(max(values) if values else np.nan)
+                mid.append(float(np.median(values)) if values else np.nan)
+            return low, mid, high
+
+        fig, axes = plt.subplots(1, 3, figsize=(16.2, 6.1),
+                                 layout="constrained")
+
+        low, mid, high = envelope("objects", "count")
+        axes[0].fill_between(x, low, high, color=member_color, alpha=0.18,
+                             label=f"members (min–max of {self.members})")
+        axes[0].plot(x, mid, "o-", color=member_color,
+                     label="member median")
+        axes[0].plot(x, mean("objects", "count"), "s--", color=mean_color,
+                     label="ensemble MEAN (an average)")
+        axes[0].plot(x, observed("objects", "count"), "k:", lw=2,
+                     label="observed")
+        axes[0].set_title("connected objects ≥35 dBZ\n"
+                          "(more = more discrete storms)", fontsize=10)
+        axes[0].legend(fontsize=7.5)
+
+        low, mid, high = envelope("spectrum", "power_ratio_2_4dx")
+        axes[1].fill_between(x, low, high, color=member_color, alpha=0.18)
+        axes[1].plot(x, mid, "o-", color=member_color,
+                     label="member median")
+        axes[1].plot(x, mean("spectrum", "power_ratio_2_4dx"), "s--",
+                     color=mean_color, label="ensemble MEAN")
+        axes[1].axhline(1.0, color="k", ls=":", lw=2,
+                        label="observed (= 1)")
+        axes[1].set_ylim(bottom=0.0)
+        axes[1].set_title("2–4Δx variance ÷ observed\n"
+                          "(a diffused field empties this band first)",
+                          fontsize=10)
+        axes[1].legend(fontsize=7.5)
+
+        for key, marker, label in (("p50_dbz", "^", "P50"),
+                                   ("p90_dbz", "o", "P90"),
+                                   ("p99_dbz", "s", "P99")):
+            low, mid, high = envelope("distribution", key)
+            axes[2].fill_between(x, low, high, color=member_color,
+                                 alpha=0.15)
+            axes[2].plot(x, mid, marker + "-", color=member_color,
+                         label=f"{label} member median", ms=4)
+            axes[2].plot(x, observed("distribution", key), marker + ":",
+                         color=obs_color, label=f"{label} observed", ms=4)
+        axes[2].set_title("in-echo reflectivity quantiles (dBZ)\n"
+                          "(catches right coverage, wrong intensity)",
+                          fontsize=10)
+        axes[2].legend(fontsize=6.8, ncol=3, loc="lower center",
+                       framealpha=0.85)
+        axes[2].margins(y=0.22)
+
+        for ax in axes:
+            ax.set_xticks(x)
+            ax.set_xticklabels(labels, fontsize=8)
+            ax.grid(color="0.9", lw=0.7)
+            ax.set_axisbelow(True)
+        settings = blocks[0]["settings"]
+        fig.suptitle(
+            "Structure, beside the skill — DIAGNOSTIC, nothing is ranked "
+            "on it\n"
+            "THE ENSEMBLE MEAN IS SMOOTH BECAUSE IT IS AN AVERAGE: read "
+            "the member envelope for the model's own structure\n"
+            f"objects at {settings['object_threshold_dbz']:g} dBZ, "
+            f"{settings['object_connectivity']}-connectivity, minimum "
+            f"{settings['object_min_area_cells']} cells | spectrum "
+            "detrended and Hann-windowed, radially averaged | quantiles "
+            f"over cells ≥ {settings['echo_floor_dbz']:g} dBZ",
+            fontsize=10.0, linespacing=1.45)
+        self.stamp(fig)
+        f = "05-structure.png"
+        fig.savefig(self.out / f, dpi=self.dpi)
+        plt.close(fig)
+        self.note(f, "Objects, small-scale variance and intensity "
+                     "quantiles per free-forecast frame, with the member "
+                     "envelope drawn beside the ensemble mean.",
+                  "structure")
 
     def fig_verify(self):
         import matplotlib.pyplot as plt
@@ -1097,6 +1226,8 @@ class Gallery:
         groups = [("lead", "The nowcast"),
                   ("verify", "Verification — observed after the "
                              "fact"),
+                  ("structure", "Structure — objects, scales and "
+                                "intensity"),
                   ("strip", "Cycles, then the free forecast"),
                   ("numbers", "Across-cycle numbers")]
         for gid, gtitle in groups:
@@ -1116,8 +1247,11 @@ class Gallery:
         (self.out / "_manifest.json").write_text(
             json.dumps(self.manifest, indent=1), encoding="utf-8")
         if rows:
+            from tools.da_sweep_score import (
+                ENSEMBLE_MEAN_STRUCTURE_WARNING, STRUCTURE_CITATIONS,
+                structure_means)
             (self.out / "_verification.json").write_text(json.dumps({
-                "schema": "gpuwm-da.nowcast-gallery-verification.v1",
+                "schema": "gpuwm-da.nowcast-gallery-verification.v2",
                 "definitions": {
                     "cols_gt35": "tools/da_cycle_prepared.py "
                                  "z_obs_space definitions, identical",
@@ -1125,7 +1259,17 @@ class Gallery:
                            f"FSS = 1 - distance, threshold "
                            f"{FSS_THRESHOLD_DBZ:g} dBZ, "
                            f"{FSS_BOX_KM:g} km box",
-                    "missing_obs_fill_dbz": MISSING_OBS_FILL_DBZ},
+                    "missing_obs_fill_dbz": MISSING_OBS_FILL_DBZ,
+                    "structure": "tools.da_sweep_score: object statistics "
+                                 "at 35 dBZ, radial power spectrum and "
+                                 "in-echo dBZ quantiles.  Diagnostics -- "
+                                 "nothing is ranked on them and no FSS "
+                                 "number depends on them",
+                    "structure_citations": STRUCTURE_CITATIONS,
+                    "structure_reading_rule":
+                        ENSEMBLE_MEAN_STRUCTURE_WARNING},
+                "structure_means": structure_means(
+                    rows, extra_labels=("control",)),
                 "frames": rows}, indent=1), encoding="utf-8")
 
     def render(self):
@@ -1149,6 +1293,7 @@ class Gallery:
         rows = self.fig_verify()
         if rows:
             self.fig_scorecard(rows)
+            self.fig_structure(rows)
         self.write_page(rows)
         print(f"gallery: {len(self.manifest)} figures + index.html at "
               f"{self.out}", flush=True)

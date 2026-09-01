@@ -412,6 +412,64 @@ generation written against one prepared case cannot be restored into
 another, and the identity check exists to stop anyone pretending
 otherwise.
 
+### Backgrounds age (EXPERIMENTAL, default off)
+
+That last paragraph has a cost nobody pays until they leave the daemon
+up.  A daemon started at 04Z holds the 04Z background until its boundary
+data runs out; the analysis stays current the whole time, but the
+background it is an increment to does not.  Currency is the only edge
+this nowcast has, so an aging background attacks the one thing it is
+for.
+
+`--background-max-age` opts into the conservative fix:
+
+```bash
+python -m tools.da_nowcast_auto start --site KXXX --out RUN_DIR \
+    --background-max-age 90 --spinup-cycles 4
+```
+
+Past that age (in minutes) the daemon prepares a **second** case from
+the newest available cycle, starts a **second** ensemble on it, and
+spins that one up by assimilating the same volumes the first one is
+assimilating.  The gallery switches to it only when it has both
+
+1. completed `--spinup-cycles` cycles (default 4 -- on the two live
+   cases this daemon has run, spin-up analyses became competitive by
+   cycle 3-4), and
+2. caught up to the running analysis.  A fresher background whose
+   analysis is half an hour behind is not an improvement; it is a newer
+   model of an older sky.
+
+Then the old ensemble is retired -- `retired.json` in its epoch
+directory, everything it produced left on disk -- and the handover is
+written to `RUN_DIR/overlap-handovers.json`
+(`gpuwm-da.nowcast-handover.v1`) with both case digests, the overlap
+window and each ensemble's cycle count across it.  The frame where the
+switch happens carries one line saying so.
+
+What it does not do:
+
+- **No state crosses cases.**  The fresh ensemble is initialised on its
+  own prepared case and cycled up from scratch, exactly as a bootstrap
+  is.  The identity binding is untouched.
+- **No second process on the card.**  Both lanes' cycles are ordinary
+  children run one at a time out of the one daemon loop.  The spin-up
+  mostly fills the wait between volumes, and it never runs a free
+  forecast -- nobody is looking at its forecast until it is promoted --
+  so it is the cheaper half of a cycle.  Budget roughly a cycle's worth
+  of extra card per overlap cycle: at 45-60 s a cycle, a handover costs
+  a few minutes.
+- **No handover is worth a working nowcast.**  If the fresh case will
+  not prepare, or its ensemble will not cycle, the attempt is retired,
+  the page says the daemon stayed on the current background and why, a
+  cooldown (`--handover-cooldown-minutes`, default 30) stops it
+  retrying every poll, and the running ensemble goes on cycling
+  untouched.  A spin-up failure never spends the primary's failure
+  budget and never stops the daemon.
+
+Leave `--background-max-age` off (the default) and none of this exists:
+one case per epoch until its boundary data is spent, exactly as above.
+
 ### Watching it
 
 ```bash
@@ -421,8 +479,11 @@ python -m tools.da_nowcast_auto status --out RUN_DIR --json
 
 The status file is `gpuwm-da.nowcast-auto.v1` and carries state,
 cycles completed, volumes behind, the current epoch, the last cycle's
-timing, a rolling history, and any active notice.  Before anything has
-started there, you get a plain refusal rather than an empty file:
+timing, a rolling history, and any active notice.  It also reports
+`background_age_seconds` and an `overlap` block whether or not the
+handover capability is enabled -- the age is worth reading either way.
+Before anything has started there, you get a plain refusal rather than
+an empty file:
 
 ```
 da_nowcast_auto: RUN_DIR\auto-status.json does not exist; nothing has started here

@@ -177,11 +177,17 @@ fn main() {
             header_hash += clock.elapsed();
         }
         let clock = Instant::now();
+        let series = mapped_engine::frames::SeriesSummary {
+            source_cycles: collection.source_cycles.clone(),
+            grid_fingerprint: collection.grid_fingerprint.clone(),
+        };
+        let mut carved = collection.clone();
         mapped_engine::frames::write_frameset(
             std::path::Path::new(directory),
             &mapping,
-            &collection,
+            &series,
             &digests,
+            |key| Ok(mapped_engine::engine::carve_valid_time(&mut carved, key)),
         )
         .expect("frameset writes");
         emit = clock.elapsed();

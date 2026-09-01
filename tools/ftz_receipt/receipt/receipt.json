@@ -3,16 +3,16 @@
   "generator": "tools/ftz_receipt/probe.py",
   "device": {
     "name": "NVIDIA GeForce RTX 5090",
-    "uuid": "e302d74f28a933cb8853ae03ac17c2499e5d01",
-    "pci_bus_id": "0000:01:00.0",
+    "uuid": "e302d74f28a933cb8853ae03ac17c249",
+    "pci_bus_id": "0000:02:00.0",
     "compute_capability": "12.0",
     "cuda_driver_version": 13030,
-    "cuda_runtime_version": 12090,
-    "nvrtc_version": "13.0",
+    "cuda_runtime_version": 13000,
+    "nvrtc_version": "13.3",
     "cupy_version": "14.0.1",
-    "numpy_version": "2.2.6",
-    "python": "3.13.7",
-    "platform": "Windows-11-10.0.26200-SP0"
+    "numpy_version": "2.5.2",
+    "python": "3.14.4",
+    "platform": "Linux-7.0.0-29-generic-x86_64-with-glibc2.43"
   },
   "cupy_ftz_append_site": {
     "found": true,
@@ -35,7 +35,7 @@
           "include_path_count": 6,
           "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
           "object_format": "cubin",
-          "object_sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+          "object_sha256": "b1601a6ec2a28bec9bb4c8c722856e15cc1d43046b8a7d541b7778868bd389ed",
           "source_sha256": "f871bedb13d80f562e373b21ecfd4b48592352c6562e3b35a269aebe9c9e0ff6"
         }
       ],
@@ -50,7 +50,7 @@
           "include_path_count": 6,
           "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
           "object_format": "cubin",
-          "object_sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+          "object_sha256": "b1601a6ec2a28bec9bb4c8c722856e15cc1d43046b8a7d541b7778868bd389ed",
           "source_sha256": "f871bedb13d80f562e373b21ecfd4b48592352c6562e3b35a269aebe9c9e0ff6"
         }
       ],
@@ -59,13 +59,12 @@
           "fired": true,
           "effective_flags": [
             "-std=c++17",
-            "--ftz=false",
-            "-ftz=true"
+            "--ftz=false"
           ],
-          "include_path_count": 6,
+          "include_path_count": 0,
           "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
           "object_format": "cubin",
-          "object_sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+          "object_sha256": "8dcaaaa6e59ac5db90eb05480535b496a2c7194a43a454ebc474c3cba83de68e",
           "source_sha256": "f871bedb13d80f562e373b21ecfd4b48592352c6562e3b35a269aebe9c9e0ff6"
         }
       ],
@@ -74,13 +73,12 @@
           "fired": true,
           "effective_flags": [
             "-std=c++17",
-            "--ftz=false",
-            "-arch=compute_120"
+            "--ftz=false"
           ],
           "include_path_count": 0,
           "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
           "object_format": "cubin",
-          "object_sha256": "436070cf076f1a06ed5ce4acb1203f73d8defef39dd21417382364535020e9de",
+          "object_sha256": "8dcaaaa6e59ac5db90eb05480535b496a2c7194a43a454ebc474c3cba83de68e",
           "source_sha256": "f871bedb13d80f562e373b21ecfd4b48592352c6562e3b35a269aebe9c9e0ff6"
         }
       ],
@@ -94,7 +92,7 @@
           "include_path_count": 6,
           "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
           "object_format": "cubin",
-          "object_sha256": "6844e4b1e407ff792b68b9c826c9c8f9012a2db1a190388214e9fc5d5efb4465",
+          "object_sha256": "8b6c3b1069f55567cefff79f9a710e6ddc42e5b6d82980749206f59923a32d0f",
           "source_sha256": "d0e37f2c0e4a3234a85ee0a506d09b0ea99abcf3fd40fb3545f501a87acd763b"
         },
         {
@@ -106,7 +104,7 @@
           "include_path_count": 6,
           "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
           "object_format": "cubin",
-          "object_sha256": "598236be4666fbea5a77f252d59c6dfa1662ce9cda2c39e8f832551fb4a6f800",
+          "object_sha256": "8177b6ddda3e333e42ee337c80a884a2c4f2a5b235caa49b0d4e639d3c54069e",
           "source_sha256": "4ea03eca3d40f35190b90ae6cbf271756686f793754b4263cd53a58b4b05bea8"
         },
         {
@@ -118,7 +116,7 @@
           "include_path_count": 6,
           "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
           "object_format": "cubin",
-          "object_sha256": "d1a87e5c76d186ef35d1946a2d10973e6c72e07b0f1f17d94271e92fe153bfd0",
+          "object_sha256": "397fc994d13cfd3715367ebd2e94b22589faac7c2e5fc7422e890ec11a134b5d",
           "source_sha256": "a4459d785cb7f2abc955ba0f5f30693c2c8cf1f66055877c88b845aaf0f4cf0b"
         },
         {
@@ -130,7 +128,7 @@
           "include_path_count": 6,
           "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
           "object_format": "cubin",
-          "object_sha256": "3140b40935cbd85ba6c53920ad42ab420515180a9818ca637fadf8df43e6328e",
+          "object_sha256": "6f3ca8d707199ee13dc2685cc3dba1859b4351324a312c3b496f7d216c4e4534",
           "source_sha256": "1101091d6d50a0b4151cabe61a81bbbd93d4c199dd1d65f38d3a8b9ee879bad9"
         },
         {
@@ -142,7 +140,7 @@
           "include_path_count": 6,
           "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
           "object_format": "cubin",
-          "object_sha256": "c3f7db6ffed0dd0634d486c22c4daf6bdfad21b1c6edeaa166793682cd1d75a5",
+          "object_sha256": "50156fe726507c80078c36e9da549d2b847ddc82e859f7df54f01165ed23f4cb",
           "source_sha256": "88951db87f505a4d14e6dc11b5c1f432db62edf701e7ae08957fa8b6705aad8c"
         },
         {
@@ -154,7 +152,7 @@
           "include_path_count": 6,
           "include_paths_omitted": "-I entries are this machine's toolkit layout, not part of the arithmetic contract",
           "object_format": "cubin",
-          "object_sha256": "15f46295e3cf1b21d8695e895fb9b3d5746f957c2d6b5fc3ec029a089b0869ff",
+          "object_sha256": "6eaa334e72cbe605454fad3621e77bd5891706db6d2edd8d59eed11fed1a0ccd",
           "source_sha256": "6b4face2ad7c36eb2df08a7390b6da6939cdf1909dd16de1a6c8674d8a37a4e7"
         }
       ]
@@ -188,8 +186,8 @@
     },
     "R2": {
       "id": "R2",
-      "label": "RawModule with the shortwave option tuple",
-      "constructor": "cupy.RawModule",
+      "label": "direct NVRTC with the shortwave option tuple",
+      "constructor": "cupy.cuda.compiler.compile_using_nvrtc",
       "site": "gpuwm/core/rrtmg_sw.py:2906",
       "site_options": [
         "-std=c++17",
@@ -211,8 +209,7 @@
       ],
       "arm_options": [
         "-std=c++17",
-        "--ftz=false",
-        "-arch=compute_120"
+        "--ftz=false"
       ]
     },
     "R4": {
@@ -383,37 +380,37 @@
     {
       "route": "R2",
       "mechanism": "plain-operator arithmetic",
-      "verdict": "flush-to-zero",
+      "verdict": "ieee-agreement",
       "input_count": 9
     },
     {
       "route": "R2",
       "mechanism": "__f*_rn intrinsic",
-      "verdict": "flush-to-zero",
+      "verdict": "ieee-agreement",
       "input_count": 9
     },
     {
       "route": "R2",
       "mechanism": "fminf/fmaxf",
-      "verdict": "flush-to-zero",
+      "verdict": "ieee-agreement",
       "input_count": 9
     },
     {
       "route": "R2",
       "mechanism": "float compare",
-      "verdict": "flush-to-zero",
+      "verdict": "ieee-agreement",
       "input_count": 9
     },
     {
       "route": "R2",
       "mechanism": "__double2float_rn",
-      "verdict": "flush-to-zero",
+      "verdict": "ieee-agreement",
       "input_count": 9
     },
     {
       "route": "R2",
       "mechanism": "(float) cast",
-      "verdict": "flush-to-zero",
+      "verdict": "ieee-agreement",
       "input_count": 9
     },
     {
@@ -531,7 +528,7 @@
     "arm_bit_table_sha256": {
       "R1": "86a1ebab2375ca705902535806e9d28129ce2db4812d6a3da723eaef0c8a5224",
       "R1-ftztrue": "86a1ebab2375ca705902535806e9d28129ce2db4812d6a3da723eaef0c8a5224",
-      "R2": "86a1ebab2375ca705902535806e9d28129ce2db4812d6a3da723eaef0c8a5224",
+      "R2": "373118f5890d8989cac4584908b0ebbb5b35239387000ca795ca5769a1ba9eec",
       "R3": "373118f5890d8989cac4584908b0ebbb5b35239387000ca795ca5769a1ba9eec",
       "R4": "86a1ebab2375ca705902535806e9d28129ce2db4812d6a3da723eaef0c8a5224",
       "R5": "bec3d8f9c95a4ad0d3e04afd5ab7dc7cf8fdf9bfe0a2ebe11ab94206ca2fd86c"
@@ -544,72 +541,72 @@
     "runs": 2,
     "byte_identical": true,
     "bit_table_sha256": [
-      "3070d3ccad8005b06b22dc09bf91e0cc17af98b8ba5c4c26deecc210999a7a82",
-      "3070d3ccad8005b06b22dc09bf91e0cc17af98b8ba5c4c26deecc210999a7a82"
+      "10f1674d3254722b652836f510808eac73e0ddd60dfa481485abe94f0a8cae68",
+      "10f1674d3254722b652836f510808eac73e0ddd60dfa481485abe94f0a8cae68"
     ]
   },
   "artifacts": {
     "bitpatterns.csv": {
-      "sha256": "3070d3ccad8005b06b22dc09bf91e0cc17af98b8ba5c4c26deecc210999a7a82",
+      "sha256": "10f1674d3254722b652836f510808eac73e0ddd60dfa481485abe94f0a8cae68",
       "provenance": "shipped-path",
       "description": "device bit table, both passes byte-identical"
     },
     "cubin/r1.cubin": {
-      "sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+      "sha256": "b1601a6ec2a28bec9bb4c8c722856e15cc1d43046b8a7d541b7778868bd389ed",
       "format": "cubin",
       "provenance": "shipped-path",
       "description": "the compiled object NVRTC returned during route R1's own compile"
     },
     "cubin/r1_ftztrue.cubin": {
-      "sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+      "sha256": "b1601a6ec2a28bec9bb4c8c722856e15cc1d43046b8a7d541b7778868bd389ed",
       "format": "cubin",
       "provenance": "shipped-path",
       "description": "the compiled object NVRTC returned during route R1-ftztrue's own compile"
     },
     "cubin/r2.cubin": {
-      "sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+      "sha256": "8dcaaaa6e59ac5db90eb05480535b496a2c7194a43a454ebc474c3cba83de68e",
       "format": "cubin",
       "provenance": "shipped-path",
       "description": "the compiled object NVRTC returned during route R2's own compile"
     },
     "cubin/r3.cubin": {
-      "sha256": "436070cf076f1a06ed5ce4acb1203f73d8defef39dd21417382364535020e9de",
+      "sha256": "8dcaaaa6e59ac5db90eb05480535b496a2c7194a43a454ebc474c3cba83de68e",
       "format": "cubin",
       "provenance": "shipped-path",
       "description": "the compiled object NVRTC returned during route R3's own compile"
     },
     "cubin/r4_0.cubin": {
-      "sha256": "6844e4b1e407ff792b68b9c826c9c8f9012a2db1a190388214e9fc5d5efb4465",
+      "sha256": "8b6c3b1069f55567cefff79f9a710e6ddc42e5b6d82980749206f59923a32d0f",
       "format": "cubin",
       "provenance": "shipped-path",
       "description": "the compiled object NVRTC returned during route R4's own compile"
     },
     "cubin/r4_1.cubin": {
-      "sha256": "598236be4666fbea5a77f252d59c6dfa1662ce9cda2c39e8f832551fb4a6f800",
+      "sha256": "8177b6ddda3e333e42ee337c80a884a2c4f2a5b235caa49b0d4e639d3c54069e",
       "format": "cubin",
       "provenance": "shipped-path",
       "description": "the compiled object NVRTC returned during route R4's own compile"
     },
     "cubin/r4_2.cubin": {
-      "sha256": "d1a87e5c76d186ef35d1946a2d10973e6c72e07b0f1f17d94271e92fe153bfd0",
+      "sha256": "397fc994d13cfd3715367ebd2e94b22589faac7c2e5fc7422e890ec11a134b5d",
       "format": "cubin",
       "provenance": "shipped-path",
       "description": "the compiled object NVRTC returned during route R4's own compile"
     },
     "cubin/r4_3.cubin": {
-      "sha256": "3140b40935cbd85ba6c53920ad42ab420515180a9818ca637fadf8df43e6328e",
+      "sha256": "6f3ca8d707199ee13dc2685cc3dba1859b4351324a312c3b496f7d216c4e4534",
       "format": "cubin",
       "provenance": "shipped-path",
       "description": "the compiled object NVRTC returned during route R4's own compile"
     },
     "cubin/r4_4.cubin": {
-      "sha256": "c3f7db6ffed0dd0634d486c22c4daf6bdfad21b1c6edeaa166793682cd1d75a5",
+      "sha256": "50156fe726507c80078c36e9da549d2b847ddc82e859f7df54f01165ed23f4cb",
       "format": "cubin",
       "provenance": "shipped-path",
       "description": "the compiled object NVRTC returned during route R4's own compile"
     },
     "cubin/r4_5.cubin": {
-      "sha256": "15f46295e3cf1b21d8695e895fb9b3d5746f957c2d6b5fc3ec029a089b0869ff",
+      "sha256": "6eaa334e72cbe605454fad3621e77bd5891706db6d2edd8d59eed11fed1a0ccd",
       "format": "cubin",
       "provenance": "shipped-path",
       "description": "the compiled object NVRTC returned during route R4's own compile"
@@ -620,7 +617,7 @@
       "reason": "this route changes how the arithmetic is written, not how it is compiled; its kernels live in the module R1 compiled and are covered by that route's object"
     },
     "ptx/r1.ptx": {
-      "sha256": "1a6228cfa45ee525f50a63bdc39c4607e5019177dc8fbdbb2e68c2e8b917e502",
+      "sha256": "3beaaa0fb57a43a00737ee69894387455f0ba2480f6052ff6c23e0b10cea27ea",
       "provenance": "mirror",
       "mirror_of": "R1",
       "description": "same source and same effective flags as the shipped compile, with CuPy's cubin target replaced by a PTX target so the instruction modifiers are readable",
@@ -633,18 +630,16 @@
         },
         "without_ftz": {
           "cvt": 1,
-          "ld": 14,
           "min": 1,
           "mul": 1,
           "selp": 2,
-          "setp": 1,
-          "st": 10
+          "setp": 1
         },
-        "f32_instruction_count": 36
+        "f32_instruction_count": 12
       }
     },
     "ptx/r1_ftztrue.ptx": {
-      "sha256": "1a6228cfa45ee525f50a63bdc39c4607e5019177dc8fbdbb2e68c2e8b917e502",
+      "sha256": "3beaaa0fb57a43a00737ee69894387455f0ba2480f6052ff6c23e0b10cea27ea",
       "provenance": "mirror",
       "mirror_of": "R1-ftztrue",
       "description": "same source and same effective flags as the shipped compile, with CuPy's cubin target replaced by a PTX target so the instruction modifiers are readable",
@@ -657,42 +652,33 @@
         },
         "without_ftz": {
           "cvt": 1,
-          "ld": 14,
           "min": 1,
           "mul": 1,
           "selp": 2,
-          "setp": 1,
-          "st": 10
+          "setp": 1
         },
-        "f32_instruction_count": 36
+        "f32_instruction_count": 12
       }
     },
     "ptx/r2.ptx": {
-      "sha256": "1a6228cfa45ee525f50a63bdc39c4607e5019177dc8fbdbb2e68c2e8b917e502",
+      "sha256": "205a681f736955ef4fdb9deaa070e3a8db9694ae8da9cbe0afcd4643e3f92896",
       "provenance": "mirror",
       "mirror_of": "R2",
       "description": "same source and same effective flags as the shipped compile, with CuPy's cubin target replaced by a PTX target so the instruction modifiers are readable",
       "ftz_modifiers": {
-        "with_ftz": {
-          "cvt": 2,
-          "min": 1,
-          "mul": 2,
-          "setp": 1
-        },
+        "with_ftz": {},
         "without_ftz": {
-          "cvt": 1,
-          "ld": 14,
-          "min": 1,
-          "mul": 1,
+          "cvt": 3,
+          "min": 2,
+          "mul": 3,
           "selp": 2,
-          "setp": 1,
-          "st": 10
+          "setp": 2
         },
-        "f32_instruction_count": 36
+        "f32_instruction_count": 12
       }
     },
     "ptx/r3.ptx": {
-      "sha256": "b4c566f4e5fdeb9df1121aa4b98166f966bbb117cbe3237f1fd49e13e4f17940",
+      "sha256": "205a681f736955ef4fdb9deaa070e3a8db9694ae8da9cbe0afcd4643e3f92896",
       "provenance": "mirror",
       "mirror_of": "R3",
       "description": "same source and same effective flags as the shipped compile, with CuPy's cubin target replaced by a PTX target so the instruction modifiers are readable",
@@ -700,14 +686,12 @@
         "with_ftz": {},
         "without_ftz": {
           "cvt": 3,
-          "ld": 14,
           "min": 2,
           "mul": 3,
           "selp": 2,
-          "setp": 2,
-          "st": 10
+          "setp": 2
         },
-        "f32_instruction_count": 36
+        "f32_instruction_count": 12
       }
     },
     "ptx/r4.ptx": {
@@ -715,10 +699,10 @@
       "reason": "the CuPy-generated reduction source is built inside CuPy and is not reproducible from this tool without re-entering its kernel cache"
     },
     "sass/r1.sass": {
-      "sha256": "f80e2c69401311df369bc772e9b9216a759153e530f10ef62635824530581cd8",
+      "sha256": "5d30faae8109e66ef3e1c07327bbcbeffbb03b02e6b46606f8e4861572dad40e",
       "provenance": "shipped-path",
       "derived_from": "cubin/r1.cubin",
-      "derived_from_sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+      "derived_from_sha256": "b1601a6ec2a28bec9bb4c8c722856e15cc1d43046b8a7d541b7778868bd389ed",
       "derivation": "nvdisasm (sections) over the committed object; no recompile",
       "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
       "ftz_modifiers": {
@@ -737,10 +721,10 @@
       }
     },
     "sass/r1_ftztrue.sass": {
-      "sha256": "f80e2c69401311df369bc772e9b9216a759153e530f10ef62635824530581cd8",
+      "sha256": "5d30faae8109e66ef3e1c07327bbcbeffbb03b02e6b46606f8e4861572dad40e",
       "provenance": "shipped-path",
       "derived_from": "cubin/r1_ftztrue.cubin",
-      "derived_from_sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+      "derived_from_sha256": "b1601a6ec2a28bec9bb4c8c722856e15cc1d43046b8a7d541b7778868bd389ed",
       "derivation": "nvdisasm (sections) over the committed object; no recompile",
       "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
       "ftz_modifiers": {
@@ -759,32 +743,28 @@
       }
     },
     "sass/r2.sass": {
-      "sha256": "f80e2c69401311df369bc772e9b9216a759153e530f10ef62635824530581cd8",
+      "sha256": "dbae0827beecde337a28916aa0fe8f881d65f0bc58ddbac8cf748e8b7dd6bf9e",
       "provenance": "shipped-path",
       "derived_from": "cubin/r2.cubin",
-      "derived_from_sha256": "7b2d851a4ef21c89ec5590dc62a1af66e6b14e031abe9d91be62bce48c9c5b54",
+      "derived_from_sha256": "8dcaaaa6e59ac5db90eb05480535b496a2c7194a43a454ebc474c3cba83de68e",
       "derivation": "nvdisasm (sections) over the committed object; no recompile",
       "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
       "ftz_modifiers": {
-        "with_ftz": {
-          "FMNMX": 1,
-          "FMUL": 2,
-          "FSET": 1
-        },
+        "with_ftz": {},
         "without_ftz": {
           "F2F": 3,
-          "FMNMX": 1,
+          "FMNMX": 2,
           "FMUL": 3,
-          "FSET": 1
+          "FSET": 2
         },
-        "float_instruction_count": 12
+        "float_instruction_count": 10
       }
     },
     "sass/r3.sass": {
-      "sha256": "7ebacbdff5cab6cf397ffb3650d2af8058955b0bcaa5beb7d2b14563ea5603b3",
+      "sha256": "dbae0827beecde337a28916aa0fe8f881d65f0bc58ddbac8cf748e8b7dd6bf9e",
       "provenance": "shipped-path",
       "derived_from": "cubin/r3.cubin",
-      "derived_from_sha256": "436070cf076f1a06ed5ce4acb1203f73d8defef39dd21417382364535020e9de",
+      "derived_from_sha256": "8dcaaaa6e59ac5db90eb05480535b496a2c7194a43a454ebc474c3cba83de68e",
       "derivation": "nvdisasm (sections) over the committed object; no recompile",
       "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
       "ftz_modifiers": {
@@ -799,10 +779,10 @@
       }
     },
     "sass/r4_0.sass": {
-      "sha256": "72dde338af73042d33b87948264330794f2fd2b950fdda1efe5175fc0f21725c",
+      "sha256": "45b27a93edeeb05300af6b0dbe08545ba2a074c4ef5d6c0abeb5ffa9265954bd",
       "provenance": "shipped-path",
       "derived_from": "cubin/r4_0.cubin",
-      "derived_from_sha256": "6844e4b1e407ff792b68b9c826c9c8f9012a2db1a190388214e9fc5d5efb4465",
+      "derived_from_sha256": "8b6c3b1069f55567cefff79f9a710e6ddc42e5b6d82980749206f59923a32d0f",
       "derivation": "nvdisasm (sections) over the committed object; no recompile",
       "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
       "ftz_modifiers": {
@@ -816,10 +796,10 @@
       }
     },
     "sass/r4_1.sass": {
-      "sha256": "4200a791c5c8fa8cf3b002844f644953b2999e1fa3bff6278c95828144d1f96a",
+      "sha256": "d5f09203d0652b1d8d68f6bb52290edd15a2cb1d5ce51f09cfb7caf7c180e9b9",
       "provenance": "shipped-path",
       "derived_from": "cubin/r4_1.cubin",
-      "derived_from_sha256": "598236be4666fbea5a77f252d59c6dfa1662ce9cda2c39e8f832551fb4a6f800",
+      "derived_from_sha256": "8177b6ddda3e333e42ee337c80a884a2c4f2a5b235caa49b0d4e639d3c54069e",
       "derivation": "nvdisasm (sections) over the committed object; no recompile",
       "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
       "ftz_modifiers": {
@@ -833,10 +813,10 @@
       }
     },
     "sass/r4_2.sass": {
-      "sha256": "974fd283ccdccb91e505382cd7f761ad51ac37d4223dc68c3ab2c6e4ef8cecc0",
+      "sha256": "dc5fe320b14970db57dc371a26d64c967297f08a8b062d8a3c12183909c4e0df",
       "provenance": "shipped-path",
       "derived_from": "cubin/r4_2.cubin",
-      "derived_from_sha256": "d1a87e5c76d186ef35d1946a2d10973e6c72e07b0f1f17d94271e92fe153bfd0",
+      "derived_from_sha256": "397fc994d13cfd3715367ebd2e94b22589faac7c2e5fc7422e890ec11a134b5d",
       "derivation": "nvdisasm (sections) over the committed object; no recompile",
       "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
       "ftz_modifiers": {
@@ -850,10 +830,10 @@
       }
     },
     "sass/r4_3.sass": {
-      "sha256": "f03f1880712f8fa3eac467a09941d265b428eff4572004b3390353f54536454c",
+      "sha256": "0f78a49fd5ce85bd34b473a5ec3b5c8880c3db1bc673501787ed20ea4e126af4",
       "provenance": "shipped-path",
       "derived_from": "cubin/r4_3.cubin",
-      "derived_from_sha256": "3140b40935cbd85ba6c53920ad42ab420515180a9818ca637fadf8df43e6328e",
+      "derived_from_sha256": "6f3ca8d707199ee13dc2685cc3dba1859b4351324a312c3b496f7d216c4e4534",
       "derivation": "nvdisasm (sections) over the committed object; no recompile",
       "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
       "ftz_modifiers": {
@@ -867,10 +847,10 @@
       }
     },
     "sass/r4_4.sass": {
-      "sha256": "7809d0450cd1ea98ba99827f268acf1eac7b739767c2e6c04995ec8e67848b9c",
+      "sha256": "90fe57d96485d28afdb84f9542ddb8ac92d5aa770fdca0732c9160a3156e5328",
       "provenance": "shipped-path",
       "derived_from": "cubin/r4_4.cubin",
-      "derived_from_sha256": "c3f7db6ffed0dd0634d486c22c4daf6bdfad21b1c6edeaa166793682cd1d75a5",
+      "derived_from_sha256": "50156fe726507c80078c36e9da549d2b847ddc82e859f7df54f01165ed23f4cb",
       "derivation": "nvdisasm (sections) over the committed object; no recompile",
       "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
       "ftz_modifiers": {
@@ -884,10 +864,10 @@
       }
     },
     "sass/r4_5.sass": {
-      "sha256": "21c283bba7123b711cede6c60abc643ea79717bd94ed49675164a68bae7f3576",
+      "sha256": "f7b6e3515565a6601b2b9355e821aebfac85a76fd0f4ba3f09f2afd000790f0d",
       "provenance": "shipped-path",
       "derived_from": "cubin/r4_5.cubin",
-      "derived_from_sha256": "15f46295e3cf1b21d8695e895fb9b3d5746f957c2d6b5fc3ec029a089b0869ff",
+      "derived_from_sha256": "6eaa334e72cbe605454fad3621e77bd5891706db6d2edd8d59eed11fed1a0ccd",
       "derivation": "nvdisasm (sections) over the committed object; no recompile",
       "description": "the instructions the device executes, disassembled from the exact object the route's own compile returned",
       "ftz_modifiers": {

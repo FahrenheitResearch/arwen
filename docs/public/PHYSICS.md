@@ -259,15 +259,19 @@ forecast-trajectory comparison, no comparison against observations.
 Per-step numerical agreement with Fortran is not evidence of forecast
 skill, which is why the maturity rung does not move.
 
-One transcription note worth publishing, because it is visible to anyone
+One declared divergence worth publishing, because it is visible to anyone
 who instruments the first step: WRF's own first P3 call evaluates `0/0`
 for the supersaturation ratios. Nothing initialises `th_old`/`qv_old`, and
 the `max(t_old,1.)` guard leaves the saturation mixing ratios at exactly
-zero. The port keeps the resulting NaN rather than repairing it — every
-consumer is a comparison, and no finite value makes them all false the way
-a NaN does, so a "fix" would silently change WRF's first-step control flow.
-Its containment is tested, not assumed: no prognostic, diagnostic or
-surface field goes non-finite.
+zero. This port floors both saturation mixing ratios at `1e-20` after the
+first-call guard — the same remedy P3 releases newer than the transcribed
+v4.5.2 carry — so the first-step ratios are exactly `-1` (fully
+subsaturated, the intended meaning) instead of NaN, default-on in all
+three arms and inert from step 2 onward. The one control-flow consequence
+is declared: the first-step trace-condensate clip can fire where NaN made
+every comparison false, so runs are bit-identical to the unfloored port
+from step 2 onward while step 1 carries exactly the documented delta
+(`tests/test_p3_port.py::test_the_first_step_qvs_floor_pins_sup_at_minus_one`).
 
 ### Milbrandt-Yau (`mp_physics = 9`) — read this before selecting it
 
@@ -962,12 +966,12 @@ why these pairings are refused:
 ```
 
 The MYNN *PBL* carries no such restriction: 5/91, 5/1 and 5/5 are all
-accepted -- **60, 60 and 87 distinct accepted combinations**
+accepted -- **60, 60 and 90 distinct accepted combinations**
 respectively, counted from the walk receipt's `accepted_combinations`.
 Which field is counted matters, so it is said rather than left to be
-inferred: `mynn_slice.accepted` in the same receipt reads **88** for
+inferred: `mynn_slice.accepted` in the same receipt reads **91** for
 the 5/5 pairing because that field counts ATTEMPTS, and the walk
-re-tries its 5/5 anchor suite in a second tier -- 88 attempts over 87
+re-tries its 5/5 anchor suite in a second tier -- 91 attempts over 90
 distinct configurations. Distinct configurations are what a reader
 asking "what may I compose?" wants, so that is what the three numbers
 above are. Earlier revisions of this page described the 5/5 pairing as

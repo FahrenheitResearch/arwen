@@ -42,6 +42,9 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from gpuwm import __version__  # noqa: E402
 from gpuwm.certify.capsule import emit_run_capsule  # noqa: E402
+from gpuwm.spectral_seam import (  # noqa: E402
+    seam_capsule_receipts as _seam_capsule_receipts,
+)
 from gpuwm.core import streaming  # noqa: E402
 from gpuwm.core.microphysics_transition import (  # noqa: E402
     MP8_TO_MP18_POLICY,
@@ -2217,6 +2220,7 @@ def run_prepared_tree(
                     relocation_runner=relocation_runner,
                     steppers=steppers,
                     step_observer=step_observer,
+                    experiment=exp,
                 ))
             wrfout_paths = ()
         else:
@@ -2235,6 +2239,7 @@ def run_prepared_tree(
                         relocation_runner=relocation_runner,
                         steppers=steppers,
                         step_observer=step_observer,
+                        experiment=exp,
                     ))
                 writers.drain()
                 wrfout_paths = writers.paths
@@ -2494,8 +2499,11 @@ def run_prepared_tree(
             "domains": _domain_rows(exp),
         },
         output={"frames": outputs, "trajectory_digest": final_digests},
+        # The spectral seam's run receipts merge in; an apply run whose
+        # step receipts are incomplete refuses a clean capsule here.
         receipts={"run_receipt": {
-            "path": str((evidence / "run-receipt.json").resolve())}},
+            "path": str((evidence / "run-receipt.json").resolve())},
+            **_seam_capsule_receipts(model)},
     )
     _atomic_json(
         progress_path,

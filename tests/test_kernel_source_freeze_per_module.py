@@ -152,8 +152,22 @@ BASELINE_PINNED: dict[str, str] = {
     # step was the scheme.  Added by the P3 CUDA port AFTER 2.5.8 published; it
     # is the module this gate named unprompted the day it was written, which is
     # the case for the reverse test at the bottom of this file.
+    # RE-PINNED by the 2.6.1 cold-start qvs-floor fix: the floor lands
+    # default-on in all three arms (2026-08-31) -- step-1 sup/supi pin
+    # at -1 instead of the stock 0/0 NaN, inert from step 2 on; the
+    # measurement is tests/test_p3_port.py::
+    # test_the_first_step_qvs_floor_pins_sup_at_minus_one plus the
+    # from-step-2 off-path identity.
+    # RE-PINNED AGAIN by the immersion-freezing overflow rescue folded off
+    # p3/front-door-20260829: the droplet and rain branches gained WRF's own
+    # commented-out double excursion, reached ONLY when the single-precision
+    # chain overflows to +Inf.  A real 6 h GFS forecast on the shipped
+    # p3-mp50 suite went non-finite at step 284 because it does (see the
+    # block comment at the branch and gpuwm/core/p3.py
+    # _rescue_overflowed_product).  The float path is byte-unchanged, so
+    # this is a new branch, not a moved answer.
     "p3":
-        "9cbcca644bd0407fa9d8b4e4f90d463287b6058a33b40399e334e74c2fa2a803",
+        "58b164ab9a650a25c330a5961e95c93fbaac753471ea44ecb71395aa3a8c3039",
     # 9c57c4ee9 feat(sase): CUDA mirror of the S3-12 additive e^{3/2} dissipation channel, p
     "sase":
         "9c49c1d06f5dfc30de04e2bed68b1d5ff4a4bf3426dadb943da03124e41d940d",

@@ -426,37 +426,39 @@ def test_the_mynn_matrix_is_the_same_in_every_land_surface_column(
 
 #: The microphysics MYNN reaches in the walk's MYNN slice, measured.
 #:
-#: The slice's anchor runs RTE+RRTMGP on both radiation streams, and TWO
-#: admitted microphysics values are refused against it, both for the same
-#: missing thing -- a cloud-optics row in
-#: gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME -- and for different WRF
-#: reasons:
+#: The slice's anchor runs RTE+RRTMGP on both radiation streams, and ONE
+#: admitted microphysics value is refused against it, for the missing
+#: thing this table is about -- a cloud-optics row in
+#: gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME:
 #:
 #: * mp_physics=9 (Milbrandt-Yau) publishes NO effective radii at all.  WRF
 #:   leaves has_reqc/has_reqi/has_reqs at 0 for MILBRANDT2MOM
 #:   (phys/module_physics_init.F:1004-1023) and the scheme's own
 #:   effective-radius block is commented out.
-#: * mp_physics=50 (P3) publishes cloud and ice radii but no SNOW radius:
-#:   WRF's P3 override sets has_reqs=0 (:1027-1033) and P3's single ice
-#:   category has no separate snow species.  Every existing row assumes a
-#:   snow radius, so there is none to reuse.
 #:
-#: Neither is a MYNN limitation, and neither is a place to invent physics:
+#: It is not a MYNN limitation, and it is not a place to invent physics:
 #: handing RRTMGP radii nobody computed is what put mp=28 on Kessler's row
-#: until 2026-08-01.  Both refusals name two remedies and both work:
+#: until 2026-08-01.  The refusal names two remedies and both work:
 #: ra_rrtmg_variant = 'rrtmg_legacy', or the Dudhia pair.
 #:
-#: The 50 entry moved OUT of this list at the 1.9 gate, when
-#: gpuwm.config.validate_p3_radiation started refusing the pairing the
-#: loader used to admit and the run used to die on.
-MYNN_MICROPHYSICS_ACCEPTED = [0, 1, 6, 8, 10, 16, 18, 28]
+#: mp_physics=50 (P3) SAT BESIDE IT AND NO LONGER DOES, which is the record
+#: of a fix rather than a widening.  P3 publishes cloud and ice radii but
+#: no snow radius, and it was excluded only because no RTE+RRTMGP row
+#: existed that did not assume one.  The row now does -- ``50: "p3"``,
+#: WRF's own coupling, has_reqc=1, has_reqi=1, has_reqs=0
+#: (module_physics_init.F:1022-1024 then :1033), with the wrappers'
+#: ice-into-snow remap (module_ra_rrtmg_lw.F:12250-12261,
+#: module_ra_rrtmg_sw.F:10851-10863) transcribed into hydrometeor_paths --
+#: so the pairing resolves instead of refusing, and
+#: gpuwm.config.validate_p3_radiation is retired with it.
+MYNN_MICROPHYSICS_ACCEPTED = [0, 1, 6, 8, 10, 16, 18, 28, 50]
 
 #: The admitted microphysics values the MYNN slice does not reach, and
-#: why.  Stated as the pair they are refused against, because each is
-#: refused against THAT radiation variant and not in general.  50 joined 9
-#: at the 1.9 gate; see MYNN_MICROPHYSICS_ACCEPTED for the two distinct
-#: WRF reasons.
-MYNN_MICROPHYSICS_EXCLUDED = (9, 50)
+#: why.  Stated as the pair it is refused against, because it is refused
+#: against THAT radiation variant and not in general.  50 was here from
+#: the 1.9 gate until the P3 cloud-optics row landed; see
+#: MYNN_MICROPHYSICS_ACCEPTED.
+MYNN_MICROPHYSICS_EXCLUDED = (9,)
 
 
 def test_mynn_composes_with_every_microphysics_and_cumulus_scheme(

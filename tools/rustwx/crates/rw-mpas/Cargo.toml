@@ -27,6 +27,10 @@ sha2 = "0.10"
 thiserror.workspace = true
 
 [[bin]]
+name = "cpas_bench_probe"
+path = "src/bin/cpas_bench_probe.rs"
+
+[[bin]]
 name = "rw_mpas_convert"
 path = "src/bin/rw_mpas_convert.rs"
 

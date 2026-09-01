@@ -1092,6 +1092,125 @@ fn validate_supersample(factor: usize) -> MpasResult<()> {
     Ok(())
 }
 
+/// The smallest inradius any Voronoi cell of this mesh has, in metres.
+///
+/// A Voronoi cell's boundary with a neighbour is the perpendicular bisector of
+/// the line joining the two generators, so the generator's distance to that
+/// boundary is exactly `dcEdge / 2`. The inradius of one cell is therefore the
+/// smallest half-`dcEdge` over its own edges, and the smallest over the whole
+/// mesh is `min(dcEdge) / 2` -- every edge belongs to two cells, so no cell is
+/// missed. Exact, not an estimate, and it is what
+/// [`categorical_supersample`] needs.
+fn min_cell_inradius_m(mesh: &Mesh) -> f64 {
+    0.5 * mesh
+        .dc_edge
+        .iter()
+        .copied()
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// How finely a CATEGORICAL source has to be sampled for every cell of this
+/// mesh to receive at least one sample.
+///
+/// THE BREAKAGE THIS PREVENTS, MEASURED 2026-08-29 on this lane's own
+/// 110,533-cell mesh (finest cell 946.99 m across flats, min dcEdge 869.25 m).
+/// Every geography dataset is sampled at one point per source pixel and each
+/// sample is charged to the NEAREST cell centre, which is the cell that
+/// contains it. When the destination cells become comparable to a source
+/// pixel, a cell can contain no sample at all: at `supersample = 1` on
+/// `modis_landuse_20class_30s_with_lakes` -- 30 arc-seconds, 926 m of latitude
+/// per pixel -- cell 49103 at 34.79N 96.84W received ZERO valid category
+/// pixels and the build stopped with `mapped no valid category pixels to cell
+/// 49103`. That refusal is correct and is NOT relaxed here: a category cannot
+/// be averaged or interpolated, so filling one silently would put a land use
+/// under a column that no archive pixel supports. What was wrong is the
+/// SAMPLING RATE, and it is derived here instead of being a constant that
+/// happened to suit meshes coarser than the archive.
+///
+/// THE CRITERION, and it is a guarantee rather than a heuristic. The
+/// subpixel centres of a regular latitude/longitude product form a lattice
+/// whose ground spacing is at most `dx_deg` and `dy_deg` in radians times the
+/// sphere radius, divided by the factor -- at most, because the longitudinal
+/// spacing carries a `cos(latitude)` this ignores. The covering radius of a
+/// rectangular lattice is half its diagonal, so every convex region whose
+/// inradius is at least that radius contains a lattice point:
+///
+/// ```text
+/// 0.5 * hypot(dx_m, dy_m) / factor  <=  min_cell_inradius_m
+/// ```
+///
+/// A Voronoi cell IS convex, and [`min_cell_inradius_m`] is exact, so a factor
+/// satisfying this puts at least one subpixel centre inside EVERY cell. The
+/// refusal above therefore stops being reachable by the mesh being fine, and
+/// remains reachable by the archive being fill over the cell, by the cell
+/// being outside `max_distance2`, or by the native regional outermost-ring
+/// rule -- which are the three things it should still catch.
+///
+/// WHAT THIS DOES NOT MOVE. For a mesh whose cells are coarser than the source
+/// the expression returns 1, which is what every already-registered mesh and
+/// both published meshes get. The 30 arc-second products have a pixel diagonal
+/// of `hypot(926.62, 926.62) = 1,310.43 m`, so the rate is
+/// `ceil(1310.43 / min(dcEdge))`
+/// and **any mesh with `min(dcEdge) >= 1,310.43 m` samples exactly as it did
+/// before**, its static's bytes unmovable. The finest REGISTERED mesh before
+/// this constant existed has `min(dcEdge)` 4,302.90 m (`v4.75.123423`) and the
+/// two published meshes are 24 km and 97 km, so all three are 3.3x to 74x
+/// clear of the boundary. Proven, not
+/// argued: `x1.40962` and `x4.163842` statics rebuild byte-for-byte.
+///
+/// The 1..=16 ceiling is [`validate_supersample`]'s and stands: a factor
+/// squares into the per-tile destination map. A mesh fine enough to need more
+/// is refused BY NAME, because at that point the archive is coarser than the
+/// mesh by more than sixteen and its categories are being replicated rather
+/// than resolved -- a statement about the data, which no sampling rate fixes.
+fn categorical_supersample(
+    index: &crate::static_geog::GeogIndex,
+    min_cell_inradius_m: f64,
+    floor: usize,
+    path: &Path,
+) -> MpasResult<usize> {
+    let per_degree = MPAS_EARTH_RADIUS_M * std::f64::consts::PI / 180.0;
+    let dx_m = index.dx.abs() * per_degree;
+    let dy_m = index.dy.abs() * per_degree;
+    let diagonal = dx_m.hypot(dy_m);
+    if !min_cell_inradius_m.is_finite() || min_cell_inradius_m <= 0.0 {
+        return Err(MpasError::Refusal(format!(
+            "the mesh reports no finite positive dcEdge, so the sampling rate {} needs cannot be derived",
+            path.display()
+        )));
+    }
+    let needed = (0.5 * diagonal / min_cell_inradius_m).ceil();
+    let needed = if needed.is_finite() && needed >= 1.0 {
+        needed as usize
+    } else {
+        1
+    };
+    let factor = needed.max(floor.max(1));
+    if factor > 16 {
+        return Err(MpasError::Refusal(format!(
+            "{} has {:.1} m x {:.1} m pixels and this mesh's smallest cell has an inradius of {:.1} m, so every cell receives a sample only at supersample {factor}, past the supported ceiling of 16. The archive is coarser than the mesh by more than sixteen: its categories would be REPLICATED rather than resolved, which no sampling rate fixes. Build this mesh against a finer categorical archive, or coarsen the mesh so its smallest cell inradius is at least {:.1} m",
+            path.display(),
+            dx_m,
+            dy_m,
+            min_cell_inradius_m,
+            0.5 * diagonal / 16.0
+        )));
+    }
+    validate_supersample(factor)?;
+    Ok(factor)
+}
+
+/// [`categorical_supersample`] for a dataset named by path.
+fn categorical_supersample_for(
+    path: &Path,
+    min_cell_inradius_m: f64,
+    floor: usize,
+) -> MpasResult<usize> {
+    let ds = GeogDataset::open(path)?;
+    categorical_supersample(&ds.index, min_cell_inradius_m, floor, path)
+}
+
 /// A conservative reject sphere around the whole cell cloud.
 ///
 /// On a GLOBAL mesh every pixel is near some cell and the kd search prunes
@@ -2117,6 +2236,37 @@ fn dataset_footprint(path: &Path, factor: usize, planes_held: usize) -> MpasResu
     })
 }
 
+/// The sampling rate each CATEGORICAL dataset gets for one mesh.
+///
+/// Derived once and used in two places -- the memory the admission gate plans
+/// against and the passes that spend it -- because a factor computed twice is
+/// two things to keep equal, and the one that would drift is the one the
+/// budget was granted for.
+#[derive(Debug, Clone, Copy)]
+struct CategoricalFactors {
+    landuse: usize,
+    soilcat: usize,
+    soilcl: [usize; 4],
+}
+
+fn categorical_factors(
+    mesh: &Mesh,
+    cfg: &StaticBuildConfig,
+) -> MpasResult<CategoricalFactors> {
+    let r = min_cell_inradius_m(mesh);
+    let g = &cfg.geog;
+    Ok(CategoricalFactors {
+        landuse: categorical_supersample_for(&g.landuse, r, cfg.supersample_landuse)?,
+        soilcat: categorical_supersample_for(&g.soilcat, r, cfg.supersample)?,
+        soilcl: [
+            categorical_supersample_for(&g.soilcl1, r, cfg.supersample_30s)?,
+            categorical_supersample_for(&g.soilcl2, r, cfg.supersample_30s)?,
+            categorical_supersample_for(&g.soilcl3, r, cfg.supersample_30s)?,
+            categorical_supersample_for(&g.soilcl4, r, cfg.supersample_30s)?,
+        ],
+    })
+}
+
 /// The resident, per-worker and cache terms the admission gate plans against.
 fn build_footprint(mesh: &Mesh, cfg: &StaticBuildConfig) -> MpasResult<(u64, u64, u64, u64)> {
     let resident = ((mesh.n_cells * (12 + 8 + 4) * 8)
@@ -2129,18 +2279,24 @@ fn build_footprint(mesh: &Mesh, cfg: &StaticBuildConfig) -> MpasResult<(u64, u64
     // `planes_held`: every pass streams one plane at a time except soilcomp,
     // which needs the whole soil column of a tile resident together.
     let soilcomp_planes = GeogDataset::open(&g.soilcomp)?.index.nz();
+    // The six CATEGORICAL datasets are sampled at the rate this mesh needs
+    // (see `categorical_supersample`), so the memory the admission gate plans
+    // against is the memory the passes actually take. Planning at the
+    // configured floor while the pass ran finer would admit a build that then
+    // exceeded its own granted budget.
+    let cat = categorical_factors(mesh, cfg)?;
     let specs: [(&PathBuf, usize, usize); 11] = [
         (&g.terrain, cfg.supersample, 1),
-        (&g.landuse, cfg.supersample_landuse, 1),
-        (&g.soilcat, cfg.supersample, 1),
+        (&g.landuse, cat.landuse, 1),
+        (&g.soilcat, cat.soilcat, 1),
         (&g.greenfrac, cfg.supersample_30s, 1),
         (&g.albedo, cfg.supersample_30s, 1),
         (&g.snow_albedo, cfg.supersample_30s, 1),
         (&g.soilcomp, cfg.supersample_30s, soilcomp_planes),
-        (&g.soilcl1, cfg.supersample_30s, 1),
-        (&g.soilcl2, cfg.supersample_30s, 1),
-        (&g.soilcl3, cfg.supersample_30s, 1),
-        (&g.soilcl4, cfg.supersample_30s, 1),
+        (&g.soilcl1, cat.soilcl[0], 1),
+        (&g.soilcl2, cat.soilcl[1], 1),
+        (&g.soilcl3, cat.soilcl[2], 1),
+        (&g.soilcl4, cat.soilcl[3], 1),
     ];
 
     let mut per_worker = 0u64;
@@ -2981,6 +3137,11 @@ pub fn build_static_reporting(
         vec![],
     );
 
+    // The sampling rate every CATEGORICAL source needs for THIS mesh, derived
+    // from the mesh's own smallest cell.  Same function the admission gate
+    // planned the memory with, so the pass cannot spend more than was granted.
+    let cat_factors = categorical_factors(&mesh, &cfg)?;
+
     let mut datasets = Vec::new();
     let mut time_field = |field: &str, path: &Path, factor: usize, f: &mut dyn FnMut() -> MpasResult<(u64, u64)>| -> MpasResult<()> {
         let started = Instant::now();
@@ -3029,8 +3190,8 @@ pub fn build_static_reporting(
 
     let mut ivgtyp = Vec::new();
     let mut landuse_ds_opt = None;
-    time_field("landuse", &cfg.geog.landuse, cfg.supersample_landuse, &mut || {
-        let (v, _, _, ds) = categorical(&ctx, &cfg.geog.landuse, cfg.supersample_landuse)?;
+    time_field("landuse", &cfg.geog.landuse, cat_factors.landuse, &mut || {
+        let (v, _, _, ds) = categorical(&ctx, &cfg.geog.landuse, cat_factors.landuse)?;
         ivgtyp = v;
         let pb = ds.plane_bytes();
         landuse_ds_opt = Some(ds);
@@ -3042,8 +3203,8 @@ pub fn build_static_reporting(
     let landmask: Vec<i32> = ivgtyp.iter().map(|&v| if v == iswater_lu { 0 } else { 1 }).collect();
 
     let mut isltyp = Vec::new();
-    time_field("soilcat_top", &cfg.geog.soilcat, cfg.supersample, &mut || {
-        let (v, _, _, ds) = categorical(&ctx, &cfg.geog.soilcat, cfg.supersample)?;
+    time_field("soilcat_top", &cfg.geog.soilcat, cat_factors.soilcat, &mut || {
+        let (v, _, _, ds) = categorical(&ctx, &cfg.geog.soilcat, cat_factors.soilcat)?;
         isltyp = v;
         Ok((ds.plane_bytes(), (isltyp.len() * 4) as u64))
     })?;
@@ -3103,8 +3264,8 @@ pub fn build_static_reporting(
     let paths = [&cfg.geog.soilcl1, &cfg.geog.soilcl2, &cfg.geog.soilcl3, &cfg.geog.soilcl4];
     for idx in 0..4 {
         let field = format!("soilcl{}", idx + 1);
-        time_field(&field, paths[idx], cfg.supersample_30s, &mut || {
-            let (v, _, _, ds) = categorical(&ctx, paths[idx], cfg.supersample_30s)?;
+        time_field(&field, paths[idx], cat_factors.soilcl[idx], &mut || {
+            let (v, _, _, ds) = categorical(&ctx, paths[idx], cat_factors.soilcl[idx])?;
             soilcls[idx] = v;
             Ok((ds.plane_bytes(), (soilcls[idx].len() * 4) as u64))
         })?;
@@ -4618,5 +4779,103 @@ mod tests {
         for good in [1usize, 4, 16] {
             validate_supersample(good).expect("inside 1..=16");
         }
+    }
+
+    /// A categorical archive at a stated pixel size, for the sampling-rate
+    /// derivation.  Only the index is read; no tile is opened.
+    fn categorical_index_at(label: &str, degrees: f64) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "rw-mpas-catrate-{}-{}",
+            std::process::id(),
+            label
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("fixture directory");
+        let index = format!(
+            "type=categorical
+projection=regular_ll
+dx={degrees}
+dy={degrees}
+             known_x=1.0
+known_y=1.0
+known_lat=-89.0
+known_lon=-179.0
+             wordsize=1
+tile_x=4
+tile_y=4
+tile_z=1
+             tile_bdr=0
+endian=big
+signed=no
+scale_factor=1.0
+             category_min=1
+category_max=8
+iswater=3
+mminlu=FIXTURE
+"
+        );
+        std::fs::write(dir.join("index"), index).expect("fixture index");
+        // One tile, so the dataset opens.  Only `dx`/`dy` are read here.
+        std::fs::write(dir.join("00001-00004.00001-00004"), [1u8; 16]).expect("fixture tile");
+        dir
+    }
+
+    /// THE BREAKAGE: a mesh whose cells are comparable to a source pixel has
+    /// cells no sample lands in, and the categorical pass refuses by name.
+    /// MEASURED 2026-08-29 on `v0.9.120.110533`: at rate 1 on the 30
+    /// arc-second MODIS land use, cell 49103 at 34.79 N 96.84 W received zero
+    /// valid category pixels.  The rate is derived so that cannot happen.
+    #[test]
+    fn a_mesh_finer_than_the_archive_is_sampled_finely_enough_that_every_cell_gets_one() {
+        let thirty_arcsec = categorical_index_at("30s", 30.0 / 3600.0);
+        // The lane's own mesh: min(dcEdge) 869.25 m, so an inradius of
+        // 434.6 m against a pixel diagonal of hypot(926.62, 926.62) = 1,310.43 m.
+        let f = categorical_supersample_for(&thirty_arcsec, 869.2511747929626 / 2.0, 1)
+            .expect("30 arc-second archive on a 869 m mesh");
+        assert_eq!(f, 2, "a 947 m mesh needs its 30 arc-second categories sampled twice per axis");
+        // And the guarantee it is derived from actually holds at that rate.
+        let per_degree = MPAS_EARTH_RADIUS_M * std::f64::consts::PI / 180.0;
+        let pixel = (30.0 / 3600.0) * per_degree;
+        assert!(
+            0.5 * pixel.hypot(pixel) / (f as f64) <= 869.2511747929626 / 2.0,
+            "the covering radius must fit inside the smallest cell's inradius"
+        );
+    }
+
+    /// The other half, and it is what keeps every registered static's bytes
+    /// where they are: for a mesh coarser than the archive the derivation
+    /// returns 1, which is the rate every published file was built at.
+    #[test]
+    fn a_mesh_coarser_than_the_archive_is_sampled_exactly_as_it_always_was() {
+        let thirty_arcsec = categorical_index_at("30s-coarse", 30.0 / 3600.0);
+        // x1.40962 (min dcEdge ~97 km), x4.163842 (~24 km), the finest
+        // registered graded rows (4,302.90 m is the finest of them), and the
+        // boundary itself.
+        for min_dc in [97_076.0, 24_000.0, 4_566.0, 4_302.90, 1_311.0] {
+            let f = categorical_supersample_for(&thirty_arcsec, min_dc / 2.0, 1)
+                .expect("coarse mesh");
+            assert_eq!(f, 1, "min(dcEdge) {min_dc} m must sample at rate 1");
+        }
+        // Just below the boundary it is 2, so the boundary sits where the
+        // derivation puts it rather than where a constant would.  The pixel
+        // diagonal of a 30 arc-second product is 1,310.43 m and the rate is
+        // ceil(1310.43 / min(dcEdge)).
+        let f = categorical_supersample_for(&thirty_arcsec, 1_300.0 / 2.0, 1).expect("just under");
+        assert_eq!(f, 2);
+    }
+
+    /// An archive more than sixteen times coarser than the mesh is REFUSED by
+    /// name rather than sampled at a rate the tile map cannot hold, and the
+    /// refusal says the thing that matters: at that ratio the categories are
+    /// being replicated rather than resolved, which no rate fixes.
+    #[test]
+    fn an_archive_far_coarser_than_the_mesh_is_refused_by_name() {
+        let one_degree = categorical_index_at("1deg", 1.0);
+        let err = categorical_supersample_for(&one_degree, 869.2511747929626 / 2.0, 1)
+            .expect_err("a 111 km archive on a 869 m mesh");
+        let text = err.to_string();
+        assert!(text.contains("supersample 16") || text.contains("past the supported ceiling"), "{text}");
+        assert!(text.contains("REPLICATED"), "{text}");
+        assert!(text.contains("finer categorical archive"), "{text}");
     }
 }

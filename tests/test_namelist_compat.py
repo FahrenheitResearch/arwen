@@ -414,8 +414,8 @@ def test_p3_runtime_is_reported_runnable_and_not_denied_as_unimplemented(
     dispatches to gpuwm/core/p3.py, and this same report writes a full
     stock-export row for.  A user reading the support report for an mp=50
     experiment was told to abandon a scheme that runs.  Radiation is the
-    Dudhia pair here, because the 4/4 RTE+RRTMGP pairing is separately
-    refused (the test below).
+    Dudhia pair here; the 4/4 RTE+RRTMGP pairing has its own test below,
+    which now asserts admission since the coupling landed.
     """
     report = require_supported_namelists(
         *_write_pair(tmp_path, mp=50, ra_lw=0, ra_sw=1))
@@ -434,31 +434,24 @@ def test_p3_runtime_is_reported_runnable_and_not_denied_as_unimplemented(
     assert "QSNOW" not in names and "QGRAUP" not in names
 
 
-def test_p3_rte_rrtmgp_pairing_is_refused_by_name_not_as_unimplemented(
+def test_p3_rte_rrtmgp_pairing_is_admitted_since_the_coupling_landed(
         tmp_path):
-    """Admitting the SCHEME does not admit the 4/4 RTE+RRTMGP PAIRING.
+    """The 4/4 RTE+RRTMGP pairing passes for mp=50, with no refusal row.
 
-    P3 supplies cloud and ice radii but no snow radius -- WRF sets
-    has_reqs=0 for the P3 family (phys/module_physics_init.F:1027-1033) --
-    so gpuwm.config.validate_p3_radiation refuses ra_lw_physics=4 /
-    ra_sw_physics=4 at the head's config door, by default
-    (ra_rrtmg_variant defaults to "rte-rrtmgp").  The concrete breakage
-    this reason prevents is a green support report followed by a full WPS
-    export and then a NotImplementedError at config load.  The reason must
-    say WHY, and must not say the scheme is unimplemented.
+    This test used to assert the report FAILED that pairing by name,
+    mirroring gpuwm.config.validate_p3_radiation.  Both retired with
+    their defect: gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME carries
+    ``50: "p3"`` now -- WRF's own has_reqs=0 coupling, the wrappers'
+    remap of the single ice category onto the snow species
+    (module_ra_rrtmg_lw.F:12250-12261, _sw.F:10851-10863) -- so a bare
+    4/4 namelist resolves to a pairing that runs.  A guard that outlives
+    its defect refuses working configurations; a report row asserting a
+    retired refusal would tell mp=50 users their working namelist fails.
     """
     report = analyze_namelists(*_write_pair(tmp_path, mp=50, ra_lw=4, ra_sw=4))
     assert report["required_state"]["stock_wrf_export"]["verdict"] == "PASS"
     runtime = report["required_state"]["gpuwm_runtime"]
-    assert runtime["verdict"] == "FAIL"
-    assert len(runtime["reasons"]) == 6
-    for reason in runtime["reasons"]:
-        assert "does not implement mp_physics=50" not in reason
-        assert "implements mp_physics=50" in reason
-        assert "ra_lw_physics=4/ra_sw_physics=4" in reason
-        assert "has_reqs=0" in reason
-        assert "module_physics_init.F:1027-1033" in reason
-        assert "validate_p3_radiation" in reason
+    assert runtime == {"verdict": "PASS", "reasons": []}
 
 
 @pytest.mark.parametrize("mass_levels", [35, 49, 80])

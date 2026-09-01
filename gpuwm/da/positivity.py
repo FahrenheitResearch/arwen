@@ -201,7 +201,24 @@ def apply_positivity(prior: Mapping[str, object],
                                  if name not in constrained],
         "negative_points": total_points,
         "mass_added_by_clip": total_mass if policy == "clip" else 0.0,
-        "mass_left_negative": 0.0 if policy == "clip" else total_mass,
+        # Only 'none' leaves negative mass standing.  'reject' reverts the
+        # increment at every offending point, so the analysis there IS the
+        # background -- nonnegative by construction -- and reporting the
+        # would-have-been-added mass under this name said the opposite of
+        # what happened: a receipt claiming the run shipped negative
+        # hydrometeor mass it had in fact refused to ship.  The quantity
+        # itself is not lost; it is the per-field
+        # ``mass_that_would_have_been_added``, which is what it always was.
+        "mass_left_negative": total_mass if policy == "none" else 0.0,
+        # What 'reject' actually does, named rather than implied.  It reverts
+        # the increment for the CONSTRAINED fields at the shared mask and
+        # leaves the same covariance increment standing everywhere else --
+        # wind and theta at those points keep their analysed values.  That is
+        # a constrained-field reject, not a whole-state one, and the two give
+        # different analyses; which one this product should do is a ruling to
+        # be taken, not a default to be changed quietly here.
+        "positivity_semantics": ("constrained-field-reject"
+                                 if policy == "reject" else policy),
         "per_field": per_field,
         "note": (
             "clip-at-zero ADDS mass and is biased wetward; the counts above "

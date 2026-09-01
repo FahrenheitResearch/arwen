@@ -59,6 +59,14 @@ imposing one scheme's assumptions on another:
   verbatim here.  Two departures from the 1/6/8/10 family the caller must
   carry: radardd02 floors at **0 dBZ**, not -35, and it reads five ice
   categories plus their moments rather than the shared rain-first set.
+- ``mp_physics=50`` -- P3 is REFUSED BY NAME and is not in either list
+  above; see :data:`NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP` for the reason
+  text the refusal prints.  P3 is an active scheme and it does produce
+  reflectivity -- ``gpuwm.core.p3`` stashes the scheme's own diagnostic Z
+  as REFL_10CM -- but that Z is computed inside ``p3_main``'s final
+  diagnostics loop, which is simultaneously a state update, so there is
+  no pure H_Z(x) to adapt over.  ``gpuwm.core.refl.compute_refl_10cm``
+  carries no mp=50 branch for the same reason and must not gain one here.
 
 The 1/6/8/10 routes share the -35 dBZ floor, the 1e-9 kg/kg species
 activity threshold, and the ``refl10cm_hm`` air-density diagnosis, so
@@ -172,6 +180,11 @@ Q_ACTIVE_THRESHOLD = 1.0e-9
 #: two agreeing clear skies yield a 35 dB innovation.  Typing ``-35.0`` at
 #: a call site is the defect this table prevents -- it is right for four
 #: schemes and silently catastrophic for the fifth.
+#:
+#: A scheme is in this table only if ONE number is the whole answer for it.
+#: The schemes for which it is not are refused by name in
+#: :data:`CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER`, which is a different
+#: statement from being absent.
 CLEAR_AIR_FLOOR_DBZ: dict[int, float] = {
     1: -35.0,
     6: -35.0,
@@ -181,6 +194,52 @@ CLEAR_AIR_FLOOR_DBZ: dict[int, float] = {
     28: -35.0,
 }
 
+#: Schemes whose H(x) has NO single clear-air value, and the paragraph that
+#: says why for each.
+#:
+#: Absence from :data:`CLEAR_AIR_FLOOR_DBZ` says "nobody has read this
+#: scheme's floor yet", which is an omission somebody can close by reading
+#: the scheme.  These schemes are a different thing and must not be
+#: reported as that one: no number belongs in the table for them, because
+#: the operator does not produce one number.  Their refusal names the
+#: mechanism, so a reader finds a decision instead of a gap and an editor
+#: who reaches for ``-35.0`` finds out what it would cost.
+CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER: dict[int, str] = {
+    50: (
+        "P3, one-category two-moment ice, reports TWO different clear-air "
+        "numbers in the same field, so no single value is its floor.  P3's "
+        "REFL_10CM is ``diag_ze`` verbatim -- ``mp_p3_wrapper_wrf`` "
+        "(module_mp_p3.F:690-932) hands the history array straight into "
+        "``p3_main`` and applies no clamp of its own -- and ``diag_ze`` is "
+        "``10*log10((ze_rain + ze_ice)*1e18)`` over two accumulators seeded "
+        "at 1e-22 mm6 m-3 (:2286-2287), so a clear LEVEL reads "
+        "-36.9897 dBZ, not -35.  A column in which nothing anywhere clears "
+        "QSMALL never reaches that diagnostic block at all -- the "
+        "no-hydrometeor skip (:3972; gpuwm/core/p3.py:1293-1294 and "
+        "gpuwm/core/kernels/p3.cu:1862) leaves every level of it holding "
+        "the -99.0 dBZ value the entry initialisation wrote (:2278).  "
+        "MEASURED, and measured against the Fortran rather than against "
+        "the transcription of it: in the WRF-Fortran oracle campaign the "
+        "reference ``zdbz`` field is bit-identical to this tree on "
+        "F01-clear-dry and F05-coldstart-nucleation, whose entire "
+        "magnitude is 99.0, and on F03-riming and F04-dep-sub, whose clear "
+        "levels hold 36.9897 (evidence/p3-fortran-oracle-20260828/"
+        "receipts/arwen-vs-fortranA.json).  Neither number is -35, and "
+        "P3 is not in "
+        "the refl10cm family that floor belongs to: it carries one ice "
+        "category and no qs and no qg, and stashes its own diagnostic "
+        "rather than being dispatched to gpuwm.core.refl.  Picking either "
+        "value is catastrophic in one direction -- -35.0 puts a +64 dB "
+        "innovation in every fully dry column and the analysis builds "
+        "condensate into clear sky; -99.0 puts a -62 dB innovation at "
+        "every clear level beside an echo and the analysis erases "
+        "condensate around every storm.  What P3 clear-air assimilation "
+        "needs is a per-cell clear-air FIELD, or a rule that masks the "
+        "no-hydrometeor columns out of the batch, and nobody has specified "
+        "one"
+    ),
+}
+
 
 def clear_air_floor_dbz(mp_physics: int) -> float:
     """The active scheme's clear-air H(x) value, or a refusal.
@@ -188,9 +247,23 @@ def clear_air_floor_dbz(mp_physics: int) -> float:
     Never falls back to the -35 dBZ majority: an unknown scheme is one
     whose floor nobody has read, and guessing it wrong is invisible in
     every diagnostic except the analysis increment.
+
+    A scheme in :data:`CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER` is refused with
+    ITS OWN reason rather than the generic one, because "this scheme's
+    floor has not been read" and "this scheme has no single floor to read"
+    ask the reader to do different things.
     """
 
     key = int(mp_physics)
+    reason = CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER.get(key)
+    if reason is not None:
+        raise ValueError(
+            f"mp_physics={key} has no single clear-air reflectivity floor, "
+            f"so none is recorded and none can be: {reason}. Until that "
+            "exists, run this scheme's cycles with clear_air=False; an "
+            "explicit clear_air_value_dbz is honoured but is a claim about "
+            "H(x) that this operator can show to be false for part of "
+            "every field")
     if key not in CLEAR_AIR_FLOOR_DBZ:
         raise ValueError(
             f"no clear-air reflectivity floor is recorded for mp_physics="
@@ -750,6 +823,58 @@ def _nssl_reflectivity(state, temperature, pressure):
     return refl
 
 
+_P3_NO_PURE_OPERATOR = (
+    "mp_physics=50 (P3) has no H_Z(x) in this module, and this is a NAMED "
+    "refusal, not an absence. P3 is an ACTIVE microphysics scheme and it "
+    "DOES produce reflectivity: gpuwm/core/p3.py:1911-1915 (reference arm) "
+    "and :2062-2064 (CUDA arm) stash the scheme's own diagnostic Z as "
+    "REFL_10CM on every history frame, which "
+    "is why gpuwm/core/refl.py deliberately carries no mp=50 branch. What "
+    "P3 cannot do is produce that Z as a PURE function of the state, which "
+    "is what an observation operator is. WRF computes P3's dBZ inside "
+    "p3_main's k_loop_final_diagnostics (module_mp_p3.F:4722-4895, within "
+    "p3_main :1905-5201), and that loop is simultaneously a state update: "
+    "it dumps sub-qsmall rain and ice into vapour and theta (:4759-4763, "
+    ":4873-4880) and clamps ni onto the ice lookup table's lambda limiters "
+    "before ze_ice reads it (:4833-4834). The gpuwm port is fused the same "
+    "way (p3_final_level, gpuwm/core/kernels/p3.cu), so evaluating it here "
+    "would move the background it is meant to observe. Routing P3 into "
+    "compute_refl_10cm instead is worse than a gap: P3 has ONE ice "
+    "category and allocates no qs and no qg at all "
+    "(gpuwm/core/state.py:464-478), so the only branch whose field list a "
+    "P3 state satisfies is the mp=1 Kessler rain-only fallback, which "
+    "reads qr alone -- it would return the -35 dBZ clear-air floor through "
+    "every glaciated updraft while P3 carries that mass in qi/qir/qib. "
+    "Difference against the model's own REFL_10CM output instead, or pass "
+    "the field in (hotstart_increments takes simulated_dbz=). Lifting this "
+    "refusal means porting a PURE P3 Z -- get_rain_dsd2, calc_bulkRhoRime, "
+    "find_lookupTable_indices_1a and the f1pr13 lookup replayed on LOCAL "
+    "copies -- which is a scheme mirror, not an adapter over one."
+)
+
+#: Shipped ``mp_physics`` selectors whose reflectivity is NATIVE to the
+#: scheme and is NOT separable from the scheme's own state update, with the
+#: reason each one is refused.  Recorded in the pattern
+#: ``gpuwm.core.microphysics_transition.UNVALIDATED_MIXED_EDGE_SELECTORS``
+#: uses for nest edges: an exclusion that SPEAKS, so the next reader finds
+#: a decision instead of an omission.
+#:
+#: mp=18 is deliberately NOT here.  NSSL's ``radardd02`` is a separate,
+#: pure Fortran diagnostic, so it earns the real arm above; the criterion
+#: is separability, not "the scheme is not in the 1/6/8/10/16/28 family".
+#:
+#: Without this table mp=50 fell off the end of the dispatch into
+#: ``gpuwm.core.refl.compute_refl_10cm``, whose gate answers a P3 state
+#: with "do_radar_ref needs an active microphysics scheme (mp_physics 1,
+#: 6, 8, 10, 16, or 28), got 50" -- false twice over -- and the host
+#: fallback answered it with the same sentence it gives mp_physics=99, a
+#: selector that does not exist.  A shipped scheme and a typo read
+#: identically, which is the reachability defect, not the missing Z.
+NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP: dict[int, str] = {
+    50: _P3_NO_PURE_OPERATOR,
+}
+
+
 def simulated_reflectivity(state, cfg, *, temperature=None, pressure=None,
                            thompson_graupel_number=None):
     """H_Z(x): 10 cm reflectivity ``(nz, ny, nx)`` in dBZ.
@@ -768,6 +893,13 @@ def simulated_reflectivity(state, cfg, *, temperature=None, pressure=None,
     them diagnoses temperature from the current state, which is the
     right choice for a DA operator evaluated between steps.
 
+    ``mp_physics=50`` is refused BY NAME through
+    :data:`NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP`: P3 is active and does
+    produce reflectivity, but only from inside ``p3_main``'s final
+    diagnostics loop, which also updates the state -- so it is not an
+    H_Z(x) and it is not routed to ``compute_refl_10cm``, whose only
+    P3-satisfiable branch is the rain-only Kessler fallback.
+
     ``mp_physics=18`` dispatches to the product's NSSL ``radardd02``
     diagnostic exactly as the production coordinator does (CUDA only, no
     host mirror; see :func:`_nssl_reflectivity` for the two caveats a DA
@@ -784,6 +916,13 @@ def simulated_reflectivity(state, cfg, *, temperature=None, pressure=None,
         raise ValueError("simulated reflectivity requires a moist state")
     if (temperature is None) != (pressure is None):
         raise ValueError("temperature and pressure must be supplied together")
+
+    # Ahead of the host/device split, because neither path has this scheme's
+    # Z and both used to answer a shipped scheme the way they answer a
+    # selector that does not exist.
+    refusal = NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP.get(int(cfg.mp_physics))
+    if refusal is not None:
+        raise NotImplementedError(refusal)
 
     xp = _array_module(state.p)
     if xp is np:

@@ -122,6 +122,9 @@ from gpuwm.physics_compat import (  # noqa: E402
     validate_single_domain_physics_profile,
 )
 from gpuwm.certify.capsule import emit_run_capsule  # noqa: E402
+from gpuwm.spectral_seam import (  # noqa: E402
+    seam_capsule_receipts as _seam_capsule_receipts,
+)
 from gpuwm.source_adapters import packaged_profile_sources  # noqa: E402
 # Re-exported, not called here: `tests/test_prepared_single_domain_forecast`
 # reads the GRIB2 profile's pins through this module because this module is
@@ -6913,7 +6916,8 @@ def run_prepared_forecast(
                 # what the executor calls, and None when the log is off
                 # so a silenced run pays nothing per step.
                 step_observer=stall_watch.wrap(
-                    step_log.step_observer if step_log.enabled else None))
+                    step_log.step_observer if step_log.enabled else None),
+                experiment=exp)
             cp.cuda.Stream.null.synchronize()
             timing["forecast_execution_with_async_io"] = (
                 time.perf_counter() - forecast_started)
@@ -7342,7 +7346,10 @@ def run_prepared_forecast(
         },
         output={"frames": output_inventory,
                 "trajectory_digest": {"d01": final_digest}},
-        receipts={"report": {"path": str((outdir / "report.json").resolve())}},
+        # The spectral seam's run receipts merge in; an apply run whose
+        # step receipts are incomplete refuses a clean capsule here.
+        receipts={"report": {"path": str((outdir / "report.json").resolve())},
+                  **_seam_capsule_receipts(model)},
     )
     _atomic_json(progress_path, {
         "schema": PROGRESS_SCHEMA,

@@ -174,6 +174,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict, fields
 from numbers import Real
 
+import math
+
 import numpy as np
 
 from gpuwm import perf_timing
@@ -255,6 +257,16 @@ class SuperobParamsError(ValueError):
     """
 
 
+class SuperobError(ValueError):
+    """The gridding pass reached a state that would have lost observations.
+
+    Reserved for internal invariants -- a reach window that fails to cover
+    its own radar's gates, and nothing a volume or a parameter can cause.
+    Loud on purpose: the failure it guards silently drops observations,
+    which is exactly the class of bug an analysis cannot detect downstream.
+    """
+
+
 #: Fractions of a Nyquist velocity or Nyquist interval.  Outside ``[0, 1]``
 #: they stop being fractions: a reject fraction above 1 admits speeds the
 #: sweep cannot unambiguously measure, which is precisely the aliased data
@@ -296,6 +308,14 @@ _FINITE_FIELDS = ("min_reflectivity_dbz",)
 #: real number".
 _NON_FLOAT_FIELDS = ("dealias", "cc_qc")
 
+#: Floor on ``||sum b_i|| / n`` for a superob velocity cell.  Below it the
+#: contributing beams disagree about direction so badly that their mean is
+#: not a look direction, and ``Vr = b_eff . x`` stops being a statement about
+#: the wind.  0.5 is where the beams span roughly a hemisphere; real cells
+#: from one radar sit above 0.99 and multi-elevation cells above 0.9, so the
+#: default removes broken geometry without touching ordinary geometry.
+MIN_BEAM_COHERENCE = 0.5
+
 
 def _fold_boundaries(values: np.ndarray, nyquist: float,
                      params) -> tuple[np.ndarray, int, int]:
@@ -322,7 +342,14 @@ def _fold_boundaries(values: np.ndarray, nyquist: float,
         return flags, 0, 0
     delta = np.abs(np.diff(values, axis=1))
     finite = np.isfinite(delta)
-    boundary = finite & (delta > params.shear_fold_fraction * 2.0 * nyquist)
+    # ``nyquist`` may be one value or one per radial.  The test is
+    # range-adjacent -- both gates of every pair are on the same radial --
+    # so a per-radial interval is the right one for its own row, and a cut
+    # that mixes PRFs never has one row judged in another row's interval.
+    scale = np.asarray(nyquist, dtype=np.float64)
+    if scale.ndim == 1:
+        scale = scale[:, None]
+    boundary = finite & (delta > params.shear_fold_fraction * 2.0 * scale)
     flags[:, :-1] |= boundary
     flags[:, 1:] |= boundary
     return flags, int(boundary.sum()), int(finite.sum())
@@ -446,10 +473,13 @@ def _dealias_velocity_sweep(sweep, nyquist, dealias_params, site,
     # geometry, and the instrument must time the call the front door
     # actually makes, not the one that predates it.
     with perf_timing.stage("obs.dealias.sweep_total", gates=int(raw.size)):
-        result = dealias_sweep(raw, sweep.azimuth_deg, nyquist, dealias_params,
-                               reference=reference,
-                               first_gate_m=moment.first_gate_range_m,
-                               gate_spacing_m=moment.gate_size_m)
+        result = dealias_sweep(
+            raw, sweep.azimuth_deg, nyquist, dealias_params,
+            reference=reference,
+            first_gate_m=moment.first_gate_range_m,
+            gate_spacing_m=moment.gate_size_m,
+            nyquist_by_radial=_believable_nyquist_by_radial(sweep, params),
+            nyquist_radials_disagree=bool(sweep.nyquist_radials_disagree))
     resolved = result.state != STATE_REJECTED
     velocity = np.where(resolved, result.velocity, raw)
     # ``band_fits`` is the raw harmonic coefficients the volume-profile pass
@@ -471,6 +501,27 @@ def _dealias_velocity_sweep(sweep, nyquist, dealias_params, site,
     }
     return {"result": result, "velocity": velocity, "resolved": resolved,
             "record": record}
+
+
+def _believable_nyquist_by_radial(sweep, params):
+    """The sweep's per-radial Nyquist, screened radial by radial.
+
+    Returns None when the pack carried no such array -- which is not the
+    same as "all radials agreed", and the unfolder is told which it is so a
+    legacy nonuniform pack fails closed instead of being unfolded in the
+    minimum's interval.  A radial whose value falls outside the plausible
+    band becomes NaN and its gates are refused individually, exactly as the
+    scalar screen refuses a whole sweep.
+    """
+
+    values = getattr(sweep, "nyquist_velocity_ms_by_radial", None)
+    if values is None:
+        return None
+    values = np.asarray(values, dtype=np.float64)
+    believable = (np.isfinite(values)
+                  & (values >= params.nyquist_min_ms)
+                  & (values <= params.nyquist_max_ms))
+    return np.where(believable, values, np.nan)
 
 
 def _believable_nyquist(reported, params) -> float | None:
@@ -921,6 +972,76 @@ class RadarContribution:
     #: the RhoHV source each sweep used -- or empty when the mask was
     #: not configured.  Empty is how a consumer knows it never ran.
     cc_qc: dict = field(default_factory=dict)
+    #: Origin of the arrays above in the analysis grid's horizontal index
+    #: space.  The arrays cover ``[j0 : j0 + shape[1]]`` by
+    #: ``[i0 : i0 + shape[2]]`` and every level; outside that box this
+    #: radar contributed nothing, which is why the merge can leave the
+    #: rest of the domain at its identity rather than store it.
+    #:
+    #: Defaulting to the origin keeps a hand-built full-domain
+    #: contribution -- a test, a downstream lane -- valid and unchanged:
+    #: a window at (0, 0) whose arrays span the grid IS the dense case.
+    j0: int = 0
+    i0: int = 0
+
+    @property
+    def window(self) -> tuple[int, int, int, int]:
+        """Inclusive ``(j0, j1, i0, i1)`` this contribution covers."""
+        return (self.j0, self.j0 + self.z_count.shape[1] - 1,
+                self.i0, self.i0 + self.z_count.shape[2] - 1)
+
+    def window_payload(self) -> dict:
+        """The window as a receipt records it."""
+        j0, j1, i0, i1 = self.window
+        cells = self.z_count.size
+        return {"j0": j0, "j1": j1, "i0": i0, "i1": i1,
+                "nz": int(self.z_count.shape[0]),
+                "nj": j1 - j0 + 1, "ni": i1 - i0 + 1,
+                "cells": int(cells)}
+
+
+#: Extra cells kept around the reach disc.  A gate is assigned to the
+#: NEAREST mass point, which can sit up to half a cell diagonal beyond the
+#: gate itself, and a projected grid's cell size varies across the domain.
+#: Two cells is far more than either effect needs and costs nothing against
+#: a disc some 160 cells across; the guard in `superob_volume` is what makes
+#: an under-estimate impossible rather than merely unlikely.
+_WINDOW_MARGIN_CELLS = 2
+
+
+def horizontal_window(grid: TargetGrid, site, params: SuperobParams):
+    """The inclusive ``(j0, j1, i0, i1)`` box of cells this radar can reach.
+
+    Measured against the grid's own mass-point coordinates rather than
+    derived from the projection, so it holds for any georeference the
+    superob stage accepts -- including one whose cell size varies across
+    the domain, where a radius in cells would not.
+
+    A radar entirely off the grid yields a degenerate one-cell window.
+    That is not a special case downstream: no gate can land in it, every
+    accumulator stays at its identity, and the contribution merges as the
+    nothing it is.
+    """
+
+    reach_m = params.max_range_km * 1000.0 + _WINDOW_MARGIN_CELLS * max(
+        float(grid.dx_m), float(grid.dy_m))
+    lat = np.radians(np.asarray(grid.lat, dtype=np.float64))
+    lon = np.radians(np.asarray(grid.lon, dtype=np.float64))
+    site_lat = math.radians(float(site.lat_deg))
+    site_lon = math.radians(float(site.lon_deg))
+    # Haversine, matching the discovery stage's metric so "in range here"
+    # and "in range there" cannot disagree about the same antenna.
+    a = (np.sin((lat - site_lat) / 2.0) ** 2
+         + np.cos(site_lat) * np.cos(lat)
+         * np.sin((lon - site_lon) / 2.0) ** 2)
+    distance = 2.0 * float(params.earth_radius_m) * np.arcsin(
+        np.sqrt(np.clip(a, 0.0, 1.0)))
+    near = distance <= reach_m
+    if not near.any():
+        return (0, 0, 0, 0)
+    rows = np.flatnonzero(near.any(axis=1))
+    cols = np.flatnonzero(near.any(axis=0))
+    return (int(rows[0]), int(rows[-1]), int(cols[0]), int(cols[-1]))
 
 
 def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
@@ -1032,9 +1153,21 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
                  if VELOCITY in sweep.moments
                  and sweep.elevation_angle_deg <= params.max_elevation_deg),
                 dealias_params)
-    shape = (grid.nz, grid.ny, grid.nx)
-    zeros = lambda: np.zeros(shape, dtype=np.float64)     # noqa: E731
     counts = SuperobCounts()
+
+    # A radar is a local instrument on a domain that need not be.  Its
+    # gates occupy a disc ~250 km across; a continental analysis grid is
+    # some 5000 km across, so full-domain accumulators spend 99% of their
+    # bytes holding zeros this antenna can never write to.  At 120 bytes
+    # per cell per site that is 10.9 GB per radar on a CONUS 3 km grid,
+    # which is the difference between a regional system and a continental
+    # one.  So the accumulators cover only the cells this radar can reach.
+    #
+    # Vertical is left whole: a beam sweeps every level within its range,
+    # and nz is already small.  All the sparsity is horizontal.
+    j0, j1, i0, i1 = horizontal_window(grid, volume.site, params)
+    shape = (grid.nz, j1 - j0 + 1, i1 - i0 + 1)
+    zeros = lambda: np.zeros(shape, dtype=np.float64)     # noqa: E731
 
     z_linear_sum = zeros()
     z_sum_dbz = zeros()
@@ -1312,9 +1445,41 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
                 if not np.any(in_column):
                     continue
 
+                # Into WINDOW coordinates.  The global indices above are
+                # what `grid.level_index` needs (column height is a
+                # property of the column, not of the window), so the
+                # offset is applied here and nowhere else -- this single
+                # ravel is the only place the accumulators' shape enters.
+                #
+                # Every value accumulated below is therefore the same
+                # float, applied in the same order, to the same logical
+                # cell; only its address changed.  That is why the
+                # windowed contribution is bit-identical to the dense one
+                # rather than merely close: `np.add.at` sees an unchanged
+                # sequence of additions.
+                j_local = j_index[in_column] - j0
+                i_local = i_index[in_column] - i0
+                # Four reductions rather than four boolean temporaries and
+                # their ORs: this runs per sweep, per moment, per radial
+                # block, and the array form cost ~20% of the whole pass for
+                # a check that is never expected to fire.
+                if (j_local.min() < 0 or j_local.max() >= shape[1]
+                        or i_local.min() < 0 or i_local.max() >= shape[2]):
+                    # Unreachable unless the window is wrong, and a wrong
+                    # window would silently drop observations.  Fail loudly
+                    # instead: this is an accuracy bug, not a bad night.
+                    raise SuperobError(
+                        f"{volume.site.id}: gates fell outside the computed "
+                        f"reach window j[{j0}..{j1}] i[{i0}..{i1}] "
+                        f"(saw j[{int(j_local.min()) + j0}.."
+                        f"{int(j_local.max()) + j0}] "
+                        f"i[{int(i_local.min()) + i0}.."
+                        f"{int(i_local.max()) + i0}]) -- the window "
+                        "under-covers this radar's gates and observations "
+                        "would have been lost.  This is a bug in "
+                        "horizontal_window(), not a data problem.")
                 flat = np.ravel_multi_index(
-                    (level[in_column], j_index[in_column],
-                     i_index[in_column]), shape)
+                    (level[in_column], j_local, i_local), shape)
                 value_sel = values.ravel()[on_grid][in_column]
                 clear_sel = clear_on_grid[in_column]
 
@@ -1531,7 +1696,7 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
         nyquist_min=nyquist_min, vr_rejected=vr_rejected,
         counts=counts, provenance=volume.provenance(),
         clear_air_source=clear_air_source,
-        fold_suspicion=fold_suspicion,
+        fold_suspicion=fold_suspicion, j0=j0, i0=i0,
         cc_qc=({} if cc_plans is None else {
             "params": params.cc_qc.to_payload(),
             "sweeps": cc_sweep_records,
@@ -1568,6 +1733,11 @@ class GriddedObservations:
     #: a caller assembling this structure by hand -- a test, a downstream
     #: lane -- is not forced to invent fold statistics it never measured.
     fold_suspicion: list = field(default_factory=list)
+    #: ``||sum b_i|| / n`` per cell: how nearly the contributing beams pointed
+    #: the same way.  1 for one beam or several parallel ones, and falling
+    #: with the spread of look directions.  None on a structure assembled by
+    #: hand before the field existed.
+    vr_beam_coherence: np.ndarray | None = None
     #: Clear-air ("zero") observations, or None for a product that carries
     #: none.  ``z0_mask`` is 1 where at least one radar measured this cell
     #: and every radar that measured it found no significant echo;
@@ -1606,6 +1776,45 @@ class GriddedObservations:
     #: Per-radar correlation-coefficient QC accounts; each entry is empty
     #: when that radar's mask never ran.  Defaulted for the same reason.
     cc_qc: list = field(default_factory=list)
+    #: Per radar, the inclusive ``(j0, j1, i0, i1)`` of the analysis grid
+    #: its ``vr_*`` plane covers.  Reflectivity is merged ACROSS radars and
+    #: stays whole-domain -- it is one field the whole network contributed
+    #: to, and at 37 bytes a cell it is 3.4 GB on a CONUS grid, which is
+    #: not the problem.  Radial velocity cannot merge, so it carries a
+    #: leading radar axis, and THAT is the array that grew to 715 GB for a
+    #: continental network at 49 bytes a cell a radar.
+    #:
+    #: Empty means whole-domain planes: the v1 layout, still valid, still
+    #: what a hand-built object gets.
+    radar_windows: list = field(default_factory=list)
+
+    @property
+    def windowed(self) -> bool:
+        return bool(self.radar_windows)
+
+    def radar_window(self, index: int) -> tuple[int, int, int, int]:
+        """Inclusive ``(j0, j1, i0, i1)`` radar ``index`` covers."""
+        if self.radar_windows:
+            return tuple(self.radar_windows[index])
+        return (0, self.vr_obs.shape[2] - 1, 0, self.vr_obs.shape[3] - 1)
+
+    def radar_plane(self, name: str, index: int, *, ny: int, nx: int):
+        """One radar's ``vr_*`` plane, expanded to the whole domain.
+
+        The compatibility path, and deliberately one plane at a time: a
+        consumer that wants the old dense view can have it without the
+        file materialising all of them at once, which is the whole saving.
+        Outside the window the value is the fill each field already used
+        where a radar saw nothing -- zero for every one of them.
+        """
+        stored = getattr(self, name)
+        plane = stored[index]
+        if not self.radar_windows:
+            return plane
+        j0, j1, i0, i1 = self.radar_window(index)
+        out = np.zeros((plane.shape[0], ny, nx), dtype=plane.dtype)
+        out[:, j0:j1 + 1, i0:i1 + 1] = plane[:, :j1 - j0 + 1, :i1 - i0 + 1]
+        return out
 
 
 def merge_contributions(contributions, grid: TargetGrid, *,
@@ -1627,10 +1836,14 @@ def merge_contributions(contributions, grid: TargetGrid, *,
             f"z_reduce must be 'max' or 'mean', got {z_reduce!r}")
     shape = (grid.nz, grid.ny, grid.nx)
     for contribution in contributions:
-        if contribution.z_count.shape != shape:
+        j0, j1, i0, i1 = contribution.window
+        if (contribution.z_count.shape[0] != grid.nz
+                or j0 < 0 or i0 < 0 or j1 >= grid.ny or i1 >= grid.nx):
             raise ValueError(
-                f"contribution from {contribution.site_id} has shape "
-                f"{contribution.z_count.shape}, grid is {shape}")
+                f"contribution from {contribution.site_id} covers "
+                f"levels 0..{contribution.z_count.shape[0] - 1}, "
+                f"j {j0}..{j1}, i {i0}..{i1}, which does not fit a grid "
+                f"of {shape}")
 
     # Zeroes from the two regimes cover different fractions of the domain,
     # so summing them would produce a count whose coverage nobody can state
@@ -1646,12 +1859,31 @@ def merge_contributions(contributions, grid: TargetGrid, *,
             "every volume in the set the same way")
     clear_air_source = sources.pop()
 
-    z_linear = sum(c.z_linear_sum for c in contributions)
-    z_count = sum(c.z_count for c in contributions)
-    z0_count = sum(c.z0_count for c in contributions)
-    z_sum_dbz = sum(c.z_sum_dbz for c in contributions)
-    z_sumsq_dbz = sum(c.z_sumsq_dbz for c in contributions)
-    z_max = np.maximum.reduce([c.z_max_dbz for c in contributions])
+    # Compose the windows rather than adding full-domain arrays.  Outside
+    # its own window a radar contributed the identity of every reduction
+    # here -- 0 for the sums and counts, -inf for a maximum, +inf for a
+    # minimum -- which is exactly what these accumulators are initialised
+    # to.  Adding 0.0 and taking max(x, -inf) are both exact, and the
+    # contributions are visited in the same order as before, so the merged
+    # arrays are bit-identical to the dense path's, not merely close.
+    def _slot(c):
+        j0, j1, i0, i1 = c.window
+        return (slice(None), slice(j0, j1 + 1), slice(i0, i1 + 1))
+
+    z_linear = np.zeros(shape, dtype=np.float64)
+    z_count = np.zeros(shape, dtype=np.int64)
+    z0_count = np.zeros(shape, dtype=np.int64)
+    z_sum_dbz = np.zeros(shape, dtype=np.float64)
+    z_sumsq_dbz = np.zeros(shape, dtype=np.float64)
+    z_max = np.full(shape, -np.inf, dtype=np.float64)
+    for contribution in contributions:
+        slot = _slot(contribution)
+        z_linear[slot] += contribution.z_linear_sum
+        z_count[slot] += contribution.z_count
+        z0_count[slot] += contribution.z0_count
+        z_sum_dbz[slot] += contribution.z_sum_dbz
+        z_sumsq_dbz[slot] += contribution.z_sumsq_dbz
+        np.maximum(z_max[slot], contribution.z_max_dbz, out=z_max[slot])
 
     has_z = z_count > 0
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -1715,12 +1947,23 @@ def merge_contributions(contributions, grid: TargetGrid, *,
     z0_err = np.where(has_z0, params.clear_air_error_dbz, 0.0)
 
     n_radar = len(contributions)
-    vr_obs = np.zeros((n_radar,) + shape, dtype=np.float64)
+    # The velocity planes cover each radar's own window, not the domain.
+    # Every radar carries the same range authority, so the windows differ
+    # only where the domain edge clips one; padding them all to the widest
+    # keeps the array rectangular -- which netCDF wants and a ragged
+    # layout would fight -- at a waste of a few edge cells rather than the
+    # 99% a whole-domain plane wastes.
+    windows = [c.window for c in contributions]
+    max_nj = max(j1 - j0 + 1 for j0, j1, _, _ in windows)
+    max_ni = max(i1 - i0 + 1 for _, _, i0, i1 in windows)
+    vshape = (n_radar, grid.nz, max_nj, max_ni)
+    vr_obs = np.zeros(vshape, dtype=np.float64)
     vr_err = np.zeros_like(vr_obs)
-    vr_mask = np.zeros((n_radar,) + shape, dtype=np.int8)
-    vr_count = np.zeros((n_radar,) + shape, dtype=np.int32)
-    vr_rejected = np.zeros((n_radar,) + shape, dtype=np.int32)
-    beam = [np.zeros((n_radar,) + shape, dtype=np.float64) for _ in range(3)]
+    vr_mask = np.zeros(vshape, dtype=np.int8)
+    vr_count = np.zeros(vshape, dtype=np.int32)
+    vr_rejected = np.zeros(vshape, dtype=np.int32)
+    beam = [np.zeros(vshape, dtype=np.float64) for _ in range(3)]
+    beam_coherence = np.zeros(vshape, dtype=np.float64)
 
     for index, contribution in enumerate(contributions):
         count = contribution.vr_count
@@ -1742,13 +1985,32 @@ def merge_contributions(contributions, grid: TargetGrid, *,
                 np.maximum(contribution.vr_sumsq / np.maximum(count, 1)
                            - mean * mean, 0.0),
                 0.0)
+        # ``y`` is the MEAN of n scalar radial velocities, so the operator
+        # that reproduces it is the MEAN of the n beam unit vectors:
+        #   mean_i(b_i . x) = (mean_i b_i) . x
+        # holds exactly, for any x, and only for the unnormalized mean.
+        # Normalising it -- as this did -- divides by ||sum b|| instead of by
+        # n, which inflates H(x) by 1/c with c = ||sum b||/n <= 1.  Two beams
+        # 60 degrees apart give c = 0.866 and so a 15.5% inflation of every
+        # modelled radial velocity in that cell, for a perfectly uniform
+        # wind, with no diagnostic anywhere that the observation and its
+        # operator had stopped describing the same quantity.
+        coherence = np.where(count > 0, norm / np.maximum(count, 1), 0.0)
         beamless = (count > 0) & ~has_vr
-        vr_obs[index] = np.where(has_vr, mean, 0.0)
-        vr_count[index] = np.where(has_vr, count, 0)
-        vr_rejected[index] = (contribution.vr_rejected
-                              + np.where(beamless, count, 0))
-        vr_mask[index] = has_vr.astype(np.int8)
-        vr_err[index] = np.where(
+        # This radar's plane IS its window, so the contribution lands at
+        # the plane's origin and no offset arithmetic is needed here --
+        # the window travelled with the contribution.  Only the padding to
+        # the widest window is skipped, and it stays zero, which is what
+        # every expression below would have produced for it anyway.
+        j0, j1, i0, i1 = contribution.window
+        slot = (index, slice(None), slice(0, j1 - j0 + 1),
+                slice(0, i1 - i0 + 1))
+        vr_obs[slot] = np.where(has_vr, mean, 0.0)
+        vr_count[slot] = np.where(has_vr, count, 0)
+        vr_rejected[slot] = (contribution.vr_rejected
+                             + np.where(beamless, count, 0))
+        vr_mask[slot] = has_vr.astype(np.int8)
+        vr_err[slot] = np.where(
             has_vr,
             np.maximum(
                 params.vr_error_floor_ms,
@@ -1756,8 +2018,30 @@ def merge_contributions(contributions, grid: TargetGrid, *,
                         + variance)),
             0.0)
         for axis, component in enumerate(vectors):
-            beam[axis][index] = np.where(has_vr, component
-                                         / np.where(has_vr, norm, 1.0), 0.0)
+            beam[axis][slot] = np.where(has_vr, component
+                                         / np.where(count > 0, count, 1), 0.0)
+        beam_coherence[slot] = np.where(has_vr, coherence, 0.0)
+        # The policy hook.  A cell whose beams point over more than a
+        # hemisphere's worth of directions is not measuring one projection of
+        # one wind; the mean beam vector shrinks toward zero and the operator
+        # it defines is dominated by whichever direction happened to
+        # dominate the gate count.  The default floor is deliberately low --
+        # it removes geometry that is broken rather than merely spread, so
+        # turning it on changes almost nothing on a real volume -- and is
+        # stated here rather than buried, because the number decides which
+        # observations reach the filter.
+        incoherent = has_vr & (coherence < MIN_BEAM_COHERENCE)
+        if np.any(incoherent):
+            vr_mask[slot] = np.where(incoherent, 0,
+                                      vr_mask[slot]).astype(np.int8)
+            vr_rejected[slot] = vr_rejected[slot] + np.where(
+                incoherent, vr_count[slot], 0)
+            vr_count[slot] = np.where(incoherent, 0, vr_count[slot])
+            vr_obs[slot] = np.where(incoherent, 0.0, vr_obs[slot])
+            vr_err[slot] = np.where(incoherent, 0.0, vr_err[slot])
+            for axis in range(3):
+                beam[axis][slot] = np.where(incoherent, 0.0,
+                                             beam[axis][slot])
 
     radars = [{
         "id": contribution.site_id,
@@ -1775,6 +2059,7 @@ def merge_contributions(contributions, grid: TargetGrid, *,
         vr_obs=vr_obs, vr_mask=vr_mask, vr_err=vr_err, vr_count=vr_count,
         vr_rejected=vr_rejected,
         vr_beam_east=beam[0], vr_beam_north=beam[1], vr_beam_up=beam[2],
+        vr_beam_coherence=beam_coherence,
         radars=radars,
         counts=[c.counts.to_payload() for c in contributions],
         provenance=[c.provenance for c in contributions],
@@ -1787,4 +2072,5 @@ def merge_contributions(contributions, grid: TargetGrid, *,
         # stays per-radar aligned, so an entry is empty exactly when that
         # radar's mask did not run.
         cc_qc=[dict(getattr(c, "cc_qc", None) or {})
-               for c in contributions])
+               for c in contributions],
+        radar_windows=[list(w) for w in windows])

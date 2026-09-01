@@ -87,6 +87,47 @@ from gpuwm.core.p3_tables import (
 f32 = np.float32
 f64 = np.float64
 
+
+def _rescue_overflowed_product(*factors):
+    """The same product, evaluated so a PARTIAL product cannot overflow.
+
+    THE DEFECT, measured on a real 6 h forecast, not postulated.  A GFS run
+    on the shipped ``p3-mp50-...`` suite went non-finite at step 284 in two
+    cells near 198 K, and BOTH arms -- the CUDA kernel and this
+    transcription -- produced it identically, out of
+    ``module_mp_p3.F:2994-2996``::
+
+        tmp1  = cdist1(i,k)*exp(aimm*(273.15-t(i,k)))
+        Q_nuc = cons6*gamma(7.+mu_c(i,k))*tmp1*dum**2
+
+    At the measured cell -- t = 198.99 K, cdist1 = 3.394e5, mu_c = 12.576,
+    lamc = 1.6846e4 -- the LEFT-TO-RIGHT single-precision partial product
+    ``cons6*gamma*tmp1`` reaches 4.8e45 and overflows to +Inf, while the
+    mathematical result, 4.4e19 once the ``dum**2`` = 9.26e-27 factor is
+    applied, is an ordinary float32.  The Inf then meets the conservation
+    limiter at :3571-3583, where ``ratio = sources/sinks`` is 0 and
+    ``qcheti = Inf * 0`` is NaN; that NaN is what reached theta and vapour.
+
+    WRF IS UNDEFINED HERE rather than wrong-but-authoritative.  Fortran does
+    not fix the association of ``a*b*c*d``, so whether the expression
+    overflows is the compiler's choice, and P3's own authors left the
+    double-precision form commented out three lines below the live one
+    (:2999-3002) -- they met this.  gpuwm's standing rule for that case is
+    to implement defined behaviour and document the divergence, never to be
+    bit-exact to a bug.
+
+    THE DIVERGENCE IS EXACTLY THE OVERFLOWING CASE AND NOTHING ELSE.  Every
+    caller evaluates WRF's single-precision chain first and reaches for this
+    only when the result is not finite, so every value WRF's arithmetic can
+    represent is still produced by WRF's arithmetic, bit for bit, and every
+    Fortran-oracle receipt already issued still stands.
+    """
+
+    product = f64(1.0)
+    for factor in factors:
+        product = product * f64(factor)
+    return f32(product)
+
 # ---------------------------------------------------------------------------
 # p3_init physical constants (:177-316), computed in float32 in source order.
 # ---------------------------------------------------------------------------
@@ -556,36 +597,46 @@ def p3_main(qc, nc, qr, nr, th_old, th, qv_old, qv, dt, qitot, qirim, nitot,
             # first-call guard: t_old is 0 before p3_main ever ran (:2328-2330)
             qvs[k] = qv_sat(max(t_old[i, k], f32(1.0)), pres[i, k], 0)
             qvi[k] = qv_sat(max(t_old[i, k], f32(1.0)), pres[i, k], 1)
+            # THE COLD-START qvs/qvi FLOOR, DEFAULT-ON IN ALL THREE ARMS
+            # (2026-08-31; ``max(qvs, 1.e-20)`` after both qv_sat calls,
+            # the remedy P3 releases newer than this port's v4.5.2
+            # transcription target carry themselves).  On
+            # the very first p3_main call both th_old and qv_old are the
+            # zero the allocation left (WRF never initialises them either
+            # -- Registry.EM_COMMON:1598-1599 declare them plain state
+            # and no real.exe or start_em path writes them); WRF's
+            # `max(t_old,1.)` guard at :2329 keeps polysvp1's argument
+            # finite, but polysvp1(1 K) underflows to 0, so stock qvs and
+            # qvi are BOTH exactly 0 and the sup/supi diagnoses below
+            # evaluate 0.0/0.0 -- a quiet domain-wide NaN this port used
+            # to TRANSCRIBE deliberately.  The floor pins step-1 sup/supi
+            # at exactly -1 (fully subsaturated, the intended meaning)
+            # and is inert from step 2 on, once t_old is real.  Never
+            # bit-exact to a bug: where the reference computes an
+            # undefined 0/0, this port implements the defined behaviour
+            # and documents the divergence, here.
+            #
+            # This is a REAL behavior change beyond the NaN cosmetics
+            # and it is DECLARED, not hidden: with sup = -1 finite, the
+            # step-1 dry-air clip below (`qc < 1e-8 .and. sup < -0.1`)
+            # can fire in cells whose wrfinput carries trace condensate,
+            # where NaN made every comparison false.  Runs are therefore
+            # bit-identical to shipped 2.6.0 from step 2 onward; step 1
+            # carries exactly this documented floor delta.  The old
+            # NaN-containment pin flipped to the floor pin:
+            # tests/test_p3_port.py::
+            # test_the_first_step_qvs_floor_pins_sup_at_minus_one.
+            # The rejected alternative -- an opt-in flag, or a floor on
+            # one arm only -- would either ship the defect in a bare
+            # default run ("fixed means default") or fork the core into
+            # two step-1 behaviors under one module, the exact property
+            # the three-arm byte gate exists to protect.
+            qvs[k] = max(qvs[k], f32(1.0e-20))
+            qvi[k] = max(qvi[k], f32(1.0e-20))
             # log_predictSsat = .false. (:2252) -> always the diagnosed branch
             ssat[i, k] = qv_old[i, k] - qvs[k]
-            # FIRST-CALL 0/0, DELIBERATELY PRESERVED (:2334-2337).
-            #
-            # On the very first p3_main call both th_old and qv_old are the
-            # zero the allocation left (WRF never initialises them either --
-            # Registry.EM_COMMON:1598-1599 declare them plain state and no
-            # real.exe or start_em path writes them; solve_em.F:3933 only
-            # passes them through).  WRF's guard `max(t_old,1.)` at :2329
-            # keeps polysvp1's argument finite, but polysvp1(1 K) underflows
-            # to 0, so qvs and qvi are BOTH exactly 0 and these two lines
-            # evaluate 0.0/0.0 in the Fortran as surely as they do here.
-            #
-            # The NaN is kept rather than repaired because no finite value
-            # reproduces its behaviour: every consumer of sup/supi on this
-            # step is a COMPARISON (the nucleation test just below, the
-            # 555-skip at :2462, the clipping tests at :2365-2407, the
-            # Cooper threshold at :3265), and IEEE makes all of them false
-            # for NaN.  A finite substitute would have to satisfy both
-            # `sup >= -0.05` false and `sup < -0.1` false at once, which is
-            # unsatisfiable -- so any "fix" would silently change WRF's
-            # first-step control flow instead of preserving it.
-            #
-            # What IS verified is that the NaN stays contained: it reaches
-            # only comparisons and never a prognostic field.  That is pinned
-            # by tests/test_p3_port.py::
-            # test_the_first_step_nan_in_sup_is_contained_to_comparisons.
-            with np.errstate(invalid="ignore", divide="ignore"):
-                sup[k] = qv_old[i, k] / qvs[k] - f32(1.0)
-                supi[k] = qv_old[i, k] / qvi[k] - f32(1.0)
+            sup[k] = qv_old[i, k] / qvs[k] - f32(1.0)
+            supi[k] = qv_old[i, k] / qvi[k] - f32(1.0)
             rhofacr[k] = (RHOSUR * inv_rho[k]) ** f32(0.54)
             rhofaci[k] = (RHOSUI * inv_rho[k]) ** f32(0.54)
             dum = f32(1.496e-6) * t[i, k] ** f32(1.5) / (t[i, k] + f32(120.0))
@@ -885,10 +936,27 @@ def p3_main(qc, nc, qr, nr, th_old, th, qv_old, qv, dt, qitot, qirim, nitot,
                 # -- immersion freezing of droplets (:2984-3015)
                 if qc[i, k] >= QSMALL and t[i, k] <= f32(269.15):
                     dum = (f32(1.0) / lamc) ** f32(3.0)
-                    tmp1 = cdist1 * np.exp(AIMM * (f32(273.15) - t[i, k]))
-                    Q_nuc = CONS6 * _gammaf(f32(7.0) + mu_c) * tmp1 \
-                        * dum ** f32(2.0)
-                    N_nuc = CONS5 * _gammaf(mu_c + f32(4.0)) * tmp1 * dum
+                    # WRF's own chain first and unchanged, so a value its
+                    # arithmetic can represent is still its value, bit for
+                    # bit.  The rescue below is reached only when it cannot
+                    # -- see _rescue_overflowed_product.
+                    with np.errstate(over="ignore", invalid="ignore"):
+                        tmp1 = cdist1 * np.exp(AIMM * (f32(273.15) - t[i, k]))
+                        gam_q = _gammaf(f32(7.0) + mu_c)
+                        gam_n = _gammaf(mu_c + f32(4.0))
+                        Q_nuc = CONS6 * gam_q * tmp1 * dum ** f32(2.0)
+                        N_nuc = CONS5 * gam_n * tmp1 * dum
+                    if not np.isfinite(Q_nuc) or not np.isfinite(N_nuc):
+                        # Argument in float32, exp in double: the authority's
+                        # own commented-out form, dexp(dble(aimm*(273.15-t)))
+                        # at :2999, and what the rain branch below does.
+                        exp_aimm = np.exp(f64(AIMM * (f32(273.15) - t[i, k])))
+                        if not np.isfinite(Q_nuc):
+                            Q_nuc = _rescue_overflowed_product(
+                                CONS6, gam_q, cdist1, exp_aimm, dum, dum)
+                        if not np.isfinite(N_nuc):
+                            N_nuc = _rescue_overflowed_product(
+                                CONS5, gam_n, cdist1, exp_aimm, dum)
                     qcheti = Q_nuc
                     ncheti = N_nuc
 
@@ -901,8 +969,20 @@ def p3_main(qc, nc, qr, nr, th_old, th, qv_old, qv, dt, qitot, qirim, nitot,
                                          + np.log(_gammaf(mu_r + f32(4.0)))
                                          - f32(3.0) * np.log(lamr)))
                     tmpdbl3 = np.exp(f64(AIMM * (f32(273.15) - t[i, k])))
-                    qrheti = CONS6 * f32(tmpdbl1 * tmpdbl3) * spf
-                    nrheti = CONS5 * f32(tmpdbl2 * tmpdbl3) * spf
+                    # Same class, same rescue.  WRF's ``sngl(tmpdbl1*tmpdbl3)``
+                    # (:3037-3038) rounds a double to float32 and can land on
+                    # +Inf for the same cold-cloud reason, reaching the same
+                    # limiter and the same NaN.  The double product is already
+                    # in hand, so the rescue is one more multiply.
+                    with np.errstate(over="ignore", invalid="ignore"):
+                        qrheti = CONS6 * f32(tmpdbl1 * tmpdbl3) * spf
+                        nrheti = CONS5 * f32(tmpdbl2 * tmpdbl3) * spf
+                    if not np.isfinite(qrheti):
+                        qrheti = _rescue_overflowed_product(
+                            CONS6, tmpdbl1 * tmpdbl3, spf)
+                    if not np.isfinite(nrheti):
+                        nrheti = _rescue_overflowed_product(
+                            CONS5, tmpdbl2 * tmpdbl3, spf)
 
                 # rime splintering (:3049-3106): log_hmossopOn = (nCat>1)
                 # (:2256) is FALSE for the ported 1-category configuration.

@@ -192,10 +192,33 @@ class Sweep:
     #: did not say, which is different from either answer and is kept
     #: different.
     nyquist_granularity: str | None = None
+    #: The Nyquist velocity each radial actually reported, shape
+    #: ``(radial_count,)`` float64, NaN where the decoder had none for that
+    #: radial.  ``None`` when the pack never carried the array at all --
+    #: which is a different statement from "every radial agreed", and the
+    #: two are kept different: the first says the originals were dropped
+    #: before Python saw them, the second says they were carried and were
+    #: equal.
+    #:
+    #: This is the array the fold arithmetic uses.  The scalar above is a
+    #: summary for receipts: it is the minimum, so it never licenses a gate
+    #: its own radial would have rejected, but it cannot express a cut whose
+    #: radials sit on different lattices and must not be asked to.
+    nyquist_velocity_ms_by_radial: np.ndarray | None = None
 
     @property
     def radial_count(self) -> int:
         return int(self.azimuth_deg.size)
+
+    @property
+    def nyquist_by_radial_valid(self) -> np.ndarray | None:
+        """Which radials carry a usable Nyquist, or None when none were packed."""
+
+        if self.nyquist_velocity_ms_by_radial is None:
+            return None
+        values = np.asarray(self.nyquist_velocity_ms_by_radial,
+                            dtype=np.float64)
+        return np.isfinite(values) & (values > 0.0)
 
 
 @dataclass(frozen=True)
@@ -328,6 +351,36 @@ def _decode(raw: bytes, path: Path) -> RadarVolume:
     for entry in meta.get("sweeps", ()):
         azimuth = view(entry["azimuth_array"])
         elevation = view(entry["elevation_array"])
+        # Optional, and optional in the strong sense: a pack that carries it
+        # is dealiasable on a nonuniform cut, one that does not is not.  The
+        # scalar is cross-checked against it rather than trusted beside it,
+        # because two fields claiming the same thing are a defect the moment
+        # they can disagree.
+        nyquist_by_radial = None
+        by_radial_key = entry.get("nyquist_by_radial_array")
+        if by_radial_key is not None:
+            packed = view(str(by_radial_key)).astype(np.float64)
+            if packed.ndim != 1 or packed.size != azimuth.size:
+                raise RadarSweepPackError(
+                    f"{path.name}: sweep {entry['sweep_index']} per-radial "
+                    f"Nyquist array has shape {packed.shape} for "
+                    f"{azimuth.size} radials")
+            usable = np.isfinite(packed) & (packed > 0.0)
+            if not bool(usable.any()):
+                raise RadarSweepPackError(
+                    f"{path.name}: sweep {entry['sweep_index']} carries a "
+                    "per-radial Nyquist array with no usable value in it; a "
+                    "present array asserts the originals were kept")
+            scalar = entry.get("nyquist_velocity_ms")
+            if scalar is not None:
+                lowest = float(packed[usable].min())
+                if abs(float(scalar) - lowest) > 1e-3:
+                    raise RadarSweepPackError(
+                        f"{path.name}: sweep {entry['sweep_index']} declares "
+                        f"nyquist_velocity_ms {float(scalar)} but its "
+                        f"per-radial array bottoms out at {lowest}; the "
+                        "scalar is defined as that array's minimum")
+            nyquist_by_radial = packed
         moments = {}
         for moment in entry.get("moments", ()):
             data = view(moment["array"])
@@ -395,6 +448,7 @@ def _decode(raw: bytes, path: Path) -> RadarVolume:
             nyquist_granularity=(
                 None if entry.get("nyquist_granularity") is None
                 else str(entry["nyquist_granularity"])),
+            nyquist_velocity_ms_by_radial=nyquist_by_radial,
             start_status=int(entry["start_status"]),
             end_status=int(entry["end_status"]),
             cut_sector=int(entry["cut_sector"]),

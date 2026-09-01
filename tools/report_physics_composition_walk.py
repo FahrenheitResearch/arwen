@@ -446,22 +446,17 @@ REMEDIES = (
                "so the remedy leaves the RTE+RRTMGP variant",
      "before": _suite(mp_physics=9, ra_lw_physics=4, ra_sw_physics=4),
      "after": _suite(mp_physics=9, ra_lw_physics=0, ra_sw_physics=1)},
-    # P3's sibling of the same rule, added at the 1.9 gate.  mp=50 was
-    # ADMITTED against RTE+RRTMGP and died at the first radiation call
-    # (gpuwm/core/rrtmgp.py resolves a cloud-optics row per selector and
-    # has none for 50); gpuwm.config.validate_p3_radiation now refuses it
-    # up front, and this pair is what proves the advice it gives works.
-    # The reason differs from Milbrandt-Yau's and is not interchangeable
-    # with it: P3 IS in WRF's use_mp_re disjunction and does supply cloud
-    # and ice radii, but has_reqs=0 (module_physics_init.F:1027-1033) and
-    # its single ice category has no separate snow species, so there is no
-    # snow radius for any existing row to consume.
-    {"id": "p3-has-no-rrtmgp-cloud-optics",
-     "remedy": "'select ra_lw_physics=0/ra_sw_physics=1 (Dudhia)' -- P3 "
-               "supplies no snow radius and every RTE+RRTMGP row assumes "
-               "one, so the remedy leaves the RTE+RRTMGP variant",
-     "before": _suite(mp_physics=50, ra_lw_physics=4, ra_sw_physics=4),
-     "after": _suite(mp_physics=50, ra_lw_physics=0, ra_sw_physics=1)},
+    # p3-has-no-rrtmgp-cloud-optics is deliberately ABSENT, and its absence
+    # is the record of a fix.  mp=50 was ADMITTED against RTE+RRTMGP at 1.9
+    # and died at the first radiation call; validate_p3_radiation then
+    # refused the pairing up front, and this catalogue carried the pair.
+    # The row it was waiting for now exists -- gpuwm.core.rrtmgp's
+    # ``50: "p3"``, WRF's own P3 coupling (has_reqc=1, has_reqi=1,
+    # has_reqs=0 at module_physics_init.F:1022-1024 then :1033, and the
+    # wrappers' ice-into-snow remap at module_ra_rrtmg_lw.F:12250-12261) --
+    # so the refusal is retired with the defect and there is no before/after
+    # pair left to walk.  A refusal pair for a refusal that no longer fires
+    # would fail this file's own "the before arm must be REFUSED" check.
     {"id": "sase-supplies-its-own-horizontal-mixing",
      "remedy": "'Set km_opt=0.'",
      "before": _suite(**_SASE, ra_lw_physics=4, ra_sw_physics=4) | {

@@ -25,6 +25,7 @@ unreachable when initialization returns.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence as _ABCSequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 import json
@@ -174,7 +175,10 @@ class ParentInitView:
 class NestedInputCatalog:
     """Source snapshots joined to an independently verified static catalog."""
 
-    snapshots: tuple[object, ...]
+    #: The forcing series.  A SEQUENCE, not necessarily a tuple: a
+    #: streamed mapped decode hands over a sequence that packs one valid
+    #: time when that time is indexed, and this catalog keeps it that way.
+    snapshots: Sequence[object]
     static_catalog: object
     inventory: tuple[str, ...] = ()
     files: tuple[object, ...] = ()
@@ -190,17 +194,32 @@ class NestedInputCatalog:
     soil_texture_downscale: bool = True
 
     def __post_init__(self) -> None:
-        snapshots = tuple(self.snapshots)
+        # A sequence is kept AS the sequence, exactly as
+        # `_validated_forcing_series` keeps it.  A streamed forcing
+        # series packs one valid time when that time is asked for;
+        # `tuple()` holds every one of them for the whole preparation,
+        # which is the residency the mapped decode streams to avoid --
+        # gigabytes per forcing time on a 3 km source, and every nested
+        # run carries this catalog.
+        snapshots = (
+            self.snapshots if isinstance(self.snapshots, _ABCSequence)
+            else tuple(self.snapshots))
         inventory = tuple(self.inventory)
         files = tuple(self.files)
         units = dict(self.units)
         provenance = dict(self.provenance)
-        if not snapshots:
+        if not len(snapshots):
             raise ValueError("nested input catalog requires source snapshots")
         if self.static_catalog is None:
             raise ValueError("nested input catalog requires a static catalog")
-        valid_times = tuple(
-            getattr(snapshot, "valid_time", None) for snapshot in snapshots)
+        # A streamed series publishes its valid times from the frameset
+        # document; reading them off the snapshots would pack every
+        # forcing time to look at one attribute of each.
+        declared = getattr(snapshots, "valid_times", None)
+        valid_times = (
+            tuple(declared) if declared is not None
+            else tuple(getattr(snapshots[index], "valid_time", None)
+                       for index in range(len(snapshots))))
         if not all(isinstance(value, datetime) for value in valid_times):
             raise TypeError("every nested source snapshot needs a datetime valid_time")
         try:
@@ -213,10 +232,16 @@ class NestedInputCatalog:
         if len(valid_times) > 1 and not increasing:
             raise ValueError(
                 "nested source snapshots must have unique increasing valid times")
-        source_types = {type(snapshot) for snapshot in snapshots}
+        # One adapter type across the series, checked WITHOUT retaining a
+        # snapshot: the set holds types, and each snapshot is released as
+        # the next is read.
+        source_types = set()
+        for index in range(len(snapshots)):
+            source_types.add(type(snapshots[index]))
         if len(source_types) != 1:
             raise TypeError("nested source snapshots must use one adapter type")
         object.__setattr__(self, "snapshots", snapshots)
+        object.__setattr__(self, "_valid_times", valid_times)
         object.__setattr__(self, "inventory", inventory)
         object.__setattr__(self, "files", files)
         object.__setattr__(self, "units", MappingProxyType(units))
@@ -226,8 +251,12 @@ class NestedInputCatalog:
     def from_source_catalog(cls, source_catalog, static_catalog):
         """Preserve trajectory-relevant source metadata while splitting GEOG."""
 
+        # The snapshots are handed over AS the sequence they arrive as,
+        # for the same reason `__post_init__` keeps one: a streamed
+        # forcing series copied into a tuple is every valid time
+        # resident.
         return cls(
-            snapshots=tuple(getattr(source_catalog, "snapshots", ())),
+            snapshots=getattr(source_catalog, "snapshots", ()),
             static_catalog=static_catalog,
             inventory=tuple(getattr(source_catalog, "inventory", ())),
             files=tuple(getattr(source_catalog, "files", ())),
@@ -237,7 +266,11 @@ class NestedInputCatalog:
 
     @property
     def valid_times(self) -> tuple[datetime, ...]:
-        return tuple(snapshot.valid_time for snapshot in self.snapshots)
+        # Read once at construction and kept: recomputing it packed
+        # every valid time of a streamed series to look at one
+        # attribute of each, and the child barrier asks for this clock
+        # once per domain.
+        return self._valid_times
 
 
 class PendingChildInputs:
@@ -429,18 +462,22 @@ def _shared_vertical_coord(vertical: VerticalConfig, nz: int) -> VerticalCoord:
 
 
 def _initial_snapshot(catalog, valid_time: datetime | None = None):
-    snapshots = tuple(getattr(catalog, "snapshots", ()))
+    # The child barrier wants ONE valid time.  Selecting it by walking
+    # the snapshots packed the whole forcing series to read one
+    # attribute per entry, so the match runs on the catalog's clock and
+    # exactly one snapshot is then read.
+    snapshots = getattr(catalog, "snapshots", ())
     valid_times = tuple(getattr(catalog, "valid_times", ()))
-    if not snapshots or not valid_times:
+    if not len(snapshots) or not valid_times:
         raise ValueError("input catalog has no decoded initial source snapshot")
     requested = valid_times[0] if valid_time is None else valid_time
-    matches = tuple(snapshot for snapshot in snapshots
-                    if snapshot.valid_time == requested)
+    matches = tuple(index for index, time in enumerate(valid_times)
+                    if time == requested)
     if len(matches) != 1:
         raise ValueError(
             "input catalog has no unique snapshot at domain start_time "
             f"{requested!s}; available valid times are {valid_times}")
-    return matches[0]
+    return snapshots[matches[0]]
 
 
 def _static_catalog(catalog):

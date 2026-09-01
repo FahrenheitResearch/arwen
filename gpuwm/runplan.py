@@ -4101,22 +4101,45 @@ def _vram_estimate(estimate, streamed, exp) -> dict[str, Any]:
         "peak_envelope_gib": round(peak / 1024 ** 3, 4),
         "envelope_basis": "streamed",
         "basis": _STREAMED_VRAM_BASIS,
-        "streamed": {
-            "resident_envelope_bytes": int(estimate.peak_envelope_bytes),
-            # The two terms of the peak above, so a caller can render the
-            # steady hold beside it without re-deriving either.
-            "vram_bytes": int(streamed.vram_bytes),
-            "radiation_transient_bytes":
-                int(streamed.radiation_transient_bytes),
-            "host_bytes": int(streamed.host_bytes),
-            "host_budget_bytes": streamed.host_budget_bytes,
-            "tile_nx": streamed.tile_nx, "tile_ny": streamed.tile_ny,
-            "window_nx": streamed.window_nx,
-            "window_ny": streamed.window_ny,
-            "nbuffers": streamed.nbuffers, "halo": streamed.halo,
-            "rung": streamed.rung, "write_mode": streamed.write_mode,
-        },
+        "streamed": _streamed_vram_section(estimate, streamed),
     }
+
+
+def _streamed_vram_section(estimate, streamed) -> dict[str, Any]:
+    """The ``streamed`` block, in the shape the road actually has.
+
+    A NESTED tree walked by ``streaming.steppers_for_tree`` takes a MIXED
+    road -- each domain resident or streamed against the budget its
+    predecessors left -- so it has no single tiling to report, and the
+    tile keys below describe one streamed domain.  Emitting them for a
+    tree would have a reader take the child's tile for the tree's; the
+    per-domain roads and claims go out as ``rows`` instead, off the same
+    walk (:class:`gpuwm.core.streaming.TreeRoadPlan`).
+    """
+    section = {
+        "resident_envelope_bytes": int(estimate.peak_envelope_bytes),
+        # The two terms of the peak above, so a caller can render the
+        # steady hold beside it without re-deriving either.
+        "vram_bytes": int(streamed.vram_bytes),
+        "radiation_transient_bytes":
+            int(streamed.radiation_transient_bytes),
+        "host_bytes": int(streamed.host_bytes),
+        "host_budget_bytes": streamed.host_budget_bytes,
+    }
+    rows = getattr(streamed, "rows", None)
+    if rows is not None:
+        section["road"] = "mixed (nested tree)"
+        section["rows"] = [dict(row) for row in rows]
+        return section
+    section.update({
+        "road": "streamed (single domain)",
+        "tile_nx": streamed.tile_nx, "tile_ny": streamed.tile_ny,
+        "window_nx": streamed.window_nx,
+        "window_ny": streamed.window_ny,
+        "nbuffers": streamed.nbuffers, "halo": streamed.halo,
+        "rung": streamed.rung, "write_mode": streamed.write_mode,
+    })
+    return section
 
 
 def estimate_plan(plan: RunPlan) -> dict[str, Any]:
@@ -4164,7 +4187,10 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
     # own: this function promises to create no CUDA context, so the pace
     # takes the planner machine already in hand and falls back to the
     # configured ``[tiles] vram_budget_bytes`` when there is none.
-    pace = estimate_pace(exp, streamed=streamed, machine=machine)
+    # THE ROOT'S ROAD, not the tree's: the pace model prices the root and
+    # charges every nest resident, so it reads a single domain's tiling.
+    # See PhaseMemoryEstimate.pace_streamed.
+    pace = estimate_pace(exp, streamed=phases.pace_streamed, machine=machine)
     # Taken from the resolution rather than re-derived, so the corridor
     # a caller was told about and the corridor it is quoted a price for
     # are one decision.  A chain that cannot feed a moving nest has

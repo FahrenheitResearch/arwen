@@ -1480,53 +1480,26 @@ def validate_milbrandt2_options(cfg: RunConfig) -> None:
             "ra_lw_physics=0/ra_sw_physics=1 (Dudhia).")
 
 
-def validate_p3_radiation(cfg: RunConfig) -> None:
-    """Refuse P3 on RTE+RRTMGP, where it has no cloud-optics coupling.
-
-    FOUND AT THE 1.9 GATE, while proving mp=50 can actually step.  The
-    admission path accepted mp_physics=50 with ra_lw_physics=4 /
-    ra_sw_physics=4 and the run then died at the FIRST radiation call:
-    ``gpuwm/core/rrtmgp.py:1961`` resolves
-    ``cloud_optics_scheme(50)`` and ``_MP_CLOUD_OPTICS_SCHEME`` has no row
-    for 50, so the adapter raised NotImplementedError mid-forecast.  A
-    refusal a user meets after the prepare is not a refusal.
-
-    Why the answer is a refusal and not a new row.  P3 is not
-    Milbrandt-Yau's case: it IS in WRF's ``use_mp_re`` disjunction, so
-    ``has_reqc = has_reqi = 1`` and the scheme does supply cloud and ice
-    radii (gpuwm/core/p3.py writes ``state.effc``/``state.effi``).  What
-    it does NOT supply is snow radii -- ``phys/module_physics_init.F``'s
-    P3 / Jensen-Ishmael override sets ``has_reqs = 0`` at :1027-1033 --
-    and P3's single ice category spans rime fraction rather than
-    separating snow from graupel at all.  No row in
-    ``_MP_CLOUD_OPTICS_SCHEME`` means "ice-active, cloud and ice radii
-    supplied, no snow radii": Thompson's and Morrison's rows all assume a
-    supplied re_snow and a separate snow species.  Choosing one of them
-    would hand RRTMGP a snow radius P3 never computed, which is inventing
-    physics, and inventing it silently is what put mp=28 on Kessler's row
-    until 2026-08-01.
-
-    So the pairing is refused and both working alternatives are named, on
-    the mp=9 precedent directly above: the legacy RRTMG variant computes
-    its own radii the way WRF does, and the Dudhia pair needs none.
-    Adding a real P3 cloud-optics row is a porting decision with its own
-    WRF authority and its own evidence, and it is not this gate's to make.
-    """
-
-    if int(cfg.mp_physics) != 50:
-        return
-    if ((cfg.ra_lw_physics, cfg.ra_sw_physics) == (4, 4)
-            and cfg.ra_rrtmg_variant != "rrtmg_legacy"):
-        raise NotImplementedError(
-            "mp_physics=50 with ra_lw_physics=4/ra_sw_physics=4 on the "
-            "RTE+RRTMGP variant has no cloud-optics coupling: WRF sets "
-            "has_reqs=0 for P3 (phys/module_physics_init.F:1027-1033) and "
-            "P3's single ice category carries no separate snow species, so "
-            "there is no snow radius to hand RRTMGP and no row in "
-            "gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME. Set "
-            "ra_rrtmg_variant='rrtmg_legacy' (which computes its own radii "
-            "the way WRF does), or select "
-            "ra_lw_physics=0/ra_sw_physics=1 (Dudhia).")
+# validate_p3_radiation RETIRED 2026-08-29, with the defect it guarded.
+#
+# It refused mp_physics=50 against the 4/4 RTE+RRTMGP pair because
+# gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME had no row for 50 and the run
+# died at its first radiation call.  That row now exists -- ``50: "p3"``,
+# transcribed from WRF's own P3 coupling: has_reqc=1, has_reqi=1,
+# has_reqs=0 (phys/module_physics_init.F:1022-1024 then :1033 in v4.7.1,
+# :1021-1023 then :1032 in v4.6.1), cal_cldfra1's P3 arm
+# (module_radiation_driver.F:3879-3887) and the wrappers' P3 species remap
+# (module_ra_rrtmg_lw.F:12250-12261, module_ra_rrtmg_sw.F:10851-10863).
+#
+# The refusal's OTHER half was worse than the thing it refused: it named
+# ra_rrtmg_variant='rrtmg_legacy' as a way through, and that arm raised
+# too -- gpuwm.core.rrtmg_legacy._MP_DECLARES_RADII had no row for 50
+# either, so the advised remedy also died at the first radiation call,
+# after the prepare.  Both arms are wired now (the legacy adapter asks
+# has_reqs separately, which is what its wrapper's P3 branch has always
+# needed), so there is no pairing left to refuse and no remedy left to
+# name.  A guard that outlives its defect refuses working configurations,
+# which is what the 7,500 m mesh floor did.
 
 
 #: Tables whose keys merge into :class:`RunConfig` field by field.
@@ -2952,7 +2925,6 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             )
         raise ValueError(f"{_MP_PHYSICS_SCHEMA_MENU}, got {cfg.mp_physics}.")
     validate_milbrandt2_options(cfg)
-    validate_p3_radiation(cfg)
     validate_aerosol_source_options(cfg)
     if cfg.mp_physics != 0 and not cfg.moist:
         raise ValueError(

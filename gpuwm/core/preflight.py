@@ -563,7 +563,7 @@ _UNPRICED = object()
 
 
 def streaming_advisory(exp, *, machine=None,
-                       envelope=_UNPRICED) -> str | None:
+                       envelope=_UNPRICED, tree_road=_UNPRICED) -> str | None:
     """Say out loud WHICH allocation this report prices.
 
     Every ENUMERATION in this module -- ``alloc_estimate_bytes``, the
@@ -594,6 +594,18 @@ def streaming_advisory(exp, *, machine=None,
       (``prepared_single_domain_forecast``, ``prepared_domain_tree_forecast``),
       which is the whole point of the release.
 
+    THE NESTED HALF WAS REWRITTEN AGAIN AT 2.6.1, for the same reason.
+    It used to say a refusal or a fit below "describes the resident tree,
+    not the mixed-road one the run will take" -- an advisory admitting the
+    report had priced a run nobody asked for, and it sat beside an exit 1
+    on trees whose mixed road (child streamed, parent resident) fits and
+    completes.  Reproduced on the published 2.5.8 and 2.6.0 wheels.  A
+    user read that pairing as "streaming has no point".  ``tree_road`` is
+    the run door's own per-domain walk
+    (:func:`gpuwm.core.streaming.tree_road_plan`, the decide pass of
+    ``steppers_for_tree``), so the sentence now states the road the run
+    takes and the verdict beside it is asked of the same road.
+
     What remains worth saying is the one thing that is still true and still
     surprising: under ``mode = "auto"`` the DECISION is the planner's, taken
     against free VRAM at the instant the run starts, so a report written
@@ -619,16 +631,69 @@ def streaming_advisory(exp, *, machine=None,
         return None
     nested_note = ""
     if len(getattr(exp, "domains", ()) or ()) > 1:
-        nested_note = (
-            "  This tree is NESTED: roads are assigned per domain "
-            "(streaming.steppers_for_tree walks parent-first, prices each "
-            "domain against the budget its predecessors left -- resident "
-            "claims, tile working sets and the coupling corridor's slots "
-            "-- and records each domain's road and claim in its decision "
-            "receipt), so a refusal or a fit below describes the resident "
-            "tree, not the mixed-road one the run will take.")
+        if tree_road is _UNPRICED:
+            from gpuwm.core.streaming import tree_road_plan
+
+            try:
+                tree_road = tree_road_plan(exp, machine=machine)
+            except Exception:        # a report never dies on its estimate
+                tree_road = None
+        if tree_road is None:
+            nested_note = (
+                "  This tree is NESTED: roads are assigned per domain "
+                "(streaming.steppers_for_tree walks parent-first and prices "
+                "each domain against the budget its predecessors left), and "
+                "that walk could not be priced here, so the figures below "
+                "describe the resident tree.")
+        elif tree_road.refusal is not None:
+            nested_note = (
+                "  This tree is NESTED, and the run door's own per-domain "
+                "walk REFUSES it: " + tree_road.refusal
+                + "  The figures below therefore describe the resident "
+                "tree, which is the only road left to quote.")
+        elif not tree_road.streams_any:
+            nested_note = (
+                "  This tree is NESTED and the run door's own per-domain "
+                "walk leaves EVERY domain resident, so the figures below "
+                "describe the road the run takes.")
+        elif not tree_road.priced:
+            # STREAMS, BUT CARRIES NO ENVELOPE.  Every enabled domain
+            # pinned its tiling, so the walk consulted no planner and no
+            # card: its claims are real but they carry no process floor
+            # and no radiation reservation, which is what makes them
+            # unfit to stand in the forecast term.  Saying which domains
+            # stream is still owed -- the roads are the answer the reader
+            # came for -- but claiming the figures below are the mixed
+            # road's would be false.
+            nested_note = (
+                "  This tree is NESTED and the run door's own per-domain "
+                "walk streams somewhere (" + tree_road.summary()
+                + "), but every enabled domain PINNED its tiling, so no "
+                "planner and no card were consulted and those claims "
+                "carry neither the once-per-process floor nor the "
+                "radiation reservation.  The figures below therefore "
+                "price the resident tree; the plan states the roads.")
+        else:
+            # THE WHOLE SENTENCE, not a note appended to a per-domain one.
+            # Every sentence below says "this domain", which a tree does
+            # not have -- and with the mixed road in the forecast term the
+            # envelope handed in IS this plan, so letting it fall through
+            # printed the same walk twice, once under a heading claiming a
+            # single streamed domain.
+            return (
+                f"[tiles] mode = '{mode}' over a NESTED tree: the memory "
+                "numbers in this report price the MIXED ROAD the run door "
+                "actually takes, walked by the same parent-first decide "
+                "pass the run uses (streaming.steppers_for_tree), which "
+                "prices each domain against the budget its predecessors "
+                "left -- " + tree_road.summary() + ".")
     if envelope is _UNPRICED:
         envelope = streamed_forecast_envelope(exp, machine=machine)
+    if getattr(envelope, "rows", None) is not None:
+        # A tree plan reached here on a road that does not stream, or one
+        # the walk refused; ``nested_note`` above already states it and
+        # the resident figures are the ones being quoted.
+        envelope = None
     if envelope is not None:
         return (f"[tiles] mode = '{mode}' streams this domain, so the memory "
                 "numbers in this report price the STREAMED allocation and "
@@ -710,7 +775,7 @@ def pace_estimate_for_report(exp, *, streamed=None, free_bytes=None):
 
 
 def check_advisories(exp, config_path=None, *, machine=None,
-                     streamed=_UNPRICED) -> list[str]:
+                     streamed=_UNPRICED, tree_road=_UNPRICED) -> list[str]:
     """Every route advisory this config earns, in report order.
 
     Same posture as ``feedback_advisory``: these change no exit code and
@@ -736,7 +801,8 @@ def check_advisories(exp, config_path=None, *, machine=None,
     advisories.extend(spawn_reservation_advisories(exp))
     advisories.extend(anisotropic_w_mixing_advisories(exp))
     advisories.append(streaming_advisory(exp, machine=machine,
-                                         envelope=streamed))
+                                         envelope=streamed,
+                                         tree_road=tree_road))
     # THE PACE, immediately after the sentence that says which road this
     # config takes -- the two belong together, because "this domain
     # streams" is only actionable next to what streaming costs and what
@@ -2105,6 +2171,9 @@ _MICROPHYSICS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     # for mp=9's reason: P3 computes REFL_10CM inside its own kernels and
     # ``stash_refl_10cm`` only parks the array on the driver
     # (gpuwm/core/refl.py:651-663), so no ``refl`` kernel is ever loaded.
+    # That absence is RECORDED, with its authority and its measured cost,
+    # in _SELF_REFLECTIVITY_MICROPHYSICS below -- and it is now a decision
+    # the rail forces rather than one a reader has to notice.
     50: ("p3_composed", "microphysics_validation"),
 }
 
@@ -2119,7 +2188,53 @@ _MICROPHYSICS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
 #: cadence.  Pricing it here before ``gpuwm/core/refl.py`` admits 28 is the
 #: safe direction -- an over-priced rail refuses a run that would have fit,
 #: an under-priced one lets a run breach the budget.
+#:
+#: WHAT THIS SET DECIDES, which is narrower than its name: not "has a
+#: reflectivity diagnostic" but "reserves the SHARED reflectivity
+#: translation unit's per-thread frame".  A moist scheme that fills
+#: REFL_10CM from its OWN kernels and hands the finished array to
+#: ``stash_refl_10cm`` loads no ``refl`` module and belongs in
+#: :data:`_SELF_REFLECTIVITY_MICROPHYSICS` instead.  Every accepted moist
+#: selector must appear in exactly one of the two, and
+#: :func:`domain_kernel_modules` refuses one that appears in neither.
 _REFLECTIVITY_MICROPHYSICS = frozenset({1, 6, 8, 10, 16, 18, 28})
+
+#: The DELIBERATE absences from :data:`_REFLECTIVITY_MICROPHYSICS`, each
+#: with the reason it is a decision and not an omission.  The pattern is
+#: ``microphysics_transition``'s ``UNVALIDATED_MIXED_EDGE_SELECTORS``: a
+#: scheme that is out of an admission set says so by name, so the next
+#: reader finds a ruling rather than a gap.  Adding a moist selector to
+#: :data:`_MICROPHYSICS_KERNEL_MODULES` without landing it in one set or
+#: the other now fails closed at ``gpuwm check``.
+_SELF_REFLECTIVITY_MICROPHYSICS: dict[int, str] = {
+    9: (
+        "Milbrandt-Yau fills the REFL_10CM slot inside its own "
+        "milbrandt2 diagnostics kernel and hands the finished array to "
+        "stash_refl_10cm (gpuwm/core/milbrandt2.py:291-296), so no refl "
+        "kernel is loaded."
+    ),
+    50: (
+        "P3 one-category computes REFL_10CM inside p3_main's own final-"
+        "checks-and-diagnostics loop -- ze_rain from the rain gamma "
+        "moment, ze_ice from ice lookup-table column 9, summed to dBZ "
+        "(phys/module_mp_p3.F:4722-4895, transcribed at "
+        "gpuwm/core/p3.py:1567-1626) -- and returns it as an OUTPUT of "
+        "mp_p3_wrapper_wrf (:690-932).  Both arms hand that finished "
+        "array straight to stash_refl_10cm (gpuwm/core/p3.py:1831-1835 "
+        "reference, :1982-1984 device), never to "
+        "compute_and_stash_refl_10cm, so no refl kernel is ever loaded.  "
+        "It could not be: refl.cu transcribes the calc_refl10cm family, "
+        "whose Rayleigh sums read qs and qg, and P3 carries ONE ice "
+        "category with a rime pair (qir/qib) and has neither -- its "
+        "accumulator row is five slots with no graupel "
+        "(gpuwm/core/physics_inventory.py:163-169).  MEASURED cost of "
+        "pricing it anyway: refl compiles to 3,600 B per thread at "
+        "nz=50 and is the WIDEST frame an mp=50 configuration has, so "
+        "admitting 50 moves the local-memory reservation from 0 to "
+        "672,645,120 B (0.63 GiB) on a 200x200x50 domain and refuses "
+        "runs that fit, for a kernel the run never launches."
+    ),
+}
 
 _CUMULUS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     0: (), 1: ("kf", "kf_validation"),
@@ -2268,11 +2383,30 @@ def domain_kernel_modules(dc: DomainConfig, *,
             modules.update(_radiation_44_kernel_modules(dc.run))
         else:
             modules.update(table[value])
-    if prices_refl and int(dc.run.mp_physics) in _REFLECTIVITY_MICROPHYSICS:
+    mp_physics = int(dc.run.mp_physics)
+    if (mp_physics and mp_physics not in _REFLECTIVITY_MICROPHYSICS
+            and mp_physics not in _SELF_REFLECTIVITY_MICROPHYSICS):
+        # FAIL-CLOSED on the reflectivity rail too, not just on the scheme
+        # row above.  A moist selector missing from BOTH sets prices no
+        # reflectivity frame at all, and silence here is the dangerous
+        # direction: the run passes ``gpuwm check`` against a budget that
+        # never counted refl.cu's per-thread frame and then breaches it at
+        # the first history step.  Being out is a legitimate answer -- it
+        # is what mp=9 and mp=50 are -- but it has to be WRITTEN.
+        raise ValueError(
+            f"no reflectivity-rail decision for mp_physics={mp_physics} on "
+            f"d{dc.grid_id:02d}.  If the scheme's REFL_10CM comes from "
+            "gpuwm.core.refl.compute_refl_10cm it loads refl.cu (or "
+            "wdm6_refl.cu) and must join _REFLECTIVITY_MICROPHYSICS; if it "
+            "fills the slot from its own kernels and only calls "
+            "stash_refl_10cm it loads neither, and must say so in "
+            "_SELF_REFLECTIVITY_MICROPHYSICS with the reason.  Leaving it "
+            "out of both under-prices the local-memory reservation.")
+    if prices_refl and mp_physics in _REFLECTIVITY_MICROPHYSICS:
         # mp=16 launches its reflectivity from its OWN translation unit, so
         # a WDM6 domain must never reserve refl.cu's wider frame and a
         # non-WDM6 domain must never reserve wdm6_refl.cu's.
-        modules.add("wdm6_refl" if int(dc.run.mp_physics) == 16 else "refl")
+        modules.add("wdm6_refl" if mp_physics == 16 else "refl")
     return frozenset(modules)
 
 
@@ -2968,7 +3102,42 @@ def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
                          "th_old", "qv_old",
                          "qi0", "ni0", "nr0", "qir0", "qib0"):
                 shapes[name] = m
-        if cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28):
+        elif cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28):
+            # WRF's SIX-MASS moist package, transcribed.  This tuple is
+            # not "the schemes with ice" -- it is the schemes whose
+            # Registry package is moist:qv,qc,qr,qi,qs,qg
+            # (Registry.EM_COMMON:3021 WSM6, :3024 Thompson, :3025
+            # Milbrandt-Yau, :3026 Morrison, :3031 WDM6, :3033 NSSL,
+            # :3036 Thompson aerosol-aware), which is what makes qs/qg
+            # and the third effective radius allocatable at all.
+            #
+            # mp=50 IS DELIBERATELY OUT, and the ``elif`` is the
+            # structural half of that decision: gpuwm/core/state.py's
+            # allocator spells the same split the same way, so this
+            # manifest stays a transcription of it and no later edit can
+            # hand P3 both packages.  P3's Registry row is
+            # moist:qv,qc,qr,qi with NO qs and NO qg, and
+            # state:re_cloud,re_ice with NO re_snow
+            # (Registry.EM_COMMON:3038); WRF's driver binds it with
+            # N_ICECAT=1 and no QS/QG dummy in the argument list at all
+            # (module_microphysics_driver.F:1569-1602, diag_effc_3d and
+            # diag_effi_3d and no snow radius).  Its package is priced by
+            # the mp==50 arm above.
+            #
+            # Two things break if 50 joins this tuple, both measured:
+            # (1) the manifest declares qs/qg/effs/qs0/qg0 that the state
+            #     builder never allocates, so the shared dycore-state
+            #     workspace is sized for five phantom fields -- the
+            #     equality in tests/test_mp_accepted_builds.py::
+            #     test_accepted_mp_builds_its_real_case_workspace fails on
+            #     exactly those five names; and
+            # (2) scratch_slot_registry's absent-mass predicate below is
+            #     "qi declared and qs NOT declared", so a declared qs
+            #     silently drops ``moist_absent_mass`` -- the shared zero
+            #     plane gpuwm/core/moist.py really allocates for P3's
+            #     calc_cq and slow_buoyancy -- out of the VRAM
+            #     projection, leaving the arena one (nz, ny, nx) FP32
+            #     plane short.
             for name in ("qi", "qs", "qg", "qi0", "qs0", "qg0",
                          "effc", "effi", "effs"):
                 shapes[name] = m
@@ -3757,6 +3926,34 @@ def scratch_slot_registry(cfg: RunConfig, *,
         if cfg.moist:
             for name in ("qv", "qc", "qr"):
                 slots["smag_r" + name] = m
+            # The three ICE MASS held tendencies, so the set is exactly
+            # the schemes whose transported inventory STARTS FROM
+            # gpuwm/core/moist.py::ICE_MASS_SPECIES ("qi", "qs", "qg").
+            # It is a PRICING MIRROR, not an admission gate: dycore
+            # allocates one carrying buffer per row of _smag2d_specs
+            # (dycore.py:1248-1252), which is SPECIES plus
+            # extra_moist_species(state) -- and that helper dispatches on
+            # FIELD PRESENCE, never on an integer.  moist.py imports cupy
+            # at module scope (:95) while this registry is priced on
+            # CPU-only installs, so the species tuples are transcribed
+            # here as integers, and only a test can hold the two
+            # spellings equal (tests/test_preflight.py, the mp=28 and
+            # mp=50 held-tendency gates).
+            #
+            # mp=50 (P3) IS EXCLUDED ON PURPOSE, and the exclusion is not
+            # a refusal -- nothing is denied, the scheme simply has no
+            # snow or graupel to hold.  It is the one ported scheme with
+            # qi and no qs/qg: Registry.EM_COMMON:3038 declares its
+            # package as "moist:qv,qc,qr,qi;scalar:qni,qnr,qir,qib", so
+            # WRF's own moist array carries no snow or graupel index
+            # under P3, and the mixing loop that PRODUCES these
+            # tendencies -- "do im = PARAM_FIRST_SCALAR, n_moist" at
+            # module_diffusion_em.F:3036, bounded by that package extent
+            # -- never reaches one.  Adding 50 here would price two full
+            # (nz, ny, nx) fields no mp=50 DomainState allocates and
+            # prepare_fixed_tendencies never writes, inflating the
+            # headroom estimate on the card the estimate exists to
+            # protect.  P3's own row is the mp == 50 arm below.
             if cfg.mp_physics in (6, 8, 9, 10, 16, 18, 28):
                 for name in ("qi", "qs", "qg"):
                     slots["smag_r" + name] = m
@@ -3810,17 +4007,35 @@ def scratch_slot_registry(cfg: RunConfig, *,
         slots["physics_qtot"] = m                   # physics.py:369
         if not cfg.moist:
             slots.update(physics_dry_qv=m, physics_dry_qc=m)
-        # physics.py:1400-1409 substitutes a zero-filled scratch plane only
+        # physics.py:1541-1550 substitutes a zero-filled scratch plane only
         # when the state has no qi/qs of its own, PER FIELD.  mp=28 and
         # mp=16 allocate both, so listing them there would price two full
         # 3-D fields the run never asks for; mp=50 (P3) allocates qi and
         # NOT qs, so it is the one scheme that needs exactly one of the
         # two -- the conditions are therefore split rather than sharing a
         # tuple.
+        #
+        # BOTH TESTS ARE NEGATED, so mp=50's presence in the first and its
+        # ABSENCE FROM THE SECOND is a decision rather than an oversight:
+        # keeping 50 out of the qs tuple is what PRICES the plane every
+        # physics-enabled mp=50 step allocates.  state.py:464-476 gives a
+        # P3 state qi/ni/nr/qir/qib and no qs -- one ice category with a
+        # rime mass/volume pair instead of split snow and graupel, so WRF
+        # registers the package as moist:qv,qc,qr,qi
+        # (Registry.EM_COMMON:3038) and its driver binds no snow array at
+        # all in the mp=50 call shape (module_microphysics_driver.F:
+        # 1569-1602).  The prep therefore substitutes qs and only qs.
+        # Adding 50 below, which is what a mechanical "this scheme set
+        # omits 50" sweep would do, drops a full nz*ny*nx float32 field
+        # from the envelope of every mp=50 domain.  Enforced by
+        # tests/test_preflight.py::test_mp50_prices_the_absent_snow_plane_
+        # and_not_the_present_ice_one, which measures the prep's own
+        # scratch requests on a real mp=50 state; before it existed that
+        # edit left this whole module green.
         if cfg.mp_physics not in (6, 8, 10, 16, 18, 28, 50):
-            slots["physics_qi"] = m                 # physics.py:1400-1404
+            slots["physics_qi"] = m                 # physics.py:1541-1545
         if cfg.mp_physics not in (6, 8, 10, 16, 18, 28):
-            slots["physics_qs"] = m                 # physics.py:1405-1409
+            slots["physics_qs"] = m                 # physics.py:1546-1550
     # FOUR producers write this one uint32 word and the disjunction has to
     # name every one of them: YSU (physics.py:_run_ysu), Shin-Hong
     # (physics.py:_run_shinhong), the native microphysics validator
@@ -3948,6 +4163,34 @@ def nest_field_kinds(cfg: RunConfig) -> tuple[str, ...]:
     are not in tension -- the inventory follows what is transported, not what
     is allocated.
 
+    The three ice MASSES are scheme-dependent for the same reason, and
+    ``mp_physics=50`` is EXCLUDED from that block deliberately.  What this
+    inventory decides is not "does the scheme have ice" but "which of WRF's
+    boundary-forced Registry members does the scheme activate": every kind
+    named here is declared ``ikjftb`` with ``i0rhusdf=(bdy_interp:dt)`` --
+    the ``moist`` masses at Registry.EM_COMMON:452-469 and the ``scalar``
+    moments at :520-558.  P3's package is
+    ``moist:qv,qc,qr,qi;scalar:qni,qnr,qir,qib`` (Registry.EM_COMMON:3038):
+    ONE ice mass, no ``qs`` and no ``qg``, which is why the mp=50 arm below
+    brings its own ``qi`` instead of joining the tuple.  WRF's driver says
+    the same thing -- the ``P3_1CATEGORY`` arm passes no snow and no
+    graupel array at all (module_microphysics_driver.F:1557-1602, against
+    ``mp_p3_wrapper_wrf``'s signature at module_mp_p3.F:690-699).  Folding
+    50 in would name ``qi`` twice and price sixteen rolling boundary tables
+    for two species an mp=50 child never allocates (gpuwm/core/state.py's
+    mp=50 arm), and the first ``force`` would then raise ``state has no
+    active nest field 'qs'`` (gpuwm/core/nest.py:186-193).
+
+    P3's remaining package members -- ``state:re_cloud,re_ice,vmi3d,
+    rhopo3d,di3d,refl_10cm,th_old,qv_old`` -- are absent for a DIFFERENT
+    reason, recorded here so it is not read as a second omission: they are
+    ``misc`` state with no ``b`` in the io string (th_old/qv_old at
+    Registry.EM_COMMON:1598-1599), so WRF builds no boundary arrays for
+    them and ``bdy_interp`` never touches them.  ``p3_main`` rewrites
+    th_old/qv_old at the end of every call (module_mp_p3.F:5018-5021);
+    they are cross-step carriers the child regenerates, not forced
+    boundary fields.
+
     This inventory contains only REAL prognostic fields handled by WRF
     ``copy_fcn`` (mass-cell or U/V face averaging).  It contains no
     masked/surface ``copy_fcnm`` fields and no integer ``copy_fcni`` fields;
@@ -3984,7 +4227,11 @@ def nest_field_kinds(cfg: RunConfig) -> tuple[str, ...]:
             # pair is forced across a nest edge exactly like the number
             # moments.  Forcing qi without them would hand the child ice
             # whose rime fraction and rime density came from whatever the
-            # child's own last step left behind.
+            # child's own last step left behind.  DELIBERATELY not folded
+            # into the qi/qs/qg tuple above: this arm carries P3's single
+            # ice mass itself, because Registry.EM_COMMON:3038 gives the
+            # scheme no qs and no qg (the docstring carries the
+            # consequence of widening that tuple).
             kinds += ["qi", "ni", "nr", "qir", "qib"]
     return tuple(kinds)
 
@@ -4628,11 +4875,26 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "bdy_interp1 reads it; the two simultaneous fields use distinct "
         "backings and FORCE ends before any aliased RK-stage read"),
     ScratchSlotLifetime(
+        # THE LIST IS nest_field_kinds' RANGE and must stay it.  A kind that
+        # crosses a nest edge and has no row here is not a slow path: the
+        # arena audit RAISES KeyError, so `gpuwm domain --ladder 12-3` --
+        # the wizard, the front door for every nested run -- dies with an
+        # unhandled traceback before it can emit anything.  P3's rime mass
+        # and rime volume were exactly that: nest_field_kinds gained
+        # "qir"/"qib" with the mp=50 arm and this tuple did not, so no
+        # nested P3 configuration could be authored at all.  MEASURED:
+        # `KeyError: scratch slot 'nest_qir_bxs' has no lifetime audit row`.
+        # tests/test_p3_front_door.py walks every shipped mp_physics against
+        # this row so the next scheme cannot repeat it -- and that walk
+        # found a SECOND hole of the same class while it was being written:
+        # Milbrandt-Yau (mp=9) forces "nh", its hail number moment, and had
+        # no row either, so a nested mp=9 wizard emission died the same way.
         tuple(f"nest_{kind}_b*" for kind in
               ("u", "v", "w", "t", "ph", "mu", "qv", "qc", "qr",
-               "qi", "qs", "qg", "nr", "ni", "ns", "ng", "qh",
+               "qi", "qs", "qg", "nr", "ni", "ns", "ng", "nh", "qh",
+               "qir", "qib",
                "qndrop", "qnr", "qni", "qns", "qng", "qnh", "qnn",
-               "qvolg", "qvolh")),
+               "qvolg", "qvolh", "nc", "nn", "nwfa", "nifa")),
         "carrying", "gpuwm/core/nest.py:force; "
         "gpuwm/ingest/lateral_bc.py:attach_nest_boundaries",
         "rolling value/tendency frames are consumed through the complete "
@@ -5011,6 +5273,27 @@ def rrtmgp_column_shapes(
         # unaffected either way -- it returns {} from this function and is
         # priced as one shared call-peak envelope.
         lay += ["effc", "effi", "effs"]
+    elif cfg.mp_physics == 50:
+        # P3 packs TWO radius columns, not three, and the missing one is
+        # the whole shape of its coupling: WRF puts has_reqs back to 0 for
+        # the P3 family (phys/module_physics_init.F:1027-1034) because P3's
+        # single ice category has no snow species to have a radius, so
+        # Registry.EM_COMMON:3043 gives it state:re_cloud,re_ice and
+        # gpuwm/core/state.py allocates effc/effi and no effs.  Pricing an
+        # effs column here would budget a per-column array the run never
+        # allocates -- over-pricing in the direction that HIDES a real
+        # allocation, since it would then look priced for a scheme whose
+        # adapter branch refuses one.
+        #
+        # UNREACHABLE UNTIL NOW, which is why the row is only landing with
+        # the coupling: this function returns {} for the legacy-RRTMG 4/4
+        # variant, and the RTE+RRTMGP variant refused mp=50 outright until
+        # gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME gained ``50: "p3"``.
+        # With that refusal retired, an mp=50 RTE+RRTMGP run reaches this
+        # branch, and without the row it would reach it priced for no
+        # radius columns at all -- the under-priced direction, which lets a
+        # run breach the budget rather than refusing it.
+        lay += ["effc", "effi"]
     for name in lay:
         shapes[f"columns/{name}"] = ((ncol, nz), 4)
     for name in ("metadata_jt", "metadata_jp", "metadata_iatm",
@@ -5837,7 +6120,16 @@ class PhaseMemoryEstimate:
     #: number that binds -- it is already the streamed one, not the resident
     #: one -- and this carries the tiling that produced it so the verdict can
     #: name it.  ``None`` is every resident run, where nothing changed.
+    #: For a NESTED tree this is the mixed-road
+    #: :class:`gpuwm.core.streaming.TreeRoadPlan` (recognisable by its
+    #: ``rows``), on the same contract: present means the forecast term is
+    #: the mixed road's.
     streamed: "StreamedEnvelope | None" = None
+    #: The mixed-road walk of a nested ``[tiles]`` tree, kept even when it
+    #: cannot replace the forecast term (an all-resident decision, a
+    #: refused walk) so the report can print the run door's answer -- the
+    #: roads, the claims, or the refusal -- beside the resident context.
+    tree_road: object | None = None
     #: The resident forecast envelope, kept beside the streamed one so a
     #: report can say what streaming BOUGHT.  Equal to
     #: ``forecast_envelope_bytes`` on a resident run.
@@ -5850,6 +6142,33 @@ class PhaseMemoryEstimate:
     @property
     def streamed_forecast(self) -> bool:
         return self.streamed is not None
+
+    @property
+    def mixed_road(self) -> bool:
+        """Whether the forecast term is a nested tree's MIXED road.
+
+        The two things :attr:`streamed` can be are told apart by the one
+        thing only the tree plan has: per-domain ``rows``.
+        """
+        return getattr(self.streamed, "rows", None) is not None
+
+    @property
+    def pace_streamed(self) -> object | None:
+        """The envelope the PACE model should be handed, not the memory one.
+
+        :func:`gpuwm.core.pace.estimate_pace` prices the ROOT's road and
+        charges every nest resident, so it reads ``tile_nx``/``halo``/
+        ``nbuffers`` off a single domain's envelope.  A
+        :class:`gpuwm.core.streaming.TreeRoadPlan` has no single tiling --
+        that is the whole point of a mixed road -- so the root's own
+        envelope is what goes to pace, and ``None`` when the walk left the
+        root RESIDENT.  Handing the tree plan over instead would have the
+        pace line say "streamed road" about a root that is never tiled and
+        quote a bus floor for bytes that never cross the bus.
+        """
+        if not self.mixed_road:
+            return self.streamed
+        return getattr(self.streamed, "root_envelope", None)
 
     @property
     def binding_phase(self) -> str:
@@ -5905,8 +6224,46 @@ class PhaseMemoryEstimate:
                 f"budget by "
                 f"{(self.peak_envelope_bytes - budget_bytes) / GIB:.2f} GiB")
 
+    def _budget_tail(self, text: str, budget_bytes: int | None) -> str:
+        if budget_bytes is None:
+            return text
+        if self.fits(budget_bytes):
+            return (f"{text}; it fits the {budget_bytes / GIB:.2f} GiB "
+                    "budget with "
+                    f"{(budget_bytes - self.peak_envelope_bytes) / GIB:.2f} "
+                    "GiB to spare")
+        return (f"{text}; that EXCEEDS the {budget_bytes / GIB:.2f} GiB "
+                f"budget by "
+                f"{(self.peak_envelope_bytes - budget_bytes) / GIB:.2f} GiB")
+
+    def _tree_road_verdict(self, budget_bytes: int | None) -> str:
+        env = self.streamed
+        phase = self.binding_phase
+        label = ("preprocessing (ingest)" if phase == "ingest"
+                 else "the mixed-road forecast")
+        parts = [f"{label} is the memory-binding phase at "
+                 f"{self.peak_envelope_bytes / GIB:.2f} GiB peak envelope "
+                 f"(mixed-road forecast "
+                 f"{self.forecast_envelope_bytes / GIB:.2f} GiB"]
+        if self.ingest_priced:
+            parts.append(f", ingest {self.ingest_envelope_bytes / GIB:.2f} "
+                         "GiB")
+        parts.append(")")
+        text = "".join(parts)
+        text += "; " + env.summary()
+        if self.resident_forecast_envelope_bytes is not None:
+            text += (f", against "
+                     f"{self.resident_forecast_envelope_bytes / GIB:.2f} GiB "
+                     "with the whole tree resident")
+        if env.host_bytes:
+            text += (f", with the streamed domain(s) in "
+                     f"{env.host_bytes / GIB:.2f} GiB of pinned host RAM")
+        return self._budget_tail(text, budget_bytes)
+
     def _streamed_verdict(self, budget_bytes: int | None) -> str:
         env = self.streamed
+        if getattr(env, "rows", None) is not None:
+            return self._tree_road_verdict(budget_bytes)
         phase = self.binding_phase
         label = ("preprocessing (ingest)" if phase == "ingest"
                  else "the streamed forecast")
@@ -6025,7 +6382,26 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
             exp, source=key, forcing_interval_seconds=float(cadence),
             vram_gib=vram_gib, profile=profile)
     resident_forecast = forecast.peak_envelope_bytes
-    streamed = streamed_forecast_envelope(exp, machine=machine)
+    tree_road = None
+    if len(getattr(exp, "domains", ()) or ()) > 1:
+        # A NESTED tree with [tiles] is priced by the same per-domain walk
+        # the run door performs (streaming.steppers_for_tree's decide
+        # pass), because the road the run actually takes is mixed --
+        # each domain resident or streamed against the budget its
+        # predecessors leave.  The root-only streamed envelope below
+        # cannot describe that run, and pricing only the resident tree
+        # is the defect that had `gpuwm check` exit 1 against configs
+        # whose mixed road fits and completes.
+        from gpuwm.core.streaming import tree_road_plan
+
+        try:
+            tree_road = tree_road_plan(exp, machine=machine)
+        except Exception:            # a gate never dies on its estimate
+            tree_road = None
+        streamed = (tree_road if tree_road is not None and tree_road.usable
+                    else None)
+    else:
+        streamed = streamed_forecast_envelope(exp, machine=machine)
     return PhaseMemoryEstimate(
         forecast=forecast, ingest=ingest,
         # THE PEAK, NOT THE HOLD.  ``vram_bytes`` is what a streamed
@@ -6038,7 +6414,7 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
                                  else int(streamed.peak_vram_bytes)),
         ingest_envelope_bytes=(None if ingest is None
                                else ingest.peak_envelope_bytes),
-        source=key, streamed=streamed,
+        source=key, streamed=streamed, tree_road=tree_road,
         resident_forecast_envelope_bytes=resident_forecast,
     )
 
@@ -6439,6 +6815,81 @@ def _synthetic_root_boundaries(cfg: RunConfig, n_intervals: int):
         relax_zone=cfg.relax_zone)
 
 
+#: ``mp_physics`` values for which ``gpuwm check --alloc`` advances the
+#: driver's behavior-gating microphysics counter before it measures
+#: residency.
+#:
+#: WHAT THIS SET DECIDES, which is not what its two values suggest.  Not
+#: "which schemes are ported", not "which schemes own a canonical
+#: accumulator row", not "which schemes predict radii".  It decides which
+#: schemes reach an allocation a CONSTRUCTED driver does not hold but a
+#: RUNNING one holds from its first microphysics call onward -- the only
+#: thing ``PhysicsDriver.microphysics_updates`` gates that can move a byte
+#: this measurement reports.  The tree has exactly one such allocation:
+#: ``gpuwm/core/rrtmgp.py:2535`` withholds the Morrison effective-radius
+#: column pack (``effc``/``effr``/``effi``/``effs``, four ``(ncol, nz)``
+#: float32 packs per radiation call) until the counter has accepted one
+#: update, because until then ``state.eff*`` is zero-filled storage rather
+#: than a PSD diagnostic.  Leave the counter at zero and ``--alloc``
+#: measures a radiation call four column packs lighter than the run's.
+#:
+#: ``10`` is Morrison, the scheme that gate is written for.  ``6`` shares
+#: the row because :func:`rrtmgp_column_shapes` prices its
+#: ``effc``/``effi``/``effs`` pack off the same state arrays, so seeding
+#: the counter states the same steady state for it; there the seeding is
+#: faithful rather than load-bearing, because the ``wsm6`` coupling arm
+#: takes its radii unconditionally.
+ALLOC_COUNTER_ADVANCED_MICROPHYSICS = (6, 10)
+
+#: Selectors deliberately absent from
+#: :data:`ALLOC_COUNTER_ADVANCED_MICROPHYSICS`, each with the reason it is
+#: absent.  An omission is not a decision; this is where the decision is
+#: written down.  Pinned by ``tests/test_preflight.py::
+#: test_the_alloc_counter_advance_records_why_p3_is_out``.
+ALLOC_COUNTER_INERT_MICROPHYSICS = {
+    50: (
+        "P3 one-category reaches NO reader of microphysics_updates on any "
+        "radiation pairing gpuwm.config admits, so advancing the counter "
+        "would move zero measured bytes while putting mp=50 in a set whose "
+        "membership means 'reaches a counter-gated allocation'.  "
+        "(1) The counter's only allocation gate lives inside the RTE "
+        "adapter's scheme == 'morrison' arm.  mp=50 DOES reach the "
+        "adapter since the 2.6.1 cloud-optics coupling "
+        "(_MP_CLOUD_OPTICS_SCHEME row 50: 'p3'; the old admission "
+        "refusal, validate_p3_radiation, retired with the defect it "
+        "guarded), but the p3 arm copies its two radii UNCONDITIONALLY "
+        "-- it reads the counter nowhere, so there is still no "
+        "counter-gated allocation for mp=50 to reach.  The two other "
+        "admitted pairings (legacy RRTMG 4/4, Dudhia 0/1) never "
+        "construct the adapter and price zero RTE+RRTMGP columns.  "
+        "(2) The legacy RRTMG adapter -- P3's only 4/4 pairing -- reads "
+        "the counter nowhere.  It takes its radii from WRF's has_req* "
+        "table, and module_physics_init.F:1017 names P3_1CATEGORY in the "
+        "use_mp_re disjunction while the :1027-1033 override sets "
+        "has_reqs=0, so P3's radii are a scheme property rather than a "
+        "first-call one.  "
+        "(3) P3 has no 'radii not yet valid' phase for such a gate to "
+        "express: gpuwm/core/state.py:494-495 seeds state.effc/effi at "
+        "10/25 microns at construction, which is exactly what p3_main "
+        "presets on entry to every call before any condensate test "
+        "(module_mp_p3.F:2279, :2281).  "
+        "(4) P3's persistent set is already whole when _materialize_"
+        "physics runs.  Its FIVE accumulator slots -- "
+        "physics_inventory.microphysics_scratch_slots(50), no graupel, "
+        "because module_microphysics_driver.F's CASE (P3_1CATEGORY) at "
+        ":1557 binds RAINNC/RAINNCV/SR/SNOWNC/SNOWNCV and diag_effc_3d/"
+        "diag_effi_3d and nothing else -- and its p3_* scratch slots are "
+        "all in scratch_slot_registry, which run_alloc_preflight prewarms "
+        "before this function is called.  "
+        "WHAT WOULD FLIP THIS: a row for 50 in "
+        "gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME, or any read of "
+        "microphysics_updates appearing in gpuwm/core/rrtmg_legacy.py.  "
+        "The pinning test fails on either, rather than letting --alloc "
+        "quietly understate a P3 run's radiation call."
+    ),
+}
+
+
 def _materialize_physics(state, cfg: RunConfig, start_time: datetime,
                          *, glw=None):
     """initialize_physics + the steady-state extras the first steps would
@@ -6500,10 +6951,13 @@ def _materialize_physics(state, cfg: RunConfig, start_time: datetime,
                 and not physics_reuses_pbl_composition(cfg)):
             if driver.tendencies.rqi is None:
                 driver.tendencies.rqi = zero_m()
-    if cfg.mp_physics in (6, 10):
+    if cfg.mp_physics in ALLOC_COUNTER_ADVANCED_MICROPHYSICS:
         # PhysicsDriver initialization already aliases and materializes all
         # seven carrying mp_* scratch slots; only the behavior-gating counter
-        # changes after the first real scheme call.
+        # changes after the first real scheme call.  Which selectors belong
+        # here -- and why mp=50 does not -- is
+        # ALLOC_COUNTER_ADVANCED_MICROPHYSICS /
+        # ALLOC_COUNTER_INERT_MICROPHYSICS above.
         driver.microphysics_updates = 1
     if physics_retains_ysu_output(cfg):
         # Materialize the positive-cadence retained YSU output set so the
@@ -7593,6 +8047,13 @@ def check_main(args) -> int:
         # WHICH FORECAST FIGURE THE READER GOT, said in a field rather
         # than inferred from the size of the number.
         payload["streamed_forecast"] = phases.streamed_forecast
+        # THE RUN DOOR'S OWN PER-DOMAIN WALK, published whether or not it
+        # replaced the forecast term: a reader whose tree the walk refuses,
+        # or leaves all-resident, is owed the same answer as one whose tree
+        # streams.  ``None`` for every config the question does not arise
+        # for (single domain, no [tiles] anywhere).
+        payload["tree_road"] = (None if phases.tree_road is None
+                                else phases.tree_road.to_json())
         if phases.streamed_forecast:
             env = phases.streamed
             payload["streamed"] = {
@@ -7607,11 +8068,6 @@ def check_main(args) -> int:
                 "resident_forecast_envelope_bytes":
                     phases.resident_forecast_envelope_bytes,
                 "host_bytes": int(env.host_bytes),
-                "host_budget_bytes": env.host_budget_bytes,
-                "tile_nx": env.tile_nx, "tile_ny": env.tile_ny,
-                "window_nx": env.window_nx, "window_ny": env.window_ny,
-                "nbuffers": env.nbuffers, "halo": env.halo,
-                "rung": env.rung, "write_mode": env.write_mode,
                 # The pair the alloc leg above compared, named, so a
                 # script never has to guess which budget it was.
                 "alloc_gate_basis": (
@@ -7619,6 +8075,22 @@ def check_main(args) -> int:
                     if streamed_alloc_gate else
                     "resident (--alloc measures a resident allocation)"),
             }
+            if phases.mixed_road:
+                # A TREE HAS NO SINGLE TILING.  These keys describe one
+                # streamed domain, and emitting them for a mixed road would
+                # have a script read the child's tile as the tree's -- so
+                # the road field says which shape this block is, and the
+                # per-domain tilings live in ``tree_road.rows`` above.
+                payload["streamed"]["road"] = "mixed (nested tree)"
+            else:
+                payload["streamed"].update({
+                    "road": "streamed (single domain)",
+                    "host_budget_bytes": env.host_budget_bytes,
+                    "tile_nx": env.tile_nx, "tile_ny": env.tile_ny,
+                    "window_nx": env.window_nx, "window_ny": env.window_ny,
+                    "nbuffers": env.nbuffers, "halo": env.halo,
+                    "rung": env.rung, "write_mode": env.write_mode,
+                })
         # The verdict compares ``envelope_budget``, not ``budget``: it is
         # an ENVELOPE sentence, and the allocation budget has already
         # subtracted the CUDA context and the local-memory backing store
@@ -7661,11 +8133,12 @@ def check_main(args) -> int:
         # surface that has actually measured the card: a machine-facing
         # reader of `gpuwm check --json` gets the pace as fields rather
         # than having to parse it back out of the advisory sentence.
-        pace = pace_estimate_for_report(exp, streamed=phases.streamed,
+        pace = pace_estimate_for_report(exp, streamed=phases.pace_streamed,
                                         free_bytes=free)
         payload["expected_pace"] = None if pace is None else pace.to_json()
         advisories = check_advisories(exp, args.config,
-                                      streamed=phases.streamed)
+                                      streamed=phases.streamed,
+                                      tree_road=phases.tree_road)
         if advisories:
             payload["advisories"] = advisories
         if rail is not None:
@@ -7692,8 +8165,31 @@ def check_main(args) -> int:
               f"({len(exp.domains)} domain(s); column_chunk "
               f"{estimate.column_chunk})")
         for advisory in check_advisories(
-                exp, args.config, streamed=phases.streamed):
+                exp, args.config, streamed=phases.streamed,
+                tree_road=phases.tree_road):
             print(f"  {advisory}")
+        # THE PLAN, PER DOMAIN, because the sentence above states the road
+        # and this states its arithmetic.  Printed for every nested tree
+        # the walk could price -- including one it refuses, where the
+        # roads it got as far as deciding are what the reader needs to see
+        # -- and never gated behind a flag: a user whose mixed road fits
+        # was being handed exit 1 and no way to see why.
+        if phases.tree_road is not None:
+            print("  MIXED-ROAD PLAN (the per-domain walk the run door "
+                  "performs; streaming.steppers_for_tree):")
+            for line in phases.tree_road.row_lines():
+                print(f"    {line}")
+            if phases.tree_road.total_budget_bytes:
+                print(f"    tree budget {_format_bytes(int(phases.tree_road.total_budget_bytes))}"
+                      f"; process floor "
+                      f"{_format_bytes(int(phases.tree_road.process_overhead_bytes))}"
+                      f"; card holds "
+                      f"{_format_bytes(int(phases.tree_road.vram_hold_bytes))}"
+                      f", peak "
+                      f"{_format_bytes(int(phases.tree_road.peak_vram_bytes))}"
+                      f" with the radiation reservation")
+            if phases.tree_road.refusal is not None:
+                print(f"    REFUSED: {phases.tree_road.refusal}")
         # UNCONDITIONAL, unlike the advisories above.  This is the line
         # whose absence let a streamed run at 399,119 columns look like a
         # stall: the memory report was complete and said nothing about
@@ -7701,7 +8197,7 @@ def check_main(args) -> int:
         # measured, so the column bound is about the reader's own
         # allowance and not a declared one.
         pace_line = pace_advisory(
-            exp, streamed=phases.streamed,
+            exp, streamed=phases.pace_streamed,
             machine=pace_machine_from_free_bytes(free))
         if pace_line:
             print(f"  {pace_line}")
@@ -7854,16 +8350,30 @@ def check_main(args) -> int:
             # allocated, and it compares a different budget from the one
             # on the reserve line: say so where the two are read, so
             # neither number reads as contradicting the other.
-            print(f"  ALLOC GATE, STREAMED: the leg below weighs the "
-                  f"streamed envelope "
+            # WHY THE ITEMIZED ESTIMATE IS NOT THE SUBJECT, and the reason
+            # differs by road.  On a single streamed domain the resident
+            # allocation never happens at all.  On a MIXED road it partly
+            # does -- a resident parent really is allocated -- so saying
+            # "the resident domain is never allocated" there would be
+            # false about the very domain the reader can see in the plan
+            # above.  What is true of both is that the walk's figure is
+            # already whole-process, which is the part that matters for
+            # which budget it is weighed against.
+            basis = (
+                "the walk above already prices every domain's road "
+                "together, resident claims included"
+                if phases.mixed_road else
+                "with [tiles] the resident domain is never allocated")
+            label = "MIXED ROAD" if phases.mixed_road else "STREAMED"
+            print(f"  ALLOC GATE, {label}: the leg below weighs the "
+                  f"envelope "
                   f"{_format_bytes(int(phases.streamed.peak_vram_bytes))} "
                   f"against "
                   f"the envelope budget {_format_bytes(envelope_budget)} "
                   f"(free VRAM less the "
                   f"{_format_bytes(EXTERNAL_MARGIN_BYTES)} other-process "
                   f"margin), not the itemized resident estimate against the "
-                  f"allocation budget: with [tiles] the resident domain is "
-                  f"never allocated, and the streamed figure already "
+                  f"allocation budget: {basis}, and the figure already "
                   f"carries the CUDA context and the per-process fixed "
                   f"cost that the allocation reserve holds separately.")
         print(f"  reserve {reserve.reserve_bytes / GIB:.2f} GiB "
@@ -7997,7 +8507,28 @@ def check_main(args) -> int:
             # "OVER BUDGET; first lever --column-chunk N" beside a
             # verdict that had just said the run fits, and the lever it
             # named would move a number nothing compares.
-            if int(phases.streamed.peak_vram_bytes) > envelope_budget:
+            if (phases.mixed_road
+                    and int(phases.streamed.peak_vram_bytes)
+                    > envelope_budget):
+                # A TREE HAS NO SINGLE TILE TO TRIM.  The remedy below
+                # names one, and printing it for a mixed road would send a
+                # reader to shrink a tiling the overshoot may not even be
+                # in -- the plan above already says which domain claims
+                # what, which is where the lever actually is.
+                print(f"  OVER BUDGET, MIXED ROAD: the per-domain walk "
+                      f"holds "
+                      f"{_format_bytes(int(phases.streamed.vram_bytes))} "
+                      f"and reaches "
+                      f"{_format_bytes(int(phases.streamed.peak_vram_bytes))}"
+                      f" against the {_format_bytes(envelope_budget)} "
+                      f"envelope budget.")
+                print("  remedy: a smaller [tiles] tile_nx/tile_ny on the "
+                      "domain whose claim the plan above shows is dearest, "
+                      "or nbuffers = 1 to trade overlap for room, or free "
+                      "VRAM and re-run")
+            elif (not phases.mixed_road
+                    and int(phases.streamed.peak_vram_bytes)
+                    > envelope_budget):
                 env = phases.streamed
                 # WHICH TERM IS OVER.  With the radiation transient in the
                 # figure, a reader told to trim the tile has to be able to

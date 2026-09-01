@@ -572,6 +572,608 @@ pub fn decode_collection(
     assemble_grib(mapping, &records)
 }
 
+/// What ONE input object's inventory pass produced.
+///
+/// Deliberately holds no decoded array: the identities, the wanted
+/// message indices grouped by the valid time each carries, and the
+/// source cycle each valid time's messages agree on.  The parsed object
+/// is dropped at the end of the pass, so a fourteen-object 3 km CONUS
+/// preparation does not hold fourteen parsed objects to find out what is
+/// in them.
+struct ObjectInventory {
+    identities: Vec<crate::grib::RecordIdentity>,
+    selected: usize,
+    by_key: BTreeMap<crate::assemble::TimeKey, Vec<usize>>,
+    /// Wanted indices matching a field the mapping declares
+    /// `cycle_invariant`: one record answers every valid time, so it is
+    /// read into EVERY slice.
+    invariant: Vec<usize>,
+    cycles: BTreeMap<crate::assemble::TimeKey, chrono::NaiveDateTime>,
+}
+
+/// Staged bytes the inventory pass may hold IN FLIGHT at once, counted
+/// on the supplied (still compressed) objects.
+///
+/// The named breakage this bound prevents is the one the serial loop was
+/// written for: parsing every input at once held every staged payload of
+/// a fourteen-object 3 km CONUS list resident before a single field had
+/// been decoded.  A worker cap alone does not prevent it -- eight
+/// half-gigabyte objects is the same accident with a smaller constant --
+/// so admission is priced in BYTES and the worker cap applies inside
+/// that.  The effect is that concurrency follows object size without
+/// anyone naming a source: a list of small objects inventories at the
+/// full [`crate::threads::THREAD_CAP`], a list of large ones collapses
+/// to the serial pass this replaces, and a single object larger than the
+/// budget is still admitted alone.
+///
+/// The number, chosen against measured object sizes rather than picked:
+/// a compressed field-per-file object measures about 0.9 MiB, so 64 MiB
+/// admits roughly seventy of them and the pass runs at the full worker
+/// cap; a multi-message per-lead object measures about 20 MiB, so the
+/// same budget admits three and the in-flight set stays close to the
+/// serial pass this replaces.  The budget is spent on the SUPPLIED
+/// bytes, so a compressed object's decompressed twin and parsed form sit
+/// above it -- call the worst in-flight addition a small multiple of
+/// 64 MiB, against a streamed peak of 3.9 to 4.0 GiB measured on the
+/// widest source here (877 objects, seven valid times, a 10.4 GB
+/// frameset).  Nothing in it names a source: object size is the
+/// property, and a source that publishes small objects is exactly the
+/// one whose inventory was serial.
+const INVENTORY_STAGED_BYTES: u64 = 64 * 1024 * 1024;
+
+/// How many of `sizes` the next inventory batch admits under `budget`.
+///
+/// Always at least one, so an object larger than the whole budget is
+/// still inventoried -- alone, which is the serial pass -- rather than
+/// stalling the walk.
+fn inventory_batch_len(sizes: &[u64], budget: u64) -> usize {
+    let mut admitted = 0u64;
+    let mut taken = 0usize;
+    for size in sizes {
+        if taken > 0 && admitted.saturating_add(*size) > budget {
+            break;
+        }
+        admitted = admitted.saturating_add(*size);
+        taken += 1;
+    }
+    taken.max(1)
+}
+
+/// Inventory every input object, bounded-parallel, in DOCUMENT ORDER.
+///
+/// The performance breakage this replaces: the pass is what tells the
+/// stream which object carries which valid time, so it runs before any
+/// field is decoded, and on a compressed field-per-file source it was
+/// the serial half of a decode that had otherwise gone parallel -- 37.5 s
+/// of a 99.8 s preparation, against 27.6 s for the whole-decode engine
+/// that had no separate pass at all.  An uncompressed multi-message
+/// source never paid it (one object, one decompression that is a memcpy).
+///
+/// Determinism is the crate rule, not an argument made here: objects go
+/// into PRE-ASSIGNED SLOTS and are drained in input-list order, so the
+/// progress stream, the identity pins, the plan order and the first
+/// refusal are the serial pass's regardless of the schedule.  Batches are
+/// walked in order for the same reason -- a refusal in batch *n* is
+/// returned before batch *n+1* is admitted, so the first refusal in
+/// document order is still the one reported.
+fn inventory_objects(
+    mapping: &Mapping,
+    files: &[String],
+    invariant_fields: &std::collections::BTreeSet<String>,
+) -> Result<Vec<ObjectInventory>> {
+    // A path whose size cannot be read prices as zero and earns its
+    // refusal from the read inside the pass, so the refusal sentence
+    // stays the one the serial loop produced.
+    let sizes: Vec<u64> = files
+        .iter()
+        .map(|path| {
+            std::fs::metadata(path)
+                .map(|meta| meta.len())
+                .unwrap_or(0)
+        })
+        .collect();
+    let mut inventories: Vec<ObjectInventory> = Vec::with_capacity(files.len());
+    let mut start = 0usize;
+    while start < files.len() {
+        let end = start + inventory_batch_len(&sizes[start..], INVENTORY_STAGED_BYTES);
+        let batch = &files[start..end];
+        let slots: Vec<Result<ObjectInventory>> = crate::threads::install(|| {
+            use rayon::prelude::*;
+            batch
+                .par_iter()
+                .map(|source| inventory_one_object(mapping, source, invariant_fields))
+                .collect()
+        });
+        inventories.extend(crate::threads::in_order(slots)?);
+        start = end;
+    }
+    Ok(inventories)
+}
+
+/// Read, stage, parse and INVENTORY one input object; decode nothing.
+fn inventory_one_object(
+    mapping: &Mapping,
+    source: &str,
+    invariant_fields: &std::collections::BTreeSet<String>,
+) -> Result<ObjectInventory> {
+    let raw = std::fs::read(source)
+        .map_err(|error| missing_input(format!("cannot read {source}: {error}")))?;
+    let payload = crate::codec::decoded_payload(raw, source)?;
+    validate_grib2_envelopes(&payload, source)?;
+    let file = grib_core::grib2::Grib2File::from_bytes(&payload).map_err(|error| {
+        crate::refusal::decode_failed(format!("GRIB2 parse failed for {source}: {error}"))
+    })?;
+    if file.messages.is_empty() {
+        return Err(crate::refusal::decode_failed(format!(
+            "GRIB2 input {source} contains no parsed fields"
+        )));
+    }
+    let identities = grib2_identities(&file.messages);
+    let wanted = wanted_indices(mapping, &identities)?;
+    let declared_levels = mapping.declared_levels()?;
+    let fields = mapping.fields()?;
+    let mut inventory = ObjectInventory {
+        selected: wanted.len(),
+        identities,
+        by_key: BTreeMap::new(),
+        invariant: Vec::new(),
+        cycles: BTreeMap::new(),
+    };
+    for index in wanted {
+        let identity = &inventory.identities[index];
+        let mut dependent = false;
+        let mut invariant = false;
+        for field in &fields {
+            if field.derivation().is_some() {
+                continue;
+            }
+            let hit = field
+                .selectors()
+                .iter()
+                .any(|selector| crate::grib::selector_matches(selector, identity, "grib2"));
+            if !hit
+                || !crate::grib::declared_vertical_admits(
+                    &declared_levels,
+                    field,
+                    identity.level_value,
+                )?
+            {
+                continue;
+            }
+            if invariant_fields.contains(&field.name) {
+                invariant = true;
+            } else {
+                dependent = true;
+            }
+        }
+        if invariant {
+            inventory.invariant.push(index);
+        }
+        if !dependent {
+            continue;
+        }
+        let message = &file.messages[index];
+        let valid_time = crate::grib::embedded_valid_time(
+            message.reference_time,
+            message.product.time_range_unit,
+            message.product.forecast_time as i64,
+            2,
+        )?;
+        let key = (valid_time, identity.member.clone());
+        inventory.by_key.entry(key.clone()).or_default().push(index);
+        inventory.cycles.entry(key).or_insert(message.reference_time);
+    }
+    Ok(inventory)
+}
+
+/// The per-object plan a streamed decode comes back to.
+struct ObjectPlan {
+    source: String,
+    by_key: BTreeMap<crate::assemble::TimeKey, Vec<usize>>,
+    invariant: Vec<usize>,
+}
+
+/// A decode that hands over ONE valid time at a time.
+///
+/// Named breakage, measured on real RRFS bytes (3 km CONUS, 45 pressure
+/// levels): decoding the whole input list first held every object's raw
+/// records AND the assembled series at once -- about 9 GiB per forcing
+/// time -- so a seven-time preparation needed roughly 65 GiB of host
+/// memory and the OOM reaper killed it on anything smaller.  Nothing in
+/// the frameset write needs two valid times: the stream is written
+/// sequentially and each frame's digests cover only its own arrays.
+///
+/// So the messages are INVENTORIED first -- identity octets only, no
+/// unpacking -- which is what tells the stream which object carries which
+/// valid time.  A valid time's messages are then read, decoded,
+/// assembled, handed over and dropped before the next valid time is
+/// asked for, and the peak follows ONE valid time plus the objects that
+/// span it rather than the number of forcing times.
+pub struct DecodeStream<'a> {
+    mapping: &'a Mapping,
+    kind: StreamKind,
+    keys: Vec<crate::assemble::TimeKey>,
+    summary: crate::frames::SeriesSummary,
+    latitude: Vec<f64>,
+    longitude: Vec<f64>,
+    vertical_values: Vec<f64>,
+    /// The resolved hybrid A/B ladder from the first slice (empty on any
+    /// other vertical kind).  Kept so the cross-time check can refuse a
+    /// series whose pv octets change between valid times: the
+    /// whole-series assembly saw every record at once and refused that
+    /// itself, and a streamed slice only ever sees its own.
+    hybrid_a: Vec<f64>,
+    hybrid_b: Vec<f64>,
+    direct_names: std::collections::BTreeSet<String>,
+}
+
+enum StreamKind {
+    /// GRIB2: one valid time's messages are read when that valid time is
+    /// asked for.
+    Sliced {
+        declaration: crate::model::GridDeclaration,
+        plan: Vec<ObjectPlan>,
+        parsed: BTreeMap<String, grib_core::grib2::Grib2File>,
+        first: Option<DecodedCollection>,
+    },
+    /// Every other declared format: decoded whole once, then carved by
+    /// valid time.  The carve MOVES each valid time's arrays out of the
+    /// collection rather than copying them, so the writer still holds one
+    /// frame at a time; what a whole-object format cannot do is avoid
+    /// decoding the rest of the series first, and saying so here is
+    /// cheaper than a second decoder that would drift from this one.
+    Whole { collection: DecodedCollection },
+}
+
+impl<'a> DecodeStream<'a> {
+    /// Inventory the inputs and establish the series header.
+    pub fn open(
+        mapping: &'a Mapping,
+        files: &[String],
+        progress: &mut dyn FnMut(Value),
+    ) -> Result<Self> {
+        let format = mapping.format()?.to_owned();
+        if format != "grib2" {
+            let collection = decode_collection(mapping, files, progress)?;
+            return Ok(Self::whole(mapping, collection));
+        }
+        let mut invariant_fields: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        for field in mapping.fields()? {
+            if field.time_binding() == Some("cycle_invariant") {
+                invariant_fields.insert(field.name.clone());
+            }
+        }
+        let declaration = mapping.grid_declaration()?;
+        // Inventoried under a STAGED-BYTE BUDGET, not one object at a
+        // time and not all of them at once.  The identity pass parses the
+        // whole object, so parsing every input at once -- which is what
+        // the decode-everything path did -- held every staged payload of
+        // a fourteen-object 3 km CONUS list resident before a single
+        // field had been decoded; the budget in
+        // [`INVENTORY_STAGED_BYTES`] is what keeps that from coming back
+        // while a list of small objects still inventories in parallel.
+        let mut plan: Vec<ObjectPlan> = Vec::with_capacity(files.len());
+        let mut identity_pins: Vec<crate::grib::RecordIdentity> = Vec::new();
+        let mut inventoried = 0usize;
+        let mut source_cycles: BTreeMap<crate::assemble::TimeKey, chrono::NaiveDateTime> =
+            BTreeMap::new();
+        let mut wanted_total = 0usize;
+        let inventories = inventory_objects(mapping, files, &invariant_fields)?;
+        for (source, inventory) in files.iter().zip(inventories) {
+            inventoried += inventory.identities.len();
+            progress(json!({
+                "event": "inventory",
+                "source": source,
+                "messages": inventory.identities.len(),
+                "selected": inventory.selected,
+            }));
+            identity_pins.extend(inventory.identities);
+            wanted_total += inventory.selected;
+            for (key, cycle) in inventory.cycles {
+                source_cycles.entry(key).or_insert(cycle);
+            }
+            plan.push(ObjectPlan {
+                source: source.clone(),
+                by_key: inventory.by_key,
+                invariant: inventory.invariant,
+            });
+        }
+        if wanted_total == 0 {
+            return Err(crate::refusal::selector_unmatched(
+                selector_identity_refusal(mapping, &identity_pins, files, inventoried)?,
+            ));
+        }
+        if source_cycles.is_empty() {
+            if invariant_fields.is_empty() {
+                return Err(crate::refusal::selector_unmatched(
+                    "no GRIB messages match the mapping selectors",
+                ));
+            }
+            // Every matched record answers a `cycle_invariant` field, so
+            // there is no time-dependent state to define the forcing
+            // axis -- the same sentence `_broadcast_invariant_fields`
+            // refuses with when it reaches the same state.
+            return Err(crate::refusal::frame_invalid(
+                "every decoded mapped field is declared time-invariant; there is \
+                 no time-dependent state to define the forcing axis",
+            ));
+        }
+        if !invariant_fields.is_empty() {
+            // The whole-series broadcast check, made from the clock the
+            // inventory read: one broadcast belongs to one cycle.
+            let cycles: std::collections::BTreeSet<chrono::NaiveDateTime> =
+                source_cycles.values().copied().collect();
+            if cycles.len() > 1 {
+                return Err(crate::refusal::frame_invalid(format!(
+                    "cycle-invariant fields cannot broadcast across mixed source \
+                     cycles {cycles:?}; one broadcast belongs to one cycle"
+                )));
+            }
+        }
+        let keys: Vec<crate::assemble::TimeKey> = source_cycles.keys().cloned().collect();
+        let mut stream = DecodeStream {
+            mapping,
+            kind: StreamKind::Sliced {
+                declaration,
+                plan,
+                parsed: BTreeMap::new(),
+                first: None,
+            },
+            keys,
+            summary: crate::frames::SeriesSummary {
+                source_cycles,
+                grid_fingerprint: String::new(),
+            },
+            latitude: Vec::new(),
+            longitude: Vec::new(),
+            vertical_values: Vec::new(),
+            hybrid_a: Vec::new(),
+            hybrid_b: Vec::new(),
+            direct_names: std::collections::BTreeSet::new(),
+        };
+        // The first valid time establishes the header every cross-time
+        // check and every join plan reads: the grid, the vertical ladder,
+        // the fingerprint and the decoded field inventory.  It is kept
+        // and handed out as the first slice, so it is decoded once.
+        let first_key = stream.keys[0].clone();
+        let second_key = stream.keys.get(1).cloned();
+        let first = stream.decode_slice(&first_key, second_key.as_ref())?;
+        stream.latitude = first.latitude.clone();
+        stream.longitude = first.longitude.clone();
+        stream.vertical_values = first.vertical_values.clone();
+        stream.hybrid_a = first.hybrid_a.clone();
+        stream.hybrid_b = first.hybrid_b.clone();
+        stream.summary.grid_fingerprint = first.grid_fingerprint.clone();
+        stream.direct_names = first
+            .direct
+            .keys()
+            .map(|(_time, _member, name)| name.clone())
+            .collect();
+        if let StreamKind::Sliced { first: slot, .. } = &mut stream.kind {
+            *slot = Some(first);
+        }
+        Ok(stream)
+    }
+
+    /// A stream over an ALREADY decoded collection.
+    fn whole(mapping: &'a Mapping, collection: DecodedCollection) -> Self {
+        let keys: Vec<crate::assemble::TimeKey> = collection.source_cycles.keys().cloned().collect();
+        DecodeStream {
+            mapping,
+            latitude: collection.latitude.clone(),
+            longitude: collection.longitude.clone(),
+            vertical_values: collection.vertical_values.clone(),
+            hybrid_a: collection.hybrid_a.clone(),
+            hybrid_b: collection.hybrid_b.clone(),
+            direct_names: collection
+                .direct
+                .keys()
+                .map(|(_time, _member, name)| name.clone())
+                .collect(),
+            summary: crate::frames::SeriesSummary {
+                source_cycles: collection.source_cycles.clone(),
+                grid_fingerprint: collection.grid_fingerprint.clone(),
+            },
+            keys,
+            kind: StreamKind::Whole { collection },
+        }
+    }
+
+    /// The `(valid_time, member)` keys, in frameset order.
+    pub fn keys(&self) -> &[crate::assemble::TimeKey] {
+        &self.keys
+    }
+
+    /// The series facts the frameset states above its frames.
+    pub fn summary(&self) -> &crate::frames::SeriesSummary {
+        &self.summary
+    }
+
+    pub fn latitude(&self) -> &[f64] {
+        &self.latitude
+    }
+
+    pub fn longitude(&self) -> &[f64] {
+        &self.longitude
+    }
+
+    pub fn vertical_values(&self) -> &[f64] {
+        &self.vertical_values
+    }
+
+    /// The field names the primary decode resolves, from the first slice.
+    pub fn direct_names(&self) -> &std::collections::BTreeSet<String> {
+        &self.direct_names
+    }
+
+    /// ONE valid time's decoded collection.
+    pub fn slice(&mut self, key: &crate::assemble::TimeKey) -> Result<DecodedCollection> {
+        let position = self
+            .keys
+            .iter()
+            .position(|candidate| candidate == key)
+            .ok_or_else(|| {
+                crate::refusal::frame_invalid(format!(
+                    "the mapped decode has no valid time {}",
+                    crate::frames::naive_isoformat(key.0)
+                ))
+            })?;
+        if let StreamKind::Sliced { first, .. } = &mut self.kind {
+            if position == 0 {
+                if let Some(collection) = first.take() {
+                    return Ok(collection);
+                }
+            }
+        }
+        let next = self.keys.get(position + 1).cloned();
+        let collection = self.decode_slice(key, next.as_ref())?;
+        self.require_one_series(&collection)?;
+        Ok(collection)
+    }
+
+    /// The cross-time checks the whole-series assembly used to make.
+    fn require_one_series(&self, collection: &DecodedCollection) -> Result<()> {
+        if collection.grid_fingerprint != self.summary.grid_fingerprint {
+            return Err(crate::refusal::frame_invalid(
+                "selected GRIB fields do not share one source grid",
+            ));
+        }
+        if collection.latitude != self.latitude || collection.longitude != self.longitude {
+            return Err(crate::refusal::frame_invalid(
+                "selected GRIB coordinate axes differ",
+            ));
+        }
+        if collection.vertical_values != self.vertical_values {
+            return Err(crate::refusal::frame_invalid(
+                "GRIB atmospheric fields do not share one complete vertical inventory",
+            ));
+        }
+        // The whole-series assembly saw every record's pv octets at once
+        // and refused a ladder that changed between them; a streamed
+        // slice resolves its own ladder alone, so the disagreement is
+        // caught here, with the same sentence.
+        if collection.hybrid_a != self.hybrid_a || collection.hybrid_b != self.hybrid_b {
+            return Err(crate::refusal::frame_invalid(
+                "selected GRIB records do not share one pv coordinate \
+                 list; hybrid A/B coefficients must be identical across \
+                 the source",
+            ));
+        }
+        Ok(())
+    }
+
+    fn decode_slice(
+        &mut self,
+        key: &crate::assemble::TimeKey,
+        next: Option<&crate::assemble::TimeKey>,
+    ) -> Result<DecodedCollection> {
+        let mapping = self.mapping;
+        match &mut self.kind {
+            StreamKind::Whole { collection } => Ok(carve(collection, key)),
+            StreamKind::Sliced {
+                declaration,
+                plan,
+                parsed,
+                ..
+            } => {
+                let mut records: Vec<GribRecord> = Vec::new();
+                for object in plan.iter() {
+                    let mut wanted: Vec<usize> = object
+                        .by_key
+                        .get(key)
+                        .cloned()
+                        .unwrap_or_default();
+                    wanted.extend(object.invariant.iter().copied());
+                    wanted.sort_unstable();
+                    wanted.dedup();
+                    if wanted.is_empty() {
+                        continue;
+                    }
+                    if !parsed.contains_key(&object.source) {
+                        let raw = std::fs::read(&object.source).map_err(|error| {
+                            missing_input(format!("cannot read {}: {error}", object.source))
+                        })?;
+                        let payload = crate::codec::decoded_payload(raw, &object.source)?;
+                        let file = grib_core::grib2::Grib2File::from_bytes(&payload).map_err(
+                            |error| {
+                                crate::refusal::decode_failed(format!(
+                                    "GRIB2 parse failed for {}: {error}",
+                                    object.source
+                                ))
+                            },
+                        )?;
+                        parsed.insert(object.source.clone(), file);
+                    }
+                    let file = &parsed[&object.source];
+                    records.extend(crate::grib::grib2_records(
+                        file,
+                        &object.source,
+                        &wanted,
+                        declaration,
+                    )?);
+                    // The parsed object is dropped the moment this valid
+                    // time is done with it, unless the NEXT valid time
+                    // reads the same object (a multi-time object) or it
+                    // carries a cycle-invariant record every slice needs.
+                    // Without this a field-per-file source -- 251 objects
+                    // at one valid time is a shipped shape -- would hold
+                    // every staged payload at once.
+                    let needed_again = next
+                        .map(|next| object.by_key.contains_key(next))
+                        .unwrap_or(false)
+                        || !object.invariant.is_empty();
+                    if !needed_again {
+                        parsed.remove(&object.source);
+                    }
+                }
+                assemble_grib(mapping, &records)
+            }
+        }
+    }
+}
+
+/// One valid time MOVED out of a whole decoded collection.
+pub fn carve_valid_time(
+    collection: &mut DecodedCollection,
+    key: &crate::assemble::TimeKey,
+) -> DecodedCollection {
+    carve(collection, key)
+}
+
+/// One valid time MOVED out of a whole decoded collection.
+fn carve(collection: &mut DecodedCollection, key: &crate::assemble::TimeKey) -> DecodedCollection {
+    let mine: Vec<crate::assemble::DirectKey> = collection
+        .direct
+        .keys()
+        .filter(|(time, member, _name)| (*time, member.clone()) == *key)
+        .cloned()
+        .collect();
+    let mut direct = BTreeMap::new();
+    for entry in mine {
+        if let Some(value) = collection.direct.remove(&entry) {
+            direct.insert(entry, value);
+        }
+    }
+    let mut source_cycles = BTreeMap::new();
+    if let Some(cycle) = collection.source_cycles.get(key) {
+        source_cycles.insert(key.clone(), *cycle);
+    }
+    DecodedCollection {
+        latitude: collection.latitude.clone(),
+        longitude: collection.longitude.clone(),
+        vertical_values: collection.vertical_values.clone(),
+        direct,
+        source_cycles,
+        grid_fingerprint: collection.grid_fingerprint.clone(),
+        // The carved valid time keeps the whole decode's vertical
+        // identity, its hybrid coefficient ladder included: the frame
+        // header reads the ladder off the collection it materializes.
+        hybrid_a: collection.hybrid_a.clone(),
+        hybrid_b: collection.hybrid_b.clone(),
+    }
+}
+
 /// `mapped_source._decode_grib`'s edition-1 arm.
 ///
 /// Deliberately NOT the GRIB2 arm above, and the differences are the
@@ -754,13 +1356,18 @@ pub fn run_decode(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> R
     ) {
         verify_input_manifest(manifest, expected, &mapping, &files, &digests)?;
     }
-    let collection = decode_collection(&mapping, &files, progress)?;
-    progress(json!({"event": "assembled", "valid_times": collection.source_cycles.len()}));
+    let mut stream = DecodeStream::open(&mapping, &files, progress)?;
+    progress(json!({"event": "assembled", "valid_times": stream.keys().len()}));
     let output = PathBuf::from(invocation.output.as_ref().expect("decode requires --output"));
-    // The frames are materialized INSIDE the writer, one valid time at
-    // a time; holding the whole series here to count it was a second
-    // full copy of every forcing time's arrays.
-    let document = crate::frames::write_frameset(&output, &mapping, &collection, &digests)?;
+    // The series is decoded, materialized and written ONE VALID TIME AT
+    // A TIME.  Holding the whole decode here to hand the writer was the
+    // raw records plus the assembled arrays of every forcing time at
+    // once -- about 9 GiB per time on a 3 km CONUS source.
+    let summary = stream.summary().clone();
+    let grid_fingerprint = summary.grid_fingerprint.clone();
+    let document = crate::frames::write_frameset(&output, &mapping, &summary, &digests, |key| {
+        stream.slice(key)
+    })?;
     let frame_count = document
         .get("frames")
         .and_then(Value::as_array)
@@ -771,7 +1378,7 @@ pub fn run_decode(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> R
         "schema": crate::FRAMESET_SCHEMA,
         "frames": frame_count,
         "output": output.display().to_string(),
-        "grid_fingerprint": collection.grid_fingerprint,
+        "grid_fingerprint": grid_fingerprint,
         "stream_bytes": document
             .get("stream")
             .and_then(|stream| stream.get("bytes"))
@@ -1141,6 +1748,33 @@ mod tests {
             .map(|item| (*item).to_owned())
             .collect();
         assert!(Invocation::parse(&arguments).is_ok());
+    }
+
+    #[test]
+    fn small_objects_batch_together_and_large_ones_do_not() {
+        // The property the bounded-parallel inventory rests on: batch
+        // width follows OBJECT SIZE, so a source that publishes one
+        // small object per field inventories many at a time while a
+        // source that publishes one large object per lead stays close to
+        // the serial pass.  Neither is named anywhere; the size decides.
+        let budget = 64 * 1024 * 1024;
+        let small = vec![1024 * 1024u64; 200];
+        assert_eq!(inventory_batch_len(&small, budget), 64);
+        let large = vec![20 * 1024 * 1024u64; 7];
+        assert_eq!(inventory_batch_len(&large, budget), 3);
+    }
+
+    #[test]
+    fn an_object_larger_than_the_whole_budget_is_still_admitted_alone() {
+        // Named breakage: a batch that admits nothing never advances,
+        // and the walk would hang on the first object bigger than the
+        // budget instead of inventorying it the way the serial pass did.
+        let budget = 64 * 1024 * 1024;
+        let sizes = vec![512 * 1024 * 1024u64, 1024];
+        assert_eq!(inventory_batch_len(&sizes, budget), 1);
+        // Unreadable sizes price as zero and must not collapse the walk.
+        assert_eq!(inventory_batch_len(&[0, 0, 0], budget), 3);
+        assert_eq!(inventory_batch_len(&[u64::MAX, u64::MAX], budget), 1);
     }
 
     #[test]

@@ -31,13 +31,39 @@ configuration this port ships:
    packaged: they belong to the unported ``mp_physics=52`` / ``53``
    options, which gpuwm refuses by name (gpuwm/config.py).
 
+MEASURED against running Fortran, 2026-08-28 (node-1, gfortran 15.2.0,
+WRF's own ``module_mp_p3.F`` compiled unmodified except for an appended
+dump routine, ``p3_init(nCat=1, trplMomI=.false., model='WRF')``):
+
+* ``itab`` (14,000 float32) and ``itabcoll`` (60,000 float32) parsed by
+  :func:`load_lookup_table_1` are BYTE-IDENTICAL to the module variables
+  ``p3_init`` fills -- ``tobytes()`` equality, zero differing words, at
+  both -O0 and -O2.  The double-rounding risk the paragraph below names
+  is therefore not realised on this table; the digests are pinned as
+  :data:`FORTRAN_ITAB_SHA256` / :data:`FORTRAN_ITABCOLL_SHA256`.
+* :func:`generate_rain_tables` is NOT byte-identical: ``vn_table`` differs
+  in 1,150 of 3,000 entries (max 5 ULP, max relative 3.3e-07),
+  ``vm_table`` in 940 (max 4 ULP, 4.2e-07) and ``revap_table`` in 110
+  (max 21 ULP, 2.2e-06).  Root cause MEASURED, not inferred: the
+  transcription's structure and accumulation order are right (``lamr`` is
+  byte-identical), and the divergence is host libm.  Over the loop's own
+  10,000 arguments, numpy's float32 ``exp`` differs from glibc ``expf``
+  on 5,824 of them by up to 3 ULP, and ``10.**(3*log10(dia))`` differs on
+  705 by up to 36 ULP -- the latter being a 1-ULP ``log10`` difference
+  amplified by ``ln(10)`` times an exponent of magnitude ~18.  A
+  byte-identical rain table needs a correctly-rounded libm on this path
+  (gpuwm.core.correctly_rounded_libm) or the generated tables shipped as
+  data; neither is decided here, and the divergence is DECLARED rather
+  than tolerated by a loosened comparison.
+
 Precision note (documented, not a divergence by design): the Fortran
 list-directed READ converts the decimal text directly to REAL(4);
 this loader parses to float64 and casts, which can in principle
 double-round the last ULP of a value whose decimal representation falls
 within half a float32 ULP of a rounding boundary.  The committed table
-carries 5 significant digits, far from any such boundary, and the oracle
-campaign (declared next stage) measures the port end to end.
+carries 5 significant digits, far from any such boundary -- and the
+measurement above confirms it: every one of the 74,000 parsed values
+matches the Fortran bit for bit.
 """
 
 from __future__ import annotations
@@ -54,6 +80,11 @@ import numpy as np
 #: a root with different bytes fails closed in :func:`load_lookup_table_1`).
 P3_TABLE_ROOT_ENV = "GPUWM_P3_TABLE_ROOT"
 
+#: The record separator a Fortran formatted sequential READ advances on.
+#: The packaged table carries CRLF, so the CR stays on the record and is
+#: trailing blank to both the Fortran read and ``bytes.split``.
+_RECORD_SEPARATOR = b"\n"
+
 #: Lookup-table array dimensions (module_mp_p3.F:48-57).
 ISIZE = 50        # normalized-q index
 DENSIZE = 5       # bulk rime density index
@@ -69,11 +100,27 @@ TABLE_1_2MOM_VERSION = "5.4_2momI"
 TABLE_1_2MOM_FILENAME = f"p3_lookupTable_1.dat-v{TABLE_1_2MOM_VERSION}"
 
 
+class P3TableVersionError(ValueError):
+    """The table's own header names a version P3 v4.5.2 does not intend.
+
+    Its own class because it is a DIFFERENT operator action from a corrupt
+    file: upstream checks the header and nothing else, and under
+    ``model='WRF'`` a mismatch is an unconditional ``stop``
+    (module_mp_p3.F:351-366).  A ValueError subclass so every existing
+    caller that already refuses on ValueError keeps refusing.
+    """
+
+
 @dataclass(frozen=True)
 class P3TableAsset:
     filename: str
     sha256: str
     size: int
+    #: The version token p3_init requires in this file's own first record
+    #: (``read(10,*) dumstr,version_header_...``, module_mp_p3.F:351).
+    #: Carried as DATA so a second table (the 3-moment table-1 variant, or
+    #: table 2 for nCat>1) is a new row here and not a new code path.
+    version: str
 
 
 #: The one packaged asset, pinned to the byte-frozen reference bundle copy
@@ -82,7 +129,38 @@ TABLE_1_2MOM_ASSET = P3TableAsset(
     filename=TABLE_1_2MOM_FILENAME,
     sha256="5cb47f2ad15b726abeacac21b5877c737178526051661473a465315348867c2f",
     size=1637040,
+    version=TABLE_1_2MOM_VERSION,
 )
+
+#: The SAME table as WRF v4.6.1 ships in ``run/``, byte for byte EXCEPT that
+#: the packaged copy carries CRLF line endings: 1,606,038 bytes / sha-256
+#: ``be1ab6fb...`` upstream against 1,637,040 / ``5cb47f2a...`` here, a
+#: difference of exactly 31,002 bytes for 31,002 records.  MEASURED
+#: 2026-08-28: WRF's own ``p3_init`` reading either file produces
+#: byte-identical ``itab`` and ``itabcoll``, because a Fortran list-directed
+#: READ treats the CR as trailing blank.  Recorded here, and named in the
+#: digest refusal below, because ``GPUWM_P3_TABLE_ROOT`` invites an operator
+#: to point at a mirror and the most obvious mirror on any machine is WRF's
+#: own ``run/`` directory -- which this pin refuses.  Whether to ACCEPT the
+#: upstream bytes as well is a restart-identity decision, not a loader one:
+#: the digest is written into every mp=50 checkpoint's setup identity
+#: (gpuwm/io/restart.py::_p3_setup_identity), so repinning to the upstream
+#: bytes would make every existing mp=50 checkpoint refuse to resume.
+UPSTREAM_WRF_TABLE_1_2MOM_SHA256 = (
+    "be1ab6fb03481e376e47c6c79d808af5d8ab069f2b242931e9c54801bad4ae84")
+UPSTREAM_WRF_TABLE_1_2MOM_SIZE = 1606038
+
+#: SHA-256 of the PARSED arrays -- C-contiguous little-endian float32
+#: ``itab[5,4,50,14]`` and ``itabcoll[5,4,50,30,2]`` -- as produced by WRF's
+#: own ``p3_init`` compiled with gfortran 15.2.0 and dumped from the module
+#: variables.  This is the parser's correctness anchor: it pins the numbers
+#: the Fortran actually loads, not the text this loader happens to read.
+#: Measured 2026-08-28 on node-1, identical at -O0 and -O2 and identical
+#: from the upstream LF file and the packaged CRLF file.
+FORTRAN_ITAB_SHA256 = (
+    "45390820659a05f80c50482dacb8c886c93c379fe7c10f468fc1d9216ababaa5")
+FORTRAN_ITABCOLL_SHA256 = (
+    "7fe622d9eb2a6e495959f2bd87542c05948ffef92b51648e104ca1e7f27da3ee")
 
 
 def packaged_p3_table_root() -> Path:
@@ -103,11 +181,51 @@ def p3_table_root() -> str:
     return str(packaged_p3_table_root())
 
 
-def _validate_asset_bytes(path: Path, asset: P3TableAsset) -> bytes:
-    """Return the file bytes after exact size + SHA-256 validation.
+def _header_version(blob: bytes, path: Path, asset: P3TableAsset) -> str:
+    """The version token from the table's first record, or a refusal.
 
-    A missing or wrong-byte table is a hard data dependency failure and
-    must never fall back silently: P3's process rates ARE these tables.
+    ``p3_init`` reads exactly this: ``read(10,*) dumstr,version_header_...``
+    at module_mp_p3.F:351, i.e. the SECOND whitespace-delimited token of the
+    first record.  Transcribed at that granularity so a file whose header
+    cannot supply one is named as such instead of failing later as a shape
+    error two hundred thousand tokens in.
+    """
+    head = blob.split(_RECORD_SEPARATOR, 1)[0]
+    try:
+        tokens = head.decode("ascii").split()
+    except UnicodeDecodeError:
+        raise P3TableVersionError(
+            f"P3 lookup table {path} does not begin with an ASCII header "
+            f"record. p3_init reads the version token from the first line "
+            "(module_mp_p3.F:351); this file is not a P3 lookup table."
+        ) from None
+    if len(tokens) < 2:
+        raise P3TableVersionError(
+            f"P3 lookup table {path} has no version token in its first "
+            f"record (read {tokens!r}). p3_init reads "
+            "``dumstr, version_header`` there (module_mp_p3.F:351), so a "
+            "file without it is not a P3 lookup table.")
+    return tokens[1]
+
+
+def _validate_asset_bytes(path: Path, asset: P3TableAsset) -> bytes:
+    """Return the file bytes after version + exact size + SHA-256 validation.
+
+    A missing, wrong-version or wrong-byte table is a hard data dependency
+    failure and must never fall back silently: P3's process rates ARE these
+    tables.
+
+    ORDER MATTERS, and it is upstream's order.  ``p3_init`` checks the
+    header version and nothing else, so the version check runs FIRST here
+    too.  Behind the digest it was unreachable: every non-pinned file --
+    including a correctly formed table of a DIFFERENT version -- failed on
+    the digest and was reported as "modified", which sends an operator who
+    staged v5.3, or the 3-moment table under this name, to look for file
+    corruption that is not there.  Measured 2026-08-28: a copy of the
+    packaged table with only its header version rewritten to ``5.3_2momI``
+    -- same length, same token count, a legitimately different table as far
+    as any operator is concerned -- was refused with "Refusing to parse a
+    modified table" and the version refusal below never ran.
     """
     if not path.is_file():
         raise FileNotFoundError(
@@ -117,11 +235,40 @@ def _validate_asset_bytes(path: Path, asset: P3TableAsset) -> bytes:
             "gpuwm package; set " + P3_TABLE_ROOT_ENV + " only to point at "
             "a byte-identical mirror.")
     blob = path.read_bytes()
+    found = _header_version(blob, path, asset)
+    if found != asset.version:
+        raise P3TableVersionError(
+            f"P3 lookup table {path} names version {found!r}; P3 v4.5.2 "
+            f"requires {asset.version!r} (module_mp_p3.F:138, checked at "
+            ":351-366 where a mismatch under model='WRF' is an "
+            "unconditional stop, not a warning). The table encodes the "
+            "ice process rates the scheme integrates: a different version "
+            "is different physics, and the 3-moment variant is a "
+            "different SHAPE (15 quantities on an 11-deep mu_i axis) that "
+            "would reshape into garbage. gpuwm refuses rather than run "
+            "P3 v4.5.2 against a table it was not built for.")
+    digest = hashlib.sha256(blob).hexdigest()
+    # Recognise WRF's OWN copy before the size check, not after it: the two
+    # files differ in size (by exactly their CR bytes), so a size-first
+    # order would report "wrong size" for the most likely mirror anybody
+    # points GPUWM_P3_TABLE_ROOT at and never reach this sentence.
+    if (asset is TABLE_1_2MOM_ASSET
+            and digest == UPSTREAM_WRF_TABLE_1_2MOM_SHA256):
+        raise ValueError(
+            f"P3 lookup table {path} is WRF's own run/ copy (LF line "
+            f"endings, {UPSTREAM_WRF_TABLE_1_2MOM_SIZE} B). It is the SAME "
+            "table: gpuwm packages it with CRLF, and p3_init loads "
+            "byte-identical itab/itabcoll from either. gpuwm still refuses "
+            "it, because the packaged digest is written into every mp=50 "
+            "checkpoint's setup identity (gpuwm/io/restart.py::"
+            "_p3_setup_identity) and accepting a second digest silently "
+            "would make two different byte sets share one identity. Use "
+            "the packaged copy (unset " + P3_TABLE_ROOT_ENV + "); see "
+            "gpuwm/data/p3/PROVENANCE.md.")
     if len(blob) != asset.size:
         raise ValueError(
             f"P3 lookup table {path} has size {len(blob)}, expected "
             f"{asset.size}. Refusing to parse a modified table.")
-    digest = hashlib.sha256(blob).hexdigest()
     if digest != asset.sha256:
         raise ValueError(
             f"P3 lookup table {path} SHA-256 {digest} does not match the "
@@ -143,17 +290,12 @@ def load_lookup_table_1(root: str) -> tuple[np.ndarray, np.ndarray]:
     ``dp_dum1`` -> REAL(4) assignment (:392-394).
     """
     path = Path(root) / TABLE_1_2MOM_ASSET.filename
+    # Version FIRST, then size, then digest -- upstream's order, and the
+    # only order in which a wrong-VERSION table is reported as one
+    # (:func:`_validate_asset_bytes`).
     blob = _validate_asset_bytes(path, TABLE_1_2MOM_ASSET)
     text = blob.decode("ascii")
     first_newline = text.index("\n")
-    header = text[:first_newline].split()
-    # read(10,*) dumstr,version_header_table_1_2mom  (:351)
-    if len(header) < 2 or header[1] != TABLE_1_2MOM_VERSION:
-        raise ValueError(
-            f"P3 lookupTable_1 header names version "
-            f"{header[1] if len(header) > 1 else '<missing>'}; P3 v4.5.2 "
-            f"requires {TABLE_1_2MOM_VERSION} (module_mp_p3.F:351-366, a "
-            "hard stop under model='WRF').")
     tokens = text[first_newline:].split()
     per_block = ISIZE * (3 + TABSIZE) + ISIZE * RCOLLSIZE * (3 + COLLTABSIZE)
     expected = DENSIZE * RIMSIZE * per_block

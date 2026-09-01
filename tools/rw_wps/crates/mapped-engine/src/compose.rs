@@ -840,16 +840,23 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
         )?;
     }
 
-    let mut combined = crate::engine::decode_collection(
-        &partition_mapping(&mapping, false)?,
-        &primary,
-        progress,
-    )?;
+    // The primary is STREAMED: its valid times are decoded one at a time
+    // as the frameset writes them.  Every check and every receipt below
+    // reads the series header -- the grid, the ladder, the clock, the
+    // field inventory -- and none of them reads a primary array, which is
+    // what makes the composition resolvable before the series exists.
+    let partitioned = partition_mapping(&mapping, false)?;
+    let mut stream = crate::engine::DecodeStream::open(&partitioned, &primary, progress)?;
     progress(json!({
         "event": "composed_primary",
-        "valid_times": combined.source_cycles.len(),
+        "valid_times": stream.keys().len(),
     }));
     let mut alignment_receipt: Option<Value> = None;
+    let mut terrain_plan: Option<crate::join::TerrainPlan> = None;
+    // The composed field inventory, grown as each join is resolved: the
+    // two-provider refusals ask what the composition has bound SO FAR,
+    // which is what the accumulating collection used to answer.
+    let mut composed_names: BTreeSet<String> = stream.direct_names().clone();
     if let Some(terrain) = &composition.terrain {
         let files = &supplements[&terrain.data_role];
         let supplement = crate::engine::decode_collection(
@@ -857,13 +864,28 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
             files,
             progress,
         )?;
-        let (composed, receipt) =
-            crate::join::compose_terrain(combined, &supplement, &terrain.time_alignment)?;
-        combined = composed;
+        let (plan, receipt) = crate::join::plan_terrain(
+            &crate::join::PrimaryHeader {
+                latitude: stream.latitude(),
+                longitude: stream.longitude(),
+                vertical_values: stream.vertical_values(),
+                source_cycles: &stream.summary().source_cycles,
+                direct_names: &composed_names,
+            },
+            &supplement,
+            &terrain.time_alignment,
+        )?;
+        terrain_plan = Some(plan);
+        composed_names.insert(EXTERNAL_FIELD.to_owned());
         alignment_receipt = Some(receipt);
         progress(json!({"event": "composed_terrain", "objects": files.len()}));
     }
 
+    // The borrowed donors stay resident because the frames borrow from
+    // them one valid time at a time; a donor is one contributing
+    // source's own decode, not the forcing series.
+    let mut borrowed: Vec<(crate::join::BindingPlan, crate::assemble::DecodedCollection)> =
+        Vec::new();
     let mut donors: BTreeMap<String, Mapping> = BTreeMap::new();
     let mut contributing_records: Vec<Value> = Vec::new();
     let mut terrain_binding_receipt: Option<Value> = None;
@@ -894,9 +916,19 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
             donor_files,
             progress,
         )?;
-        let (composed, receipt) =
-            crate::join::compose_bound_fields(combined, &donor_collection, binding)?;
-        combined = composed;
+        let (plan, receipt) = crate::join::plan_bound_fields(
+            &crate::join::PrimaryHeader {
+                latitude: stream.latitude(),
+                longitude: stream.longitude(),
+                vertical_values: stream.vertical_values(),
+                source_cycles: &stream.summary().source_cycles,
+                direct_names: &composed_names,
+            },
+            &donor_collection,
+            binding,
+        )?;
+        borrowed.push((plan, donor_collection));
+        composed_names.extend(binding.fields.iter().cloned());
         let provenance_path = &provenance[&binding.provenance_role];
         let mut fields = binding.fields.clone();
         fields.sort();
@@ -933,13 +965,19 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
         }));
     }
 
-    // The manifest's explicit member binding lands LAST, after every
-    // join: the composition operates on the identity the bytes carry
-    // (donor alignment refuses member-bearing donors on its own terms),
-    // and the stamp then reaches every canonical frame at once.  Twin of
-    // `mapped_composition._bind_manifest_member`.
+    let mut series = stream.summary().clone();
     if let Some((member, _identity)) = &member_binding {
-        combined = bind_manifest_member(combined, member)?;
+        // The composed clock is restated under the bound member so the
+        // frameset's keys and the slices it pulls agree; the records
+        // themselves are stamped as each slice is composed.
+        let stamped: BTreeMap<crate::assemble::TimeKey, chrono::NaiveDateTime> = series
+            .source_cycles
+            .into_iter()
+            .map(|((valid_time, _member), cycle)| {
+                ((valid_time, Some(member.clone())), cycle)
+            })
+            .collect();
+        series.source_cycles = stamped;
     }
 
     let union = union_mapping(&mapping, &donors, &composition.bindings)?;
@@ -949,11 +987,44 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
             .as_ref()
             .expect("compose requires --output"),
     );
-    // One valid time is materialized, written and dropped inside the
-    // writer.  The composed collection is then the only whole-series
-    // object left, which is what took a seven-time 3 km CONUS compose
-    // to 67 GiB of host memory.
-    let document = crate::frames::write_frameset(&output, &union, &combined, &digests)?;
+    // One valid time at a time, end to end: the primary slice is
+    // decoded, the composition's joins are applied to it, the frame is
+    // materialized and written, and all of it is dropped before the next
+    // valid time is read.
+    let source_keys: Vec<crate::assemble::TimeKey> = stream.keys().to_vec();
+    let mut position = 0usize;
+    let document = crate::frames::write_frameset(&output, &union, &series, &digests, |key| {
+        let source_key = source_keys[position].clone();
+        position += 1;
+        // The frameset's key and the decode's key differ only in the
+        // member the manifest binds; if they ever differed in the VALID
+        // TIME, the composition would be applied to a different forcing
+        // time than the frame being written, so it refuses by naming
+        // both rather than composing the wrong one.
+        if key.0 != source_key.0 {
+            return Err(mapping_invalid(format!(
+                "the composed frameset asked for {} while the decode is at \
+                 {}; the frame order and the decode order have diverged",
+                crate::frames::naive_isoformat(key.0),
+                crate::frames::naive_isoformat(source_key.0)
+            )));
+        }
+        let mut slice = stream.slice(&source_key)?;
+        if let Some(plan) = &terrain_plan {
+            crate::join::apply_terrain(plan, &mut slice, &source_key)?;
+        }
+        for (plan, donor) in &borrowed {
+            crate::join::apply_bound_fields(plan, donor, &mut slice, &source_key)?;
+        }
+        // The manifest's explicit member binding lands LAST, after every
+        // join: the composition operates on the identity the bytes carry
+        // (donor alignment refuses member-bearing donors on its own
+        // terms).  Twin of `mapped_composition._bind_manifest_member`.
+        if let Some((member, _identity)) = &member_binding {
+            slice = bind_manifest_member(slice, member)?;
+        }
+        Ok(slice)
+    })?;
     let frame_count = document
         .get("frames")
         .and_then(Value::as_array)
@@ -1000,7 +1071,7 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
         "schema": crate::FRAMESET_SCHEMA,
         "frames": frame_count,
         "output": output.display().to_string(),
-        "grid_fingerprint": combined.grid_fingerprint,
+        "grid_fingerprint": series.grid_fingerprint,
         "bindings": composition.bindings.len(),
         "stream_bytes": document
             .get("stream")

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "arwen": {
+      "command": "arwen-mcp",
+      "args": [],
+      "env": {
+        "GPUWM_MCP_JOBS_DIR": "${HOME}/.gpuwm/mcp-jobs"
+      }
+    }
+  }
+}

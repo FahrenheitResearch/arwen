@@ -150,6 +150,34 @@ def _direct_imports(tree: ast.Module) -> set[str]:
     return names
 
 
+class UnreadableTestFile(RuntimeError):
+    """A test file the index could not parse, named rather than dropped."""
+
+
+def _synthetic_product_paths(name: str) -> tuple[str, ...]:
+    """The paths a dotted module WOULD occupy, for a module that is gone.
+
+    The inverse of :func:`_module_name`, used only for import names that
+    resolve to no file on disk.  Returns an empty tuple for anything
+    outside the product trees, so third-party and standard-library imports
+    never enter the index.
+
+    BOTH spellings are returned because the name alone cannot distinguish
+    them: ``gpuwm.core.advection`` is ``gpuwm/core/advection.py`` if it was
+    a module and ``gpuwm/core/advection/__init__.py`` if it was a package,
+    and the file is gone, so there is nothing left to look at.  Keying both
+    is safe in the direction that matters -- a key for a path that never
+    existed is never touched by anything and costs one dict entry, while
+    missing the real one is the silent no-selection this fixes.
+    """
+
+    parts = name.split(".")
+    if not parts or parts[0] not in PRODUCT_TREES:
+        return ()
+    stem = "/".join(parts)
+    return (f"{stem}.py", f"{stem}/__init__.py")
+
+
 def _parse(path: pathlib.Path) -> ast.Module | None:
     try:
         return ast.parse(path.read_text(encoding="utf-8", errors="replace"))
@@ -169,6 +197,7 @@ def build_index() -> tuple[dict[str, str], dict[str, set[str]]]:
             modules[_module_name(path)] = rel
 
     importers: dict[str, set[str]] = {}
+    unreadable: list[str] = []
     for tree_name in TEST_TREES:
         for path in sorted((REPO_ROOT / tree_name).rglob("test_*.py")):
             rel = path.relative_to(REPO_ROOT).as_posix()
@@ -176,11 +205,50 @@ def build_index() -> tuple[dict[str, str], dict[str, set[str]]]:
                 continue
             tree = _parse(path)
             if tree is None:
+                # A TEST FILE THAT DOES NOT PARSE IS NOT A TEST FILE THAT
+                # DOES NOT MATTER.  Skipping it silently removes every
+                # import edge it owns, so a lane that edits a module only
+                # this file imports selects NOTHING, runs nothing, and
+                # reports a green fast-fix leg -- and the file was
+                # unparseable, which means it was mid-edit or broken, which
+                # is precisely when its edges matter most.  The failure is
+                # invisible in both directions: no error from the selector,
+                # and no test in the output to notice the absence of.
+                unreadable.append(rel)
                 continue
             for name in _direct_imports(tree):
                 product = modules.get(name)
-                if product is not None:
-                    importers.setdefault(product, set()).add(rel)
+                if product is None:
+                    # A NAME THAT RESOLVES TO NO FILE ON DISK IS THE
+                    # DELETION CASE, and it is the one the selector used to
+                    # answer with silence.  `build_index` walks the tree as
+                    # it is NOW, so a product module deleted in the range
+                    # under test has no entry, `importers.get(rel)` returns
+                    # empty, and the lane runs nothing -- while the tests
+                    # that still import the deleted module are exactly the
+                    # ones about to fail.  Deleting a module is when import
+                    # analysis has the most to say, and it said nothing.
+                    #
+                    # The edge is recoverable without consulting git,
+                    # because the TEST still carries the import statement:
+                    # invert _module_name back into the path the module
+                    # would occupy and key the edge there, so a later
+                    # `importers.get("gpuwm/foo/bar.py")` finds its
+                    # importers whether or not that file still exists.
+                    # Only names under a product tree are synthesised;
+                    # third-party imports are not this index's business.
+                    for candidate in _synthetic_product_paths(name):
+                        importers.setdefault(candidate, set()).add(rel)
+                    continue
+                importers.setdefault(product, set()).add(rel)
+    if unreadable:
+        raise UnreadableTestFile(
+            "fastfix cannot parse "
+            + ", ".join(unreadable)
+            + " -- these files own import edges the selector needs, and "
+              "dropping them silently is how a lane runs zero tests and "
+              "reports green. Fix the syntax error (or delete the file) "
+              "rather than letting the index be built without it.")
     return modules, importers
 
 
@@ -190,8 +258,14 @@ def build_index() -> tuple[dict[str, str], dict[str, set[str]]]:
 
 
 def changed_files(base: str, head: str = "HEAD") -> list[str]:
+    # --no-renames ON PURPOSE.  Rename detection is on by default, and it
+    # reports a renamed module under its NEW path only.  For test selection
+    # that is the wrong summary: the tests that import the OLD name are the
+    # ones a rename breaks, and they are reachable only from the old path.
+    # Reported as a delete plus an add, both paths enter the selector and
+    # the deletion half is answered by the synthetic-path edges above.
     out = subprocess.run(
-        ["git", "diff", "--name-only", f"{base}..{head}"],
+        ["git", "diff", "--no-renames", "--name-only", f"{base}..{head}"],
         cwd=REPO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, check=True)
     return [line.strip() for line in out.stdout.splitlines() if line.strip()]

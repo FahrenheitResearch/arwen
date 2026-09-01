@@ -4254,10 +4254,70 @@ def steppers_for_tree(model, options: StreamingOptions | None = None, *,
     options = OFF if options is None else options
     if not tree_streams_anywhere(model, options):
         return {}
-    import dataclasses
-
     builders = dict(builders or {})
     out = {}
+    decided = decide_tree(list(model.walk_parent_first()), options,
+                          machine=machine, decisions=decisions).decided
+    for node, cfg, node_options, node_machine, decision in decided:
+        gid = int(node.cfg.grid_id)
+        stepper = make_stepper(node.state, cfg, node_options,
+                               decision=decision, machine=node_machine,
+                               build=builders.get(gid))
+        if is_streaming(stepper):
+            out[gid] = stepper
+    return out
+
+
+@dataclass
+class TreeDecision:
+    """Every domain's road, decided; the ledger the walk kept beside it.
+
+    ``decided`` is ``[(node, cfg, node_options, node_machine, decision)]``
+    in walk (parent-first) order -- exactly what the build pass of
+    :func:`steppers_for_tree` consumes.  The ledger fields exist so a
+    pricing surface (``gpuwm check``) can state the tree's arithmetic
+    without re-deriving it from the decisions: ``vram_spent_bytes`` is
+    the sum of the marginal claims and corridor claims, and
+    ``process_overhead_bytes`` is the once-per-process floor charged at
+    the dearest rung, so the card holds
+    ``process_overhead_bytes + vram_spent_bytes`` between radiation calls
+    and that plus ``radiation_transient_bytes`` at the instant one fires.
+    ``priced`` is False for a tree that never consulted the planner
+    (every enabled domain pinned its tiling), where roads are recorded
+    and no budget arithmetic exists.
+    """
+
+    decided: list
+    priced: bool
+    process_overhead_bytes: int
+    radiation_transient_bytes: int
+    total_budget_bytes: int
+    vram_spent_bytes: int
+    host_spent_bytes: int
+    #: The PAGE-LOCKABLE ceiling this walk priced its host ledger against
+    #: (``machine0.host_budget_bytes``), or ``None`` when no planner was
+    #: consulted and there is therefore no machine behind the walk.
+    #: Carried so an admission gate can weigh ``host_spent_bytes`` against
+    #: the same ceiling the walk used rather than deriving a second one.
+    host_budget_bytes: int | None = None
+
+
+def decide_tree(nodes, options=None, *, machine=None,
+                decisions=None) -> TreeDecision:
+    """Decide every domain's road against one budget; build nothing.
+
+    The DECIDE pass of :func:`steppers_for_tree`, split out so a surface
+    that must not construct steppers -- ``gpuwm check``, which prices the
+    tree the run door would take without owning the card it is sizing --
+    walks the SAME arithmetic instead of growing a second model of it.
+    ``nodes`` is the parent-first node list; each node needs only ``cfg``
+    (``grid_id``, ``run``) and ``parent`` -- ``state`` is the build
+    pass's business, which is what makes this callable from a bare
+    config tree with no model behind it.
+    """
+    options = OFF if options is None else options
+    import dataclasses
+
     # THE TREE IS PRICED TOGETHER.  A per-domain decision that hands every
     # grid the whole card is how a resident parent and a streamed child
     # both plan against the same bytes and meet as an OOM mid-run instead
@@ -4278,7 +4338,6 @@ def steppers_for_tree(model, options: StreamingOptions | None = None, *,
     # a pinned domain occupies the card whether or not it asked a
     # question, and leaving it out of the budget would hand its bytes to
     # the next domain twice.
-    nodes = list(model.walk_parent_first())
     per_domain = [options_for_domain(node.cfg, options) for node in nodes]
     consults_planner = any(o.enabled and o.tile_nx is None
                            for o in per_domain)
@@ -4537,14 +4596,263 @@ def steppers_for_tree(model, options: StreamingOptions | None = None, *,
                     "by deleting the [tiles] table.")
         decided.append((node, cfg, node_options, node_machine, decision))
         decided_by_gid[gid] = decision
-    for node, cfg, node_options, node_machine, decision in decided:
-        gid = int(node.cfg.grid_id)
-        stepper = make_stepper(node.state, cfg, node_options,
-                               decision=decision, machine=node_machine,
-                               build=builders.get(gid))
-        if is_streaming(stepper):
-            out[gid] = stepper
-    return out
+    return TreeDecision(
+        decided=decided, priced=bool(consults_planner),
+        process_overhead_bytes=int(tree_overhead),
+        radiation_transient_bytes=int(tree_transient),
+        total_budget_bytes=int(total_budget),
+        vram_spent_bytes=int(spent), host_spent_bytes=int(host_spent),
+        host_budget_bytes=(
+            None if getattr(machine0, "host_budget_bytes", None) is None
+            else int(machine0.host_budget_bytes)))
+
+
+@dataclass(frozen=True)
+class TreeRoadPlan:
+    """The mixed-road pricing of one NESTED ``[tiles]`` tree, for a report.
+
+    Named breakage: ``gpuwm check`` on a nested config with ``[tiles]``
+    priced only the fully-resident tree and exited 1 beside an advisory
+    saying its refusal "is not the last word" -- while the run door's own
+    walk (:func:`steppers_for_tree`) took a mixed road (child streamed,
+    parent resident) that fit and completed.  A user read that pairing as
+    "streaming has no point".  This object is the same decide pass's
+    arithmetic, packaged so the report's verdict and exit code can follow
+    the road the run door actually takes.
+
+    ``rows`` is one entry per domain in walk order.  ``vram_hold_bytes``
+    is the tree's once-per-process floor plus every marginal claim and
+    corridor claim -- what the card holds between radiation calls -- and
+    :attr:`peak_vram_bytes` adds the tree's radiation reservation, the
+    figure every admission question is asked of (the same pairing
+    :class:`StreamedEnvelope` documents).  ``refusal`` carries the walk's
+    own sentence when no road runs this tree; ``priced`` is False when
+    every enabled domain pinned its tiling and no budget arithmetic
+    exists.
+    """
+
+    rows: tuple
+    refusal: str | None
+    priced: bool
+    streams_any: bool
+    vram_hold_bytes: int
+    radiation_transient_bytes: int
+    host_bytes: int
+    total_budget_bytes: int
+    process_overhead_bytes: int
+    #: The page-locking ceiling the walk priced its host ledger against,
+    #: under the name :class:`StreamedEnvelope` gives it, so ``gpuwm go``'s
+    #: pinned-store leg weighs a tree with the same code it weighs a single
+    #: domain with.  ``None`` means nothing could read the box's RAM, which
+    #: on that leg's own law never refuses.
+    host_budget_bytes: int | None = None
+    #: The ROOT domain's own :class:`StreamedEnvelope`, or ``None`` when
+    #: the root is RESIDENT on this road.  Carried because the pace model
+    #: (:func:`gpuwm.core.pace.estimate_pace`) prices the root's road and
+    #: charges every nest resident, so it needs the root's answer rather
+    #: than the tree's: handed this object it would read ``tile_nx`` off a
+    #: plan that has no single tiling.  Named breakage, on the mixed road
+    #: this class exists for: a resident root with a streamed child would
+    #: have had the pace line say "streamed road" about a domain that is
+    #: never tiled, and quote a bus floor for bytes that never cross it.
+    root_envelope: object | None = None
+
+    @property
+    def peak_vram_bytes(self) -> int:
+        return int(self.vram_hold_bytes) + int(self.radiation_transient_bytes)
+
+    #: Alias so surfaces written against :class:`StreamedEnvelope` read
+    #: the hold under the same name.
+    @property
+    def vram_bytes(self) -> int:
+        return int(self.vram_hold_bytes)
+
+    @property
+    def usable(self) -> bool:
+        """Whether this plan may REPLACE the resident forecast term.
+
+        Only a priced walk that actually streams somewhere and was not
+        refused: an all-resident decision is the resident road, whose
+        calibrated envelope the report already carries, and a refused or
+        unpriced walk has no figure to stand in its place.
+        """
+        return (self.refusal is None and self.priced and self.streams_any)
+
+    def _row_text(self, row: dict) -> str:
+        gid = int(row["grid_id"])
+        if row["road"] == "streamed":
+            tile = row.get("tile") or {}
+            text = (f"d{gid:02d} streams ({tile.get('nbuffers')} buffer(s) "
+                    f"of tile {tile.get('tile_nx')}x{tile.get('tile_ny')} "
+                    f"+ halo {tile.get('halo')}): claim "
+                    f"{row['claim_bytes'] / (1024 ** 3):.2f} GiB")
+        else:
+            text = (f"d{gid:02d} resident: claim "
+                    f"{row['claim_bytes'] / (1024 ** 3):.2f} GiB")
+        if row.get("corridor_claim_bytes"):
+            text += (f" + coupling corridor "
+                     f"{row['corridor_claim_bytes'] / (1024 ** 3):.2f} GiB")
+        if row.get("host_claim_bytes"):
+            text += (f"; pinned host store "
+                     f"{row['host_claim_bytes'] / (1024 ** 3):.2f} GiB")
+        return text
+
+    def row_lines(self) -> tuple:
+        return tuple(self._row_text(row) for row in self.rows)
+
+    def summary(self) -> str:
+        """One sentence for the advisory, naming the road per domain."""
+        roads = ", ".join(
+            f"d{int(row['grid_id']):02d} "
+            + ("streams" if row["road"] == "streamed" else "resident")
+            for row in self.rows)
+        return (f"the mixed road prices {roads}; the card holds "
+                f"{self.vram_hold_bytes / (1024 ** 3):.2f} GiB between "
+                f"radiation calls and {self.peak_vram_bytes / (1024 ** 3):.2f} "
+                f"GiB at the instant one fires")
+
+    def to_json(self) -> dict:
+        """The same walk as fields, for ``gpuwm check --json``.
+
+        A machine reader of the report gets the per-domain roads and
+        claims as data rather than having to parse them back out of
+        :meth:`row_lines`.  ``rows`` are already plain ints and strings.
+        """
+        return {
+            "rows": [dict(row) for row in self.rows],
+            "refusal": self.refusal,
+            "priced": bool(self.priced),
+            "streams_any": bool(self.streams_any),
+            "replaces_forecast_term": bool(self.usable),
+            "vram_hold_bytes": int(self.vram_hold_bytes),
+            "radiation_transient_bytes": int(self.radiation_transient_bytes),
+            "peak_vram_bytes": int(self.peak_vram_bytes),
+            "host_bytes": int(self.host_bytes),
+            "host_budget_bytes": self.host_budget_bytes,
+            "total_budget_bytes": int(self.total_budget_bytes),
+            "process_overhead_bytes": int(self.process_overhead_bytes),
+        }
+
+
+def _config_tree_nodes(domains) -> list:
+    """Parent-first nodes over bare :class:`DomainConfig` rows.
+
+    The same order :meth:`gpuwm.core.model.Model.walk_parent_first`
+    yields -- root, then depth-first with children in declaration order --
+    because the tree walk's greedy budget arithmetic is order-dependent
+    and two surfaces walking two orders would price two different trees.
+    Each node carries exactly what the decide pass reads: ``cfg`` and
+    ``parent``.
+    """
+    from types import SimpleNamespace
+
+    children: dict = {}
+    for dc in domains:
+        children.setdefault(int(getattr(dc, "parent_id", 0)), []).append(dc)
+    ordered: list = []
+
+    def visit(dc, parent_node) -> None:
+        node = SimpleNamespace(cfg=dc, parent=parent_node)
+        ordered.append(node)
+        for child in children.get(int(dc.grid_id), ()):
+            visit(child, node)
+
+    for root in children.get(0, ()):
+        visit(root, None)
+    return ordered
+
+
+def _plan_rows(decisions: dict) -> tuple:
+    rows = []
+    for gid in sorted(decisions):
+        decision = decisions[gid]
+        detail = dict(getattr(decision, "detail", None) or {})
+        row = {
+            "grid_id": int(gid),
+            "road": ("streamed" if decision.stream else "resident"),
+            "mode": detail.get("configured_mode"),
+            "reason": decision.reason,
+            "claim_bytes": int(detail.get("claim_bytes") or 0),
+            "corridor_claim_bytes": int(
+                detail.get("corridor_claim_bytes") or 0),
+            "host_claim_bytes": int(detail.get("host_claim_bytes") or 0),
+        }
+        if decision.stream:
+            row["tile"] = {
+                "tile_nx": decision.tile_nx, "tile_ny": decision.tile_ny,
+                "nbuffers": decision.nbuffers, "halo": decision.halo,
+            }
+        rows.append(row)
+    return tuple(rows)
+
+
+def tree_road_plan(exp, *, machine=None) -> TreeRoadPlan | None:
+    """Price the road :func:`steppers_for_tree` would take, for a report.
+
+    ``None`` when the question does not arise: a single-domain config
+    (the single-domain streamed envelope already answers it), or a tree
+    with no ``[tiles]`` configured anywhere.  Never raises -- this runs
+    inside pricing surfaces whose job is to answer before the user spends
+    anything, so the walk's own refusal (a both-streamed edge, "no tile
+    fits") comes back as :attr:`TreeRoadPlan.refusal` for the report to
+    print, with the resident figures left standing as the verdict's
+    basis.
+    """
+    domains = tuple(getattr(exp, "domains", ()) or ())
+    if len(domains) < 2:
+        return None
+    options = getattr(exp, "tiles", None) or OFF
+    if not (options.enabled
+            or any(options_for_domain(dc, options).enabled
+                   for dc in domains)):
+        return None
+    nodes = _config_tree_nodes(domains)
+    decisions: dict = {}
+    refusal = None
+    outcome = None
+    try:
+        outcome = decide_tree(nodes, options, machine=machine,
+                              decisions=decisions)
+    except StreamingRefused as error:
+        refusal = str(error)
+    except Exception as error:              # a report never dies on its estimate
+        # ``autoplan.CannotPlan`` for a domain no road can carry lands
+        # here: streaming would not have saved this tree either, and the
+        # planner's sentence says why.
+        refusal = str(error)
+    rows = _plan_rows(decisions)
+    # PRICED FROM THE WALK'S OWN DECISION, never re-derived: the root's
+    # envelope has to describe the road this walk chose for it, and a
+    # second ``decide`` against the whole card would answer for a root
+    # that had no siblings spending the budget beside it.
+    root_gid = int(nodes[0].cfg.grid_id) if nodes else None
+    root_decision = decisions.get(root_gid)
+    root_envelope = None
+    if root_decision is not None and root_decision.stream:
+        try:
+            root_envelope = streamed_envelope(
+                nodes[0].cfg.run, options_for_domain(nodes[0].cfg, options),
+                machine=machine, decision=root_decision)
+        except Exception:            # a report never dies on its estimate
+            root_envelope = None
+    if outcome is None:
+        return TreeRoadPlan(
+            rows=rows, refusal=refusal, priced=False, streams_any=any(
+                row["road"] == "streamed" for row in rows),
+            vram_hold_bytes=0, radiation_transient_bytes=0, host_bytes=0,
+            total_budget_bytes=0, process_overhead_bytes=0,
+            host_budget_bytes=None, root_envelope=root_envelope)
+    return TreeRoadPlan(
+        rows=rows, refusal=refusal, priced=outcome.priced,
+        streams_any=any(row["road"] == "streamed" for row in rows),
+        vram_hold_bytes=(int(outcome.process_overhead_bytes)
+                         + int(outcome.vram_spent_bytes)),
+        radiation_transient_bytes=int(outcome.radiation_transient_bytes),
+        host_bytes=int(outcome.host_spent_bytes),
+        total_budget_bytes=int(outcome.total_budget_bytes),
+        process_overhead_bytes=int(outcome.process_overhead_bytes),
+        host_budget_bytes=outcome.host_budget_bytes,
+        root_envelope=root_envelope)
 
 
 def streaming_receipt(options: StreamingOptions | None,
