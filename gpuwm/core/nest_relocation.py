@@ -1014,13 +1014,38 @@ def release_state_arrays(state) -> dict[str, object]:
         elif isinstance(value, np.ndarray):
             host_arrays += 1
             setattr(state, name, None)
+    cumulus_workspace_bytes = 0
     if getattr(state, "physics", None) is not None:
+        # DROPPING state.physics IS NOT ENOUGH ON ITS OWN.  The driver
+        # holds cumulus_callable and the adapter holds the driver back
+        # (NewTiedtke.bind_driver), so the two form a reference cycle
+        # that refcounting cannot collect.  CPython's cyclic collector
+        # can, but it triggers on PYTHON object counts and the workspace
+        # behind that cycle is 433.2 MiB of VRAM hanging off one small
+        # object -- so it stayed resident across relocation after
+        # relocation.
+        #
+        # MEASURED before the fix, matched pair on prepared_nt16_hafs
+        # over 30 forecast minutes, identical but for this surface: the
+        # relocating arm built FOUR NtWorkspaces against the control's
+        # two, and its pool live floor climbed 4425 -> 6923 MiB while
+        # the control's held 4425 -> 4451.
+        #
+        # Asking the adapter to release is deliberate rather than
+        # calling gc.collect() here: the collector would also be a
+        # whole-heap pause on a path that runs mid-forecast, and it
+        # would free this by accident rather than by contract.
+        cumulus = getattr(state.physics, "cumulus_callable", None)
+        release = getattr(cumulus, "release", None)
+        if release is not None:
+            cumulus_workspace_bytes = int(release() or 0)
         state.physics = None
     return {
         "owned_device_bytes": int(owned_device_bytes),
         "owned_device_arrays": int(owned_device_arrays),
         "shared_view_arrays": int(device_views),
         "host_arrays": int(host_arrays),
+        "cumulus_workspace_bytes": int(cumulus_workspace_bytes),
     }
 
 

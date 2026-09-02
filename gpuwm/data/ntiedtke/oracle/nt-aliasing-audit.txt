@@ -1,0 +1,109 @@
+==========================================================================
+READ BEFORE WRITTEN -- the caller's incoming value is LOAD-BEARING
+==========================================================================
+  cumastrn   ptte       intent(inout) :509   zdhpbl(jl)=zdhpbl(jl)+(alv*pqte(jl,jk)+cpd*ptte(jl,j
+  cumastrn   pqte       intent(inout) :509   zdhpbl(jl)=zdhpbl(jl)+(alv*pqte(jl,jk)+cpd*ptte(jl,j
+  cumastrn   pvom       intent(inout) :1021  ztenu(jl,jk) = pvom(jl,jk)
+  cumastrn   pvol       intent(inout) :1022  ztenv(jl,jk) = pvol(jl,jk)
+  cutypen    culab      intent(out  ) :1337  klab(jl,jk)=culab(jl,jk)
+  cutypen    cutu       intent(out  ) :1335  ptu(jl,jk)=cutu(jl,jk)
+  cutypen    cuqu       intent(out  ) :1336  pqu(jl,jk)=cuqu(jl,jk)
+  cutypen    culu       intent(out  ) :1334  plu(jl,jk)=culu(jl,jk)
+  cuascn     ldcum      intent(inout) :1909  if(.not.ldcum(jl)) then
+  cuascn     kctop0     intent(inout) :1934  if(.not.ldcum(jl).and.paph(jl,jk).lt.4.e4) kctop0(jl
+  cuascn     klab       intent(inout) :1933  if(.not.ldcum(jl).or.ktype(jl).eq.3) klab(jl,jk)=0
+  cuascn     ptenh      intent(inout) :2048  zseen = (cpd*ptenh(jl,jk+1)+pgeoh(jl,jk+1))*zdmfen(j
+  cuascn     pqenh      intent(inout) :2047  zqeen = pqenh(jl,jk+1)*zdmfen(jl)
+  cuascn     ptu        intent(inout) :1950  pmfus(jl,ikb) = pmfub(jl)*(cpd*ptu(jl,ikb)+pgeoh(jl,
+  cuascn     plu        intent(inout) :1920  if(jk.ne.kcbot(jl)) plu(jl,jk)=0.
+  cudlfsn    prfl       intent(inout) :2445  llo2(jl)=ldcum(jl).and.prfl(jl).gt.0..and..not.lddra
+  cuddrafn   prfl       intent(inout) :2694  if(prfl(jl).gt.0..and.pmfu(jl,jk).gt.0.) then
+  cuddrafn   ptd        intent(inout) :2672  zsdde=(cpd*ptd(jl,jk-1)+pgeoh(jl,jk-1))*zdmfde(jl)
+  cuddrafn   pqd        intent(inout) :2673  zqdde=pqd(jl,jk-1)*zdmfde(jl)
+  cuddrafn   pmfd       intent(inout) :2627  llo2(jl)=lddraf(jl).and.pmfd(jl,jk-1).lt.0.
+  cuddrafn   pmfds      intent(inout) :2674  zmfdsk=pmfds(jl,jk-1)+zseen-zsdde
+  cuddrafn   pmfdq      intent(inout) :2675  zmfdqk=pmfdq(jl,jk-1)+zqeen-zqdde
+  cuflxn     lddraf     intent(inout) :2867  if(.not.ldcum(jl).or.kdtop(jl).lt.kctop(jl)) lddraf(
+  cuflxn     ktype      intent(inout) :2868  if(.not.ldcum(jl)) ktype(jl)=0
+  cuflxn     pmfu       intent(inout) :2885  pmfus(jl,jk)=pmfus(jl,jk)-pmfu(jl,jk)*           &
+  cuflxn     pmfd       intent(inout) :2891  pmfds(jl,jk) = pmfds(jl,jk)-pmfd(jl,jk) * &
+  cuadjtqn   pt         intent(inout) :3329  zl = 1./(pt(jl,kk)-c4les)
+  cuadjtqn   pq         intent(inout) :3338  zcond = (pq(jl,kk)*zcor**2-zqsat*zcor)/(zcor**2+zqsa
+  cubasmcn   klab       intent(out  ) :3461  if(.not.ldcum(jl) .and. klab(jl,kk+1).eq.0) then
+
+==========================================================================
+FIRST USE IS A CALL ARGUMENT -- needs a human; the callee may write
+==========================================================================
+  cumastrn   ktype      intent(inout) :495   &      ldcum,    kcbot,     ictop0,    ktype,    wba
+  cumastrn   kcbot      intent(inout) :495   &      ldcum,    kcbot,     ictop0,    ktype,    wba
+  cumastrn   kctop      intent(inout) :555   &     kcbot,    kctop,    ictop0,   icum,     ztmst,
+  cumastrn   ldcum      intent(inout) :495   &      ldcum,    kcbot,     ictop0,    ktype,    wba
+  cumastrn   pqsen      intent(inout) :476   &     pqen,     pqsen,    puen,     pven,     pverv,
+  cumastrn   prain      intent(inout) :831   &  ,  prain,    pmfdde_rate, pmflxr, pmflxs )
+  cumastrn   pcte       intent(inout) :925   zdmfup,zdmfdp,zdpmel,ptte,pqte,pcte)
+  cumastrn   ptu        intent(inout) :478   &     zqsenh,   ilwmin,   ptu,      pqu,      ztd,  
+  cumastrn   pqu        intent(inout) :478   &     zqsenh,   ilwmin,   ptu,      pqu,      ztd,  
+  cumastrn   plu        intent(inout) :481   &     zmfdq,    zdmfup,   zdmfdp,   zdpmel,   plu,  
+  cumastrn   plude      intent(inout) :482   &     plude,    ilab)
+  cumastrn   pmfu       intent(inout) :480   &     pmfu,     pmfd,     zmfus,    zmfds,    zmfuq,
+  cumastrn   pmfd       intent(inout) :480   &     pmfu,     pmfd,     zmfus,    zmfds,    zmfuq,
+  cuascn     puu        intent(inout) :1973  &     pqu,      plu,      puu,      pvu,      pmfus,
+  cuascn     pvu        intent(inout) :1973  &     pqu,      plu,      puu,      pvu,      pmfus,
+
+==========================================================================
+SELF-REFERENTIAL FIRST WRITE (x = f(x)) -- also load-bearing
+==========================================================================
+  cuflxn     pmfus      intent(inout) :2885  pmfus(jl,jk)=pmfus(jl,jk)-pmfu(jl,jk)*           &
+  cuflxn     pmfds      intent(inout) :2891  pmfds(jl,jk) = pmfds(jl,jk)-pmfd(jl,jk) * &
+  cuflxn     pmfuq      intent(inout) :2887  pmfuq(jl,jk)=pmfuq(jl,jk)-pmfu(jl,jk)*pqenh(jl,jk)
+  cuflxn     pmfdq      intent(inout) :2893  pmfdq(jl,jk) = pmfdq(jl,jk)-pmfd(jl,jk)*pqenh(jl,jk)
+  cudtdqn    ptent      intent(inout) :3140  ptent(jl,jk) = ptent(jl,jk) + zdtdt(jl,jk)
+  cudtdqn    ptenq      intent(inout) :3141  ptenq(jl,jk) = ptenq(jl,jk) + zdqdt(jl,jk)
+  cududvn    ptenu      intent(inout) :3245  ptenu(jl,jk) = ptenu(jl,jk) + zdudt(jl,jk)
+  cududvn    ptenv      intent(inout) :3246  ptenv(jl,jk) = ptenv(jl,jk) + zdvdt(jl,jk)
+
+==========================================================================
+DUMMY DECLARED WITHOUT intent -- invisible to every check above
+==========================================================================
+  cuflxn     pdpmel     no intent attribute; treat as inout
+  cuflxn     plglac     no intent attribute; treat as inout
+  cuflxn     pmfdde_rate no intent attribute; treat as inout
+  cuflxn     pmflxr     no intent attribute; treat as inout
+  cuflxn     pmflxs     no intent attribute; treat as inout
+  cuflxn     prain      no intent attribute; treat as inout
+
+==========================================================================
+intent(out) WITH ONLY CONDITIONAL WRITES -- also load-bearing
+==========================================================================
+  cutypen    cubot      writes only at lines [1493, 1498, 1716]
+  cutypen    cutop      writes only at lines [1494, 1497, 1717]
+  cutypen    culab      writes only at lines [1509, 1731, 1736]
+  cutypen    cutu       writes only at lines [1510, 1732, 1737]
+  cutypen    cuqu       writes only at lines [1511, 1733, 1738]
+  cutypen    culu       writes only at lines [1512, 1734, 1739]
+  cuascn     ktype      writes only at lines [1910]
+  cudlfsn    ptd        writes only at lines [2473]
+  cudlfsn    pqd        writes only at lines [2474]
+  cudlfsn    pmfd       writes only at lines [2475]
+  cudlfsn    pmfds      writes only at lines [2476]
+  cudlfsn    pmfdq      writes only at lines [2477]
+  cudlfsn    pdmfdp     writes only at lines [2478]
+  cubasmcn   ktype      writes only at lines [3480]
+  cubasmcn   kcbot      writes only at lines [3477]
+  cubasmcn   klab       writes only at lines [3478]
+  cubasmcn   pmfub      writes only at lines [3471]
+  cubasmcn   plrain     writes only at lines [3479]
+  cubasmcn   ptu        writes only at lines [3465]
+  cubasmcn   pqu        writes only at lines [3467]
+  cubasmcn   plu        writes only at lines [3468]
+  cubasmcn   pmfu       writes only at lines [3472]
+  cubasmcn   pmfus      writes only at lines [3473]
+  cubasmcn   pmfuq      writes only at lines [3474]
+  cubasmcn   pmful      writes only at lines [3475]
+  cubasmcn   pdmfup     writes only at lines [3476]
+  cuentrn    pdmfen     writes only at lines [3519, 3532]
+  cuentrn    pdmfde     writes only at lines [3520, 3533]
+
+written before read (safe to pass fresh arrays): 87
+READ FIRST (harness MUST pass the caller's array): 29
+call-argument first (inspect by hand):            15

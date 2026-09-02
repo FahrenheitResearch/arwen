@@ -504,6 +504,122 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
     SM120_NVRTC_13_0_48,
     SM120_NVRTC_13_3_33,
     SM86_NVRTC_13_0_48,
+    # ------------------------------------------------------------------
+    # ADDED 2026-08-29, because cu_physics = 16 could not run without
+    # it: kernel_local_frame_bytes is FAIL-CLOSED and raised on the
+    # missing 'ntiedtke' row rather than charging zero. That is the
+    # ninth site of the Phase 2 group and the third to announce itself
+    # through a raise rather than a silent default.
+    #
+    # A FOURTH COMPILE PLATFORM, not a row bolted onto an existing one.
+    # A frame is what NVRTC emitted for one architecture at one
+    # compiler build -- this file's own opening paragraph -- so
+    # writing 'ntiedtke': 0 into recordings measured on 13.0.48 and
+    # 13.3.33 would have been asserting a measurement never taken.
+    # Measured here with tools/vram_reserve_probe.py frames.
+    #
+    # IT RAISES NOTHING. Checked before adding: no module's ceiling
+    # moves, so no existing budget changes. It adds three rows the
+    # ceiling did not carry at all -- ntiedtke, mynn_dmp_sibling and
+    # mynn_scalar_mix, all 0 B -- and the latter two were a latent
+    # instance of the same fail-closed raise waiting for whoever
+    # priced a run that selected them.
+    KernelFrameRecording(
+        box='node-1 (this workstation)',
+        device='NVIDIA GeForce RTX 5070 Ti',
+        compute_capability='120',
+        nvrtc_build='13.0.88',
+        platform_family='windows',
+        measured='2026-08-29',
+        # Every module the probe could compile. The eleven it could not are
+        # the same set the other Windows recordings omit -- noahmp_driver,
+        # the rrtmg_lw chain and rrtmg_sw -- so this is complete in the
+        # same sense theirs are.
+        complete=True,
+        frames=MappingProxyType({
+            'acoustic': 544,
+            'advection': 0,
+            'coriolis_map': 0,
+            'diagnostics': 0,
+            'diff6': 0,
+            'diff6_seam': 0,
+            'diffusion': 0,
+            'dycore': 0,
+            'ftz_probe': 0,
+            'gf': 88,
+            'health': 0,
+            'health_tile': 0,
+            'jacobi_eigh': 0,
+            'kessler': 5120,
+            'kf': 512,
+            'kf_validation': 0,
+            'lbc_flow': 0,
+            'lbc_state': 0,
+            'microphysics_validation': 0,
+            'milbrandt2': 2048,
+            'morrison': 5120,
+            'myjpbl': 9232,
+            'myjsfc': 0,
+            'mynn_dmp_sibling': 0,
+            'mynn_pbl': 0,
+            'mynn_scalar_mix': 0,
+            'mynn_surface': 0,
+            'nest': 0,
+            'nest_microphysics': 0,
+            'noah': 176,
+            'noahmp_bareflux': 0,
+            'noahmp_fluxprep': 0,
+            'noahmp_leaves': 272,
+            'noahmp_radiation': 0,
+            'noahmp_sflx': 0,
+            'noahmp_snow': 200,
+            'noahmp_soilwater': 0,
+            'noahmp_vegeflux': 0,
+            'noahmp_vegprecip': 0,
+            'noahmp_water': 224,
+            'nssl2': 15504,
+            'nssl2_diagnostics': 0,
+            'nssl2_driver_support': 15504,
+            'nssl2_fused_gs': 112,
+            'nssl2_nucond': 0,
+            'nssl2_qvexcess': 0,
+            'ntiedtke': 0,
+            'openbc': 0,
+            'pd_advection': 0,
+            'refl': 18432,
+            'rrtmg_lw': 0,
+            'rrtmg_mcica_wrf': 0,
+            'rrtmgp_cloud': 0,
+            'rrtmgp_gas': 512,
+            'rrtmgp_mcica': 0,
+            'rrtmgp_rte': 3600,
+            'rrtmgp_validation': 0,
+            'ruc': 144,
+            'sase': 6272,
+            'saxpy': 0,
+            'sfclay': 0,
+            'shinhong': 14040,
+            'shinhong_validation': 0,
+            'smag2d': 0,
+            'spec_bdy': 0,
+            'thompson': 11264,
+            'thompson_aerosol_cold': 0,
+            'thompson_aerosol_probe': 0,
+            'thompson_aerosol_sat': 0,
+            'thompson_aerosol_sed': 9216,
+            'thompson_aerosol_state': 40,
+            'thompson_aerosol_warm': 0,
+            'tke_budget': 0,
+            'uh_diag': 0,
+            'vert_interp': 768,
+            'wdm6': 9776,
+            'wdm6_refl': 16128,
+            'wsm6': 7216,
+            'ysu': 0,
+            'ysu_validation': 0,
+        }),
+    ),
+
 )
 
 

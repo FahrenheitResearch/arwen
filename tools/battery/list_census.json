@@ -2,8 +2,8 @@
  "_what": "Per-entry collected-test counts for each CPU battery list.",
  "_why": "F20 of the 2026-08-28 fault-injection audit: one entry deleted from tools/battery/stage1_files.txt stops a whole suite running and nothing says so.  Measured at b47a400a5: tests/test_stage1_manifest.py goes 362 -> 360 passed and stays green for tests/test_water_overlay.py, tests/test_doctor.py and tests/test_speedrun.py alike, and test_battery_route.py, test_fastfix_selector.py and test_ci_test_replay.py are green.  The manifest gate pins four entries by name and counts nothing.",
  "_how_to_re_record": "python -m tools.battery.record_list_census  (collects every leg's list under its recorded markexpr and environment with --collect-only and rewrites this file).  A count that FELL is coverage that left: say in the commit which tests went and where they went to.  A count that rose needs no argument.",
- "recorded_at_commit": "36e68a4283aba51cc1cfe953a7da67e35b452cd7",
- "recorded_on": "2026-09-01",
+ "recorded_at_commit": "7391fa8db29fa8a6b97210e97371eb0e2e91c03d",
+ "recorded_on": "2026-09-02",
  "legs": {
   "stage1": {
    "list": "tools/battery/stage1_files.txt",
@@ -11,7 +11,7 @@
    "environment": {
     "GPUWM_NO_LOCAL_GPU": "1"
    },
-   "collected_total": 7699,
+   "collected_total": 8198,
    "files": {
     "tests/test_runplan.py": 142,
     "tests/test_nest_spawn_soil.py": 20,
@@ -73,7 +73,7 @@
     "tests/test_release_snapshot_front_door.py": 6,
     "tests/test_release_snapshot_machine_paths.py": 20,
     "tests/test_release_snapshot_modes.py": 3,
-    "tests/test_stage1_manifest.py": 464,
+    "tests/test_stage1_manifest.py": 496,
     "tests/test_publish_workflow_state_machine.py": 58,
     "tests/test_verify_source_bridge_pins.py": 8,
     "tests/test_wheel_pin_gate.py": 5,
@@ -104,7 +104,7 @@
     "tests/test_obs_model_source.py": 24,
     "tests/test_flagship_tools.py": 12,
     "tests/test_obs_cross_reader.py": 32,
-    "tests/test_gpu_shard_manifest.py": 91,
+    "tests/test_gpu_shard_manifest.py": 135,
     "tests/test_docs_extras_agree_with_code.py": 28,
     "tests/test_highres_geog_stack_refusal.py": 9,
     "tests/test_static_needs_no_met_inputs.py": 6,
@@ -188,10 +188,10 @@
     "tests/test_config_freeze.py": 4,
     "tests/test_p3_cuda.py": 13,
     "tests/test_p3_restart_manifest.py": 5,
-    "tests/test_kernel_source_freeze_per_module.py": 94,
+    "tests/test_kernel_source_freeze_per_module.py": 95,
     "tests/test_cuda_libm_table_copies.py": 37,
     "tests/test_excluded_subsystem_scan_is_armed.py": 14,
-    "tests/test_battery_list_census.py": 1023,
+    "tests/test_battery_list_census.py": 1057,
     "tests/test_fastfix_batched_durations.py": 6,
     "tests/test_tracked_file_writers_keep_lf.py": 34,
     "tests/test_p3_legacy_rrtmg_radii.py": 6,
@@ -235,7 +235,23 @@
     "tests/test_streaming_refused_door.py": 2,
     "tests/test_tree_under_test.py": 9,
     "tests/test_morrison_cold_trap.py": 2,
-    "tests/test_bridge_stale_resolution.py": 20
+    "tests/test_bridge_stale_resolution.py": 20,
+    "tests/test_cells_doors.py": 7,
+    "tests/test_kernel_loader_inert.py": 191,
+    "tests/test_no_forecast_gate.py": 5,
+    "tests/test_ntiedtke_aliasing_audit.py": 10,
+    "tests/test_ntiedtke_call_order_vs_source.py": 35,
+    "tests/test_ntiedtke_capture_provenance.py": 10,
+    "tests/test_ntiedtke_constant_family.py": 7,
+    "tests/test_ntiedtke_cumastrn_ownership.py": 11,
+    "tests/test_ntiedtke_dead_workspace_writes.py": 5,
+    "tests/test_ntiedtke_launch_arity.py": 21,
+    "tests/test_ntiedtke_oracle_integrity.py": 2,
+    "tests/test_ntiedtke_oracle_single_source.py": 8,
+    "tests/test_ntiedtke_output_provenance.py": 4,
+    "tests/test_ntiedtke_pattern_controls.py": 7,
+    "tests/test_ntiedtke_phase2_gates.py": 21,
+    "tests/test_ntiedtke_stage_signature.py": 44
    }
   },
   "always": {
@@ -244,12 +260,12 @@
    "environment": {
     "GPUWM_NO_LOCAL_GPU": "1"
    },
-   "collected_total": 2164,
+   "collected_total": 2231,
    "files": {
-    "tests/test_stage1_manifest.py": 464,
+    "tests/test_stage1_manifest.py": 496,
     "tests/test_cargo_gate_manifest.py": 124,
     "tests/test_tiles_gate_manifest.py": 27,
-    "tests/test_battery_list_census.py": 1023,
+    "tests/test_battery_list_census.py": 1057,
     "tests/test_line_ending_stability.py": 12,
     "tests/test_release_notes_are_public_facing.py": 23,
     "tests/test_case_token_leakage.py": 45,
@@ -270,7 +286,7 @@
     "tests/test_wheel_pin_gate.py": 5,
     "tests/test_mynn_dmp_sibling.py": 4,
     "tests/test_excluded_subsystem_absent.py": 6,
-    "tests/test_kernel_source_freeze_per_module.py": 94,
+    "tests/test_kernel_source_freeze_per_module.py": 95,
     "tests/test_cuda_libm_table_copies.py": 37,
     "tests/test_excluded_subsystem_scan_is_armed.py": 14,
     "tests/test_fastfix_batched_durations.py": 6,

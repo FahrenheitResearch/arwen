@@ -115,9 +115,11 @@ BASELINE_PINNED: dict[str, str] = {
     # 6106e4e31 feat(ftz): measure FP32 subnormal handling on all five compile routes
     "ftz_probe":
         "a8c76a2f19dce3eb9ce545f2caacd1891ac35c3de56c7d57e39e787f37e1717f",
-    # 35d83fc8c perf(gf): the column arrays leave the frame the driver prices at full reside
+    # d0c23dad0 feat(cumulus): New Tiedtke joins as cu_physics = 16 -- the glibc
+    # float32 transcendentals leave gf.cu for the shared glibc_flt32.cuh the
+    # loader prepends; a move, not an edit (517 non-trivial lines out, 517 in)
     "gf":
-        "27019d7fdd4ad31aec2e2e4b21ec339dd512a449aea5e35ab2386ca5217aae5e",
+        "2e6a0b59b669e3c35fc0138be14d7ce2a8d7781b2c02f46ea41a23efe0764142",
     # 1ee7f0be0 tiles: name the streamed-run config table, and part it from cycle streaming
     "health_tile":
         "2943d5e226a61487aefbe7f191dc120420a4cfe3f96deef19c90c2bb8c15bead",
@@ -130,6 +132,10 @@ BASELINE_PINNED: dict[str, str] = {
     # 5b912c2b9 Batch canonical microphysics validation
     "microphysics_validation":
         "a9e21aff3e9f011bf16a49ae3df3bf7d7688fc86bb8ba27ead08340839034e78",
+    # d0c23dad0 feat(cumulus): New Tiedtke joins as cu_physics = 16 -- the scheme's
+    # translation unit, bitwise against WRF v4.6.1 at every stage (tests/test_ntiedtke_*)
+    "ntiedtke":
+        "06daa934a71a02797fbaaaef243b83d4c43382e2dcd1cbd83505393d9373af7a",
     # c1563f187 fix(release-scan): the gate reads by content, and sees an escaped path
     "milbrandt2":
         "381aa37f9509ac8663e0333131ae44aa963820cd7712c88e89d555ef5b92b574",

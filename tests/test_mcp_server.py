@@ -53,8 +53,8 @@ ENGINE_TOOLS = {
     "arwen_doctor", "arwen_sources", "arwen_capabilities",
     "arwen_plan_domain", "arwen_estimate", "arwen_fetch", "arwen_prep",
     "arwen_forecast", "arwen_render", "arwen_list_products",
-    "arwen_run_summary", "job_status", "job_events", "job_result",
-    "job_cancel", "job_list",
+    "arwen_run_summary", "arwen_cells", "arwen_cells_catalog",
+    "job_status", "job_events", "job_result", "job_cancel", "job_list",
 }
 
 

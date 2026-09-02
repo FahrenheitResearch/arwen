@@ -1,0 +1,19 @@
+# undefined symbols in the -O0 reference objects
+## ccpp_kind_types_O0.o
+## cu_ntiedtke_glob.o
+                 U __powisf2
+                 U _gfortran_internal_pack
+                 U expf
+                 U free
+                 U logf
+                 U malloc
+                 U memcpy
+                 U memset
+                 U powf
+## module_cu_ntiedtke_glob.o
+                 U __cu_ntiedtke_MOD_cu_ntiedtke_init
+                 U __cu_ntiedtke_MOD_cu_ntiedtke_run
+                 U free
+                 U malloc
+                 U memcpy
+                 U memset

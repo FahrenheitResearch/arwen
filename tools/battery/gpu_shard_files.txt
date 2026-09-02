@@ -352,3 +352,27 @@ tests/test_gf_engine_smoke.py
 # They are ALSO on no CPU list, so they are 396 tests running nowhere -- a
 # separate gap, recorded here rather than swept, and the right place to fix
 # it is tools/battery/stage1_files.txt, not this file.
+# New Tiedtke (cu_physics = 16, d0c23dad0): the stage and pipeline parity suites
+# against the WRF v4.6.1 oracle corpus, all device rows.
+tests/test_cumulus_momentum_extension.py
+tests/test_ntiedtke_adjust_parity.py
+tests/test_ntiedtke_cloud_depth_parity.py
+tests/test_ntiedtke_cuascn_parity.py
+tests/test_ntiedtke_cuddrafn_parity.py
+tests/test_ntiedtke_cudlfsn_parity.py
+tests/test_ntiedtke_cudtdqn_parity.py
+tests/test_ntiedtke_cududvn_parity.py
+tests/test_ntiedtke_cuflxn_parity.py
+tests/test_ntiedtke_kedis_parity.py
+tests/test_ntiedtke_launch_geometry.py
+tests/test_ntiedtke_mprofile_parity.py
+tests/test_ntiedtke_mrescale_parity.py
+tests/test_ntiedtke_pattern_controls.py
+tests/test_ntiedtke_phase2_gates.py
+tests/test_ntiedtke_phase_one_end_condition.py
+tests/test_ntiedtke_pipeline_boundaries.py
+tests/test_ntiedtke_post_conversion_parity.py
+tests/test_ntiedtke_post_run_parity.py
+tests/test_ntiedtke_prep_parity.py
+tests/test_ntiedtke_uscale_parity.py
+tests/test_ntiedtke_workspace.py

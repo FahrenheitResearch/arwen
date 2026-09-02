@@ -168,8 +168,68 @@ def prepared_domain_config_identity(domain_config) -> dict[str, object]:
 #: ``output`` say how the run writes, the lifecycle trio says what a
 #: nest does after birth.  A domain that really uses one holds a
 #: document instead of ``None`` and is refused against an older header.
+#: ``run.ntiedtke_tiedtke_closure`` (cu_physics = 16) is the first
+#: NESTED member of this table.  The walk below builds dotted paths,
+#: so a ``run.`` entry has always worked here -- this is the first to
+#: use it.  Its not-in-use value is ``False``, which selects New
+#: Tiedtke's OWN closure: exactly what every cache prepared before
+#: the flag existed was prepared with, so "absent" and "default"
+#: describe the same prepared state provably rather than plausibly.
 DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
-    "start_time", "spawn", "tiles", "output", "retire", "rearm", "follow"})
+    # 2.6.1's members: top-level DomainConfig declarations whose
+    # off state is None.
+    "start_time", "spawn", "tiles", "output", "retire", "rearm", "follow",
+    # This branch's members, NESTED under run.  The walk builds dotted
+    # paths, so these have always worked here.  Dropping them when
+    # 2.6.1 restructured the table above would have re-refused every
+    # tree prepared before 2.5.8 -- the exact V-12 hole this table
+    # exists to close, reopened by the merge that adopted its fix.
+    "run.mp28_aerosol_source", "run.wif_climatology_path",
+    "run.ntiedtke_tiedtke_closure",
+    # 2.6.1 added run.p3_backend to RunConfig without adding it here,
+    # which refused EVERY tree prepared before it -- 16 of them on the
+    # box that found this.  The FOURTH instance of this exact trap in
+    # this one table, and the second by a different author.
+    #
+    # Tolerable on the strongest form of the argument: the field is
+    # SCHEME-SCOPED to mp_physics = 50 (config.py:3128 refuses any
+    # non-default value under every other scheme), so a cache written
+    # before it existed could not have selected a P3 backend at all.
+    # A tree that really did carries the value in its header and is
+    # still compared strictly.
+    "run.p3_backend",
+})
+
+
+def _run_config_defaults(*names: str) -> dict[str, object]:
+    """``{"run.<name>": RunConfig's default}`` for each name.
+
+    Imported inside the call rather than at module scope: this module is
+    part of the ingest path and gpuwm.config pulls in a good deal of the
+    package, so a top-level import here would tighten the import graph for
+    a lookup that happens once per prepared-cache comparison.
+    """
+    import dataclasses
+
+    from gpuwm.config import RunConfig
+
+    fields = {f.name: f for f in dataclasses.fields(RunConfig)}
+    out: dict[str, object] = {}
+    for name in names:
+        field = fields.get(name)
+        if field is None:
+            raise AttributeError(
+                f"RunConfig has no field {name!r}, so the tolerance for "
+                f"run.{name} cannot state what its not-in-use value is. "
+                f"Either the field was renamed -- update "
+                f"DEFAULT_TOLERANT_IDENTITY_FIELDS with it -- or the "
+                f"tolerance is stale and should be removed.")
+        if field.default is dataclasses.MISSING:
+            raise ValueError(
+                f"RunConfig.{name} has no default, so 'absent means "
+                f"default' is not a statement that can be made about it.")
+        out[f"run.{name}"] = field.default
+    return out
 
 
 def undelayed_identity_defaults(experiment) -> dict[str, object]:
@@ -195,7 +255,14 @@ def undelayed_identity_defaults(experiment) -> dict[str, object]:
             # after spawn (see DEFAULT_TOLERANT_IDENTITY_FIELDS): each is
             # an optional declaration whose off state is None.
             "tiles": None, "output": None,
-            "retire": None, "rearm": None, "follow": None}
+            "retire": None, "rearm": None, "follow": None,
+            # READ FROM THE DATACLASS, not restated: two
+            # hand-maintained copies of one default is the failure
+            # this package has paid for repeatedly.
+            **_run_config_defaults("mp28_aerosol_source",
+                                   "wif_climatology_path",
+                                   "ntiedtke_tiedtke_closure",
+                                   "p3_backend")}
 
 
 #: Identity fields that describe when the run WRITES, not what it

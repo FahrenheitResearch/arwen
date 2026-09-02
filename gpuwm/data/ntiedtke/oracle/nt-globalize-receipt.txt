@@ -1,0 +1,9 @@
+# objcopy --globalize-symbol receipt
+cu_ntiedtke:
+  text sha256 before: 7ec70a3965b41c6a2a14471741f8e092c69f52308f56d560214b756a0fc9e2d6
+  text sha256 after : 7ec70a3965b41c6a2a14471741f8e092c69f52308f56d560214b756a0fc9e2d6
+  differing bytes in whole object (symbol table only): 437
+module_cu_ntiedtke:
+  text sha256 before: 3e22ccaaca588c44b8666268e232d96790f77d508fab1a4d60de1fde4938ea4b
+  text sha256 after : 3e22ccaaca588c44b8666268e232d96790f77d508fab1a4d60de1fde4938ea4b
+  differing bytes in whole object (symbol table only): 3

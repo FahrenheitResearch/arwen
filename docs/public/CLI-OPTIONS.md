@@ -52,6 +52,54 @@ Takes no options of its own.
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--json` | emit the registry as JSON for a front end |
 
+## `gpuwm cells`
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+
+## `gpuwm cells analyze`
+
+| argument | what it does |
+|---|---|
+| `WRFOUT [WRFOUT ...]` | wrfout NetCDF file(s), a directory of them, or a glob; one domain per invocation, sorted by name (WRF's stamp order) |
+
+| option | what it does |
+|---|---|
+| `--json` | print the analyze receipt as JSON |
+| `--ladder BOTTOM:TOP:STEP` | the fixed height ladder titan sees, metres above sea level, cell centres (default 250:18000:250: 72 levels) |
+| `--no-catalog` | stop after titan analyze; write no catalog |
+| `--no-temperature` | export reflectivity only; by default the model temperature rides along on the ladder so titan reports each cell's mean temperature |
+| `--out DIR` | the case folder; the series lands under <DIR>/<domain>/cells/<first-valid-day>/ |
+| `--profile {legacy,severe,research,operational}` | titan threshold profile (default severe) |
+| `--titan PATH` | the titan binary; default resolves $GPUWM_TITAN, then the bridge directories, then PATH |
+| `--titan-config FILE` | a titan key=value config overriding the profile |
+
+## `gpuwm cells catalog`
+
+| argument | what it does |
+|---|---|
+| `WRFOUT [WRFOUT ...]` | wrfout NetCDF file(s), a directory of them, or a glob; one domain per invocation, sorted by name (WRF's stamp order) |
+
+| option | what it does |
+|---|---|
+| `--bundle DIR` | a titan analyze bundle (frames.jsonl, tracks.json, ...) |
+| `--json` | print the catalog receipt as JSON |
+| `--out DIR` | where the catalog files go |
+
+## `gpuwm cells export`
+
+| argument | what it does |
+|---|---|
+| `WRFOUT [WRFOUT ...]` | wrfout NetCDF file(s), a directory of them, or a glob; one domain per invocation, sorted by name (WRF's stamp order) |
+
+| option | what it does |
+|---|---|
+| `--json` | print the export receipt as JSON |
+| `--ladder BOTTOM:TOP:STEP` | the fixed height ladder titan sees, metres above sea level, cell centres (default 250:18000:250: 72 levels) |
+| `--no-temperature` | export reflectivity only; by default the model temperature rides along on the ladder so titan reports each cell's mean temperature |
+| `--out DIR` | directory for input.tfs and export-receipt.json |
+
 ## `gpuwm certify`
 
 | option | what it does |

@@ -571,9 +571,15 @@ def resolve_clock(exp: ExperimentConfig, *,
                 "radt", minutes, dt_ex, step_ticks, tick_den, dc.grid_id,
                 run.dt, _physics_interval_steps)
         cudt_ticks = stepcu = None
-        if run.cu_physics in (1, 3):
+        if run.cu_physics in (1, 3, 16):
             # GF pins cudt_minutes = 0: the calendar records the every-step
             # cadence the physics driver actually runs, same as radt = 0.
+            # New Tiedtke pins it for the same reason and one more -- its
+            # RAINCV is a per-call rate with no persistence, so a hold
+            # would reapply it every step (config.py's cu_physics == 16
+            # arm). Adding 16 here is what makes the F14 three-way check
+            # run for it at all; outside the tuple the scheme still runs,
+            # on a cadence nothing validated.
             cudt_ticks, stepcu = _physics_calendar(
                 "cudt", run.cudt_minutes, dt_ex, step_ticks, tick_den,
                 dc.grid_id, run.dt, _physics_interval_steps)

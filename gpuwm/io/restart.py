@@ -423,6 +423,16 @@ CUMULUS_ALGORITHM_IDENTITIES = {
     # a restart written under it must never resume under a WRF-faithful
     # build, which would be a different identity string.
     3: "grell-freitas-wrf461-gfdrv-corrected-k22-v1",
+    # New Tiedtke, cu_ntiedtke/cumastrn as shipped in WRF v4.6.1.
+    #
+    # BUMP THE -v1 IF THE DRIVER SEAM MOVES, not only if the kernels do.
+    # This port computes PRATEC at max_ulp == 0 and deliberately does not
+    # hand it to the driver (docs/ntiedtke/PORT-RECORD.md section 38), so every
+    # checkpoint written under this identity carries cu_pratec == 0 by
+    # construction.  An implementation that delivered it would give the
+    # same slot a different meaning, and that is exactly the kind of
+    # cross-resume this string exists to refuse.
+    16: "new-tiedtke-wrf461-cumastrn-v1",
 }
 RRTMGP_TRACE_GAS_POLICY_IDENTITY = \
     "rfmip-experiment-zero-plus-date-policy-and-overrides-v1"
@@ -950,7 +960,7 @@ DRIVER_SERIALIZED_ATTRS = frozenset({
 #:   ``vmax`` under ``sf_sfclay_physics = 0``.
 #:
 #: MEASURED, and this is the whole reason the class exists: OLR was the
-#: ONLY variable that differed across a restart on the melissa_lowres
+#: ONLY variable that differed across a restart on the tc_lowres
 #: tree -- static, moving-nest, every configuration -- out of 77 in every
 #: frame.  Carrying it takes a resumed run from 17-of-18 frames
 #: byte-identical to 18 of 18.
@@ -2415,8 +2425,16 @@ def physics_setup_identity(state, cfg) -> dict:
             raise RestartManifestError(
                 "active cumulus cannot be restart-identified without an "
                 "attached PhysicsDriver")
+        # A SECOND SCHEME-KEYED TABLE, and it fails closed rather than
+        # silently: an unlisted scheme leaves expected_class None, which
+        # sends _callable_setup_identity down the custom-adapter path and
+        # demands a restart_identity attribute the stock class does not
+        # have.  So a missing row here refuses the checkpoint -- correctly,
+        # but with a message about custom callables that would send the
+        # reader looking in the wrong place.
         expected = {1: "gpuwm.core.kf.KainFritsch",
-                    3: "gpuwm.core.gf.GrellFreitas"}.get(
+                    3: "gpuwm.core.gf.GrellFreitas",
+                    16: "gpuwm.core.ntiedtke.NewTiedtke"}.get(
             int(cfg.cu_physics))
         callable_identity = _callable_setup_identity(
             driver.cumulus_callable, label="cumulus",

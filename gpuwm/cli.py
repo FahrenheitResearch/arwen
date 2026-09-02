@@ -99,6 +99,7 @@ from gpuwm.update_cli import register_cli as update_register_cli
 from gpuwm.version_cli import register_cli as version_register_cli
 from gpuwm.verify import cases
 from gpuwm.verify.spectral_cli import register_cli as spectral_register_cli
+from gpuwm.cells.cli import register_cli as cells_register_cli
 
 #: Discovered verification cases: name -> case module exposing
 #: ``run(outdir) -> dict`` and ``GATES``.  Membership comes from the
@@ -375,6 +376,7 @@ def build_parser() -> argparse.ArgumentParser:
     update_register_cli(sub)
     version_register_cli(sub)
     spectral_register_cli(sub)
+    cells_register_cli(sub)
     lst = sub.add_parser(
         "cases", help="list the discovered verification cases and the "
                       "entry points each one declares")

@@ -504,6 +504,23 @@ REMEDIES = (
                       sf_surface_physics=0, ra_lw_physics=0,
                       ra_sw_physics=0, km_opt=3),
      "after": _suite(cu_physics=3)},
+    # New Tiedtke's own PBL requirement, which arrived as a NEW refusal rule
+    # the moment 16 entered CU_SCHEMES -- and this gate caught that it had
+    # no remedy pair before anyone had shown its advice reaches an accepted
+    # run.  The message names TWO edits ("set both in one edit"), and only
+    # one of them is exercised here: cudt_minutes is held at 0.0 by the
+    # walk's own template for every suite it builds, so the `after` below
+    # satisfies that half by construction rather than by following the
+    # message.  The cudt half is proved separately, with its own negative
+    # control, in tests/test_ntiedtke_phase2_gates.py.
+    {"id": "new-tiedtke-needs-a-pbl",
+     "remedy": "'requires a PBL scheme' -- and as with Grell-Freitas, YSU "
+               "requires its own surface-layer class, so the remedy moves "
+               "both",
+     "before": _suite(cu_physics=16, bl_pbl_physics=0, sf_sfclay_physics=0,
+                      sf_surface_physics=0, ra_lw_physics=0,
+                      ra_sw_physics=0, km_opt=3),
+     "after": _suite(cu_physics=16)},
     {"id": "km-opt-zero-needs-the-acknowledgement",
      "remedy": "'write the acknowledgement out in full: "
                "km_opt_zero_acknowledgement = ...'",

@@ -198,6 +198,31 @@ class GrellFreitas:
         """
         self._driver = driver
 
+    def release(self) -> int:
+        """Drop the driver back-reference so a dropped driver can be freed.
+
+        THE SAME CYCLE New Tiedtke had (0bea9490), with a different
+        consequence.  PhysicsDriver holds ``cumulus_callable`` and the
+        line above holds the driver back, so ``state.physics = None`` at a
+        relocation frees neither and the whole driver graph stays resident
+        -- refcounting cannot collect a cycle, and CPython's cyclic
+        collector triggers on Python object counts rather than on the
+        device bytes hanging off them.
+
+        Unlike New Tiedtke this adapter is STATELESS: it caches no
+        pipeline and owns no workspace, so there is nothing here to free
+        and the return is 0.  What the cycle was pinning is the driver's
+        own state, not the scheme's.  Measured across the receipt corpus,
+        Grell-Freitas grew 35.04 MiB per relocation against New Tiedtke's
+        61.20 and Kain-Fritsch's 1.28.
+
+        Returns bytes freed BY THIS ADAPTER, which is honestly zero, so
+        the relocation receipt's cumulus_workspace_bytes does not claim
+        credit for memory the collector reclaims elsewhere.
+        """
+        self._driver = None
+        return 0
+
     def __call__(self, *, atmosphere, fields, state, cfg):
         import cupy as cp
 

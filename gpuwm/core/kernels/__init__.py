@@ -49,6 +49,20 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     # deliberately NOT listed -- it keeps its own helpers verbatim so its
     # assembled source and PTX stay byte-identical.
     "rrtmgp_rte": ("rrtmgp_planck_common.cuh",),
+    # glibc 2.39's own float32 expf/logf/powf words, which every kernel
+    # graded bitwise against a gfortran oracle must call instead of CUDA's
+    # builtins.  gf.cu owned the only copy until New Tiedtke (cu_physics=16)
+    # needed the same three functions; the alternative was a THIRD
+    # transcription beside gf's gfk_* and noahmp_leaves.cu's r_log/r_exp/
+    # r_pow.  Listing gf here costs it the by-construction inertness the
+    # unlisted modules keep, so it is bought with a measurement instead:
+    # the lift leaves all seven gf entry points at byte-identical
+    # local_size_bytes/num_regs/const_size_bytes, and the gf parity suites
+    # still grade at max_ulp 0.  See glibc_flt32.cuh's header.
+    "gf": ("glibc_flt32.cuh",),
+    # New Tiedtke: scale_fac reads log(dxref/dx), and glibc's logf is not
+    # CUDA's.  Prep stage only so far; cumastrn will add exp and pow.
+    "ntiedtke": ("glibc_flt32.cuh",),
 }
 
 #: Read-only view for tests and freeze receipts.

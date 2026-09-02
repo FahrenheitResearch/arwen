@@ -37,7 +37,7 @@ from typing import Mapping
 import cupy as cp
 import numpy as np
 
-from gpuwm.config import (MYJ_PBL_SCHEME, MYJ_SFCLAY_SCHEME,
+from gpuwm.config import (CU_SCHEMES, MYJ_PBL_SCHEME, MYJ_SFCLAY_SCHEME,
                           NOAHMP_OPTION_IDENTITY, RUC_OPTION_IDENTITY,
                           SASE_PBL_SCHEME, RunConfig,
                           radiation_enabled, radiation_scheme_ids,
@@ -479,9 +479,41 @@ _SASE_FLUX_DIAG_OUTPUT = {"SASE_FQV_VENT": "fqv_vent",
 
 def _cumulus_optional_tendency_components(
         cfg: RunConfig) -> tuple[str, ...]:
-    """Canonical KF moisture categories for the configured MP phase mode."""
+    """Canonical KF moisture categories for the configured MP phase mode.
+
+    NEW TIEDTKE BRANCHES OUT BEFORE THE PHASE LOGIC.  This function applied
+    Kain-Fritsch's category rules to every non-zero ``cu_physics``, and at
+    16 that would ask the scheme for ``rqr`` -- and, on a separate-ice-snow
+    package, ``rqs`` -- which it does not produce.  ``cu_ntiedtke_post_run``
+    forms exactly six tendency fields (``module_cu_ntiedtke.F:514-524``):
+    theta, qv, qc, qi, u and v.  There is no separate rain or snow
+    category, so the optional set is ``rqi`` and nothing else, and only
+    where the moist package carries QI at all.
+
+    The ice predicate is the tree's existing one rather than a new list:
+    ``PBL_RQI_MICROPHYSICS`` already answers "does this package carry QI",
+    and asking it twice in two different ways is how the two answers drift.
+
+    AN EARLY RETURN, DELIBERATELY, AND THIS IS THE ONE SITE OF THE SEVEN
+    THAT SITS ON A PATH GRELL-FREITAS EXECUTES (review).  The body
+    below applies Kain-Fritsch's category rules to EVERY non-zero
+    ``cu_physics``, so ``cu_physics = 3`` is getting ``rqr`` today.  That
+    is the KF-logic-for-everyone shape catalogued in section 10 and it is
+    DELIBERATE UNTOUCHED SCOPE, not an oversight: restructuring this into
+    a per-scheme dispatch is tidier and is exactly how the 3 path would
+    acquire an accidental difference while New Tiedtke was being landed.
+    Improving Grell-Freitas underneath a live campaign is the owner's decision,
+    not a side effect of this port.
+
+    Branching above the existing body leaves the 1 and 3 paths textually
+    untouched, so GF's inertness here is visible by inspection -- and is
+    measured anyway, because a formula and the thing it describes agreeing
+    proves they agree, not that either is right.
+    """
     if not cfg.cu_physics:
         return ()
+    if cfg.cu_physics == 16:
+        return ("rqi",) if cfg.mp_physics in PBL_RQI_MICROPHYSICS else ()
     from gpuwm.core.kf import KFPhaseMode, kf_phase_mode_for_microphysics
 
     phase_mode = kf_phase_mode_for_microphysics(cfg.mp_physics)
@@ -1160,6 +1192,27 @@ class CumulusResult:
     rainc: cp.ndarray | None = None
     nca_seconds: cp.ndarray | None = None
     pratec: cp.ndarray | None = None
+    # MOMENTUM, added for New Tiedtke and OPTIONAL so that every existing
+    # adapter is unaffected.  Grell-Freitas and Kain-Fritsch as adapted
+    # here return neither, so both stay None and the coupling below
+    # returns exactly the zeros it always did -- inertness by
+    # construction rather than by care, which is what the four
+    # pre-extension baselines gate (docs/ntiedtke/PHASE2-BASELINES.md).
+    #
+    # New Tiedtke is the first cumulus scheme in this tree that produces
+    # them: cu_ntiedtke.F90:55 sets lmfdudv = .true. as a PARAMETER, so
+    # its momentum update is not a runtime option.  A scheme supplying one
+    # of the pair and not the other is refused rather than silently
+    # half-applied.
+    rucuten: cp.ndarray | None = None
+    rvcuten: cp.ndarray | None = None
+
+    def __post_init__(self) -> None:
+        if (self.rucuten is None) != (self.rvcuten is None):
+            raise ValueError(
+                "CumulusResult carries one momentum tendency and not the "
+                "other; WRF's cumulus momentum is a pair (lmfdudv guards "
+                "both) and applying half of it is not a physical state")
 
 
 class _NativeKFCumulusResult(CumulusResult):
@@ -1336,47 +1389,34 @@ class PhysicsTendencies:
         return None if extra is None else extra.get(name)
 
 
-def couple_ysu_tendencies(state: DomainState, cfg: RunConfig,
-                          ysu: Mapping[str, cp.ndarray]) -> PhysicsTendencies:
-    """Mass-couple and A-grid-to-C-grid interpolate YSU rates.
+def _couple_momentum_to_faces(state: DomainState, cfg: RunConfig,
+                              mass_u: cp.ndarray, mass_v: cp.ndarray
+                              ) -> tuple[cp.ndarray, cp.ndarray]:
+    """Mass-coupled A-grid momentum rates onto C-grid faces.
 
-    WRF ``calculate_phy_tend`` first multiplies every A-grid PBL rate by
-    ``c1h*mut+c2h``.  ``phy_bl_ten`` then uses ``add_a2c_u/v`` for momentum
-    and ``add_a2a`` for theta/moisture.  Finally ``rk_addtend_dry`` divides
-    the forward momentum/scalar tendencies by their map factor before they
-    join the working slow slot.  Moist scalar tendencies remain in coupled
-    form for ``rk_update_scalar``.
+    WRF ``phy_bl_ten`` uses ``add_a2c_u``/``add_a2c_v`` for momentum
+    (module_physics_addtendc.F:2412-2419, :2466-2473), and
+    ``rk_addtend_dry`` then divides by the staggered map factor.
+
+    LIFTED OUT OF :func:`couple_ysu_tendencies` RATHER THAN COPIED, because
+    the map-factor block below carries a correction that was MEASURED --
+    128x96x49, full physics, one step, ``pbl_tendencies/rv`` the last of
+    158 carriers still differing between 1 GPU and 4 -- and a second copy
+    of a hard-won fix is how it comes back. Cumulus momentum is the second
+    caller; ``ru``/``rv`` were zeros for every non-PBL path until New
+    Tiedtke, which is the first scheme in this tree with ``lmfdudv``.
     """
-    chm = (state.c1h[:, None, None] * state.total_mu()[None]
-           + state.c2h[:, None, None])
-    mass_u = chm * ysu["du"]
-    mass_v = chm * ysu["dv"]
-
     # Periodic halo semantics: face f lies between cells f-1 and f; the
     # final staggered face duplicates face zero.
     ru = 0.5 * (mass_u + cp.roll(mass_u, 1, axis=2))
     ru = cp.concatenate([ru, ru[:, :, :1]], axis=2)
     rv = 0.5 * (mass_v + cp.roll(mass_v, 1, axis=1))
     rv = cp.concatenate([rv, rv[:, :1, :]], axis=1)
-    rtheta = chm * ysu["dtheta"]
-    rqv = chm * ysu["dqv"]
-    rqc = chm * ysu["dqc"]
-    # WRF phy_bl_ten adds RQIBLTEN exactly when the moist set carries ice
-    # (module_physics_addtendc.F, IF(F_QI) branch); schemes that mix ice
-    # return dqi and it couples like the other moist scalars.
-    dqi = ysu.get("dqi")
-    rqi = None if dqi is None else chm * dqi
 
-    # WRF's boundary-forced loop bounds omit the physical outer cell and
-    # normal velocity faces for specified .OR. nested domains
-    # (module_physics_addtendc.F:2312-2319 add_a2a, :2412-2419 add_a2c_u,
-    # :2466-2473 add_a2c_v).  gpuwm has no halo cells, so zero those slots.
+    # WRF's boundary-forced loop bounds omit the normal velocity faces for
+    # specified .OR. nested domains.  gpuwm has no halo cells, so zero
+    # those slots.
     if cfg.specified or cfg.nested:
-        _specified_mass_mask(rtheta)
-        _specified_mass_mask(rqv)
-        _specified_mass_mask(rqc)
-        if rqi is not None:
-            _specified_mass_mask(rqi)
         ru[..., 0, :] = 0.0
         ru[..., -1, :] = 0.0
         ru[..., :, 0] = 0.0
@@ -1396,14 +1436,14 @@ def couple_ysu_tendencies(state: DomainState, cfg: RunConfig,
     if state.has_msf:
         ru = ru / state.msfu[None]
         rv = rv / state.msfv[None]
-        # AND THE DIVISION UNDOES THE DUPLICATION MADE AT :1277-1280.
+        # AND THE DIVISION UNDOES THE DUPLICATION MADE ABOVE.
         # ``msfu``/``msfv`` are staggered STATICS and their own alias slot
         # was never closed: on a window of a larger analysis it holds the
         # map factor one column/row OUTSIDE the window, not face zero's.  So
         # ``ru[..., nx] = ru[..., 0] / msfu[..., nx]`` while
         # ``ru[..., 0] = ru[..., 0] / msfu[..., 0]``, and the periodic
         # identity this function states in its own comment stops holding
-        # right here.  Restoring it is what makes the coupled PBL momentum
+        # right here.  Restoring it is what makes the coupled momentum
         # tendency survive a decomposition: a tiled run re-derives the alias
         # slot from face 0 (tilestream/spec.py:34-52) and the monolithic run
         # must agree with it.  MEASURED, 128x96x49, full physics, one step:
@@ -1420,6 +1460,47 @@ def couple_ysu_tendencies(state: DomainState, cfg: RunConfig,
             ru[..., -1] = ru[..., 0]
         if not (cfg.specified or cfg.nested or cfg.open_y):
             rv[..., -1, :] = rv[..., 0, :]
+    return ru, rv
+
+
+def couple_ysu_tendencies(state: DomainState, cfg: RunConfig,
+                          ysu: Mapping[str, cp.ndarray]) -> PhysicsTendencies:
+    """Mass-couple and A-grid-to-C-grid interpolate YSU rates.
+
+    WRF ``calculate_phy_tend`` first multiplies every A-grid PBL rate by
+    ``c1h*mut+c2h``.  ``phy_bl_ten`` then uses ``add_a2c_u/v`` for momentum
+    and ``add_a2a`` for theta/moisture.  Finally ``rk_addtend_dry`` divides
+    the forward momentum/scalar tendencies by their map factor before they
+    join the working slow slot.  Moist scalar tendencies remain in coupled
+    form for ``rk_update_scalar``.
+    """
+    chm = (state.c1h[:, None, None] * state.total_mu()[None]
+           + state.c2h[:, None, None])
+    ru, rv = _couple_momentum_to_faces(state, cfg, chm * ysu["du"],
+                                       chm * ysu["dv"])
+    rtheta = chm * ysu["dtheta"]
+    rqv = chm * ysu["dqv"]
+    rqc = chm * ysu["dqc"]
+    # WRF phy_bl_ten adds RQIBLTEN exactly when the moist set carries ice
+    # (module_physics_addtendc.F, IF(F_QI) branch); schemes that mix ice
+    # return dqi and it couples like the other moist scalars.
+    dqi = ysu.get("dqi")
+    rqi = None if dqi is None else chm * dqi
+
+    # WRF's boundary-forced loop bounds omit the physical outer cell and
+    # normal velocity faces for specified .OR. nested domains
+    # (module_physics_addtendc.F:2312-2319 add_a2a, :2412-2419 add_a2c_u,
+    # :2466-2473 add_a2c_v).  gpuwm has no halo cells, so zero those slots.
+    # add_a2a's scalar masking stays here; the momentum half moved into
+    # _couple_momentum_to_faces with the faces it applies to.
+    if cfg.specified or cfg.nested:
+        _specified_mass_mask(rtheta)
+        _specified_mass_mask(rqv)
+        _specified_mass_mask(rqc)
+        if rqi is not None:
+            _specified_mass_mask(rqi)
+
+    if state.has_msf:
         rtheta = rtheta / state.msft[None]
     return PhysicsTendencies(cp.ascontiguousarray(ru),
                              cp.ascontiguousarray(rv),
@@ -1434,12 +1515,21 @@ def couple_column_tendencies(
         state: DomainState, cfg: RunConfig, *, rtheta: cp.ndarray | None = None,
         rqv: cp.ndarray | None = None, rqc: cp.ndarray | None = None,
         rqr: cp.ndarray | None = None, rqi: cp.ndarray | None = None,
-        rqs: cp.ndarray | None = None) -> PhysicsTendencies:
+        rqs: cp.ndarray | None = None, ru: cp.ndarray | None = None,
+        rv: cp.ndarray | None = None) -> PhysicsTendencies:
     """Dry-mass-couple mass-grid radiation/cumulus physical rates.
 
     Theta joins the dry slow-tendency stack and therefore receives WRF's
     mass-point map-factor division.  Moist species stay mass-coupled for
     ``rk_update_scalar``, matching :func:`couple_ysu_tendencies`.
+
+    ``ru``/``rv`` are A-GRID momentum rates and are optional.  Omitted --
+    which is every caller before New Tiedtke -- the returned stacks are the
+    same zeros this function has always produced, so the extension is inert
+    for Grell-Freitas and Kain-Fritsch by construction.  Supplied, they go
+    through :func:`_couple_momentum_to_faces`, the SAME path YSU's momentum
+    takes, so the C-grid interpolation and the measured map-factor alias
+    closure are shared rather than reproduced.
     """
     nz, ny, nx = state.p.shape
     shape = (nz, ny, nx)
@@ -1461,11 +1551,17 @@ def couple_column_tendencies(
         for array in (qr, qi, qs):
             if array is not None:
                 _specified_mass_mask(array)
+    if ru is None:
+        face_u = cp.zeros((nz, ny, nx + 1), dtype=DTYPE)
+        face_v = cp.zeros((nz, ny + 1, nx), dtype=DTYPE)
+    else:
+        face_u, face_v = _couple_momentum_to_faces(state, cfg, chm * ru,
+                                                   chm * rv)
     if state.has_msf:
         theta = theta / state.msft[None]
     return PhysicsTendencies(
-        cp.zeros((nz, ny, nx + 1), dtype=DTYPE),
-        cp.zeros((nz, ny + 1, nx), dtype=DTYPE),
+        cp.ascontiguousarray(face_u),
+        cp.ascontiguousarray(face_v),
         cp.ascontiguousarray(theta), cp.ascontiguousarray(qv),
         cp.ascontiguousarray(qc),
         None if qr is None else cp.ascontiguousarray(qr),
@@ -2349,9 +2445,22 @@ class PhysicsDriver:
             }
             for name, new in news.items():
                 self.cu_rates[name][...] = new
+            # ru/rv WERE MISSING HERE, and that is the whole of the
+            # Phase 2 momentum extension being inert.  CumulusResult
+            # carried them, __post_init__ validated them as a pair, the
+            # kernel graded them at max_ulp == 0 -- and this call, the
+            # last hop, dropped them on the floor.
+            #
+            # Found by ABLATION, not by any of those checks: a build with
+            # the momentum tendencies withheld produced output
+            # BIT-IDENTICAL to one with them present, 141 of 141 frames
+            # and track.csv.  Nothing that inspects the value can see a
+            # value that is never consumed; only removing it and finding
+            # no difference can.
             self.cumulus_tendencies = couple_column_tendencies(
                 state, cfg, rtheta=rtheta, rqv=rqv, rqc=rqc, rqr=rqr,
-                rqi=rqi, rqs=rqs)
+                rqi=rqi, rqs=rqs,
+                ru=result.rucuten, rv=result.rvcuten)
             self.cumulus_tendencies.materialize(
                 _cumulus_optional_tendency_components(cfg))
             if result.rainc is not None:
@@ -2403,6 +2512,20 @@ class PhysicsDriver:
         # eligible-column assignment is identical under both driver
         # predicates (>= 0.5*DT and > 0).
         cp.copyto(self.cu_nca, nca_new, where=eligible)
+        # FAIL CLOSED rather than repeat the silent drop.  The held path
+        # rebuilds from self.cu_rates, which has no momentum slots, so a
+        # held scheme carrying momentum would lose it exactly the way the
+        # no-hold branch did until 2026-08-30.  No scheme reaches here
+        # with momentum today -- Kain-Fritsch is the only NCA consumer and
+        # it produces none -- so this refuses rather than pricing storage
+        # for a case that does not exist.
+        if result.rucuten is not None or result.rvcuten is not None:
+            raise ValueError(
+                "a held (nca_seconds) cumulus result carries momentum "
+                "tendencies, which the held path cannot persist: cu_rates "
+                "has no momentum slots. Add them there before enabling a "
+                "momentum-producing scheme with an NCA hold, rather than "
+                "letting the coupling drop them silently")
         cumulus_components = _cumulus_optional_tendency_components(cfg)
         self.cumulus_tendencies = couple_column_tendencies(
             state, cfg, rtheta=self.cu_rates["rthcuten"],
@@ -2551,8 +2674,27 @@ class PhysicsDriver:
             # once; positive cadence keeps the separate historical target.
             self.tendencies = pbl
         target = self.tendencies
+        # THE SECOND HALF OF THE MOMENTUM DEFECT.  These two lanes were
+        # ASSIGNED from the PBL alone while every scalar lane below
+        # ACCUMULATES pbl + radiation + cumulus.  So even once
+        # _run_cumulus passed ru/rv into couple_column_tendencies, the
+        # coupled value was overwritten here and never reached the state.
+        #
+        # Two layers, and the first fix alone was necessary and not
+        # sufficient -- which is precisely what the positive control
+        # caught: after wiring the coupling, New Tiedtke's forecast was
+        # STILL bit-identical, because of this line.
+        #
+        # None-safe, following the rqr/rqi/rqs pattern below: Grell-Freitas
+        # and Kain-Fritsch produce no momentum, so their contribution is
+        # absent rather than zero and adding it unconditionally would
+        # raise.
         target.ru[...] = pbl.ru
         target.rv[...] = pbl.rv
+        for name in ("ru", "rv"):
+            contribution = getattr(self.cumulus_tendencies, name, None)
+            if contribution is not None:
+                getattr(target, name).__iadd__(contribution)
         for name in ("rtheta", "rqv", "rqc"):
             value = getattr(target, name)
             value[...] = getattr(pbl, name)
@@ -4401,6 +4543,16 @@ class PhysicsDriver:
         """
         output = {name: self.fields[field]
                   for name, field in _OUTPUT_FIELDS.items()}
+        # Per-level radiative heating, output-only.  Both are live 3D
+        # arrays (allocated :1869-1870, populated :2297-2300) that the
+        # step consumes and then discards; the theta budget cannot be
+        # closed by level without them.  Presence-guarded so a run with
+        # radiation off carries the same inventory it always did.
+        for _name, _attr in (("RTHRATLW", "rthratenlw"),
+                             ("RTHRATSW", "rthratensw")):
+            _value = getattr(self, _attr, None)
+            if _value is not None:
+                output[_name] = _value
         if self.sase_active:
             # Each scheme supplies its own boundary-layer height.  YSU
             # refreshes fields['pblh'] on every due call; SASE has no such
@@ -4629,10 +4781,15 @@ def initialize_physics(
     if ra_sw_physics not in (0, 1, 4, 90):
         raise ValueError("ra_sw_physics must be 0, 1, 4, or 90")
     radiation_active = bool(ra_lw_physics or ra_sw_physics)
-    if cfg.cu_physics not in (0, 1, 3):
+    # A SECOND WHITELIST, separate from the adapter dispatch below, and it
+    # restated the scheme set rather than reading CU_SCHEMES. Both had to
+    # be found; this one only announced itself when a cu_physics = 16 run
+    # got past config validation, the memory gate and the frame table.
+    # Reading the config module's tuple means the next scheme is one edit.
+    if cfg.cu_physics not in CU_SCHEMES:
         raise ValueError(
-            "cu_physics must be 0 (off), 1 (Kain-Fritsch) or "
-            "3 (Grell-Freitas)")
+            f"cu_physics must be one of {CU_SCHEMES} -- 0 (off), "
+            "1 (Kain-Fritsch), 3 (Grell-Freitas) or 16 (New Tiedtke)")
     if radiation_active and radiation is None:
         missing = [name for name, value in (
             ("radiation_start_time", radiation_start_time),
@@ -4705,6 +4862,14 @@ def initialize_physics(
         # through the parity suites, never from a RunConfig.
         from gpuwm.core.gf import GrellFreitas
         cumulus = GrellFreitas()
+    elif cfg.cu_physics == 16 and cumulus is None:
+        # cu_physics=16 resolves to the New Tiedtke adapter around the
+        # twenty-one ntiedtke.cu stages. The adapter does WRF's cumulus-
+        # driver FOLD (RTHFTEN + RTHRATEN + RTHBLTEN, times Exner) itself;
+        # the dycore export stays pure advection because Grell-Freitas is
+        # not in WRF's fold list and sums the lanes on its own.
+        from gpuwm.core.ntiedtke import NewTiedtke
+        cumulus = NewTiedtke()
     elif cfg.cu_physics and cumulus is None:
         raise ValueError("cu_physics requires a cumulus callable")
     if not cfg.cu_physics and cumulus is not None:

@@ -1448,6 +1448,12 @@ def local_memory_profile_from_device(cp) -> DeviceLocalMemoryProfile:
 #: under-pricing is what put a run 1,630 MiB over; the bound is stated, not
 #: silently tightened.
 KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
+    # Added with this box's recording; all three are 0 B and none
+    # was in the ceiling before. 'ntiedtke' is what cu_physics = 16
+    # needs to be priceable at all.
+    'ntiedtke': 0,
+    'mynn_dmp_sibling': 0,
+    'mynn_scalar_mix': 0,
     "acoustic": 544,
     "advection": 0,
     "coriolis_map": 0,
@@ -2239,7 +2245,13 @@ _SELF_REFLECTIVITY_MICROPHYSICS: dict[int, str] = {
 _CUMULUS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     0: (), 1: ("kf", "kf_validation"),
     # One translation unit carries all of GFDRV (deep, shallow, driver).
-    3: ("gf",)}
+    3: ("gf",),
+    # And one carries all twenty-one New Tiedtke stages. The table is
+    # FAIL-CLOSED -- domain_kernel_modules raises on a selector with no
+    # entry -- so 16 announced itself here rather than going quiet, which
+    # is why this was the one item of the seven that could not be
+    # forgotten.
+    16: ("ntiedtke",)}
 _PBL_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     0: (), 1: ("ysu", "ysu_validation"),
     # MYJ (Mellor-Yamada-Janjic).  ONE module: gpuwm/core/myjpbl.py's only
@@ -2612,7 +2624,8 @@ def column_workspace_bytes(
     """
     return (gf_column_workspace_bytes(exp, profile=profile)
             + kf_column_workspace_bytes(exp, profile=profile)
-            + ysu_column_workspace_bytes(exp, profile=profile))
+            + ysu_column_workspace_bytes(exp, profile=profile)
+            + ntiedtke_column_workspace_bytes(exp, profile=profile))
 
 
 def gf_column_workspace_bytes(
@@ -2691,6 +2704,52 @@ def ysu_column_workspace_bytes(
             continue
         columns = min(int(dc.run.nx) * int(dc.run.ny), tile_cap)
         worst = max(worst, ysu_workspace_floats(int(dc.run.nz), columns) * 4)
+    return int(worst)
+
+
+def ntiedtke_column_workspace_bytes(
+        exp: ExperimentConfig, *,
+        profile: DeviceLocalMemoryProfile | None = None) -> int:
+    """Device bytes New Tiedtke's column workspace holds, or zero.
+
+    THIS WAS A REFUSAL until 2026-08-29, and the refusal was right for as
+    long as it stood: the distinct-array count was not derivable, and a
+    silent zero in this sum would have let a run proceed under-budgeted
+    with nothing to show for it.  Two things changed.
+
+    First, the count is now MEASURED rather than estimated, because
+    ``NtWorkspace`` allocates and can be counted: 89 level arrays, 37
+    surface, and 11 level-sized scratch slabs ``cutypen`` slices out of
+    one pointer.  The old docstring's worry -- that the union of kernel
+    signatures gives 90 names of which many are the same storage under
+    different Fortran spellings -- was exactly right, and 41 of them turned
+    out to be aliases (docs/ntiedtke/PORT-RECORD.md section 33).
+
+    Second, the old text argued New Tiedtke does NOT cap, because
+    ``NtLaunchGeometry`` launches over the full column count.  True when
+    written and false since: the ASSEMBLER caps at GF's tile and walks the
+    domain in chunks, and the chunking gate proves the answer is
+    byte-identical at 32, 64 and 108 columns.  So the analogy to
+    :func:`gf_column_workspace_bytes` that the old text warned against is
+    now the correct shape.
+
+    BOTH THE CAP AND THE BYTE COUNT COME FROM ``gpuwm.core.ntiedtke``.
+    Neither is restated here.  A census formula living apart from the
+    thing it counts is what put 75 arrays where 89 belonged, and this
+    module would be the second copy.
+
+    Zero for every configuration that does not select ``cu_physics = 16``.
+    """
+    from gpuwm.core.ntiedtke import nt_tile_columns, nt_workspace_bytes
+
+    profile = MEASURED_LOCAL_MEMORY_PROFILE if profile is None else profile
+    worst = 0
+    for dc in exp.domains:
+        if int(dc.run.cu_physics) != 16:
+            continue
+        columns = nt_tile_columns(int(dc.run.nx) * int(dc.run.ny),
+                                  profile.multiprocessor_count)
+        worst = max(worst, nt_workspace_bytes(int(dc.run.nz), columns))
     return int(worst)
 
 

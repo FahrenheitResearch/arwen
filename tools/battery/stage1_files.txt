@@ -1299,3 +1299,22 @@ tests/test_morrison_cold_trap.py
 # libexec rungs must stay unjudged, or the developer path refuses on
 # every run.
 tests/test_bridge_stale_resolution.py
+tests/test_cells_doors.py
+# New Tiedtke (cu_physics = 16, d0c23dad0): the files that carry CPU-selectable
+# nodes under the stage-1 marker expression, plus the two kernel guards that were
+# on no list (the loader inventory and the per-module source freeze).
+tests/test_kernel_loader_inert.py
+tests/test_no_forecast_gate.py
+tests/test_ntiedtke_aliasing_audit.py
+tests/test_ntiedtke_call_order_vs_source.py
+tests/test_ntiedtke_capture_provenance.py
+tests/test_ntiedtke_constant_family.py
+tests/test_ntiedtke_cumastrn_ownership.py
+tests/test_ntiedtke_dead_workspace_writes.py
+tests/test_ntiedtke_launch_arity.py
+tests/test_ntiedtke_oracle_integrity.py
+tests/test_ntiedtke_oracle_single_source.py
+tests/test_ntiedtke_output_provenance.py
+tests/test_ntiedtke_pattern_controls.py
+tests/test_ntiedtke_phase2_gates.py
+tests/test_ntiedtke_stage_signature.py

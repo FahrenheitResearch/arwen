@@ -45,10 +45,18 @@ _ALLOWED_AEROSOL_MODULES = frozenset({
 #: rrtmgp_rte joined when the LW solver started deriving its own Planck
 #: sources; rrtmgp_gas is deliberately absent (it keeps its own copies so
 #: its assembled source and PTX stay byte-identical).
+#: gf joined when the glibc 2.39 float32 transcendentals were lifted out of
+#: gf.cu into glibc_flt32.cuh for New Tiedtke to share.  It is the one entry
+#: whose module KNOWINGLY gives up the byte-identical-source guarantee the
+#: unlisted modules keep -- gf's correctness is held by its 396 parity tests
+#: at max_ulp 0, which is a stronger gate than source identity and the only
+#: reason the trade was takeable.
 _EXPECTED_HEADERS = {
     **{name: ("thompson_aerosol_common.cuh",)
        for name in _ALLOWED_AEROSOL_MODULES},
     "rrtmgp_rte": ("rrtmgp_planck_common.cuh",),
+    "gf": ("glibc_flt32.cuh",),
+    "ntiedtke": ("glibc_flt32.cuh",),
 }
 
 

@@ -271,6 +271,14 @@ class RunConfig:
     # capability rather than adding one.  Appended to preserve positional
     # RunConfig compatibility.
     isftcflx: int = 0
+    #: Run cu_physics = 16's kernels with cu_physics = 6's DEEP closure:
+    #: fixed ztau = 2400 s (module_cu_tiedtke.F:105) and the moisture-
+    #: convergence first guess (:855-866) in place of scale_fac scaling and
+    #: the geometric 0.1*zmfmax.  Those two substitutions are the entire
+    #: difference between the two schemes' deep arms, so this makes the
+    #: ported New Tiedtke run Tiedtke's closure without a second port.
+    #: False leaves every cu16 result bit-identical.
+    ntiedtke_tiedtke_closure: bool = False
     iz0tlnd: int = 0
     # Noah LSM options whose kernel branches already exist, so these expose
     # an implemented capability rather than adding one.  ``usemonalb`` selects
@@ -866,7 +874,16 @@ LAND_SURFACE_SCHEMES = (0, 2, 3, 4)
 #: ADVECTION, and any scheme added to this set that expects the pre-folded
 #: form must do that fold in its own adapter rather than moving the
 #: export, or it double-counts the heating GF must not see twice.
-CUMULUS_ADVECTIVE_FORCING_SCHEMES = frozenset({3})
+#
+# 16 JOINS IT, AND THE FOLD STAYS IN THE ADAPTER. WRF's cumulus driver
+# pre-folds RTHRATEN + RTHBLTEN into RTHFTEN at
+# module_cumulus_driver.F:867 for G3SCHEME and NTIEDTKESCHEME only. GF is
+# not in that list and sums the three lanes itself, so ArWen's dycore
+# exports PURE ADVECTION. Moving the export to do the fold would
+# double-count radiative and PBL heating for Grell-Freitas and move
+# run_myj -- the baseline every intensity number is graded against. The
+# fold therefore belongs in the New Tiedtke adapter and nowhere else.
+CUMULUS_ADVECTIVE_FORCING_SCHEMES = frozenset({3, 16})
 #: ``bl_pbl_physics`` value selecting the SASE closure.
 #:
 #: SASE is an ArWen-only scheme -- a Scale-Adaptive Stress-Energetics
@@ -910,8 +927,17 @@ MYJ_PBL_SCHEME = 2
 #: gpuwm/core/physics.py) -- and 900 is :data:`SASE_PBL_SCHEME`,
 #: ArWen-only (see there).
 PBL_SCHEMES = (0, 1, MYJ_PBL_SCHEME, 5, 11, SASE_PBL_SCHEME)
-# 0 = none, 1 = Kain-Fritsch, 3 = Grell-Freitas.
-CU_SCHEMES = (0, 1, 3)
+# 0 = none, 1 = Kain-Fritsch, 3 = Grell-Freitas, 16 = New Tiedtke.
+#
+# 16 IS WRF'S OWN NUMBER for NTIEDTKESCHEME (module_cumulus_driver.F), not
+# an ArWen allocation. It became selectable once all six of the things
+# tests/test_ntiedtke_phase2_gates.py names landed in one edit: the cudt
+# law below, the advective forcing pair, clock.py's cumulus calendar,
+# preflight's kernel-module table and its column-workspace term, and
+# physics.py's optional tendency components. Each was a refusal that cost
+# nothing while 16 was unreachable and would have been a silent wrong
+# answer the moment it was not.
+CU_SCHEMES = (0, 1, 3, 16)
 
 #: The exact id :attr:`RunConfig.km_opt_zero_acknowledgement` must carry.
 #:
@@ -2755,6 +2781,51 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "cu_physics=3; set them with the scheme or leave the Registry "
             "defaults (0/0)."
         )
+
+    # PLACED AFTER THE GRELL CHAIN ABOVE, NOT INSIDE IT.  The first
+    # version of this sat between `if cfg.cu_physics == 3:` and its
+    # `elif cfg.clos_choice != 0 or cfg.ishallow != 0:`, which silently
+    # re-parented that elif onto the 16 test -- so every cu_physics = 3
+    # config carrying ishallow = 1 was refused, which is most of the
+    # campaign's.  Every unit test passed: none exercises a GF config
+    # with a non-default Grell key through validate_run_config.  The
+    # BASELINE RE-RUN caught it, which is the whole reason the group is
+    # re-run rather than argued inert.
+    if cfg.cu_physics == 16:
+        # NEW TIEDTKE PINS cudt_minutes = 0 for the same reason GF does,
+        # and one it does not share.
+        #
+        # Shared: it runs on the model step and carries no NCA hold. cudt
+        # is a Kain-Fritsch cadence knob.
+        #
+        # Its own: cudt_minutes DEFAULTS TO 5.0, so a config that merely
+        # selects 16 and says nothing else would hold the scheme's rates
+        # for five minutes -- for a scheme whose RAINCV is rn/stepcu, a
+        # per-call rate with no persistence (module_cu_ntiedtke.F:506-509,
+        # verified against the real routine rather than read). The held
+        # rate would be reapplied every step of the hold and the
+        # precipitation would be five times what the scheme produced.
+        if cfg.cudt_minutes != 0.0:
+            raise ValueError(
+                "cu_physics=16 (New Tiedtke) requires cudt_minutes=0: the "
+                "scheme runs on the model step and carries no NCA hold, "
+                "and its RAINCV is a per-call rate (rn/stepcu) with no "
+                "persistence -- a five-minute hold would reapply it every "
+                "step. cudt is a Kain-Fritsch cadence knob."
+            )
+        if not cfg.bl_pbl_physics:
+            # cumastrn:509 reads ptte/pqte into zdhpbl, which drives the
+            # shallow closure, and cutypen reads the surface fluxes; both
+            # come from the PBL stack. Same requirement GF states, for the
+            # same reason.
+            raise ValueError(
+                "cu_physics=16 (New Tiedtke) requires a PBL scheme: the "
+                "shallow closure reads the boundary-layer moisture "
+                "convergence (cumastrn:509) and cutypen reads the surface "
+                "fluxes the PBL stack maintains. Select a PBL scheme, "
+                "e.g. bl_pbl_physics=1 (YSU); note 16 also requires "
+                "cudt_minutes=0, so set both in one edit."
+            )
     if cfg.sf_sfclay_physics not in (1, 91) and (
             cfg.isftcflx or cfg.iz0tlnd):
         raise ValueError(
@@ -2936,8 +3007,9 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "on; icloud=0 would be a silent WRF semantic change")
     if cfg.cu_physics not in CU_SCHEMES:
         raise ValueError(
-            f"cu_physics must be 0 (off), 1 (Kain-Fritsch) or 3 "
-            f"(Grell-Freitas), got {cfg.cu_physics}."
+            f"cu_physics must be one of {CU_SCHEMES} -- 0 (off), "
+            f"1 (Kain-Fritsch), 3 (Grell-Freitas) or 16 (New Tiedtke), "
+            f"got {cfg.cu_physics}."
         )
     if cfg.hypsometric_opt not in (1, 2):
         raise ValueError(

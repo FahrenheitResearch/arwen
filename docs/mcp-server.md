@@ -71,6 +71,8 @@ The server wraps the CLI doors -- everything published gpuwm owns:
 | `arwen_render` | JOB: `gpuwm render` -- PNGs from wrfout frames; `--pair` comparison sheets supported |
 | `arwen_list_products` | `gpuwm render --list-products`: per-file product availability, with reasons |
 | `arwen_run_summary` | read a run folder's receipts (report.json status verdict, proof/receipt, events/progress JSONL, output inventory) into one JSON |
+| `arwen_cells` | JOB: `gpuwm cells analyze` -- storm cells over a wrfout series: titan identification and tracking, then the per-cell catalog with ArWen's updraft, cloud and freezing-level attributes |
+| `arwen_cells_catalog` | read the catalog a cells run wrote (columns with units and provenance, receipt, rows; one track, capped) |
 | `job_status` / `job_events` / `job_result` / `job_cancel` / `job_list` | the job pattern, below |
 
 ## The job pattern

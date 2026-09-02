@@ -458,6 +458,78 @@ def register(server: Any, manager: JobManager) -> list[str]:
             "render", [*_engine_prefix(), *args], cwd=TREE_ROOT, gpu=False,
             outputs={"outdir": out_dir})
 
+    @tool
+    def arwen_cells(out_dir: str, wrfout: list[str],
+                    profile: str | None = None,
+                    ladder: str | None = None,
+                    titan: str | None = None,
+                    extra_args: list[str] | None = None) -> dict[str, Any]:
+        """Storm cells over a wrfout series, as a job.
+
+        Launches `gpuwm cells analyze` detached: the series is exported
+        onto a height ladder, the titan storm-cell engine identifies and
+        tracks the cells, and the catalog (one row per cell per frame:
+        titan's id/track/age/area/echo tops/trend joined to ArWen's peak
+        updraft, cloud top/base, freezing and supercooled levels,
+        supercooled liquid water) lands under
+        `<out_dir>/<domain>/cells/<first-valid-day>/`.  Returns
+        {job_id}; follow it with job_status, then read the catalog with
+        arwen_cells_catalog(out_dir).  `profile` is a titan threshold
+        profile (research, severe, legacy, operational); `ladder` is
+        BOTTOM:TOP:STEP metres; `titan` names the binary when the
+        resolution ladder does not find one.
+        """
+
+        if not wrfout:
+            raise ArwenRefusal(
+                "no wrfout files were given, so there is no history to "
+                "find a cell in.")
+        args = ["cells", "analyze", *[str(p) for p in wrfout],
+                "--out", out_dir]
+        if profile:
+            args += ["--profile", profile]
+        if ladder:
+            args += ["--ladder", ladder]
+        if titan:
+            args += ["--titan", titan]
+        args += _clean_args(extra_args)
+        return manager.launch(
+            "cells", [*_engine_prefix(), *args], cwd=TREE_ROOT, gpu=False,
+            outputs={"outdir": out_dir})
+
+    @tool
+    def arwen_cells_catalog(out_dir: str, track_id: int | None = None,
+                            max_rows: int = 500) -> dict[str, Any]:
+        """The cell catalog a `gpuwm cells analyze` run wrote, as JSON.
+
+        Reads `catalog.json` under `out_dir` (the case folder, or the
+        series folder itself) -- the column table with units and
+        provenance, the receipt, and the rows, optionally one track's
+        and capped at `max_rows` newest-first.  Reads only; runs
+        nothing.
+        """
+
+        root = Path(out_dir)
+        candidates = ([root / "catalog.json"] if (root / "catalog.json").is_file()
+                      else sorted(root.rglob("catalog.json")))
+        if not candidates:
+            raise ArwenRefusal(
+                f"no catalog.json under {out_dir}; run arwen_cells on the "
+                f"series first (or pass the folder it wrote).")
+        document = json.loads(candidates[-1].read_text(encoding="utf-8"))
+        rows = document.get("rows", [])
+        if track_id is not None:
+            rows = [row for row in rows if row.get("track_id") == track_id]
+        total = len(rows)
+        rows = sorted(rows, key=lambda row: row.get("timestamp_ms", 0),
+                      reverse=True)[:max(int(max_rows), 0)]
+        for row in rows:
+            row.pop("geometry", None)
+        return {"catalog": str(candidates[-1]), "schema": document.get("schema"),
+                "columns": document.get("columns"),
+                "receipt": document.get("receipt"),
+                "rows_total": total, "rows": rows}
+
     # -- jobs: the follow tools -----------------------------------------
 
     @tool

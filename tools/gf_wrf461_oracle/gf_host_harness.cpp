@@ -55,7 +55,15 @@ static inline double __longlong_as_double(long long l)
 static inline float __double2float_rn(double d) { return (float)d; }
 
 // ---- the kernel source, verbatim -----------------------------------------
+// The include ORDER mirrors what gpuwm/core/kernels/__init__.py assembles for
+// nvrtc -- preamble (common.cuh), then the module's _EXTRA_HEADERS entry, then
+// the .cu -- because a harness that assembles a DIFFERENT string is grading a
+// different kernel.  glibc_flt32.cuh joined that list when gf.cu's glibc 2.39
+// transcendentals were lifted out for New Tiedtke to share; without this line
+// the gfk_* calls left behind in gf.cu do not resolve and the whole no-GPU
+// grader stops building, which is the break test_gf_workspace.py names.
 #include "common.cuh"
+#include "glibc_flt32.cuh"
 #include "gf.cu"
 
 // ---- the column workspace, on the host -----------------------------------
