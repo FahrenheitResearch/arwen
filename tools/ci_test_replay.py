@@ -81,7 +81,13 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish.yml"
 #: replays was fine, so the verdict described the harness rather than the
 #: tree -- and this harness exists to be pointed at a public snapshot from
 #: whatever interpreter the box has.
-VENV_SEEDS = ("build", "setuptools")
+#: CI pins 3.11, whose environment ships setuptools; ``python -m venv``
+#: on 3.12+ does not (PEP 632).  Pinned and joined by ``wheel`` because
+#: a bare 3.14 venv sent tests/test_package_data_coverage.py and
+#: tests/test_configs_are_packaged.py -- which call setuptools directly
+#: to measure what the wheel would contain -- to 15 failures that said
+#: nothing about the tree.
+VENV_SEEDS = ("build", "setuptools>=77", "wheel")
 
 
 def venv_python(venv_dir: Path) -> Path:

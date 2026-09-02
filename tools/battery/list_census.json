@@ -2,7 +2,7 @@
  "_what": "Per-entry collected-test counts for each CPU battery list.",
  "_why": "F20 of the 2026-08-28 fault-injection audit: one entry deleted from tools/battery/stage1_files.txt stops a whole suite running and nothing says so.  Measured at b47a400a5: tests/test_stage1_manifest.py goes 362 -> 360 passed and stays green for tests/test_water_overlay.py, tests/test_doctor.py and tests/test_speedrun.py alike, and test_battery_route.py, test_fastfix_selector.py and test_ci_test_replay.py are green.  The manifest gate pins four entries by name and counts nothing.",
  "_how_to_re_record": "python -m tools.battery.record_list_census  (collects every leg's list under its recorded markexpr and environment with --collect-only and rewrites this file).  A count that FELL is coverage that left: say in the commit which tests went and where they went to.  A count that rose needs no argument.",
- "recorded_at_commit": "34c115090fc9027e3e13244154064c24e9887e1b",
+ "recorded_at_commit": "36e68a4283aba51cc1cfe953a7da67e35b452cd7",
  "recorded_on": "2026-09-01",
  "legs": {
   "stage1": {

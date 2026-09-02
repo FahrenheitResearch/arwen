@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.6.2 (2026-09-01)
+## 2.6.3 (2026-09-01)
 
 New:
 - `gpuwm doctor` measures the install root against Windows' 260-character
@@ -14,6 +14,10 @@ New:
   caller's state, so a batch that brings no aerosol data is a valid batch.
 
 Fixed:
+- 2.6.2 was tagged but never published: a test in the suite rewrote
+  `os.name` process-wide, so every path operation raised on Linux and
+  the release job died. 2.6.3 is that release plus the fix, and no
+  2.6.2 artifacts reached PyPI.
 - `gpuwm fetch-tables` stages `CCN_ACTIVATE.BIN` into the table root, so
   `mp_physics = 28` runs from a wheel install. The command used to report
   the root complete and byte-valid while every aerosol-aware forecast

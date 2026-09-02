@@ -3053,13 +3053,22 @@ def test_the_base_dependency_line_defers_instead_of_claiming_ok():
 def _long_path_row(monkeypatch, *, nt=True, enabled=0, length=120):
     """The row, with the box's three inputs forced."""
 
+    from pathlib import PureWindowsPath
+
     from gpuwm import doctor
 
-    monkeypatch.setattr(doctor.os, "name", "nt" if nt else "posix")
+    # The platform is forced through doctor's own seam, never through
+    # the global ``os.name``: pathlib picks WindowsPath from ``os.name``
+    # at construction, so rewriting it on a Linux box made every
+    # ``Path()`` in the process raise, pytest's reporter included (the
+    # 2.6.2 publish run's test job died that way).  The fake root is a
+    # PureWindowsPath, which exists on every platform and is only ever
+    # measured through ``str()``.
+    monkeypatch.setattr(doctor, "_is_windows", lambda: nt)
     monkeypatch.setattr(doctor, "_long_paths_enabled", lambda: enabled)
-    fake = Path("C:/" + ("d" * (length - 20)) + "/kernels/probe.cu")
+    fake = "C:/" + ("d" * (length - 20)) + "/kernels/probe.cu"
     monkeypatch.setattr(doctor, "_longest_kernel_source_path",
-                        lambda: Path(str(fake)[:length]))
+                        lambda: PureWindowsPath(fake[:length]))
     return doctor._long_path_install_root_check()
 
 

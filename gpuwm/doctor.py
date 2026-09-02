@@ -5195,6 +5195,22 @@ def _longest_kernel_source_path() -> "Path | None":
     return max(sources, key=lambda path: len(str(path)))
 
 
+def _is_windows() -> bool:
+    """The platform test the long-path row consults, as its own seam.
+
+    Tests force the Windows arm through THIS function, never through
+    ``os.name``: ``pathlib.Path`` chooses ``WindowsPath`` from
+    ``os.name`` at construction, so a test that rewrote the global
+    ``os.name`` to ``"nt"`` on a Linux box made every ``Path()`` in the
+    process raise ``NotImplementedError`` (Python 3.11), including the
+    one pytest builds to format the failure, and the 2.6.2 publish run's
+    test job died in pytest's own reporter.  A Windows box was blind to
+    it, since the patch is a no-op there.
+    """
+
+    return os.name == "nt"
+
+
 def _long_path_install_root_check() -> Check:
     """A deep install root that no other row would ever name.
 
@@ -5210,7 +5226,7 @@ def _long_path_install_root_check() -> Check:
     box had no row to read.
     """
 
-    if os.name != "nt":
+    if not _is_windows():
         return Check(
             _LONG_PATH_ROW, "info",
             "not judged -- the MAX_PATH ceiling is a Windows filesystem "
