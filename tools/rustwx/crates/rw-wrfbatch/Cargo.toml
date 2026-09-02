@@ -54,7 +54,7 @@ rw-ingest = { path = "../rw-ingest" }
 rw-store = { path = "../rw-store" }
 # The vendored WSR-88D site table.  `rw_obsgrid` labels an observation
 # file's radars by POSITION against it, because the two id-carrying fields
-# a `gpuwm-obs.radar-grid.v1` file has are both unreadable through this
+# a `gpuwm-obs.radar-grid` file has are both unreadable through this
 # reader (see src/obs_grid.rs).
 wx-radar = { path = "../../vendor/wx-radar" }
 

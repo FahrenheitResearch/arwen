@@ -1,4 +1,5 @@
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -364,3 +365,91 @@ def test_rejects_unknown_key(tmp_path):
     msg = str(excinfo.value)
     assert str(f) in msg
     assert "not_a_real_option" in msg
+
+
+# ---------------------------------------------------------------------------
+# A config that travels with its data loads from any working directory
+# ---------------------------------------------------------------------------
+
+_MP28_DYNAMICS = """
+mp_physics = 28
+moist = true
+aer_init_opt = 1
+wif_input_opt = 1
+mp28_aerosol_source = "climatology"
+"""
+
+
+def _case_with_dataset(tmp_path, value):
+    """A config directory holding its own dataset, named relatively."""
+
+    case = tmp_path / "mycase"
+    (case / "data").mkdir(parents=True)
+    (case / "data" / "wif.dat").write_bytes(b"\x00" * 16)
+    cfg = _write_toml(
+        case, dynamics=_MP28_DYNAMICS + f'wif_climatology_path = "{value}"')
+    return case, cfg
+
+
+def test_a_config_resolves_its_file_references_from_its_own_directory(
+        tmp_path, monkeypatch):
+    """`MissingWifClimatologyDataset: ... and there is no such file`
+
+    Reproduced on the published 2.6.1 wheel: a config naming its dataset
+    relatively loaded from the directory it was written in and from
+    nowhere else.  From any other working directory the value stayed
+    relative, resolved against the process CWD, and the run refused --
+    naming a path the user never wrote.  A config that ships beside its
+    data has to be loadable from any directory.
+    """
+
+    case, cfg = _case_with_dataset(tmp_path, "data/wif.dat")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    loaded = load_config(cfg)
+    resolved = Path(loaded.wif_climatology_path)
+    assert resolved.is_absolute()
+    assert resolved.is_file()
+    assert resolved == (case / "data" / "wif.dat").resolve()
+
+
+def test_the_working_directory_still_wins_so_fingerprints_do_not_move(
+        tmp_path, monkeypatch):
+    """A value that already resolves is left byte-for-byte alone.
+
+    ``wif_climatology_path`` is scheme-scoped into the run fingerprint,
+    so rewriting a path that a checkout could already open would move
+    restart and experiment identities under runs nobody reconfigured.
+    """
+
+    case, cfg = _case_with_dataset(tmp_path, "data/wif.dat")
+    monkeypatch.chdir(case)
+    loaded = load_config(cfg)
+    assert loaded.wif_climatology_path == "data/wif.dat"
+
+
+def test_an_absolute_reference_is_never_rewritten(tmp_path, monkeypatch):
+    case, _ = _case_with_dataset(tmp_path, "data/wif.dat")
+    blob = case / "data" / "wif.dat"
+    other = tmp_path / "other"
+    other.mkdir()
+    cfg = _write_toml(
+        other,
+        dynamics=_MP28_DYNAMICS + f'wif_climatology_path = "{blob.as_posix()}"')
+    monkeypatch.chdir(tmp_path)
+    assert load_config(cfg).wif_climatology_path == blob.as_posix()
+
+
+def test_a_reference_that_resolves_nowhere_is_left_for_the_refusal(
+        tmp_path, monkeypatch):
+    """Rewriting it would only change which path the refusal prints."""
+
+    case = tmp_path / "case"
+    case.mkdir()
+    cfg = _write_toml(
+        case,
+        dynamics=_MP28_DYNAMICS + 'wif_climatology_path = "data/absent.dat"')
+    monkeypatch.chdir(tmp_path)
+    assert load_config(cfg).wif_climatology_path == "data/absent.dat"

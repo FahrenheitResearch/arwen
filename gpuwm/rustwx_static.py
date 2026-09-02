@@ -23,7 +23,7 @@ import subprocess
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
                            cargo_build_one_liner, default_bridge_dir,
-                           ensure_executable, executable_name, launchable,
+                           accept_resolved, executable_name, launchable,
                            packaged_bridge_dir, quiet_loader_errors)
 
 #: Environment variable naming a prebuilt static builder.
@@ -143,7 +143,7 @@ def find_static_bin() -> Path | None:
     override = os.environ.get(STATIC_ENV)
     for candidate in static_candidates():
         if candidate.is_file():
-            return ensure_executable(candidate.resolve())
+            return accept_resolved(candidate.resolve())
         if override and candidate == Path(override):
             raise FileNotFoundError(
                 f"{STATIC_ENV} names a missing file: {candidate}")

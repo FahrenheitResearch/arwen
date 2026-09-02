@@ -118,7 +118,7 @@ def _find(env_var: str, name: str) -> Path | None:
     override = os.environ.get(env_var)
     for candidate in _candidates(env_var, name):
         if candidate.is_file():
-            return bridges.ensure_executable(candidate.resolve())
+            return bridges.accept_resolved(candidate.resolve())
         if override and candidate == Path(override):
             raise FileNotFoundError(
                 f"{env_var} names a missing file: {candidate}.  Point it "

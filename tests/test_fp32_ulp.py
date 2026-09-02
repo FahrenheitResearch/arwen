@@ -332,12 +332,13 @@ def _rederivations(path: Path) -> list[int]:
     return _rederivations_in_source(source)
 
 
-def test_nothing_re_derives_the_total_order():
-    """One implementation, imported everywhere.
+def _estate_sources() -> tuple[dict[str, Path], dict[str, Path]]:
+    """Every ``.py`` this checkout owns, split into source and build output.
 
-    This is the gate the bug needed and did not have: the sign error was
-    never a hard mistake to make, it was a mistake made thirteen times
-    because each gate wrote its own copy.
+    THE ESTATE, in one place.  Two gates below read the same file set --
+    the total-order scan and the compile sweep -- and a scan whose scope
+    is written twice drifts into two different claims about what "the
+    whole tree" means.
     """
     source, generated = {}, {}
     for path in sorted(_REPO_ROOT.rglob("*.py")):
@@ -353,6 +354,55 @@ def test_nothing_re_derives_the_total_order():
             else source
         )
         target[rel] = path
+    return source, generated
+
+
+def test_every_source_file_in_the_estate_compiles():
+    """THE BREAKAGE THIS GATE PREVENTS: a Python file that cannot be
+    parsed shipping in the tree, and every whole-tree scan reporting
+    green because it silently skipped the file it could not read.
+
+    Found 2026-09-01 on the release line:
+    ``tools/rustwx/crates/rw-mpas/tests/goldens/make_mesh_goldens.py``
+    and ``probe_rules.py`` both carried an unterminated module docstring
+    -- a ``_mesh()`` helper had been pasted INTO the docstring instead of
+    after it -- so neither script would run at all, and the goldens the
+    rw-mpas Rust tests consume could not be regenerated.  They sat that
+    way through a release.
+
+    Nothing caught it because nothing had to.  ``_rederivations`` below
+    answers ``SyntaxError`` with ``return []``, which reads as "this file
+    has no re-derivations" when the truth is "this file was never read".
+    The scan directly above walks the entire estate and would have
+    touched both files; an unparseable file was simply exempt from it.
+    So the sweep is widened here rather than given its own scope: one
+    enumeration, and a file that cannot be parsed is now a RED instead of
+    a silent pass in every gate that shares it.
+    """
+    source, generated = _estate_sources()
+    offenders = {}
+    for rel, path in (*source.items(), *generated.items()):
+        try:
+            compile(path.read_text(encoding="utf-8"), str(path), "exec")
+        except SyntaxError as error:
+            offenders[rel] = f"line {error.lineno}: {error.msg}"
+        except UnicodeDecodeError as error:
+            offenders[rel] = f"undecodable as utf-8: {error}"
+    assert offenders == {}, (
+        "these files do not compile, so they cannot run and every"
+        " whole-tree scan skipped them rather than reading them:"
+        f" {offenders}"
+    )
+
+
+def test_nothing_re_derives_the_total_order():
+    """One implementation, imported everywhere.
+
+    This is the gate the bug needed and did not have: the sign error was
+    never a hard mistake to make, it was a mistake made thirteen times
+    because each gate wrote its own copy.
+    """
+    source, generated = _estate_sources()
 
     scanned = {
         hashlib.sha256(path.read_bytes()).hexdigest()

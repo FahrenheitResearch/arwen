@@ -58,9 +58,16 @@ def test_the_estate_actually_contains_a_radar_front_door_check():
     ``collect_checks()`` spawns the CUDA eigensolver probe and a subprocess
     per Python package -- minutes on a contended card, for a fact that is
     static.
+
+    ``_collect_checks`` is that function; the public ``collect_checks``
+    is a thin wrapper holding the reader scope every resolution in this
+    report runs inside (``gpuwm.bridges.inspection_only``).  The gate
+    reads the assembler wherever it lives, and falls back to the public
+    name so it keeps asking its question if the two are ever merged.
     """
 
-    assert "_nexrad_front_door_check" in doctor.collect_checks.__code__.co_names, (
+    assembler = getattr(doctor, "_collect_checks", doctor.collect_checks)
+    assert "_nexrad_front_door_check" in assembler.__code__.co_names, (
         "gpuwm doctor does not check for the radar front door, so it "
         "reports a healthy estate on a box that cannot ingest a single "
         "radar observation")

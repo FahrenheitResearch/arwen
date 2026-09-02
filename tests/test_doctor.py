@@ -2059,6 +2059,18 @@ def _wheel_shaped_install(monkeypatch, tmp_path):
     the rung its own docstring already promised.
     """
 
+    # BEFORE any patch below.  gpuwm.obs.frontdoor binds
+    # packaged_bridge_dir by FROM-IMPORT, so if this module is first
+    # imported while that name is patched, it captures the tmp_path
+    # lambda as its own module-level value and monkeypatch has nothing
+    # to restore it to -- the redirection then outlives the test for the
+    # whole session.  It leaked exactly that way: test_mpas_mesh_door
+    # imports frontdoor lazily inside its ladder test, so whenever it ran
+    # after this helper it compared the real ladder against candidates
+    # still pointing into a deleted `no-packaged-bridges`.  Importing
+    # first pins the real function as the restore target.
+    from gpuwm.obs import frontdoor as _frontdoor
+
     site_packages = tmp_path / "site-packages"
     site_packages.mkdir()
     staged = tmp_path / "userdir"
@@ -2071,6 +2083,9 @@ def _wheel_shaped_install(monkeypatch, tmp_path):
     monkeypatch.setattr(bridges, "_package_parent", lambda: site_packages)
     monkeypatch.setattr(bridges, "default_bridge_dir", lambda: staged)
     monkeypatch.setattr(bridges, "packaged_bridge_dir", lambda: packaged)
+    # Redirect the rung frontdoor resolves too, now that the import
+    # above has pinned the real function as the restore target.
+    monkeypatch.setattr(_frontdoor, "packaged_bridge_dir", lambda: packaged)
     return staged
 
 
@@ -2898,3 +2913,217 @@ def test_console_scripts_check_says_untested_when_it_cannot_find_them(
     check = doctor._console_scripts_check()
     assert check.status == "untested"
     assert check.detail.startswith("not tested")
+
+
+# ---------------------------------------------------------------------------
+# The gpuwm / gpuwm-data pair is a doctor ROW, not a traceback
+# ---------------------------------------------------------------------------
+#
+# The breakage, measured on the published 2.6.1 wheel with gpuwm-data 2.6.0
+# installed beside it.  Two halves, both wrong:
+#
+#   * Doctor printed `ok  base dependencies ... gpuwm-data==2.6.1` -- a green
+#     line asserting the `==` pin was met on an install where it was not --
+#     and named the pair nowhere else in the report.
+#   * On a box with no staged Thompson root, `gpuwm doctor` then DIED in a
+#     nine-frame ImportError out of `_thompson_tables_check`: the companion
+#     lock refuses with ImportError, and that check catches only
+#     (FileNotFoundError, ValueError, OSError).
+#
+# Doctor's contract is a named row with the exact remedy at doctor's own exit
+# convention.  A traceback is the one thing it must never print, and `ok` over
+# a skewed pair is worse than a traceback, because the reader stops looking.
+
+
+def _skewed_pair(monkeypatch, *, gpuwm_version: str, companion: str) -> None:
+    """Install-shaped skew: metadata says the two are different cuts."""
+
+    from gpuwm import data_assets
+
+    monkeypatch.setattr(data_assets, "_required_companion_version",
+                        lambda: gpuwm_version)
+    monkeypatch.setattr(doctor.importlib.metadata, "version",
+                        lambda _name: companion)
+
+
+def test_a_skewed_companion_is_a_blocking_row_with_the_pip_line(monkeypatch):
+    """The row, not the traceback: named, blocking, and pasteable."""
+
+    from gpuwm import data_assets
+
+    _skewed_pair(monkeypatch, gpuwm_version="2.6.1", companion="2.6.0")
+    check = doctor._companion_pair_check()
+
+    assert check.name == data_assets.COMPANION_DISTRIBUTION
+    assert check.status == "missing"
+    assert check.blocking is True
+    assert check.severity == "broken"
+    assert "2.6.0" in check.detail and "2.6.1" in check.detail
+    assert check.remedy == "pip install gpuwm-data==2.6.1"
+    assert check.action == "pip install gpuwm-data==2.6.1"
+    # The severity rule is stated once; this row must satisfy it.
+    assert doctor.blocking_gaps([check]) == [check]
+
+
+def test_a_matched_companion_is_a_verified_row(monkeypatch):
+    """The other arm.  A matched pair must not manufacture a gap."""
+
+    _skewed_pair(monkeypatch, gpuwm_version="2.6.1", companion="2.6.1")
+    check = doctor._companion_pair_check()
+
+    assert check.status == "verified"
+    assert check.remedy is None
+    assert doctor.blocking_gaps([check]) == []
+
+
+def test_a_locally_labelled_gpuwm_is_a_verified_row(monkeypatch):
+    """A private rebuild of a published release is not a skew.
+
+    Doctor reads the same lock the data path does, so a wheel carrying a
+    PEP 440 local label must not be told to `pip install` a companion that
+    was never published under that label.
+    """
+
+    from gpuwm import data_assets
+
+    monkeypatch.setattr(data_assets, "_VERSION_CHECKED", False)
+    import gpuwm
+    monkeypatch.setattr(gpuwm, "__version__", "2.6.1+label.1")
+    monkeypatch.setattr(doctor.importlib.metadata, "version",
+                        lambda _name: "2.6.1")
+
+    check = doctor._companion_pair_check()
+    assert check.status == "verified"
+
+
+def test_the_thompson_row_survives_a_companion_refusal(monkeypatch):
+    """The frame that used to end the whole report.
+
+    `thompson_table_root()` re-raises the companion's ImportError when no
+    staged root can answer.  Doctor must turn that into a row and keep
+    going; the verdict and the remedy belong to the companion row above, so
+    this one reports only that it could not run.
+    """
+
+    import gpuwm.physics_compat as physics_compat
+
+    def _refuse() -> str:
+        raise ImportError("gpuwm REFUSES to read packaged reference data")
+
+    monkeypatch.setattr(physics_compat, "thompson_table_root", _refuse)
+
+    check = doctor._thompson_tables_check()
+    assert check.status == "untested"
+    assert check.detail.startswith("not tested")
+    assert check.blocking is False
+    assert "gpuwm-data" in (check.brief or "")
+
+
+def test_the_pair_check_runs_in_the_assembled_report():
+    """A check nobody calls prevents nothing.
+
+    The row has to be registered, and registered AHEAD of the table rows it
+    explains -- a skewed companion passes every table validator and is still
+    the wrong tables.
+    """
+
+    import inspect
+
+    source = inspect.getsource(doctor)
+    assert "checks.append(_companion_pair_check())" in source
+    assert (source.index("checks.append(_companion_pair_check())")
+            < source.index("checks.append(_thompson_tables_check())"))
+
+
+def test_the_base_dependency_line_defers_instead_of_claiming_ok():
+    """One package, one verdict.
+
+    Importability is not the question for the companion -- a skewed one
+    imports perfectly -- so the base-dependency block must point at the row
+    that compares versions rather than print its own `ok`.
+    """
+
+    assert doctor._DEEP_CHECKED["gpuwm-data"] == "gpuwm-data"
+
+
+# ---------------------------------------------------------------------------
+# A deep install root on a Windows box that never enabled long paths
+# ---------------------------------------------------------------------------
+
+def _long_path_row(monkeypatch, *, nt=True, enabled=0, length=120):
+    """The row, with the box's three inputs forced."""
+
+    from gpuwm import doctor
+
+    monkeypatch.setattr(doctor.os, "name", "nt" if nt else "posix")
+    monkeypatch.setattr(doctor, "_long_paths_enabled", lambda: enabled)
+    fake = Path("C:/" + ("d" * (length - 20)) + "/kernels/probe.cu")
+    monkeypatch.setattr(doctor, "_longest_kernel_source_path",
+                        lambda: Path(str(fake)[:length]))
+    return doctor._long_path_install_root_check()
+
+
+def test_a_deep_install_root_without_long_paths_is_a_named_row(monkeypatch):
+    """`FileNotFoundError` on a kernel source that rglob had just listed.
+
+    Every CUDA kernel is read off disk as text out of the install root
+    and handed to NVRTC as one source string; there are no include paths
+    to lengthen, so the length is the INSTALL ROOT's.  Measured on this
+    project's reference box with LongPathsEnabled=0: a 259-character
+    full path opened, a 260-character one raised FileNotFoundError.
+    Nothing in doctor measured the install root's depth, so a box that
+    hit this had no row to read.
+    """
+
+    from gpuwm.render_layout import _MAX_PATH
+
+    check = _long_path_row(monkeypatch, enabled=0, length=_MAX_PATH + 4)
+    assert check.status == "missing"
+    assert not check.blocking
+    assert check.severity == doctor.SEVERITY_DEGRADED
+    assert str(_MAX_PATH) in check.detail
+    assert "LongPathsEnabled=0" in check.detail
+    assert check.action
+    assert "LongPathsEnabled" in check.remedy
+    _assert_remedy_lines_are_commands_or_comments(check.remedy, windows=True)
+    _assert_remedy_lines_are_commands_or_comments(check.remedy, windows=False)
+
+
+def test_long_paths_enabled_clears_the_row_at_any_depth(monkeypatch):
+    from gpuwm.render_layout import _MAX_PATH
+
+    check = _long_path_row(monkeypatch, enabled=1, length=_MAX_PATH + 40)
+    assert check.status == "verified"
+    assert "LongPathsEnabled=1" in check.detail
+
+
+def test_a_shallow_root_reports_its_headroom(monkeypatch):
+    check = _long_path_row(monkeypatch, enabled=0, length=100)
+    assert check.status == "verified"
+    assert "headroom" in check.brief
+
+
+def test_the_row_declines_to_judge_off_windows_but_keeps_its_name(
+        monkeypatch):
+    """Skipped elsewhere BY NAME: the reader sees the row, not a gap."""
+
+    check = _long_path_row(monkeypatch, nt=False)
+    assert check.status == "info"
+    assert check.remedy is None
+    assert not check.blocking
+    assert check.detail.startswith("not judged")
+    assert check.brief == "not Windows"
+
+
+def test_an_unreadable_registry_is_not_judged(monkeypatch):
+    check = _long_path_row(monkeypatch, enabled=None, length=100)
+    assert check.status == "info"
+    assert check.detail.startswith("not judged")
+    assert not check.blocking
+
+
+def test_the_long_path_row_is_in_the_default_estate():
+    """A check behind a flag is a check nobody runs."""
+
+    names = [c.name for c in doctor.collect_checks(sources=())]
+    assert "Windows long paths (install root depth)" in names

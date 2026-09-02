@@ -37,7 +37,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from gpuwm.bridges import (default_bridge_dir, ensure_executable,
+from gpuwm.bridges import (default_bridge_dir, accept_resolved,
                            executable_name, packaged_bridge_dir)
 from gpuwm.ingest.source_coverage import \
     ForcingSeriesRefusal as _ForcingSeriesRefusal
@@ -438,7 +438,7 @@ def find_engine() -> Path | None:
     override = os.environ.get(ENGINE_PATH_ENV)
     for candidate in engine_candidates():
         if candidate.is_file():
-            return ensure_executable(candidate.resolve())
+            return accept_resolved(candidate.resolve())
         if override and candidate == Path(override):
             raise FileNotFoundError(
                 f"{ENGINE_PATH_ENV} names a missing file: {candidate}.  "

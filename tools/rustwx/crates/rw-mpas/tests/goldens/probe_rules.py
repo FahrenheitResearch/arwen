@@ -1,5 +1,14 @@
 """Probe: establish the reconstruction rules the golden format depends on.
 
+Throwaway measurement harness. Answers three questions on BOTH published meshes:
+  Q1  Is edgesOnCell[i,j] the edge between cell i and cellsOnCell[i,j]?
+  Q2  Is verticesOnCell[i,j] the vertex {i, cellsOnCell[i,j-1], cellsOnCell[i,j]}?
+      (and the j/j+1 alternative, so the off-by-one is ruled out by count, not assumed)
+  Q3  How far do the file's latCell/lonCell sit from asin(z)/atan2(y,x)?
+If Q1 and Q2 hold with zero violations, the full cellsOnCell ring determines every
+other connectivity array, and the golden can carry complete topology in CSR form.
+"""
+
 import os as _os
 
 
@@ -20,14 +29,6 @@ def _mesh(filename):
     return _os.path.join(root, filename)
 
 
-Throwaway measurement harness. Answers three questions on BOTH published meshes:
-  Q1  Is edgesOnCell[i,j] the edge between cell i and cellsOnCell[i,j]?
-  Q2  Is verticesOnCell[i,j] the vertex {i, cellsOnCell[i,j-1], cellsOnCell[i,j]}?
-      (and the j/j+1 alternative, so the off-by-one is ruled out by count, not assumed)
-  Q3  How far do the file's latCell/lonCell sit from asin(z)/atan2(y,x)?
-If Q1 and Q2 hold with zero violations, the full cellsOnCell ring determines every
-other connectivity array, and the golden can carry complete topology in CSR form.
-"""
 import sys
 import numpy as np
 from netCDF4 import Dataset

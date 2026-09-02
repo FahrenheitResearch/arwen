@@ -822,9 +822,22 @@ def _trim_default_pool() -> None:
 
     Live allocations are untouched, so this cannot change any computed
     value (see execute_experiment's pool_trim_per_period).
+
+    THE BREAKAGE THE GUARD PREVENTS.  A trim is an optimisation, never a
+    correctness step, but it runs at every step boundary -- so when the
+    pool itself cannot be reached, raising here aborts a run that never
+    needed a device.  That is reachable with CuPy INSTALLED and every
+    device masked (``CUDA_VISIBLE_DEVICES=-1``, which tests/conftest.py
+    plants for the whole session): the first pool call answers
+    ``cudaErrorNoDevice`` and killed host-only nest runs at their first
+    step boundary.  An unreachable pool leaves the cache where it is,
+    which is the same state a trim that freed nothing would leave.
     """
     import cupy as cp
-    cp.get_default_memory_pool().free_all_blocks()
+    try:
+        cp.get_default_memory_pool().free_all_blocks()
+    except cp.cuda.runtime.CUDARuntimeError:
+        return
 
 
 def execute_experiment(

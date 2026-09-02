@@ -432,3 +432,235 @@ def test_gpuwm_check_warns_about_unstaged_tables_and_still_passes(
     other = type("E", (), {"domains": (_Domain(10),)})()
     assert _warn_unstaged_physics_tables(other) is None
     assert capsys.readouterr().err == ""
+
+
+# ---------------------------------------------------------------------------
+# The staged root has to be complete for mp=28 too, and the two legs of
+# the command are independent
+# ---------------------------------------------------------------------------
+
+def _packaged_ccn_asset():
+    """The one aerosol asset, or a skip when this checkout lacks it."""
+
+    from gpuwm.core.thompson_aerosol_contract import AEROSOL_TABLE_ASSETS
+
+    return AEROSOL_TABLE_ASSETS[0]
+
+
+def test_staging_carries_the_mp28_activation_table_into_the_staged_root(
+        tmp_path, monkeypatch, capsys):
+    """`MissingAerosolTableAsset: CCN_ACTIVATE.BIN ... was not found`
+
+    Reproduced on the published 2.6.1 wheel: `gpuwm fetch-tables` staged
+    the four classic tables into ~/.gpuwm/tables/thompson, printed "table
+    root ... complete and byte-valid", exited 0 -- and the next
+    mp_physics=28 forecast died at its first microphysics step, because
+    the aerosol contract resolves CCN_ACTIVATE.BIN against the SAME root
+    as the classic tables and the copy was still sitting in
+    site-packages.  "Complete" has to mean complete for every scheme the
+    root serves, not just for mp=8.
+    """
+
+    asset = _packaged_ccn_asset()
+    real_packaged = packaged_thompson_table_root()
+    if not (real_packaged / asset.filename).is_file():
+        pytest.skip(f"packaged asset absent: {asset.filename}")
+    if not all((real_packaged / name).is_file()
+               for name in table_assets.EXTERNALIZED_TABLE_FILENAMES):
+        pytest.skip("externalized asset bytes not present in this checkout")
+
+    packaged, user_root = _wheel_shaped_install(tmp_path, monkeypatch)
+    # A real wheel carries the activation table; the helper above only
+    # lays down the classic set, so put it where a wheel has it.
+    import shutil
+
+    shutil.copyfile(real_packaged / asset.filename,
+                    packaged / asset.filename)
+
+    assert table_assets.fetch_tables_main(
+        _args(from_dir=str(real_packaged))) == 0
+    printed = capsys.readouterr().out
+    assert asset.filename in printed
+    assert "the mp=28 activation table" in printed
+
+    staged = user_root / asset.filename
+    assert staged.is_file(), "the staged root is still fatal for mp=28"
+    assert staged.stat().st_size == asset.bytes
+
+    # The check the first microphysics step makes, against the root a
+    # run on this install actually resolves.
+    from gpuwm.core.thompson_aerosol_contract import (
+        resolve_ccn_activation_path,
+        validate_ccn_activation_asset,
+    )
+
+    assert resolve_ccn_activation_path(None, user_root) == staged
+    assert validate_ccn_activation_asset(staged) == asset
+
+
+def test_a_present_activation_table_is_left_alone(tmp_path, monkeypatch,
+                                                  capsys):
+    """Idempotent: the copy is a gap-filler, never an overwrite."""
+
+    asset = _packaged_ccn_asset()
+    real_packaged = packaged_thompson_table_root()
+    if not (real_packaged / asset.filename).is_file():
+        pytest.skip(f"packaged asset absent: {asset.filename}")
+    if not all((real_packaged / name).is_file()
+               for name in table_assets.EXTERNALIZED_TABLE_FILENAMES):
+        pytest.skip("externalized asset bytes not present in this checkout")
+
+    packaged, user_root = _wheel_shaped_install(tmp_path, monkeypatch)
+    import shutil
+
+    shutil.copyfile(real_packaged / asset.filename,
+                    packaged / asset.filename)
+    assert table_assets.fetch_tables_main(
+        _args(from_dir=str(real_packaged))) == 0
+    first = (user_root / asset.filename).stat().st_mtime_ns
+    capsys.readouterr()
+
+    assert table_assets.fetch_tables_main(
+        _args(from_dir=str(real_packaged))) == 0
+    printed = capsys.readouterr().out
+    assert "the mp=28 activation table" not in printed
+    assert (user_root / asset.filename).stat().st_mtime_ns == first
+
+
+def test_a_refused_wif_leg_still_stages_the_mandatory_tables(
+        tmp_path, monkeypatch, capsys):
+    """`gpuwm fetch-tables --wif` used to stage NOTHING when --wif failed.
+
+    Reproduced on the published 2.6.1 wheel against its own default URL:
+    the WIF leg ran first, 404'd, returned 2, and the classic tables --
+    which no flag makes optional and every forecast reads -- were never
+    attempted.  The user asked for both and got neither.  The legs are
+    independent; only --wif-only skips the mandatory one.
+    """
+
+    real_packaged = packaged_thompson_table_root()
+    if not all((real_packaged / name).is_file()
+               for name in table_assets.EXTERNALIZED_TABLE_FILENAMES):
+        pytest.skip("externalized asset bytes not present in this checkout")
+
+    packaged, user_root = _wheel_shaped_install(tmp_path, monkeypatch)
+    wif_root = tmp_path / "wif"
+
+    # --from carries the classic tables but not the WIF dataset, so the
+    # optional leg refuses for a real reason while the mandatory one can
+    # be satisfied.
+    code = table_assets.fetch_tables_main(_args(
+        from_dir=str(real_packaged), wif=True, wif_root=str(wif_root)))
+    printed = capsys.readouterr().out
+
+    assert code == 2, "a refused optional leg still fails the command"
+    assert "REFUSED" in printed
+    # ...and the mandatory leg ran anyway.
+    validate_table_assets(user_root)
+    assert table_assets.unstaged_table_assets() == []
+    # The summary says which leg did what, so the exit code is not the
+    # only thing the reader has.
+    assert "classic coefficient tables: staged" in printed
+    assert "aerosol climatology dataset: REFUSED" in printed
+
+
+def test_wif_only_is_the_one_flag_that_skips_the_mandatory_leg(
+        tmp_path, monkeypatch, capsys):
+    """The operator saying so in as many words is still honoured."""
+
+    packaged, user_root = _wheel_shaped_install(tmp_path, monkeypatch)
+    wif_root = tmp_path / "wif"
+    code = table_assets.fetch_tables_main(_args(
+        from_dir=str(tmp_path / "empty"), wif=True, wif_only=True,
+        wif_root=str(wif_root)))
+    assert code == 2
+    assert not user_root.exists(), "--wif-only touched the classic root"
+
+
+def test_the_wif_dataset_resolves_from_the_versioned_release_base(
+        monkeypatch):
+    """404: the dataset was fetched from the fixed v1.0.0 table release.
+
+    Verified against the live endpoint on 2026-09-01: the coefficient
+    tables answer 200 there and QNWFA_QNIFA_SIGMA_MONTHLY.dat answers
+    404, because it has never been published under that tag.  It is
+    carried as an asset of the release that pins it, beside the bridge
+    bundles, so its base has to move with the release.
+    """
+
+    from gpuwm import bridge_assets
+
+    monkeypatch.delenv(table_assets.ASSET_URL_BASE_ENV, raising=False)
+    monkeypatch.delenv("GPUWM_BRIDGE_ASSET_URL_BASE", raising=False)
+
+    class _Pins:
+        release = "v9.9.9"
+
+    monkeypatch.setattr(bridge_assets, "load_pins", lambda: _Pins())
+    base = table_assets.wif_asset_url_base()
+    assert base.endswith("/releases/download/v9.9.9")
+    assert base == bridge_assets.asset_url_base(_Pins())
+    assert "v1.0.0" not in base
+
+
+def test_an_unreachable_wif_dataset_names_the_file_url_and_remedy(
+        monkeypatch):
+    """A refusal that does not say what to do is a traceback with manners."""
+
+    from gpuwm import bridge_assets
+    from gpuwm.ingest.wif_dataset import WIF_DATASET_FILE
+
+    monkeypatch.delenv(table_assets.ASSET_URL_BASE_ENV, raising=False)
+
+    def _no_release():
+        raise bridge_assets.BridgeAssetError("the packaged pins declare "
+                                             "no release")
+
+    monkeypatch.setattr(bridge_assets, "load_pins", _no_release)
+    with pytest.raises(table_assets.TableAssetError) as excinfo:
+        table_assets.wif_asset_url_base()
+    message = str(excinfo.value)
+    assert WIF_DATASET_FILE in message
+    assert "releases/download" in message
+    assert "--from DIR" in message
+    assert table_assets.ASSET_URL_BASE_ENV in message
+
+
+def test_the_wif_leg_stages_from_a_local_file_url_base(tmp_path,
+                                                       monkeypatch, capsys):
+    """The whole route, over a file:// base, with the real pin enforced."""
+
+    from gpuwm.ingest.wif_dataset import (
+        WIF_DATASET_ASSET, WIF_DATASET_FILE)
+
+    payload = tmp_path / "published"
+    payload.mkdir()
+    source = _real_wif_bytes()
+    if source is None:
+        pytest.skip("the pinned WIF dataset is not present on this host")
+    import shutil
+
+    shutil.copyfile(source, payload / WIF_DATASET_FILE)
+
+    base = payload.resolve().as_uri()
+    monkeypatch.setenv(table_assets.ASSET_URL_BASE_ENV, base)
+    wif_root = tmp_path / "wif"
+    assert table_assets.stage_wif_dataset(None, str(wif_root)) == 0
+    landed = wif_root / WIF_DATASET_FILE
+    assert landed.is_file()
+    assert landed.stat().st_size == WIF_DATASET_ASSET.bytes
+    assert "verified and installed" in capsys.readouterr().out
+
+
+def _real_wif_bytes():
+    """The pinned dataset wherever this host keeps it, else None."""
+
+    from gpuwm.ingest.wif_dataset import (
+        WIF_DATASET_ASSET, WIF_DATASET_FILE, resolve_wif_data_root)
+
+    candidates = [resolve_wif_data_root(None) / WIF_DATASET_FILE]
+    for candidate in candidates:
+        if (candidate.is_file()
+                and candidate.stat().st_size == WIF_DATASET_ASSET.bytes):
+            return candidate
+    return None

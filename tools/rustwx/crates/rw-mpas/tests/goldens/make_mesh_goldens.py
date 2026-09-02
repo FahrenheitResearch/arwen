@@ -1,25 +1,5 @@
 """Extract mesh goldens from the two published MPAS grid files.
 
-import os as _os
-
-
-def _mesh(filename):
-    """Locate a staged MPAS grid file.
-
-    The meshes are large and are not redistributed, so their location is the
-    reader's to state.  GPUWM_MESH_ROOT names the directory holding them; the
-    filenames are fixed by the mesh family.  A machine-specific absolute path
-    was hardcoded here once and shipped in the release tree.
-    """
-    root = _os.environ.get("GPUWM_MESH_ROOT")
-    if not root:
-        raise SystemExit(
-            "set GPUWM_MESH_ROOT to the directory holding "
-            f"{filename} -- these goldens are generated from a staged mesh "
-            "this repository does not carry")
-    return _os.path.join(root, filename)
-
-
 NOT SHIPPED CODE. This is a test harness, run once against the real NCAR-generated
 grid files on node-2. The artifacts it emits (*.rwg + *.json) are what the Rust test
 consumes; this script exists so the extraction is reproducible and reviewable.
@@ -66,6 +46,27 @@ SUBSETTING, STATED EXACTLY
     computed over ALL of its elements (n, non-finite count, min, max, exact fsum,
     mean) plus a raw-bytes sha256. So no field is covered only by its sample.
 """
+
+import os as _os
+
+
+def _mesh(filename):
+    """Locate a staged MPAS grid file.
+
+    The meshes are large and are not redistributed, so their location is the
+    reader's to state.  GPUWM_MESH_ROOT names the directory holding them; the
+    filenames are fixed by the mesh family.  A machine-specific absolute path
+    was hardcoded here once and shipped in the release tree.
+    """
+    root = _os.environ.get("GPUWM_MESH_ROOT")
+    if not root:
+        raise SystemExit(
+            "set GPUWM_MESH_ROOT to the directory holding "
+            f"{filename} -- these goldens are generated from a staged mesh "
+            "this repository does not carry")
+    return _os.path.join(root, filename)
+
+
 
 import hashlib
 import json

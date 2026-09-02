@@ -320,7 +320,12 @@ def test_an_unknown_field_is_refused_with_the_vocabulary(ensemble_root,
 
 @pytest.fixture(scope="module")
 def radar_grid(tmp_path_factory) -> Path:
-    """One real ``gpuwm-obs.radar-grid.v1`` file from the real writer."""
+    """One real ``gpuwm-obs.radar-grid`` file from the real writer.
+
+    It goes through ``merge_contributions``, which always attaches reach
+    windows, so this is a v2 file -- which is the point: the engine is
+    asked to read what the pipeline actually produces.
+    """
 
     pytest.importorskip("netCDF4", reason="the obs writer needs netCDF4")
     from gpuwm.obs.radar_grid import write_radar_grid

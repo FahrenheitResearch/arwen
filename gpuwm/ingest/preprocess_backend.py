@@ -440,15 +440,34 @@ def _announce_auto_cpu(reason: str) -> None:
              "--preprocess-backend cpu or cuda.")
 
 
+#: The certified GPU-preprocessing pair, named once.
+#:
+#: This text used to offer ``[gpu-cu13]`` as the CUDA-13 box's remedy.
+#: Following it installed a pair the resolver does not certify: the auto
+#: backend reads the runtime, finds it outside
+#: :data:`~gpuwm.gpu_stack_identity.CUDA_RUNTIME_RANGE`, and prepares on
+#: the CPU backend -- so a user who did exactly what the remedy said got
+#: CPU preprocessing, with nothing connecting it to the advice they
+#: followed.  A remedy names what is certified or it is not a remedy.
+#: The extra is not withdrawn: it is the matching wheel for a CUDA-13
+#: box's MODEL runtime, which is measured.  What was never measured is
+#: PREPROCESSING on it, so it is described below as what it is instead
+#: of being offered as a way to reach the GPU path.
 _GPU_PREPROCESS_REMEDY = (
     "CUDA preprocessing was requested but this install cannot import "
     "cupy, so every GPU interpolation kernel is unreachable.  Refusing "
     "here, before any source bytes are decoded, rather than in the "
     "first kernel after them.\n"
-    "  # CuPy ships one wheel per CUDA major; pick yours:\n"
+    "  # GPU preprocessing is certified on the CUDA 12.x runtime "
+    "family only:\n"
     "  remedy: pip install 'gpuwm[gpu-cu12]'\n"
-    "  #   ... on a box whose CUDA is 13-only, instead:\n"
-    "  #   pip install 'gpuwm[gpu-cu13]'\n"
+    "  # A CUDA-13-only box has no certified GPU preprocessing pair "
+    "today:\n"
+    "  #   [gpu-cu13] is the matching wheel for the MODEL runtime "
+    "there, but\n"
+    "  #   preprocessing outside the certified family runs on the "
+    "deterministic\n"
+    "  #   parallel CPU backend, which is what auto already picks.\n"
     "  # or run the same preparation off-GPU: --preprocess-backend cpu\n"
     "  # (or auto, which picks the CPU backend on this install)")
 
@@ -510,10 +529,17 @@ def resolve_preprocess_backend(backend="cuda", *, workers: int | None = None,
             cp = candidate.array_module
             runtime_version = int(cp.cuda.runtime.runtimeGetVersion())
             cupy_major = int(str(cp.__version__).split(".", 1)[0])
+            # The range is IMPORTED, not restated: this test, the
+            # remedy above and gpu_stack_identity's own refusal have
+            # to answer "what is certified" identically, and three
+            # copies of a literal pair is how they stop doing that.
+            from gpuwm.gpu_stack_identity import CUDA_RUNTIME_RANGE
+
+            certified_low, certified_high = CUDA_RUNTIME_RANGE
             if (
                 int(cp.cuda.runtime.getDeviceCount()) > 0
                 and cupy_major >= 13
-                and 12_000 <= runtime_version < 13_000
+                and certified_low <= runtime_version < certified_high
             ):
                 return candidate
             if int(cp.cuda.runtime.getDeviceCount()) <= 0:

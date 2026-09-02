@@ -1700,6 +1700,26 @@ def _np_morrison_apply_level(q, n, temperature, pressure, rhoa, dt,
             if target > n["ni"] + n["ns"] + n["ng"]:
                 r["nnuccd"] = (target - n["ni"] - n["ns"] - n["ng"]) / dt
                 r["mnuccd"] = r["nnuccd"] * _MORR_MI0
+                # Mirror of morrison.cu's cold-trap nucleation bound: below
+                # ~159 K the extrapolated liquid POLYSVP drops under its ice
+                # curve, qvi == qvs, and the 0.999*QVS trigger fires with qv
+                # at or below ice saturation while the one-sided FUDGEF
+                # rescale skips the dum <= 0 / sum_dep > 0 sign pair (the
+                # qv = -1.6e-4 kg/kg polar-night model-top abort, T255
+                # native suite, 2026-09-01).  The nucleated mass is bounded
+                # by the vapor excess over ice saturation, the number moment
+                # scaling with it so both sides of the process shrink
+                # together.  Above the trap the bound also engages in cold
+                # first nucleation whose excess is under the Cooper embryo
+                # mass (the 1.08 arm near 200 K, a reachable WRF tropopause
+                # state): the dum > 0 FUDGEF branch already caps the mass
+                # in both models there, so qv and qi match WRF and only
+                # the number moment shrinks -- crystals keep MI0 seed mass
+                # instead of WRF's mass-starved count.
+                avail = max(q["qv"] - qvi, 0.0) / dt
+                if r["mnuccd"] > avail:
+                    r["nnuccd"] *= avail / r["mnuccd"]
+                    r["mnuccd"] = avail
 
         epsi = (2.0 * _MORR_PI * n0i * rhoa * dv / lam["i"] ** 2
                 if q["qi"] >= _MORR_QSMALL else 0.0)

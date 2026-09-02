@@ -302,20 +302,30 @@ FROZEN_MODULE_DIGESTS = {
         'fadf66fea201e4eac56e8a58d72b11940325b142a4e08fcc0b8db80fd78b53ec',
         '4cd1c59322d6a800eaebee8182a5a2a25413c37ffe4681f56a164a71ebd3a47b'),
     'morrison': (
-        # Re-pinned for two bit-exact sedimentation rearrangements: the
-        # substep sweep now runs only over the levels that carry a fall
-        # speed, and the Courant pass reads each level once for all five
-        # categories instead of once per category.  morrison is not an mp=8
-        # translation unit, and neither edit changes an FP operation --
-        # the skipped substep levels add +0 to a quantity that cannot be
-        # negative, and the Courant reduction is a chain of exactly
-        # associative fmaxf.  Measured byte-for-byte identical over all 10
-        # mutated 3-D fields and all 7 surface fields in the layered,
-        # shallow and every-level-occupied regimes, with the seeded
-        # 250x200x49 mp=10 lane's SHA-256 unchanged.  This pin moves while
-        # the compiled binary's FP results do not.
-        '58eb091a705a476226b07cd82b4b7d8cf03d549c97c92cee312b19ef53e732b3',
-        '075757cb4d75818a76ce4f8b43515c601e4b2de06567bcde2502772f9db90f09'),
+        # MOVER: the deposition-freezing cold-trap bound, carried to the
+        # engine line from lane/level5-owner 0c54221d2.  UNLIKE the two
+        # sedimentation rearrangements this pin previously recorded, this
+        # one DOES change FP results, and it is a DECLARED DIVERGENCE from
+        # WRF, not a transcription repair: WRF F:2902-2905 sets MNUCCD
+        # with no vapor-availability test, and the F:3009-3015 FUDGEF
+        # rescale tests only the two matching sign pairs, so a positive
+        # MNUCCD over a subsaturated state is never rescaled.  Below the
+        # 159.4887 K POLYSVP crossover measured on this transcription the
+        # extrapolated liquid curve falls under the ice curve, F:1315
+        # clamps QVI==QVS, and the 0.999*QVS trigger fires at or below ice
+        # saturation: the unfixed kernel drove qv to -1.87e-4 kg/kg out of
+        # 5.55e-8 kg/kg available at 156 K / 250 Pa, dt-independent at
+        # dt = 10/50/300/900 s.  Neither WRF nor a p_top-limited regional
+        # domain reaches that state.  The bound ALSO engages where WRF can
+        # reach -- 44 of 227 MNUCCD executions over the 28-column WRF
+        # oracle fixture, 189.88-199.96 K, number moment scaled 0.197-0.898
+        # -- moving case 13's ni on 16 levels (67% relative), qi on 23
+        # levels (1.4e-3) and qv at 1.8e-16.  On the sm_86 device NO pinned
+        # per-field max_ulp moves and the overall 1,709,094,255 / sr is
+        # unchanged; the fixture mismatch count rises 3,512 -> 3,554 of
+        # 10,948.  Recorded in the morrison-mp10 registry warnings.
+        '85d723f915f3cb0b727b65656075ce53b9e4f8f0da454334fa1f14d51a60e018',
+        '5bc1ef49f02b39052ef73c17d449e31d0361faa18524e6d8da050c3bd79c4092'),
     'mynn_pbl': (
         'b53ab90e634e61367afadfaa77667c8f2eb2430fc061ce9976509fe0e2f4490e',
         '87f80d06cc7724fd1277eefbf91738fe8eb0e774768ed64292cb1157f19a2d84'),

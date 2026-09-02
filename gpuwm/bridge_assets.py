@@ -1007,6 +1007,216 @@ def classify_assets(dest: Path, bundle: BundlePin
 
 
 # ---------------------------------------------------------------------------
+# What a RESOLUTION is allowed to hand back
+# ---------------------------------------------------------------------------
+
+#: Policy for a staged artifact that is not the one this release pinned,
+#: applied where a resolution ladder is about to hand the file to a door.
+#:
+#: ``refresh`` (the default) re-fetches this release's bundle and uses
+#: the verified bytes; ``refuse`` never touches the network and names
+#: the mismatch instead; ``allow`` runs the staged file anyway and is a
+#: reported WORKAROUND, not a configuration.
+STALE_POLICY_ENV = "GPUWM_BRIDGE_STALE_POLICY"
+
+#: The accepted values of :data:`STALE_POLICY_ENV`, default first.
+STALE_POLICIES = ("refresh", "refuse", "allow")
+
+#: Socket timeout for an automatic refresh.  Shorter than
+#: :data:`_TIMEOUT_S`, which serves a command the operator typed and is
+#: watching: an auto-refresh happens inside somebody else's door, so an
+#: unreachable network has to become the offline refusal quickly rather
+#: than hold a run open for two minutes per read.
+_AUTO_REFRESH_TIMEOUT_S = 30
+
+#: ``{(path, size, mtime_ns): matches}`` for pin comparisons already
+#: made in this process.  A door can resolve the same artifact many
+#: times in one run and the answer cannot change under it without the
+#: size or the mtime moving, so the SHA-256 is computed once.
+_PIN_MEMO: dict[tuple[str, int, int], bool] = {}
+
+
+def _under(path: Path, directory: Path) -> bool:
+    """Is ``path`` inside ``directory``?  Never raises."""
+
+    try:
+        return path.resolve().is_relative_to(directory.resolve())
+    except (OSError, ValueError):
+        return False
+
+
+@dataclass(frozen=True)
+class StagedPinStatus:
+    """One staged artifact, judged against the pins this wheel carries.
+
+    Produced only for a file under :func:`gpuwm.bridges
+    .default_bridge_dir` that this release publishes a pin for, which is
+    the one rung whose contents no version of gpuwm controls: a wheel
+    upgrade replaces the Python half and leaves that directory exactly
+    as the previous release wrote it.
+    """
+
+    path: Path
+    pin: BinaryPin
+    release: str
+    matches: bool
+    observed_bytes: int
+    observed_revisions: tuple[str, ...]
+
+    @property
+    def observed_revision(self) -> str | None:
+        """The single stamp the file carries, or None if it is not one."""
+
+        return (self.observed_revisions[0]
+                if len(self.observed_revisions) == 1 else None)
+
+    def provenance(self) -> str:
+        """What the bytes on disk say about where they came from."""
+
+        if self.observed_revision is not None:
+            return f"built from source revision {self.observed_revision}"
+        if not self.observed_revisions:
+            marker = SOURCE_REV_MARKER.decode("ascii").rstrip("=")
+            return f"carrying no {marker} stamp"
+        return (f"carrying {len(self.observed_revisions)} distinct "
+                "source-revision stamps ("
+                + ", ".join(self.observed_revisions) + ")")
+
+    def describe(self) -> str:
+        """The mismatch in one sentence, naming both sides by number."""
+
+        return (f"{self.path} is {self.observed_bytes:,} B "
+                f"{self.provenance()}; {self.release} pins "
+                f"{self.pin.bytes:,} B (SHA-256 {self.pin.sha256[:12]}...) "
+                f"for {self.pin.artifact}")
+
+
+def staged_pin_status(path: Path | str, *,
+                      pins: BridgePins | None = None
+                      ) -> StagedPinStatus | None:
+    """Judge a resolved artifact against this release's pins, or None.
+
+    ``None`` -- the question does not arise -- for every case where the
+    pins have nothing to say, and each of those is a deliberate
+    exemption rather than an oversight:
+
+    * the file is not under :func:`gpuwm.bridges.default_bridge_dir`.
+      An environment override is an explicit declaration, a checkout's
+      ``target/release`` is a build the developer just made, and
+      ``libexec`` beside the package or inside it arrived with this
+      version.  None of the three is the skew this judgement exists
+      for, and a cargo build never matches a release pin by
+      construction, so judging them would refuse the developer path on
+      every run.
+    * this install carries no pins for this platform -- a source
+      checkout (whose packaged document declares no release until the
+      cut stamps it), or a platform no bundle is published for.
+    * this release publishes no pin for a file by that name.
+
+    Otherwise the answer is the one ``gpuwm fetch-bridges`` and ``gpuwm
+    doctor`` already ask of the same file: are these the exact bytes,
+    size and SHA-256, that this release published?  A mismatch reads the
+    embedded ``GPUWM_BRIDGE_SOURCE_REV`` stamps as well, so a refusal
+    can name which release the file on disk came from rather than only
+    that it is wrong.
+    """
+
+    try:
+        resolved = Path(path).resolve()
+    except (OSError, ValueError):
+        return None
+    if not _under(resolved, bridges.default_bridge_dir()):
+        return None
+    if pins is None:
+        try:
+            pins = load_pins()
+        except BridgeAssetError:
+            # An unreadable pins document is doctor's line to report; it
+            # is not a reason to block every door on this box.
+            return None
+    bundle = pins.bundle_for(host_platform())
+    if bundle is None or not pins.release:
+        return None
+    pin = next((entry for entry in bundle.binaries
+                if entry.filename == resolved.name), None)
+    if pin is None:
+        return None
+    try:
+        stat = resolved.stat()
+    except OSError:
+        return None
+    key = (str(resolved), stat.st_size, stat.st_mtime_ns)
+    matches = _PIN_MEMO.get(key)
+    if matches is None:
+        matches = matches_pin(resolved, pin)
+        _PIN_MEMO[key] = matches
+    revisions: tuple[str, ...] = ()
+    if not matches:
+        try:
+            revisions = embedded_source_revisions(resolved.read_bytes())
+        except OSError:
+            revisions = ()
+    return StagedPinStatus(
+        path=resolved, pin=pin, release=pins.release, matches=matches,
+        observed_bytes=stat.st_size, observed_revisions=revisions)
+
+
+def forget_pin_memo() -> None:
+    """Drop the in-process pin cache (a refresh has moved the bytes)."""
+
+    _PIN_MEMO.clear()
+
+
+def stale_policy() -> str:
+    """The configured policy for a stale staged artifact, validated.
+
+    An unrecognised value is not silently treated as the default: a
+    misspelled policy would then look like it was honoured.
+    """
+
+    raw = (os.environ.get(STALE_POLICY_ENV) or "").strip().lower()
+    if not raw:
+        return STALE_POLICIES[0]
+    if raw not in STALE_POLICIES:
+        warn(f"{STALE_POLICY_ENV}={raw!r} is not one of "
+             f"{', '.join(STALE_POLICIES)}; using {STALE_POLICIES[0]!r}")
+        return STALE_POLICIES[0]
+    return raw
+
+
+def refresh_staged_bundle(*, pins: BridgePins | None = None,
+                          dest: Path | None = None, progress=None,
+                          urlopen_fn=None) -> list[Path]:
+    """Re-stage this release's bundle over the staged directory.
+
+    The same verified path ``gpuwm fetch-bridges`` walks -- download,
+    size and SHA-256 against the packaged pins, contract marker, atomic
+    replace -- reached from a resolution rather than from a command, so
+    that a bare run stops using an artifact this release did not
+    publish.  Every refusal on that path is a :class:`BridgeAssetError`
+    and stays one here; the caller turns it into the offline arm.
+    """
+
+    resolved_pins = load_pins() if pins is None else pins
+    bundle = resolved_pins.bundle_for(host_platform())
+    if bundle is None:
+        raise BridgeAssetError(
+            "this install carries no bundle pin for "
+            f"{host_platform_description()}, so there is nothing to "
+            "refresh from")
+    destination = bridges.default_bridge_dir() if dest is None else Path(dest)
+    opener = urlopen_fn
+    if opener is None:
+        def opener(request):
+            return urlopen(request, timeout=_AUTO_REFRESH_TIMEOUT_S)
+    installed = fetch_bundle(resolved_pins, bundle, destination,
+                             progress=progress or (lambda message: None),
+                             urlopen_fn=opener)
+    forget_pin_memo()
+    return installed
+
+
+# ---------------------------------------------------------------------------
 # Download (resumable, restartable)
 # ---------------------------------------------------------------------------
 
@@ -1151,7 +1361,13 @@ def stage_from_bundle(archive: Path, bundle: BundlePin, dest: Path,
             "assets do not match its pins would render geography-less "
             "plots; refusing it")
     dest.mkdir(parents=True, exist_ok=True)
-    work = dest / f"{ARCHIVE_SUBDIR}-stage"
+    # Per PROCESS, because staging is no longer only something an
+    # operator types: a resolution that finds a stale artifact refreshes
+    # the estate itself, so two runs on one box can be extracting into
+    # this directory at the same moment.  A shared scratch name means
+    # the ``finally`` below deletes the other run's half-written files.
+    # The install itself is already safe -- verify, then ``os.replace``.
+    work = dest / f"{ARCHIVE_SUBDIR}-stage-{os.getpid()}"
     work.mkdir(parents=True, exist_ok=True)
     installed: list[Path] = []
     try:
@@ -1218,7 +1434,13 @@ def stage_from_loose_files(source_dir: Path, bundle: BundlePin, dest: Path,
              f"({', '.join(absent)}); staging the {len(present)} that "
              "are present -- gpuwm doctor reports the rest")
     dest.mkdir(parents=True, exist_ok=True)
-    work = dest / f"{ARCHIVE_SUBDIR}-stage"
+    # Per PROCESS, because staging is no longer only something an
+    # operator types: a resolution that finds a stale artifact refreshes
+    # the estate itself, so two runs on one box can be extracting into
+    # this directory at the same moment.  A shared scratch name means
+    # the ``finally`` below deletes the other run's half-written files.
+    # The install itself is already safe -- verify, then ``os.replace``.
+    work = dest / f"{ARCHIVE_SUBDIR}-stage-{os.getpid()}"
     work.mkdir(parents=True, exist_ok=True)
     installed: list[Path] = []
     try:
@@ -1472,6 +1694,16 @@ def _print_listing(pins: BridgePins, bundle: BundlePin, dest: Path) -> None:
 
 
 def fetch_bridges_main(args) -> int:
+    with bridges.inspection_only():
+        return _fetch_bridges_main(args)
+
+
+def _fetch_bridges_main(args) -> int:
+    # Inside :func:`gpuwm.bridges.inspection_only` because this command
+    # IS the remedy the stale-artifact refusal names.  A door that
+    # resolves a stale binary refuses and points here; if getting here
+    # could itself hit that refusal, the remedy would be unreachable
+    # from the exact state it exists to repair.
     dest = (Path(args.dest) if getattr(args, "dest", None)
             else bridges.default_bridge_dir())
     platform = host_platform()
@@ -1645,7 +1877,9 @@ __all__ = [
     "AssetPin", "BinaryPin", "BridgeAssetError", "BridgePins",
     "BundlePin", "BundledArtifact", "LIBRARY_ABI", "library_abi_for",
     "PINS_RESOURCE", "PINS_SCHEMA",
-    "SOURCE_REV_MARKER",
+    "SOURCE_REV_MARKER", "STALE_POLICIES", "STALE_POLICY_ENV",
+    "StagedPinStatus", "forget_pin_memo", "refresh_staged_bundle",
+    "staged_pin_status", "stale_policy",
     "SUPPORTED_PLATFORMS", "artifact_filename", "asset_url_base",
     "bundle_url", "classify_assets", "classify_destination",
     "download_bundle", "embedded_source_revisions", "fetch_bundle",

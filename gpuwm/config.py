@@ -1571,6 +1571,54 @@ def load_streaming_options(path: str | Path):
     return StreamingOptions.from_mapping(raw.get("tiles"), source=str(path))
 
 
+#: Keys whose value names a FILE the run opens for reading.  A relative
+#: value resolves from the working directory first, else from the config
+#: file's own directory and its ancestors, nearest first.
+#:
+#: The concrete breakage: a config that names its dataset relatively --
+#: the documented way to keep a case folder self-contained -- opened only
+#: from the one directory the author happened to be standing in.  From
+#: anywhere else ``resolve_wif_climatology`` built the path against the
+#: process CWD, found nothing, and refused with "there is no such file",
+#: naming a path the user never wrote.  A config that travels with its
+#: data has to be loadable from any working directory or it is not a
+#: config, it is a bookmark.
+#:
+#: Working directory FIRST, deliberately, and not the config-dir-only
+#: rule ``case_data._resolve_path`` uses: this value is scheme-scoped
+#: into the run fingerprint (``core.model.SCHEME_SCOPED_RUN_FIELDS`` maps
+#: mp=28 to it), so a checkout whose relative path already resolves must
+#: keep resolving to the same string, or restarts and experiment
+#: identities move underneath runs that were never reconfigured.
+CONFIG_RELATIVE_FILE_KEYS: tuple[str, ...] = (
+    "wif_climatology_path",
+)
+
+
+def _anchor_config_file_paths(merged: dict, config_path: str | Path) -> None:
+    """Rewrite relative file values that resolve only beside the config.
+
+    A value that is empty, absolute, or already a file from the working
+    directory is left exactly as written.  One that resolves nowhere is
+    also left as written: the consumer's own refusal names it, and
+    rewriting it would only change which path the refusal prints.
+    """
+
+    base = Path(config_path).resolve().parent
+    for key in CONFIG_RELATIVE_FILE_KEYS:
+        value = merged.get(key, "")
+        if not value or not isinstance(value, str):
+            continue
+        rel = Path(value)
+        if rel.is_absolute() or rel.is_file():
+            continue
+        for home in (base, *base.parents):
+            candidate = home / rel
+            if candidate.is_file():
+                merged[key] = str(candidate.resolve())
+                break
+
+
 def load_config(path: str | Path) -> RunConfig:
     import io
 
@@ -1615,6 +1663,7 @@ def load_config(path: str | Path) -> RunConfig:
                 )
             key_table[key] = table
         merged.update(entries)
+    _anchor_config_file_paths(merged, path)
     return validate_run_config(RunConfig(**merged))
 
 

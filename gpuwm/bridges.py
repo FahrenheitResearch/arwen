@@ -32,16 +32,24 @@ consumer of a missing artifact must refuse BY NAME with
 :func:`artifact_remedy` rather than degrade into a Python
 reimplementation of the decoder.
 
-Nothing here runs cargo; resolution is read-only so ``gpuwm doctor``
-can report the estate without side effects.
+Nothing here runs cargo.  Resolution has one side effect and one
+only: an artifact staged in rung 5 that is not the one this release
+pinned is re-fetched before it is handed to a door
+(:func:`require_release_pin`), because that rung is the one a ``pip
+install -U gpuwm`` leaves untouched -- new Python, last release's
+binaries.  Readers that must see the estate as it is, ``gpuwm doctor``
+first among them, resolve inside :func:`inspection_only`, where the
+guarantee is the original one.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 import re
 import shutil
+import sys
 
 #: Bridge executable -> the environment variable that names a prebuilt
 #: copy.  The same variables drive the sealed-runtime decoder binding in
@@ -729,6 +737,225 @@ def ensure_executable(path: Path) -> Path:
     return path
 
 
+class StaleBridgeError(RuntimeError):
+    """A staged artifact is not the binary this release published.
+
+    Distinct from ``FileNotFoundError`` on purpose.  The artifact IS
+    there and it WILL launch, so a door that falls back on "not found"
+    must not treat this as the same event: the remedy is to replace the
+    bytes, not to build or fetch a missing file, and a silent
+    degradation is exactly the outcome this refusal exists to prevent.
+    """
+
+
+#: True while a caller is READING the estate rather than opening a door.
+#: ``gpuwm doctor`` resolves every artifact to report on it and must see
+#: what a door would see without refusing on it or fetching anything --
+#: this module's contract is that resolution has no side effects, and
+#: the automatic refresh below is the one exception, carved out here so
+#: the reporting paths keep the original guarantee.
+_INSPECTION_ONLY = False
+
+#: Set once a process has tried the automatic refresh, with the failure
+#: text if it did not work.  One attempt per run: a box with no network
+#: must not re-dial for every artifact a door resolves.
+_REFRESH_ATTEMPTED = False
+_REFRESH_FAILURE: str | None = None
+
+#: Artifacts already reported under the ``allow`` workaround, so a run
+#: that resolves one twelve times says so once.
+_STALE_ALLOWED: set[str] = set()
+
+
+@contextlib.contextmanager
+def inspection_only():
+    """Resolve without acting on a stale staged artifact.
+
+    For readers: ``gpuwm doctor``, the receipt writers, anything whose
+    job is to say what the estate IS.  Inside this scope a resolution
+    hands back whatever the ladder found, exactly as it did before the
+    pin check existed, so a report can name a mismatch instead of dying
+    on it -- and so that reading the estate never triggers a download.
+    """
+
+    global _INSPECTION_ONLY
+    previous = _INSPECTION_ONLY
+    _INSPECTION_ONLY = True
+    try:
+        yield
+    finally:
+        _INSPECTION_ONLY = previous
+
+
+def _artifact_env_var(artifact: str) -> str | None:
+    """The environment variable that overrides ``artifact``, if any."""
+
+    if artifact in BRIDGE_ENV:
+        return BRIDGE_ENV[artifact]
+    try:
+        from gpuwm.bridge_assets import BUNDLED_ARTIFACTS
+    except Exception:                                # noqa: BLE001
+        return None
+    for entry in BUNDLED_ARTIFACTS:
+        if entry.name == artifact:
+            return entry.env_var
+    return None
+
+
+def _stale_refusal(status, *, refresh_note: str | None = None) -> str:
+    """Why this staged file may not be used, and the way out of it.
+
+    Names the file, what it is, what this release pinned instead, and
+    the single command that replaces it.  The breakage is stated in
+    terms of what the run would DO with it rather than as a hash
+    mismatch, because the hash is not the thing that hurts.
+    """
+
+    from gpuwm.bridge_assets import STALE_POLICY_ENV
+
+    env_var = _artifact_env_var(status.pin.artifact)
+    lines = [
+        f"the staged {status.pin.artifact} is not the binary "
+        f"{status.release} published: {status.describe()}.",
+        "This gpuwm's Python would drive another release's binary: "
+        "every behaviour that moved between the two -- an argument the "
+        "door now passes, a default that changed, a capability a "
+        "predicate tests for -- reverts or diverges with nothing in the "
+        "run saying so, which is how ten gates come back skipped "
+        "instead of failed.",
+    ]
+    if refresh_note:
+        lines.append(refresh_note)
+    lines.append("remedy:")
+    lines.append("  gpuwm fetch-bridges")
+    lines.append(f"  # re-stages {status.release}'s bundle over "
+                 f"{default_bridge_dir()}, verifying every artifact's")
+    lines.append("  # size and SHA-256 against the pins packaged in this "
+                 "install")
+    if env_var:
+        lines.append(f"  # or name a copy you control: {env_var}=<path> "
+                     "(an override is never judged)")
+    lines.append(f"  # or {STALE_POLICY_ENV}=allow to run the staged file "
+                 "regardless -- a WORKAROUND, and the divergence above "
+                 "stays")
+    return "\n".join(lines)
+
+
+def _refresh_staged_estate(status) -> str | None:
+    """Re-fetch this release's bundle once; None on success.
+
+    The offline arm is the return value: whatever went wrong, phrased
+    as the sentence the refusal carries, so a box with no route to the
+    release assets is told that is what happened rather than being left
+    to read a traceback.
+    """
+
+    global _REFRESH_ATTEMPTED, _REFRESH_FAILURE
+
+    if _REFRESH_ATTEMPTED:
+        return _REFRESH_FAILURE
+    _REFRESH_ATTEMPTED = True
+    from gpuwm import bridge_assets
+    from gpuwm.explain import warn
+
+    warn(f"the staged {status.pin.artifact} is not {status.release}'s "
+         f"binary ({status.provenance()}); fetching {status.release}'s "
+         "bridge bundle before this run continues")
+    try:
+        bridge_assets.refresh_staged_bundle(
+            progress=lambda message: print(message, file=sys.stderr))
+    except bridge_assets.BridgeAssetError as error:
+        _REFRESH_FAILURE = (
+            f"the automatic refresh could not complete ({error}), so the "
+            "staged file is still the one described above.")
+        return _REFRESH_FAILURE
+    except OSError as error:
+        _REFRESH_FAILURE = (
+            f"the automatic refresh could not complete ({type(error).__name__}"
+            f": {error}), so the staged file is still the one described "
+            "above.")
+        return _REFRESH_FAILURE
+    _REFRESH_FAILURE = None
+    return None
+
+
+def require_release_pin(path: Path) -> Path:
+    """``path`` is bytes this release published, or it is not used.
+
+    Asked of ONE rung: :func:`default_bridge_dir`.  That is the
+    directory ``gpuwm fetch-bridges`` writes and the only one a wheel
+    upgrade leaves behind -- ``pip install -U gpuwm`` replaces the
+    Python half and never looks at it -- so it is where new Python ends
+    up driving an older release's binaries.  Everything above it on the
+    ladder is exempt by construction and stays exempt: an environment
+    override is an explicit declaration, a checkout's ``target/release``
+    is a build the developer just made (and can never match a release
+    pin), and both ``libexec`` rungs arrived with this version.
+
+    ``gpuwm doctor`` already reported this class as a BROKEN line, and
+    no door consulted it, which is the whole defect: the report said the
+    estate was wrong while the resolution ladder kept handing the same
+    bytes to the routes.  The two now read one judgement
+    (:func:`gpuwm.bridge_assets.staged_pin_status`) and differ only in
+    what they do with it -- doctor reports, a door acts -- so they
+    cannot disagree again.
+
+    Default is to fix it: re-fetch this release's bundle, verified by
+    size and SHA-256 exactly as the command does, and carry on with the
+    new bytes.  Offline, that becomes the refusal.
+    """
+
+    if _INSPECTION_ONLY:
+        return path
+    try:
+        if not path.resolve().is_relative_to(default_bridge_dir().resolve()):
+            return path
+    except (OSError, ValueError):
+        return path
+    from gpuwm import bridge_assets
+
+    status = bridge_assets.staged_pin_status(path)
+    if status is None or status.matches:
+        return path
+    policy = bridge_assets.stale_policy()
+    if policy == "allow":
+        if status.pin.artifact not in _STALE_ALLOWED:
+            _STALE_ALLOWED.add(status.pin.artifact)
+            from gpuwm.explain import warn
+
+            warn(f"running the staged {status.pin.artifact} anyway "
+                 f"({bridge_assets.STALE_POLICY_ENV}=allow): "
+                 f"{status.describe()}")
+        return path
+    if policy == "refresh":
+        failure = _refresh_staged_estate(status)
+        if failure is None:
+            after = bridge_assets.staged_pin_status(path)
+            if after is None or after.matches:
+                return path
+            raise StaleBridgeError(_stale_refusal(
+                after, refresh_note=(
+                    "the automatic refresh ran and this artifact still "
+                    "does not match its pin.")))
+        raise StaleBridgeError(_stale_refusal(status, refresh_note=failure))
+    raise StaleBridgeError(_stale_refusal(status))
+
+
+def accept_resolved(path: Path, *, executable: bool = True) -> Path:
+    """The last step of every resolution ladder: this file, or a refusal.
+
+    One place, because fourteen ladders in this package end here and a
+    fifteenth copy of the accept step is how one door keeps resolving
+    what the other fourteen refuse.  ``executable=False`` is for the
+    libraries, which are loaded rather than launched and whose modes pip
+    does not break.
+    """
+
+    if executable:
+        path = ensure_executable(path)
+    return require_release_pin(path)
+
+
 def packaged_bridge_dir() -> Path:
     """The wheel-bundled bridge directory inside this installation.
 
@@ -801,7 +1028,7 @@ def find_artifact(env_var: str, filename: str) -> Path | None:
     override = os.environ.get(env_var)
     for candidate in artifact_candidates(env_var, filename):
         if candidate.is_file():
-            return ensure_executable(candidate.resolve())
+            return accept_resolved(candidate.resolve())
         if override and candidate == Path(override):
             raise FileNotFoundError(
                 f"{env_var} names a missing file: {candidate}")
@@ -1329,6 +1556,8 @@ __all__ = [
     "build_from_clone_hint", "cargo_activation_command",
     "cargo_is_installed", "crate_dir", "default_bridge_dir",
     "executable_name", "find_artifact", "find_bridge",
+    "StaleBridgeError", "accept_resolved", "inspection_only",
+    "require_release_pin",
     "install_aware_build_hint", "install_into_default_bridge_dir",
     "rust_toolchain_install_command",
     "install_aware_one_line_hint",

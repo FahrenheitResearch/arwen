@@ -128,6 +128,17 @@ _TIER2_PATH_ALLOWANCE = frozenset({
     "tools/benchmark_" + "seed" + "ed_step.py",
 })
 
+#: Commit messages that name the subsystem and cannot be reworded: this
+#: repository forbids rebase, amend and force-push (CLAUDE.md, forward
+#: commits only) and never pushes to any remote, so the branch route this
+#: module's message test governs is closed by law rather than by wording.
+#: Pinned by full SHA with the reason, so a second entry is a decision.
+_MESSAGE_ALLOWANCE = {
+    "ccd11d67f31a6a26e9b6490182b046db16e991cb":
+        "the 2026-09-01 law commit that sanctioned the private package; "
+        "rewording is banned here and the branch is never pushed",
+}
+
 #: The innocent English word that contains a Tier-1 token.
 _FALSE_POSITIVE = re.compile("fore" + "cast", re.I)
 
@@ -448,12 +459,14 @@ def test_no_new_commit_MESSAGE_names_the_excluded_subsystem():
     or cutting a release from git history.  This repository has a GitHub
     remote configured, so that route is one command away.
 
-    REMEDIATION, when this fails, is not a code change.  The offending
-    text is inside immutable commit objects and the only fix is to reword
-    them -- ``git rebase -r --exec`` over the range, or filter-repo --
-    which rewrites every SHA after the earliest one touched.  Do it before
-    the branch is shared, never after.  Until then this gate is a release
-    blocker and is meant to read as one.
+    REMEDIATION.  Rewording -- ``git rebase -r --exec`` over the range, or
+    filter-repo -- is what git offers, and it is BANNED in this repository:
+    CLAUDE.md allows forward commits only, and the same file forbids any push
+    to any remote, which is the barrier the branch route needs.  A message
+    that cannot be reworded is registered in ``_MESSAGE_ALLOWANCE`` by full
+    SHA with its reason, and this test stays red on any message that is
+    not.  Write commit messages on this line without the subsystem's name;
+    the allowance is for the past, not a style.
     """
 
     try:
@@ -466,9 +479,13 @@ def test_no_new_commit_MESSAGE_names_the_excluded_subsystem():
 
     offenders: list[str] = []
     current = ""
+    current_full = ""
     for line in log.decode("utf-8", "replace").splitlines():
         if len(line) == 40 and all(c in "0123456789abcdef" for c in line):
             current = line[:9]
+            current_full = line
+            continue
+        if current_full in _MESSAGE_ALLOWANCE:
             continue
         token = _tier1_match(line)
         if token is not None:

@@ -70,6 +70,7 @@ import time
 import urllib.error
 import urllib.request
 
+from gpuwm import bridges
 from gpuwm import fetch_guard
 from gpuwm.progress import ByteCounter
 from gpuwm.core.thompson_contract import (
@@ -109,15 +110,49 @@ def asset_url_base() -> str:
 
 
 def wif_asset_url_base() -> str:
-    """Where ``--wif`` downloads from.
+    """Where ``--wif`` downloads from: the VERSIONED release-assets base.
 
-    The same override and the same default base as the coefficient
-    tables: one externalization policy, not two.  Kept as its own
-    function so the WIF row can be pointed at a mirror on its own the
-    day the two are hosted apart, without a caller learning which.
+    This used to return :func:`asset_url_base`, i.e. the fixed ``v1.0.0``
+    release the coefficient tables are published under -- where this file
+    has never existed.  ``gpuwm fetch-tables --wif`` therefore refused
+    with ``HTTP Error 404`` on every install that had no local copy, which
+    is every install: there was no reachable route to the dataset at all.
+
+    The coefficient tables can sit at a fixed tag because their bytes are
+    frozen -- the same four files answer every release.  This dataset is
+    carried as an asset of the release that pins it, alongside the bridge
+    bundles, so its base has to MOVE with the release.  That is exactly
+    what :func:`gpuwm.bridge_assets.asset_url_base` computes
+    (``<REPOSITORY_URL>/releases/download/<pins.release>``), including the
+    ``GPUWM_BRIDGE_ASSET_URL_BASE`` override, so it is reused rather than
+    restated: one versioned base, not two that can drift apart.
+
+    ``GPUWM_TABLE_ASSET_URL_BASE`` still wins when it is set, because an
+    operator who has named a mirror for this command's downloads has named
+    it for all of them.
     """
 
-    return asset_url_base()
+    override = os.environ.get(ASSET_URL_BASE_ENV)
+    if override and override.strip():
+        return override.strip().rstrip("/")
+
+    from gpuwm import bridge_assets
+
+    try:
+        return bridge_assets.asset_url_base(bridge_assets.load_pins())
+    except Exception as error:
+        from gpuwm.ingest.wif_dataset import WIF_DATASET_FILE
+
+        raise TableAssetError(
+            f"{WIF_DATASET_FILE}: no download URL could be resolved.  It "
+            "is published as an asset of the release that pins it, at "
+            f"<{bridges.REPOSITORY_URL}/releases/download/"
+            f"<release>/{WIF_DATASET_FILE}>, and the packaged release pin "
+            f"could not be read: {error}\n"
+            "  how to supply it: stage from a local copy with `gpuwm "
+            "fetch-tables --wif --from DIR`, or set "
+            f"{ASSET_URL_BASE_ENV} (or GPUWM_BRIDGE_ASSET_URL_BASE) to a "
+            "base URL that carries the file")
 
 
 class TableAssetError(RuntimeError):
@@ -396,18 +431,16 @@ def fetch_asset_from_dir(root: Path, asset: TableAsset,
     return final
 
 
-def fetch_tables_main(args) -> int:
-    from gpuwm.physics_compat import packaged_thompson_table_root
+def stage_classic_tables(args) -> int:
+    """Stage the mandatory classic coefficient tables.  0, or 2 on refusal.
 
-    # The WIF leg runs FIRST and independently.  `--wif` alone must be
-    # able to stage the input dataset on a box whose coefficient tables
-    # are already complete, and a coefficient-table refusal must not
-    # leave the reader wondering whether the dataset landed.
-    if getattr(args, "wif", False):
-        code = stage_wif_dataset(getattr(args, "from_dir", None),
-                                 getattr(args, "wif_root", None))
-        if code or getattr(args, "wif_only", False):
-            return code
+    The mandatory leg of ``fetch-tables``: every ``mp_physics=8`` and
+    ``mp_physics=28`` run reads this set, and no flag makes it optional.
+    Split out of :func:`fetch_tables_main` so the optional ``--wif`` leg
+    cannot decide whether it runs.
+    """
+
+    from gpuwm.physics_compat import packaged_thompson_table_root
 
     root = staging_root(getattr(args, "root", None))
     packaged = packaged_thompson_table_root()
@@ -456,6 +489,33 @@ def fetch_tables_main(args) -> int:
                 return 2
             absent.remove(asset)
             copied.append(asset)
+        # mp=28 reads CCN_ACTIVATE.BIN out of the SAME root as the
+        # classic tables -- the aerosol contract shares the root on
+        # purpose, so tnccn_act and the process tables cannot come from
+        # two different WRF builds.  It is not a member of
+        # CLASSIC_TABLE_ASSETS, so the loop above never carried it, and
+        # a staged root without it is complete for mp=8 and fatal for
+        # mp=28: on a wheel install `fetch-tables` reported the root
+        # "complete and byte-valid" and the next mp=28 forecast died at
+        # its first microphysics step with MissingAerosolTableAsset,
+        # while the packaged copy sat in site-packages the whole time.
+        # Copied under the identical pin verification; a copy already
+        # present is left alone.
+        from gpuwm.core.thompson_aerosol_contract import AEROSOL_TABLE_ASSETS
+        for asset in AEROSOL_TABLE_ASSETS:
+            if (root / asset.filename).is_file():
+                continue
+            if not (packaged / asset.filename).is_file():
+                continue
+            print(f"gpuwm fetch-tables: copying {asset.filename} "
+                  f"({asset.bytes:,} B, the mp=28 activation table) from "
+                  f"the package into {root}")
+            try:
+                fetch_asset_from_dir(root, asset, packaged)
+            except TableAssetError as error:
+                print(f"gpuwm fetch-tables: REFUSED: {error}")
+                return 2
+            copied.append(asset)
 
     packaged_gaps = [asset for asset in absent
                      if asset.filename not in EXTERNALIZED_TABLE_FILENAMES]
@@ -497,6 +557,49 @@ def fetch_tables_main(args) -> int:
     validate_table_assets(root)
     print(f"gpuwm fetch-tables: table root {root} complete and byte-valid")
     return 0
+
+
+def fetch_tables_main(args) -> int:
+    """Run the mandatory table leg and the optional ``--wif`` leg.
+
+    The two legs are INDEPENDENT.  ``--wif`` names an extra optional
+    dataset; it does not change whether the coefficient tables every run
+    needs get staged.  This used to run the WIF leg first and return on
+    its exit code, so `gpuwm fetch-tables --wif` against an unreachable
+    dataset refused and left the mandatory tables unstaged -- the user
+    asked for both and got neither, with nothing in the output saying the
+    classic leg had never been attempted.
+
+    The exit code is the worst of the legs that ran, and the closing
+    summary names each leg as staged or refused, so "did my tables land"
+    is answered by reading the last line rather than by inferring it from
+    a single number.
+    """
+
+    wif_requested = bool(getattr(args, "wif", False))
+    wif_only = bool(getattr(args, "wif_only", False))
+
+    wif_code: int | None = None
+    if wif_requested:
+        wif_code = stage_wif_dataset(getattr(args, "from_dir", None),
+                                     getattr(args, "wif_root", None))
+
+    # --wif-only is the one flag that legitimately skips the mandatory
+    # leg, because it is the operator saying so in as many words.
+    classic_code: int | None = None
+    if not wif_only:
+        classic_code = stage_classic_tables(args)
+
+    legs = []
+    if classic_code is not None:
+        legs.append(("classic coefficient tables", classic_code))
+    if wif_code is not None:
+        legs.append(("--wif aerosol climatology dataset", wif_code))
+    if len(legs) > 1 or (wif_requested and not wif_only):
+        for label, code in legs:
+            state = "staged" if code == 0 else "REFUSED"
+            print(f"gpuwm fetch-tables: {label}: {state}")
+    return max((code for _, code in legs), default=0)
 
 
 def stage_wif_dataset(source_dir=None, root=None) -> int:
@@ -618,6 +721,7 @@ __all__ = [
     "register_cli",
     "require_thompson_tables",
     "staging_is_self_chosen",
+    "stage_classic_tables",
     "stage_wif_dataset",
     "staging_root",
     "unstaged_table_assets",

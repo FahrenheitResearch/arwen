@@ -1,5 +1,5 @@
 """Observations for ArWen: acquisition, geometry, superobbing, and the
-``gpuwm-obs.radar-grid.v1`` contract the DA lanes consume.
+``gpuwm-obs.radar-grid`` contract the DA lanes consume.
 
 The pipeline is four stages with a provable artifact between each pair:
 
@@ -7,7 +7,8 @@ The pipeline is four stages with a provable artifact between each pair:
 ``rw_nexrad decode``  volume -> ``gpuwm-obs.radar-sweeps.v1`` pack
 :mod:`gpuwm.obs.superob`   pack + :class:`~gpuwm.obs.target_grid.TargetGrid`
                            -> gridded accumulators
-:mod:`gpuwm.obs.radar_grid` -> ``gpuwm-obs.radar-grid.v1`` NetCDF
+:mod:`gpuwm.obs.radar_grid` -> ``gpuwm-obs.radar-grid`` NetCDF (v2 when
+                           the set is windowed, v1 when it is not)
 
 Nothing in here names a case, a campaign, or a particular radar: site ids,
 bucket names and time windows are data that arrive through arguments.

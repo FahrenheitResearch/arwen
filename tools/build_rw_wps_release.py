@@ -430,6 +430,17 @@ _OPTIONAL_STAGED_IMPORTS = {
         "gpuwm/core/ruc_contract.py instead would pull "
         "gpuwm.core.noahmp_mynn_contract and gpuwm.ingest.ruc_soil in "
         "behind it for two integer tuples.",
+    ("gpuwm/table_assets.py", "gpuwm.core.thompson_aerosol_contract"):
+        "THE mp=28 ACTIVATION TABLE'S PIN, and only that.  The import is "
+        "function-local inside stage_classic_tables' packaged-copy arm, "
+        "which completes a staged table root for a scheme this wheel "
+        "cannot run.  Nothing staged reaches it: the arm belongs to "
+        "`gpuwm fetch-tables`, whose only wiring is table_assets."
+        "register_cli() from gpuwm/cli.py, and cli.py is excluded above; "
+        "fetch_tables_main has no other caller in the tree.  Staging "
+        "gpuwm/core/thompson_aerosol_contract.py instead would pull "
+        "gpuwm.core.correctly_rounded_libm in behind it -- a forecast-side "
+        "libm this wheel stages nowhere -- for one TableAsset tuple.",
     ("gpuwm/core/state.py", "gpuwm.core.preflight"):
         "CUDA forecast scratch-preflight path; RW-WPS constructs host state",
     ("gpuwm/core/uh_diag.py", "gpuwm.core.streaming"):

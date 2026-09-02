@@ -434,13 +434,22 @@ class TestTheDoctorLine:
         return doctor._region_dealias_check()
 
     def test_the_estate_asks_about_the_engine_at_all(self):
-        """Read off the assembling function: collect_checks() probes CUDA."""
+        """Read off the assembling function: collect_checks() probes CUDA.
+
+        ``_collect_checks`` is that function; the public
+        ``collect_checks`` is a thin wrapper holding the reader scope
+        every resolution in the report runs inside
+        (``gpuwm.bridges.inspection_only``).  Read the assembler
+        wherever it lives, falling back to the public name so this keeps
+        asking its question if the two are ever merged.
+        """
 
         import inspect
 
         from gpuwm import doctor
 
-        source = inspect.getsource(doctor.collect_checks)
+        assembler = getattr(doctor, "_collect_checks", doctor.collect_checks)
+        source = inspect.getsource(assembler)
         assert "_region_dealias_check()" in source
 
     def test_an_absent_library_BLOCKS_and_the_remedy_is_the_build(

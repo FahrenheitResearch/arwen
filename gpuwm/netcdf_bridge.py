@@ -38,7 +38,7 @@ from typing import Mapping
 import numpy as np
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
-                           default_bridge_dir, ensure_executable,
+                           default_bridge_dir, accept_resolved,
                            executable_name, packaged_bridge_dir)
 
 #: Environment variable naming a prebuilt ``rw_netcdf``.
@@ -99,7 +99,7 @@ def find_netcdf_bin() -> Path | None:
     override = os.environ.get(NETCDF_ENV)
     for candidate in netcdf_candidates():
         if candidate.is_file():
-            return ensure_executable(candidate.resolve())
+            return accept_resolved(candidate.resolve())
         if override and candidate == Path(override):
             raise FileNotFoundError(
                 f"{NETCDF_ENV} names a missing file: {candidate}.  Point it "

@@ -19,7 +19,12 @@ The ladder, unchanged:
 3. ``<root>/libexec/bridges`` beside the package;
 4. ``~/.gpuwm/bridges``.
 
-Nothing here runs cargo; resolution is read-only.
+Nothing here runs cargo.  Resolution has one side effect and one
+only: an artifact found in ``~/.gpuwm/bridges`` that is not the one this
+release pinned is re-fetched before it is handed to a door
+(:func:`gpuwm.bridges.require_release_pin`).  ``gpuwm doctor`` resolves
+inside :func:`gpuwm.bridges.inspection_only`, where there is no side
+effect at all, so the report still says what the estate IS.
 """
 
 from __future__ import annotations
@@ -32,7 +37,7 @@ from dataclasses import dataclass
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
                            cargo_build_one_liner, default_bridge_dir,
-                           ensure_executable, executable_name,
+                           accept_resolved, executable_name,
                            packaged_bridge_dir)
 
 _PROBE_TIMEOUT_S = 20
@@ -95,7 +100,7 @@ class FrontDoor:
         override = os.environ.get(self.env_var)
         for candidate in self.candidates():
             if candidate.is_file():
-                return ensure_executable(candidate.resolve())
+                return accept_resolved(candidate.resolve())
             if override and candidate == Path(override):
                 raise FileNotFoundError(
                     f"{self.env_var} names a missing file: {candidate}")

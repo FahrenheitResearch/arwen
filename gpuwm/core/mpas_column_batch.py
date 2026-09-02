@@ -107,8 +107,8 @@ everything back in place; a restored seam continues bit-identically
 (GPU-gated test).  The transported species and theta live on the
 MPAS side and restart with the caller's own state.
 
-MICROPHYSICS SCHEMES (2026-08-31)
----------------------------------
+MICROPHYSICS SCHEMES (2026-08-31; mp=28 2026-09-01)
+---------------------------------------------------
 ``microphysics_scheme`` selects the phase-2 scheme and, with it, the
 transported species set (:data:`_SPECIES_BY_SCHEME`):
 
@@ -140,6 +140,71 @@ transported species set (:data:`_SPECIES_BY_SCHEME`):
   byte-identical to schema v2 before this arm existed, so stored WSM6
   payloads keep restoring and a cross-scheme restore refuses on the
   identity gate.
+* ``"thompson_aero"`` (mp_physics=28, aerosol-aware Thompson): the
+  ELEVEN scalars WRF's own mp=28 driver arm transports
+  (module_microphysics_driver.F's THOMPSONAERO arm into
+  ``mp_gt_driver``) -- WSM6's six masses ``qv/qc/qr/qi/qs/qg``, the
+  three number moments ``ni``/``nr``/``nc``, and the two aerosol
+  number tracers ``nwfa`` (water-friendly) / ``nifa`` (ice-friendly).
+  ``nc`` is PROGNOSTIC here, which is the whole difference from
+  classic Thompson (Registry.EM_COMMON:3036), so a route that carried
+  mp=8's two moments and let the seam default the other three would
+  run the aerosol physics on substituted state; both directions of
+  slack refuse by name.  There is no ``nbca``: WRF allocates the
+  black-carbon scalar in the mp=28 package (Registry.EM_COMMON:3036)
+  but ``mp_gt_driver`` reads and emits it only under
+  ``wif_input_opt=2`` and zeroes it otherwise (module_mp_thompson.F
+  :1322-1325, :3983-3988), ArWen refuses that option by name
+  (gpuwm/config.py's MP28_AEROSOL_SOURCE_OPTIONS) and no ArWen state
+  allocates the species, so the seam refuses it rather than carrying
+  an exact zero.  Radii are WSM6's own backgrounds -- ``mp_gt_driver``
+  seeds re_qc/re_qi/re_qs from the same RE_*_BG parameters and clamps
+  them identically for both Thompson entries (:1466-1479) -- and all
+  three ride the restart payload.  The mp=28 cross-step carriers are
+  the two SURFACE aerosol emission tendencies ``nwfa2d``/``nifa2d``
+  (# kg-1 s-1, Registry.EM_COMMON:492-493): ``mp_gt_driver`` takes
+  them INTENT(IN) (:1098) and only reads them (:1320-1321), and
+  nothing between a resume and the next microphysics call can rebuild
+  them from the caller's transported state, so they are seam-owned
+  state on the restart payload -- the same argument th_old/qv_old ride
+  under P3.  Receipts and buckets are the full seven-slot WSM6 shape
+  (mp=28 has a graupel category and its driver arm binds
+  GRAUPELNC/GRAUPELNCV, module_microphysics_driver.F:1029-1091).
+  Phase-2 mp=28 REFUSES ``rho_dry`` for P3's reason with mp=28's
+  authority: ``mp_gt_driver`` builds its own rho from the EOS
+  pressure, temperature and vapour at :1802 and the adapter never
+  reads ``state.alt``, so an accepted input would be silently unread.
+
+  THE AEROSOL INITIAL STATE (FIRST CONTACT).  ``thompson_init`` is
+  WRF's once-per-domain aerosol initialization: two independent
+  ``MAXVAL`` tests on the domain's own ``nwfa``/``nifa`` (:490/:528),
+  a synthetic CCN/IN profile for whichever is absent (:493-551) and,
+  with the CCN fill, the surface emission ``nwfa2d`` from the lowest
+  level (:509-510).  The seam runs the port of exactly that
+  (gpuwm/core/microphysics_aerosol.py ``thompson_aerosol_init_fill``)
+  ONCE, at the FIRST ``run_phase2`` call of a freshly constructed
+  seam, on the caller's bound arrays with the caller's own
+  ``z_interface`` geometry -- the first moment the seam holds the
+  state WRF's init tests.  A caller that transports no aerosol (the
+  hex route today) gets WRF's synthetic profile and emission in its
+  own arrays; a caller that brings its own aerosol takes WRF's
+  has_CCN/has_IN branches (no fill), and ``nwfa2d`` then derives from
+  the caller's lowest level by real.exe's climatology-branch formula
+  (dyn_em/module_initialize_real.F:4518-4519, the same expression as
+  :509-510).  ``nifa2d`` is zero in every WRF branch (real.exe
+  :4508 and :4524-4529; ``thompson_init`` never takes it).  The seam
+  therefore
+  stages no WIF climatology and requires none -- its RunConfig names
+  that as ``mp28_aerosol_source="synthetic"`` -- and a caller's real
+  aerosol is never overwritten.  ``aerosol_init_receipt`` reports
+  which branches ran; it rides the restart payload so a restored seam
+  never re-fills a checkpointed field.  Phase 1 never reads the
+  aerosol fields on this seam (only MYNN under ``bl_mynn_mixscalars``
+  does, and the seam runs YSU), so first contact in phase 2 loses no
+  physics against WRF's init-before-first-step ordering.  The cold
+  start ``initialize_physics`` runs at construction sees only the
+  seam's zero placeholder buffers with no geometry; its product is
+  discarded (reset to zero) and its receipt is not the seam's.
 """
 
 from __future__ import annotations
@@ -184,14 +249,49 @@ _PHASE1, _PHASE2 = 1, 2
 #: Transported species by microphysics scheme.  The WSM6 row is the
 #: pinned 2026-08-10 counterparty set; the P3 row is WRF's own mp=50
 #: call shape (module_microphysics_driver.F:1569-1602): the four moist
-#: masses, both number moments, and the rime mass/volume pair.  The
-#: rows are deliberately NOT shared or derived from each other -- the
-#: same regression argument as gpuwm/core/state.py's mp tuples.
+#: masses, both number moments, and the rime mass/volume pair; the
+#: aerosol-aware Thompson row is WRF's own mp=28 call shape (the
+#: THOMPSONAERO arm's mp_gt_driver argument order): WSM6's six masses,
+#: the three number moments ni/nr/nc, and the water- and ice-friendly
+#: aerosol number tracers nwfa/nifa.  The rows are deliberately NOT
+#: shared or derived from each other -- the same regression argument as
+#: gpuwm/core/state.py's mp tuples, where a tuple shared between mp=8
+#: and mp=28 is named as the way an mp=28 field silently appears on an
+#: mp=8 state.
 _SPECIES_BY_SCHEME = {
     "wsm6": ("qv", "qc", "qr", "qi", "qs", "qg"),
     "p3": ("qv", "qc", "qr", "qi", "ni", "nr", "qir", "qib"),
+    "thompson_aero": ("qv", "qc", "qr", "qi", "qs", "qg",
+                      "ni", "nr", "nc", "nwfa", "nifa"),
 }
 _SPECIES = _SPECIES_BY_SCHEME["wsm6"]
+
+#: gpuwm ``mp_physics`` selector per scheme row.  One table, so the
+#: RunConfig the seam builds and the species row it enforces cannot
+#: drift apart.
+_MP_PHYSICS_BY_SCHEME = {"wsm6": 6, "p3": 50, "thompson_aero": 28}
+
+#: Scheme rows whose driver arm binds a GRAUPEL accumulator, and so
+#: report ``graupelncv`` in the per-call receipt and ``GRAUPELNC`` in
+#: the buckets.  P3's single ice category has neither
+#: (gpuwm/core/physics_inventory.py's mp=50 surface-slot row), and a
+#: permanent zero key would let a consumer claim a field the scheme
+#: never has.
+_GRAUPEL_SCHEMES = frozenset({"wsm6", "thompson_aero"})
+
+#: The one scheme row whose phase-2 adapter consumes ``rho_dry``, and
+#: the reason each other row refuses it BY NAME rather than accepting
+#: an input nothing reads.  WSM6's adapter derives rho = 1/alt
+#: (gpuwm/core/wsm6.py:109-112); P3 and aerosol-aware Thompson both
+#: build density from the EOS pressure inside their own kernels.
+_RHO_DRY_REFUSAL_BY_SCHEME = {
+    "p3": ("P3's kernels derive density from the EOS pressure where "
+           "the authority does (module_mp_p3.F)"),
+    "thompson_aero": ("mp_gt_driver builds its own rho from the EOS "
+                      "pressure, temperature and vapour "
+                      "(module_mp_thompson.F:1802) and the mp=28 "
+                      "adapter never reads state.alt"),
+}
 
 #: Persistent state fields the restart manifest serializes per scheme,
 #: beside the driver manifest and the serialized scratch buckets.  The
@@ -199,10 +299,19 @@ _SPECIES = _SPECIES_BY_SCHEME["wsm6"]
 #: ``effs`` (single ice category, no snow radius -- WRF's has_reqs=0
 #: override, module_physics_init.F:1027-1033) and adds the cross-step
 #: supersaturation carriers ``th_old``/``qv_old``, which nothing
-#: between a resume and the next microphysics call can refill.
+#: between a resume and the next microphysics call can refill.  The
+#: mp=28 row keeps WSM6's radii (mp_gt_driver seeds and clamps
+#: re_qc/re_qi/re_qs from the same RE_*_BG parameters) and adds the two
+#: SURFACE aerosol emission tendencies ``nwfa2d``/``nifa2d``, which are
+#: INTENT(IN) to every microphysics call (module_mp_thompson.F:1098):
+#: the seam's first-contact ``thompson_init`` derives nwfa2d once and
+#: nothing refills either afterwards, so they are cross-step constants
+#: a resume cannot rebuild from the caller's transported state.
 _STATE_RESTART_FIELDS_BY_SCHEME = {
     "wsm6": ("effc", "effi", "effs", "h_diabatic"),
     "p3": ("effc", "effi", "h_diabatic", "th_old", "qv_old"),
+    "thompson_aero": ("effc", "effi", "effs", "h_diabatic",
+                      "nwfa2d", "nifa2d"),
 }
 
 #: Seam-held raw output buffers, serialized so a restored seam keeps
@@ -422,12 +531,35 @@ class _ColumnBatchState:
         else:
             # WSM6 scheme-native radii (microns), the mp=6 cold start of
             # gpuwm/core/state.py (module_model_constants.F RE_*_BG).
+            # mp=28 SHARES this row, and not by resemblance: mp_gt_driver
+            # seeds re_qc1d/re_qi1d/re_qs1d from those same three
+            # RE_*_BG parameters and applies the same
+            # MAX(RE_*_BG, MIN(...)) clamp for both Thompson entries
+            # (module_mp_thompson.F:1466-1479), so the background a
+            # radiation call sees before the first microphysics step is
+            # identical -- exactly the argument DomainState's
+            # ``mp_physics in (6, 8, 16, 28)`` arm makes.
             self.effc = xp.full(shape3, np.float32(2.49),
                                 dtype=np.float32)
             self.effi = xp.full(shape3, np.float32(4.99),
                                 dtype=np.float32)
             self.effs = xp.full(shape3, np.float32(9.99),
                                 dtype=np.float32)
+        if cfg.mp_physics == 28:
+            # QNWFA2D / QNIFA2D: WRF's SURFACE aerosol emission
+            # TENDENCIES (# kg-1 s-1, Registry.EM_COMMON:492-493).  They
+            # are INTENT(IN) to mp_gt_driver (module_mp_thompson.F:1098;
+            # read at :1320-1321, never written), so they are cross-step
+            # constants, seam-owned and on the restart payload.  Both
+            # start at exactly zero, WRF's allocator state: the seam's
+            # first-contact thompson_init derives nwfa2d (:509-510, or
+            # real.exe's :4518-4519 form when the caller brings its own
+            # aerosol), and nifa2d is not even a thompson_init argument
+            # (:424-444 take nwfa2d/nbca2d only) -- a run with no
+            # WIF/dust ingest keeps nifa2d == 0 for the whole forecast,
+            # which is WRF's own behaviour.
+            self.nwfa2d = zeros(ny, nx)
+            self.nifa2d = zeros(ny, nx)
         # Retained microphysics heating (WRF h_diabatic, K/s); zero at
         # init exactly as WRF start_em, one-step lag by construction.
         self.h_diabatic = zeros(*shape3)
@@ -542,12 +674,13 @@ class MpasColumnBatchPhysics:
         if int(wsm6_hail_opt) not in (0, 1):
             raise ValueError(
                 f"wsm6_hail_opt must be 0 or 1, got {wsm6_hail_opt!r}")
-        if microphysics_scheme == "p3" and int(wsm6_hail_opt) != 0:
+        if microphysics_scheme != "wsm6" and int(wsm6_hail_opt) != 0:
             raise ValueError(
                 "wsm6_hail_opt is a WSM6 hail-mode knob; on a "
-                "microphysics_scheme='p3' seam it would be silently "
-                "ignored, which reads as configuration the run does not "
-                "have.  Leave it 0 (the default)")
+                f"microphysics_scheme={microphysics_scheme!r} seam it "
+                "would be silently ignored, which reads as "
+                "configuration the run does not have.  Leave it 0 (the "
+                "default)")
         threshold = float(xice_threshold)
         if not np.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
             raise ValueError(
@@ -600,12 +733,28 @@ class MpasColumnBatchPhysics:
 
         from gpuwm.config import RunConfig
         from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY
-        mp_physics = {"wsm6": 6, "p3": 50}[microphysics_scheme]
+        mp_physics = _MP_PHYSICS_BY_SCHEME[microphysics_scheme]
+        if microphysics_scheme == "thompson_aero":
+            # NAME the aerosol initial state instead of arriving at it.
+            # 'auto' means "use WRF's monthly WIF climatology when it
+            # resolves"; the seam has no ingest path and stages no
+            # dataset, so 'synthetic' is the true description of what
+            # its first-contact thompson_init does for a caller that
+            # brings no aerosol -- gpuwm/config.py's
+            # MP28_AEROSOL_SOURCES makes that the supported way an
+            # explicitly data-free run declares the fallback.  A caller
+            # that brings its own aerosol keeps it (module docstring,
+            # FIRST CONTACT); the seam never requires a staged
+            # climatology to transport the mp=28 species.
+            aerosol_source = {"mp28_aerosol_source": "synthetic"}
+        else:
+            aerosol_source = {}
         cfg = RunConfig(
             nx=ncol, ny=1, nz=nz, dx=dx, dy=dx,
             ztop=top_nominal, dt=float(cadences["dt"]),
             run_seconds=0.0, moist=True, mp_physics=mp_physics,
             wsm6_hail_opt=int(wsm6_hail_opt),
+            **aerosol_source,
             ra_physics=4, ra_rrtmg_variant=RRTMG_VARIANT_LEGACY,
             sf_sfclay_physics=1, sf_surface_physics=4,
             bl_pbl_physics=1,
@@ -621,6 +770,7 @@ class MpasColumnBatchPhysics:
         self._nz, self._ncol = nz, ncol
         self._start_time = start_time
         self._microphysics_scheme = microphysics_scheme
+        self._has_graupel = microphysics_scheme in _GRAUPEL_SCHEMES
         self._species = _SPECIES_BY_SCHEME[microphysics_scheme]
         self._state_restart_fields = (
             _STATE_RESTART_FIELDS_BY_SCHEME[microphysics_scheme])
@@ -697,6 +847,26 @@ class MpasColumnBatchPhysics:
             radiation_latitude=lat.reshape(1, ncol),
             radiation_longitude=lon.reshape(1, ncol))
 
+        #: The seam's own thompson_init receipt (module docstring, FIRST
+        #: CONTACT): None until the first run_phase2 of a fresh mp=28
+        #: seam, then ``{"ccn_filled", "in_filled", "nwfa2d_source"}``;
+        #: always None on a scheme without aerosol state.
+        self._aerosol_init = None
+        if microphysics_scheme == "thompson_aero":
+            # initialize_physics ran microphysics_cold_start (WRF's
+            # mp_init slot, module_physics_init.F:1635) on this state's
+            # zero PLACEHOLDER buffers with no geometry: php is zero
+            # here, so z8w = 0 on every level and the fill's z1 is 0.
+            # That product is not an aerosol state of any column the
+            # seam will ever run -- the first run_phase1 overwrites
+            # nwfa/nifa with the caller's arrays, and nwfa2d would carry
+            # 50/0 -- so it is reset, and thompson_init runs for real at
+            # first contact on the caller's bound state (run_phase2).
+            # The driver's microphysics_init_receipt describes that
+            # placeholder pass; ``aerosol_init_receipt`` is the seam's.
+            for name in ("nwfa", "nifa", "nwfa2d"):
+                getattr(state, name)[...] = cp.float32(0.0)
+
         # Persistent input/atmosphere buffers ((nz[+1], 1, ncol)).
         shape3 = (nz, 1, ncol)
         iface3 = (nz + 1, 1, ncol)
@@ -760,7 +930,8 @@ class MpasColumnBatchPhysics:
         field is the state substitution the hex seam's mp=50 refusal
         existed to stop), and a species OUTSIDE the scheme's row refuses
         too (accepting it would silently drop caller state -- P3 writes
-        neither qs nor qg, and WSM6 has no number or rime moments).
+        neither qs nor qg, WSM6 has no number or rime moments, and
+        aerosol-aware Thompson has no rime pair and no ``nbca``).
         """
         scheme = self._microphysics_scheme
         missing = [name for name in self._species
@@ -779,7 +950,9 @@ class MpasColumnBatchPhysics:
                 f"{self._species}; {extra} are not state of this scheme "
                 "and accepting them would silently drop caller fields "
                 "(P3 has one ice category and writes neither qs nor qg; "
-                "WSM6 carries no number or rime moments)")
+                "WSM6 carries no number or aerosol moments; mp=28 "
+                "carries no rime pair, and its black-carbon scalar "
+                "nbca exists in no ArWen state)")
         return {name: candidates[name] for name in self._species}
 
     def _rebind_species_buffers(self):
@@ -799,6 +972,7 @@ class MpasColumnBatchPhysics:
     def run_phase1(self, *, dt, u, v, theta, pressure, pressure_interface,
                    z_interface, w, rho_dry, qv, qc, qr, qi, qs=None,
                    qg=None, ni=None, nr=None, qir=None, qib=None,
+                   nc=None, nwfa=None, nifa=None,
                    exner=None, rthdynten=None,
                    rqvdynten=None) -> MpasColumnPhysicsTendencies:
         """Run the due phase-1 chain; return the held raw tendency set.
@@ -809,11 +983,13 @@ class MpasColumnBatchPhysics:
 
         The species keywords follow the constructor's
         ``microphysics_scheme`` row (:data:`_SPECIES_BY_SCHEME`):
-        ``"wsm6"`` requires ``qs``/``qg`` and refuses the P3 four;
+        ``"wsm6"`` requires ``qs``/``qg`` and refuses every moment;
         ``"p3"`` requires ``ni``/``nr``/``qir``/``qib`` and refuses
-        ``qs``/``qg``.  Either direction of slack -- a missing species
-        or an extra one -- is a state substitution, so both refuse by
-        name instead of defaulting to zeros or dropping the array.
+        ``qs``/``qg``; ``"thompson_aero"`` requires ``qs``/``qg`` AND
+        ``ni``/``nr``/``nc``/``nwfa``/``nifa``, and refuses the rime
+        pair.  Either direction of slack -- a missing species or an
+        extra one -- is a state substitution, so both refuse by name
+        instead of defaulting to zeros or dropping the array.
 
         ``rthdynten``/``rqvdynten`` ([nz, ncol] float32, K/s dry theta
         and kg/kg/s) are the caller's dynamics forcing for GF's
@@ -838,7 +1014,8 @@ class MpasColumnBatchPhysics:
                   "rho_dry": rho_dry}
         inputs.update(self._require_species(
             "run_phase1", qv=qv, qc=qc, qr=qr, qi=qi, qs=qs, qg=qg,
-            ni=ni, nr=nr, qir=qir, qib=qib))
+            ni=ni, nr=nr, qir=qir, qib=qib, nc=nc, nwfa=nwfa,
+            nifa=nifa))
         for name in ("u", "v", "theta", "pressure",
                      "rho_dry") + self._species:
             self._require_input(name, inputs[name], level)
@@ -965,7 +1142,8 @@ class MpasColumnBatchPhysics:
 
     # ------------------------------------------------------------------
     def run_phase2(self, *, theta, qv, qc, qr, qi, qs=None, qg=None,
-                   ni=None, nr=None, qir=None, qib=None, pressure,
+                   ni=None, nr=None, qir=None, qib=None, nc=None,
+                   nwfa=None, nifa=None, pressure,
                    rho_dry=None, z_interface,
                    refl_10cm_due: bool = False) -> dict:
         """Run the phase-2 scheme in place on the caller's arrays.
@@ -976,16 +1154,28 @@ class MpasColumnBatchPhysics:
         caller's integrator clamps scalar state before this call (pinned
         contract), so no clamp is applied here.
 
-        WSM6 additionally requires ``rho_dry``; a P3 seam REFUSES it,
-        because P3's kernels derive density from the EOS pressure
-        exactly where the authority does (module_mp_p3.F:2293 region)
-        and an accepted-but-unread input reads as configuration the run
-        does not have.  Returns per-call surface diagnostics as
-        ``[column]`` copies: ``rainncv``/``snowncv`` (mm) and ``sr``
-        for both schemes, plus ``graupelncv`` for WSM6 only -- P3's one
-        ice category has no graupel species, and a permanent zero key
-        would let a consumer claim a field the scheme never has (the
-        mp=50 five-slot argument in gpuwm/core/physics_inventory.py).
+        WSM6 alone requires ``rho_dry`` (its adapter derives
+        rho = 1/alt); the P3 and aerosol-aware Thompson rows REFUSE it,
+        because both build density from the EOS pressure inside their
+        own kernels -- P3 where module_mp_p3.F does, mp=28 at
+        module_mp_thompson.F:1802 -- and an accepted-but-unread input
+        reads as configuration the run does not have
+        (:data:`_RHO_DRY_REFUSAL_BY_SCHEME`).  Returns per-call surface
+        diagnostics as ``[column]`` copies: ``rainncv``/``snowncv``
+        (mm) and ``sr`` for every scheme, plus ``graupelncv`` for the
+        rows with a graupel category (WSM6 and mp=28).  P3's one ice
+        category has no graupel species, and a permanent zero key would
+        let a consumer claim a field the scheme never has (the mp=50
+        five-slot argument in gpuwm/core/physics_inventory.py).
+
+        On a ``"thompson_aero"`` seam the FIRST call of a freshly
+        constructed seam runs ``thompson_init`` on the caller's bound
+        arrays before the microphysics step (module docstring, FIRST
+        CONTACT): WRF's two ``MAXVAL`` tests decide per field whether
+        the caller brought aerosol, the synthetic profile fills whichever
+        is absent, and ``nwfa2d`` derives from the lowest level either
+        way.  ``aerosol_init_receipt`` reports what ran; a restored seam
+        carries the receipt and never re-fills.
 
         ``refl_10cm_due`` is WRF's history-step ``diagflag``: when True the
         scheme adapter computes REFL_10CM inside the same microphysics call
@@ -1003,10 +1193,12 @@ class MpasColumnBatchPhysics:
         cp = self._cp
         nz, ncol = self._nz, self._ncol
         level, iface = (nz, ncol), (nz + 1, ncol)
-        wsm6 = self._microphysics_scheme == "wsm6"
+        scheme = self._microphysics_scheme
+        wsm6 = scheme == "wsm6"
         species = self._require_species(
             "run_phase2", qv=qv, qc=qc, qr=qr, qi=qi, qs=qs, qg=qg,
-            ni=ni, nr=nr, qir=qir, qib=qib)
+            ni=ni, nr=nr, qir=qir, qib=qib, nc=nc, nwfa=nwfa,
+            nifa=nifa)
         if wsm6 and rho_dry is None:
             raise ValueError(
                 "run_phase2: microphysics_scheme='wsm6' requires "
@@ -1014,10 +1206,9 @@ class MpasColumnBatchPhysics:
                 "gpuwm/core/wsm6.py:109-112)")
         if not wsm6 and rho_dry is not None:
             raise ValueError(
-                "run_phase2: microphysics_scheme='p3' does not consume "
-                "rho_dry -- P3's kernels derive density from the EOS "
-                "pressure where the authority does (module_mp_p3.F), "
-                "and an accepted-but-unread input reads as "
+                f"run_phase2: microphysics_scheme={scheme!r} does not "
+                f"consume rho_dry -- {_RHO_DRY_REFUSAL_BY_SCHEME[scheme]}"
+                ", and an accepted-but-unread input reads as "
                 "configuration the run does not have")
         for name, value in (("theta", theta), ("pressure", pressure),
                             *species.items()):
@@ -1044,12 +1235,19 @@ class MpasColumnBatchPhysics:
             alt = state.scratch((nz, 1, ncol), "physics_column_alt")
             cp.divide(cp.float32(1.0), v3(rho_dry), out=alt)
             state.alt = alt
-        # P3 reads php/phb for z8w only (gpuwm/core/p3.py mp_z8w) and
-        # never touches state.alt; the php binding below serves both.
+        # P3 (gpuwm/core/p3.py mp_z8w) and aerosol-aware Thompson
+        # (gpuwm/core/microphysics_aerosol.py's z8w/dz prep) both read
+        # php/phb for z8w only and never touch state.alt; the php
+        # binding below serves every row.
         php = state.scratch((nz + 1, 1, ncol), "physics_column_php")
         cp.multiply(v3(z_interface), cp.float32(_constants.G), out=php)
         state.php = php
         try:
+            if scheme == "thompson_aero" and self._aerosol_init is None:
+                # FIRST CONTACT: WRF's once-per-domain thompson_init, on
+                # the state WRF's init would test -- the caller's own
+                # arrays, the caller's own geometry.
+                self._aerosol_init = self._thompson_first_contact()
             # THE ARW POST-RK PAIR (gpuwm/core/dycore.py:2507-2510):
             # microphysics dispatch, then the driver's bucket/RAINBL
             # acceptance.
@@ -1061,7 +1259,7 @@ class MpasColumnBatchPhysics:
                 "snowncv": diagnostics.snowncv.reshape(ncol).copy(),
                 "sr": diagnostics.sr.reshape(ncol).copy(),
             }
-            if wsm6:
+            if self._has_graupel:
                 receipt["graupelncv"] = (
                     diagnostics.graupelncv.reshape(ncol).copy())
             if refl_10cm_due:
@@ -1084,13 +1282,73 @@ class MpasColumnBatchPhysics:
         return receipt
 
     # ------------------------------------------------------------------
+    def _thompson_first_contact(self) -> dict:
+        """``thompson_init`` on the caller's bound mp=28 state, once.
+
+        Called from ``run_phase2`` with the caller's species views and
+        ``php = z_interface*g`` bound.  ``thompson_aerosol_init_fill``
+        is the port of thompson_init:480-551: two independent
+        ``MAXVAL`` presence tests, the synthetic CCN/IN profile for
+        each absent field, and -- inside the CCN fill -- ``nwfa2d``
+        from the lowest level (:509-510).  When the caller brought its
+        own water-friendly aerosol the fill does not run and WRF's
+        ``nwfa2d`` comes from real.exe instead: the climatology branch
+        derives it from the lowest level with the SAME expression
+        (dyn_em/module_initialize_real.F:4518-4519, ``z1`` the lowest
+        layer's geopotential depth), which is what runs here.
+        ``nifa2d`` is zero in every WRF branch and is left alone.
+        """
+        from gpuwm.core.microphysics_aerosol import (
+            thompson_aerosol_init_fill)
+        cp = self._cp
+        state = self._state
+        filled = thompson_aerosol_init_fill(state, self._cfg)
+        ccn_filled, in_filled = bool(filled["ccn"]), bool(filled["in"])
+        if ccn_filled:
+            nwfa2d_source = "thompson_init"
+        else:
+            # module_initialize_real.F:4518-4519, in WRF's own
+            # single-precision evaluation order:
+            #   z1 = (phb(i,2,j) - phb(i,1,j)) / g
+            #   qnwfa2d(i,j) = qnwfa(i,1,j) * 0.000196 * (50./z1)
+            # phb is zero on this state, so the lowest layer's depth is
+            # the bound php's.
+            z1 = cp.divide(cp.subtract(state.php[1], state.php[0]),
+                           cp.float32(_constants.G))
+            cp.multiply(
+                cp.multiply(state.nwfa[0], cp.float32(0.000196)),
+                cp.divide(cp.float32(50.0), z1),
+                out=state.nwfa2d)
+            nwfa2d_source = "caller-aerosol"
+        return {"ccn_filled": ccn_filled, "in_filled": in_filled,
+                "nwfa2d_source": nwfa2d_source}
+
+    @property
+    def aerosol_init_receipt(self):
+        """The seam's ``thompson_init`` receipt, or None.
+
+        None on a scheme without aerosol state and on an mp=28 seam
+        before its first ``run_phase2``.  Afterwards a dict:
+        ``ccn_filled``/``in_filled`` (which of WRF's two synthetic
+        profile fills ran -- False means the caller brought that
+        field) and ``nwfa2d_source`` (``"thompson_init"`` when the CCN
+        fill derived the surface emission at :509-510,
+        ``"caller-aerosol"`` when real.exe's climatology-branch form
+        derived it from the caller's lowest level).  Rides the restart
+        payload.
+        """
+        return None if self._aerosol_init is None else dict(
+            self._aerosol_init)
+
+    # ------------------------------------------------------------------
     def accumulated_precipitation(self) -> dict:
         """Host-visible bucket copies: RAINNC/SNOWNC[/GRAUPELNC]/RAINC (mm).
 
         The buckets accumulate in the seam across phase-2 calls (the
         RAINNC family) and phase-1 cumulus steps (RAINC); a batch with
         no cumulus scheme reports RAINC as zeros, WRF's own convention.
-        GRAUPELNC is reported for WSM6 only: P3's driver arm binds five
+        GRAUPELNC is reported for the rows with a graupel category
+        (WSM6 and aerosol-aware Thompson).  P3's driver arm binds five
         slots and no graupel accumulator (gpuwm/core/
         physics_inventory.py mp=50 row), and reporting a permanent zero
         would let output claim a graupel field P3 never has.
@@ -1099,7 +1357,7 @@ class MpasColumnBatchPhysics:
         ncol = self._ncol
         state, driver = self._state, self._driver
         buckets = [("RAINNC", "mp_rainnc"), ("SNOWNC", "mp_snownc")]
-        if self._microphysics_scheme == "wsm6":
+        if self._has_graupel:
             buckets.append(("GRAUPELNC", "mp_graupelnc"))
         out = {}
         for name, slot in buckets:
@@ -1174,23 +1432,31 @@ class MpasColumnBatchPhysics:
         arrays = {key: cp.asnumpy(value)
                   for key, value in self._restart_manifest().items()}
         kf_time = getattr(driver.cumulus_callable, "_history_time", None)
+        scalars = {
+            "step_index": self._step_index,
+            "elapsed_seconds": self._state.elapsed_seconds,
+            "call_counts": dict(driver.call_counts),
+            "microphysics_updates":
+                int(driver.microphysics_updates),
+            "ysu_nan_guard_fires": int(driver.ysu_nan_guard_fires),
+            "kf_history_time": (None if kf_time is None
+                                else float(kf_time)),
+            # Carrier provenance (schema v2, see RESTART_SCHEMA):
+            # the buffers ride the array manifest; who wrote them
+            # and when rides here.
+            "carriers": driver.carriers.state(),
+        }
+        if self._microphysics_scheme == "thompson_aero":
+            # Scheme-asymmetric like the identity's "microphysics" key:
+            # the wsm6/p3 payloads stay byte-identical.  A restored
+            # mp=28 seam must know first contact already happened, or
+            # its next run_phase2 would re-run thompson_init's presence
+            # tests on a checkpointed field.
+            scalars["aerosol_init"] = self.aerosol_init_receipt
         return {
             "identity": dict(self._identity),
             "arrays": arrays,
-            "scalars": {
-                "step_index": self._step_index,
-                "elapsed_seconds": self._state.elapsed_seconds,
-                "call_counts": dict(driver.call_counts),
-                "microphysics_updates":
-                    int(driver.microphysics_updates),
-                "ysu_nan_guard_fires": int(driver.ysu_nan_guard_fires),
-                "kf_history_time": (None if kf_time is None
-                                    else float(kf_time)),
-                # Carrier provenance (schema v2, see RESTART_SCHEMA):
-                # the buffers ride the array manifest; who wrote them
-                # and when rides here.
-                "carriers": driver.carriers.state(),
-            },
+            "scalars": scalars,
         }
 
     def restore_state(self, payload: dict) -> None:
@@ -1263,6 +1529,16 @@ class MpasColumnBatchPhysics:
         adapter = driver.cumulus_callable
         if adapter is not None and hasattr(adapter, "_history_time"):
             adapter._history_time = scalars["kf_history_time"]
+        if self._microphysics_scheme == "thompson_aero":
+            if "aerosol_init" not in scalars:
+                raise ValueError(
+                    "restart payload lacks scalars['aerosol_init']: an "
+                    "mp=28 payload records whether thompson_init's "
+                    "first contact ran, and without it a restored seam "
+                    "would re-test a checkpointed aerosol field")
+            receipt = scalars["aerosol_init"]
+            self._aerosol_init = (None if receipt is None
+                                  else dict(receipt))
         # Carrier provenance (schema v2): the held radiation buffers were
         # restored as driver arrays above; this restores WHO wrote them
         # and WHEN, so the first radiation-not-due step's LSM consumption

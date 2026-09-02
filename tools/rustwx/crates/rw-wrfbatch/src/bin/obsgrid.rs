@@ -2,7 +2,7 @@
 //! render path.
 //!
 //! The observation file is already classic NetCDF on the model mass grid
-//! (`gpuwm-obs.radar-grid.v1`), so this is a read problem and not a write
+//! (`gpuwm-obs.radar-grid`, v1 and v2), so this is a read problem and not a write
 //! problem -- and materialising it as a fake wrfout would make the
 //! renderer's `TitleProvenance::LocalImport` state that a model produced
 //! observations.  Site markers and range rings ride on the same

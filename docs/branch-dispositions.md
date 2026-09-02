@@ -106,6 +106,7 @@ branches, which is the accounting working.
 |---|---|---|
 | feature/arwen-global-level5 | active-lane | global-model physics line, in progress |
 | lane/cycle-children | active-lane | confirmed daemon-crasher fix (64b728a60) queued into the salvage fold |
+| lane/da | active-lane | level5 programme (separate agent): global-core audit lane |
 | lane/engine-261 | active-lane | the 2.6.1 integration lane itself |
 | lane/engine-261-da | active-lane | 2.6.1 fold lane (DA cluster) |
 | lane/engine-261-finemesh | active-lane | 2.6.1 fold lane (fine-mesh unlock) |
@@ -114,11 +115,17 @@ branches, which is the accounting working.
 | lane/engine-261-salvage | active-lane | the salvage lane folding the triage's confirmed defect carriers; this ledger and its gate live here |
 | lane/engine-261-spectral | active-lane | 2.6.1 fold lane (spectral subsystem) |
 | lane/engine-per-time-decode | active-lane | mid-fold for 2.6.1; the stranding that set the pattern for this whole ledger |
+| lane/engine-riders-262 | active-lane | the 2.6.2 rider lane: release-line defects the 2.6.1 merge surfaced |
 | lane/harness-falsegreen-11 | active-lane | confirmed cross-checkout import refusal (2 of 4 commits), queued into the salvage fold |
+| lane/insitu | active-lane | level5 programme (separate agent): global-core audit lane |
+| lane/instruments | active-lane | level5 programme (separate agent): global-core audit lane |
+| lane/transform | active-lane | level5 programme (separate agent), created 2026-09-01 mid-session; not this line's to merge |
 | lane/meshgen-degeneracy | active-lane | one-line trace-precision fix, queued into the salvage fold |
 | lane/p3-tables-state-audit | active-lane | confirmed table-version refusal dead code, queued into the salvage fold |
 | lane/prove-fine-mesh | active-lane | the only categorical-supersample implementation; folding via lane/engine-261-finemesh |
+| lane/semi-implicit | active-lane | level5 programme (separate agent): global-core lane, created 2026-09-01; not this line's to merge |
 | lane/spectral-level2 | active-lane | complete Level-2 spectral operator subsystem; folding via lane/engine-261-spectral |
+| lane/statics | active-lane | level5 programme (separate agent): global-core lane, created 2026-09-01; not this line's to merge |
 | lane/tiles-small-card-236 | active-lane | small-card sizing-gate fixes, queued into the salvage fold |
 | lane/verify-real-card-3080 | active-lane | exFAT output_root defect record, queued into the salvage fold |
 | p3/front-door-20260829 | active-lane | four measured engine fixes plus the campaign gate file, queued into the salvage fold |

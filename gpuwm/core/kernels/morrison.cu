@@ -611,6 +611,32 @@ __device__ __forceinline__ void morr_process_level(
         if (target > *ni + *ns + *ng) {
             r.nnuccd = (target - *ni - *ns - *ng) / dt;
             r.mnuccd = r.nnuccd * MMI0;
+            // Deposition nucleation may not consume vapor that is not
+            // there.  Below ~159 K POLYSVP's extrapolated liquid curve
+            // drops under its ice curve, EIS = min(EW, ...) makes
+            // qvi == qvs, and the 0.999*QVS trigger fires with qv AT OR
+            // BELOW ice saturation; the FUDGEF rescale below skips the
+            // dum <= 0 / sum_dep > 0 sign pair, so the unbounded MNUCCD
+            // drove a polar-night model-top level to qv = -1.6e-4 kg/kg
+            // (T255 native-suite abort at hour 49 of a 384 h run,
+            // 2026-09-01).  Bound the nucleated mass by the vapor excess
+            // over ice saturation and scale the number moment with it:
+            // both sides of the process shrink together, so no crystal
+            // count appears whose seed mass never existed.  Documented
+            // divergence: module_mp_morr_two_moment.F carries the same
+            // one-sided limiter but has no 156 K levels to reach it with.
+            // The bound also engages above the trap, in cold first
+            // nucleation whose excess is under the Cooper embryo mass
+            // (the 1.08 ice-supersaturation arm near 200 K, a reachable
+            // WRF tropopause state): there the dum > 0 FUDGEF branch
+            // already caps the MASS in both models, so qv and qi match
+            // WRF and only the number moment shrinks -- crystals keep
+            // MI0 seed mass instead of WRF's mass-starved count.
+            real avail = fmaxf(*qv - qvi, 0.0f) / dt;
+            if (r.mnuccd > avail) {
+                r.nnuccd *= avail / r.mnuccd;
+                r.mnuccd = avail;
+            }
         }
     }
 

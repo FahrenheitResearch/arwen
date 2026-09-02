@@ -1,8 +1,13 @@
 """Stage and publish the WPS_GEOG mirror to Hugging Face.
 
-The mirror (:data:`gpuwm.geog_assets.HF_MIRROR_REPO`) republishes the
-nine NCAR per-dataset WPS_GEOG tarballs **byte-for-byte** so `gpuwm
-fetch-geog` gets CDN bandwidth while one pin table covers both hosts.
+The mirror (:data:`gpuwm.geog_assets.HF_MIRROR_REPO`) republishes every
+archive in :data:`gpuwm.geog_assets.GEOG_ARCHIVES` **byte-for-byte** --
+the nine standard WPS_GEOG tarballs and the Noah-MP ``soilgrids``
+archive the mesh door requires -- so `gpuwm fetch-geog` gets CDN
+bandwidth while one pin table covers both hosts.  A pinned archive
+with no row here is exactly how the mirror lagged the pin table by a
+full archive for nine days in 2026-08; ``prepare`` refuses the staging
+directory until every pinned archive is present and verified.
 This script is the only publication path:
 
     # 1. verify the staged tarballs against the packaged pins and
@@ -74,6 +79,12 @@ _PROVENANCE = {
         "1-degree annual-mean deep-soil temperature climatology",
         "distributed with WPS by NCAR; ultimate source not stated on "
         "NCAR's pages"),
+    "soilgrids": (
+        "Noah-MP soil composition and four-layer texture (seven WPS "
+        "datasets under one parent); required by the `gpuwm mesh` door "
+        "only",
+        "distributed with WPS by NCAR for Noah-MP; the name matches ISRIC "
+        "SoilGrids, ultimate source not stated on NCAR's pages"),
 }
 
 
@@ -104,11 +115,13 @@ tags:
 A **byte-for-byte mirror** of the nine standard NCAR WPS v4
 geographical (static) dataset tarballs that
 [ArWen](https://github.com/FahrenheitResearch/arwen)'s static builder
-reads -- republished here for CDN bandwidth.  The authoritative source
+reads, plus the Noah-MP `soilgrids` archive its `gpuwm mesh` door
+requires -- republished here for CDN bandwidth.  The authoritative source
 is NCAR/UCAR's WPS geographical data distribution:
 <{NCAR_BASE_URL.rsplit('/', 2)[0]}/users/download/get_sources_wps_geog.html>
 (tarballs under `{NCAR_BASE_URL}/`).  Nothing is modified: each file
-here is the NCAR tarball as downloaded on 2026-07-29, and the SHA-256
+here is the NCAR tarball as downloaded on 2026-07-29 (`soilgrids.tar.bz2`
+on 2026-09-01, matching the pin gpuwm computed on 2026-08-23), and the SHA-256
 pins below are enforced by `gpuwm fetch-geog` for downloads from this
 mirror and from NCAR alike.
 
@@ -120,8 +133,9 @@ gpuwm fetch-geog          # this mirror, verified against the pins
 gpuwm fetch-geog --source ncar   # upstream instead
 ```
 
-Or plain HTTPS: `.../resolve/main/<filename>` and untar the nine
-tarballs into one directory.  `MANIFEST.sha256` is `sha256sum -c`
+Or plain HTTPS: `.../resolve/main/<filename>` and untar the
+tarballs into one directory (`soilgrids.tar.bz2` carries its seven
+datasets under one parent; `gpuwm fetch-geog` lays them out).  `MANIFEST.sha256` is `sha256sum -c`
 compatible.
 
 ## Pinned contents
@@ -212,8 +226,8 @@ def upload(archives: Path, repo: str, private: bool) -> int:
         repo_id=repo, repo_type="dataset", folder_path=str(archives),
         allow_patterns=[a.filename for a in GEOG_ARCHIVES]
         + [MANIFEST_NAME, README_NAME],
-        commit_message="WPS_GEOG mirror snapshot (NCAR bytes of "
-                       "2026-07-29, pinned in gpuwm.geog_assets)")
+        commit_message="WPS_GEOG mirror snapshot: every archive pinned in "
+                       "gpuwm.geog_assets, NCAR bytes verified by prepare")
     print(f"upload: published to https://huggingface.co/datasets/{repo}")
     print("upload: smoke-check the resolve route with:\n"
           "  GPUWM_NETWORK_TESTS=1 python -m pytest "

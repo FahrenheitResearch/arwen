@@ -1928,10 +1928,10 @@ def cal_cldfra1(qv, qc, qi, qs, tlay, play, *, f_qc=True, f_qi=True,
             "(module_radiation_driver.F:3870-3877), qc+qi with no snow "
             "species (the P3 arm, :3879-3887) and qc alone (:3891-3899). "
             f"f_qc={bool(f_qc)}/f_qi={bool(f_qi)}/f_qs={bool(f_qs)} is "
-            "WRF's mp=5 arm at :3902-3922, whose weight is the F_ICE_PHY "
-            "ice fraction this port does not carry -- taking any other arm "
-            "for it would weight the saturation blend with a field that "
-            "does not exist")
+            "WRF's Ferrier arm (mp_physics=5) at :3902-3922, whose weight "
+            "is the F_ICE_PHY ice fraction this port does not carry -- "
+            "taking any other arm for it would weight the saturation "
+            "blend with a field that does not exist")
     qcldmin = DTYPE(1.0e-12)
     svpt0 = DTYPE(273.15)
     tc = tlay - svpt0

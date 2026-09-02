@@ -145,7 +145,9 @@ def resolve_static_bridge() -> Path:
     override = os.environ.get(STATIC_BRIDGE_ENV)
     for candidate in library_candidates():
         if candidate.is_file():
-            return candidate.resolve()
+            from gpuwm.bridges import accept_resolved
+
+            return accept_resolved(candidate.resolve(), executable=False)
         if override and candidate == Path(override):
             raise FileNotFoundError(
                 f"{STATIC_BRIDGE_ENV} names a missing file: {candidate}")

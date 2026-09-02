@@ -341,8 +341,35 @@ def test_the_species_rows_are_pinned_per_scheme():
     assert mcb._SPECIES_BY_SCHEME == {
         "wsm6": ("qv", "qc", "qr", "qi", "qs", "qg"),
         "p3": ("qv", "qc", "qr", "qi", "ni", "nr", "qir", "qib"),
+        "thompson_aero": ("qv", "qc", "qr", "qi", "qs", "qg",
+                          "ni", "nr", "nc", "nwfa", "nifa"),
     }
     assert mcb._SPECIES == mcb._SPECIES_BY_SCHEME["wsm6"]
+    assert mcb._MP_PHYSICS_BY_SCHEME == {
+        "wsm6": 6, "p3": 50, "thompson_aero": 28}
+    assert set(mcb._MP_PHYSICS_BY_SCHEME) == set(mcb._SPECIES_BY_SCHEME)
+
+
+def test_the_mp28_row_matches_the_hex_scalar_requirement_row():
+    """The mp=28 species row is a CROSS-PROGRAM contract.
+
+    hexcore's ``_required_scalar_names`` requires exactly
+    ``qv/qc/qr/qi/qs/qg`` + ``nr/ni`` + ``nc/nwfa/nifa`` for
+    mp_physics=28 (MPAS-A allocates and round-trips the same set,
+    mpas_atmphys_interface.F:653-702).  If the two sides disagree the
+    hex route either cannot construct the seam or constructs it on a
+    species set the scheme does not write.  DomainState's own mp=28
+    tuple is the third copy and is checked here too: the seam must not
+    transport a field the engine state has no slot for.
+    """
+    from gpuwm.core.moist import THOMPSON_AERO_NUMBER_SPECIES
+    row = set(mcb._SPECIES_BY_SCHEME["thompson_aero"])
+    assert row == {"qv", "qc", "qr", "qi", "qs", "qg",
+                   "nr", "ni", "nc", "nwfa", "nifa"}
+    assert set(THOMPSON_AERO_NUMBER_SPECIES) < row
+    # No black carbon anywhere: WRF's qnbca arrives only with
+    # wif_input_opt=2 and no ArWen state allocates it.
+    assert "nbca" not in row and "qnbca" not in row
 
 
 def test_the_restart_state_rows_are_pinned_per_scheme():
@@ -358,13 +385,55 @@ def test_the_restart_state_rows_are_pinned_per_scheme():
     assert mcb._STATE_RESTART_FIELDS_BY_SCHEME == {
         "wsm6": ("effc", "effi", "effs", "h_diabatic"),
         "p3": ("effc", "effi", "h_diabatic", "th_old", "qv_old"),
+        "thompson_aero": ("effc", "effi", "effs", "h_diabatic",
+                          "nwfa2d", "nifa2d"),
     }
+
+
+def test_the_mp28_restart_row_carries_the_surface_emission_pair():
+    """nwfa2d/nifa2d are the mp=28 analogue of P3's th_old/qv_old.
+
+    Both are INTENT(IN) to every microphysics call (module_mp_thompson.F
+    :1310-1327): thompson_init derives nwfa2d once at construction and
+    nothing in mp_gt_driver ever refills either.  A row that lost them
+    would resume with the surface aerosol source silently at zero and
+    no error anywhere -- the aerosol physics would be inert in exactly
+    the way microphysics.microphysics_init's docstring names as the
+    scheme's most dangerous failure mode.
+    """
+    row = mcb._STATE_RESTART_FIELDS_BY_SCHEME["thompson_aero"]
+    assert ("nwfa2d", "nifa2d") == row[-2:]
+    # mp=28 keeps WSM6's radius TRIPLE: mp_gt_driver seeds and clamps
+    # re_qc/re_qi/re_qs from the same RE_*_BG parameters.
+    assert "effs" in row
+    assert "effs" not in mcb._STATE_RESTART_FIELDS_BY_SCHEME["p3"]
+
+
+def test_the_graupel_bearing_rows_are_pinned():
+    """Which rows report graupelncv/GRAUPELNC, and which cannot.
+
+    mp=28 has a graupel category and its driver arm binds
+    GRAUPELNC/GRAUPELNCV; P3 has one ice category and binds neither
+    (gpuwm/core/physics_inventory.py's mp=50 surface-slot row), so a
+    permanent zero key would let a consumer claim a field P3 never has.
+    """
+    assert mcb._GRAUPEL_SCHEMES == frozenset({"wsm6", "thompson_aero"})
+    assert set(mcb._RHO_DRY_REFUSAL_BY_SCHEME) == (
+        set(mcb._SPECIES_BY_SCHEME) - {"wsm6"}), (
+            "every non-WSM6 row must name why it refuses rho_dry")
 
 
 def test_an_unknown_microphysics_scheme_refuses_with_the_roster():
     with pytest.raises(ValueError, match="microphysics_scheme"):
         mcb.run_mpas_column_batch(**_constructor_kwargs(
             microphysics_scheme="thompson"))
+
+
+def test_thompson_aero_refuses_the_wsm6_hail_knob():
+    """The knob is WSM6's; on an mp=28 seam it would be ignored."""
+    with pytest.raises(ValueError, match="wsm6_hail_opt"):
+        mcb.run_mpas_column_batch(**_constructor_kwargs(
+            microphysics_scheme="thompson_aero", wsm6_hail_opt=1))
 
 
 def test_p3_refuses_the_wsm6_hail_knob():
@@ -384,9 +453,29 @@ def test_phase_signatures_carry_the_p3_species_keywords():
     for method in (mcb.MpasColumnBatchPhysics.run_phase1,
                    mcb.MpasColumnBatchPhysics.run_phase2):
         parameters = inspect.signature(method).parameters
-        for name in ("ni", "nr", "qir", "qib"):
+        for name in ("ni", "nr", "qir", "qib", "nc", "nwfa", "nifa"):
             assert name in parameters
             assert parameters[name].default is None
     phase2 = inspect.signature(
         mcb.MpasColumnBatchPhysics.run_phase2).parameters
     assert phase2["rho_dry"].default is None
+
+
+def test_mp28_first_contact_lives_in_phase2_and_rides_the_payload():
+    """thompson_init on the caller's arrays can only run where the seam
+    holds them writable: phase 2.  Phase 1 is read-only by law, so the
+    first-contact hook must not appear there; and export/restore must
+    carry the receipt, or a restored seam would re-run thompson_init's
+    presence tests on a checkpointed aerosol field.
+    """
+    import inspect
+    phase1 = inspect.getsource(mcb.MpasColumnBatchPhysics.run_phase1)
+    phase2 = inspect.getsource(mcb.MpasColumnBatchPhysics.run_phase2)
+    assert "_thompson_first_contact" not in phase1
+    assert "_thompson_first_contact" in phase2
+    export = inspect.getsource(mcb.MpasColumnBatchPhysics.export_state)
+    restore = inspect.getsource(mcb.MpasColumnBatchPhysics.restore_state)
+    assert "aerosol_init" in export and "aerosol_init" in restore
+    assert isinstance(
+        inspect.getattr_static(mcb.MpasColumnBatchPhysics,
+                               "aerosol_init_receipt"), property)

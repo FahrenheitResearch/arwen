@@ -149,3 +149,57 @@ def test_auto_with_unusable_runtime_names_the_runtime(
     err = capsys.readouterr().err
     assert err.count("\n") == 1
     assert "13" in err
+
+
+# ---------------------------------------------------------------------------
+# The remedy names what is certified, not what merely installs
+# ---------------------------------------------------------------------------
+
+def _remedy_install_lines():
+    """The lines the reader is told to RUN, not the ones explaining."""
+
+    from gpuwm.ingest.preprocess_backend import _GPU_PREPROCESS_REMEDY
+
+    return [line.strip() for line in _GPU_PREPROCESS_REMEDY.splitlines()
+            if line.strip().startswith("remedy:")]
+
+
+def test_the_gpu_preprocess_remedy_names_only_a_certified_pair():
+    """Following the remedy used to land on an UNCERTIFIED pair.
+
+    The text sent a CUDA-13 box to `pip install 'gpuwm[gpu-cu13]'`, but
+    the auto resolver certifies only the CUDA 12.x runtime family, so
+    the user who did exactly that got preprocessing on the CPU backend
+    and no sentence tying it to the advice they had followed.  A remedy
+    names what is certified or it is not a remedy.
+    """
+
+    lines = _remedy_install_lines()
+    assert lines, "the remedy stopped naming a command to run"
+    assert all("gpu-cu12" in line for line in lines), lines
+    assert not any("gpu-cu13" in line for line in lines), lines
+
+
+def test_the_remedy_states_the_certified_family_and_the_cuda13_outcome():
+    """cu13 is still described -- as what it is, not as a way to the GPU."""
+
+    from gpuwm.ingest.preprocess_backend import _GPU_PREPROCESS_REMEDY
+
+    text = _GPU_PREPROCESS_REMEDY
+    assert "CUDA 12.x runtime family only" in text
+    assert "no certified GPU preprocessing pair" in text
+    assert "CPU backend" in text
+
+
+def test_the_certified_range_is_the_pin_not_a_restated_literal():
+    """Three copies of a literal pair is how the answers drift apart."""
+
+    import inspect
+
+    from gpuwm import ingest
+    from gpuwm.gpu_stack_identity import CUDA_RUNTIME_RANGE
+
+    source = inspect.getsource(ingest.preprocess_backend)
+    assert "CUDA_RUNTIME_RANGE" in source
+    assert "12_000 <= runtime_version < 13_000" not in source
+    assert CUDA_RUNTIME_RANGE == (12_000, 13_000)

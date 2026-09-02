@@ -21,6 +21,12 @@ The MCP SDK is the `[mcp]` extra; the base wheel is unchanged:
 pip install gpuwm[mcp]
 ```
 
+The extra resolves `mcp>=1.26,<2`.  The ceiling is exclusive and
+deliberate: this server speaks the 1.x FastMCP surface, 2.x renamed it,
+and a floor with no ceiling resolves to whichever SDK is newest -- which
+is by definition the one this server has never run on.  If you pin the
+SDK yourself, pin it inside that range.
+
 Claude Code registration -- put this in the project's `.mcp.json`
 (committed copy: `examples/mcp/claude-code.mcp.json`):
 

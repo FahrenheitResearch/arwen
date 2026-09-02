@@ -767,6 +767,11 @@ tests/test_chain_stage_env.py
 tests/test_cli.py
 tests/test_bridge_fetch.py
 tests/test_table_fetch.py
+# The fetch-geog contract: the pin table, the mirror/NCAR routes and the
+# mirror publisher's coverage of every pinned archive.  On no list until
+# 2026-09-01, when the mirror turned out to have lagged the pin table by a
+# whole archive (soilgrids) for nine days and nothing had said so.
+tests/test_fetch_geog.py
 tests/test_source_adapters.py
 tests/test_namelist_compat.py
 tests/test_bridge_bundle_adopt.py
@@ -1280,3 +1285,17 @@ tests/test_p3_identity_contract.py
 tests/test_p3_table_refusals.py
 tests/test_streaming_refused_door.py
 tests/test_tree_under_test.py
+# The Morrison deposition-freezing cold trap: below the 159.4887 K POLYSVP
+# crossover the unbounded MNUCCD withdrew 1.87e-4 kg/kg of vapor from the
+# 5.55e-8 kg/kg that existed, dt-independent, and a native run aborted on
+# negative qv.  CPU-only mirror, no cupy, runs under GPUWM_NO_LOCAL_GPU=1.
+tests/test_morrison_cold_trap.py
+
+# 2.6.2: a staged bridge that is not this release's binary must never
+# reach a door.  The published 2.6.1 resolved ~/.gpuwm/bridges/
+# rw_mpas_mesh.exe stamped with the v2.5.3 tag, doctor called it BROKEN,
+# and every ladder handed it to the routes anyway.  Listed because the
+# exemptions are the fragile half: an override, a dev build and both
+# libexec rungs must stay unjudged, or the developer path refuses on
+# every run.
+tests/test_bridge_stale_resolution.py

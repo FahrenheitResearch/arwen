@@ -1,4 +1,4 @@
-"""``gpuwm-obs.radar-grid.v1`` — gridded radar observations, the DA front door.
+"""``gpuwm-obs.radar-grid`` — gridded radar observations, the DA front door.
 
 This is the cross-lane contract: the DA lanes read this file and nothing
 upstream of it.  Everything a data assimilation step needs to use an
@@ -383,7 +383,10 @@ def write_radar_grid(path: str | Path, observations: GriddedObservations,
                      params: SuperobParams,
                      provenance: dict | None = None,
                      overwrite: bool = False) -> dict:
-    """Write one ``gpuwm-obs.radar-grid.v1`` file, atomically.
+    """Write one ``gpuwm-obs.radar-grid`` file, atomically.
+
+    The layout the observation set is in decides the version: a windowed
+    set writes v2, a whole-domain one writes v1.
 
     Returns the receipt: schema, status, path, byte count, sha256, and the
     grid identity the file is bound to.

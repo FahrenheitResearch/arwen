@@ -22,8 +22,12 @@ ancestors; for a relocated binary :func:`renderer_env` pins
 explicit ``RUSTWX_BASEMAP_DIR``/``RUSTWX_ASSETS_DIR`` in the caller's
 environment always wins.
 
-Nothing here runs cargo; resolution is read-only so ``gpuwm doctor``
-can report the estate without side effects.
+Nothing here runs cargo.  Resolution has one side effect and one
+only: an artifact found in ``~/.gpuwm/bridges`` that is not the one this
+release pinned is re-fetched before it is handed to a door
+(:func:`gpuwm.bridges.require_release_pin`).  ``gpuwm doctor`` resolves
+inside :func:`gpuwm.bridges.inspection_only`, where there is no side
+effect at all, so the report still says what the estate IS.
 """
 
 from __future__ import annotations
@@ -286,7 +290,7 @@ def find_renderer() -> Path | None:
     override = os.environ.get(RENDERER_ENV)
     for candidate in renderer_candidates():
         if candidate.is_file():
-            return bridges.ensure_executable(candidate.resolve())
+            return bridges.accept_resolved(candidate.resolve())
         if override and candidate == Path(override):
             raise FileNotFoundError(
                 f"{RENDERER_ENV} names a missing file: {candidate}.  "

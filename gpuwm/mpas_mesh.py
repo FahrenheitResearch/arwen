@@ -98,7 +98,7 @@ import tempfile
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
                            cargo_build_one_liner, default_bridge_dir,
-                           ensure_executable, executable_name,
+                           accept_resolved, executable_name,
                            packaged_bridge_dir)
 
 #: Schema of the sizing table this module reads.
@@ -232,7 +232,7 @@ class MpasBridge:
         override = os.environ.get(self.env_var)
         for candidate in self.candidates():
             if candidate.is_file():
-                return ensure_executable(candidate.resolve())
+                return accept_resolved(candidate.resolve())
             if override and candidate == Path(override):
                 raise FileNotFoundError(
                     f"{self.env_var} names a missing file: {candidate}")

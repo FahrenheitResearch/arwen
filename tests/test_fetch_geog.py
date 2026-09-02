@@ -877,3 +877,35 @@ def test_live_mirror_serves_the_pinned_bytes_sizes():
                             f"(HTTP {error.code}): {url}")
             raise
         assert length == archive.archive_bytes, url
+
+
+def _publish_tool():
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / "tools" / "publish_geog_mirror.py"
+    spec = importlib.util.spec_from_file_location("publish_geog_mirror", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_mirror_publisher_knows_every_pinned_archive():
+    """Every archive the pin table verifies has a provenance row, and the
+    mirror README renders with all of them.
+
+    The breakage this prevents: soilgrids was pinned on 2026-08-23 and the
+    publisher, written for nine tarballs, had no row for it -- so the
+    mirror lagged the pin table by a whole archive and every mesh-door
+    fetch 404'd on the default source until 2026-09-01.  A pinned archive
+    the publisher cannot render must fail here, not on the next mirror
+    snapshot.
+    """
+    tool = _publish_tool()
+    missing = [a.dataset for a in geog_assets.GEOG_ARCHIVES
+               if a.dataset not in tool._PROVENANCE]
+    assert missing == [], f"publisher has no provenance row for {missing}"
+    stale = sorted(set(tool._PROVENANCE) - {a.dataset for a in geog_assets.GEOG_ARCHIVES})
+    assert stale == [], f"publisher carries provenance for unpinned {stale}"
+    readme = tool._readme_text()
+    for archive in geog_assets.GEOG_ARCHIVES:
+        assert f"`{archive.filename}` | {archive.archive_bytes:,} | `{archive.archive_sha256}`" in readme
+        assert f"| `{archive.dataset}` |" in readme

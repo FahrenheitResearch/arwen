@@ -88,17 +88,59 @@ def package_data_root() -> Path:
     return _PACKAGE_DATA_ROOT
 
 
+def _public_version(version: str) -> str:
+    """``version`` with any PEP 440 local label (``+...``) removed.
+
+    ``.public`` and deliberately NOT ``.base_version``.  The local label
+    is the only part a private rebuild of a published release adds, and
+    dropping it is the whole job here; ``.base_version`` would also drop
+    the pre-release segment, collapsing ``2.7.0rc1`` into ``2.7.0``.
+    Those are two different cuts that ship two different companions, so
+    accepting one for the other is exactly the skew this lock exists to
+    refuse -- the strip has to be narrower than that.
+
+    Guarded the way :mod:`gpuwm.version_cli` guards its comparisons:
+    ``packaging`` is not a declared dependency, and without it the
+    partition on ``+`` gives the same answer for every version string
+    PEP 440 admits, because a local label is the only thing ``+`` can
+    introduce.
+    """
+
+    try:
+        from packaging.version import InvalidVersion, Version
+    except ImportError:
+        return version.partition("+")[0]
+    try:
+        return Version(version).public
+    except InvalidVersion:
+        return version.partition("+")[0]
+
+
 def _required_companion_version() -> str:
-    """The version the installed ``gpuwm`` was built against.
+    """The PUBLIC version the installed ``gpuwm`` was built against.
 
     Read from distribution metadata rather than restated, because the two
     are cut from one commit at one version and ``gpuwm`` pins
     ``gpuwm-data==`` that exact string.
+
+    PUBLIC, because the companion is cut per public release and only
+    ever published under one.  A PEP 440 local label (``2.6.1+<label>``)
+    marks a private rebuild of that SAME release: it reads the same
+    tables, and no companion wearing that label exists to install.
+    Comparing the full string refused the correct companion from every
+    locally-built wheel and then printed a remedy -- ``pip install
+    gpuwm-data==2.6.1+<label>`` -- that resolves to nothing.
+
+    ``_UNKNOWN_VERSION`` is returned untouched: it is a sentinel the
+    callers below compare against by identity, and its own ``+unknown``
+    is not a version label to strip.
     """
 
     from gpuwm import __version__
 
-    return __version__
+    if __version__ == _UNKNOWN_VERSION:
+        return __version__
+    return _public_version(__version__)
 
 
 def companion_install_command() -> str:
@@ -297,12 +339,16 @@ def _check_version() -> None:
         # Importable but not installed: a source checkout on sys.path.
         # Same reasoning as above -- nothing to compare.
         return
-    if found == required:
+    # Both sides stripped to their public version: the comparison asks
+    # "were these two cut from the same release", and a local label on
+    # either half does not change that answer.
+    if _public_version(found) == required:
         _VERSION_CHECKED = True
         return
+    from gpuwm import __version__ as installed
     raise ImportError(
         f"gpuwm REFUSES to read packaged reference data from a "
-        f"mismatched companion: gpuwm {required} requires "
+        f"mismatched companion: gpuwm {installed} requires "
         f"{COMPANION_DISTRIBUTION} {required}, found {found}.  The two "
         f"are cut from one commit and pinned `==`, so this install was "
         f"edited.  The tables are versioned data, not interchangeable "

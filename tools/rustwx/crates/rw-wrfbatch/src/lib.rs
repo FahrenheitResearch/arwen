@@ -8,8 +8,8 @@
 //!
 //! * `rw_ensbatch` -- ensemble products (mean, spread, NMEP, PMM,
 //!   paintball) from N member wrfouts at one valid time;
-//! * `rw_obsgrid` -- the `gpuwm-obs.radar-grid.v1` observation grid, read
-//!   natively rather than disguised as a forecast.
+//! * `rw_obsgrid` -- the `gpuwm-obs.radar-grid` observation grid (v1 and
+//!   the windowed v2), read natively rather than disguised as a forecast.
 //!
 //! Both need the same three things `rw_wrfbatch` already has: the hardened
 //! wrfout import ([`wrf_process`]), a way to put an arbitrary 2-D plane

@@ -225,6 +225,14 @@ SEVERITY_OPT_IN = "opt-in"
 #: stop those.  ``Check.blocking`` is the authority and
 #: :func:`blocking_gaps` states the rule.
 
+def _companion_distribution_name() -> str:
+    """The companion row's name, so cross-references cannot drift."""
+
+    from gpuwm import data_assets
+
+    return data_assets.COMPANION_DISTRIBUTION
+
+
 @dataclass(frozen=True)
 class Check:
     """One doctor line: verified/present/MISSING/info plus the remedy.
@@ -1414,6 +1422,11 @@ _IMPORT_NAME = {
 _DEEP_CHECKED = {
     "rasterio": "geography stack (rasterio + pyproj)",
     "pyproj": "geography stack (rasterio + pyproj)",
+    # Importability is not the question for the companion -- a skewed
+    # one imports perfectly.  :func:`_companion_pair_check` compares the
+    # versions, so the base-dependency line names the pin and points
+    # there instead of printing `ok` over an install that is not.
+    "gpuwm-data": "gpuwm-data",
 }
 
 
@@ -2647,6 +2660,16 @@ def _staged_estate_check() -> Check:
     * Absent is somebody else's line.  Every bundled artifact already
       has a check that names it when it is not staged, and printing the
       same gap twice gives a reader two counts of one estate.
+
+    The doors ask the same question now, at the moment they pick a file
+    (:func:`gpuwm.bridges.require_release_pin`, over the same pins and
+    the same size-and-SHA-256 comparison), which is what this line used
+    to say alone: node-1's report named the skew and every route went on
+    running the August bytes anyway.  This check keeps its own job --
+    saying what the estate IS, all of it, before anything opens a door
+    -- and stays a reader: it resolves inside
+    :func:`gpuwm.bridges.inspection_only` so measuring the box never
+    repairs it.
     """
 
     try:
@@ -2707,8 +2730,16 @@ def _staged_estate_check() -> Check:
             resolved = resolved if resolved.is_file() else None
         else:
             try:
-                resolved = bridges.find_artifact(artifact.env_var,
-                                                 pin.filename)
+                # Resolve as a READER.  Outside this scope the same call
+                # refreshes, or refuses on, exactly the artifacts this
+                # line exists to enumerate, and a check that repairs what
+                # it is measuring can only ever report a clean estate.
+                # `collect_checks` already holds this scope; it is
+                # repeated here because tests and embedders reach this
+                # function directly.
+                with bridges.inspection_only():
+                    resolved = bridges.find_artifact(artifact.env_var,
+                                                     pin.filename)
             except FileNotFoundError:
                 # The override names a missing file.  Its own check
                 # already reports that by name.
@@ -2744,14 +2775,20 @@ def _staged_estate_check() -> Check:
             _STAGED_ESTATE_NAME, "missing",
             f"{len(stale)} artifact(s) staged at {staged_dir} are NOT this "
             f"release's bytes: {', '.join(stale)}.  They exist and they "
-            "launch, so every other line above passes them; a route that "
-            "runs one of them meets a contract this release never tested "
-            f"({census}){assets_note}",
+            "launch, so every other line above passes them.  The doors no "
+            "longer do: a resolution that lands on one of these re-fetches "
+            "this release's bundle before the run continues and refuses by "
+            "name when it cannot, so what this line predicts is a run that "
+            "pauses to refresh -- or stops -- never one that silently "
+            f"diverges ({census}){assets_note}",
             "gpuwm fetch-bridges\n"
             "  # replaces every artifact whose bytes do not match the\n"
-            "  # packaged pins, then re-verifies size and SHA-256",
+            "  # packaged pins, then re-verifies size and SHA-256.\n"
+            "  # Doing it here is doing it deliberately, once, rather\n"
+            "  # than inside the next door that resolves one of them",
             action="gpuwm fetch-bridges",
-            brief=f"{len(stale)} staged artifact(s) predate this release",
+            brief=f"{len(stale)} staged artifact(s) are not "
+                  f"{pins.release}'s bytes",
             group=_GROUP_BRIDGES, severity=SEVERITY_BROKEN)
     if stale_assets or absent_assets:
         return Check(
@@ -3944,13 +3981,114 @@ def _cpu_library_check() -> Check:
 # Packaged tables: the model's own validators, not directory counts
 # ---------------------------------------------------------------------------
 
+def _companion_pair_check() -> Check:
+    """Are ``gpuwm`` and its ``gpuwm-data`` companion the same cut?
+
+    The breakage this prevents, measured on the published 2.6.1 wheel
+    with gpuwm-data downgraded to 2.6.0 beside it.  Doctor printed
+    ``ok  base dependencies ... gpuwm-data==2.6.1`` -- a green line
+    asserting the ``==`` pin was met over an install where it was not --
+    and said nothing else about the pair anywhere in the report.  Then,
+    on any box whose Thompson tables are not already staged under
+    ``~/.gpuwm``, the run died in a nine-frame ``ImportError`` raised
+    out of :func:`_thompson_tables_check`, because that check catches
+    file errors and the companion lock refuses with ``ImportError``.
+    Doctor's contract is a row and a remedy, never a traceback, so the
+    skew gets a row of its own and the pin's own line points here.
+
+    Metadata, not presence: a companion cut for another release has
+    every file and opens cleanly.  It is a different numerical setup
+    wearing the right filenames -- 2.6.1's radiation and microphysics
+    reading 2.6.0's k-distribution and lookup tables -- and it produces
+    numbers rather than an error, which is why nothing downstream can
+    see it and why it belongs in this report.
+    """
+
+    from gpuwm import data_assets
+
+    required = data_assets._required_companion_version()
+    distribution = data_assets.COMPANION_DISTRIBUTION
+    if required == data_assets._UNKNOWN_VERSION:
+        # gpuwm itself is a source tree no distribution provides.  There
+        # is no version to hold the companion to, so there is no skew to
+        # find and a gap here would name no breakage.
+        return Check(
+            distribution, "info",
+            f"gpuwm runs from a source tree no distribution provides, "
+            f"so there is no version to hold {distribution} to",
+            brief="source tree; no version to compare")
+    try:
+        found: str | None = importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        found = None
+    if found is None:
+        try:
+            importlib.import_module(data_assets.COMPANION_PACKAGE)
+        except ImportError:
+            return Check(
+                distribution, "missing",
+                f"gpuwm {required} pins {distribution}=={required} and no "
+                f"{distribution} distribution is installed; every packaged "
+                f"reference table (the RRTMGP k-distributions, the "
+                f"Thompson lookup tables) resolves through it",
+                data_assets.companion_install_command(),
+                action=data_assets.companion_install_command(),
+                brief="not installed", severity="broken")
+        # Importable but not installed: a source checkout on sys.path.
+        # data_assets deliberately does not compare in that shape, so
+        # neither does this row -- `verified` is not a word for a
+        # question nobody asked.
+        return Check(
+            distribution, "untested",
+            f"not tested: {data_assets.COMPANION_PACKAGE} imports from a "
+            f"source checkout that no distribution provides, so there is "
+            f"no companion version to compare against gpuwm {required}",
+            brief="source checkout; version not comparable")
+    if data_assets._public_version(found) == required:
+        return Check(
+            distribution, "verified",
+            f"gpuwm {required} and {distribution} {found} are the same "
+            f"cut, so every packaged table this install reads is the one "
+            f"its physics was built against",
+            brief=f"{distribution} {found} matches")
+    return Check(
+        distribution, "missing",
+        f"gpuwm {required} pins {distribution}=={required}, found "
+        f"{found}.  The two are cut from one commit, so this install was "
+        f"edited.  Running {required}'s radiation and microphysics "
+        f"against {found}'s k-distribution and lookup tables is a "
+        f"different numerical setup that produces numbers instead of an "
+        f"error, and no certification capsule can see it",
+        data_assets.companion_install_command(),
+        action=data_assets.companion_install_command(),
+        brief=f"{distribution} is {found}, needs {required}",
+        severity="broken")
+
+
 def _thompson_tables_check() -> Check:
     from gpuwm.core.thompson_contract import validate_table_assets
     from gpuwm.physics_compat import thompson_table_root
     from gpuwm.table_assets import (
         classify_assets, missing_externalized_assets)
 
-    root = thompson_table_root()
+    try:
+        root = thompson_table_root()
+    except ImportError as error:
+        # The companion refused: skewed, or absent with no staged root
+        # to fall to.  Resolving the root sits OUTSIDE the try below on
+        # purpose -- that one catches the file errors a validator raises
+        # -- and an ImportError crossing this frame is what turned
+        # `gpuwm doctor` into a traceback.  :func:`_companion_pair_check`
+        # above owns the verdict and the remedy; this row says only that
+        # it could not run, because two lines publishing one remedy is
+        # how a reader learns to read neither.
+        return Check(
+            "thompson tables", "untested",
+            f"not tested: the packaged table root could not be resolved "
+            f"-- {error}",
+            brief=f"companion refused; see the "
+                  f"{_companion_distribution_name()} line",
+            blocking=False, severity="degraded")
     try:
         assets = validate_table_assets(root)
     except (FileNotFoundError, ValueError, OSError) as error:
@@ -5005,9 +5143,159 @@ def _default_route_order() -> tuple[str, ...]:
     return tuple(executable) + tuple(sorted(rest, key=rank))
 
 
+#: Windows' classic path ceiling, measured rather than assumed.  On this
+#: project's own reference box (LongPathsEnabled = 0) a 259-character
+#: full path opened and a 260-character one failed with
+#: ERROR_PATH_NOT_FOUND -- errno 2, which surfaces as
+#: ``FileNotFoundError`` and reads as "the file is not there" rather than
+#: "the name is too long".  That is the same number
+#: :data:`gpuwm.render_layout._MAX_PATH` documents for the render tree;
+#: it is restated as an import below, not as a second literal.
+_LONG_PATH_ROW = "Windows long paths (install root depth)"
+
+
+def _long_paths_enabled() -> int | None:
+    """``LongPathsEnabled`` from the machine hive, or None if unreadable.
+
+    Absence is the same answer as 0: the value is created by whoever
+    turns the feature on, and a box that never turned it on has the
+    MAX_PATH ceiling.  None is reserved for "could not look", which is
+    not judged.
+    """
+
+    try:
+        import winreg
+    except ImportError:
+        return None
+    try:
+        with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\FileSystem") as key:
+            value, _kind = winreg.QueryValueEx(key, "LongPathsEnabled")
+            return int(value)
+    except FileNotFoundError:
+        return 0
+    except OSError:                          # noqa: BLE001 - reported
+        return None
+
+
+def _longest_kernel_source_path() -> "Path | None":
+    """The longest full path NVRTC's sources are read from, or None."""
+
+    try:
+        from gpuwm.core import kernels
+
+        kdir = Path(kernels.__file__).parent
+        sources = [path for path in kdir.iterdir()
+                   if path.suffix in (".cu", ".cuh")]
+    except Exception:                        # noqa: BLE001 - reported
+        return None
+    if not sources:
+        return None
+    return max(sources, key=lambda path: len(str(path)))
+
+
+def _long_path_install_root_check() -> Check:
+    """A deep install root that no other row would ever name.
+
+    The concrete breakage, and it is silent: every CUDA kernel this
+    model compiles is read off disk as text out of
+    ``gpuwm/core/kernels`` and handed to NVRTC as one source string.
+    There are no include paths to lengthen -- the length is the INSTALL
+    ROOT's.  Put the venv somewhere deep on a Windows box that never
+    enabled long paths and the read fails with ``FileNotFoundError`` on
+    a file that ``rglob`` had just listed, so the report reads as a
+    broken install rather than a path too long by four characters.
+    Nothing else in doctor measures the install root's depth, so the
+    box had no row to read.
+    """
+
+    if os.name != "nt":
+        return Check(
+            _LONG_PATH_ROW, "info",
+            "not judged -- the MAX_PATH ceiling is a Windows filesystem "
+            f"limit and this box is {sys.platform}",
+            brief="not Windows", blocking=False)
+
+    from gpuwm.render_layout import _MAX_PATH
+
+    longest = _longest_kernel_source_path()
+    if longest is None:
+        return Check(
+            _LONG_PATH_ROW, "info",
+            "not judged -- the packaged kernel sources could not be "
+            "listed, so there is no path here to measure",
+            brief="no kernel sources", blocking=False)
+
+    length = len(str(longest))
+    enabled = _long_paths_enabled()
+    headroom = _MAX_PATH - 1 - length
+    if enabled == 1:
+        return Check(
+            _LONG_PATH_ROW, "verified",
+            f"LongPathsEnabled=1, so the {_MAX_PATH}-character ceiling "
+            f"does not apply; longest kernel source path {length} chars",
+            brief=f"long paths on ({length} chars)")
+    if enabled is None:
+        return Check(
+            _LONG_PATH_ROW, "info",
+            "not judged -- LongPathsEnabled could not be read from the "
+            f"machine hive; longest kernel source path {length} chars, "
+            f"{_MAX_PATH} is the ceiling when the value is 0",
+            brief="registry unreadable", blocking=False)
+    if length < _MAX_PATH:
+        return Check(
+            _LONG_PATH_ROW, "verified",
+            f"longest kernel source path {length} chars, {headroom} "
+            f"under the {_MAX_PATH}-character ceiling "
+            "(LongPathsEnabled=0)",
+            brief=f"{headroom} chars of headroom")
+    detail = (f"the install root is too deep: {longest.name} sits at "
+              f"{length} characters and this box has LongPathsEnabled=0, "
+              f"so the {_MAX_PATH}-character ceiling applies.  Reading "
+              "that file raises FileNotFoundError, so every kernel "
+              "compile fails as a missing file rather than a long path")
+    remedy = ("# Two fixes; either one is enough." "\n"
+              "  # 1. Reinstall into a shorter root, e.g. C:\\gpuwm, "
+              "and the" "\n"
+              "  #    whole tree comes back under the ceiling." "\n"
+              "  # 2. Or lift the ceiling machine-wide, once, as "
+              "administrator:" "\n"
+              "  #    set LongPathsEnabled to 1 (DWORD) under" "\n"
+              "  #    HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem "
+              "and reboot.")
+    return Check(
+        _LONG_PATH_ROW, "missing", detail, remedy,
+        action=("reinstall under a shorter root, or set "
+                "LongPathsEnabled=1 and reboot"),
+        brief=f"{length} chars, over the {_MAX_PATH} ceiling",
+        blocking=False, severity=SEVERITY_DEGRADED)
+
+
+
 def collect_checks(sources: tuple[str, ...] | None = None,
                    progress: Callable[[str], None] | None = None
                    ) -> list[Check]:
+    """The estate as it IS, which is the whole job of this command.
+
+    A thin wrapper over :func:`_collect_checks` holding one contract:
+    every resolution below happens inside
+    :func:`gpuwm.bridges.inspection_only`, so a staged artifact that is
+    not this release's bytes is REPORTED here -- see
+    :func:`_staged_estate_check`, which names it and offers ``gpuwm
+    fetch-bridges`` -- and never refreshed or refused underneath the
+    report.  A diagnostic that repairs the box while measuring it can
+    no longer say what the box was, and one that dies on the defect it
+    was run to find is worse than no diagnostic at all.
+    """
+
+    with bridges.inspection_only():
+        return _collect_checks(sources, progress)
+
+
+def _collect_checks(sources: tuple[str, ...] | None = None,
+                    progress: Callable[[str], None] | None = None
+                    ) -> list[Check]:
     """The estate, plus every named data route's own resolution.
 
     ``sources=None`` means every route this build knows, which is what
@@ -5109,6 +5397,10 @@ def collect_checks(sources: tuple[str, ...] | None = None,
     checks.append(_mapped_grib2_route_check())
     checks.append(_cpu_library_check())
     phase("physics tables and static inputs")
+    # Ahead of every table line, because it is the question none of them
+    # answers: a skewed companion passes each validator and is still the
+    # wrong tables.  A reader meets the cause before the symptom.
+    checks.append(_companion_pair_check())
     checks.append(_thompson_tables_check())
     checks.append(_p3_table_check())
     checks.append(_noah_tables_check())
@@ -5120,6 +5412,7 @@ def collect_checks(sources: tuple[str, ...] | None = None,
     checks.append(_install_identity_check())
     checks.append(_console_scripts_check())
     checks.append(_non_git_import_check())
+    checks.append(_long_path_install_root_check())
     # Resolved ONCE for every registry route below.  Twenty-eight of
     # the routes decode on the same mapped engine, and asking that
     # binary the same question twenty-eight times would put the whole

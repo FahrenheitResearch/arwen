@@ -1,5 +1,75 @@
 # Changelog
 
+## 2.6.2 (2026-09-01)
+
+New:
+- `gpuwm doctor` measures the install root against Windows' 260-character
+  path ceiling, where a deep root on a box without long paths enabled
+  makes every kernel source read fail as a missing file. Windows only,
+  skipped by name elsewhere.
+- The MPAS column-batch physics seam transports aerosol-aware Thompson
+  (`mp_physics = 28`): WRF's eleven scalars, graupel receipts, the surface
+  aerosol emission pair on the restart payload, and the scheme's own
+  aerosol initialization at the seam's first microphysics call on the
+  caller's state, so a batch that brings no aerosol data is a valid batch.
+
+Fixed:
+- `gpuwm fetch-tables` stages `CCN_ACTIVATE.BIN` into the table root, so
+  `mp_physics = 28` runs from a wheel install. The command used to report
+  the root complete and byte-valid while every aerosol-aware forecast
+  died at its first microphysics step. It carries the classic set's pin.
+- `gpuwm fetch-tables --wif` no longer lets the optional dataset leg
+  cancel the mandatory one. Only `--wif-only` skips the coefficient
+  tables, the exit code is the worst of the legs that ran, and a summary
+  names each leg staged or refused.
+- `gpuwm fetch-tables --wif` resolves `QNWFA_QNIFA_SIGMA_MONTHLY.dat`
+  from the versioned release-assets base, honoring
+  `GPUWM_BRIDGE_ASSET_URL_BASE`, where it used to answer 404. A refusal
+  names the file, the URL and two ways to supply it.
+- A bridge staged in `~/.gpuwm/bridges` by an earlier release no longer
+  reaches a door: every ladder checks it against this install's pins and
+  re-fetches by default. Offline it refuses with the file, its revision
+  and the replacing command; overrides, in-tree builds and wheel-shipped
+  binaries are never judged.
+- The Rust observation engine `rw_obsgrid` reads the windowed radar-grid
+  layout natively. 2.6.1 made that layout what the ingest path writes
+  while the engine still implemented the whole-domain one, so every
+  freshly built grid was refused at the schema check. Older files stay
+  readable.
+- `gpuwm doctor` reports a skewed `gpuwm-data` companion as a blocking
+  row carrying the exact pip line, rather than dying in an uncaught
+  `ImportError`. The base-dependency line no longer prints `ok` over the
+  pinned companion.
+- The companion version lock compares PEP 440 public versions, so a
+  wheel built with a local label accepts the `gpuwm-data` it was cut
+  against, with a typeable remedy. A genuine release
+  mismatch is still refused.
+- The GPU preprocessing remedy names the certified CUDA pair instead of
+  an uncertified extra. It states that such a box has no
+  certified pair today and that the CPU backend runs there.
+- A config's relative file references resolve from the config's own
+  directory as well as the working directory, so a config that ships
+  beside its data loads from anywhere. A value that already resolves is
+  left byte for byte alone, so run fingerprints do not move.
+- A host-only run no longer aborts at its first step boundary when CuPy
+  is installed and every device is masked. The pool trim is an
+  optimisation, so an unreachable pool now skips it instead of raising.
+- Morrison deposition-freezing nucleation is bounded by the vapour excess
+  over ice saturation. The unbounded term drove qv negative below about
+  159 K, beyond a regional lid; it also engages between about 190 and
+  213 K, which a cold tropopause under the default 50 hPa lid reaches.
+  That divergence from WRF is declared and measured; no parity pin moved.
+- The WPS_GEOG mirror carries the Noah-MP `soilgrids` archive, so a
+  mesh-door `gpuwm fetch-geog` no longer falls from the default source to
+  a 404. The publisher refuses to stage a pin table it cannot render.
+- The two rw-mpas golden helper scripts compile again: a helper sat
+  inside each module docstring, leaving both unterminated and the
+  Rust tests' goldens impossible to regenerate. The whole-tree
+  source scan now fails on a file it cannot parse.
+- The RRTMGP cloud-fraction refusal names the scheme it refuses instead
+  of citing only WRF line numbers, so the reader learns which arm is
+  unsupported.
+
 ## 2.6.1 (2026-08-31)
 
 New:

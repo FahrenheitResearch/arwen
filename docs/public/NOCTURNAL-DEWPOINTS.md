@@ -210,10 +210,14 @@ should belong to the same install.
 **1f. Check the renderer separately -- it has its own version.**
 
 The plotting engine and the GRIB decoders are compiled binaries that
-live outside the Python package, in `~/.gpuwm/bridges`. **Upgrading
-the Python package does not upgrade them**, so a plot can be drawn by
-an old renderer no matter how current the model is, and a version
-stamped on an image is the renderer's statement, not the engine's.
+live outside the Python package, in `~/.gpuwm/bridges`. **Upgrading the
+Python package does not rewrite that directory**, so a version stamped
+on an image is the renderer's statement, not the engine's. A door that
+resolves one of those binaries now checks it against the pins this
+install carries and re-fetches the release bundle before the run
+continues; with no route to the release assets it refuses instead,
+naming the file and the revision it was built from. `gpuwm doctor` is
+how you see the whole estate at once, before anything opens a door.
 
 ```bash
 gpuwm doctor
@@ -230,7 +234,10 @@ the report says which copy of ArWen produced it. Then look for these:
 "speaks this release's contract" is the answer you want; it is an
 actual ABI check, not just "the file exists". Anything reported as
 `missing` or as not speaking this release's contract is stale, and
-`gpuwm fetch-bridges` replaces it.
+`gpuwm fetch-bridges` replaces it. The line named `staged bridge
+estate` is the stricter one: it compares every staged artifact's exact
+bytes against this release's pins, and it is the same comparison a door
+makes before it runs one.
 
 ### 2. Find out whether your config is an asymmetric pairing
 

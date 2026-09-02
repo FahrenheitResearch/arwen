@@ -34,8 +34,12 @@ with the same resolution ladder as :mod:`gpuwm.bridges`:
 3. ``<root>/libexec/bridges`` beside the package;
 4. ``~/.gpuwm/bridges``.
 
-Nothing here runs cargo; resolution is read-only so ``gpuwm doctor``
-can report the estate without side effects.
+Nothing here runs cargo.  Resolution has one side effect and one
+only: an artifact found in ``~/.gpuwm/bridges`` that is not the one this
+release pinned is re-fetched before it is handed to a door
+(:func:`gpuwm.bridges.require_release_pin`).  ``gpuwm doctor`` resolves
+inside :func:`gpuwm.bridges.inspection_only`, where there is no side
+effect at all, so the report still says what the estate IS.
 """
 
 from __future__ import annotations
@@ -47,7 +51,7 @@ import subprocess
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
                            cargo_build_one_liner, default_bridge_dir,
-                           ensure_executable, executable_name, launchable,
+                           accept_resolved, executable_name, launchable,
                            packaged_bridge_dir, quiet_loader_errors)
 
 #: Environment variable naming a prebuilt fetch backbone.
@@ -122,7 +126,7 @@ def find_fetch_bin() -> Path | None:
     override = os.environ.get(FETCH_ENV)
     for candidate in fetch_candidates():
         if candidate.is_file():
-            return ensure_executable(candidate.resolve())
+            return accept_resolved(candidate.resolve())
         if override and candidate == Path(override):
             raise FileNotFoundError(
                 f"{FETCH_ENV} names a missing file: {candidate}")

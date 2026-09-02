@@ -525,3 +525,49 @@ def test_shared_idealized_assembly_executes_with_tiny_mock_states(monkeypatch):
     assert (report.steps, report.forces, report.feedback_calls) == (20, 10, 10)
     assert calls == [1, 2] * 10
     assert model.node(2).parent is model.root
+
+
+def test_a_masked_device_does_not_abort_the_host_step_boundary(monkeypatch):
+    """An unreachable CuPy pool skips the trim instead of killing the run.
+
+    ``_trim_default_pool`` runs at every step boundary of
+    ``execute_experiment``.  With CuPy INSTALLED and every device masked
+    -- ``CUDA_VISIBLE_DEVICES=-1``, which tests/conftest.py plants for the
+    whole session -- its first pool call answers ``cudaErrorNoDevice``,
+    and before the guard that aborted the host-only assembly above with a
+    CUDARuntimeError from a run that never needed a device.
+
+    The pool is stubbed rather than probed so the gate is the same on a
+    box with no CuPy at all, and so it pins the exact attribute the guard
+    catches on: a rename to some other exception class would pass a
+    ``try/except Exception`` and fails here.
+    """
+
+    import sys
+    import types
+
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
+
+    class _CUDARuntimeError(Exception):
+        pass
+
+    tried = []
+
+    def _free_all_blocks():
+        tried.append("pool reached")
+        raise _CUDARuntimeError(
+            "cudaErrorNoDevice: no CUDA-capable device is detected")
+
+    fake = types.ModuleType("cupy")
+    fake.cuda = types.SimpleNamespace(
+        runtime=types.SimpleNamespace(CUDARuntimeError=_CUDARuntimeError))
+    fake.get_default_memory_pool = lambda: types.SimpleNamespace(
+        free_all_blocks=_free_all_blocks)
+    monkeypatch.setitem(sys.modules, "cupy", fake)
+
+    from gpuwm.core.model import _trim_default_pool
+
+    _trim_default_pool()
+    assert tried == ["pool reached"], (
+        "the guard returned without attempting the trim, so it would also "
+        "skip it on a healthy device")

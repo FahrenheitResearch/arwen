@@ -17,7 +17,7 @@ tendencies. Implementation: `gpuwm/core/mpas_column_batch.py`.
   field array.
 - Species set follows the constructor's `microphysics_scheme`
   (default `"wsm6"`, everything below unchanged; `"p3"` selects
-  mp_physics=50):
+  mp_physics=50, `"thompson_aero"` selects mp_physics=28):
   - `"wsm6"`: the full WSM6 six, `qv/qc/qr/qi/qs/qg`. The MPAS init
     carries `qv/qc/qr`; the seam's state zero-initializes the frozen
     categories once at construction and phase 2 evolves all six in the
@@ -33,6 +33,32 @@ tendencies. Implementation: `gpuwm/core/mpas_column_batch.py`.
     carries `"microphysics": "p3"`; the `"wsm6"` identity is unchanged,
     so stored WSM6 payloads keep restoring and cross-scheme restores
     refuse on the identity gate.
+  - `"thompson_aero"` (2026-09-01): WRF's own mp=28 transport, ELEVEN
+    scalars -- WSM6's six masses `qv/qc/qr/qi/qs/qg` plus `ni/nr/nc`
+    (ice, rain and cloud droplet number; `nc` is prognostic here) and
+    the aerosol number tracers `nwfa/nifa` (water- and ice-friendly).
+    No `nbca` (WRF zeroes black carbon without `wif_input_opt=2`,
+    which ArWen refuses by name) and no rime pair; both directions of
+    slack refuse by name. Phase 2 refuses `rho_dry` (Thompson builds
+    density from the EOS pressure in-kernel), receipts are the
+    seven-slot WSM6 shape (`rainncv/snowncv/graupelncv/sr`; the
+    buckets carry `GRAUPELNC`), the WSM6 radius triple rides the
+    payload, and the surface aerosol emission pair `nwfa2d/nifa2d`
+    (INTENT(IN) to every microphysics call) rides it as seam-owned
+    state. FIRST CONTACT: the first `run_phase2` of a freshly
+    constructed seam runs thompson_init on the caller's bound arrays
+    with the caller's own `z_interface` -- WRF's two presence tests,
+    the synthetic CCN/IN profile for whatever the caller did not bring,
+    and `nwfa2d` from the lowest level either way (thompson_init's form
+    when the fill ran, real.exe's climatology form when the caller
+    brought aerosol; `nifa2d` is zero in every WRF branch).
+    `seam.aerosol_init_receipt` reports which branches ran and the
+    payload's `scalars["aerosol_init"]` carries it, so a restored seam
+    never re-fills a checkpointed field. The seam stages no WIF
+    climatology and requires none: a batch that brings no aerosol data
+    is a valid batch, and a batch that brings its own is never
+    overwritten. A `"thompson_aero"` identity carries `"microphysics":
+    "thompson_aero"`.
 
 ## Construction
 
@@ -242,6 +268,10 @@ call counters and the model clock all persist on the seam across calls.
 - `seam.restore_state(payload)` on a freshly constructed seam with the
   identical configuration restores everything in place. Identity
   mismatches, unknown keys and missing keys refuse.
+- A `"thompson_aero"` payload's scalars also carry `"aerosol_init"`,
+  the first-contact receipt; an mp=28 payload without it refuses by
+  name. The `"wsm6"` and `"p3"` payload layouts are unchanged (gated
+  by `test_wsm6_and_p3_payload_layouts_are_unchanged_by_the_mp28_arm`).
 - A restored seam continues bit-identically. Gated by
   `tests/test_mpas_column_batch_gpu.py::
   test_restart_round_trip_continues_bit_identically`.

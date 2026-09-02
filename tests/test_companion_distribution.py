@@ -603,3 +603,122 @@ def test_an_installed_wheel_refuses_a_decoy_companion_beside_it(
         "the failure did not name the companion, so the decoy was read "
         f"and something downstream of it broke instead:\n{output}")
     assert "REFUS" in result.stderr.upper(), output
+
+
+# ---------------------------------------------------------------------------
+# The lock compares PUBLIC versions, not full version strings
+# ---------------------------------------------------------------------------
+#
+# The breakage, reproduced against the published 2.6.1 pair: a wheel built
+# from this tree with a PEP 440 local label -- `2.6.1+<label>`, which is what
+# every private rebuild of a published release carries -- refused the public
+# `gpuwm-data 2.6.1` it was cut against, because the comparison was on the
+# whole string.  The refusal then printed `pip install gpuwm-data==2.6.1+
+# <label>`, a line that resolves to nothing, so the remedy could not even be
+# run.  The label says WHO built the wheel; it does not change which release's
+# tables the physics needs.  A different public version is still refused --
+# that is the skew the lock exists for and it must survive this.
+
+
+def test_a_local_label_accepts_the_companion_of_its_public_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`2.6.1+<label>` is a private build of 2.6.1 and takes 2.6.1's tables."""
+
+    monkeypatch.setattr(data_assets, "_VERSION_CHECKED", False)
+    monkeypatch.setattr(data_assets, "_required_companion_version",
+                        lambda: "2.6.1")
+    monkeypatch.setattr("importlib.metadata.version", lambda _name: "2.6.1")
+
+    data_assets._check_version()  # must not raise
+    assert data_assets._VERSION_CHECKED
+
+
+def test_a_locally_labelled_companion_is_accepted_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The strip is symmetric: a rebuilt COMPANION is the same data cut.
+
+    Same reasoning as the wheel side.  A companion rebuilt from the release
+    commit carries the release's bytes whatever label the builder stamped on
+    it, so refusing it would name no breakage.
+    """
+
+    monkeypatch.setattr(data_assets, "_VERSION_CHECKED", False)
+    monkeypatch.setattr(data_assets, "_required_companion_version",
+                        lambda: "2.6.1")
+    monkeypatch.setattr("importlib.metadata.version",
+                        lambda _name: "2.6.1+rebuild.4")
+
+    data_assets._check_version()
+    assert data_assets._VERSION_CHECKED
+
+
+def test_a_different_public_version_is_still_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The refusal the lock exists for survives the local-label strip."""
+
+    monkeypatch.setattr(data_assets, "_VERSION_CHECKED", False)
+    monkeypatch.setattr(data_assets, "_required_companion_version",
+                        lambda: "2.6.1")
+    monkeypatch.setattr("importlib.metadata.version",
+                        lambda _name: "2.6.0+rebuild.4")
+
+    with pytest.raises(ImportError) as caught:
+        data_assets._check_version()
+    message = str(caught.value)
+    assert "REFUSES" in message
+    assert "2.6.0" in message and "2.6.1" in message
+    assert f"pip install {data_assets.COMPANION_DISTRIBUTION}==2.6.1" in message
+
+
+def test_the_remedy_names_a_version_that_was_published(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`pip install gpuwm-data==2.6.1+<label>` resolves to nothing.
+
+    The companion is only ever published under a public version, so a remedy
+    carrying the wheel's local label is a command that cannot succeed -- the
+    same reasoning the module already applies to an uninstalled source tree,
+    where it drops the `==` pin rather than print `==0+unknown`.
+    """
+
+    import gpuwm
+
+    monkeypatch.setattr(gpuwm, "__version__", "2.6.1+label.1")
+    assert data_assets.companion_install_command() == (
+        f"pip install {data_assets.COMPANION_DISTRIBUTION}==2.6.1")
+
+
+def test_the_sentinel_for_an_uninstalled_tree_is_not_stripped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`0+unknown` is a sentinel, not a labelled version.
+
+    It is compared by identity at three call sites; stripping it to `0` would
+    make every one of them miss and turn "gpuwm is an uninstalled source tree"
+    into "gpuwm 0 requires gpuwm-data 0".
+    """
+
+    import gpuwm
+
+    monkeypatch.setattr(gpuwm, "__version__", data_assets._UNKNOWN_VERSION)
+    assert (data_assets._required_companion_version()
+            == data_assets._UNKNOWN_VERSION)
+    assert data_assets.companion_install_command() == (
+        f"pip install {data_assets.COMPANION_DISTRIBUTION}")
+
+
+def test_public_version_keeps_the_prerelease_segment() -> None:
+    """`.public`, not `.base_version`, and this is the difference.
+
+    `2.7.0rc1` and `2.7.0` are two different cuts that ship two different
+    companions.  `.base_version` collapses them, which would accept exactly
+    the pairing this lock exists to refuse.
+    """
+
+    assert data_assets._public_version("2.6.1+label.1") == "2.6.1"
+    assert data_assets._public_version("2.6.1") == "2.6.1"
+    assert data_assets._public_version("2.7.0rc1+label.1") == "2.7.0rc1"
+    assert data_assets._public_version("2.7.0rc1") != "2.7.0"
