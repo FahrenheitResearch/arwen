@@ -250,11 +250,59 @@ def default_geog_root() -> Path | None:
     return None
 
 
+def geog_dataset_candidates(root: Path, name: str) -> tuple[Path, ...]:
+    """Every directory that may serve dataset `name` under `root`, best first.
+
+    Two layouts are real, and both come from ``gpuwm fetch-geog``.  A
+    single-dataset archive unpacks to ``root/<name>``.  A container
+    archive unpacks to ``root/<archive>/<name>``: its pin declares the
+    children in ``index_subdirs`` and the fetcher validates each child's
+    index exactly there.  This lookup used to know the first layout
+    only, so a tree the product had just staged, precisely as designed,
+    read as five datasets short -- doctor's own remedy could not turn
+    its row green and ``gpuwm mesh`` refused the static half of the
+    pair on every install that followed it.
+
+    Read off the pin table.  No archive name is spelled here, so a
+    future container is one row in
+    :data:`gpuwm.geog_assets.GEOG_ARCHIVES` and nothing else, and the
+    fetcher, doctor and the door cannot disagree about where a child
+    lives.  The flat path comes first so a hand-built archive keeps
+    winning over the staged one when a box carries both.
+    """
+
+    from gpuwm.geog_assets import GEOG_ARCHIVES
+
+    candidates = [root / name]
+    for archive in GEOG_ARCHIVES:
+        if name in archive.index_subdirs:
+            candidates.append(root / archive.dataset / name)
+    return tuple(candidates)
+
+
+def geog_dataset_dir(root: Path, name: str) -> Path | None:
+    """The directory that serves `name` under `root`, or None.
+
+    Served means carrying its WPS ``index`` file; an empty directory
+    left by an interrupted extraction is not a dataset.
+    """
+
+    for candidate in geog_dataset_candidates(root, name):
+        if (candidate / "index").is_file():
+            return candidate
+    return None
+
+
 def missing_geog_datasets(root: Path) -> list[str]:
-    """Which required datasets `root` does not carry, in request order."""
+    """Which required datasets `root` does not carry, in request order.
+
+    Both staged layouts count (:func:`geog_dataset_candidates`); the
+    engine resolves each dataset the same way, so a tree this calls
+    complete is one the builder reads.
+    """
 
     return [name for name in REQUIRED_GEOG_DATASETS
-            if not (root / name / "index").is_file()]
+            if geog_dataset_dir(root, name) is None]
 
 
 def fetchable_for(datasets) -> list[str]:
@@ -385,7 +433,8 @@ __all__ = [
     "CARGO_BUILD_HINT", "REQUIRED_GEOG_DATASETS", "STATIC_ABI_MARKER",
     "STATIC_ENV", "STATIC_NAME", "StaticEngineError",
     "PLACEHOLDER_FIELDS", "FORMERLY_UNWRITTEN_FIELDS", "fetchable_for",
-    "crate_dir", "default_geog_root", "find_static_bin", "geog_refusal",
+    "crate_dir", "default_geog_root", "find_static_bin",
+    "geog_dataset_candidates", "geog_dataset_dir", "geog_refusal",
     "missing_geog_datasets", "probe_static_bin", "run_static",
     "static_candidates", "static_remedy",
 ]

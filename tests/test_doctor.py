@@ -369,6 +369,13 @@ def test_the_mesh_verdict_blocks_when_that_door_is_installed(
 
 def test_the_mesh_row_goes_quiet_once_the_soil_archive_is_staged(
         tmp_path, monkeypatch):
+    """The flat layout: every required directory straight under the root.
+
+    A hand-built or copied archive looks like this, and it has to keep
+    passing.  It is NOT what `gpuwm fetch-geog` stages for the soil
+    group; the test after this one covers that layout.
+    """
+
     from gpuwm import rustwx_static
 
     geog = _stage_wrf_geog(tmp_path / "WPS_GEOG")
@@ -380,6 +387,88 @@ def test_the_mesh_row_goes_quiet_once_the_soil_archive_is_staged(
                         lambda: tmp_path / "rw_mpas_static")
     names = {check.name for check in doctor._geog_tree_checks(geog)}
     assert "WPS_GEOG (MPAS static)" not in names
+
+
+def _stage_geog_as_fetch_geog_does(root, consumer):
+    """Lay out `root` exactly as `gpuwm fetch-geog` stages `consumer`'s pins.
+
+    Read off the pin table so the fixture cannot drift from the fetcher:
+    a single-dataset archive lands at ``root/<dataset>/index``; a
+    container archive lands at ``root/<archive>/<child>/index`` for every
+    child its ``index_subdirs`` declares, which is exactly where the
+    fetcher's own validation looks for it.
+    """
+
+    from gpuwm.geog_assets import GEOG_ARCHIVES
+
+    for archive in GEOG_ARCHIVES:
+        if consumer not in archive.required_by:
+            continue
+        for child in archive.index_subdirs or ("",):
+            directory = root / archive.dataset / child
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "index").write_text("type = continuous\n",
+                                             encoding="ascii")
+    return root
+
+
+def test_the_mesh_row_goes_quiet_on_the_tree_fetch_geog_actually_stages(
+        tmp_path, monkeypatch):
+    """Doctor's own remedy has to clear doctor's own row.
+
+    The shipped defect: `gpuwm fetch-geog` stages the soil archive as
+    ``WPS_GEOG/<archive>/<child>`` (the pin's ``index_subdirs``) and the
+    reader behind this row looked at ``WPS_GEOG/<child>`` only, so a
+    fresh install that ran the fetch exactly as this row told it to was
+    told it was still five datasets short, and `gpuwm mesh` refused the
+    static half of the pair.  The suite did not catch it because the
+    only fixture for this row (the test above) wrote every required
+    name flat at the root, a layout the fetcher never produces for that
+    archive.  This fixture stages what the fetcher stages, read off the
+    same table.
+    """
+
+    from gpuwm import geog_assets, rustwx_static
+
+    geog = tmp_path / "WPS_GEOG"
+    for consumer in geog_assets.GEOG_CONSUMERS:
+        _stage_geog_as_fetch_geog_does(geog, consumer)
+    # The soil group sits under its container and nowhere else.
+    containers = [a for a in geog_assets.GEOG_ARCHIVES if a.index_subdirs]
+    assert containers, "the pin table carries a container archive"
+    for archive in containers:
+        for child in archive.index_subdirs:
+            assert not (geog / child).exists(), child
+            assert (geog / archive.dataset / child / "index").is_file()
+    monkeypatch.setattr(rustwx_static, "find_static_bin",
+                        lambda: tmp_path / "rw_mpas_static")
+    checks = doctor._geog_tree_checks(geog)
+    by_name = {check.name: check for check in checks}
+    assert "WPS_GEOG (MPAS static)" not in by_name, by_name[
+        "WPS_GEOG (MPAS static)"].detail
+    assert by_name["WPS_GEOG"].status == "verified"
+    assert doctor.blocking_gaps(checks) == []
+
+
+def test_one_child_missing_from_the_staged_container_is_named_alone(
+        tmp_path, monkeypatch):
+    """An interrupted extraction is still reported, by the child it lost."""
+
+    from gpuwm import geog_assets, rustwx_static
+
+    geog = tmp_path / "WPS_GEOG"
+    for consumer in geog_assets.GEOG_CONSUMERS:
+        _stage_geog_as_fetch_geog_does(geog, consumer)
+    lost = [name for name in rustwx_static.REQUIRED_GEOG_DATASETS
+            if rustwx_static.geog_dataset_candidates(geog, name)[1:]][-1]
+    (rustwx_static.geog_dataset_dir(geog, lost) / "index").unlink()
+    monkeypatch.setattr(rustwx_static, "find_static_bin",
+                        lambda: tmp_path / "rw_mpas_static")
+    row = {check.name: check for check in doctor._geog_tree_checks(geog)}[
+        "WPS_GEOG (MPAS static)"]
+    assert row.status == "missing" and row.blocking
+    assert lost in row.detail
+    assert row.brief == "1 dataset(s) short of an MPAS static"
 
 
 def test_distribution_manifest_revalidates_declared_artifact_hashes(

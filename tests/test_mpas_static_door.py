@@ -11,6 +11,8 @@ Rust binary actually prints.
 from __future__ import annotations
 
 import argparse
+import json
+import pathlib
 from pathlib import Path
 import subprocess
 
@@ -130,12 +132,108 @@ def test_the_refusal_names_the_plain_fetch_now_that_it_covers_the_soil(
 
 
 def test_a_complete_geography_archive_is_not_refused(tmp_path):
+    # The flat layout, every directory straight under the root.  A copied
+    # or hand-built archive looks like this and has to keep passing.
     root = tmp_path / "WPS_GEOG"
     for name in rustwx_static.REQUIRED_GEOG_DATASETS:
         (root / name).mkdir(parents=True)
         (root / name / "index").write_text("x", encoding="utf-8")
     assert rustwx_static.geog_refusal(root) is None
     assert rustwx_static.missing_geog_datasets(root) == []
+
+
+def _stage_as_fetch_geog_does(root):
+    """`root` laid out as `gpuwm fetch-geog` stages the mesh door's pins.
+
+    Read off the pin table: a single-dataset archive at
+    ``root/<dataset>/index``, a container archive at
+    ``root/<archive>/<child>/index`` per declared child.  The fixture
+    cannot drift from the fetcher because the fetcher validates the same
+    rows the same way.
+    """
+
+    from gpuwm.geog_assets import GEOG_ARCHIVES, GEOG_CONSUMER_MESH
+
+    for archive in GEOG_ARCHIVES:
+        if GEOG_CONSUMER_MESH not in archive.required_by:
+            continue
+        for child in archive.index_subdirs or ("",):
+            directory = root / archive.dataset / child
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "index").write_text("x", encoding="utf-8")
+    return root
+
+
+def test_the_tree_fetch_geog_stages_is_not_refused(tmp_path):
+    """The door reads the tree the product's own fetcher writes.
+
+    The shipped defect: the fetcher stages the soil archive as
+    ``WPS_GEOG/<archive>/<child>`` and this reader looked at
+    ``WPS_GEOG/<child>`` alone, so after a fetch run exactly as doctor
+    prescribed `gpuwm mesh` still refused the static half of the pair
+    for five datasets the tree carried.  The suite missed it because the
+    only complete-archive fixture (the test above) laid every name flat,
+    a layout the fetcher never produces for that archive.
+    """
+
+    root = _stage_as_fetch_geog_does(tmp_path / "WPS_GEOG")
+    assert rustwx_static.missing_geog_datasets(root) == []
+    assert rustwx_static.geog_refusal(root) is None
+    # and the door's own pre-flight, which is what `gpuwm mesh` calls
+    assert mpas_mesh.static_geog_refusal(root) == (root, None)
+
+
+def test_a_container_child_is_found_under_its_archive_directory(tmp_path):
+    """Both candidates come off the pin table; neither is spelled here."""
+
+    from gpuwm.geog_assets import GEOG_ARCHIVES
+
+    root = tmp_path / "WPS_GEOG"
+    containers = [a for a in GEOG_ARCHIVES if a.index_subdirs]
+    assert containers, "the pin table carries a container archive"
+    for archive in containers:
+        for child in archive.index_subdirs:
+            assert rustwx_static.geog_dataset_candidates(root, child) == (
+                root / child, root / archive.dataset / child)
+            assert rustwx_static.geog_dataset_dir(root, child) is None
+            # a directory without its index is an interrupted extraction,
+            # not a dataset
+            (root / archive.dataset / child).mkdir(parents=True)
+            assert rustwx_static.geog_dataset_dir(root, child) is None
+            (root / archive.dataset / child / "index").write_text(
+                "x", encoding="utf-8")
+            assert rustwx_static.geog_dataset_dir(root, child) == (
+                root / archive.dataset / child)
+    for archive in GEOG_ARCHIVES:
+        if not archive.index_subdirs:
+            assert rustwx_static.geog_dataset_candidates(
+                root, archive.dataset) == (root / archive.dataset,)
+
+
+def test_the_flat_path_wins_when_both_layouts_carry_a_dataset(tmp_path):
+    root = _stage_as_fetch_geog_does(tmp_path / "WPS_GEOG")
+    nested = [name for name in rustwx_static.REQUIRED_GEOG_DATASETS
+              if rustwx_static.geog_dataset_candidates(root, name)[1:]]
+    assert nested
+    first, rest = nested[0], nested[1:]
+    (root / first).mkdir()
+    (root / first / "index").write_text("x", encoding="utf-8")
+    assert rustwx_static.geog_dataset_dir(root, first) == root / first
+    for name in rest:
+        assert rustwx_static.geog_dataset_dir(root, name) != root / name
+    assert rustwx_static.missing_geog_datasets(root) == []
+
+
+def test_one_missing_child_of_a_staged_container_is_named_alone(tmp_path):
+    root = _stage_as_fetch_geog_does(tmp_path / "WPS_GEOG")
+    nested = [name for name in rustwx_static.REQUIRED_GEOG_DATASETS
+              if rustwx_static.geog_dataset_candidates(root, name)[1:]]
+    lost = nested[-1]
+    (rustwx_static.geog_dataset_dir(root, lost) / "index").unlink()
+    assert rustwx_static.missing_geog_datasets(root) == [lost]
+    text = rustwx_static.geog_refusal(root)
+    assert text is not None and f"missing 1 dataset(s)" in text
+    assert lost in text.split("what does work")[0]
 
 
 def test_an_environment_override_naming_a_missing_file_is_a_hard_error(
@@ -271,6 +369,57 @@ def test_a_pair_with_the_advection_tables_is_called_runnable():
     text = mpas_mesh.runnability_verdict(["defc_a", "defc_b"], HEALTHY_FP32)
     assert "this pair is what a run needs: grid and static together" in text
     assert "NOT YET RUNNABLE" not in text
+
+
+#: A receipt the static engine itself wrote (schema
+#: ``rw-mpas-static.build/v3-unified``, 82 variables, ``deriv_two`` among
+#: them), kept in the tree as evidence.  The reader is tested against the
+#: writer's real output, not against a fixture shaped to please the reader.
+ENGINE_RECEIPT = (pathlib.Path(__file__).resolve().parents[1] / "evidence"
+                  / "meshgen-coordination-20260826" / "node1"
+                  / "fit.static.receipt.json")
+
+
+def test_the_absent_list_is_derived_from_what_the_engine_wrote():
+    """The door read a key the unified writer never wrote.
+
+    MEASURED 2026-09-02 on a freshly built 2,562-cell pair with both the
+    published rw_mpas_static and a rebuilt one: the receipt carries
+    ``variables`` and ``generated_fields`` and no ``unwritten_*`` key, so the
+    door printed NOT MEASURED after every successful build.  The list is
+    derived from ``variables`` now; the real receipt in evidence/ is the
+    fixture, so this test fails the day the writer renames that key too.
+    """
+
+    receipt = json.loads(ENGINE_RECEIPT.read_text(encoding="utf-8"))
+    assert "unwritten_operator_fields" not in receipt
+    assert "variables" in receipt and "deriv_two" in receipt["variables"]
+    absent = mpas_mesh.unwritten_operator_fields_from_receipt(receipt)
+    assert absent == [], absent
+    # This receipt predates the live FP32 metric contract, so the healthy
+    # fixture stands in for that reading; the branch under test is the
+    # absent-field one.
+    text = mpas_mesh.runnability_verdict(absent, HEALTHY_FP32)
+    assert "absent-field list" not in text
+    assert "NOT YET RUNNABLE" not in text
+    assert "grid and static together" in text
+
+    # The same shape with the blocking table left out of the file.
+    without = dict(receipt)
+    without["variables"] = [v for v in receipt["variables"]
+                            if v != "deriv_two"]
+    absent = mpas_mesh.unwritten_operator_fields_from_receipt(without)
+    assert absent == ["deriv_two"], absent
+    assert "NOT YET RUNNABLE" in mpas_mesh.runnability_verdict(absent)
+
+    # A receipt carrying neither key is still unreadable, not runnable.
+    assert mpas_mesh.unwritten_operator_fields_from_receipt(
+        {"schema": receipt["schema"]}) is None
+    # And an archived receipt with the old keys keeps its meaning.
+    assert mpas_mesh.unwritten_operator_fields_from_receipt(
+        {"unwritten_operator_fields": ["deriv_two"],
+         "unwritten_soil_composition_fields": ["soilcomp"]}
+    ) == ["deriv_two", "soilcomp"]
 
 
 def test_an_unread_absent_list_is_not_reported_as_runnable():

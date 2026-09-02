@@ -235,6 +235,36 @@ def test_the_noahmp_soil_container_is_pinned_and_declares_its_children():
         assert child in archive.index_subdirs
 
 
+def test_the_reader_finds_every_mesh_dataset_where_the_fetcher_stages_it(
+        tmp_path):
+    """The fetcher's layout and the door's reader, bound through one table.
+
+    The fetcher validates a container archive child by child at
+    ``root/<archive>/<child>/index``; the reader behind doctor's mesh row
+    and `gpuwm mesh`'s refusal used to look at ``root/<child>/index``
+    alone.  Both passed their own tests and every install that followed
+    doctor's remedy was told it was still five datasets short.  This
+    stages a tree the fetcher's own bar accepts and asks the reader.
+    """
+
+    from gpuwm import rustwx_static
+
+    root = tmp_path / "WPS_GEOG"
+    for archive in geog_assets.GEOG_ARCHIVES:
+        if geog_assets.GEOG_CONSUMER_MESH not in archive.required_by:
+            continue
+        for child in archive.index_subdirs or ("",):
+            directory = root / archive.dataset / child
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "index").write_text(_INDEX_TEXT)
+        ok, detail = validate_dataset_dir(root, archive.dataset,
+                                          check_receipt=False)
+        assert ok, detail
+    assert rustwx_static.missing_geog_datasets(root) == []
+    for name in rustwx_static.REQUIRED_GEOG_DATASETS:
+        assert rustwx_static.geog_dataset_dir(root, name) is not None, name
+
+
 def test_the_mandatory_bundle_claims_only_what_was_walked():
     # --bundle serves the nine the 2026-07-29 walk found.  A pin added
     # later must not silently widen that claim, or --bundle extracts

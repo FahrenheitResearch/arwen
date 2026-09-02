@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.6.5 (2026-09-02)
+
+Fixed:
+- `gpuwm fetch-geog` stages the soil archive as `WPS_GEOG/soilgrids/<dataset>` and every reader looked for `WPS_GEOG/<dataset>`: doctor's "WPS_GEOG (MPAS static)" row, the mesh door's pre-flight and `rw_mpas_static` itself. An install that ran doctor's own remedy was told it was still five datasets short and `gpuwm mesh` refused the static half of the pair. All three read both layouts now, off the pin table's own child declarations; the static built from a staged tree is byte-identical to one built from a flat tree.
+- `gpuwm mesh` gives its runnability verdict again. The door read the static engine's absent-field list from a receipt key the unified writer never wrote, so every pair built since then was announced "NOT MEASURED" after a successful build; the list is now derived from the variables the engine wrote, and a receipt with neither is still reported as not measured rather than runnable.
+
 ## 2.6.4 (2026-09-02)
 
 New:

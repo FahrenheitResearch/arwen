@@ -1037,6 +1037,45 @@ def generate(*, spec: dict, cells: int, out: Path, workdir: Path,
 PORT_BLOCKING_STATIC_FIELDS = ("deriv_two",)
 
 
+def unwritten_operator_fields_from_receipt(receipt) -> list[str] | None:
+    """The engine's absent list, read from what the engine actually wrote.
+
+    THE BREAKAGE THIS FIXES (found 2026-09-02 while proving the soil-archive
+    fix on a real pair): the door read ``unwritten_operator_fields`` and
+    ``unwritten_soil_composition_fields`` out of the static receipt, and the
+    unified static writer (receipt schema ``rw-mpas-static.build/v3-unified``)
+    has never written either key.  It writes ``variables``, every variable it
+    put in the file.  So every pair the door built since that writer landed
+    was announced "NOT MEASURED: the static engine's absent-field list did
+    not come back", with both the published binary and a fresh build, and
+    the runnability verdict the door exists to give was never given.
+
+    The absent list is therefore DERIVED: the fields the port reads that are
+    not in the written list.  A receipt that still carries the old keys is
+    read as before, so an archived receipt keeps its meaning.  A receipt with
+    neither is unreadable and stays ``None``, which the verdict reports as
+    not measured rather than as runnable.
+    """
+
+    if receipt is None:
+        return None
+    legacy = receipt.get("unwritten_operator_fields")
+    if legacy is not None:
+        absent = list(legacy)
+        absent += list(receipt.get("unwritten_soil_composition_fields") or ())
+        return absent
+    variables = receipt.get("variables")
+    if variables is None:
+        return None
+    from gpuwm.rustwx_static import FORMERLY_UNWRITTEN_FIELDS
+
+    written = set(variables)
+    wanted = list(PORT_BLOCKING_STATIC_FIELDS) + [
+        name for name in FORMERLY_UNWRITTEN_FIELDS
+        if name not in PORT_BLOCKING_STATIC_FIELDS]
+    return [name for name in wanted if name not in written]
+
+
 def _short_edge_refusal(agreement) -> str | None:
     """The pair is complete but the port's own gates would still stop it.
 
@@ -1611,10 +1650,8 @@ def mesh_main(args) -> int:
                   f"{declared.get('f32_bits', '')} -- the mesh registry "
                   "compares this scalar bit for bit")
         static_receipt = document.get("receipt") or {}
-        unwritten = static_receipt.get("unwritten_operator_fields")
+        unwritten = unwritten_operator_fields_from_receipt(static_receipt)
         absent = list(unwritten or ())
-        absent += list(
-            static_receipt.get("unwritten_soil_composition_fields") or ())
         if absent:
             print("gpuwm mesh: absent from the static (not zero-filled): "
                   + ", ".join(absent))

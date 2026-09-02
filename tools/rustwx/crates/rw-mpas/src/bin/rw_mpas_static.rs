@@ -67,6 +67,31 @@ fn geog_table_text(separator: &str) -> String {
         .join(separator)
 }
 
+/// The directories `gpuwm fetch-geog` stages under a container, from the
+/// table itself, so the help cannot describe a layout the builder does not
+/// read.
+fn geog_container_text() -> String {
+    let mut containers: Vec<&str> = Vec::new();
+    for (_, container) in rw_mpas::static_builder::GEOG_CONTAINER_TABLE.iter() {
+        if !containers.contains(container) {
+            containers.push(container);
+        }
+    }
+    containers
+        .iter()
+        .map(|container| {
+            let children = rw_mpas::static_builder::GEOG_CONTAINER_TABLE
+                .iter()
+                .filter(|(_, c)| c == container)
+                .map(|(child, _)| *child)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{container}/ carries {children}")
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 fn usage() -> String {
     format!(
         "usage: {ABI_MARKER}\n\n\
@@ -101,7 +126,9 @@ fn usage() -> String {
         \x20  caps how many tiles decode at once. The static is byte-identical at every\n\
         \x20  setting of both.\n\n\
          WHERE EACH FIELD COMES FROM\n\
-        \x20  {}\n\n\
+        \x20  {}\n\
+        \x20  Each directory is read at <root>/<directory>, or at the container\n\
+        \x20  `gpuwm fetch-geog` stages it under: {}.\n\n\
          WRITTEN AS A BITWISE +0 PLACEHOLDER, NOT AS VALUES\n\
         \x20  {}\n\
         \x20    the local frames and the RBF reconstruction weights belong to the vertical\n\
@@ -118,6 +145,7 @@ fn usage() -> String {
         NOMINAL_DX_CROSS_CHECK_RELATIVE * 100.0,
         DEFAULT_VALID_TIME,
         geog_table_text("\n\x20  "),
+        geog_container_text(),
         staticfile::ZERO_PLACEHOLDER_FIELDS.join(", "),
     )
 }

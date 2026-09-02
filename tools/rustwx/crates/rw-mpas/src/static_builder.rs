@@ -140,6 +140,8 @@ pub const NOMINAL_DX_CROSS_CHECK_RELATIVE: f64 = 1e-3;
 /// a branch and not a per-dataset module. The names are the archive's own
 /// directory names, which is what `gpuwm fetch-geog` stages and what the
 /// door's completeness check looks for, so the three cannot drift apart.
+/// WHERE under the root a directory sits is [`GEOG_CONTAINER_TABLE`]'s
+/// business, resolved by [`resolve_geog_dataset_dir`].
 pub const GEOG_DATASET_TABLE: [(&str, &str); 12] = [
     ("terrain", "topo_gmted2010_30s"),
     ("landuse", "modis_landuse_20class_30s_with_lakes"),
@@ -155,11 +157,63 @@ pub const GEOG_DATASET_TABLE: [(&str, &str); 12] = [
     ("soilcl4", "texture_layer4"),
 ];
 
+/// Which dataset directories `gpuwm fetch-geog` stages INSIDE a container
+/// directory rather than at the archive root: `(directory, container)`.
+///
+/// One upstream archive carries the Noah-MP soil group as seven dataset
+/// directories under a single top-level directory, and the fetcher unpacks it
+/// as it comes: `WPS_GEOG/soilgrids/soilcomp`, `WPS_GEOG/soilgrids/texture_layer1`
+/// and so on. Its pin -- the `soilgrids` row of `gpuwm/geog_assets.py`, whose
+/// `index_subdirs` declares exactly these children -- is what that layout
+/// follows, and this table mirrors the row so the builder looks where the
+/// product stages. Every reader once assumed the flat layout alone, so an
+/// install that ran the fetch exactly as doctor told it to was refused for
+/// five datasets it already had.
+///
+/// A row here, not a branch: a future container archive is a row in the pin
+/// table and a matching row here, and nothing else changes.
+pub const GEOG_CONTAINER_TABLE: [(&str, &str); 7] = [
+    ("soilcomp", "soilgrids"),
+    ("texture_top", "soilgrids"),
+    ("texture_bot", "soilgrids"),
+    ("texture_layer1", "soilgrids"),
+    ("texture_layer2", "soilgrids"),
+    ("texture_layer3", "soilgrids"),
+    ("texture_layer4", "soilgrids"),
+];
+
+/// Where dataset directory `dataset` lives under `root`.
+///
+/// `root/<dataset>` when that carries a WPS `index`; otherwise
+/// `root/<container>/<dataset>` for a container [`GEOG_CONTAINER_TABLE`]
+/// names for it; otherwise the flat path, so [`StaticGeogPaths::missing`]
+/// still names the dataset by its own directory name and the refusal reads
+/// the same in both layouts. The flat path is tried first, matching the
+/// door's own lookup, so a hand-built archive keeps winning over a staged
+/// one on a box that carries both.
+pub fn resolve_geog_dataset_dir(root: &Path, dataset: &str) -> PathBuf {
+    let flat = root.join(dataset);
+    if flat.join("index").is_file() {
+        return flat;
+    }
+    for (child, container) in GEOG_CONTAINER_TABLE.iter() {
+        if *child == dataset {
+            let nested = root.join(container).join(dataset);
+            if nested.join("index").is_file() {
+                return nested;
+            }
+        }
+    }
+    flat
+}
+
 impl StaticGeogPaths {
-    /// Resolve every geography directory from one archive root.
+    /// Resolve every geography directory from one archive root, in either
+    /// layout `gpuwm fetch-geog` stages ([`resolve_geog_dataset_dir`]).
     pub fn under(root: &Path) -> Self {
         let at = |name: &str| -> PathBuf {
-            root.join(
+            resolve_geog_dataset_dir(
+                root,
                 GEOG_DATASET_TABLE
                     .iter()
                     .find(|(slot, _)| *slot == name)
@@ -3488,6 +3542,140 @@ mod tests {
     use super::*;
     use crate::static_geog::fixture::{dataset, plane_1234_be, MINIMAL_INDEX, TILE_NAME};
     use crate::sha256_file;
+
+    // -- where a dataset directory is, in both layouts fetch-geog stages ----
+
+    /// A throwaway WPS_GEOG root for the layout tests.
+    fn layout_root(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "rw-mpas-geog-layout-{}-{}",
+            std::process::id(),
+            label
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("layout root");
+        dir
+    }
+
+    /// A dataset directory that counts as present: it carries an `index`.
+    fn stage(dir: &Path) {
+        std::fs::create_dir_all(dir).expect("dataset directory");
+        std::fs::write(dir.join("index"), "type=continuous\n").expect("index");
+    }
+
+    /// The container a directory is staged under, per the table.
+    fn container_of(directory: &str) -> Option<&'static str> {
+        GEOG_CONTAINER_TABLE
+            .iter()
+            .find(|(child, _)| *child == directory)
+            .map(|(_, container)| *container)
+    }
+
+    /// The root laid out exactly as `gpuwm fetch-geog` stages it: single
+    /// dataset archives flat, the soil group under its container.
+    fn stage_as_fetched(root: &Path) {
+        for (_, directory) in GEOG_DATASET_TABLE.iter() {
+            match container_of(directory) {
+                Some(container) => stage(&root.join(container).join(directory)),
+                None => stage(&root.join(directory)),
+            }
+        }
+    }
+
+    #[test]
+    fn a_flat_archive_resolves_every_dataset_at_the_root() {
+        let root = layout_root("flat");
+        for (_, directory) in GEOG_DATASET_TABLE.iter() {
+            stage(&root.join(directory));
+        }
+        let paths = StaticGeogPaths::under(&root);
+        for (slot, path) in paths.slots() {
+            let directory = GEOG_DATASET_TABLE
+                .iter()
+                .find(|(s, _)| *s == slot)
+                .expect("slot is a row")
+                .1;
+            assert_eq!(path, root.join(directory), "{slot}");
+        }
+        assert!(paths.missing().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_layout_fetch_geog_stages_resolves_the_soil_group_under_its_container() {
+        // The shipped defect: this exact tree, staged by the product's own
+        // fetcher, was refused for five datasets it carried.
+        let root = layout_root("fetched");
+        stage_as_fetched(&root);
+        let paths = StaticGeogPaths::under(&root);
+        assert_eq!(paths.terrain, root.join("topo_gmted2010_30s"));
+        assert_eq!(paths.soilcomp, root.join("soilgrids").join("soilcomp"));
+        assert_eq!(paths.soilcl1, root.join("soilgrids").join("texture_layer1"));
+        assert_eq!(paths.soilcl4, root.join("soilgrids").join("texture_layer4"));
+        assert!(paths.missing().is_empty(), "{:?}", paths.missing());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_dataset_in_neither_place_is_named_by_its_own_directory() {
+        let root = layout_root("short");
+        for (_, directory) in GEOG_DATASET_TABLE.iter() {
+            if container_of(directory).is_none() {
+                stage(&root.join(directory));
+            }
+        }
+        // An empty container directory (an interrupted extraction) is not a
+        // dataset either.
+        std::fs::create_dir_all(root.join("soilgrids").join("soilcomp")).unwrap();
+        let paths = StaticGeogPaths::under(&root);
+        assert_eq!(
+            paths.missing(),
+            vec![
+                "soilcomp".to_string(),
+                "texture_layer1".to_string(),
+                "texture_layer2".to_string(),
+                "texture_layer3".to_string(),
+                "texture_layer4".to_string(),
+            ]
+        );
+        // The unresolved slot keeps the flat path so the refusal names the
+        // directory, never a container it was not found in.
+        assert_eq!(paths.soilcomp, root.join("soilcomp"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_flat_path_wins_when_both_layouts_carry_a_dataset() {
+        let root = layout_root("both");
+        stage_as_fetched(&root);
+        stage(&root.join("soilcomp"));
+        assert_eq!(resolve_geog_dataset_dir(&root, "soilcomp"), root.join("soilcomp"));
+        assert_eq!(
+            resolve_geog_dataset_dir(&root, "texture_layer2"),
+            root.join("soilgrids").join("texture_layer2")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn every_soil_directory_the_builder_reads_has_a_container_row() {
+        // The five soil slots are the ones the fetcher stages nested; a slot
+        // added to GEOG_DATASET_TABLE from that archive without a row here
+        // would reproduce the refusal for that one directory.
+        for slot in ["soilcomp", "soilcl1", "soilcl2", "soilcl3", "soilcl4"] {
+            let directory = GEOG_DATASET_TABLE
+                .iter()
+                .find(|(s, _)| *s == slot)
+                .expect("slot is a row")
+                .1;
+            assert!(container_of(directory).is_some(), "{directory} has no container row");
+        }
+        // And every container row names a directory, not a slot.
+        for (child, container) in GEOG_CONTAINER_TABLE.iter() {
+            assert!(!child.is_empty() && !container.is_empty());
+            assert_ne!(child, container);
+        }
+    }
 
     // -- carrying a value to cells the archive has no pixel for -------------
 
