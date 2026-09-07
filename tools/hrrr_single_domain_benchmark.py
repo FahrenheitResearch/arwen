@@ -742,6 +742,15 @@ def _device_name(cp) -> str:
     return str(name)
 
 
+
+def _configured_soil_mesh(grid, experiment_tables):
+    """Declare the decoder's actual geometry to the shared soil operator."""
+    from gpuwm.ingest.hrrr import hrrr_source_grid
+    from gpuwm.ingest.soil_downscale import soil_mesh_plan_from_case
+    return soil_mesh_plan_from_case(
+        None, grid, experiment_tables, source_grid=hrrr_source_grid())
+
+
 def _source_identity() -> dict[str, object]:
     paths = (
         REPO / "gpuwm/hrrr_forecast.py",
@@ -750,6 +759,11 @@ def _source_identity() -> dict[str, object]:
         REPO / "gpuwm/ingest/hrrr_surface.py",
         REPO / "gpuwm/ingest/real.py",
         REPO / "gpuwm/ingest/soil.py",
+        REPO / "gpuwm/ingest/soil_downscale.py",
+        REPO / "gpuwm/static/highres_production.py",
+        REPO / "gpuwm/static/highres.py",
+        REPO / "gpuwm/static/highres_fetch.py",
+        REPO / "gpuwm/ingest/ruc_soil.py",
         REPO / "gpuwm/ingest/lateral_bc.py",
         REPO / "gpuwm/ingest/prepared_cache.py",
         REPO / "gpuwm/state_serialization_contract.py",
@@ -1201,54 +1215,19 @@ _NATIVE_HRRR_RUNTIME_SWITCHES = MappingProxyType({
     for profile in SINGLE_DOMAIN_PHYSICS_PROFILES
 })
 
-_HRRR_SOURCE_ABSENT_STATE_DEFAULTS = MappingProxyType({
-    WSM6_PROFILE_ID: MappingProxyType({}),
-    KESSLER_PROFILE_ID: MappingProxyType({}),
-    MYNN_PROFILE_ID: MappingProxyType({}),
-    MYNN_RUC_PROFILE_ID: MappingProxyType({}),
-    RUC_PROFILE_ID: MappingProxyType({}),
-    NOAHMP_PROFILE_ID: MappingProxyType({}),
-    MYNN_NOAHMP_PROFILE_ID: MappingProxyType({}),
-    THOMPSON_PROFILE_ID: MappingProxyType({
-        "ni": 0.0, "nr": 0.0,
-    }),
-    MORRISON_PROFILE_ID: MappingProxyType({
-        "nc": 0.0, "nr": 0.0, "ni": 0.0, "ns": 0.0, "ng": 0.0,
-    }),
-    NSSL2_PROFILE_ID: MappingProxyType({
-        "qh": 0.0, "qndrop": 0.0, "qnr": 0.0, "qni": 0.0,
-        "qns": 0.0, "qng": 0.0, "qnh": 0.0,
-        "qnn": 408163264.0, "qvolg": 0.0, "qvolh": 0.0,
-    }),
-    # P3's Registry ``scalar:`` members (Registry.EM_COMMON:3038): the two
-    # number moments and the prognostic rime pair.  No real-data source
-    # read here supplies any of them, so all four cold-start at the
-    # allocator's exact FP32 zero and the scheme owns their first update
-    # -- it floors nitot at nsmall before any mean size is taken
-    # (module_mp_p3.F:2572-2573) and zeroes an unsupported rime pair in
-    # calc_bulkRhoRime (:6799-6813).  Same policy, same words, as
-    # gpuwm/ingest/real.py's mp=50 entry.
-    P3_LEGACY_RRTMG_PROFILE_ID: MappingProxyType({
-        "ni": 0.0, "nr": 0.0, "qir": 0.0, "qib": 0.0,
-    }),
-})
+from gpuwm.ingest.microphysics_cold_start import source_absent_microphysics
 
+# Compatibility views for old receipt callers. The species/default authority is
+# shared and selector-based; production passes the actual RunConfig below.
+_HRRR_SOURCE_ABSENT_STATE_DEFAULTS = MappingProxyType({
+    profile: MappingProxyType(source_absent_microphysics(
+        SimpleNamespace(**single_domain_runtime_switches(profile)))[1])
+    for profile in SINGLE_DOMAIN_PHYSICS_PROFILES
+})
 _HRRR_SOURCE_ABSENT_WRF_FIELDS = MappingProxyType({
-    WSM6_PROFILE_ID: (),
-    KESSLER_PROFILE_ID: (),
-    MYNN_PROFILE_ID: (),
-    MYNN_RUC_PROFILE_ID: (),
-    RUC_PROFILE_ID: (),
-    NOAHMP_PROFILE_ID: (),
-    MYNN_NOAHMP_PROFILE_ID: (),
-    THOMPSON_PROFILE_ID: ("QNICE", "QNRAIN"),
-    MORRISON_PROFILE_ID: (
-        "QNRAIN", "QNICE", "QNSNOW", "QNGRAUPEL"),
-    NSSL2_PROFILE_ID: (
-        "QHAIL", "QNDROP", "QNRAIN", "QNICE", "QNSNOW",
-        "QNGRAUPEL", "QNHAIL", "QNCCN", "QVGRAUPEL", "QVHAIL"),
-    P3_LEGACY_RRTMG_PROFILE_ID: (
-        "QNICE", "QNRAIN", "QIR", "QIB"),
+    profile: source_absent_microphysics(
+        SimpleNamespace(**single_domain_runtime_switches(profile)))[0]
+    for profile in SINGLE_DOMAIN_PHYSICS_PROFILES
 })
 
 
@@ -1425,7 +1404,8 @@ def _microphysics_table_authority(profile: str) -> dict[str, object] | None:
     omits the key rather than writing an empty one.
     """
 
-    switches = _native_hrrr_runtime_switches(profile)
+    switches = (_native_hrrr_runtime_switches(profile)
+                if isinstance(profile, str) else asdict(profile))
     mp_physics = int(switches["mp_physics"])
     if mp_physics == THOMPSON_MP_PHYSICS:
         from gpuwm.core.thompson_contract import (
@@ -1490,6 +1470,31 @@ def _microphysics_table_authority(profile: str) -> dict[str, object] | None:
             ],
         }
     return None
+
+
+def _configured_physics_receipt(cfg, profile=None, *, acknowledgements=()):
+    from gpuwm.hrrr_configuration import resolved_run_settings
+    from gpuwm.physics_compat import single_domain_physics_selection
+    fields, defaults = source_absent_microphysics(cfg)
+    resolved = resolved_run_settings(cfg)
+    selection = single_domain_physics_selection(cfg, profile=profile,
+        expert_acknowledgements=tuple(acknowledgements))
+    receipt = {
+        "schema": "gpuwm-prepared-physics-profile-v1", "profile": profile,
+        "front_door_selection": selection, "selection": "configured d01",
+        "resolved": resolved,
+        "hrrr_initialization_contract": {
+            "analyzed_mass_fields": ["QC", "QR", "QI", "QS", "QG"],
+            "source_absent_fields": list(fields),
+            "source_absent_number_fields": [name for name in fields if name.startswith("QN")],
+            "source_absent_state_defaults_fp32": defaults,
+            "number_moment_policy": "exact active-scheme FP32 cold-start values",
+        },
+    }
+    tables = _microphysics_table_authority(cfg)
+    if tables is not None:
+        receipt["microphysics_table_authority"] = tables
+    return receipt
 
 
 def _validate_native_hrrr_physics_profile(
@@ -2223,17 +2228,15 @@ def _initial_hrrr_microphysics_receipt(
             raise ValueError(
                 f"native HRRR discarded source species {source_name} lacks "
                 "a source-bound WRF-real policy receipt")
-    try:
-        defaults = _HRRR_SOURCE_ABSENT_STATE_DEFAULTS[
-            _initialization_contract_profile(profile)]
-    except KeyError:
-        raise ValueError(
-            f"unsupported native HRRR physics profile {profile!r}") from None
+    cfg = (SimpleNamespace(**_native_hrrr_runtime_switches(profile))
+           if isinstance(profile, str) else profile)
+    absent_wrf_fields, defaults = source_absent_microphysics(cfg)
+    selection_label = profile if isinstance(profile, str) else f"mp_physics={cfg.mp_physics}"
     exact_fields = {}
     numbers = {}
     number_names = frozenset({
         "nc", "nr", "ni", "ns", "ng", "qndrop", "qnr", "qni",
-        "qns", "qng", "qnh", "qnn",
+        "qns", "qng", "qnh", "qnn", "nn", "nh",
     })
     for name, raw_expected in defaults.items():
         value = getattr(state, name, None)
@@ -2250,7 +2253,7 @@ def _initial_hrrr_microphysics_receipt(
                     "native HRRR Thompson source-absent number moment "
                     f"{name} must initialize to exact zero")
             raise ValueError(
-                f"native HRRR profile {profile!r} source-absent state "
+                f"native HRRR selection {selection_label!r} source-absent state "
                 f"{name} must initialize to exact FP32 "
                 f"{float(expected)!r}")
         field_receipt = {
@@ -2268,7 +2271,10 @@ def _initial_hrrr_microphysics_receipt(
                     "all_exact_expected": True,
                 }
             )
-    if profile == THOMPSON_PROFILE_ID:
+    if not isinstance(profile, str):
+        number_policy = ("exact active-scheme source-absent FP32 initial values"
+                         if defaults else "not applicable")
+    elif profile == THOMPSON_PROFILE_ID:
         number_policy = "real.exe exact-zero QNICE/QNRAIN"
     elif profile == MORRISON_PROFILE_ID:
         number_policy = (
@@ -2335,11 +2341,9 @@ def _initial_hrrr_microphysics_receipt(
         },
         "vertical_disposition": disposition,
         "discarded_source_species": dict(discarded),
-        "source_absent_wrf_fields": list(
-            _HRRR_SOURCE_ABSENT_WRF_FIELDS[
-                _initialization_contract_profile(profile)]),
+        "source_absent_wrf_fields": list(absent_wrf_fields),
         "source_absent_state_policy": (
-            "profile-defined exact FP32 WRF-real-style cold start"),
+            "active-scheme exact FP32 WRF-real-style cold start"),
         "state_source_absent_fields": exact_fields,
         "source_absent_number_policy": number_policy,
         "state_number_fields": numbers,
@@ -2595,7 +2599,7 @@ def _compact_boundary_static(static, run_cfg, *, width):
 def _initialize_boundary_sides(
         compact_mets, run_cfg, static_sides, eta, *, p_top, width,
         preprocess_backend="cuda", preprocess_workers=None,
-        cpu_preprocess_bridge=None):
+        cpu_preprocess_bridge=None, sfcp_to_sfcp=True):
     """Initialize one hour's four side rectangles on one explicit backend."""
     from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
 
@@ -2690,7 +2694,7 @@ def _initialize_boundary_sides(
             # honour the request with.
             result = initialize_real(
                 strip_met, strip_cfg, coord, strip_static["HGT_M"],
-                p_top=p_top, sfcp_to_sfcp=True,
+                p_top=p_top, sfcp_to_sfcp=sfcp_to_sfcp,
                 preprocess_backend=preprocess,
                 state_backend="preprocess",
                 flag_sh_surface_fallback=(
@@ -2730,13 +2734,13 @@ _PREPARE_WORKER_CONTEXT = None
 
 def _prepare_worker_init(
         run_cfg, static_sides, eta, p_top, width,
-        preprocess_backend, cpu_preprocess_bridge):
+        preprocess_backend, cpu_preprocess_bridge, sfcp_to_sfcp=True):
     """Install immutable per-domain inputs in one spawned worker process."""
     global _PREPARE_WORKER_CONTEXT
     _PREPARE_WORKER_CONTEXT = (
         run_cfg, static_sides, tuple(float(value) for value in eta),
         float(p_top), int(width), preprocess_backend,
-        cpu_preprocess_bridge)
+        cpu_preprocess_bridge, sfcp_to_sfcp)
 
 
 def _prepare_boundary_hour(
@@ -2745,14 +2749,14 @@ def _prepare_boundary_hour(
     if _PREPARE_WORKER_CONTEXT is None:
         raise RuntimeError("boundary preparation worker was not initialized")
     (run_cfg, static_sides, eta, p_top, width, preprocess_backend,
-     cpu_preprocess_bridge) = _PREPARE_WORKER_CONTEXT
+     cpu_preprocess_bridge, sfcp_to_sfcp) = _PREPARE_WORKER_CONTEXT
     started = time.perf_counter()
     sides, side_timings, memory, preprocess_receipt = _initialize_boundary_sides(
         compact_mets, run_cfg, static_sides, eta,
         p_top=p_top, width=width,
         preprocess_backend=preprocess_backend,
         preprocess_workers=preprocess_workers,
-        cpu_preprocess_bridge=cpu_preprocess_bridge)
+        cpu_preprocess_bridge=cpu_preprocess_bridge, sfcp_to_sfcp=sfcp_to_sfcp)
     finished = time.perf_counter()
     return {
         "forecast_hour": int(hour),
@@ -2772,7 +2776,8 @@ def _prepare_boundary_hour(
 def _initialize_state(
         snapshot, dc, grid, static, eta, mapping_report, *,
         p_top, column_workers=1, surface_fallback_radius: int = 8,
-        preprocess_backend="cuda", state_backend="cuda"):
+        preprocess_backend="cuda", state_backend="cuda",
+        sfcp_to_sfcp=True, water_temperature_statics=None):
     """Full-domain f00/reference initialization with split timing."""
     from gpuwm.core.grid import make_vertical_coord
     from gpuwm.ingest.real import initialize_real
@@ -2781,6 +2786,9 @@ def _initialize_state(
         snapshot, grid, static, mapping_report,
         surface_fallback_radius=surface_fallback_radius,
         preprocess_backend=preprocess_backend)
+    if water_temperature_statics is not None:
+        from gpuwm.ingest.water_temperature import assemble_horizontal_water_temperature
+        met = assemble_horizontal_water_temperature(met, water_temperature_statics)
     started = time.perf_counter()
     coord = make_vertical_coord(
         dc.run.nz, hybrid_opt=dc.run.hybrid_opt, etac=dc.run.etac,
@@ -2788,7 +2796,7 @@ def _initialize_state(
     state_timing = {}
     result = initialize_real(
         met, dc.run, coord, static["HGT_M"], grid=grid, p_top=p_top,
-        sfcp_to_sfcp=True, column_workers=column_workers,
+        sfcp_to_sfcp=sfcp_to_sfcp, column_workers=column_workers,
         preprocess_backend=preprocess_backend,
         state_backend=state_backend,
         timing_report=state_timing)
@@ -2820,6 +2828,8 @@ def _lbc_payload_sha256(boundaries):
 
 
 def _start_seal(args, producer_report, source_hash_receipt, source_window):
+    from gpuwm.ingest.native_supplements import verify_supplement_receipt
+    verify_supplement_receipt(source_hash_receipt)
     from tools.hrrr_pipeline import write_pipeline_receipt
 
     controller = args.pipeline_signals / "controller.json"
@@ -2929,49 +2939,63 @@ def run(args):
         expected_nz=target.nz,
         context="native HRRR initializer",
     )
-    physics_profile = _validate_native_hrrr_physics_profile(
-        args.namelist_input, args.physics_profile,
-        expert_acknowledgements=tuple(args.ack))
+    from gpuwm.hrrr_configuration import resolve_root_experiment
+    exp, experiment_tables = resolve_root_experiment(
+        target=target, vertical=vertical_grid, namelist_input=args.namelist_input,
+        start_time=model_start_time, run_seconds=args.run_seconds,
+        experiment_config=getattr(args, "experiment_config", None),
+        wps_namelist=getattr(args, "wps_namelist", None),
+        physics_profile=args.physics_profile, acknowledgements=tuple(args.ack),
+        history_interval_seconds=args.history_interval_seconds)
+    from gpuwm.case_data import optional_case_data_from_tables
+    companion_source = getattr(args, "experiment_config", None) or args.namelist_input
+    declared_case = optional_case_data_from_tables(
+        experiment_tables, source=str(companion_source),
+        base_dir=Path(companion_source).parent)
+    from gpuwm.ingest.native_supplements import native_pressure_policy, require_native_pressure_field
+    case_policy = native_pressure_policy(args.namelist_input, declared_case)
+    if args.prepared_cache is None or not args.prepared_cache.exists():
+        if args.pipeline_series is not None:
+            from tools.hrrr_pipeline import _parse_series
+            for row in _parse_series(args.pipeline_series):
+                require_native_pressure_field(case_policy, bindings=row[3:])
+        else:
+            require_native_pressure_field(case_policy, bridge_root=args.bridge)
+    trace_gas_overrides = ({"co2": declared_case.co2_vmr}
+        if declared_case is not None and declared_case.co2_vmr is not None else None)
+    from gpuwm.ingest.water_overlay import (
+        load_bound_water_overlay, overlay_snapshot_sequence, verify_overlay_sequence)
+    water_overlay, water_overlay_binding = load_bound_water_overlay(
+        None if declared_case is None else declared_case.water_temperature_overlay)
+    from gpuwm.static.highres_production import (parse_static_table, static_highres_identity)
+    static_highres = parse_static_table(experiment_tables.get("static"),
+        source=str(companion_source), base_dir=Path(companion_source).parent)
+    physics_profile = _configured_physics_receipt(
+        exp.root.run, args.physics_profile, acknowledgements=tuple(args.ack))
     eta = np.asarray(vertical_grid.eta_levels, dtype=np.float64)
     p_top = vertical_grid.p_top
-    history_interval_seconds = (
-        float(args.history_interval_seconds)
-        if args.history_interval_seconds is not None else 300.0)
-    exp = _experiment(
-        vertical_grid, run_seconds=args.run_seconds,
-        start_time=model_start_time, target=target,
-        physics_profile=args.physics_profile,
-        history_interval_seconds=history_interval_seconds)
+    history_interval_seconds = float(exp.root.history_interval_s)
     if args.publish_experiment_config is not None:
-        # Published BEFORE any decoding, so a preparation that is going
-        # to fail its own config round-trip fails in a second rather
-        # than after the fetch.  The tables are rebuilt from the same
-        # inputs rather than captured above: `build_experiment` owns the
-        # dict it was handed, and rendering a document from a mapping
-        # another call may have consumed is how a published authority
-        # stops describing the experiment beside it.
         from gpuwm.experiment_document import publish_experiment_document
-
-        experiment_tables, _published_target = _experiment_tables(
-            vertical_grid, run_seconds=args.run_seconds,
-            start_time=model_start_time, target=target,
-            physics_profile=args.physics_profile,
-            history_interval_seconds=history_interval_seconds)
         published_config = publish_experiment_document(
             args.publish_experiment_config, experiment_tables, exp)
-        print(f"published experiment authority: {published_config}",
-              flush=True)
+        print(f"published experiment authority: {published_config}", flush=True)
     output_cadence_receipt = (
         _validate_history_output_cadence(exp, history_interval_seconds)
         if args.io_mode == "history" or args.prepare_only else None)
     _validate_resolved_hrrr_profile(exp, physics_profile)
     dc = exp.domains[0]
     grid = benchmark_grid(target)
+    soil_mesh = _configured_soil_mesh(grid, experiment_tables)
     if grid.latlon_mass()[0].shape != (target.ny, target.nx):
         raise ValueError("target Lambert geometry shape drift")
 
     static, attrs, static_load = _load_static(
         args.static_cache, args.static_receipt, target)
+    from gpuwm.static.highres_production import require_prepared_highres
+    require_prepared_highres(
+        json.loads(Path(args.static_receipt).read_text(encoding="utf-8")), grid,
+        config=static_highres, domain_id=1, case_date=exp.start_time.date())
     timing = {"load_and_verify_cached_native_static": static_load["wall_seconds"]}
     io_before = _proc_io()
     total_started = time.perf_counter()
@@ -2989,7 +3013,14 @@ def run(args):
         "model_start_time": model_start_time.isoformat(),
         "source_forecast_hours": list(source_forecast_hours),
         "model_forcing_hours": list(model_forcing_hours),
+        "ingest": {"soil_texture_downscale": soil_mesh.enabled},
+        "trace_gas_overrides": trace_gas_overrides,
+        "preparation_case_policy": case_policy,
+        "water_temperature_overlay": water_overlay_binding,
     }
+
+    if static_highres is not None:
+        source_identity["static_highres"] = static_highres_identity(static_highres)
     namelist_sha256 = _sha256(args.namelist_input)
     prepared_cache_receipt = None
     prepared_cache_identity = None
@@ -3207,7 +3238,30 @@ def run(args):
             # soon as mapping finishes instead of pinning all f00..f12 views.
             return snapshots.pop(hour)
 
+    overlay_series = None
+    if not restore_cached and water_overlay is not None:
+        # Keep the existing one-hour loader lifetime in both pipeline and
+        # sealed-file modes. The wrapper retains receipts, never weather arrays.
+        raw_acquire = acquire_snapshot
+
+        class ForcingSequence:
+            def __len__(self):
+                return len(requested_hours)
+
+            def __getitem__(self, index):
+                return raw_acquire(requested_hours[index])
+
+        overlay_series = overlay_snapshot_sequence(
+            ForcingSequence(), water_overlay, binding=water_overlay_binding)
+
+        def acquire_snapshot(hour):
+            return overlay_series[requested_hours.index(hour)]
+
     if not restore_cached:
+        from gpuwm.ingest.water_temperature import WaterTemperatureStatics
+        water_statics = WaterTemperatureStatics.for_route(
+            route="native preparation", policy=case_policy["water_temperature_policy"],
+            landmask=static["LANDMASK"], lu_index=static["LU_INDEX"], landuse_attrs=attrs)
         intervals = []
         boundary_sides_by_hour = {}
         valid_time_by_hour = {}
@@ -3234,7 +3288,8 @@ def run(args):
             f00_job_started = time.perf_counter()
             result, met, horizontal, vertical, state_timing = _initialize_state(
                 snapshot, dc, grid, static, eta, mapping,
-                p_top=p_top,
+                p_top=p_top, sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
+                water_temperature_statics=water_statics,
                 column_workers=args.prepare_workers,
                 surface_fallback_radius=(
                     target.surface_fallback_radius_cells),
@@ -3436,6 +3491,7 @@ def run(args):
                      worker_preprocess_receipt) = _initialize_boundary_sides(
                         compact, dc.run, static_sides, eta,
                         p_top=p_top, width=width,
+                        sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
                         preprocess_backend=hour_preprocess)
                     finished = time.perf_counter()
                     del compact
@@ -3461,7 +3517,8 @@ def run(args):
                         dc.run, static_sides, tuple(eta), p_top, width,
                         preprocess_receipt["backend"],
                         (str(args.cpu_preprocess_bridge)
-                         if args.cpu_preprocess_bridge is not None else None)))
+                         if args.cpu_preprocess_bridge is not None else None),
+                        case_policy["sfcp_to_sfcp"]))
                 futures = {}
                 slot_futures = [None] * schedule_slots
 
@@ -3541,6 +3598,7 @@ def run(args):
         timing["all_root_lbc_bound_seconds_from_startup"] = (
             time.perf_counter() - total_started)
 
+        verify_overlay_sequence(overlay_series)
         if args.prepared_cache is not None:
             # In pipeline mode the canonical bridge manifest does not exist
             # until all f00..f12 payloads have been atomically published and
@@ -3573,27 +3631,13 @@ def run(args):
                 seal_process = None
 
             from gpuwm.ingest.prepared_cache import write_prepared_cache
-            from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
-            from gpuwm.native_wrf_contract import canonical_noah_surface
+            from gpuwm.ingest.hrrr_physics import resolve_prepared_noah_surface
 
-            # The source-neutral Noah surface, persisted WITH the cache.
-            # This is the same derivation initialize_hrrr_physics runs at
-            # every native launch (preprocess_land_surface_soil ->
-            # canonical_noah_surface); writing it here is what makes the
-            # cache portable: prepared_single_domain_forecast's preflight
-            # demands the exact canonical inventory, restores it, and
-            # never re-derives soil from the native SOILT/SOILW -- which
-            # this cache therefore no longer persists (the writer drops
-            # the legacy met soil pair when a canonical surface rides
-            # along).  Field 2026-08-06: the first portable HRRR case
-            # refused at that preflight because this call wrote no
-            # surface at all.
-            surface_soil = preprocess_land_surface_soil(
-                root_met.fields,
-                sf_surface_physics=int(dc.run.sf_surface_physics),
-                soil_type=static["SCT_DOM"],
-                deep_soil_temperature=static["SOILTEMP"])
-            canonical_surface = canonical_noah_surface(surface_soil)
+            # The cache and fresh forecast consume the very same solved
+            # surface, including the declared sub-source-cell soil treatment.
+            root_surface = resolve_prepared_noah_surface(
+                root_met, dc.run, static, soil_mesh=soil_mesh)
+            canonical_surface = root_surface.fields
 
             started = time.perf_counter()
             prepared_cache_receipt = write_prepared_cache(
@@ -3608,6 +3652,8 @@ def run(args):
                     "model_forcing_hours": list(model_forcing_hours),
                     "forcing_hours": list(requested_hours),
                     "mapping_reports": _strict_json(mapping_reports),
+                    "soil_texture_downscale": _strict_json(
+                        root_surface.soil_texture_downscale),
                 }, sealed_forcing_extension=args.sealed_prepared_cache)
             timing["write_prepared_state_and_all_lbc_cache"] = (
                 time.perf_counter() - started)
@@ -3621,9 +3667,10 @@ def run(args):
     preprocess_worker_budget_receipt = preprocess_worker_budget.receipt()
     physics_profile["hrrr_initialization"] = (
         _initial_hrrr_microphysics_receipt(
-            root_result.state, args.physics_profile,
+            root_result.state, exp.root.run,
             getattr(root_result, "hydrometeor_initialization", None)))
 
+    verify_overlay_sequence(overlay_series)
     if args.prepare_only:
         if prepared_cache_receipt is None:
             raise RuntimeError("prepare-only completed without a cache receipt")
@@ -3736,7 +3783,8 @@ def run(args):
         root_result, dc.run, root_met, static, attrs, grid,
         initial_snapshot.valid_time,
         constant_glw_wm2=declared_constant_glw(exp),
-        surface=root_surface)
+        surface=root_surface, soil_mesh=soil_mesh, p_top=exp.vertical.p_top,
+        column_chunk=exp.column_chunk, trace_gas_overrides=trace_gas_overrides)
     timing["initialize_physics"] = time.perf_counter() - started
 
     clock = resolve_clock(exp, lbc_interval_s=3600.0)
@@ -4211,9 +4259,8 @@ def _parse_args(argv=None):
     parser.add_argument("--bridge", type=Path, required=True)
     parser.add_argument(
         "--physics-profile",
-        choices=SINGLE_DOMAIN_PHYSICS_PROFILES,
-        default=ROUTE_DEFAULT_PHYSICS_PROFILE,
-        help="explicit GPUWM HRRR physics/runtime contract",
+        default=None,
+        help="optional equality assertion against a named physics template",
     )
     parser.add_argument(
         "--ack", action="append", default=[],
@@ -4252,6 +4299,8 @@ def _parse_args(argv=None):
         help=("strict gpuwm-hrrr-target-domain-v1 JSON; omission retains "
               "the sealed 500x500 benchmark target"),
     )
+    parser.add_argument("--experiment-config", type=Path)
+    parser.add_argument("--wps-namelist", type=Path)
     parser.add_argument("--namelist-input", type=Path, required=True)
     parser.add_argument(
         "--publish-experiment-config", type=Path,

@@ -11,12 +11,21 @@ Everything here calls the actual product code -- ``LambertGrid``,
 geometry/probe/crop functions and ``_write_deterministic_npz`` -- never a
 re-implementation.
 
-Run from the repo root:  python tools/static_rust_port/extract_lane1_goldens.py
+Run from the repo root. The default directory is the committed Windows
+authority; native qualification uses a separate directory:
+
+    python tools/static_rust_port/extract_lane1_goldens.py --output <directory>
+
+NumPy defaults to the qualified version 2.2.6. The manifest records the
+native platform and hashes both reference sources and array payloads.
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
+import os
+import platform
 import sys
 from pathlib import Path
 
@@ -24,6 +33,20 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
+
+# A reference extractor must never ask the Rust implementation for its own
+# expected results, even when a built bridge is present in the checkout.
+os.environ["GPUWM_STATIC_PYTHON"] = "1"
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--output", type=Path,
+                    help="separate directory for this platform's Python authority")
+parser.add_argument("--require-numpy", default="2.2.6")
+arguments = parser.parse_args()
+if np.__version__ != arguments.require_numpy:
+    parser.error(f"NumPy {arguments.require_numpy} is required; found {np.__version__}")
+if arguments.output is None and sys.platform != "win32":
+    parser.error("the committed lane1 directory holds Windows goldens; "
+                 "use --output for a separate native-platform authority")
 
 from gpuwm.static.build import _DomainSampler, _wps32_for  # noqa: E402
 from gpuwm.static.corridor import (  # noqa: E402
@@ -33,13 +56,29 @@ from gpuwm.static.lambert import LambertGrid  # noqa: E402
 from gpuwm.static.projection import (  # noqa: E402
     MercatorGrid, PolarStereoGrid)
 
-OUT = ROOT / "tools" / "rustwx" / "crates" / "static-fields" / "tests" \
-    / "goldens" / "lane1"
+OUT = arguments.output or (ROOT / "tools" / "rustwx" / "crates" / "static-fields"
+                           / "tests" / "goldens" / "lane1")
 OUT.mkdir(parents=True, exist_ok=True)
 
 MANIFEST: dict = {
     "generator": "tools/static_rust_port/extract_lane1_goldens.py",
     "numpy": np.__version__,
+    "arithmetic_backend": "python-numpy",
+    "platform": {
+        "system": platform.system(),
+        "machine": platform.machine(),
+        "byteorder": sys.byteorder,
+        "python": platform.python_version(),
+        "python_compiler": platform.python_compiler(),
+        "libc": list(platform.libc_ver()),
+        "numpy_cpu_features": dict(np._core._multiarray_umath.__cpu_features__),
+    },
+    "source_sha256": {
+        name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+        for name in ("gpuwm/static/lambert.py", "gpuwm/static/projection.py",
+                     "gpuwm/static/build.py", "gpuwm/static/corridor.py",
+                     "tools/static_rust_port/extract_lane1_goldens.py")
+    },
     "cases": {},
 }
 
@@ -67,6 +106,7 @@ def put_array(case_name: str, key: str, value: np.ndarray) -> None:
         "file": filename,
         "dtype": dtype,
         "shape": list(value.shape),
+        "sha256": hashlib.sha256(raw).hexdigest(),
     }
 
 

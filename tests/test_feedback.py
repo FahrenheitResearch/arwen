@@ -287,6 +287,172 @@ def test_feedback_restricts_exact_mass_faces_and_leaves_rim_untouched(ratio):
         np.testing.assert_array_equal(after[outside], before[kind][outside])
 
 
+def _seed_child_column_mass_gradient(state, ratio):
+    """A child column-mass ramp across the feedback footprint.
+
+    ``_seed_state`` leaves ``mup = 0``, which makes the coupling mass
+    ``c1h*(mub+mup)+c2h`` uniform on BOTH grids -- and a mass-weighted
+    average of a uniform mass IS the unweighted average.  Every stencil
+    assertion in ``test_feedback_restricts_exact_mass_faces_and_leaves_rim_
+    untouched`` therefore passes whether or not the transaction couples.
+    The 8 Pa/cell ramp below is what separates the two.
+    """
+    import cupy as cp
+
+    ny, nx = state.mup.shape
+    state.mup[...] = cp.arange(nx, dtype=cp.float32)[None, :] * cp.float32(8.0)
+    return 8.0 * (3 * ratio - 1) / 2.0        # its mean over the footprint
+
+
+@requires_gpu
+@pytest.mark.gpu
+@pytest.mark.parametrize("ratio", [4, 3], ids=["even-ratio-4", "odd-ratio-3"])
+def test_feedback_restricts_uncoupled_fields_under_a_child_mass_gradient(
+        ratio):
+    """WRF's feedback restricts the RAW prognostics, never coupled ones.
+
+    ``share/mediation_feedback_domain.F`` (146 lines, read end to end) and
+    ``external/RSL_LITE/feedback_domain_em_part1.F`` / ``_part2.F`` contain
+    no ``couple_or_uncouple_em``; ``inc/nest_feedbackup_interp.inc:23-27``
+    hands ``copy_fcn`` the bare ``ngrid%u_2`` and
+    ``share/interp_fcn.F:1476-1477`` accumulates ``1./REAL(nri*nrj)`` of
+    it.  Only the FORCE path couples (``share/mediation_force_domain.F:117``
+    parent, ``:129`` nest) and uncouples again (``:184``, ``:196``).
+
+    So the parent must receive the UNWEIGHTED cell/face averages -- the
+    same numbers the uniform-mass sibling test asserts -- even when the
+    child's column mass varies across the footprint.  A mass-coupled
+    transaction returns ``mean(chm*f)/chm_parent`` instead; with this ramp
+    that is 8.558 vs 8.5 for theta and 8.147 vs 6.5 for the high u face at
+    ratio 4 (5.033 / 5.972 at ratio 3), so the assertions below separate
+    the two by far more than FP32 noise.
+    """
+    import cupy as cp
+
+    from gpuwm.core.nest import NestCoupler
+    from gpuwm.core.preflight import nest_field_kinds
+    from gpuwm.core.state import DomainState
+
+    parent_cfg = _domain(1, 0, nx=14, ny=14)
+    child_cfg = _domain(
+        2, 1, nx=ratio * 3, ny=ratio * 3, ratio=ratio)
+    parent_state = DomainState(parent_cfg.run)
+    child_state = DomainState(child_cfg.run)
+    _seed_state(parent_state, child=False)
+    _seed_state(child_state, child=True)
+    _seed_operator_patterns(child_state, ratio)
+    footprint_mu = _seed_child_column_mass_gradient(child_state, ratio)
+    clock = SimpleNamespace(ticks=0)
+    parent = SimpleNamespace(
+        cfg=parent_cfg, state=parent_state, clock=clock)
+    child = SimpleNamespace(
+        cfg=child_cfg, state=child_state, clock=clock, parent=parent)
+    coupler = NestCoupler(child, feedback=1)
+
+    before = {}
+    for kind in nest_field_kinds(parent_cfg.run):
+        name = {"t": "thp", "ph": "php"}.get(kind, kind)
+        value = parent_state.mup if kind == "mu" else getattr(
+            parent_state, name)
+        before[kind] = cp.asnumpy(value).copy()
+
+    scratch = FeedbackScratch()
+    coupler.feedback_prepare(child, scratch)
+    coupler.feedback_commit(child)
+    # No finalize: it only re-diagnoses p/al/alt, and every claim below is
+    # about what the restriction wrote.
+
+    # The discriminator is live only if the parent really took a non-zero
+    # column mass here: with mup == 0 the coupling mass is uniform on both
+    # grids and the coupled and uncoupled paths agree identically, so
+    # everything below would pass either way.
+    assert float(parent_state.mup[4, 4]) == pytest.approx(
+        footprint_mu, abs=1.0e-4)
+
+    for value, expect in (
+            (parent_state.thp[0, 4, 4], (ratio * ratio + 1) / 2.0),
+            (parent_state.u[0, 4, 4], (ratio + 1) / 2.0),
+            (parent_state.u[0, 4, 5], (3 * ratio + 1) / 2.0),
+            (parent_state.v[0, 4, 4], (5 * ratio + 1) / 2.0),
+            (parent_state.v[0, 5, 4], (7 * ratio + 1) / 2.0)):
+        assert float(value) == pytest.approx(expect, abs=1.0e-6)
+    # The uniform child rows: a convex average of a constant is that
+    # constant, so these pin that the mass ramp leaked into nothing else.
+    assert float(parent_state.w[0, 4, 4]) == pytest.approx(4.0, abs=1.0e-6)
+    assert float(parent_state.php[0, 4, 4]) == pytest.approx(8.0, abs=1.0e-6)
+    assert float(parent_state.qv[0, 4, 4]) == pytest.approx(
+        0.002, abs=1.0e-8)
+
+    # copy_fcn now writes into the parent's live prognostic rather than a
+    # scratch buffer, so "only the feedback rectangle" is load-bearing.
+    for kind in nest_field_kinds(parent_cfg.run):
+        name = {"t": "thp", "ph": "php"}.get(kind, kind)
+        value = parent_state.mup if kind == "mu" else getattr(
+            parent_state, name)
+        after = cp.asnumpy(value)
+        reg = coupler.registrations[
+            "x" if kind == "u" else "y" if kind == "v" else "m"]
+        i_lo, i_hi, j_lo, j_hi = feedback_parent_bounds(
+            reg, spec_zone=child_cfg.run.spec_zone)
+        mask = np.zeros(after.shape[-2:], dtype=bool)
+        mask[j_lo:j_hi + 1, i_lo:i_hi + 1] = True
+        outside = np.broadcast_to(~mask, after.shape)
+        np.testing.assert_array_equal(after[outside], before[kind][outside])
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_feedback_theta_lands_in_the_parents_own_base_frame():
+    """WRF restricts ``t_2 = theta - 300``; gpuwm stores ``theta - thb``.
+
+    300 is a global constant (``t0``), so parent and child mean the same
+    thing by ``t_2`` and WRF writes the restriction straight across.  gpuwm's
+    ``thp`` is measured against a per-grid base profile instead, so the
+    restricted value has to change reference frame on arrival.  With the
+    parent's ``thb`` 9 K below the child's, the parent must end up at
+    ``mean(theta_child) - thb_parent`` = 5 + 300 - 291 = 14 K, not at the
+    restricted ``t_2`` of 5 K.
+    """
+    import cupy as cp
+
+    from gpuwm.core.nest import NestCoupler
+    from gpuwm.core.state import DomainState
+
+    ratio = 3
+    parent_cfg = _domain(1, 0, nx=14, ny=14)
+    child_cfg = _domain(2, 1, nx=9, ny=9, ratio=ratio)
+    parent_state = DomainState(parent_cfg.run)
+    child_state = DomainState(child_cfg.run)
+    _seed_state(parent_state, child=False)
+    _seed_state(child_state, child=True)
+    _seed_operator_patterns(child_state, ratio)
+    parent_state.thb[...] = cp.float32(291.0)     # child keeps 300.0
+    before_thp = cp.asnumpy(parent_state.thp).copy()
+    clock = SimpleNamespace(ticks=0)
+    parent = SimpleNamespace(
+        cfg=parent_cfg, state=parent_state, clock=clock)
+    child = SimpleNamespace(
+        cfg=child_cfg, state=child_state, clock=clock, parent=parent)
+    coupler = NestCoupler(child, feedback=1)
+
+    scratch = FeedbackScratch()
+    coupler.feedback_prepare(child, scratch)
+    coupler.feedback_commit(child)
+
+    restricted_t2 = (ratio * ratio + 1) / 2.0            # = 5.0
+    assert float(parent_state.thp[0, 4, 4]) == pytest.approx(
+        restricted_t2 + 300.0 - 291.0, abs=1.0e-4)
+    # The rebasing is confined to the cells copy_fcn wrote.
+    mass_reg = coupler.registrations["m"]
+    i_lo, i_hi, j_lo, j_hi = feedback_parent_bounds(
+        mass_reg, spec_zone=child_cfg.run.spec_zone)
+    mask = np.zeros(parent_state.thp.shape[-2:], dtype=bool)
+    mask[j_lo:j_hi + 1, i_lo:i_hi + 1] = True
+    outside = np.broadcast_to(~mask, parent_state.thp.shape)
+    after = cp.asnumpy(parent_state.thp)
+    np.testing.assert_array_equal(after[outside], before_thp[outside])
+
+
 def _feedback_experiment(run_seconds, feedback=1):
     from gpuwm.experiment import (
         ExperimentConfig, ProjectionConfig, VerticalConfig)

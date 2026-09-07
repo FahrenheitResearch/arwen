@@ -374,7 +374,8 @@ SM86_NVRTC_13_0_48 = KernelFrameRecording(
     # constraint that no longer holds.  ``gf``, ``ysu`` and ``kf`` were all
     # re-read on that card at the post-workspace source, same NVRTC.
     # Extended 2026-08-31 with the two MYNN-EDMF modules (see their rows),
-    # so it is the one recording that covers every ``.cu`` in the tree.
+    # and 2026-09-05 with lbc_time and ntiedtke at this compiler/architecture.
+    # Every standalone source remains covered by an actual reading.
     complete=True,
     frames=MappingProxyType({
         'acoustic': 544,
@@ -411,6 +412,10 @@ SM86_NVRTC_13_0_48 = KernelFrameRecording(
         'kf_validation': 0,
         'lbc_flow': 0,
         'lbc_state': 0,
+        # Added from both driver-read entry points on this same platform,
+        # 2026-09-05: linear16/rational36 registers; both local_size_bytes0.
+        # Exact source/compiler receipts: docs/lbc_time_local_memory.md.
+        'lbc_time': 0,
         'microphysics_validation': 0,
         'milbrandt2': 2048,
         'morrison': 5120,
@@ -445,6 +450,10 @@ SM86_NVRTC_13_0_48 = KernelFrameRecording(
         'nssl2_fused_gs': 112,
         'nssl2_nucond': 0,
         'nssl2_qvexcess': 0,
+        # Added 2026-09-05 from all21 driver-read entry points on this
+        # platform, closing the pre-existing hole in this complete table.
+        # Every entry reports0B local; see docs/lbc_time_local_memory.md.
+        'ntiedtke': 0,
         'openbc': 0,
         'pd_advection': 0,
         'refl': 18432,
@@ -531,11 +540,11 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
         nvrtc_build='13.0.88',
         platform_family='windows',
         measured='2026-08-29',
-        # Every module the probe could compile. The eleven it could not are
-        # the same set the other Windows recordings omit -- noahmp_driver,
-        # the rrtmg_lw chain and rrtmg_sw -- so this is complete in the
-        # same sense theirs are.
-        complete=True,
+        # Every module the probe could compile on that date. This reading
+        # predates lbc_time.cu (2026-09-04), so it cannot claim complete
+        # coverage of today's source or borrow a row from another compiler.
+        # Every value it did record still has an exact-equality driver gate.
+        complete=False,
         frames=MappingProxyType({
             'acoustic': 544,
             'advection': 0,
@@ -620,6 +629,18 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
         }),
     ),
 
+    # A partial recording of the new boundary module, independently measured
+    # through the production loader on local WSL. No other module was read.
+    KernelFrameRecording(
+        box='drew-desktop (WSL2)',
+        device='NVIDIA GeForce RTX 3080',
+        compute_capability='86',
+        nvrtc_build='12.8.93',
+        platform_family='linux',
+        measured='2026-09-05',
+        complete=False,
+        frames=MappingProxyType({'lbc_time': 0}),
+    ),
 )
 
 

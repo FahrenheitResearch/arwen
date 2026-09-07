@@ -1,10 +1,10 @@
 """Measure, on THIS box, whether numpy's transcendental bit results match
-the UCRT libm that Rust std links (the "libm risk" named in
+the native scalar libm that Rust std links (the "libm risk" named in
 docs/dev/static-rust-port.md).  Lane 1 chooses its Rust evaluation
 strategy per function from this table, then the goldens hold it.
 
-f64: numpy ufunc vs CPython math.* (math calls UCRT directly).
-f32: numpy ufunc vs UCRT's float functions via ctypes vs
+f64: numpy ufunc vs CPython math.* (UCRT on Windows, system libm on Linux).
+f32: numpy ufunc vs the native libm's float functions via ctypes vs
      double-rounding ((f32)f64func((f64)x)).
 """
 from __future__ import annotations
@@ -12,6 +12,8 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import math
+import os
+import platform
 
 import numpy as np
 
@@ -28,11 +30,15 @@ RAD = DEG * (np.pi / 180.0)
 POS = np.abs(rng.uniform(0.01, 3.0, 8000)) + 1e-6
 UNIT = rng.uniform(-1.0, 1.0, 8000)
 
-ucrt = ctypes.CDLL("ucrtbase")
+libm_name = "ucrtbase" if os.name == "nt" else ctypes.util.find_library("m")
+if libm_name is None:
+    raise RuntimeError("cannot locate this platform's scalar libm")
+native_libm = ctypes.CDLL(libm_name)
+print(f"platform={platform.platform()} numpy={np.__version__} libm={libm_name}")
 
 
 def bind(name, restype, argtypes):
-    fn = getattr(ucrt, name)
+    fn = getattr(native_libm, name)
     fn.restype = restype
     fn.argtypes = argtypes
     return fn
@@ -55,7 +61,7 @@ def compare32(label, np_fn, crt_name, math_fn, values):
                  dtype=np.float32)
     na = int(np.count_nonzero(a.view(np.uint32) != b.view(np.uint32)))
     nc = int(np.count_nonzero(a.view(np.uint32) != c.view(np.uint32)))
-    print(f"f32 {label:10s} vs-ucrt {na}/{a.size}   vs-dblround {nc}/{a.size}")
+    print(f"f32 {label:10s} vs-libm {na}/{a.size}   vs-dblround {nc}/{a.size}")
 
 
 compare64("sin", np.sin, math.sin, RAD)
@@ -111,7 +117,7 @@ b32 = np.array([crt_atan2f(float(y), float(x)) for y, x in zip(x32, y32)],
                dtype=np.float32)
 c32 = np.array([np.float32(math.atan2(float(y), float(x)))
                 for y, x in zip(x32, y32)], dtype=np.float32)
-print("f32 atan2      vs-ucrt",
+print("f32 atan2      vs-libm",
       int(np.count_nonzero(a32.view(np.uint32) != b32.view(np.uint32))),
       "  vs-dblround",
       int(np.count_nonzero(a32.view(np.uint32) != c32.view(np.uint32))),
@@ -125,7 +131,7 @@ powb = np.array([crt_powf(float(v), float(e32)) for v in p32],
                 dtype=np.float32)
 powc = np.array([np.float32(math.pow(float(v), float(e32))) for v in p32],
                 dtype=np.float32)
-print("f32 pow        vs-ucrt",
+print("f32 pow        vs-libm",
       int(np.count_nonzero(pow32.view(np.uint32) != powb.view(np.uint32))),
       "  vs-dblround",
       int(np.count_nonzero(pow32.view(np.uint32) != powc.view(np.uint32))),

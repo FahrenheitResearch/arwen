@@ -5,6 +5,10 @@ regional atmospheric model. It is not affiliated with or endorsed by
 NCAR or UCAR. The name is a wordmark for "the ARW solver, GPU-native";
 the Python package is currently named `gpuwm`.
 
+Start with the [TUI user manual](docs/public/TUI-USER-MANUAL.md) for
+interactive workflows and the [CLI user manual](docs/public/CLI-USER-MANUAL.md)
+for commands, scripts and troubleshooting.
+
 > **Safety.** ArWen is a research and educational tool. It is never a
 > substitute for official forecasts and warnings from your national
 > meteorological service. Do not use it to make safety decisions.
@@ -23,7 +27,7 @@ especially in places where no national convection-permitting model
 exists.
 
 ![Paired CPU (WRF v4.6.1) and GPU (ArWen) composite reflectivity, same
-initial state, same physics, +3 h](docs/public/img/hero-cpu-vs-gpu-reflectivity.png)
+case and analysis input, same physics, +3 h](docs/public/img/hero-cpu-vs-gpu-reflectivity.png)
 
 *Above: unchanged WRF v4.6.1 (left of each pair) and ArWen (right),
 same case, matched physics. At +3 h on the 3 km domain the two models
@@ -36,7 +40,7 @@ matching to 3 pixels in 14,227; the numbers behind this figure are in
 
 - Integrates a WRF-ARW-class compressible nonhydrostatic core (RK3,
   split-explicit acoustics, one-way static nesting) in FP32 on CUDA.
-- Runs WRF v4.6.1-transcribed physics: 5 microphysics schemes, YSU,
+- Runs WRF v4.6.1-transcribed physics: microphysics schemes, YSU,
   MYNN and scale-aware Shin-Hong PBL, Noah / Noah-MP / RUC land
   surface, RTE+RRTMGP and legacy RRTMG radiation, Kain-Fritsch cumulus
   ([PHYSICS.md](docs/public/PHYSICS.md)).
@@ -45,6 +49,14 @@ matching to 3 pixels in 14,227; the numbers behind this figure are in
   `real.exe` ([DATA.md](docs/public/DATA.md)).
 - Sizes domains to your GPU with a measured VRAM model
   (`gpuwm domain`; [HARDWARE.md](docs/public/HARDWARE.md)).
+- Offers a native terminal research workspace (`gpuwm tui`): browse weather
+  families, research questions and configurations, review hardware choices,
+  edit initial-state warm bubbles or domain following, and plot existing
+  history. The 2.7 development catalog has 114 starting configurations across
+  8/12/16/24/32 GiB profiles; actual inputs and free memory govern admission.
+  See [Research workspaces](docs/public/RESEARCH-WORKSPACES.md),
+  [terminal controls](docs/public/TUI-TASK-MODES.md) and the separate
+  [development qualification record](docs/dev/research-qualification.md).
 - Runs independent forecasts concurrently on distinct GPUs with isolated
   output, temp, CuPy-cache, and driver-JIT-cache paths (`gpuwm multi-run`;
   [HARDWARE.md](docs/public/HARDWARE.md#independent-runs-on-multiple-gpus)).
@@ -131,33 +143,39 @@ release's exact native bundles. GitHub's automatic source `.zip` and
 use `gpuwm fetch-bridges`, or clone the tag and build the vendored Rust
 workspaces when installing from source.
 
-Then a first forecast -- two commands, no placeholders:
+Stage geography once, then size and launch a forecast. These commands work
+in PowerShell and Linux shells:
 
-```bash
-# 1. Size a domain to your card at your point of interest.  The
-#    emitted TOML records the cycle and fetch area, so nothing has to
-#    be copied by hand.
-gpuwm domain --point 35.3,-97.5 --card 24gb --ladder 12 \
-  --source gfs --cycle latest --hours 6 --out configs/myarea.toml
-
-# 2. Run the whole chain: fetch -> initialize -> GPU forecast -> PNGs.
-#    (`--dry-run` prints the six underlying commands instead.)
+```text
+gpuwm fetch-geog
+gpuwm domain --point "35.3,-97.5" --card 24gb --ladder 12 --source gfs --cycle latest --hours 6 --out configs/myarea.toml
 gpuwm go configs/myarea.toml
 ```
 
-Step 2 builds its static fields — terrain, land use, soil — from the
-WPS_GEOG tree, and `gpuwm setup` does **not** stage it: ~1.3 GB
-compressed, ~16 GB unpacked, which is a decision rather than a default.
-Run `gpuwm fetch-geog` once, before or after step 1. A bare `gpuwm
-setup` closes by saying it skipped it, and `gpuwm doctor` names the gap
-with the same command.
+`fetch-geog` stages the terrain, land-use and soil data used by native
+preparation (~1.3 GB compressed, ~16 GB unpacked). Existing verified data
+is reused. `domain` writes your configuration and matching WPS namelist;
+`go` carries it through fetch, native preparation, forecast and pictures.
+Use `gpuwm go configs/myarea.toml --dry-run` to inspect the selected route.
 
-Bare `gpuwm domain` at a terminal asks four questions and ends by
-printing that exact `gpuwm go` line.  Nest ladders (12-3, 12-3-1, ...)
-and the ERA5 route run stage by stage instead of through `go`; the
-wizard's closing block prints each next command for the config it just
-wrote, and the full walkthrough is
-[FIRST-LIGHT.md](docs/public/FIRST-LIGHT.md).
+Bare `gpuwm domain` guides you through the choices. `--ladder 12-3` adds
+a finer nest, `--nz 76` chooses 76 vertical levels, and `--tiles auto`
+lets the shared planner choose streaming when the forecast needs it.
+Streaming uses host RAM while GPU work runs in tiles; increasing a VRAM
+budget flag does not increase the card's physical memory.
+
+The same `go` command handles nest ladders and sources with registered
+native fetch/preparation routes, including HRRR pressure files. It carries
+prepared-manifest hashes internally. ERA5 configurations with local input
+files in `[case_data]` use `gpuwm run CONFIG`; the wizard prints the correct
+command for the configuration it writes. See
+[FIRST-LIGHT.md](docs/public/FIRST-LIGHT.md) for the walkthrough.
+
+Launch checks the GPU, memory estimate and required geography before
+fetching. `--products t2,refl` asks for temperature and reflectivity;
+`--products none` runs the forecast without pictures. On the native staged
+route, `launch.log` keeps detailed diagnostics and `--explain` also prints
+them. A failed stage reports its reason and leaves its evidence available.
 
 For an uploading HRRR cycle, `gpuwm stream PLAN.toml` runs bounded,
 crash-resumable hourly restart-extend legs. Each leg seals a forcing prefix,
@@ -185,6 +203,7 @@ the edge is in the last column rather than in your way.
 | Parts: `gpuwm fetch-bridges`, `gpuwm fetch-tables`, re-run | **Supported** | Green, and re-running either is safe: what is already staged and pin-valid is verified and skipped. |
 | `gpuwm fetch-geog` (the WPS_GEOG static tree) | **Supported** | Green. |
 | GFS, single domain, through `gpuwm go` | **Supported** | Green: one command from fetch to PNGs. |
+| HRRR pressure files, nested, through `gpuwm go` (2.7 candidate) | **Verified source build on Linux** | One-hour, two-domain run: 12 forecast frames and 24 temperature/reflectivity PNGs. Final 2.7 wheel acceptance is still pending. |
 | GFS, single domain, stage by stage | **Supported** | Green through the forecast. |
 | GFS, nest ladder -> the domain-tree runner | **Supported** | Green through the forecast. No page documents an authority-materialization step for the tree runner; the single-domain page's step does not transfer, and this route does not need it. |
 | ERA5, from a config | **Supported** | Green: request template -> validate -> check -> run -> render. |
@@ -228,13 +247,14 @@ piece is -- is below.
 ### The install scripts
 
 One command from the checkout root. `install.sh` / `install.ps1`
-create `.venv`, install the `[gpu,render]` extras, stage the
+create `.venv`, install the matching `gpuwm-data` companion from the
+checkout, install the `[gpu-cu12,render]` or `[gpu-cu13,render]` extras, stage the
 externalized Thompson tables (`gpuwm fetch-tables`: a one-time
 ~243 MiB release-asset download from a checkout, SHA-256-verified
 before install, skipped when already present; `--no-fetch-tables` /
 `-NoFetchTables` defers it), offer to install rustup when `cargo` is
 missing (they ask first; `--yes` / `-Yes` consents), build the
-vendored Rust GRIB bridges and the production render engine offline
+vendored Rust GRIB bridges, production render engine, and terminal workspace offline
 (`--no-render` / `-NoRender` skips the renderer build), and finish
 with `gpuwm doctor`. Re-running either script is safe: an existing
 `.venv`, staged tables, and built bridges are reused.
@@ -425,11 +445,12 @@ same checkpoint with changed settings, written to its own folder, with
 the source run opened read-only and every setting a checkpoint binds
 refused by name.  See
 [docs/branch-from-checkpoint.md](docs/branch-from-checkpoint.md).
-That is this route, the `[case_data]` route.  When you need to
-resume, run a `[case_data]` experiment or a multi-domain config: both
-checkpoint.  The prepared single-domain forecaster writes none at any
-`restart_interval_s`, and `gpuwm check` says so before you spend the
-run.  The `tools/` runners write a different file: the domain-tree
+The `[case_data]` route and both prepared routes, single-domain and
+multi-domain, support checkpoints. Newly generated configurations write
+them hourly (or at the end of a shorter run). Set `restart_interval_s = 0`
+explicitly to disable them; resume requires a complete checkpoint that the
+run actually wrote and its matching configuration and prepared inputs.
+The `tools/` runners write a different progress file: the domain-tree
 route writes `<outdir>/evidence/progress.json` and the single-domain
 runners write `<outdir>/progress.json`.
 
@@ -509,7 +530,9 @@ loader rather than a gate on it
   provenance, and one-way consumers refuse a feedback-modified parent.
   It feeds back dynamic state only, where WRF also feeds back hundreds
   of masked land-surface fields, so it is not a WRF-equivalent claim.
-  No vertical refinement, no adaptive time step.
+  Live nests retain a shared vertical coordinate. Adaptive time steps are
+  available through `use_adaptive_time_step`; the selected route validates
+  its clock, output and forcing constraints.
 - **Precision.** The model state is FP32 (like WRF's default REAL).
   No end-to-end bit-identity with WRF is claimed anywhere; see
   [VERIFICATION.md](docs/public/VERIFICATION.md) for exactly what is
@@ -575,13 +598,19 @@ loader rather than a gate on it
 ## Verification
 
 ArWen is gated against WRF v4.6.1 (commit `d66e442f`) at three levels:
-bit-level kernel oracles against unmodified WRF Fortran, t=0
-initialization parity, and matched-run forecast comparisons. A sample
+bit-level kernel oracles against unmodified WRF Fortran, a t=0
+full-state digest, and matched-run forecast comparisons. The digest is
+published as it comes out: on the reference case the two t=0 states do
+not agree within its pinned ceilings, verdict **FAIL** on all four
+domains
+([receipt](gpuwm/data/certification/t0_state_parity_digest.json),
+[table](gpuwm/data/certification/t0_state_parity_digest.md)). A sample
 of the measured results:
 
 | Gate | Scope | Measured result |
 |---|---|---|
-| t=0 parity | 4 domains, historical reference case | T2 MAE 0.000 K, corr 1.000 on every domain vs the WRF initial state |
+| t=0 full-state digest | 4 domains, historical reference case | verdict **FAIL** on all four domains: 20 of 24 scored (domain, group) cells are outside the pinned ceilings ([receipt](gpuwm/data/certification/t0_state_parity_digest.json), [table](gpuwm/data/certification/t0_state_parity_digest.md)) |
+| t=0 comparator metrics | 4 domains, interior grid | T2 MAE 0.000 K, corr 1.000 on every domain -- the streaming comparator's own four metrics, and not a statement about the initial state |
 | Matched 6 h forecast | d02 (3 km), 15Z | composite refl corr 0.985; >=20 dBZ echo area within 3 pixels of WRF's 14,227 |
 | Matched 6 h forecast | d03 (1 km), 18Z | T2 MAE 0.347 K; refl corr 0.715 (convective-scale chaos floor; see the page) |
 | Component oracles | legacy RRTMG LW/SW engines | max ULP 0 vs the transcription oracle over the full fixture decks |

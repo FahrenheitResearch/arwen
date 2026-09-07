@@ -50,7 +50,7 @@ def cuda():
     return _cuda
 
 
-_FIX_FILES = ("fixtures_real.npz", "fixtures_synth.npz")
+_FIX_FILES = ("fixtures_real.npz", "fixtures_synth.npz", "fixtures_tall.npz")
 
 
 def _day_cases():
@@ -375,13 +375,15 @@ def test_gpu_local_frames():
         assert bound * RESIDENT_THREADS < 2 * 2**30
 
 
-def test_batched_vram_estimate():
+@pytest.mark.parametrize('tall',[False,True])
+def test_batched_vram_estimate(tall):
     """sw_batched_vram_bytes honesty: estimate >= pool-measured peak >=
     0.5 * estimate, at two chunk sizes (single-chunk and multi-chunk)."""
     groups = _deck_groups()
-    cs = max(groups.values(), key=len)
+    cs = max(groups.values(), key=(lambda cs: _flag_key(cs[0])[5]) if tall else len)
     nlay = _flag_key(cs[0])[5]
     ins = _group_inputs(cs)
+    cuda()  # coefficient buffers are persistent, outside this transient estimate
     pool = cp.get_default_memory_pool()
     for chunk in (len(cs), 8):
         estimate = sw.sw_batched_vram_bytes(min(chunk, len(cs)), nlay,

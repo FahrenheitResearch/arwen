@@ -45,6 +45,36 @@ fn clear_error() {
     LAST_ERROR.with(|slot| slot.borrow_mut().clear());
 }
 
+/// Turn a panic below this seam into the ABI's own refusal.
+///
+/// An unwind that reaches an `extern "C"` boundary aborts the process on the
+/// edition this workspace pins, so a panic in a decoder would take the host
+/// Python interpreter with it instead of returning the negative code and
+/// last-error string this ABI documents.  Every entry point runs its body
+/// through here, the same discipline `tools/grib1_bridge/src/lib.rs` applies
+/// to its own exports.
+pub(crate) fn guard<T>(on_panic: T, body: impl FnOnce() -> T) -> T {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        Ok(value) => value,
+        Err(payload) => {
+            let detail = payload
+                .downcast_ref::<&str>()
+                .map(|text| (*text).to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic payload".to_string());
+            // `try_borrow_mut`, not `borrow_mut`: the panic may have come from
+            // inside the last-error accessor itself, and a second panic here
+            // would abort exactly what this guard exists to prevent.
+            LAST_ERROR.with(|slot| {
+                if let Ok(mut message) = slot.try_borrow_mut() {
+                    *message = format!("panic in the obs-regrid seam: {detail}");
+                }
+            });
+            on_panic
+        }
+    }
+}
+
 /// # Safety
 /// `ptr` must point to `len` readable `T`, or be null when `len` is 0.
 unsafe fn slice<'a, T>(ptr: *const T, len: usize) -> Option<&'a [T]> {
@@ -71,7 +101,9 @@ unsafe fn slice_mut<'a, T>(ptr: *mut T, len: usize) -> Option<&'a mut [T]> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn gpuwm_obsregrid_abi_version() -> u32 {
-    OBSREGRID_ABI_VERSION
+    guard(0, || {
+        OBSREGRID_ABI_VERSION
+    })
 }
 
 /// The source-revision stamp, same contract as
@@ -79,12 +111,14 @@ pub extern "C" fn gpuwm_obsregrid_abi_version() -> u32 {
 /// the binary as bytes by the release cut, never executed.
 #[unsafe(no_mangle)]
 pub extern "C" fn gpuwm_obsregrid_source_rev() -> *const std::os::raw::c_char {
-    static SOURCE_REV_STAMP: &str = concat!(
-        "GPUWM_BRIDGE_SOURCE_REV=",
-        env!("GPUWM_BRIDGE_SOURCE_REV"),
-        "\0"
-    );
-    SOURCE_REV_STAMP.as_ptr().cast()
+    guard(std::ptr::null(), || {
+        static SOURCE_REV_STAMP: &str = concat!(
+            "GPUWM_BRIDGE_SOURCE_REV=",
+            env!("GPUWM_BRIDGE_SOURCE_REV"),
+            "\0"
+        );
+        SOURCE_REV_STAMP.as_ptr().cast()
+    })
 }
 
 /// Copy the thread-local last error into `buf` (UTF-8, no NUL); returns
@@ -94,16 +128,18 @@ pub extern "C" fn gpuwm_obsregrid_source_rev() -> *const std::os::raw::c_char {
 /// `buf` must point to `cap` writable bytes, or be null with `cap` 0.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gpuwm_obsregrid_last_error(buf: *mut u8, cap: usize) -> usize {
-    LAST_ERROR.with(|slot| {
-        let message = slot.borrow();
-        let raw = message.as_bytes();
-        if !buf.is_null() && cap > 0 {
-            let n = raw.len().min(cap);
-            unsafe {
-                std::ptr::copy_nonoverlapping(raw.as_ptr(), buf, n);
+    guard(0, || {
+        LAST_ERROR.with(|slot| {
+            let message = slot.borrow();
+            let raw = message.as_bytes();
+            if !buf.is_null() && cap > 0 {
+                let n = raw.len().min(cap);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(raw.as_ptr(), buf, n);
+                }
             }
-        }
-        raw.len()
+            raw.len()
+        })
     })
 }
 
@@ -133,66 +169,68 @@ pub unsafe extern "C" fn gpuwm_obsregrid_build_plan(
     out_reachable: *mut u8,
     out_max_used_distance_m: *mut f64,
 ) -> i32 {
-    clear_error();
-    let method = match Method::from_code(method) {
-        Ok(value) => value,
-        Err(error) => return set_error(error.to_string()),
-    };
-    let source_cells = match source_ny.checked_mul(source_nx) {
-        Some(value) if value > 0 => value,
-        _ => return set_error("the source grid must be a non-empty 2-D shape"),
-    };
-    let destination_cells = match destination_ny.checked_mul(destination_nx) {
-        Some(value) if value > 0 => value,
-        _ => return set_error("the destination grid must be a non-empty 2-D shape"),
-    };
-    let index_cells = match method {
-        Method::Nearest => destination_cells,
-        Method::CellAverage => source_cells,
-    };
-    let (Some(source_latitude), Some(source_longitude)) = (
-        unsafe { slice(source_latitude, source_cells) },
-        unsafe { slice(source_longitude, source_cells) },
-    ) else {
-        return set_error("null source latitude/longitude pointer");
-    };
-    let (Some(destination_latitude), Some(destination_longitude)) = (
-        unsafe { slice(destination_latitude, destination_cells) },
-        unsafe { slice(destination_longitude, destination_cells) },
-    ) else {
-        return set_error("null destination latitude/longitude pointer");
-    };
-    let (Some(index_out), Some(reachable_out)) = (
-        unsafe { slice_mut(out_source_index, index_cells) },
-        unsafe { slice_mut(out_reachable, destination_cells) },
-    ) else {
-        return set_error("null plan output pointer");
-    };
-    if out_max_used_distance_m.is_null() {
-        return set_error("null max-used-distance pointer");
-    }
+    guard(ERR, || {
+        clear_error();
+        let method = match Method::from_code(method) {
+            Ok(value) => value,
+            Err(error) => return set_error(error.to_string()),
+        };
+        let source_cells = match source_ny.checked_mul(source_nx) {
+            Some(value) if value > 0 => value,
+            _ => return set_error("the source grid must be a non-empty 2-D shape"),
+        };
+        let destination_cells = match destination_ny.checked_mul(destination_nx) {
+            Some(value) if value > 0 => value,
+            _ => return set_error("the destination grid must be a non-empty 2-D shape"),
+        };
+        let index_cells = match method {
+            Method::Nearest => destination_cells,
+            Method::CellAverage => source_cells,
+        };
+        let (Some(source_latitude), Some(source_longitude)) = (
+            unsafe { slice(source_latitude, source_cells) },
+            unsafe { slice(source_longitude, source_cells) },
+        ) else {
+            return set_error("null source latitude/longitude pointer");
+        };
+        let (Some(destination_latitude), Some(destination_longitude)) = (
+            unsafe { slice(destination_latitude, destination_cells) },
+            unsafe { slice(destination_longitude, destination_cells) },
+        ) else {
+            return set_error("null destination latitude/longitude pointer");
+        };
+        let (Some(index_out), Some(reachable_out)) = (
+            unsafe { slice_mut(out_source_index, index_cells) },
+            unsafe { slice_mut(out_reachable, destination_cells) },
+        ) else {
+            return set_error("null plan output pointer");
+        };
+        if out_max_used_distance_m.is_null() {
+            return set_error("null max-used-distance pointer");
+        }
 
-    let plan = match build_plan(
-        method,
-        source_latitude,
-        source_longitude,
-        (source_ny, source_nx),
-        destination_latitude,
-        destination_longitude,
-        (destination_ny, destination_nx),
-        max_distance_m,
-    ) {
-        Ok(value) => value,
-        Err(error) => return set_error(error.to_string()),
-    };
-    index_out.copy_from_slice(&plan.source_index);
-    for (slot, value) in reachable_out.iter_mut().zip(plan.reachable.iter()) {
-        *slot = u8::from(*value);
-    }
-    unsafe {
-        *out_max_used_distance_m = plan.max_used_distance_m;
-    }
-    OK
+        let plan = match build_plan(
+            method,
+            source_latitude,
+            source_longitude,
+            (source_ny, source_nx),
+            destination_latitude,
+            destination_longitude,
+            (destination_ny, destination_nx),
+            max_distance_m,
+        ) {
+            Ok(value) => value,
+            Err(error) => return set_error(error.to_string()),
+        };
+        index_out.copy_from_slice(&plan.source_index);
+        for (slot, value) in reachable_out.iter_mut().zip(plan.reachable.iter()) {
+            *slot = u8::from(*value);
+        }
+        unsafe {
+            *out_max_used_distance_m = plan.max_used_distance_m;
+        }
+        OK
+    })
 }
 
 /// Apply a plan to one field and its validity.
@@ -214,58 +252,60 @@ pub unsafe extern "C" fn gpuwm_obsregrid_apply_plan(
     out_values: *mut f64,
     out_valid: *mut u8,
 ) -> i32 {
-    clear_error();
-    let method = match Method::from_code(method) {
-        Ok(value) => value,
-        Err(error) => return set_error(error.to_string()),
-    };
-    let source_cells = match source_ny.checked_mul(source_nx) {
-        Some(value) if value > 0 => value,
-        _ => return set_error("the source grid must be a non-empty 2-D shape"),
-    };
-    let destination_cells = match destination_ny.checked_mul(destination_nx) {
-        Some(value) if value > 0 => value,
-        _ => return set_error("the destination grid must be a non-empty 2-D shape"),
-    };
-    let index_cells = match method {
-        Method::Nearest => destination_cells,
-        Method::CellAverage => source_cells,
-    };
-    let (Some(source_index), Some(reachable), Some(values), Some(valid)) = (
-        unsafe { slice(source_index, index_cells) },
-        unsafe { slice(reachable, destination_cells) },
-        unsafe { slice(values, source_cells) },
-        unsafe { slice(valid, source_cells) },
-    ) else {
-        return set_error("null plan or field pointer");
-    };
-    let (Some(out_values), Some(out_valid)) = (
-        unsafe { slice_mut(out_values, destination_cells) },
-        unsafe { slice_mut(out_valid, destination_cells) },
-    ) else {
-        return set_error("null output pointer");
-    };
+    guard(ERR, || {
+        clear_error();
+        let method = match Method::from_code(method) {
+            Ok(value) => value,
+            Err(error) => return set_error(error.to_string()),
+        };
+        let source_cells = match source_ny.checked_mul(source_nx) {
+            Some(value) if value > 0 => value,
+            _ => return set_error("the source grid must be a non-empty 2-D shape"),
+        };
+        let destination_cells = match destination_ny.checked_mul(destination_nx) {
+            Some(value) if value > 0 => value,
+            _ => return set_error("the destination grid must be a non-empty 2-D shape"),
+        };
+        let index_cells = match method {
+            Method::Nearest => destination_cells,
+            Method::CellAverage => source_cells,
+        };
+        let (Some(source_index), Some(reachable), Some(values), Some(valid)) = (
+            unsafe { slice(source_index, index_cells) },
+            unsafe { slice(reachable, destination_cells) },
+            unsafe { slice(values, source_cells) },
+            unsafe { slice(valid, source_cells) },
+        ) else {
+            return set_error("null plan or field pointer");
+        };
+        let (Some(out_values), Some(out_valid)) = (
+            unsafe { slice_mut(out_values, destination_cells) },
+            unsafe { slice_mut(out_valid, destination_cells) },
+        ) else {
+            return set_error("null output pointer");
+        };
 
-    let reachable: Vec<bool> = reachable.iter().map(|byte| *byte != 0).collect();
-    let valid_field: Vec<bool> = valid.iter().map(|byte| *byte != 0).collect();
-    let mut valid_out = vec![false; destination_cells];
-    if let Err(error) = apply_plan(
-        method,
-        source_index,
-        &reachable,
-        (source_ny, source_nx),
-        (destination_ny, destination_nx),
-        values,
-        &valid_field,
-        out_values,
-        &mut valid_out,
-    ) {
-        return set_error(error.to_string());
-    }
-    for (slot, value) in out_valid.iter_mut().zip(valid_out.iter()) {
-        *slot = u8::from(*value);
-    }
-    OK
+        let reachable: Vec<bool> = reachable.iter().map(|byte| *byte != 0).collect();
+        let valid_field: Vec<bool> = valid.iter().map(|byte| *byte != 0).collect();
+        let mut valid_out = vec![false; destination_cells];
+        if let Err(error) = apply_plan(
+            method,
+            source_index,
+            &reachable,
+            (source_ny, source_nx),
+            (destination_ny, destination_nx),
+            values,
+            &valid_field,
+            out_values,
+            &mut valid_out,
+        ) {
+            return set_error(error.to_string());
+        }
+        for (slot, value) in out_valid.iter_mut().zip(valid_out.iter()) {
+            *slot = u8::from(*value);
+        }
+        OK
+    })
 }
 
 #[cfg(test)]

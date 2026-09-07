@@ -29,18 +29,54 @@ import pytest
 GATE = (Path(__file__).resolve().parents[1]
         / "tools" / "ntiedtke_wrf461_oracle" / "check_no_forecast.sh")
 
-#: RESOLVE THE INTERPRETER, do not let CreateProcess pick one.
-#: subprocess.run(["bash", ...]) searches PATH through CreateProcess, which
-#: on this box finds System32ash.exe -- the WSL launcher -- before Git's.
-#: WSL then reports "No such file or directory" for a Git-style `/c/` path
-#: because it mounts that drive as /mnt/c, and every test in this file fails for a reason
-#: unrelated to the gate.  shutil.which reports Git's bash; CreateProcess
-#: chooses differently, and only the second one runs the script.
-BASH = shutil.which("bash")
+def _resolve_bash() -> str | None:
+    """Use an MSYS shell for the /c paths and Windows process-table query.
+
+    Windows can resolve even an explicit shutil.which("bash") to the WSL
+    shim. Find Git's shell beside git.exe first, then inspect PATH, and
+    verify the shell's runtime instead of trusting its executable name.
+    """
+    if os.name != "nt":
+        return shutil.which("bash")
+
+    candidates = []
+    git = shutil.which("git")
+    if git:
+        for directory in Path(git).resolve().parents[:3]:
+            candidates.extend((directory / "bin" / "bash.exe",
+                               directory / "usr" / "bin" / "bash.exe"))
+    candidates.extend(Path(directory) / "bash.exe"
+                      for directory in os.get_exec_path())
+
+    windows = Path(os.environ.get("SystemRoot", r"C:\Windows")).resolve()
+    excluded = [windows / name for name in ("System32", "SysWOW64", "Sysnative")]
+    if local := os.environ.get("LOCALAPPDATA"):
+        excluded.append(Path(local).resolve() / "Microsoft" / "WindowsApps")
+    seen = set()
+    rejected = []
+    for candidate in candidates:
+        candidate = candidate.resolve()
+        if candidate in seen or not candidate.is_file():
+            continue
+        seen.add(candidate)
+        if any(candidate.is_relative_to(directory) for directory in excluded):
+            continue  # WSL launchers do not implement MSYS /c paths.
+        probe = subprocess.run(
+            [str(candidate), "--noprofile", "--norc", "-c", "uname -s"],
+            capture_output=True, text=True, timeout=10)
+        if probe.returncode == 0 and probe.stdout.startswith(("MINGW", "MSYS")):
+            return str(candidate)
+        rejected.append(f"{candidate}: {probe.stdout.strip()} {probe.stderr.strip()}")
+    if rejected:
+        raise RuntimeError("No usable Git Bash/MSYS shell: " + "; ".join(rejected))
+    return None
+
+
+BASH = _resolve_bash()
 
 pytestmark = pytest.mark.skipif(
     BASH is None or not GATE.is_file(),
-    reason="needs bash and the gate script")
+    reason="needs bash (Git Bash/MSYS on Windows) and the gate script")
 
 
 def msys(path) -> str:

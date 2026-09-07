@@ -1,0 +1,33 @@
+{
+  "name": "Ordinary forecast: mouse entry, typed settings, native draft",
+  "steps": [
+    {"action":"expect","text":"Choose a forecast mode","name":"home"},
+    {"action":"click","text":"Choose a forecast mode","row_prefix":"│"},
+    {"action":"press","key":"ctrl+n"},
+    {"action":"expect","text":"Location: latitude,longitude","name":"location"},
+    {"action":"paste","text":"35.3,-97.5"},
+    {"action":"press","key":"enter"},
+    {"action":"expect","text":"Input source","name":"source"},
+    {"action":"press","key":"enter"},
+    {"action":"expect","text":"Start cycle (UTC)","name":"date"},
+    {"action":"press","key":"ctrl+u"},
+    {"action":"paste","text":"2026-09-06T12"},
+    {"action":"press","key":"enter"},
+    {"action":"expect","text":"Forecast duration (hours)","name":"duration"},
+    {"action":"press","key":"enter"},
+    {"action":"expect","text":"New configuration file","name":"save-path"},
+    {"action":"press","key":"ctrl+u"},
+    {"action":"paste","text":"{workspace}/First forecast.toml"},
+    {"action":"press","key":"enter"},
+    {"action":"expect","text":"Review or click any setting","name":"settings-summary"},
+    {"action":"press","key":"ctrl+n"},
+    {"action":"expect","text":"Create configuration (Enter)","name":"review"},
+    {"action":"press","key":"enter"},
+    {"action":"expect_jobs","count":1,"timeout_seconds":60,"name":"native-draft-command"},
+    {"action":"expect_file","path":"{workspace}/First forecast.toml","timeout_seconds":60,"name":"created-native-draft"},
+    {"action":"expect","text":["Everyday forecast setup created","F6 reviews the plan"],"timeout_seconds":30,"name":"opened-draft"},
+    {"action":"press","key":"f6"},
+    {"action":"expect_jobs","count":2,"timeout_seconds":60,"name":"native-plan-command"},
+    {"action":"capture","name":"planned-forecast"}
+  ]
+}

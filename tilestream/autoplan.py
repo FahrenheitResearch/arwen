@@ -353,6 +353,21 @@ class Footprint:
     bytes_per_cell: float
     store_bytes_per_cell: float
     source: str = "measured"
+    # Grid diagnostics survive relocation and are shared by tile buffers.
+    domain_fixed_bytes: int = 0
+    # (nz, pressure top, selected common column cap), resolved by the owning
+    # experiment. The base measured rung still supplies all other prices.
+    classic_lw_context: tuple[int, float, int] | None = None
+
+    def classic_call_bytes(self, window_cells: int) -> int:
+        if self.classic_lw_context is None:
+            return 0
+        from gpuwm.core.rrtm_inventory import call_workspace_bytes
+        nz, p_top, cap = self.classic_lw_context
+        columns, remainder = divmod(int(window_cells), nz)
+        if remainder:
+            raise ValueError("radiation window cells must contain whole vertical columns")
+        return call_workspace_bytes(columns, nz, p_top, cap)
 
     def buffer_bytes(self, window_cells: int) -> float:
         """VRAM one tile buffer of ``window_cells`` costs."""
@@ -365,9 +380,14 @@ class Footprint:
         process that already holds one wants :meth:`marginal_bytes`, which
         is this number without the part the process already paid.
         """
-        raw = (CUDA_CONTEXT_BYTES + self.process_fixed_bytes
+        raw = (CUDA_CONTEXT_BYTES + self.process_fixed_bytes + self.domain_fixed_bytes
                + nbuffers * self.buffer_bytes(window_cells))
-        return raw * VRAM_SAFETY
+        # The empirical rung already reserves a radiation call separately
+        # in budget_for. Charge only the excess of this actual window/cap;
+        # adding the entire classic call would charge that reserve twice.
+        classic = self.classic_call_bytes(window_cells) * VRAM_SAFETY
+        excess = max(0, classic - self.radiation_transient_bytes)
+        return raw * VRAM_SAFETY + excess
 
     @property
     def process_overhead_bytes(self) -> float:
@@ -526,12 +546,42 @@ def rung_of(cfg) -> str:
     return "dry"
 
 
-def footprint_for(cfg, *, rung: str | None = None) -> Footprint:
+def footprint_for(cfg, *, rung: str | None = None, radiation_context=None,
+                  follower_slots=()) -> Footprint:
     """The :class:`Footprint` to plan ``cfg`` with."""
     key = rung or rung_of(cfg)
     if key not in FOOTPRINTS:
         raise KeyError(f"unknown rung {key!r}; have {sorted(FOOTPRINTS)}")
-    return FOOTPRINTS[key]
+    from dataclasses import replace
+    from gpuwm.core.cfl_inventory import WRF_CFL_BYTES, wrf_cfl_recording_requested
+    fp = FOOTPRINTS[key]
+    if follower_slots:
+        # One independent FP32 horizontal window in each tile buffer and in
+        # the canonical full-domain store. Window cells include nz; tracker
+        # planes do not. Halo/ring/shadow accounting then follows the ordinary
+        # carrier footprint without pricing a full-domain plane per tile.
+        per_cell = 4 * len(set(follower_slots)) / int(cfg.nz)
+        fp = replace(fp, bytes_per_cell=fp.bytes_per_cell + per_cell,
+                     store_bytes_per_cell=fp.store_bytes_per_cell + per_cell,
+                     source=fp.source + "; declared follower window carriers")
+    if wrf_cfl_recording_requested(cfg):
+        fp = replace(fp, domain_fixed_bytes=fp.domain_fixed_bytes + WRF_CFL_BYTES)
+    if radiation_context is not None and radiation_context.cam_ozone:
+        from gpuwm.core.cam_ozone import memory_increment_per_cell
+        device, carried = memory_increment_per_cell(cfg)
+        fp = replace(fp, bytes_per_cell=fp.bytes_per_cell + device,
+                     store_bytes_per_cell=fp.store_bytes_per_cell + carried,
+                     source=fp.source + "; derived CAM ozone allocation bound")
+    from gpuwm.config import DEFAULT_COLUMN_CHUNK, radiation_scheme_ids
+    if radiation_scheme_ids(cfg)[0] == 1:
+        # Bare RunConfig callers retain the preflight API's shared defaults;
+        # experiment routes supply their validated explicit vertical/cap pair.
+        cap, top = ((DEFAULT_COLUMN_CHUNK, 5000.0) if radiation_context is None else
+                    (radiation_context.column_chunk, radiation_context.p_top))
+        if top == 0:
+            return replace(fp, source=fp.source + "; classic LW pressure top unresolved until initialization")
+        fp = replace(fp, classic_lw_context=(int(cfg.nz), float(top), int(cap)))
+    return fp
 
 
 def _forced(cfg) -> bool:
@@ -649,9 +699,9 @@ class Machine:
                use_free_vram: bool = True) -> "Machine":
         """Read the machine, refusing to guess where guessing is unsafe.
 
-        VRAM comes from ``cudaMemGetInfo``: FREE by default, because a card
-        with a desktop or another tenant on it does not have its total to
-        give.  Host RAM comes from the cgroup limit and ``MemTotal``,
+        VRAM comes from ``cudaMemGetInfo`` capped by device-wide NVML free
+        when readable: FREE by default, because a card with a desktop or
+        another tenant on it does not have its total to give.  Host RAM comes from the cgroup limit and ``MemTotal``,
         whichever is smaller -- ``/proc/meminfo`` inside a container reports
         the HOST's memory (MEASURED: 503 GiB reported against a 241.7 GiB
         cgroup limit), and a pinned store sized from that number is a plan to
@@ -660,8 +710,16 @@ class Machine:
         """
         import cupy as cp
 
-        with cp.cuda.Device(device):
+        selected_device = cp.cuda.Device(device)
+        with selected_device:
             free, total = cp.cuda.runtime.memGetInfo()
+        if use_free_vram:
+            # Share check's machine-wide cap: on WDDM CUDA may count memory
+            # obtainable only by evicting another process. PCI identity keeps
+            # CUDA-visible device ordering from selecting a different NVML GPU.
+            from gpuwm.core.preflight import cap_free_to_device_wide
+            free, _ = cap_free_to_device_wide(
+                free, device_id=selected_device.pci_bus_id)
         props = cp.cuda.runtime.getDeviceProperties(device)
         name = props["name"].decode() if isinstance(props["name"], bytes) \
             else str(props["name"])
@@ -701,7 +759,7 @@ class Machine:
                    host_bytes=int(host_bytes), name=name, host_source=source)
 
 
-def _windows_memtotal() -> int | None:
+def _windows_memory_status() -> tuple[int, int] | None:
     """This Windows box's physical RAM, via ``GlobalMemoryStatusEx``.
 
     The Win32 equivalent of ``MemTotal``, and the reason it is needed here:
@@ -733,8 +791,29 @@ def _windows_memtotal() -> int | None:
         # No windll (non-Windows), or the call was refused.  Answering None
         # keeps the "refuse rather than guess" contract intact.
         return None
-    total = int(status.ullTotalPhys)
-    return total if total > 0 else None
+    total, available = int(status.ullTotalPhys), int(status.ullAvailPhys)
+    return (total, available) if total > 0 and 0 <= available <= total else None
+
+
+def _windows_memtotal() -> int | None:
+    status = _windows_memory_status()
+    return None if status is None else status[0]
+
+
+def _host_memavailable() -> int | None:
+    """Available physical RAM from the OS, excluding swap/pagefile capacity."""
+    if sys.platform == "win32":
+        status = _windows_memory_status()
+        return None if status is None else status[1]
+    try:
+        with open("/proc/meminfo", "r", encoding="ascii") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    available = int(line.split()[1]) * 1024
+                    return available if available >= 0 else None
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
 
 
 def _host_memtotal() -> int | None:
@@ -1016,7 +1095,8 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
          rung: str | None = None, write_mode: str = "ring",
          prefer_resident: bool = True, max_nbuffers: int = 3,
          allow_ragged: bool = True, prefer_exact: bool = True,
-         max_redundancy: float | None = 4.0) -> Plan:
+         max_redundancy: float | None = 4.0,
+         minimum_halo: int | None = None) -> Plan:
     """Decide how to run ``cfg`` on ``machine``, or refuse and say why.
 
     ``write_mode="ring"`` keeps one store plus a few per cent; ``"shadow"``
@@ -1027,6 +1107,11 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
     the configuration is not one of the four measured rungs and you have run
     :func:`measure_footprint` on it; ``rung`` when you just want a different
     row of :data:`FOOTPRINTS`.
+
+    ``minimum_halo`` reserves a larger dependency envelope when the caller
+    knows the acoustic count can grow, as under adaptive stepping. It never
+    reduces the current config's halo; the same value sizes every candidate,
+    arena and reported byte count.
 
     ``max_nbuffers`` caps the pipeline depth.  Two are taken whenever they
     fit even at the cost of a smaller tile (worth 1.32x, measured); a third
@@ -1059,6 +1144,8 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
     nx, ny, nz = int(cfg.nx), int(cfg.ny), int(cfg.nz)
     cells = nx * ny * nz
     halo = _harness.halo_radius(cfg)
+    if minimum_halo is not None:
+        halo = max(halo, int(minimum_halo))
     # PER AXIS.  ``open_x`` alone leaves y wrapping, and a plan that clamps
     # a wrapping axis corrupts its two boundary tile rows -- see
     # :func:`is_periodic`.
@@ -1380,7 +1467,8 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
 
 def _max_window_cells(fp: Footprint, nbuffers: int, budget: int) -> int:
     """Largest compute window, in cells, that ``nbuffers`` buffers can hold."""
-    room = budget / VRAM_SAFETY - CUDA_CONTEXT_BYTES - fp.process_fixed_bytes
+    room = (budget / VRAM_SAFETY - CUDA_CONTEXT_BYTES
+            - fp.process_fixed_bytes - fp.domain_fixed_bytes)
     room = room / nbuffers - fp.buffer_fixed_bytes
     return int(room / fp.bytes_per_cell) if room > 0 else 0
 

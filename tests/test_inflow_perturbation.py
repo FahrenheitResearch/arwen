@@ -11,6 +11,8 @@ byte gates run against the retained dual-certified pair
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -304,3 +306,394 @@ def test_on_builds_against_a_pbl_parent():
     assert isinstance(built, ip.InflowPerturbation)
     assert built.faces_mode == "inflow"
     assert built.amplitude_scale == 1.0
+
+
+# ---------------------------------------------------------------------------
+# The refresh cadence under an adaptive parent (399d95a86)
+#
+# refresh_index is not a per-step physical rate like dtbc or the Davies
+# weight -- those are the readings 399d95a86 correctly moved from the
+# CONFIGURED step to the LIVE one.  It is a QUANTIZER of absolute model
+# time into REFRESH_SECONDS buckets, and a quantizer whose bucket moves
+# is not a function of time: floor(T / D(t)) with D varying is neither
+# monotone nor onto.  These tests state the cadence contract the module
+# docstring already claims ("held for 100 s of model time ... the same
+# draw on every card, every run, every restart") against a parent whose
+# step breathes, which is the one case the pinned fixed-clock test
+# (test_refresh_holds_for_pinned_seconds, a run-CONSTANT pair) cannot
+# see.
+# ---------------------------------------------------------------------------
+
+#: A parent on the adaptive tick lattice: dt breathes 4-8 s around a
+#: CONFIGURED 5.0 s, tick = 1/100 s (399d95a86 folds 100 into the
+#: denominator when the adaptive clock is on).
+_TICK_DEN = 100
+_SPEC_DT = 5.0
+_SPEC_STEP = int(_SPEC_DT * _TICK_DEN)
+#: round(REFRESH_SECONDS / _SPEC_DT) forces of _SPEC_STEP ticks each.
+_SPEC_BUCKET_TICKS = 20 * _SPEC_STEP
+
+
+class _Spec:
+    """The FROZEN configured pair (core/clock.py:322-334, :336-344)."""
+
+    def __init__(self, step_ticks, dt_fp32):
+        self.step_ticks = int(step_ticks)
+        self.dt_fp32 = float(dt_fp32)
+
+
+class _Clock:
+    """The tick counter plus both step pairs, live and configured.
+
+    ``spec.*`` is config-resolution output and stays frozen; the bare
+    attributes are what the model is integrating with RIGHT NOW, and the
+    only writers of them anywhere are core/adaptive_clock.py:780,785 and
+    io/restart.py:4643-4644, both adaptive-only.  On a fixed clock the
+    two agree for the whole run, which is why every shipped case is
+    blind to the difference.
+    """
+
+    def __init__(self, step_ticks, dt_fp32):
+        self.spec = _Spec(step_ticks, dt_fp32)
+        self.ticks = 0
+        self.step_ticks = int(step_ticks)
+        self.dt_fp32 = float(dt_fp32)
+
+    def at(self, ticks, step_ticks=None, dt_fp32=None):
+        self.ticks = int(ticks)
+        if step_ticks is not None:
+            self.step_ticks = int(step_ticks)
+        if dt_fp32 is not None:
+            self.dt_fp32 = float(dt_fp32)
+        return self
+
+
+class _ClockNode:
+    """A parent as the force hook sees it: one clock, nothing else."""
+
+    def __init__(self, clock):
+        self.clock = clock
+
+
+def _adaptive_trajectory(hours=3.0):
+    """(ticks, step_ticks, dt) at every parent force of a breathing run.
+
+    The controller quantises dt onto the tick lattice and ``advance()``
+    increments ``ticks`` by the LIVE step, so the tick stamps are not a
+    uniform ladder -- which is the whole point.
+    """
+    rows = []
+    ticks = 0
+    limit = int(hours * 3600 * _TICK_DEN)
+    while ticks < limit:
+        dt = 6.0 + 2.0 * math.sin(
+            2.0 * math.pi * (ticks / _TICK_DEN) / 1200.0)
+        step = max(1, int(round(dt * _TICK_DEN)))
+        rows.append((ticks, step, step / _TICK_DEN))
+        ticks += step
+    return rows
+
+
+def _on_generator():
+    """One ON generator against a legal (PBL-on) parent."""
+    parent = _CfgNode(_nested_cfg(bl_pbl_physics=1, km_opt=4),
+                      grid_id=2, parent_id=1)
+    child = _CfgNode(_nested_cfg(inflow_perturbation=True), parent=parent)
+    return ip.build_inflow_perturbation(child)
+
+
+def _indices_over(rows, generator, clock):
+    parent = _ClockNode(clock)
+    out = []
+    for row in rows:
+        clock.at(*row)
+        out.append(generator._refresh_for(parent))
+    return out
+
+
+def _hold_spans(rows, indices):
+    """Model seconds each index value spanned, in force order."""
+    spans = []
+    start, current = rows[0][0], indices[0]
+    for (ticks, _step, _dt), index in zip(rows[1:], indices[1:]):
+        if index != current:
+            spans.append((ticks - start) / _TICK_DEN)
+            start, current = ticks, index
+    return spans
+
+
+def test_the_refresh_index_never_goes_backward_under_a_varying_parent_step():
+    """A backward index re-emits a Philox draw the face already imprinted.
+
+    The draw is keyed on (seed, grid_id, face, refresh) alone, so index
+    k names ONE pattern for the life of the run.  Revisiting k puts that
+    pattern back on the boundary and the Davies zone drives the relax
+    rows toward a target it has already relaxed toward -- a repeating
+    imprint instead of the decorrelating one the mechanism exists to
+    make.
+    """
+    generator = _on_generator()
+    clock = _Clock(_SPEC_STEP, _SPEC_DT)
+    rows = _adaptive_trajectory()
+    indices = _indices_over(rows, generator, clock)
+    backward = [(a, b) for a, b in zip(indices, indices[1:]) if b < a]
+    assert not backward, (
+        f"{len(backward)} backward transitions over {len(rows)} forces, "
+        f"largest jump {max(a - b for a, b in backward)} indices "
+        f"(e.g. {backward[0][0]} -> {backward[0][1]})")
+
+
+def test_one_draw_is_held_for_the_pinned_seconds_under_a_varying_step():
+    """REFRESH_SECONDS is a contract on MODEL TIME, not on force count.
+
+    The index changes at fixed tick boundaries, so a force can only land
+    on one to within a single parent step: the tolerance is the longest
+    LIVE step on the trajectory, and nothing wider.
+    """
+    generator = _on_generator()
+    clock = _Clock(_SPEC_STEP, _SPEC_DT)
+    rows = _adaptive_trajectory()
+    spans = _hold_spans(rows, _indices_over(rows, generator, clock))
+    slack = max(dt for _t, _s, dt in rows)
+    bad = [s for s in spans if abs(s - ip.REFRESH_SECONDS) > slack]
+    assert not bad, (
+        f"{len(bad)} of {len(spans)} holds are further than one parent "
+        f"step ({slack:.1f} s) from the pinned {ip.REFRESH_SECONDS:.1f} s: "
+        f"spans run {min(spans):.1f} s to {max(spans):.1f} s, median "
+        f"{sorted(spans)[len(spans) // 2]:.1f} s")
+
+
+def test_a_replayed_refresh_index_is_refused():
+    """The un-regressable half: any future re-conversion raises here."""
+    generator = _on_generator()
+    clock = _Clock(_SPEC_STEP, _SPEC_DT)
+    parent = _ClockNode(clock)
+    clock.at(3 * _SPEC_BUCKET_TICKS)
+    assert generator._refresh_for(parent) == 3
+    clock.at(_SPEC_BUCKET_TICKS)
+    with pytest.raises(ValueError, match="already imprinted"):
+        generator._refresh_for(parent)
+
+
+def test_the_generator_reads_the_frozen_parent_step_not_the_live_one():
+    """The index at one model time may not depend on the live step.
+
+    ``(400, 4.0)`` agrees with the frozen pair at this tick count and
+    ``(600, 6.0)`` does not; the sweep is here so agreeing by luck is
+    never mistaken for the contract.
+    """
+    at_ticks = 100 * _SPEC_BUCKET_TICKS
+    for live_step, live_dt in ((_SPEC_STEP, _SPEC_DT), (400, 4.0),
+                               (600, 6.0), (700, 7.0), (800, 8.0)):
+        generator = _on_generator()
+        clock = _Clock(_SPEC_STEP, _SPEC_DT).at(at_ticks, live_step, live_dt)
+        got = generator._refresh_for(_ClockNode(clock))
+        assert got == 100, (
+            f"live (step={live_step} ticks, dt={live_dt} s) moved the index "
+            f"at a fixed model time to {got}; the configured pair "
+            f"(step={_SPEC_STEP}, dt={_SPEC_DT}) buckets it at 100")
+
+
+def test_the_cadence_harness_passes_on_a_constant_divisor():
+    """The deliberately-wrong input for the two tests above.
+
+    Same trajectory, same assertions, but the divisor handed in is the
+    run constant it is supposed to be.  If this ever fails, those two
+    are failing on the harness rather than on the varying divisor.
+    """
+    rows = _adaptive_trajectory()
+    indices = [ip.refresh_index(ticks, _SPEC_STEP, _SPEC_DT)
+               for ticks, _step, _dt in rows]
+    assert all(b >= a for a, b in zip(indices, indices[1:]))
+    slack = max(dt for _t, _s, dt in rows)
+    assert all(abs(s - ip.REFRESH_SECONDS) <= slack
+               for s in _hold_spans(rows, indices))
+
+
+def test_the_pinned_fixed_clock_sequence_is_unchanged_by_the_frozen_read():
+    """Bit-identity on every shipped case.
+
+    The acceptance-v2 pin (item 7) driven through the generator seam
+    instead of the bare function: on a fixed clock live == spec, so the
+    integer sequence must be the one
+    ``test_refresh_holds_for_pinned_seconds`` already holds.  If this
+    moves, the change is not a no-op and G1/G2 owe a re-run.
+    """
+    generator = _on_generator()
+    clock = _Clock(15, 3.75)
+    parent = _ClockNode(clock)
+    ticks = list(range(0, 3 * 27 * 15, 15))
+    through_seam = []
+    for tick in ticks:
+        clock.at(tick)
+        through_seam.append(generator._refresh_for(parent))
+    assert through_seam == [ip.refresh_index(t, 15, 3.75) for t in ticks]
+
+
+# ---------------------------------------------------------------------------
+# What the run injected -- the outflow control's amplitude match
+#
+# faces = "outflow" (acceptance G5) is the registered negative control for
+# the fetch-reduction claim: the same code, the same seed, the same
+# amplitude convention, on the complementary faces, so nothing is advected
+# in and the scored inflow face's relax rows are never touched.  It only
+# READS as a control if it injected a comparable amount, and it does not
+# by construction -- each face's theta_max comes from its own wind and
+# enters as U squared.  These tests drive the real force hook and prove
+# the receipt says which case a null result is.
+# ---------------------------------------------------------------------------
+
+#: Face-mean boundary-normal winds the fake state below produces.
+#: west and north ENTER; east and south LEAVE, and more slowly, which is
+#: the asymmetry the receipt exists to expose.
+_INWARD_MS = {"west": 8.0, "east": -2.0, "south": -1.0, "north": 3.0}
+
+
+class _ForceState:
+    """Just the state fields the force hook and the table write read."""
+
+    def __init__(self, cp, nz, ny, nx):
+        rng = np.random.default_rng(4)
+        # Full-level base geopotential: 0-4,000 m, so the half levels
+        # sit at 250, 750, ... and a 1,000 m PBLH admits exactly two.
+        self.phb = cp.asarray(
+            (np.linspace(0.0, 4000.0, nz + 1) * c.G).astype(np.float64))
+        u = np.zeros((nz, ny, nx), dtype=np.float32)
+        v = np.zeros((nz, ny, nx), dtype=np.float32)
+        u[:, :, 0] = _INWARD_MS["west"]
+        u[:, :, -1] = -_INWARD_MS["east"]
+        v[:, 0, :] = _INWARD_MS["south"]
+        v[:, -1, :] = -_INWARD_MS["north"]
+        self.u = cp.asarray(u)
+        self.v = cp.asarray(v)
+        self.mub2d = cp.asarray(
+            rng.uniform(30000.0, 60000.0, (ny, nx)).astype(np.float32))
+        self.c1h = cp.asarray(np.linspace(1.0, 0.2, nz).astype(np.float32))
+        self.c2h = cp.asarray(np.linspace(0.0, 40000.0, nz).astype(np.float32))
+
+
+class _PhysicsDriver:
+    def __init__(self, pblh):
+        self.fields = {"pblh": pblh}
+
+
+class _ParentState:
+    def __init__(self, physics):
+        self.physics = physics
+
+
+class _ForceNode:
+    """A child node as ``apply_at_force`` reads it."""
+
+    def __init__(self, run, state, parent, grid_id=3, parent_id=2):
+        self.cfg = _CfgNode._Cfg(run, grid_id, parent_id)
+        self.state = state
+        self.parent = parent
+
+
+def _force_pair(cp, faces_mode, nz=8, ny=24, nx=24):
+    """One built generator plus the node and tables it perturbs."""
+    parent_run = _nested_cfg(bl_pbl_physics=1, km_opt=4)
+    parent_cfg = _CfgNode(parent_run, grid_id=2, parent_id=1)
+    parent_cfg.state = _ParentState(
+        _PhysicsDriver(cp.full((16, 16), 1000.0, dtype=cp.float32)))
+    parent_cfg.clock = _Clock(_SPEC_STEP, _SPEC_DT)
+    child_cfg = _CfgNode(
+        _nested_cfg(inflow_perturbation=True,
+                    inflow_perturbation_faces=faces_mode),
+        parent=parent_cfg)
+    generator = ip.build_inflow_perturbation(child_cfg)
+    node = _ForceNode(child_cfg.cfg.run, _ForceState(cp, nz, ny, nx),
+                      parent_cfg)
+    return generator, node, _tables(cp, nz, ny, nx, 5)
+
+
+def test_the_force_hook_reports_what_it_injected():
+    """The receipt carries amplitude, face length and level count."""
+    cp = pytest.importorskip("cupy")
+    generator, node, fields = _force_pair(cp, "inflow")
+    assert generator.injection_receipt()["totals"] == {}
+    generator.apply_at_force(node, fields)
+
+    receipt = generator.injection_receipt()
+    assert receipt["faces_mode"] == "inflow"
+    assert set(receipt["last_force"]) == {"west", "north"}
+    for face, row in receipt["last_force"].items():
+        assert row["inward_mean_ms"] == pytest.approx(_INWARD_MS[face],
+                                                      rel=1e-5)
+        assert row["theta_max_k"] == pytest.approx(
+            ip.face_amplitude(_INWARD_MS[face], 1.0), rel=1e-5)
+        assert row["face_cells"] == 24
+        assert row["levels"] == 2          # 250 m and 750 m, under 1,000 m
+        assert row["refresh"] == 0
+    assert receipt["totals"]["west"]["forces"] == 1
+
+    generator.apply_at_force(node, fields)
+    assert generator.injection_receipt()["totals"]["west"]["forces"] == 2
+
+
+def test_the_outflow_control_takes_the_complementary_faces():
+    """Nothing the control injects lands on the face the meter scores."""
+    cp = pytest.importorskip("cupy")
+    generator, node, fields = _force_pair(cp, "outflow")
+    before = {face: pair[0].copy()
+              for face, pair in fields["theta"].items()}
+    generator.apply_at_force(node, fields)
+
+    receipt = generator.injection_receipt()
+    assert receipt["faces_mode"] == "outflow"
+    assert set(receipt["last_force"]) == {"east", "south"}
+    for face in ("west", "north"):
+        assert cp.array_equal(fields["theta"][face][0], before[face])
+    for face in ("east", "south"):
+        assert not cp.array_equal(fields["theta"][face][0], before[face])
+
+
+def test_the_outflow_arm_is_not_amplitude_matched_by_construction():
+    """Which is the whole reason the receipt has to carry the number.
+
+    ``theta_max`` goes as U squared on each face's OWN wind, so a
+    control on slower leaving faces injects quadratically less.  A null
+    D90 result from this arm means "seeding the leaving edges does not
+    shorten the fetch" only if the amplitudes are comparable; otherwise
+    it means almost nothing was seeded, and the receipt is what tells
+    the two apart.
+    """
+    cp = pytest.importorskip("cupy")
+    peak = {}
+    for mode in ("inflow", "outflow"):
+        generator, node, fields = _force_pair(cp, mode)
+        generator.apply_at_force(node, fields)
+        peak[mode] = max(row["theta_max_k_max"] for row
+                         in generator.injection_receipt()["totals"].values())
+    # 8 m/s entering against 2 m/s leaving: 16x, not 1x.
+    assert peak["inflow"] / peak["outflow"] == pytest.approx(16.0, rel=1e-4)
+
+
+def test_zero_amplitude_still_records_the_faces_it_selected():
+    """G2's arm must read as "selected, injected nothing", not "absent"."""
+    cp = pytest.importorskip("cupy")
+    parent_run = _nested_cfg(bl_pbl_physics=1, km_opt=4)
+    parent_cfg = _CfgNode(parent_run, grid_id=2, parent_id=1)
+    parent_cfg.state = _ParentState(
+        _PhysicsDriver(cp.full((16, 16), 1000.0, dtype=cp.float32)))
+    parent_cfg.clock = _Clock(_SPEC_STEP, _SPEC_DT)
+    child_cfg = _CfgNode(
+        _nested_cfg(inflow_perturbation=True,
+                    inflow_perturbation_amplitude_scale=0.0),
+        parent=parent_cfg)
+    generator = ip.build_inflow_perturbation(child_cfg)
+    node = _ForceNode(child_cfg.cfg.run, _ForceState(cp, 8, 24, 24),
+                      parent_cfg)
+    fields = _tables(cp, 8, 24, 24, 5)
+    before = {face: pair[0].copy()
+              for face, pair in fields["theta"].items()}
+    generator.apply_at_force(node, fields)
+
+    receipt = generator.injection_receipt()
+    assert set(receipt["last_force"]) == {"west", "north"}
+    assert all(row["theta_max_k"] == 0.0
+               for row in receipt["last_force"].values())
+    # G2: the classification ran and not one table byte moved.
+    for face, pair in fields["theta"].items():
+        assert cp.array_equal(pair[0], before[face])

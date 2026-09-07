@@ -1133,7 +1133,10 @@ def evaluate_n5s_shadow(candidate_evidence: str | Path,
     a single non-degenerate miss fails the registered compound gate.  F28
     converts rows whose E95 is exactly zero to documented evidence while
     retaining their measured distances; any row whose E95 is positive keeps
-    the original binding comparator.
+    the original binding comparator.  A degenerate row measured nothing, so
+    it is INCOMPLETE rather than accepted: ``verdict`` is "fail" if any
+    non-degenerate row missed, "incomplete" if any envelope was degenerate,
+    and only otherwise "pass", and ``passed`` is true only for "pass".
     """
     wrf_run_directory = Path(wrf_run_directory).resolve()
     ensemble, candidate, provenance = _verified_n5s_documents(
@@ -1233,7 +1236,12 @@ def evaluate_n5s_shadow(candidate_evidence: str | Path,
             raise ValueError(
                 f"N5S metric {metric!r} carries a negative/non-finite distance")
         envelope_degenerate = envelope == 0.0
-        accepted = envelope_degenerate or distance <= envelope
+        # A zero E95 is the absence of a measurement, not evidence of
+        # agreement: the twin-pairs never separated, so the row has no
+        # yardstick to hold the GPU distance against.  Such a row is
+        # INCOMPLETE -- neither accepted nor failed -- and an incomplete row
+        # must not let the compound verdict read PASS.
+        accepted = not envelope_degenerate and distance <= envelope
         passed &= accepted
         row = {"metric": metric, "gpu_distance": distance,
                "cpu_e95": envelope, "passed": bool(accepted)}
@@ -1242,6 +1250,7 @@ def evaluate_n5s_shadow(candidate_evidence: str | Path,
             row.update({
                 "documented_evidence": True,
                 "envelope_degenerate": True,
+                "status": "incomplete",
                 "adjudication": "f28-degenerate-envelope",
             })
         rows.append(row)
@@ -1254,8 +1263,15 @@ def evaluate_n5s_shadow(candidate_evidence: str | Path,
             f"N5S domain/category coverage {coverage} != {expected_coverage}")
     metric = "N5S_matched_physics_wrf_shadow"
     all_envelopes_degenerate = degenerate_rows == len(rows)
+    failed_rows = sum(
+        1 for row in rows
+        if not row["passed"] and not row.get("envelope_degenerate"))
+    verdict = ("fail" if failed_rows else
+               "incomplete" if degenerate_rows else "pass")
     report = {
         "schema": 2, "metric": metric, "passed": bool(passed),
+        "verdict": verdict,
+        "failed_rows": failed_rows,
         "degenerate_rows": degenerate_rows,
         "documented_evidence": bool(degenerate_rows),
         "all_envelopes_degenerate": all_envelopes_degenerate,

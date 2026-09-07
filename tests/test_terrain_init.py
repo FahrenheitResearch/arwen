@@ -256,6 +256,7 @@ void calc_p_alpha_phase1(const real* __restrict__ thp,
                          const real* __restrict__ mup,
                          const real* __restrict__ thb,
                          const real* __restrict__ phb,
+                         const real* __restrict__ dphbr,
                          const real* __restrict__ alb,
                          const real* __restrict__ rdnw,
                          real mub,
@@ -272,8 +273,9 @@ void calc_p_alpha_phase1(const real* __restrict__ thp,
     real mu = mub + mup[(size_t)j * nx + i];
     for (int k = 0; k < nz; ++k) {
         real th  = thb[k] + thp[IDX3(k, j, i)];
-        real dph = (phb[k + 1] + php[IDX3(k + 1, j, i)])
-                 - (phb[k]     + php[IDX3(k,     j, i)]);
+        real dphb = (phb[k + 1] - phb[k]) + dphbr[k];
+        real dph = dphb
+                 + (php[IDX3(k + 1, j, i)] - php[IDX3(k, j, i)]);
         real a = -dph * rdnw[k] / mu;
         alt[IDX3(k, j, i)] = a;
         al[IDX3(k, j, i)]  = a - alb[k];
@@ -321,7 +323,7 @@ def test_flat_init_and_diagnostics_bitwise_phase1():
     alt1 = cp.zeros_like(s.alt)
     ncol = cfg.ny * cfg.nx
     k1(((ncol + 255) // 256,), (256,),
-       (s.thp, s.php, s.mup, s.thb, s.phb, s.alb, s.rdnw,
+       (s.thp, s.php, s.mup, s.thb, s.phb, s.dphb_resid, s.alb, s.rdnw,
         np.float32(b.mub), np.int32(cfg.nz), np.int32(cfg.ny),
         np.int32(cfg.nx), p1, al1, alt1))
     assert bool((s.p == p1).all())

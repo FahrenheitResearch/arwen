@@ -627,6 +627,26 @@ class WaterTemperatureAssembly:
     statics: WaterTemperatureStatics
 
 
+def assemble_horizontal_water_temperature(horizontal, statics):
+    """Attach the common finished water surface to a mapped snapshot.
+
+    Adapter-specific interpolation has already happened. This step depends
+    only on canonical surface fields and the target's declared geography.
+    """
+    from dataclasses import replace
+
+    def host(value):
+        return value.get() if hasattr(value, "get") else value
+
+    fields = horizontal.fields
+    assembly = assemble_for_route(
+        statics, mapped_skin=host(fields["SKINTEMP"]),
+        mapped_sst=(None if "SST" not in fields else host(fields["SST"])))
+    return replace(horizontal, water_temperature=assembly.values,
+                   water_temperature_source=assembly.provider,
+                   water_temperature_receipt=assembly.receipt)
+
+
 def assemble_for_route(statics, *, mapped_sst, mapped_skin, source_sst=None,
                        source_lat=None, source_lon=None,
                        target_lat=None, target_lon=None):

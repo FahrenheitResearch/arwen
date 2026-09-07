@@ -134,7 +134,12 @@ __device__ real r_log10(real x)
     unsigned int hx = __float_as_uint(x);
     int k = 0;
     if ((int)hx < 0x00800000) {
-        if ((hx & 0x7fffffffu) == 0u) return DV(-two25, fabsf(x));
+        // glibc spells log10(+-0) as `-two25 / fabsf(x)`, a division whose
+        // only purpose is to raise divide-by-zero on the way to -inf; FDLIBM
+        // divides by a `zero` variable instead.  ArWen returns the -inf.
+        // Dropped at 2.6.6 -- the two forms were compared on all
+        // 4,294,967,296 float32 bit patterns and differ on none.
+        if ((hx & 0x7fffffffu) == 0u) return __int_as_float(0xff800000);
         if ((int)hx < 0) return __int_as_float(0x7fc00000);
         k -= 25;
         x = MU(x, two25);

@@ -78,7 +78,14 @@ _CAPABILITIES = {
     # the online lane stays exact.
     "same_scheme_mp_physics": [6, 8, 10, 18, 28, 50],
     "cross_scheme_transitions": [],
-    "vertical_remapping": False,
+    # A child may carry its OWN eta ladder, deeper than the archived
+    # parent's, when it declares one (``eta_levels`` in the child config,
+    # written by ``gpuwm downscale --child-levels``).  The remap is
+    # conservative in dry mass and every water substance
+    # (gpuwm/vertical_remap.py) and runs once at preparation on the host; the
+    # integration loop is unchanged.  p_top/hybrid_opt/etac stay shared with
+    # the parent -- that is what gives the two ladders coincident endpoints.
+    "vertical_remapping": "conservative-offline-prepare",
     "terrain_policy": "sint-parent-inherited",
     "forecast_backend": "cuda",
     "preprocess_backends": ["cuda", "cpu"],
@@ -237,10 +244,9 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time):
         lon = np.asarray(initial.fields["XLONG"], dtype=np.float64)
 
     radiation = None
-    if radiation_scheme_ids(cfg) == (4, 4):
+    if 4 in radiation_scheme_ids(cfg):
         from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY, rrtmg_variant
         if rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY:
-            from gpuwm.core.rrtmg_legacy import RRTMGLegacyRadiation
             if cfg.o3input == 2:
                 # FAIL CLOSED, the same refusal runtime._child_radiation_
                 # adapter raises for the in-memory child routes.
@@ -274,9 +280,9 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time):
                     "or run the child on the nested route "
                     "(gpuwm.runtime.prepare_child_case), which wires the "
                     "parent's o3rad through ParentOzoneProvider.")
-            radiation = RRTMGLegacyRadiation(
-                start_time, lat, lon, p_top=float(initial.receipt["p_top"]),
-                o3input=cfg.o3input)
+            from gpuwm.core.radiation_composition import make_radiation
+            radiation = make_radiation(
+                cfg, start_time, lat, lon, p_top=float(initial.receipt["p_top"]))
 
     if surface is None:
         return initialize_physics(
@@ -502,10 +508,22 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     parent_file_receipts = [
         _file_receipt(frame.path) for frame in contract.frames]
     dims = contract.frames[0].dimensions
-    if int(cfg.nz) != int(dims["bottom_top"]):
+    # A child at a DIFFERENT level count than its parent is now built by the
+    # conservative vertical remap (gpuwm/vertical_remap.py), which requires
+    # the child to name the ladder it wants.  A level count on its own is
+    # refused rather than filled in: make_vertical_coord's default is a
+    # UNIFORM ladder, so a child that asked only for "more levels" off a
+    # stretched parent would silently get a different atmosphere, not a finer
+    # sampling of the same one.
+    if int(cfg.nz) != int(dims["bottom_top"]) and cfg.eta_levels is None:
         raise OfflineChildContractError(
-            f"child nz={cfg.nz} differs from parent nz={dims['bottom_top']}; "
-            "native offline-child vertical remapping is not implemented")
+            f"child nz={cfg.nz} differs from parent nz={dims['bottom_top']} "
+            "but the child config names no eta_levels: a deeper child has to "
+            "declare the ladder it wants, because a bare level count would "
+            "be filled in with a uniform ladder and the child would start "
+            "from a different atmosphere than its parent, not a finer "
+            "sampling of it.  Add eta_levels to the child config (gpuwm "
+            "downscale --child-levels writes one for you).")
     if float(cfg.run_seconds) > (
             contract.end_time - contract.start_time).total_seconds():
         raise OfflineChildContractError(
@@ -577,11 +595,13 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     initial = interpolate_parent_initial_state(
         contract.frames[0].path, placement,
         physics_binding=binding, target_mp_physics=cfg.mp_physics,
-        backend=args.preprocess_backend)
+        backend=args.preprocess_backend,
+        child_eta_levels=cfg.eta_levels)
     prepared = build_offline_lateral_boundaries(
         contract, placement,
         target_mp_physics=cfg.mp_physics,
         backend=args.preprocess_backend,
+        child_eta_levels=cfg.eta_levels,
         spec_bdy_width=cfg.spec_bdy_width,
         spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
     # A float32 SINT of a number moment can round across zero.  When it

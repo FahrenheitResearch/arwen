@@ -468,7 +468,6 @@ def resolve_bundle(prepared_root: Path) -> dict:
               "not runnable here; prepare it again with this one")
     entry = index[schema]
     source = _resolve_packaged_source(root, entry)
-    _refuse_uncertified_mapping(root, source)
     domains = payload.get("domain_count")
     if not isinstance(domains, int) or isinstance(domains, bool):
         domains = 1 if entry["layout"] == "single" else None
@@ -513,10 +512,22 @@ def packaged_source_of(prepared_root: Path) -> str | None:
     composition = Path(prepared_root) / _MAPPED_EVIDENCE_COMPOSITION
     if not (mapping.is_file() and composition.is_file()):
         return None
+    manifest_path = Path(prepared_root) / _MAPPED_EVIDENCE_MANIFEST
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None  # the sealed evidence reader diagnoses invalid content
+
+    from gpuwm.prepared_source_schemas import source_schemas
+    schemas = source_schemas()
     observed = (_sha256(mapping), _sha256(composition))
     for source, profile_id in packaged_profile_sources().items():
         pins = packaged_authority_sha256(profile_id)
-        if observed == (pins["mapping"], pins["composition"]):
+        if (observed == (pins["mapping"], pins["composition"])
+                and isinstance(manifest, dict)
+                and manifest.get("schema") == schemas.get(source)):
             return source
     return None
 
@@ -524,74 +535,18 @@ def packaged_source_of(prepared_root: Path) -> str | None:
 def _resolve_packaged_source(prepared_root: Path, entry: dict) -> str:
     """The source a bundle was prepared from, disambiguated when it must be."""
 
+    from gpuwm.prepared_source_schemas import mapped_sources
+    mapped = mapped_sources()
+
     sources = entry.get("sources") or [entry["source"]]
-    if len(sources) < 2:
+    if not mapped.intersection(sources):
         return str(entry["source"])
     identified = packaged_source_of(prepared_root)
-    if identified in sources:
+    if identified in mapped:
         return str(identified)
-    # No shipped profile matches, so this is a caller's own mapping.  The
-    # first-registered source is returned so the refusal below -- which
-    # names that exact situation in the reader's own vocabulary -- is the
-    # thing they meet, rather than a schema-lookup error.
-    return str(entry["source"])
-
-
-def _refuse_uncertified_mapping(root: Path, source: str) -> None:
-    """Say what is actually wrong when a user's own mapping arrives here.
-
-    A packaged source is not a separate preparation.  It is the
-    declarative mapped route wearing a specific name, and it writes
-    exactly the same proof schema any other mapped preparation writes --
-    which means the schema alone cannot tell a packaged bundle from a
-    bundle a user prepared with ``gpuwm prep --source mapped`` and their
-    own mapping.  The COPIED AUTHORITIES can, and by their bytes:
-    :func:`packaged_source_of` compares the mapping and composition this
-    tree carries against every profile this distribution ships.
-
-    Today the forecast stage certifies only the packaged mapping: its
-    evidence check pins the mapping, composition and provenance
-    authorities to the digests shipped with this distribution, and a
-    user-authored mapping fails that pin.  That refusal is CORRECT and
-    must not be widened -- widening it would make a specific route a
-    permissive one, and every receipt would then say 20CRv3 about data
-    that never came from it.  What was wrong was only that the reader
-    met it as "mapped preparation does not use the packaged 20CRv3
-    authorities", four stages deep, after a preparation that had
-    succeeded.
-
-    So this is the same refusal, moved to the door and told in the
-    vocabulary of the person who typed the command.  It is a narrower
-    refusal, not a warning, and nothing is let through that was not let
-    through before.
-    """
-
-    from gpuwm.source_adapters import packaged_profile_sources
-
-    packaged = packaged_profile_sources()
-    if source not in packaged:
-        return
-    mapping = Path(root) / _MAPPED_EVIDENCE_MAPPING
-    if not mapping.is_file():
-        return                      # the runner's own evidence check owns this
-    if packaged_source_of(root) is not None:
-        return                      # it IS a shipped profile; nothing to say
-    shipped = ", ".join(sorted(packaged))
-    raise StageRefusal(
-        f"{mapping} is not any mapping this distribution ships, so this "
-        "tree was prepared from a mapping you authored -- and the "
-        "forecast stage certifies only the packaged profiles.  Its "
-        "evidence check pins the mapping, composition and provenance "
-        "authorities to the digests shipped with this distribution, and "
-        "yours are not those.\n"
-        "  This is a real limit, not a flag you are missing: preparing "
-        "an arbitrary source works today, running the result does not, "
-        "because no certificate exists yet for a caller-supplied "
-        "mapping.\n"
-        f"  what does work now: `gpuwm prep --source <{shipped}> ...` "
-        "prepares against a packaged profile and this stage runs it\n"
-        "  # said here rather than four stages deeper, where the same "
-        "refusal reads as an internal hash mismatch")
+    # The shared mapped proof schema identifies a route, not a model.
+    # Missing/changed authorities are diagnosed by the sealed evidence reader.
+    return "mapped"
 
 
 def single_domain_digests(bundle: dict) -> dict:
@@ -606,17 +561,29 @@ def single_domain_digests(bundle: dict) -> dict:
 
     payload = bundle["payload"]
     cache = payload.get("prepared_cache")
+    if bundle["layout"] == "tree":
+        # Relay the root identity already bound by this proof. The reader
+        # verifies it against the canonical manifest, domain receipt and
+        # actual cache; the stage does not manufacture a new identity.
+        artifacts = payload.get("artifact_receipt")
+        domains = artifacts.get("domains") if isinstance(artifacts, dict) else None
+        roots = [row for row in domains
+                 if isinstance(row, dict) and type(row.get("grid_id")) is int
+                 and row["grid_id"] == 1] if isinstance(domains, list) else []
+        if (len(roots) != 1 or roots[0].get("parent_id") != 0
+                or roots[0].get("schema") != "gpuwm-native-domain-artifact-build-v1"
+                or roots[0].get("status") != "READY"):
+            raise StageRefusal(
+                f"{bundle['document']} carries no unambiguous READY d01 "
+                "artifact receipt for --runner single.")
+        root_artifacts = roots[0].get("artifacts")
+        cache = (root_artifacts.get("prepared_cache")
+                 if isinstance(root_artifacts, dict) else None)
     content = cache.get("content_sha256") if isinstance(cache, dict) else None
     if not isinstance(content, str):
-        # A hierarchy product has no single prepared cache -- it has a
-        # per-domain one -- so this is the shape test for "tree", and it
-        # is the document's, not a guess.
         raise StageRefusal(
-            f"{bundle['document']} carries no single prepared-cache "
-            "identity, which is what a multi-domain hierarchy product "
-            "looks like.  Run it with the tree runner instead -- "
-            "`gpuwm sim` picks that automatically; you reached this by "
-            "asking for --runner single.")
+            f"{bundle['document']} carries no prepared-cache identity "
+            "for the requested single-domain forecast.")
     manifest = _source_manifest_digest(bundle, payload)
     if manifest is None:
         raise StageRefusal(
@@ -704,12 +671,32 @@ def _progress_flags(progress_format: str | None) -> list[str]:
     return ["--progress-format", str(progress_format)]
 
 
+def _restart_flags(layout: str, restart: Path | None,
+                   sealed_forcing_extension: bool) -> list[str]:
+    """Forward canonical checkpoints; extension still needs hierarchy receipts."""
+    if sealed_forcing_extension and layout != "tree":
+        raise StageRefusal(
+            "sealed forcing extension requires the prepared hierarchy artifact format; "
+            "a single prepared bundle binds its complete configuration and stop time.")
+    return (["--restart", str(restart)] if restart is not None else []) + (
+        ["--sealed-forcing-extension"] if sealed_forcing_extension else [])
+
+
+def _health_debug_flags(layout: str, enabled: bool) -> list[str]:
+    return ["--health-debug"] if enabled else []
+
+
 def sim_command(bundle: dict, *, experiment_config: Path,
                 wps_namelist: Path | None, outdir: Path,
                 physics_profile: str | None = None,
                 io_mode: str = "history",
                 progress_format: str | None = None,
-                runner: str = "auto") -> list[str]:
+                runner: str = "auto",
+                restart: Path | None = None,
+                sealed_forcing_extension: bool = False,
+                health_debug: bool = False,
+                render_products: str | None = None,
+                render_dir: Path | None = None) -> list[str]:
     """The exact runner command this prepared tree needs.
 
     This is the seam's published boundary.  ``gpuwm sim
@@ -719,10 +706,10 @@ def sim_command(bundle: dict, *, experiment_config: Path,
     and never call ``gpuwm sim`` again.  A front door that can hand out
     its own replacement is a front door nobody is trapped behind.
 
-    ``progress_format`` is the ONE axis on which a hosting caller may
-    legitimately differ from a human at a terminal, and it is a
-    parameter rather than a second command builder so that it stays the
-    only one.  ``None`` -- the default, and what ``gpuwm sim`` uses --
+    ``progress_format`` controls the hosting caller's stdout protocol.
+    Scientific settings and explicitly requested restart or diagnostic
+    operands use this same command builder for every caller.
+    ``None`` -- the default, and what ``gpuwm sim`` uses --
     leaves the runner's own per-step ``Timing for main:`` lines on
     stdout, which is the whole point of the standalone door.  ``gpuwm
     go`` passes ``"jsonl"`` because it OWNS the runner's stdout: its
@@ -730,13 +717,18 @@ def sim_command(bundle: dict, *, experiment_config: Path,
     discarded lines, and ``gpuwm run-plan`` hosting the runner in
     process reserves that channel for its own event stream.  The
     equivalence gate in ``tests/test_stage_seams.py`` pins that this
-    flag is the only difference between the two, so no other divergence
-    can hide behind it.
+    flag is the only difference for otherwise identical operands.
     """
 
     layout = bundle["layout"] if runner == "auto" else runner
     if layout not in {"single", "tree"}:
         raise StageRefusal(f"unknown runner arm {layout!r}")
+    restart_flags = _restart_flags(layout, restart, sealed_forcing_extension)
+    health_flags = _health_debug_flags(layout, health_debug)
+    render_flags = ([] if render_products is None else
+                    ["--render-products", str(render_products)])
+    if render_dir is not None:
+        render_flags += ["--render-dir", str(render_dir)]
     config = Path(experiment_config)
     if layout == "tree":
         digests = tree_digests(bundle, config)
@@ -746,6 +738,7 @@ def sim_command(bundle: dict, *, experiment_config: Path,
                 digests["preparation_receipt"],
                 "--experiment-config", str(config),
                 "--experiment-config-sha256", digests["experiment_config"],
+                *restart_flags, *health_flags, *render_flags,
                 *_progress_flags(progress_format),
                 "--io-mode", io_mode, "--outdir", str(outdir)]
     if wps_namelist is None:
@@ -764,6 +757,7 @@ def sim_command(bundle: dict, *, experiment_config: Path,
             "--wps-namelist", str(Path(wps_namelist)),
             *([] if physics_profile is None
               else ["--physics-profile", str(physics_profile)]),
+            *restart_flags, *health_flags, *render_flags,
             *_progress_flags(progress_format),
             "--io-mode", io_mode, "--outdir", str(outdir)]
 
@@ -847,7 +841,8 @@ def claim_run_dir(args, bundle: dict, *, claim: bool = True) -> Path:
 def sim_main(args) -> int:
     """``gpuwm sim``: the forecast, alone.
 
-    Nothing is fetched, nothing is rendered and no network is touched.
+    Nothing is fetched. Rendering stays off unless products are requested;
+    that opt-in uses the runner's existing first-committed-frame worker.
     The runner is called IN THIS PROCESS rather than spawned, which is
     what puts its per-step output on the caller's terminal as it
     happens instead of behind a pipe -- the whole point of running the
@@ -858,6 +853,11 @@ def sim_main(args) -> int:
 
     try:
         bundle = resolve_bundle(args.prepared_root)
+        layout = bundle["layout"] if args.runner == "auto" else args.runner
+        # Check the actual bundle adapter before allocating an output folder.
+        _restart_flags(layout, getattr(args, "restart", None),
+                       getattr(args, "sealed_forcing_extension", False))
+        _health_debug_flags(layout, getattr(args, "health_debug", False))
         # The run folder is resolved BEFORE the command is composed, so
         # the --outdir in the printed line is the one this stage would
         # actually write to.  --print-command only NAMES it: that flag's
@@ -872,7 +872,12 @@ def sim_main(args) -> int:
             physics_profile=getattr(args, "physics_profile", None),
             io_mode=getattr(args, "io_mode", "history"),
             progress_format=getattr(args, "progress_format", None),
-            runner=getattr(args, "runner", "auto"))
+            runner=getattr(args, "runner", "auto"),
+            restart=getattr(args, "restart", None),
+            sealed_forcing_extension=getattr(args, "sealed_forcing_extension", False),
+            health_debug=getattr(args, "health_debug", False),
+            render_products=getattr(args, "render_products", None),
+            render_dir=getattr(args, "render_dir", None))
     except StageRefusal as refusal:
         print(render(str(refusal), explain=explain_enabled(args),
                      command="gpuwm sim"), file=sys.stderr)
@@ -885,10 +890,13 @@ def sim_main(args) -> int:
         return 0
 
     layout = bundle["layout"] if args.runner == "auto" else args.runner
+    requested = getattr(args, "render_products", None)
+    plots = requested is not None and str(requested).strip().lower() not in {"", "none"}
     print(f"sim: {bundle['document'].parent} -- {bundle['schema']} "
           f"(source {bundle['source']}, "
           f"{'domain tree' if layout == 'tree' else 'single domain'}), "
-          f"no fetch and no render on this route")
+          + (f"no fetch; first-frame plots requested: {requested}"
+             if plots else "no fetch and no render on this route"))
     if outdir != Path(args.outdir):
         print(f"sim: run folder "
               f"{run_stamp.relative_to_case(outdir, args.outdir)} under "
@@ -933,7 +941,7 @@ def register_cli(subparsers) -> None:
     sim = subparsers.add_parser(
         "sim",
         help="the forecast alone, on a prepared tree that already "
-             "exists -- no fetching, no rendering, no network.  The "
+             "exists -- no fetching; rendering is opt-in.  The "
              "bundle's own proof/receipt says which source prepared it "
              "and whether it is one domain or a tree",
         description="Run a prepared tree and exit.  The digests each "
@@ -968,11 +976,29 @@ def register_cli(subparsers) -> None:
                           "forecast is already in it")
     run_stamp.add_argument(sim, option="--outdir",
                            artifacts="wrfout, report.json and receipts")
+    sim.add_argument("--restart", type=Path, default=None, metavar="RST",
+                     help="resume a prepared single-domain checkpoint or any "
+                          "member of a hierarchy checkpoint set into a fresh "
+                          "output folder; the runtime validates config, inputs and "
+                          "checkpoint identity without changing settings")
+    sim.add_argument("--health-debug", action="store_true",
+                     help="write per-step health diagnostics with the prepared hierarchy runner")
+    sim.add_argument("--sealed-forcing-extension", action="store_true",
+                     help="use the existing prepared-tree append-only forcing "
+                          "prefix contract when writing or restoring checkpoints")
     sim.add_argument("--physics-profile", default=None, metavar="ID",
                      dest="physics_profile",
                      help="optional assertion that the hash-bound "
                           "experiment IS this shipped suite; omitted, "
                           "the experiment's own suite runs as written")
+    sim.add_argument("--render-products", default=None, metavar="SPEC",
+                     help="render selected products from the first committed "
+                          "history frame while the forecast runs: comma-separated "
+                          "catalog selectors, 'all', or 'none'. Omitted means "
+                          "no rendering; this does not render every saved frame")
+    sim.add_argument("--render-dir", type=Path, default=None, metavar="DIR",
+                     help="first-frame picture directory (default OUTDIR/png); "
+                          "ignored without --render-products")
     sim.add_argument("--io-mode", default="history", choices=("history",),
                      dest="io_mode",
                      help="history output (the only mode this seam "

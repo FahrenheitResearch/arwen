@@ -353,3 +353,65 @@ TESTS = (
 @pytest.mark.parametrize("case", TESTS, ids=lambda f: f.__name__)
 def test_streamed_carrier_freshness(case):
     case()
+
+
+@pytest.mark.parametrize("explicit_target", [False, True])
+def test_device_store_refresh_restores_clock_and_provenance(explicit_target):
+    from gpuwm.core.streaming import StreamedDomain
+
+    state, driver = _driver(glw_at=0., swdown_at=0.)
+    current, current_driver = _driver(glw_at=3600., swdown_at=3600.)
+    current.elapsed_seconds = 3620.
+    current_driver.call_counts.update(radiation=16, noah=181)
+    current_driver.ysu_nan_guard_fires = 2
+    current_driver.microphysics_updates = 181
+    canonical = physinv.carrier_scalars(current)
+    drained = []
+    stream = object.__new__(StreamedDomain)
+    stream.host_store = False
+    stream._state = state if not explicit_target else None
+    stream.scalars = {}
+
+    def drain():
+        drained.append(True)
+        stream.scalars.update(canonical)
+
+    stream._run = SimpleNamespace(drain=drain)
+    # The arrays already alias the store. A refresh must still wait for
+    # the sweep and restore all non-array state before external readers.
+    with pytest.raises(CarrierContractError, match="stale"):
+        _consume(driver.carriers, 3620.)
+    assert stream.refresh_state(state if explicit_target else None) == 0
+    assert drained == [True]
+    assert physinv.carrier_scalars(state) == canonical
+    _consume(driver.carriers, 3620.)
+
+
+@pytest.mark.parametrize("has_state,has_scalars", [(False, True), (True, False)])
+def test_device_store_refresh_without_scalar_destination_still_drains(has_state, has_scalars):
+    from gpuwm.core.streaming import StreamedDomain
+
+    state, _ = _driver(glw_at=0., swdown_at=0.)
+    stream = object.__new__(StreamedDomain)
+    stream.host_store = False
+    stream._state = state if has_state else None
+    stream.scalars = {"elapsed_seconds": 12.} if has_scalars else None
+    drained = []
+    stream._run = SimpleNamespace(drain=lambda: drained.append(True))
+    assert stream.refresh_state() == 0
+    assert drained == [True]
+    assert state.elapsed_seconds == 0.
+
+
+def test_device_store_refresh_preserves_carrier_policy_validation():
+    from gpuwm.core.streaming import StreamedDomain
+
+    state, _ = _driver(glw_at=0., policy="required")
+    current, _ = _driver(glw_at=3600., policy="wrf_compat_zero")
+    stream = object.__new__(StreamedDomain)
+    stream.host_store = False
+    stream._state = state
+    stream.scalars = physinv.carrier_scalars(current)
+    stream._run = SimpleNamespace(drain=lambda: None)
+    with pytest.raises(CarrierContractError, match="policy"):
+        stream.refresh_state()

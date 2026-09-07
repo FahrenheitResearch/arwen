@@ -505,7 +505,8 @@ def _score_f27_fss20(monkeypatch, tmp_path, *, domain, value):
 
 def test_f27_d03_below_envelope_is_documented_deficiency(monkeypatch, tmp_path):
     results = _score_f27_fss20(
-        monkeypatch, tmp_path, domain="d03", value=0.70)
+        monkeypatch, tmp_path, domain="d03",
+        value=nest_gates.F27_DOCUMENTED_DEFICIENCY_FLOOR)
 
     fss = results["d03_refl_10cm_fss"]
     assert fss["passed"] is True
@@ -514,7 +515,7 @@ def test_f27_d03_below_envelope_is_documented_deficiency(monkeypatch, tmp_path):
         "event_dbz": 20.0,
         "radius_km": 5.0,
         "minimum": 0.8558,
-        "value": 0.70,
+        "value": 0.7047,
         "passed": True,
         "documented_deficiency": True,
         "envelope_minimum": 0.8558,
@@ -525,6 +526,35 @@ def test_f27_d03_below_envelope_is_documented_deficiency(monkeypatch, tmp_path):
     assert set(row40) == {
         "event_dbz", "radius_km", "minimum", "value", "passed"}
     assert (row30["minimum"], row40["minimum"]) == (0.80, 0.70)
+
+
+@pytest.mark.parametrize("value", [0.0, 0.02, 0.20, 0.7046])
+@pytest.mark.parametrize("domain", ["d03", "d04"])
+def test_f27_below_the_measured_floor_still_blocks(
+        monkeypatch, tmp_path, domain, value):
+    """Negative control: the F27 row must be able to fail.
+
+    F27 converts a value below 0.8558 to a documented deficiency, and
+    ``value >= 0.8558`` accepts, so before the fix the two branches
+    partitioned the finite reals and no finite FSS20 could fail the d03/d04
+    row -- 0.02 reported PASS under an adjudication string saying "this is
+    the known 0.70 deficiency".  F27 documents the deficiency it measured
+    (0.7047-0.7084); anything under that floor is a different, undocumented
+    deficiency and blocks.
+    """
+    results = _score_f27_fss20(
+        monkeypatch, tmp_path, domain=domain, value=value)
+
+    fss = results[f"{domain}_refl_10cm_fss"]
+    assert fss["passed"] is False
+    row20 = fss["evidence"]["scores"][0]
+    assert row20 == {
+        "event_dbz": 20.0,
+        "radius_km": 5.0,
+        "minimum": 0.8558,
+        "value": value,
+        "passed": False,
+    }
 
 
 @pytest.mark.parametrize("value", [0.8558, 0.86, 0.90])
@@ -562,7 +592,15 @@ def test_f27_d02_fss20_remains_blocking_at_original_minimum(
     }
 
 
-def test_f24_degenerate_fss_rows_are_provisional_passes(monkeypatch, tmp_path):
+def test_f24_degenerate_fss_rows_are_held_and_never_read_as_passes(
+        monkeypatch, tmp_path):
+    """A reference with no events holds the row, but a hold is not a pass.
+
+    The row measured nothing, so it is INCOMPLETE: it stays out of the
+    conjunction for the F24 ensemble adjudicator to dispose of, and it does
+    not reach ``passed: true``.  With every leg held nothing was scored at
+    all, so the compound row cannot pass either.
+    """
     candidate, reference = tmp_path / "candidate", tmp_path / "reference"
     candidate.write_bytes(b"candidate")
     reference.write_bytes(b"reference")
@@ -586,18 +624,66 @@ def test_f24_degenerate_fss_rows_are_provisional_passes(monkeypatch, tmp_path):
         run_summary=_no_blowup_summary(),
         verdicts={"d02_refl_10cm_structure": {"passed": True}})
     fss = results["d02_refl_10cm_fss"]
-    assert fss["passed"] is True
+    assert fss["passed"] is False
     for row in fss["evidence"]["scores"]:
         assert set(row) == {
-            "event_dbz", "radius_km", "minimum", "value", "passed",
+            "event_dbz", "radius_km", "minimum", "value", "passed", "status",
             "degenerate", "candidate_coverage", "reference_coverage",
             "adjudication"}
-        assert row["passed"] is True
+        assert row["passed"] is False
+        assert row["status"] == "incomplete"
         assert row["value"] < row["minimum"]
         assert row["degenerate"] is True
         assert row["candidate_coverage"] == 1.0
         assert row["reference_coverage"] == 0.0
         assert row["adjudication"] == "held-for-ensemble-envelope-f24"
+
+
+def test_f24_candidate_without_convection_fails_a_convective_reference(
+        monkeypatch, tmp_path):
+    """Negative control: the gate that detects missing convection must fire.
+
+    The reference frame is full of >= 40 dBZ echo and the candidate produces
+    none at all -- the exact regression the FSS family exists to catch, and
+    the worst possible forecast for this row.  Before the fix the degeneracy
+    predicate was ORed over candidate AND reference coverage, so all three
+    legs were stamped ``degenerate``, reported ``passed: true``, and were
+    dropped from the conjunction: the compound row passed with FSS 0.0
+    everywhere.  Degeneracy is now one-sided -- only a reference without
+    events can make a row meteorologically meaningless.
+    """
+    candidate, reference = tmp_path / "candidate", tmp_path / "reference"
+    candidate.write_bytes(b"candidate")
+    reference.write_bytes(b"reference")
+    base = np.arange(144, dtype=np.float64).reshape(12, 12)
+    diagnostics = {
+        "mslp": base,
+        "levels": {
+            500: {"temperature": base},
+            850: {"temperature": base},
+        },
+    }
+    monkeypatch.setattr(
+        real74_d02.weather_metrics, "wrf_diagnostics", lambda _path: diagnostics)
+    monkeypatch.setattr(
+        real74_d02, "_composite_reflectivity",
+        lambda path: np.full(
+            (12, 12), 0.0 if Path(path) == candidate else 50.0))
+
+    results = real74_d02.score_statistical_frame(
+        "N3", "d02", candidate, reference, dx_m=3000.0,
+        run_summary=_no_blowup_summary(),
+        verdicts={"d02_refl_10cm_structure": {"passed": True}})
+
+    fss = results["d02_refl_10cm_fss"]
+    assert fss["passed"] is False
+    scores = fss["evidence"]["scores"]
+    assert len(scores) == len(nest_gates.REFL_10CM_FSS_FAMILY)
+    for row in scores:
+        assert set(row) == {
+            "event_dbz", "radius_km", "minimum", "value", "passed"}
+        assert row["passed"] is False
+        assert row["value"] == 0.0
 
 
 def test_f24_identically_empty_fss_keeps_registered_value(monkeypatch, tmp_path):
@@ -625,6 +711,11 @@ def test_f24_identically_empty_fss_keeps_registered_value(monkeypatch, tmp_path)
     scores = results["d02_refl_10cm_fss"]["evidence"]["scores"]
     assert all(row["degenerate"] is True and row["value"] == 1.0
                for row in scores)
+    # Two identically empty fields agree perfectly and measure nothing; the
+    # registered FSS = 1.0 is kept in evidence, but an empty conjunction is
+    # not a pass.
+    assert results["d02_refl_10cm_fss"]["passed"] is False
+    assert all(row["status"] == "incomplete" for row in scores)
 
 
 def test_f24_degenerate_formula_failure_records_null_fss(monkeypatch, tmp_path):
@@ -652,8 +743,12 @@ def test_f24_degenerate_formula_failure_records_null_fss(monkeypatch, tmp_path):
         run_summary=_no_blowup_summary(),
         verdicts={"d02_refl_10cm_structure": {"passed": True}})
     rows = results["d02_refl_10cm_fss"]["evidence"]["scores"]
-    assert all(row["passed"] is True and row["fss"] is None
-               and "value" not in row for row in rows)
+    assert all(row["fss"] is None and "value" not in row for row in rows)
+    # The held row carries no numeric score, so it is INCOMPLETE rather than
+    # failed -- and, having measured nothing, it is not a pass either.
+    assert all(row["passed"] is False and row["status"] == "incomplete"
+               for row in rows)
+    assert results["d02_refl_10cm_fss"]["passed"] is False
 
 
 def test_f24_empty_fss_interior_fails_loudly(monkeypatch, tmp_path):
@@ -710,7 +805,8 @@ def _f24_held_row(event_dbz=40.0):
         "event_dbz": event_dbz,
         "radius_km": 5.0,
         "minimum": 0.70,
-        "passed": True,
+        "passed": False,
+        "status": "incomplete",
         "degenerate": True,
         "candidate_coverage": 0.0,
         "reference_coverage": 0.0,
@@ -1295,9 +1391,43 @@ def test_boundary_blowup_consumes_accumulated_run_summary():
     })
     assert value == 1.0
     assert evidence["boundary_w_max_ms"] == 9.0
+    assert evidence["unmeasured_w_maximum"] is False
     assert "every dynamics substep" in evidence["source"]
     with pytest.raises(ValueError, match="RunSummary"):
         real74_d02.boundary_zone_blowup_value({})
+
+
+@pytest.mark.parametrize(("boundary", "interior"), (
+    (float("nan"), 2.0),
+    (1.0e9, float("nan")),
+    (40.0, float("nan")),
+    (40.0, float("inf")),
+), ids=["nan-boundary", "huge-boundary-nan-interior", "nan-interior",
+        "inf-interior"])
+def test_boundary_blowup_fires_on_an_unmeasured_w_maximum(boundary, interior):
+    """Negative control: the gate's own yardstick going missing must fire it.
+
+    ``boundary_zone_blowup`` is a purely relative bound -- the boundary
+    maximum against five times the same run's interior maximum -- so the
+    interior maximum IS the reference.  ``max(nan, 1.0)`` is ``nan`` and
+    ``x > nan`` is False, so a run whose interior maximum could not be
+    measured reported ``boundary_zone_blowup: False`` and the registered
+    ``<= 0.5`` row passed, for any boundary vertical velocity whatsoever.
+    The consumer the nest gates read fires regardless of what the producer
+    recorded.
+    """
+    value, evidence = real74_d02.boundary_zone_blowup_value({
+        "boundary_w_max_ms": boundary,
+        "interior_w_max_ms": interior,
+        "boundary_zone_blowup": False,
+        "dynamics_substeps": 300,
+    })
+
+    assert value == 1.0
+    assert evidence["diagnostic_fired"] is True
+    assert evidence["unmeasured_w_maximum"] is True
+    record = nest_gates.gate("N3", "d02_boundary_zone_blowup")
+    assert real74_d02.gate_result(record, value=value)["passed"] is False
 
 
 def test_complete_ratchet_inventory_catches_intermediate_and_missing_frames(
@@ -1603,29 +1733,92 @@ def test_f28_all_degenerate_n5s_envelopes_are_documented_evidence(
         1 if category == "d04_reflectivity_fss_distance"
         else len(real74_chain.N5S_DOMAINS)
         for category in real74_chain.N5S_CATEGORIES)
-    assert report["passed"] is True
+    assert report["passed"] is False
+    assert report["verdict"] == "incomplete"
+    assert report["failed_rows"] == 0
     assert report["degenerate_rows"] == expected
     assert report["documented_evidence"] is True
     assert report["all_envelopes_degenerate"] is True
     assert len(report["comparisons"]) == expected
     for row in report["comparisons"]:
         assert set(row) == {
-            "metric", "gpu_distance", "cpu_e95", "passed",
+            "metric", "gpu_distance", "cpu_e95", "passed", "status",
             "documented_evidence", "envelope_degenerate", "adjudication"}
         assert row["gpu_distance"] == 2.5
         assert row["cpu_e95"] == 0.0
-        assert row["passed"] is True
+        assert row["passed"] is False
+        assert row["status"] == "incomplete"
         assert row["documented_evidence"] is True
         assert row["envelope_degenerate"] is True
         assert row["adjudication"] == "f28-degenerate-envelope"
 
     n5_row = real74_chain._consume_controller_gate_report(
         "N5S_matched_physics_wrf_shadow", report)
-    assert n5_row["passed"] is True
+    assert n5_row["passed"] is False
     assert n5_row["evidence"]["degenerate_rows"] == expected
     assert n5_row["evidence"]["documented_evidence"] is True
     assert n5_row["evidence"]["all_envelopes_degenerate"] is True
     assert n5_row["evidence"]["comparisons"] == report["comparisons"]
+
+
+@pytest.mark.parametrize("gpu_distance", [1.0e9, 50.0, 1.0])
+def test_f28_degenerate_envelope_refuses_any_gpu_distance(
+        tmp_path, monkeypatch, gpu_distance):
+    """Negative control: a zero envelope must accept nothing at all.
+
+    Feed the one gate that compares gpuwm against a matched-physics WRF run
+    a GPU-vs-WRF distance that is definitely wrong -- up to 1e9 in the
+    registered units -- while every CPU twin-pair scores exactly 0.0, which
+    is the state the F28 amendment records for all 61 registered metrics.
+    Before the ver-05-01 fix ``accepted = envelope_degenerate or distance <=
+    envelope`` made every one of these rows ``passed: True`` and the compound
+    report ``passed: True``; the absence of a yardstick is not agreement.
+    """
+    _stub_n5s_artifact_reconstruction(monkeypatch)
+    candidate, wrf = _n5s_files(
+        tmp_path, gpu_distance, cpu_pair_values=(0.0, 0.0, 0.0))
+
+    report = real74_chain.evaluate_n5s_shadow(candidate, wrf)
+
+    assert report["passed"] is False
+    assert report["verdict"] == "incomplete"
+    assert all(row["passed"] is False for row in report["comparisons"])
+    assert all(row["gpu_distance"] == gpu_distance
+               for row in report["comparisons"])
+    n5_row = real74_chain._consume_controller_gate_report(
+        "N5S_matched_physics_wrf_shadow", report)
+    assert n5_row["passed"] is False
+
+
+def test_f28_one_degenerate_row_holds_the_compound_verdict_short_of_pass(
+        tmp_path, monkeypatch):
+    """A single unmeasured row is enough to deny PASS, and says which state.
+
+    Every other row is inside its envelope, so nothing FAILED; the compound
+    verdict is INCOMPLETE rather than PASS because one row had no envelope
+    to be measured against.
+    """
+    _stub_n5s_artifact_reconstruction(monkeypatch)
+    candidate, wrf = _n5s_files(tmp_path, 2.5)
+    ensemble_path = wrf / "n5s-ensemble.json"
+    ensemble = json.loads(ensemble_path.read_text(encoding="utf-8"))
+    degenerate_metric = next(iter(ensemble["cpu_pair_distances"]))
+    ensemble["cpu_pair_distances"][degenerate_metric] = [0.0, 0.0, 0.0]
+    ensemble_path.write_text(json.dumps(ensemble), encoding="utf-8")
+
+    report = real74_chain.evaluate_n5s_shadow(candidate, wrf)
+
+    assert report["passed"] is False
+    assert report["verdict"] == "incomplete"
+    assert report["failed_rows"] == 0
+    assert report["degenerate_rows"] == 1
+    assert report["all_envelopes_degenerate"] is False
+    held = next(row for row in report["comparisons"]
+                if row["metric"] == degenerate_metric)
+    assert held["status"] == "incomplete"
+    assert held["passed"] is False
+    assert all(row["passed"] is True for row in report["comparisons"]
+               if row["metric"] != degenerate_metric)
 
 
 @pytest.mark.parametrize("bad_distance", [

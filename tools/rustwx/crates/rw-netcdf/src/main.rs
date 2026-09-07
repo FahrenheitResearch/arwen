@@ -10,10 +10,9 @@
 //!   (name, `standard_name`, units checks) happens on the Python side
 //!   against this document; no values are read.
 //! * `rw_netcdf dump FILE OUTDIR VAR...` decodes the named variables and
-//!   writes one flat little-endian `f64` file each, plus a
-//!   `metadata.json` giving each variable's shape and filename.  numpy
-//!   maps those with `np.fromfile(..., dtype="<f8")`, exactly as it does
-//!   for `grib2_dump` output.
+//!   writes little-endian `f64` numeric planes or fixed-width ASCII bytes,
+//!   plus `metadata.json` giving each variable's dtype, shape and filename.
+//!   numpy maps those with the declared `<f8` or `|S1` dtype.
 //!
 //! CF reference-time decoding lives HERE rather than in Python, because
 //! turning `hours since 1970-01-01` plus a number into an instant is
@@ -54,12 +53,13 @@ pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
 
 const USAGE: &str = "\
 usage: rw_netcdf inventory FILE
-       rw_netcdf dump [--raw] FILE OUTPUT_DIR VARIABLE [VARIABLE...]
+       rw_netcdf dump [--raw|--no-mask] [--unit-scale=N] [--unit-offset=N] FILE OUTPUT_DIR VARIABLE [VARIABLE...]
        rw_netcdf --abi | --help
 
   inventory  print a JSON description of FILE (no values are read)
   dump       decode VARIABLEs into OUTPUT_DIR as flat little-endian f64
              files plus metadata.json
+  --unit-scale=N / --unit-offset=N  explicit quantity conversion after CF unpacking
   --raw      skip CF decoding: no _FillValue/missing_value masking and no
              scale_factor/add_offset, so stored sentinels survive.  This
              is what netCDF4's set_auto_mask(False) asks for, and some
@@ -140,6 +140,8 @@ struct DumpRecord {
     /// than infer it. `missing_count` is the number of elements written
     /// as NaN because they matched `_FillValue`/`missing_value`.
     cf: CfApplied,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unit_transform: Option<[f64; 2]>,
 }
 
 #[derive(Serialize, Default)]
@@ -193,21 +195,35 @@ fn main() {
             let raw = args.iter().any(|a| a == "--raw");
             let no_mask = raw || args.iter().any(|a| a == "--no-mask");
             let apply_scale = !raw;
+            let mut unit_transform = [1.0_f64, 0.0_f64];
+            for argument in &args[1..] {
+                for (index, prefix) in [(0, "--unit-scale="), (1, "--unit-offset=")] {
+                    if let Some(text) = argument.strip_prefix(prefix) {
+                        unit_transform[index] = text.parse::<f64>()
+                            .unwrap_or_else(|_| fail("unit transform must be finite numbers"));
+                    }
+                }
+            }
+            if !unit_transform.iter().all(|v| v.is_finite()) || unit_transform[0] == 0.0 {
+                fail("unit transform must have a finite nonzero scale and finite offset");
+            }
             let positional: Vec<&String> = args[1..]
                 .iter()
-                .filter(|a| a.as_str() != "--raw" && a.as_str() != "--no-mask")
+                .filter(|a| a.as_str() != "--raw" && a.as_str() != "--no-mask"
+                    && !a.starts_with("--unit-scale=") && !a.starts_with("--unit-offset="))
                 .collect();
             if positional.len() < 3 {
                 fail("dump takes FILE, OUTPUT_DIR and at least one VARIABLE");
             }
             let names: Vec<String> =
                 positional[2..].iter().map(|s| (*s).clone()).collect();
-            if let Err(error) = dump(
+            if let Err(error) = dump_transformed(
                 Path::new(positional[0]),
                 Path::new(positional[1]),
                 &names,
                 !no_mask,
                 apply_scale,
+                unit_transform,
             ) {
                 fail(&error);
             }
@@ -527,8 +543,48 @@ fn inventory(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Preserve fixed-width ASCII character arrays in their declared shape.
+/// Classic readers return one string per row; HDF5 NC_CHAR returns one
+/// string per byte. Neither packing nor CF masking applies to characters.
+fn character_bytes(file: &netcrust::File, variable: &netcrust::Variable) -> Result<Vec<u8>, String> {
+    let name = variable.name();
+    let shape = variable.shape();
+    let total = shape.iter().try_fold(1usize, |n, &size| n.checked_mul(size))
+        .ok_or_else(|| format!("{name}: character shape overflows"))?;
+    if total as u64 > netcrust::MAX_ARRAY_ELEMENTS {
+        return Err(format!("{name}: character array exceeds the reader element limit"));
+    }
+    let width = shape.last().copied().unwrap_or(1);
+    let strings = file.read_strings(name).map_err(|error| format!("cannot decode {name}: {error}"))?;
+    if total == 0 && strings.is_empty() { return Ok(Vec::new()); }
+    let chunk = if width > 0 && strings.len() == total / width {
+        width
+    } else if strings.len() == total { 1 } else {
+        return Err(format!("{name}: decoded {} strings do not match character shape {shape:?}", strings.len()));
+    };
+    let mut bytes = Vec::with_capacity(total);
+    for text in strings {
+        if !text.is_ascii() || text.len() > chunk {
+            return Err(format!("{name}: expected fixed-width ASCII characters; decoded text does not fit its {chunk}-byte slot"));
+        }
+        bytes.extend_from_slice(text.as_bytes());
+        bytes.resize(bytes.len() + chunk - text.len(), 0);
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
 fn dump(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
         apply_scale: bool) -> Result<(), String> {
+    dump_transformed(path, out_dir, names, apply_mask, apply_scale, [1.0, 0.0])
+}
+
+fn dump_transformed(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
+                    apply_scale: bool, unit_transform: [f64; 2]) -> Result<(), String> {
+    let transformed = unit_transform != [1.0, 0.0];
+    if !unit_transform.iter().all(|v| v.is_finite()) || unit_transform[0] == 0.0 {
+        return Err("unit transform must have a finite nonzero scale and finite offset".into());
+    }
     let (file, metadata) = open(path)?;
     fs::create_dir_all(out_dir)
         .map_err(|error| format!("cannot create {}: {error}", out_dir.display()))?;
@@ -543,22 +599,22 @@ fn dump(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
         // go through a closure that knows which path it is on.
         let variable = file.variable(name);
         if let Some(variable) = variable.as_ref() {
-            // Named refusal rather than a confusing type error from deep
-            // in the reader.  netcrust promotes numeric variables to f64
-            // and exposes no string/char read at all, so a character
-            // variable (WRF's `Times`, ERA5's `expver`) cannot be dumped
-            // here.  Say which variable and why.
-            if matches!(
-                variable.dtype(),
-                netcrust::DataType::Char | netcrust::DataType::String
-            ) {
-                return Err(format!(
-                    "{name} is a {:?} variable; rw_netcdf dumps numeric \
-                     variables only, because the vendored netcrust reader \
-                     promotes to f64 and exposes no character read.  Select \
-                     a numeric variable, or read this one another way.",
-                    variable.dtype()
-                ));
+            if matches!(variable.dtype(), netcrust::DataType::Char | netcrust::DataType::String) {
+                if transformed {
+                    return Err(format!("{name}: unit conversion requires a numeric variable"));
+                }
+                let shape = variable.shape();
+                let values = character_bytes(&file, variable)?;
+                let filename = format!("{index:04}.chars");
+                fs::write(out_dir.join(&filename), values)
+                    .map_err(|error| format!("cannot write {name}: {error}"))?;
+                records.push(DumpRecord {
+                    name: name.clone(), filename, shape,
+                    dimensions: variable.dimensions().iter().map(|d| d.name().to_string()).collect(),
+                    dtype: "|S1", units: None, times: None, cf: CfApplied::default(),
+                    unit_transform: None,
+                });
+                continue;
             }
         } else if !file.has_hdf5_dataset(name) {
             return Err(format!("variable not found in {}: {name}", path.display()));
@@ -624,6 +680,18 @@ fn dump(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
                 }
             }
         }
+        // Explicit quantity-unit conversion follows CF unpacking. Masked values
+        // stay NaN; overflow of a finite input is a named decoding refusal.
+        if transformed {
+            for value in &mut values {
+                if value.is_finite() {
+                    *value = *value * unit_transform[0] + unit_transform[1];
+                    if !value.is_finite() {
+                        return Err(format!("{name}: unit conversion overflowed a finite value"));
+                    }
+                }
+            }
+        }
         let cf = CfApplied {
             missing_count,
             ..cf
@@ -675,6 +743,7 @@ fn dump(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
             units,
             times,
             cf,
+            unit_transform: transformed.then_some(unit_transform),
         });
     }
 
@@ -1509,16 +1578,16 @@ mod tests {
     }
 
     #[test]
-    fn char_variables_are_refused_by_name_and_missing_ones_by_name() {
+    fn char_variables_preserve_bytes_and_missing_variables_are_refused() {
         let dir = scratch("dump-refusals");
         let source = dir.join("packed.nc");
         write_packed_classic(&source);
         let out = dir.join("out");
 
-        let refusal = dump(&source, &out, &["label".into()], true, true)
-            .expect_err("char variables cannot be dumped");
-        assert!(refusal.contains("label"), "{refusal}");
-        assert!(refusal.contains("numeric"), "{refusal}");
+        dump(&source, &out, &["label".into()], true, true).expect("dump characters");
+        assert_eq!(fs::read(out.join("0000.chars")).unwrap(), b"abcd");
+        let metadata = read_metadata(&out);
+        assert_eq!(record(&metadata, "label")["dtype"], "|S1");
 
         let missing = dump(&source, &out, &["absent".into()], true, true)
             .expect_err("unknown variables are refused");

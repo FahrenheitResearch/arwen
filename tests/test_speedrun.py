@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -305,6 +306,135 @@ def test_a_matching_compile_mode_passes():
     speedrun.assert_compile_mode("cold", measured="cold",
                                  cache_dir=Path("/tmp/x"), entries=0,
                                  entries_for_this_card=0)
+
+
+# ---------------------------------------------------------------------------
+# --cold-cache-dir empties a kernel cache, or refuses; it never deletes
+# ---------------------------------------------------------------------------
+
+def _kernel_cache(directory: Path, *, entries: int = 3) -> Path:
+    """A directory shaped like a real CuPy kernel cache.
+
+    CuPy writes ``<40-hex SHA1 of the blob><blob>`` and the blob is a CUDA
+    ELF whose ``e_flags`` carries the SM version in its second byte --
+    :mod:`gpuwm.kernel_compile_notice` decodes exactly that, so the census
+    this door consults reads these files as sm_120 entries.
+    """
+
+    directory.mkdir(parents=True, exist_ok=True)
+    blob = b"\x7fELF" + b"\0" * 44 + struct.pack("<I", 120 << 8)
+    for index in range(entries):
+        (directory / f"{index:040x}").write_bytes(b"0" * 40 + blob)
+    return directory
+
+
+def test_the_cold_cache_flag_refuses_a_directory_that_is_not_a_kernel_cache(
+        tmp_path):
+    """The negative control: staged GRIB is not a cache, and survives.
+
+    ``--cold-cache-dir`` used to be ``if path.exists(): shutil.rmtree(path)``
+    on whatever the flag was handed, after ``.expanduser().resolve()``.  A
+    reader already typing ``--staged ./staged`` on the same line who typed
+    ``--cold-cache-dir .`` deleted the working directory, staged bytes and
+    all, from a flag that reads as a cache knob.  Nothing about it may
+    delete a directory this door cannot identify.
+    """
+
+    from gpuwm import speedrun_cli
+
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    payload = staged / "gfs.t12z.pgrb2.0p25.f000.grib2"
+    payload.write_bytes(b"GRIB" + b"\x00" * 4096)
+
+    with pytest.raises(speedrun.ColdCacheRefusal) as excinfo:
+        speedrun_cli._prepare_cold_cache(staged)
+
+    assert payload.is_file(), "the staged input was deleted"
+    assert payload.stat().st_size == 4100
+    text = str(excinfo.value)
+    assert str(staged) in text
+    assert "Nothing was deleted" in text
+
+
+def test_the_cold_cache_flag_refuses_the_inherited_cache_by_name(
+        tmp_path, monkeypatch):
+    """The help text's promise, made a property of the code.
+
+    The flag exists to AVOID the inherited cache, which is exactly why
+    ``--cold-cache-dir ~/.cupy/kernel_cache`` is the mistake it invites --
+    and that path is cache-shaped, so the shape test alone would empty it.
+    """
+
+    from gpuwm import speedrun_cli
+
+    inherited = _kernel_cache(tmp_path / "kernel_cache")
+    monkeypatch.setenv("CUPY_CACHE_DIR", str(inherited))
+
+    with pytest.raises(speedrun.ColdCacheRefusal) as excinfo:
+        speedrun_cli._prepare_cold_cache(inherited)
+
+    assert len(list(inherited.iterdir())) == 3
+    assert "inherited" in str(excinfo.value)
+
+
+def test_the_cold_cache_flag_refuses_the_working_directory(
+        tmp_path, monkeypatch):
+    """``--cold-cache-dir .`` -- the typo the flag invites."""
+
+    from gpuwm import speedrun_cli
+
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "staged").mkdir()
+    monkeypatch.chdir(work)
+
+    with pytest.raises(speedrun.ColdCacheRefusal) as excinfo:
+        speedrun_cli._prepare_cold_cache(Path(".").expanduser().resolve())
+
+    assert (work / "staged").is_dir()
+    assert "working directory" in str(excinfo.value)
+
+
+def test_the_cold_cache_flag_refuses_the_home_directory(
+        tmp_path, monkeypatch):
+    """``--cold-cache-dir ~`` resolves to $HOME before rmtree sees it."""
+
+    from gpuwm import speedrun_cli
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "notes.txt").write_text("keep me", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    with pytest.raises(speedrun.ColdCacheRefusal) as excinfo:
+        speedrun_cli._prepare_cold_cache(Path("~").expanduser().resolve())
+
+    assert (home / "notes.txt").read_text(encoding="utf-8") == "keep me"
+    assert "home directory" in str(excinfo.value)
+
+
+def test_the_cold_cache_flag_still_empties_a_real_kernel_cache(tmp_path):
+    """The positive half: a directory it CAN identify is emptied.
+
+    A guard against fixing the delete by refusing everything -- the flag
+    has a job, and both published records were set with it.
+    """
+
+    from gpuwm import speedrun_cli
+
+    cache = _kernel_cache(tmp_path / "cold")
+    assert speedrun_cli._prepare_cold_cache(cache) == cache
+    assert list(cache.iterdir()) == []
+
+    absent = tmp_path / "not" / "there"
+    assert speedrun_cli._prepare_cold_cache(absent) == absent
+    assert absent.is_dir()
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert speedrun_cli._prepare_cold_cache(empty) == empty
 
 
 # ---------------------------------------------------------------------------
@@ -745,3 +875,33 @@ def test_speedrun_md_exists_and_names_every_course():
     for course_id in speedrun.load_course_table():
         assert course_id in text
     assert "THE CLOCK STARTS WHEN THE BYTES ARE STAGED" in text
+
+
+def test_cold_cache_preserves_mixed_kernel_and_user_data(tmp_path):
+    from gpuwm import speedrun_cli
+
+    cache = _kernel_cache(tmp_path / "mixed")
+    payload = cache / "weather-data.grib2"
+    payload.write_bytes(b"GRIB-user-input")
+    before = {entry.name: entry.read_bytes() for entry in cache.iterdir()}
+    with pytest.raises(speedrun.ColdCacheRefusal, match="Nothing was deleted"):
+        speedrun_cli._prepare_cold_cache(cache)
+    assert {entry.name: entry.read_bytes() for entry in cache.iterdir()} == before
+
+
+def test_cold_cache_does_not_recursively_delete_a_new_arrival(tmp_path, monkeypatch):
+    from gpuwm import kernel_compile_notice, speedrun_cli
+
+    cache = _kernel_cache(tmp_path / "changing")
+    original = kernel_compile_notice.scan_kernel_cache
+
+    def changed(path):
+        result = original(path)
+        (path / "new-user-data.txt").write_text("preserve", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(kernel_compile_notice, "scan_kernel_cache", changed)
+    with pytest.raises(speedrun.ColdCacheRefusal, match="changed during validation"):
+        speedrun_cli._prepare_cold_cache(cache)
+    assert (cache / "new-user-data.txt").read_text(encoding="utf-8") == "preserve"
+    assert len(list(cache.iterdir())) == 4

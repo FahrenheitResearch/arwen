@@ -1,16 +1,4 @@
-"""``StreamingRefused`` reaches the user as a refusal, not a traceback.
-
-Named breakage: :class:`gpuwm.core.streaming.StreamingRefused` subclasses
-``RuntimeError``, and the CLI boundary's ``RuntimeError`` clause re-raised
-anything it did not recognise -- so a ``[tiles] mode = "on"`` config over
-a nested tree, which ``build_experiment`` refuses at config validation
-(``gpuwm/experiment.py``, via ``refuse_streamed_nests``), escaped every
-door except run-plan as a ~20-line Python traceback with the remedy
-paragraph buried at the bottom.  Reproduced on the published 2.5.8 and
-2.6.0 wheels.  The boundary now prints the refusal on the same contract
-as every documented refusal: the message, exit 2, no traceback, remedy
-intact.
-"""
+"""Concrete streaming operation refusals survive the public CLI boundary."""
 
 from __future__ import annotations
 
@@ -20,7 +8,7 @@ from gpuwm import cli
 
 
 def _nested_tiles_on_config(tmp_path):
-    """A nested tree whose ``[tiles] mode = "on"`` the loader refuses."""
+    """A streamed child requiring the unimplemented moving-store rebuild."""
     path = tmp_path / "nested_tiles_on.toml"
     path.write_text(textwrap.dedent("""\
         [experiment]
@@ -50,8 +38,17 @@ def _nested_tiles_on_config(tmp_path):
 
         [tiles]
         mode = "on"
+        store = "device"
         tile_nx = 96
         tile_ny = 96
+
+        [relocation]
+        enabled = true
+        grid_id = 2
+        [[relocation.move]]
+        at_seconds = 120.0
+        di_parent_cells = 1
+        dj_parent_cells = 0
 
         [[domain]]
         grid_id = 1
@@ -86,8 +83,8 @@ def test_check_prints_the_streaming_refusal_and_exits_2(tmp_path, capsys):
     err = capsys.readouterr().err
     assert code == 2, err
     # The core's own sentence, verbatim subject matter: the refusal names
-    # the concrete breakage (a coupling edge with both ends streamed).
-    assert "BOTH ends streamed" in err
+    # the concrete missing moving-store operation.
+    assert "moving a streamed child" in err and "host store" in err
     # The remedy paragraph survives at the boundary instead of being
     # buried under stack frames.
     assert "remedy" in err

@@ -1,0 +1,11 @@
+# Acoustic flux ownership across domain turns
+
+`ww_pp` is the acoustic perturbation eta mass flux. It cannot be shared across sequential domains: `advance_mu_th` and its mapped-grid variant leave the forced outer column untouched, while `accumulate_sumflux` reads that column. It must therefore survive a restart and remain owned by its domain. Interior columns are diagnosed before use; this does not establish the same property for the forced frame.
+
+The shared dycore workspace previously included this checkpoint-only field in its rebuilt inventory. Differently shaped domains received overlapping prefix views. A CPU allocation witness changed240 of462 parent entries by writing only the child. An actual mixed-radiation public tree then exposed differing acoustic checkpoint arrays across resident, streamed and resumed execution.
+
+The fix allocates the existing array per domain and excludes it from the shareable rebuilt set. The `acoustic/ww_pp` checkpoint key, restoration, physical-state digest exclusion and relocation identity rules remain unchanged. No kernel arithmetic, initialization value or single-domain allocation changes.
+
+The common preflight inventory now prices each domain allocation. For the retained four-domain fixture, sum4*(nz+1)*ny*nx is172,200,200 B and the old maximum is72,000,000 B. Physical residency increases by100,200,200 B; the1.15 allocation bound increases by115,230,230 B. Single-domain allocation and ordinary tile buffers constructed without a shared dycore workspace are unchanged. When N equal-size tile buffers explicitly share that workspace, they now retain N independent flux arrays instead of one: the physical increase is (N-1)*4*(nz+1)*ny*nx bytes. The same sum-minus-maximum rule applies to unequal buffer shapes. The reserve test takes the difference of the two separately rounded3% retention terms.
+
+`tests/test_acoustic_carrier_lifetime.py` proves domain isolation and the actual forced-frame read through CUDA acoustic update plus sumflux, with forced/unforced and mapped/unmapped controls. Existing restart and preflight gates retain complete classification and exact allocation coverage. The actual local public-tree comparison is kept in the release evidence; it must include the acoustic array, not remove it to achieve equality.

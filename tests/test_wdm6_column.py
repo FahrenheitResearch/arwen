@@ -141,6 +141,48 @@ def _water_substance(state):
 
 
 @requires_gpu
+@pytest.mark.parametrize("file_ccn", [0., 7.5e9])
+def test_shipped_wrfinput_ccn_restore_reaches_real_gpu_microphysics(tmp_path, file_ccn):
+    import cupy as cp
+    import netCDF4
+    from gpuwm.core.microphysics import apply as mp_apply
+    from gpuwm.config import soil_layer_count
+    from gpuwm.ingest import wrfinput
+    from wrf_input_fixtures import _small_wrfinput
+
+    cfg, state, _driver = _wdm6_case()
+    mapping = wrfinput._active_moisture_map(cfg)
+    original = {name: cp.asnumpy(getattr(state, name)).copy() for name in mapping.values()}
+    path = tmp_path / "wrfinput_d01"
+    _small_wrfinput(path, nz=cfg.nz, ny=cfg.ny, nx=cfg.nx, moisture_names=tuple(mapping))
+    with netCDF4.Dataset(path, "a") as dataset:
+        dataset.createDimension("soil_layers_stag", soil_layer_count(cfg))
+        dataset.MP_PHYSICS = 16
+        dataset.SF_SURFACE_PHYSICS = cfg.sf_surface_physics
+        dataset.BL_PBL_PHYSICS = cfg.bl_pbl_physics
+        for wrf_name, state_name in mapping.items():
+            dataset[wrf_name][:] = file_ccn if wrf_name == "QNCCN" else original[state_name]
+    restored = wrfinput.read_wrfinput(path, cfg=cfg, require_complete=False,
+        expected_dimensions={"west_east":cfg.nx, "west_east_stag":cfg.nx+1,
+            "south_north":cfg.ny, "south_north_stag":cfg.ny+1,
+            "bottom_top":cfg.nz, "bottom_top_stag":cfg.nz+1,
+            "soil_layers_stag":soil_layer_count(cfg)})
+    # Real decoder -> shipped moisture restore -> actual device allocation.
+    wrfinput._restore_active_moisture(state, restored.raw, cfg, cp)
+    expected = np.full(state.nn.shape, np.float32(cfg.wdm6_ccn_conc))
+    np.testing.assert_array_equal(cp.asnumpy(state.nn), expected)
+    np.testing.assert_array_equal(cp.asnumpy(state.nn0), expected)
+    for name in original.keys() - {"nn"}:
+        np.testing.assert_array_equal(cp.asnumpy(getattr(state, name)), original[name])
+    assert mp_apply(state, cfg, float(cfg.dt)) is not None
+    cp.cuda.runtime.deviceSynchronize()
+    for name in mapping.values():
+        field = cp.asnumpy(getattr(state, name))
+        assert np.isfinite(field).all(), name
+        assert (field >= 0).all(), name
+
+
+@requires_gpu
 def test_wdm6_column_produces_a_physically_admissible_state():
     import cupy as cp
 

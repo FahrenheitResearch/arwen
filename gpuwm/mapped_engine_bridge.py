@@ -30,9 +30,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import subprocess
-from collections.abc import Sequence as _ABCSequence
+from collections.abc import Mapping as _ABCMapping, Sequence as _ABCSequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -864,6 +865,83 @@ def _fields_tile_stream(document: Mapping[str, object],
     return cursor == declared_bytes
 
 
+class _FieldwiseFrame:
+    """Validated scalar/axis metadata plus individually verified field reads."""
+
+    def __init__(self, metadata, fields):
+        self._metadata = metadata
+        self.fields = fields
+
+    def __getattr__(self, name):
+        return getattr(self._metadata, name)
+
+    def validate_remaining_fields(self):
+        # The materialized route checks even fields the regular join ignores.
+        # Keep that integrity guarantee without retaining those arrays.
+        for name in self.fields:
+            if name not in self.fields.verified:
+                self.fields[name]
+
+    @property
+    def atmospheric_window(self):
+        return self.fields.window
+
+    @property
+    def source_pressure_hpa(self):
+        return self.fields.pressure_hpa
+
+    def with_atmospheric_window(self, window):
+        fields = self.fields
+        return _FieldwiseFrame(self._metadata, _FrameFields(
+            fields._frames, fields._index, self._metadata, window=window))
+
+
+class _FrameFields(_ABCMapping):
+    def __init__(self, frames, index, metadata, *, window=None):
+        self._frames, self._index, self._metadata = frames, index, metadata
+        self.window = window
+        self.pressure_hpa = None
+        self._names = frames.field_names(index)
+        if len(set(self._names)) != len(self._names):
+            raise ValueError(f"frame {index} repeats a canonical field name")
+        self.verified = set()
+
+    def __iter__(self):
+        return iter(self._names)
+
+    def __len__(self):
+        return len(self._names)
+
+    def __contains__(self, name):
+        return name in self._names
+
+    def __getitem__(self, name):
+        from gpuwm.mapped_source import _validate_mapped_field_grid, _validate_mapped_field_shape
+        from gpuwm.ingest.atmospheric_window import CANONICAL_ATMOSPHERIC_FIELDS
+
+        metadata = self._metadata
+        if self.window is not None and name in CANONICAL_ATMOSPHERIC_FIELDS:
+            if self.window.source_shape != (metadata.latitude.size, metadata.longitude.size):
+                raise ValueError("atmospheric window differs from its original source grid")
+            document = next(row for row in self._frames._entries[self._index]["fields"]
+                            if str(row["name"]) == name)
+            original_shape = document.get("original", {}).get("shape", document["shape"])
+            _validate_mapped_field_shape(name, document["axes"], original_shape,
+                                        metadata.latitude.size, metadata.longitude.size,
+                                        metadata.vertical_values.size)
+            field, levels = self._frames._read_window_field(self._index, document, self.window)
+            if levels is not None:
+                self.pressure_hpa = levels
+            self.verified.add(name)
+            return field
+        field = self._frames.field(self._index, name)
+        _validate_mapped_field_grid(field, metadata.latitude.size,
+                                    metadata.longitude.size,
+                                    metadata.vertical_values.size)
+        self.verified.add(name)
+        return field
+
+
 class FrameSet(_ABCSequence):
     """The frames of a written frameset, materialized ONE at a time.
 
@@ -886,6 +964,11 @@ class FrameSet(_ABCSequence):
     arrays are the same little-endian float64 values the memory-mapped
     read produced, verified against the same per-field digests.
 
+    The regular-snapshot join can instead request ``fieldwise_frame``.
+    It uses the same metadata constructor and field checks while the owning
+    snapshot copies one field at a time. This avoids a whole decoded frame
+    alongside its packed copy; the stream representation is unchanged.
+
     What moves is WHEN a corrupt array is caught.  It is caught when its
     frame is read rather than before the first frame is built.  No
     number from an unverified frame reaches a preparation either way --
@@ -894,12 +977,13 @@ class FrameSet(_ABCSequence):
     consumes them all.
     """
 
-    def __init__(self, directory: str | Path, *, retain: object = None):
+    def __init__(self, directory: str | Path, *, retain: object = None, full_fallback=None):
+        from gpuwm.ingest.atmospheric_window import WINDOWED_FRAMESET_SCHEMA
         self._directory = Path(directory)
         document = json.loads(
             (self._directory / FRAMES_DOCUMENT).read_text(encoding="utf-8"))
         schema = str(document.get("schema"))
-        if schema != FRAMESET_SCHEMA:
+        if schema not in (FRAMESET_SCHEMA, WINDOWED_FRAMESET_SCHEMA):
             raise ValueError(
                 f"{self._directory / FRAMES_DOCUMENT} declares schema "
                 f"{schema!r}; this release reads {FRAMESET_SCHEMA!r}")
@@ -933,6 +1017,12 @@ class FrameSet(_ABCSequence):
                     f"{self._stream} hashes to {observed}; the frameset "
                     f"declares {stream_document['sha256']}")
         self._entries = list(document["frames"])
+        self._full_fallback = full_fallback
+        self._full_frames = None
+        for index, entry in enumerate(self._entries):
+            if "atmospheric_window" in entry and schema != WINDOWED_FRAMESET_SCHEMA:
+                raise ValueError("a window descriptor cannot overload the full frameset schema")
+            self._published_window(index)
         #: The object whose lifetime the stream file needs -- the
         #: engine's scratch directory handle.  Held here so the frames
         #: cannot outlive the bytes they read from.
@@ -978,16 +1068,15 @@ class FrameSet(_ABCSequence):
     def field_digest(self, index: int, name: str) -> str:
         """The declared ``_array_sha256`` of one field.
 
-        The same digest :meth:`_materialize` checks the read bytes
-        against, so a receipt built from it names the array that
-        actually reached the preparation -- an engine that wrote a
-        digest its own bytes do not match refuses when the frame is
-        read, before the tree is published.
+        A full payload is checked against this digest at materialization.
+        A windowed payload carries the writer's completely validated original
+        field digest and its own retained-payload digest separately, preserving
+        source receipts while the retained bytes are checked when read.
         """
 
         for field in self._entries[index]["fields"]:
             if str(field["name"]) == name:
-                return str(field["sha256"])
+                return str(field.get("original", field)["sha256"])
         raise KeyError(f"frame {index} carries no field {name!r}")
 
     def field_count(self, index: int) -> int:
@@ -995,6 +1084,26 @@ class FrameSet(_ABCSequence):
 
     def header(self, index: int) -> Any:
         return _header_from_document(self._entries[index]["header"])
+
+    def coordinates(self, index: int):
+        """The source axes, verified against their declared byte digests.
+
+        Axes live in the frameset document. A grid-consistency check should
+        not read every atmospheric field to obtain these few kilobytes.
+        """
+        entry = self._entries[index]
+        return (_axis_values(entry["latitude"], "latitude"),
+                _axis_values(entry["longitude"], "longitude"))
+
+    def pressure_levels_hpa(self, index):
+        """Original full-plane medians without retaining a full atmosphere."""
+        from gpuwm.ingest.atmospheric_window import AtmosphericWindow
+        frame = self.fieldwise_frame(index)
+        shape = (len(frame.latitude), len(frame.longitude))
+        window = self._published_window(index) or AtmosphericWindow(shape, (0, 1), (0, 1))
+        frame = frame.with_atmospheric_window(window)
+        frame.fields["air_pressure"]
+        return frame.source_pressure_hpa
 
     # -- one frame's arrays ----------------------------------------
 
@@ -1011,6 +1120,8 @@ class FrameSet(_ABCSequence):
             return self._cached_frame.fields[name]
         for document in self._entries[index]["fields"]:
             if str(document["name"]) == name:
+                if "original" in document:
+                    return self._original_frames().field(index, name)
                 return self._read_field(index, document)
         raise KeyError(f"frame {index} carries no field {name!r}")
 
@@ -1053,7 +1164,11 @@ class FrameSet(_ABCSequence):
             raise ValueError(
                 f"frame {index} field {name!r} hashes to {observed}; "
                 f"the frameset declares {declared}")
-        return CanonicalField(
+        # This reader allocated the buffer, verified its complete bytes, and
+        # retains no alias. Move it into immutable field ownership instead of
+        # transiently owning a second full float64 field in the constructor.
+        buffer.release()
+        return CanonicalField._take_owned_stream_array(
             name=name,
             units=str(document["units"]),
             axes=tuple(str(axis) for axis in document["axes"]),
@@ -1065,14 +1180,167 @@ class FrameSet(_ABCSequence):
                 str(value) for value in document["source_references"]),
         )
 
-    def _materialize(self, index: int) -> Any:
+    def _read_window_field(self, index, document, window):
+        """Verify the complete field using one plane; retain declared support.
+
+        This is the same frames.f64 codec, not another weather decoder. Every
+        byte still contributes to the original field hash and value checks.
+        Pressure's original full-plane median is computed before discarding
+        any columns, so a hybrid ladder cannot acquire a local median.
+        """
+        import numpy as np
+        from gpuwm.mapped_source import CanonicalField
+
+        if "original" in document:
+            return self._read_published_window_field(index, document, window)
+
+        name = str(document["name"])
+        shape = tuple(int(n) for n in document["shape"])
+        start, length = int(document["offset"]), int(document["length"])
+        if str(document["dtype"]) != STREAM_DTYPE:
+            raise ValueError(f"frame {index} field {name!r} declares an invalid dtype")
+        if tuple(document["axes"]) != ("vertical", "y", "x") or len(shape) != 3:
+            raise ValueError(f"{name} atmospheric window requires vertical/y/x axes")
+        if shape[1:] != window.source_shape or min(shape) < 1:
+            raise ValueError(f"{name} atmospheric window differs from the source shape")
+        if length != 8 * shape[0] * shape[1] * shape[2]:
+            raise ValueError(f"frame {index} field {name!r} declares inconsistent bytes")
+        if start < 0 or start + length > self._declared_bytes:
+            raise ValueError(f"frame {index} field {name!r} claims bytes outside the stream")
+        digest = hashlib.sha256()
+        digest.update(STREAM_DTYPE.encode("ascii") + b"\0")
+        digest.update(json.dumps(shape).encode("ascii") + b"\0")
+        values = np.empty((shape[0], *window.shape), dtype=np.float64)
+        plane = np.empty(shape[1:], dtype=np.dtype(STREAM_DTYPE))
+        levels = np.empty(shape[0], dtype=np.float64) if name == "air_pressure" else None
+        missing = 0
+        infinity = False
+        invalid_pressure = False
+        with self._stream.open("rb") as handle:
+            handle.seek(start)
+            for level in range(shape[0]):
+                buffer = memoryview(plane).cast("B")
+                count = handle.readinto(buffer)
+                if count != len(buffer):
+                    raise ValueError(f"frame {index} field {name!r} ends before its declared bytes")
+                digest.update(buffer)
+                buffer.release()
+                missing += int(np.isnan(plane).sum())
+                infinity |= bool(np.isinf(plane).any())
+                if levels is not None:
+                    invalid_pressure |= bool(np.any(plane <= 0.0) or not np.isfinite(plane).all())
+                    levels[level] = np.median(plane) / 100.0
+                values[level] = plane[slice(*window.rows), slice(*window.columns)]
+        observed = digest.hexdigest()
+        if observed != str(document["sha256"]):
+            raise ValueError(f"frame {index} field {name!r} hashes to {observed}; "
+                             f"the frameset declares {document['sha256']}")
+        if infinity:
+            raise ValueError(f"{name} contains infinity")
+        if missing != int(document["missing_count"]):
+            raise ValueError(f"{name} missing count does not match its data")
+        if invalid_pressure:
+            raise ValueError("mapped air pressure must be finite and positive")
+        if levels is not None:
+            levels.setflags(write=False)
+        return CanonicalField._take_owned_stream_array(
+            name=name, units=str(document["units"]), axes=tuple(document["axes"]),
+            location=str(document["location"]), staggering=str(document["staggering"]),
+            values=values, missing_count=int(np.isnan(values).sum()),
+            source_references=tuple(str(v) for v in document["source_references"])), levels
+
+    def _published_window(self, index):
+        from gpuwm.ingest.atmospheric_window import (
+            AtmosphericWindow, CANONICAL_ATMOSPHERIC_FIELDS, WINDOW_SCHEMA,
+        )
+        entry = self._entries[index]
+        row = entry.get("atmospheric_window")
+        if row is None:
+            if any("original" in field for field in entry["fields"]):
+                raise ValueError("windowed payload lacks its explicit support descriptor")
+            return None
+        if row.get("schema") != WINDOW_SCHEMA or row.get("operation") != \
+                "regular-parabolic-bilinear-original-fp32-support":
+            raise ValueError("unknown atmospheric window representation/operation")
+        window = AtmosphericWindow(tuple(row["source_shape"]), tuple(row["rows"]), tuple(row["columns"]))
+        lat, lon = self.coordinates(index)
+        if window.source_shape != (len(lat), len(lon)):
+            raise ValueError("published atmospheric window changed the original source axes")
+        fields = row["fields"]
+        if (not fields or len(fields) != len(set(fields))
+                or not set(fields).issubset(CANONICAL_ATMOSPHERIC_FIELDS)):
+            raise ValueError("invalid published atmospheric field inventory")
+        actual = {str(field["name"]) for field in entry["fields"] if "original" in field}
+        if set(fields) != actual:
+            raise ValueError("window descriptor and retained payload inventories differ")
+        for field in entry["fields"]:
+            if "original" not in field:
+                continue
+            original = field["original"]
+            shape = tuple(original["shape"])
+            if (len(shape) != 3 or any(type(n) is not int or n < 1 for n in shape)
+                    or shape[1:] != window.source_shape
+                    or tuple(field["shape"]) != (shape[0], *window.shape)
+                    or tuple(field["axes"]) != ("vertical", "y", "x")
+                    or original.get("validation") != "complete-canonical-field-before-window-v1"
+                    or len(str(original.get("sha256", ""))) != 64
+                    or any(c not in "0123456789abcdef" for c in str(original.get("sha256", "")))
+                    or type(original.get("missing_count")) is not int
+                    or not 0 <= original["missing_count"] <= math.prod(shape)):
+                raise ValueError("published atmospheric payload lost its original field contract")
+        if "air_pressure" in fields:
+            levels = _axis_values(entry["original_pressure_hpa"], "original pressure")
+            if len(levels) != len(entry["vertical_values"]["values"]) or not (levels > 0).all():
+                raise ValueError("published atmosphere changed its full-source pressure ladder")
+        return window
+
+    def _original_frames(self):
+        if self._full_frames is None:
+            if self._full_fallback is None:
+                raise ValueError("this windowed frameset needs its retained original source provider for a full read")
+            full = self._full_fallback()
+            if (not isinstance(full, FrameSet) or len(full) != len(self)
+                    or full.valid_times != self.valid_times or full.members != self.members
+                    or full.mapping_sha256s != self.mapping_sha256s):
+                raise ValueError("full frameset fallback changed its source clock or identity")
+            for index in range(len(self)):
+                if (full._published_window(index) is not None
+                        or full.header(index) != self.header(index)
+                        or any(full._entries[index][key] != self._entries[index][key]
+                               for key in ("grid_fingerprint", "latitude", "longitude", "source_cycle",
+                                           "vertical_kind", "vertical_units", "vertical_values"))):
+                    raise ValueError("full frameset fallback changed its original geometry")
+                if full.input_sha256(index) != self.input_sha256(index):
+                    raise ValueError("full frameset fallback changed its original input authority")
+                if any(full.field_digest(index, name) != self.field_digest(index, name)
+                       for name in self.field_names(index)):
+                    raise ValueError("full frameset fallback changed its original field identity")
+            self._full_frames = full
+        return self._full_frames
+
+    def _read_published_window_field(self, index, document, requested):
+        import numpy as np
+        from dataclasses import replace
+        window = self._published_window(index)
+        if not window.contains_window(requested):
+            full = self._original_frames()
+            original = next(row for row in full._entries[index]["fields"]
+                            if row["name"] == document["name"])
+            return full._read_window_field(index, original, requested)
+        field = self._read_field(index, document)
+        if requested != window:
+            values = field.values[:,
+                requested.rows[0] - window.rows[0]:requested.rows[1] - window.rows[0],
+                requested.columns[0] - window.columns[0]:requested.columns[1] - window.columns[0]]
+            field = replace(field, values=values, missing_count=int(np.isnan(values).sum()))
+        levels = (_axis_values(self._entries[index]["original_pressure_hpa"], "original pressure")
+                  if document["name"] == "air_pressure" else None)
+        return field, levels
+
+    def _frame_metadata(self, index, fields):
         from gpuwm.mapped_source import MappedSourceFrame
 
         entry = self._entries[index]
-        fields = {
-            str(document["name"]): self._read_field(index, document)
-            for document in entry["fields"]
-        }
         return MappedSourceFrame(
             valid_time=datetime.fromisoformat(str(entry["valid_time"])),
             member=None if entry["member"] is None else str(entry["member"]),
@@ -1088,6 +1356,15 @@ class FrameSet(_ABCSequence):
             grid_fingerprint=str(entry["grid_fingerprint"]),
             header=_header_from_document(entry["header"]),
         )
+
+    def _materialize(self, index: int) -> Any:
+        if self._published_window(index) is not None:
+            return self._original_frames()[index]
+        fields = {
+            str(document["name"]): self._read_field(index, document)
+            for document in self._entries[index]["fields"]
+        }
+        return self._frame_metadata(index, fields)
 
     def __getitem__(self, index):
         if isinstance(index, slice):
@@ -1108,11 +1385,41 @@ class FrameSet(_ABCSequence):
         self._cached_frame = frame
         return frame
 
+    def fieldwise_frame(self, index):
+        """Read validated metadata now and verify each field when requested.
+
+        No arrays are borrowed from the cache: the regular snapshot owns its
+        copies. Other consumers may retain a materialized frame independently.
+        """
+        position = int(index)
+        if position < 0:
+            position += len(self._entries)
+        if not 0 <= position < len(self._entries):
+            raise IndexError(position)
+        self._cached_index = None
+        self._cached_frame = None
+        metadata = self._frame_metadata(position, {})
+        return _FieldwiseFrame(metadata, _FrameFields(self, position, metadata))
+
+    def release_frame(self, frame) -> None:
+        """Drop only this cached frame after a consumer has packed its own copy.
+
+        Other consumers keep their references; stream files and the engine
+        scratch owner remain available for later validated reads.
+        """
+        if self._cached_frame is frame:
+            self._cached_index = None
+            self._cached_frame = None
+
     def close(self) -> None:
         """Drop the retained frame and the engine scratch it read from."""
 
         self._cached_index = None
         self._cached_frame = None
+        if self._full_frames is not None:
+            self._full_frames.close()
+            self._full_frames = None
+        self._full_fallback = None
         retain, self._retain = self._retain, None
         cleanup = getattr(retain, "cleanup", None)
         if cleanup is not None:
@@ -1135,8 +1442,14 @@ class _FrameSetSlice(_ABCSequence):
                 self._frames, self._positions[index])
         return self._frames[self._positions[int(index)]]
 
+    def fieldwise_frame(self, index):
+        return self._frames.fieldwise_frame(self._positions[int(index)])
 
-def open_frameset(directory: str | Path, *, retain: object = None) -> FrameSet:
+    def release_frame(self, frame) -> None:
+        self._frames.release_frame(frame)
+
+
+def open_frameset(directory: str | Path, *, retain: object = None, full_fallback=None) -> FrameSet:
     """Open a frameset directory without reading a single array.
 
     ``retain`` is the object whose lifetime the stream file needs -- the
@@ -1144,7 +1457,7 @@ def open_frameset(directory: str | Path, *, retain: object = None) -> FrameSet:
     over instead of deleting the bytes the frames still read from.
     """
 
-    return FrameSet(directory, retain=retain)
+    return FrameSet(directory, retain=retain, full_fallback=full_fallback)
 
 
 def read_frameset(directory: str | Path) -> tuple[Any, ...]:
@@ -1179,6 +1492,7 @@ def engine_command(
     contributing_mappings: Mapping[str, Path] | None = None,
     input_manifest: Path | None = None,
     input_manifest_sha256: str | None = None,
+    atmospheric_window: bool = False,
 ) -> list[str]:
     """The exact argv the seam contract defines, in a stable order.
 
@@ -1222,6 +1536,8 @@ def engine_command(
     if input_manifest is not None:
         command.extend(("--input-manifest", str(input_manifest)))
         command.extend(("--input-manifest-sha256", str(input_manifest_sha256)))
+    if atmospheric_window:
+        command.extend(("--atmospheric-window", "stdio"))
     return command
 
 
@@ -1314,6 +1630,7 @@ def run_engine(
     input_manifest_sha256: str | None = None,
     engine: str | Path | None = None,
     on_progress: Callable[[dict], None] | None = None,
+    atmospheric_grids=(),
 ) -> dict[str, object]:
     """Run one engine subcommand; refusals become Python exceptions.
 
@@ -1331,6 +1648,18 @@ def run_engine(
     """
 
     binary = Path(engine) if engine is not None else require_engine()
+    grids = tuple(atmospheric_grids)
+    window_enabled = False
+    if grids:
+        from gpuwm.ingest.atmospheric_window import WINDOW_SCHEMA
+        capability = subprocess.run([str(binary), "capabilities"],
+                                    capture_output=True, text=True, check=False)
+        if capability.returncode != 0:
+            raise RuntimeError(f"mapped writer capability query failed: {capability.stderr.strip()}")
+        declared = json.loads(capability.stdout)
+        if declared.get("schema") != CAPABILITIES_SCHEMA:
+            raise ValueError("mapped writer returned an unknown capability schema")
+        window_enabled = declared.get("features", {}).get("atmospheric_window") == WINDOW_SCHEMA
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     input_list = output / "inputs.txt"
@@ -1358,10 +1687,14 @@ def run_engine(
         input_manifest=(
             None if input_manifest is None else Path(input_manifest)),
         input_manifest_sha256=input_manifest_sha256,
+        atmospheric_window=window_enabled,
     )
-    completed = subprocess.run(
-        command, capture_output=True, text=True, check=False,
-    )
+    if window_enabled:
+        completed = _run_window_engine(command, grids)
+    else:
+        completed = subprocess.run(
+            command, capture_output=True, text=True, check=False,
+        )
     if completed.returncode != 0:
         refusal = parse_refusal(completed.stderr or "")
         if refusal is None:
@@ -1380,6 +1713,44 @@ def run_engine(
         "stdout": completed.stdout or "",
         "command": command,
     }
+
+
+def _run_window_engine(command, grids):
+    """One owned process; metadata replies precede atmospheric publication.
+
+    Stderr goes to a real file so decoder diagnostics cannot deadlock the
+    request/reply pipes. Any parent-side error closes/kills and reaps only this
+    engine. Ordinary full invocations retain their existing subprocess path.
+    """
+    import tempfile
+    from gpuwm.ingest.atmospheric_window import window_request_response
+    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as errors:
+        child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=errors, text=True, encoding="utf-8")
+        lines = []
+        try:
+            for line in child.stdout:
+                lines.append(line)
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict) and event.get("schema") == PROGRESS_SCHEMA \
+                        and event.get("event") == "atmospheric_window_request":
+                    response = window_request_response(event, grids)
+                    child.stdin.write(json.dumps(response, allow_nan=False) + "\n")
+                    child.stdin.flush()
+            code = child.wait()
+        except BaseException:
+            if child.poll() is None:
+                child.kill()
+            child.wait()
+            raise
+        finally:
+            child.stdin.close()
+            child.stdout.close()
+        errors.seek(0)
+        return subprocess.CompletedProcess(command, code, "".join(lines), errors.read())
 
 
 __all__ = [

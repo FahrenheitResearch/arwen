@@ -121,7 +121,7 @@ RRTMGP_TOA_PRESSURE_PA = 1.005183574463
 WRF_LW_UPPER_DELTA_P_PA = 400.0
 MAX_RRTMGP_LAYERS = 128
 MAX_LEGACY_LONGWAVE_LAYERS = 128
-MAX_LEGACY_SHORTWAVE_LAYERS = 64
+MAX_LEGACY_SHORTWAVE_LAYERS = None  # runtime-sized workspace; no fixed SW layer ceiling
 
 
 def rrtmgp_above_model_layer_counts(

@@ -1,0 +1,1312 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:arwen:case-catalog:v1",
+  "title": "ArWen case catalog v1",
+  "description": "Catalog data only. The ArWen loader additionally checks UTC, duplicate IDs, tier containment/order and native scientific contracts. Bounds describe required study coverage; native fitting reports actual grid extents.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "arwen.case-catalog.v1"
+    },
+    "catalog": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "provenance": {
+          "type": "array"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "version",
+        "provenance"
+      ],
+      "additionalProperties": false
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/case"
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "catalog",
+    "cases"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,127}$",
+      "not": {
+        "enum": [
+          "con",
+          "prn",
+          "aux",
+          "nul",
+          "com1",
+          "com2",
+          "com3",
+          "com4",
+          "com5",
+          "com6",
+          "com7",
+          "com8",
+          "com9",
+          "lpt1",
+          "lpt2",
+          "lpt3",
+          "lpt4",
+          "lpt5",
+          "lpt6",
+          "lpt7",
+          "lpt8",
+          "lpt9"
+        ]
+      }
+    },
+    "bounds": {
+      "type": "object",
+      "properties": {
+        "south": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "west": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "north": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "east": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        }
+      },
+      "required": [
+        "south",
+        "west",
+        "north",
+        "east"
+      ],
+      "additionalProperties": false
+    },
+    "tier": {
+      "type": "object",
+      "properties": {
+        "bounds_degrees": {
+          "$ref": "#/$defs/bounds"
+        },
+        "root_dx_km": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "nest_ratios": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 2
+          }
+        },
+        "run_hours": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "nz": {
+          "type": "integer",
+          "minimum": 4
+        },
+        "history_interval_s": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "physics_profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "native_overrides": {
+          "$ref": "#/$defs/nativeOverrides"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "domain_intents": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "grid_id": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "center_lat": {
+                "type": "number",
+                "minimum": -90,
+                "maximum": 90
+              },
+              "center_lon": {
+                "type": "number",
+                "minimum": -180,
+                "maximum": 180
+              },
+              "dx_km": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "width_km": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "height_km": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            },
+            "required": [
+              "grid_id",
+              "center_lat",
+              "center_lon",
+              "dx_km",
+              "width_km",
+              "height_km"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "root_dx_km",
+        "nest_ratios",
+        "run_hours"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "bounds_degrees"
+          ]
+        },
+        {
+          "required": [
+            "domain_intents"
+          ]
+        }
+      ]
+    },
+    "sourceOption": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cycle_utc": {
+          "type": "string",
+          "minLength": 1
+        },
+        "forecast_start_hour": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "notes": {
+          "type": "string"
+        },
+        "references": {
+          "type": "array"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "tier_schedules": {
+          "type": "object",
+          "properties": {
+            "lower": {
+              "type": "object",
+              "properties": {
+                "cycle_utc": {
+                  "type": "string"
+                },
+                "run_hours": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "forecast_start_hour": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "metadata": {
+                  "type": "object"
+                },
+                "cadence_hours": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "cycle_utc",
+                "run_hours"
+              ],
+              "additionalProperties": false
+            },
+            "recommended": {
+              "type": "object",
+              "properties": {
+                "cycle_utc": {
+                  "type": "string"
+                },
+                "run_hours": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "forecast_start_hour": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "metadata": {
+                  "type": "object"
+                },
+                "cadence_hours": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "cycle_utc",
+                "run_hours"
+              ],
+              "additionalProperties": false
+            },
+            "upper": {
+              "type": "object",
+              "properties": {
+                "cycle_utc": {
+                  "type": "string"
+                },
+                "run_hours": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "forecast_start_hour": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "metadata": {
+                  "type": "object"
+                },
+                "cadence_hours": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "cycle_utc",
+                "run_hours"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "lower",
+            "recommended",
+            "upper"
+          ],
+          "additionalProperties": false
+        },
+        "cadence_hours": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tier_geometry": {
+          "type": "object",
+          "properties": {
+            "lower": {
+              "$ref": "#/$defs/tier"
+            },
+            "recommended": {
+              "$ref": "#/$defs/tier"
+            },
+            "upper": {
+              "$ref": "#/$defs/tier"
+            }
+          },
+          "required": [
+            "lower",
+            "recommended",
+            "upper"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "cycle_utc"
+      ],
+      "additionalProperties": false
+    },
+    "case": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "synthetic": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "event": {
+          "type": "object",
+          "properties": {
+            "start_utc": {
+              "type": "string",
+              "minLength": 1
+            },
+            "end_utc": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "start_utc",
+            "end_utc"
+          ],
+          "additionalProperties": false
+        },
+        "source_options": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/sourceOption"
+          }
+        },
+        "recommended_source_option": {
+          "$ref": "#/$defs/id"
+        },
+        "tiers": {
+          "type": "object",
+          "properties": {
+            "lower": {
+              "$ref": "#/$defs/tier"
+            },
+            "recommended": {
+              "$ref": "#/$defs/tier"
+            },
+            "upper": {
+              "$ref": "#/$defs/tier"
+            }
+          },
+          "required": [
+            "lower",
+            "recommended",
+            "upper"
+          ],
+          "additionalProperties": false
+        },
+        "physics_profile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "native_overrides": {
+          "$ref": "#/$defs/nativeOverrides"
+        },
+        "recommendations": {
+          "type": "array"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "references": {
+          "type": "array"
+        },
+        "research_recipe_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "event_kind",
+        "source_options",
+        "tiers"
+      ],
+      "additionalProperties": false
+    },
+    "nativeOverrides": {
+      "type": "object",
+      "properties": {
+        "shared": {
+          "type": "object",
+          "properties": {
+            "base_temp": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "bl_mynn_closure": {
+              "type": "number",
+              "enum": [
+                2.5,
+                2.6,
+                3.0
+              ]
+            },
+            "bl_mynn_cloudmix": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "bl_mynn_cloudpdf": {
+              "type": "integer",
+              "enum": [
+                0,
+                1,
+                2
+              ]
+            },
+            "bl_mynn_edmf": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "bl_mynn_edmf_mom": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "bl_mynn_edmf_tke": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "bl_mynn_mixlength": {
+              "type": "integer",
+              "enum": [
+                0,
+                1,
+                2
+              ]
+            },
+            "bl_mynn_mixqt": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "bl_mynn_mixscalars": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "bl_mynn_output": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "bl_mynn_tkeadvect": {
+              "type": "boolean"
+            },
+            "bl_pbl_physics": {
+              "type": "integer"
+            },
+            "bldt": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "c_s": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "clos_choice": {
+              "type": "integer",
+              "enum": [
+                0
+              ]
+            },
+            "cu_physics": {
+              "type": "integer"
+            },
+            "cudt_minutes": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "damp_opt": {
+              "type": "integer",
+              "enum": [
+                0,
+                3
+              ]
+            },
+            "dampcoef": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "diff_6th_factor": {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.0
+            },
+            "diff_6th_opt": {
+              "type": "integer",
+              "enum": [
+                0,
+                1,
+                2
+              ]
+            },
+            "diff_6th_slopeopt": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "diff_6th_thresh": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "dveg": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "emdiv": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "epssm": {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.0
+            },
+            "etac": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "flag_sm_adj": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "h_sca_adv_order": {
+              "type": "integer",
+              "enum": [
+                2,
+                5
+              ]
+            },
+            "hybrid_opt": {
+              "type": "integer",
+              "enum": [
+                0,
+                1,
+                2
+              ]
+            },
+            "hypsometric_opt": {
+              "type": "integer",
+              "enum": [
+                1,
+                2
+              ]
+            },
+            "icloud": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "icloud_bl": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "isfflx": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "isftcflx": {
+              "type": "integer",
+              "enum": [
+                0,
+                1,
+                2
+              ]
+            },
+            "ishallow": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "iz0tlnd": {
+              "type": "integer",
+              "enum": [
+                0,
+                1,
+                2
+              ]
+            },
+            "khdif": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "km_opt": {
+              "type": "integer"
+            },
+            "kvdif": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "map_proj": {
+              "type": "integer",
+              "enum": [
+                0,
+                1,
+                2,
+                3
+              ]
+            },
+            "moist": {
+              "type": "boolean"
+            },
+            "moist_adv_opt": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "moist_cq": {
+              "type": "boolean"
+            },
+            "moist_mix6_off": {
+              "type": "boolean"
+            },
+            "morr_rimed_ice": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "mosaic_lu": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "mosaic_soil": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "mp_physics": {
+              "type": "integer"
+            },
+            "mp_tend_lim": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "nest_microphysics_transition": {
+              "type": "string",
+              "enum": [
+                "same-scheme-only",
+                "mp8-to-mp18-mass-diagnosed-v1",
+                "mp-edge-mass-diagnosed-v1"
+              ]
+            },
+            "no_mp_heating": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "noahmp_acc_dt": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "noahmp_output": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "nssl_2moment_on": {
+              "type": "integer",
+              "enum": [
+                -1,
+                1
+              ]
+            },
+            "nssl_3moment": {
+              "not": {},
+              "description": "The NSSL three-moment extension (nssl_3moment=1, which WRF rewrites to 2 with hail on at module_check_a_mundo.F:3457-3463) adds the qzr/qzg/qzh reflectivity moments and the ipconc>=6 branch throughout the scheme. The ported family is the two-moment ipconc=5 branch only; gpuwm/core/nssl2_contract.py refuses the combination at validation."
+            },
+            "nssl_ccn_on": {
+              "type": "integer",
+              "enum": [
+                -1,
+                0,
+                1
+              ]
+            },
+            "nssl_density_on": {
+              "type": "integer",
+              "enum": [
+                -1,
+                1,
+                2
+              ]
+            },
+            "nssl_hail_on": {
+              "type": "integer",
+              "enum": [
+                -1,
+                0,
+                1
+              ]
+            },
+            "num_soil_layers": {
+              "type": "integer",
+              "enum": [
+                4,
+                9
+              ]
+            },
+            "o3input": {
+              "type": "integer",
+              "enum": [
+                0,
+                2
+              ]
+            },
+            "open_x": {
+              "type": "boolean"
+            },
+            "open_y": {
+              "type": "boolean"
+            },
+            "opt_alb": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_btr": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_crop": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_crs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_frz": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_gla": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_inf": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_infdv": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_irr": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_irrm": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_pedo": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_rad": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_rsf": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_run": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_sfc": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_snf": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_soil": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_stc": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_tbot": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_tdrn": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opt_thcnd": {
+              "type": "integer",
+              "enum": [
+                1,
+                2
+              ]
+            },
+            "ra_lw_physics": {
+              "type": "integer"
+            },
+            "ra_physics": {
+              "type": "integer",
+              "enum": [
+                0,
+                4,
+                90
+              ]
+            },
+            "ra_rrtmg_variant": {
+              "type": "string",
+              "enum": [
+                "rte-rrtmgp",
+                "rrtmg_legacy"
+              ]
+            },
+            "ra_sw_physics": {
+              "type": "integer"
+            },
+            "radt": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "radt_minutes": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "rdlai2d": {
+              "type": "boolean"
+            },
+            "rdmaxalb": {
+              "type": "boolean"
+            },
+            "relax_zone": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "seaice_albedo_default": {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.0
+            },
+            "sf_sfclay_physics": {
+              "type": "integer"
+            },
+            "sf_surface_physics": {
+              "type": "integer"
+            },
+            "smdiv": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "soiltstep": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "spec_exp": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "spec_zone": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "spp_lsm": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "swrad_scat": {
+              "type": "number",
+              "minimum": 0.0
+            },
+            "terrain_opt": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "time_step_sound": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "top_lid": {
+              "type": "boolean"
+            },
+            "use_mp_re": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "usemonalb": {
+              "type": "boolean"
+            },
+            "w_damping": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "wif_input_opt": {
+              "not": {},
+              "description": "This selects WRF's WIF metgrid aerosol input stream. gpuwm has no WIF ingest and no QNWFA/QNIFA initial/boundary carrier. NOTE the asymmetry recorded on thompson-aerosol-mp28: WRF's real.exe FATALs mp_physics=28 with wif_input_opt=0 (dyn_em/module_initialize_real.F:2734-2736) while gpuwm runs it on thompson_init's synthetic profile."
+            },
+            "wrf_rrtmg_compatibility": {
+              "type": "string",
+              "enum": [
+                "none",
+                "wrf-rrtmg-4-4-to-rte-rrtmgp-v2",
+                "wrf-rrtmg-4-4-legacy-v1"
+              ]
+            },
+            "wsm6_hail_opt": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "ysu_topdown_pblmix": {
+              "type": "integer",
+              "enum": [
+                0,
+                1
+              ]
+            },
+            "zdamp": {
+              "type": "number",
+              "minimum": 0.0
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "domains": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "grid_id": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "settings": {
+                "type": "object",
+                "properties": {
+                  "bl_pbl_physics": {
+                    "type": "integer"
+                  },
+                  "bldt": {
+                    "type": "number",
+                    "minimum": 0.0
+                  },
+                  "c_s": {
+                    "type": "number",
+                    "minimum": 0.0
+                  },
+                  "clos_choice": {
+                    "type": "integer",
+                    "enum": [
+                      0
+                    ]
+                  },
+                  "cu_physics": {
+                    "type": "integer"
+                  },
+                  "cudt_minutes": {
+                    "type": "number",
+                    "minimum": 0.0
+                  },
+                  "dampcoef": {
+                    "type": "number",
+                    "minimum": 0.0
+                  },
+                  "diff_6th_factor": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                  },
+                  "diff_6th_opt": {
+                    "type": "integer",
+                    "enum": [
+                      0,
+                      1,
+                      2
+                    ]
+                  },
+                  "diff_6th_slopeopt": {
+                    "type": "integer",
+                    "enum": [
+                      0,
+                      1
+                    ]
+                  },
+                  "diff_6th_thresh": {
+                    "type": "number",
+                    "minimum": 0.0
+                  },
+                  "emdiv": {
+                    "type": "number",
+                    "minimum": 0.0
+                  },
+                  "epssm": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0
+                  },
+                  "h_sca_adv_order": {
+                    "type": "integer",
+                    "enum": [
+                      2,
+                      5
+                    ]
+                  },
+                  "isfflx": {
+                    "type": "integer",
+                    "enum": [
+                      0,
+                      1
+                    ]
+                  },
+                  "ishallow": {
+                    "type": "integer",
+                    "enum": [
+                      0,
+                      1
+                    ]
+                  },
+                  "khdif": {
+                    "type": "number",
+                    "minimum": 0.0
+                  },
+                  "km_opt": {
+                    "type": "integer"
+                  },
+                  "kvdif": {
+                    "type": "number",
+                    "minimum": 0.0
+                  },
+                  "moist": {
+                    "type": "boolean"
+                  },
+                  "moist_adv_opt": {
+                    "type": "integer",
+                    "enum": [
+                      0,
+                      1
+                    ]
+                  },
+                  "moist_cq": {
+                    "type": "boolean"
+                  },
+                  "moist_mix6_off": {
+                    "type": "boolean"
+                  },
+                  "mp_physics": {
+                    "type": "integer"
+                  },
+                  "nest_microphysics_transition": {
+                    "type": "string",
+                    "enum": [
+                      "same-scheme-only",
+                      "mp8-to-mp18-mass-diagnosed-v1",
+                      "mp-edge-mass-diagnosed-v1"
+                    ]
+                  },
+                  "o3input": {
+                    "type": "integer",
+                    "enum": [
+                      0,
+                      2
+                    ]
+                  },
+                  "ra_lw_physics": {
+                    "type": "integer"
+                  },
+                  "ra_physics": {
+                    "type": "integer",
+                    "enum": [
+                      0,
+                      4,
+                      90
+                    ]
+                  },
+                  "ra_rrtmg_variant": {
+                    "type": "string",
+                    "enum": [
+                      "rte-rrtmgp",
+                      "rrtmg_legacy"
+                    ]
+                  },
+                  "ra_sw_physics": {
+                    "type": "integer"
+                  },
+                  "radt": {
+                    "type": "number",
+                    "minimum": 0.0
+                  },
+                  "radt_minutes": {
+                    "type": "number",
+                    "minimum": 0.0
+                  },
+                  "sf_sfclay_physics": {
+                    "type": "integer"
+                  },
+                  "smdiv": {
+                    "type": "number",
+                    "minimum": 0.0
+                  },
+                  "spec_exp": {
+                    "type": "number",
+                    "minimum": 0.0
+                  },
+                  "swrad_scat": {
+                    "type": "number",
+                    "minimum": 0.0
+                  },
+                  "use_mp_re": {
+                    "type": "integer",
+                    "enum": [
+                      0,
+                      1
+                    ]
+                  },
+                  "wrf_rrtmg_compatibility": {
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "wrf-rrtmg-4-4-to-rte-rrtmgp-v2",
+                      "wrf-rrtmg-4-4-legacy-v1"
+                    ]
+                  },
+                  "zdamp": {
+                    "type": "number",
+                    "minimum": 0.0
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "grid_id",
+              "settings"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  }
+}

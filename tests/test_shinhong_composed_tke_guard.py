@@ -195,8 +195,8 @@ def test_driver_disposition_repairs_passengers_and_keeps_tendencies_fatal(
         _shinhong_passenger_advisory=False,
         pbl_tendencies=FakeTendencies(),
         last_ysu=None,
-        gf_rthblten=None,
-        gf_rqvblten=None,
+        gf_rthblten=np.zeros(shape, F),
+        gf_rqvblten=np.zeros(shape, F),
     )
     # THE REAL SEAM, BOUND TO THE FAKE: a due call ends at
     # PhysicsDriver._couple_pbl_slot, which couples the raw rates AND

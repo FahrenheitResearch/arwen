@@ -297,19 +297,47 @@ def test_all_four_sites_emit_through_the_same_builder_object():
 
 
 def test_all_four_sites_name_a_declared_emission_site():
+    def declared_sites(expression):
+        if isinstance(expression, ast.Name) and expression.id == "emission_site":
+            return set()  # The common front-door wrapper forwards this argument.
+        if isinstance(expression, ast.IfExp):
+            return declared_sites(expression.body) | declared_sites(expression.orelse)
+        assert isinstance(expression, ast.Constant), ast.dump(expression)
+        assert isinstance(expression.value, str), ast.dump(expression)
+        return {expression.value}
+
     used = set()
     for name in EMITTERS:
         path = REPO / (name.replace(".", "/") + ".py")
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        if name == "gpuwm.runtime":
+            owners = {node.name: node for node in tree.body
+                      if isinstance(node, ast.FunctionDef)}
+            calls = [node for node in ast.walk(owners["run_experiment"])
+                     if isinstance(node, ast.Call)
+                     and isinstance(node.func, ast.Name)
+                     and node.func.id == "_run_built_experiment"]
+            assert {any(kw.arg == "prepared_steppers" for kw in call.keywords)
+                    for call in calls} == {True, False}
+            labels = [kw.value for node in ast.walk(owners["_run_built_experiment"])
+                      if isinstance(node, ast.Call)
+                      and isinstance(node.func, ast.Name)
+                      and node.func.id == "_emit_front_door_capsule"
+                      for kw in node.keywords if kw.arg == "emission_site"]
+            expected = ast.parse(
+                "'runtime.run_experiment:single-domain' if prepared_steppers "
+                "is not None else 'runtime.run_experiment:domain-tree'",
+                mode="eval").body
+            assert len(labels) == 1
+            assert ast.dump(labels[0]) == ast.dump(expected)
         for node in ast.walk(tree):
             if (isinstance(node, ast.Call)
                     and isinstance(node.func, ast.Name)
                     and node.func.id in {"emit_run_capsule",
                                          "_emit_front_door_capsule"}):
                 for keyword in node.keywords:
-                    if (keyword.arg == "emission_site"
-                            and isinstance(keyword.value, ast.Constant)):
-                        used.add(keyword.value.value)
+                    if keyword.arg == "emission_site":
+                        used.update(declared_sites(keyword.value))
     assert used == set(EMISSION_SITES), used
 
 
@@ -439,33 +467,42 @@ def test_the_schema_requires_the_cpu_half_and_states_the_gpu_half():
 # --- F3-AC3: the digest observes the trajectory, it does not join it -------
 
 def test_the_digest_is_computed_after_the_final_sync_and_the_writer_drain():
-    """Structural: on both run exits the digest follows sync and drain."""
+    """Both execution owners finish I/O and sync before either state digest."""
     source = (REPO / "gpuwm" / "runtime.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     functions = {node.name: node for node in ast.walk(tree)
                  if isinstance(node, ast.FunctionDef)}
-    for name in ("integrate_prepared_case", "run_experiment"):
+    # run_experiment delegates ordinary singles to integrate_prepared_case,
+    # and both adaptive singles and domain trees to _run_built_experiment.
+    delegated = {node.func.id for node in ast.walk(functions["run_experiment"])
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+    assert {"integrate_prepared_case", "_run_built_experiment"} <= delegated
+
+    def digest_lines(body):
+        return [node.lineno for node in ast.walk(body)
+                if isinstance(node, ast.Call)
+                and ((isinstance(node.func, ast.Name)
+                      and node.func.id == "canonical_state_digest")
+                     or (isinstance(node.func, ast.Attribute)
+                         and node.func.attr == "canonical_digest"))]
+
+    assert not digest_lines(functions["run_experiment"])
+    for name in ("integrate_prepared_case", "_run_built_experiment"):
         body = functions[name]
         sync = [node.lineno for node in ast.walk(body)
                 if isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "deviceSynchronize"]
-        digest = [node.lineno for node in ast.walk(body)
-                  if isinstance(node, ast.Call)
-                  and isinstance(node.func, ast.Name)
-                  and node.func.id == "canonical_state_digest"]
+        digest = digest_lines(body)
         assert sync and digest, name
         assert min(digest) > max(sync), (
             f"{name} computes the digest at line {min(digest)}, at or before "
             f"its final device synchronization at {max(sync)}")
-    drain = [node.lineno for node in ast.walk(functions["run_experiment"])
+    drain = [node.lineno for node in ast.walk(functions["_run_built_experiment"])
              if isinstance(node, ast.Call)
              and isinstance(node.func, ast.Attribute)
              and node.func.attr == "drain"]
-    digest = [node.lineno for node in ast.walk(functions["run_experiment"])
-              if isinstance(node, ast.Call)
-              and isinstance(node.func, ast.Name)
-              and node.func.id == "canonical_state_digest"]
+    digest = digest_lines(functions["_run_built_experiment"])
     assert drain and min(digest) > max(drain)
 
 

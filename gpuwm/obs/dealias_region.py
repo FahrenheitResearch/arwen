@@ -1,3 +1,22 @@
+# ======================================================================
+# THIRD-PARTY NOTICE.  This module drives a library ported from
+# third-party work.  ArWen distributes it under the Apache License 2.0;
+# the notice below belongs to that upstream.  Full texts are in the
+# repository NOTICE and in the licenses/ directory.
+#
+#   region-global-dealias, the Rust library this module drives, is a port
+#   of Py-ART's dealias_region_based.
+#
+#       Copyright (c) 2013, UChicago Argonne, LLC.  All rights reserved.
+#
+#   Py-ART is BSD 3-Clause with an added U.S. Department of Energy
+#   government-rights paragraph (contract DE-AC02-06CH11357) requiring
+#   that a modified derivative be clearly marked so as not to be confused
+#   with the version available from ANL.  This port is such a derivative
+#   and is named region_global_dealias, not Py-ART.  Full text in
+#   licenses/LICENSE-PyART-Argonne-BSD-3-Clause.txt and in the port's own
+#   tree at tools/region_global_dealias/PYART-LICENSE.txt.
+# ======================================================================
 """The region-global dealiasing engine: Drew's Rust crate behind the seam.
 
 :mod:`gpuwm.obs.dealias` said it in its own docstring -- ``dealias_sweep``

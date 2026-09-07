@@ -21,12 +21,13 @@ import json
 import shlex
 import itertools
 import shutil
+import signal
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from gpuwm import go_cli, run_stamp
+from gpuwm import go_cli, provenance, run_stamp
 from gpuwm.cli import main as cli_main
 
 
@@ -48,6 +49,53 @@ def _stage_root(command) -> Path:
     raise AssertionError(
         f"no run-tree flag in {command!r}; the fake cannot tell which "
         "run folder this stage was composed for")
+
+
+def _startup_notices(command: str) -> tuple:
+    """Matchers for the stderr lines a healthy front door is documented
+    to write, one predicate per line.
+
+    Two, both intended and both matched by their exact text so anything
+    else on stderr still fails the test that calls this:
+
+    * the provenance banner, ``gpuwm <door>: <banner>``, which
+      :func:`gpuwm.provenance_gate.announce` prints once per process so
+      a log names the tree that ran.  It is prefixed by whichever door
+      this process opened FIRST (a test that authors its config through
+      ``gpuwm domain`` sees ``gpuwm domain:``), and whichever test opened
+      it has consumed it, so a test run alone sees the line and a test
+      run after its neighbours does not;
+    * the Ctrl-C notice ``gpuwm.cli`` prints for a long-running command
+      when the process inherited SIGINT ignored, which is every test
+      process a shell started in the background (``nohup``, ``&``).
+    """
+
+    banner = provenance.resolve().banner()
+
+    def is_banner(line: str) -> bool:
+        door, sep, text = line.partition(": ")
+        return (bool(sep) and text == banner and door.startswith("gpuwm ")
+                and " " not in door[len("gpuwm "):])
+
+    notices = [is_banner]
+    if signal.getsignal(signal.SIGINT) is signal.SIG_IGN:
+        interrupt_notice = (
+            "warning: SIGINT is set to ignore in this process, so Ctrl-C "
+            f"cannot stop `gpuwm {command}`; send SIGTERM to stop it")
+        notices.append(lambda line: line == interrupt_notice)
+    return tuple(notices)
+
+
+def _without_startup_notices(err: str, command: str) -> str:
+    """``err`` minus the documented startup notices, each at most once."""
+
+    lines = err.splitlines()
+    for is_notice in _startup_notices(command):
+        for index, line in enumerate(lines):
+            if is_notice(line):
+                del lines[index]
+                break
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +206,9 @@ def _a_card_whose_free_vram_this_file_decides(monkeypatch):
     """
 
     from gpuwm.core import preflight
+    from types import SimpleNamespace
+    from gpuwm import doctor
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: SimpleNamespace(status="verified"))
 
     monkeypatch.setattr(
         preflight, "device_memory_probe_subprocess",
@@ -179,33 +230,79 @@ def test_the_pinned_card_is_what_the_gate_reads(gfs_config, tmp_path):
 # Refusals: never half-orchestrate
 # ---------------------------------------------------------------------------
 
-def test_an_era5_case_data_config_is_refused_toward_gpuwm_run(tmp_path,
-                                                              capsys):
+def test_wizard_era5_config_uses_the_shared_declared_input_launch(tmp_path, capsys):
     config = _emit(tmp_path, "era5", source="era5")
-    assert cli_main(["go", str(config), "--dry-run"]) == 2
-    error = capsys.readouterr().err
-    assert "[case_data]" in error
-    assert "gpuwm run" in error
+    before = config.read_bytes()
+    capsys.readouterr()  # Separate wizard output from the launch preview.
+    output = tmp_path / "era5 launch"
+    assert cli_main(["go", str(config), "--outdir", str(output), "--dry-run"]) == 0
+    printed = capsys.readouterr().out
+    assert "go: era5, 1 domain(s); prepare -> forecast -> render" in printed
+    assert "Run: gpuwm go " in printed
+    assert "fetch ->" not in printed
+    assert config.read_bytes() == before
+    assert not output.exists()
 
 
-def test_a_domain_tree_is_refused_toward_its_own_runner(tmp_path, capsys):
+def test_a_domain_tree_dry_runs_and_step_five_is_the_tree_runner(
+        tmp_path, capsys, monkeypatch):
+    """`gpuwm go` runs a nest ladder; it used to refuse one.
+
+    The refusal it replaces told a reader with a two-domain config to
+    "re-emit the config without --ladder" -- throw the nests away --
+    on the premise that "the single-domain runner this chain drives
+    takes one".  The chain already drove the other runner: the plan's
+    own ``runner`` key is the tree module here, and ``_run_forecast``
+    already composed ``tree_forecast_command`` on that arm.
+    """
+
+    # A dry run prints commands and spends nothing, but `go` still
+    # resolves the decoder bridge before it prints -- pinned here so
+    # this test reads the dispatch and not the build state of the box.
+    bridge = tmp_path / "gfs_grib2_bridge"
+    bridge.write_bytes(b"stub")
+    monkeypatch.setattr(go_cli, "resolve_bridge", lambda: bridge)
+
     config = _emit(tmp_path, "tree", ladder="12-3")
-    assert cli_main(["go", str(config), "--dry-run"]) == 2
-    error = capsys.readouterr().err
-    assert "2 domains" in error
-    # The runner is named by its INSTALLED spelling: a wheel has no
-    # tools/ directory, so a tools/-path pointer names a file the
-    # reader provably does not have.
-    assert "gpuwm-prepared-tree-forecast" in error
-    assert go_cli.MANUAL_CHAIN in error
-    # The one-command re-emit remedy is the wizard's own default now,
-    # so the remedy says so instead of trailing off in "...".
-    assert "without --ladder" in error
-    assert "..." not in error.split("remedy:")[1]
+    assert cli_main(["go", str(config), "--outdir", str(tmp_path / "go"),
+                     "--dry-run"]) == 0
+    printed = capsys.readouterr().out
+    # Step 5 is the TREE runner, module form, with the one preparation
+    # receipt it binds -- not the single-domain runner's three digests.
+    step5 = printed.split("5. forecast")[1].split("6. render")[0]
+    assert go_cli.TREE_RUNNER_MODULE in step5
+    assert "--preparation-receipt-sha256" in step5
+    assert "--prepared-content-sha256" not in step5
+    assert go_cli.RUNNER_MODULE not in step5
+    # And the plan itself resolves to that runner with no keyword.
+    plan = go_cli.plan_from_config(config, outdir=tmp_path / "plan")
+    assert plan["domains"] == 2
+    assert plan["runner"] == go_cli.TREE_RUNNER_MODULE
+
+
+def test_the_legacy_stage_composer_refuses_other_input_formats(tmp_path):
+    """The public door dispatches first; the GFS decoder stays format-bound."""
+
+    tree = _emit(tmp_path, "tree2", ladder="12-3")
+    era5 = tmp_path / "era5-tree.toml"
+    era5.write_text(
+        tree.read_text(encoding="utf-8")
+        + '\n[case_data]\nschema = "gpuwm.case.v1"\n', encoding="utf-8")
+    with pytest.raises(go_cli.GoRefusal) as refusal:
+        go_cli.plan_from_config(era5, outdir=tmp_path / "o1")
+    assert "[case_data]" in str(refusal.value)
+
+    hrrr = tmp_path / "hrrr-tree.toml"
+    hrrr.write_text(
+        tree.read_text(encoding="utf-8").replace(
+            'source = "gfs"', 'source = "hrrr"'), encoding="utf-8")
+    with pytest.raises(go_cli.GoRefusal) as refusal:
+        go_cli.plan_from_config(hrrr, outdir=tmp_path / "o2")
+    assert "--source hrrr" in str(refusal.value)
 
 
 def test_the_default_emission_is_what_the_default_runner_accepts(
-        tmp_path, capsys):
+        tmp_path, capsys, monkeypatch):
     """Default wizard output piped to the default runner composes.
 
     The 4090 user-zero stress run (2026-08-03) followed the obvious
@@ -221,6 +318,7 @@ def test_the_default_emission_is_what_the_default_runner_accepts(
     suite runs as written (owner ruling 2026-07-31), so nothing here
     needs one.
     """
+    monkeypatch.setattr(go_cli, "resolve_bridge", lambda: tmp_path / "bridge")
 
     out = tmp_path / "default.toml"
     assert cli_main(["domain", "--point=35.3,-97.5", "--card", "24gb",
@@ -237,16 +335,19 @@ def test_the_default_emission_is_what_the_default_runner_accepts(
 
 
 def test_a_config_with_no_shipped_profile_runs_with_status_stated(
-        tmp_path, capsys):
+        tmp_path, capsys, monkeypatch):
     """Converted (owner ruling 2026-07-31): the chain's last stage runs
     the config's own suite as written, so the first stage plans it
     instead of refusing it -- with the verification status stated in one
     sentence and no --physics-profile invented anywhere."""
+    monkeypatch.setattr(go_cli, "resolve_bridge", lambda: tmp_path / "bridge")
 
     config = _emit_unnamed_suite(tmp_path, "default_suite")
     assert cli_main(["go", str(config), "--dry-run"]) == 0
     captured = capsys.readouterr()
-    assert captured.err == ""
+    # Nothing on stderr beyond the two startup notices the door is
+    # documented to write: no refusal, no warning about the profile.
+    assert _without_startup_notices(captured.err, "go") == "", captured.err
     assert "supported, not yet WRF-verified" in captured.out
     assert "--physics-profile" not in captured.out
 
@@ -277,12 +378,12 @@ def test_a_config_without_a_fetch_table_is_refused(tmp_path, capsys,
     assert "no [fetch] table" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("source", ["hrrr", "gdas", "era5"])
-def test_only_the_documented_source_is_orchestrated(source):
-    """Scope stated as a property of the other routes, not a preference."""
-
-    assert go_cli.ORCHESTRATED_SOURCES == ("gfs",)
-    assert source not in go_cli.ORCHESTRATED_SOURCES
+@pytest.mark.parametrize("source,chain", [("gfs", "prepared:go"),
+                                           ("hrrr", "prepared:hrrr"),
+                                           ("icon-eu", "prepared:staged")])
+def test_native_launch_uses_the_registered_chain(source, chain):
+    from gpuwm.runplan import prepared_chain_for_source
+    assert prepared_chain_for_source(source) == chain
 
 
 # ---------------------------------------------------------------------------
@@ -475,7 +576,7 @@ def test_go_forwards_a_profile_only_when_the_whole_config_is_it(tmp_path):
     0`` below the gray zone, tighter ``radt``, the ``diff_6th_factor``
     ladder) the chain composed a stage-1 command guaranteed to refuse
     its own config.  `gpuwm run-plan`'s prepared route dispatches
-    exactly this shape (``go_main(..., allow_tree=True)``).  Before the
+    exactly this shape (``go_main``, the same call `gpuwm go` makes).  Before the
     stage-1 refusal existed the same derivation was WORSE, not fine: the
     materializer silently flattened those nests onto the profile, which
     is the ledger #90 defect itself.
@@ -488,8 +589,7 @@ def test_go_forwards_a_profile_only_when_the_whole_config_is_it(tmp_path):
     """
 
     tree = _emit(tmp_path, "tree", ladder="12-3")
-    plan = go_cli.plan_from_config(tree, outdir=tmp_path / "go",
-                                   allow_tree=True)
+    plan = go_cli.plan_from_config(tree, outdir=tmp_path / "go")
     assert plan["profile"] is None
     assert "--physics-profile" not in go_cli.authority_command(plan)
     # And stage 1 ACCEPTS what go now composes, publishing the config's
@@ -512,7 +612,7 @@ def test_go_forwards_a_profile_only_when_the_whole_config_is_it(tmp_path):
     shutil.copy(tree.with_suffix(".namelist.wps"),
                 agreeing.with_suffix(".namelist.wps"))
     agreeing_plan = go_cli.plan_from_config(
-        agreeing, outdir=tmp_path / "go-agree", allow_tree=True)
+        agreeing, outdir=tmp_path / "go-agree")
     assert agreeing_plan["profile"] == PROFILE
 
     # The single-domain emission was never affected and still binds.
@@ -786,7 +886,7 @@ def test_a_succeeding_chain_reports_one_line_per_stage(tmp_path, capsys,
     def fake_run(command, **kwargs):
         # Materialize the artifacts the relay reads back.
         if "--author-front-door-manifest" in command:
-            manifest = plan_root / "data" / "gfs-input-manifest.json"
+            manifest = Path(command[command.index("--out") + 1]) / "gfs-input-manifest.json"
             manifest.parent.mkdir(parents=True, exist_ok=True)
             manifest.write_text("{}", encoding="utf-8")
         if "--output-root" in command:
@@ -854,7 +954,7 @@ def test_a_passing_stages_note_survives_the_output_capture(
 
     def fake_run(command, **kwargs):
         if "--author-front-door-manifest" in command:
-            manifest = plan_root / "data" / "gfs-input-manifest.json"
+            manifest = Path(command[command.index("--out") + 1]) / "gfs-input-manifest.json"
             manifest.parent.mkdir(parents=True, exist_ok=True)
             manifest.write_text("{}", encoding="utf-8")
         if "--output-root" in command:
@@ -894,7 +994,7 @@ def test_explain_replays_every_stage(tmp_path, capsys, monkeypatch,
 
     def fake_run(command, **kwargs):
         if "--author-front-door-manifest" in command:
-            manifest = plan_root / "data" / "gfs-input-manifest.json"
+            manifest = Path(command[command.index("--out") + 1]) / "gfs-input-manifest.json"
             manifest.parent.mkdir(parents=True, exist_ok=True)
             manifest.write_text("{}", encoding="utf-8")
         if "--output-root" in command:
@@ -980,15 +1080,231 @@ def test_the_cwd_relative_fetch_out_key_is_not_trusted(tmp_path, gfs_config):
 
     recorded = tomllib.loads(
         gfs_config.read_text(encoding="utf-8"))["fetch"]["out"]
-    assert recorded.startswith("..") or Path(recorded).is_absolute()
+    assert recorded and recorded != str(tmp_path / "go" / "data")
 
     plan = go_cli.plan_from_config(gfs_config, outdir=tmp_path / "go")
-    assert plan["data"] == tmp_path / "go" / "data"
+    assert plan["data"].parent == tmp_path / "go" / "downloads"
 
     override = tmp_path / "already-fetched"
     plan = go_cli.plan_from_config(gfs_config, outdir=tmp_path / "go",
                                    data_dir=override)
     assert plan["data"] == override
+
+
+def _record_cached_request(folder, request):
+    """Use the fetch writer's schema so its real identity guard reads this cache."""
+    from gpuwm import fetch
+
+    folder.mkdir(parents=True, exist_ok=True)
+    payload = fetch._manifest_payload(
+        source=request["source"],
+        cycle=fetch.parse_cycle(request["cycle"], request["source"]),
+        hours=(0, 3), area=fetch.parse_area(request["area"]), files=[])
+    (folder / fetch.FETCH_MANIFEST_NAME).write_text(json.dumps(payload), encoding="utf-8")
+    (folder / "existing-input").write_bytes(b"retain this earlier download")
+
+
+@pytest.mark.parametrize("changed", [
+    {"cycle": "2026-07-30T00"}, {"area": "30,-110,40,-90"},
+    {"source": "hrrr"}, {"hours": 12}, {"cadence": 1},
+    {"forecast_start_hour": 3}, {"product": "prs"},
+])
+def test_repeat_forecasts_select_their_own_inputs_automatically(tmp_path, changed):
+    from gpuwm import fetch
+
+    request = {"source": "gfs", "cycle": "2026-07-29T18", "hours": 6,
+               "area": "25,-105,45,-85", "cadence": 3}
+    root = tmp_path / "runs"
+    first = go_cli.managed_download_dir(root, request)
+    _record_cached_request(first, request)
+    before = {p.name: p.read_bytes() for p in first.iterdir()}
+    second_request = request | changed
+    second = go_cli.managed_download_dir(root, second_request)
+    assert second != first and not second.exists()
+    fetch.check_prior_request(
+        second, source=second_request["source"],
+        cycle=fetch.parse_cycle(second_request["cycle"], second_request["source"]),
+        area=fetch.parse_area(second_request["area"]))
+    _record_cached_request(second, second_request)
+    assert go_cli.managed_download_dir(root, request) == first
+    assert go_cli.managed_download_dir(root, second_request) == second
+    assert {p.name: p.read_bytes() for p in first.iterdir()} == before
+
+
+def test_identical_fetches_share_cache_despite_config_output_spelling(tmp_path):
+    request = {"source": "gfs", "cycle": "2026-07-29T18", "hours": 6,
+               "area": "25,-105,45,-85", "out": "old-folder"}
+    first = go_cli.managed_download_dir(tmp_path, request)
+    second = go_cli.managed_download_dir(
+        tmp_path, request | {"area": "45.0,-85.0,25.0,-105.0", "out": "new-folder"})
+    assert first == second
+    assert not list(tmp_path.iterdir()), "Planning must not allocate downloads"
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), object()])
+def test_unserializable_download_settings_are_a_named_refusal(tmp_path, invalid):
+    request = {"source": "gfs", "cycle": "2026-07-29T18", "hours": invalid,
+               "area": "25,-105,45,-85"}
+    with pytest.raises(go_cli.GoRefusal, match="forecast download settings are invalid"):
+        go_cli.managed_download_dir(tmp_path / "runs", request)
+    assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.parametrize("source", ["gfs", "hrrr", "icon-eu"])
+@pytest.mark.parametrize("explicit_data", [False, True])
+def test_saved_latest_is_refused_before_a_dry_run_probes_or_selects_cache(
+        tmp_path, monkeypatch, capsys, gfs_config, source, explicit_data):
+    from gpuwm import fetch
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("A saved latest refusal must not probe, fetch or choose a cache")
+
+    monkeypatch.setattr(fetch, "resolve_latest_cycle", unexpected)
+    monkeypatch.setattr(go_cli, "managed_download_dir", unexpected)
+    monkeypatch.setattr(subprocess, "Popen", unexpected)
+    config = tmp_path / "saved-latest.toml"
+    config.write_text(gfs_config.read_text(encoding="utf-8").replace(
+        'cycle = "2026-07-29T18"', 'cycle = "Latest"').replace(
+        'source = "gfs"', f'source = "{source}"'), encoding="utf-8")
+    root = tmp_path / "runs"
+    argv = ["go", str(config), "--dry-run", "--outdir", str(root)]
+    if explicit_data:
+        argv += ["--data-dir", str(tmp_path / "existing-inputs")]
+
+    assert cli_main(argv) == 2
+    message = capsys.readouterr().err
+    assert "saved [fetch].cycle must be a concrete UTC cycle" in message
+    assert "[experiment].start_time" in message
+    assert "gpuwm domain --cycle latest" in message
+    assert not root.exists()
+
+
+@pytest.mark.parametrize("start_hour", [0, 3])
+def test_a_saved_fetch_cannot_shift_the_experiment_start(
+        tmp_path, gfs_config, start_hour):
+    config = tmp_path / "wrong-cycle.toml"
+    text = gfs_config.read_text(encoding="utf-8").replace(
+        'cycle = "2026-07-29T18"', 'cycle = "2026-07-30T00"')
+    if start_hour:
+        text = text.replace('[fetch]', f'[fetch]\nforecast_start_hour = {start_hour}')
+    config.write_text(text, encoding="utf-8")
+    with pytest.raises(go_cli.GoRefusal, match="download and experiment agree"):
+        go_cli.plan_from_config(config, outdir=tmp_path / "runs")
+    assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.parametrize("cycle", ["latest", "2026-07-30T00"])
+def test_runplan_refuses_an_unbound_saved_fetch_clock_without_probing(
+        tmp_path, gfs_config, monkeypatch, cycle):
+    from gpuwm import fetch, runplan
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Resolving a saved config must not query latest")
+
+    monkeypatch.setattr(fetch, "resolve_latest_cycle", unexpected)
+    config = tmp_path / "unbound-clock.toml"
+    config.write_text(gfs_config.read_text(encoding="utf-8").replace(
+        'cycle = "2026-07-29T18"', f'cycle = "{cycle}"'), encoding="utf-8")
+    plan = runplan.build_plan(
+        {"schema": runplan.PLAN_SCHEMA, "name": "saved-clock", "route": "prepared",
+         "config": {"path": str(config)}, "output_root": str(tmp_path / "runs")},
+        source="saved-clock.json", base_dir=tmp_path, sha256="0" * 64)
+    with pytest.raises(runplan.PlanError, match=r"\[experiment\].start_time"):
+        runplan.resolve_plan(plan, require_inputs=False)
+    assert not (tmp_path / "runs").exists()
+
+
+def test_explicit_runplan_latest_resolves_once_before_managed_cache_selection(
+        tmp_path, monkeypatch):
+    from datetime import datetime
+    from gpuwm import fetch, runplan
+
+    probes = []
+
+    def resolve(source, last_hour):
+        probes.append((source, last_hour))
+        return datetime(2026, 7, 29, 18)
+
+    monkeypatch.setattr(fetch, "resolve_latest_cycle", resolve)
+    arguments, resolutions, _ = runplan.resolve_fetch_cycle(
+        ["--source", "gfs", "--cycle", "latest", "--hours", "6",
+         "--forecast-start-hour", "3"])
+    cycle = arguments[arguments.index("--cycle") + 1]
+    request = {"source": "gfs", "cycle": cycle, "hours": 6,
+               "forecast_start_hour": 3, "area": "25,-105,45,-85"}
+    cache = go_cli.managed_download_dir(tmp_path, request)
+
+    assert cache == go_cli.managed_download_dir(tmp_path, request)
+    assert runplan.resolve_fetch_cycle(arguments) == (arguments, [], [])
+    assert resolutions[0]["value"] == cycle == "2026-07-29T18"
+    assert probes == [("gfs", 9)]
+    assert not list(tmp_path.iterdir()), "Planning must not allocate downloads"
+
+
+@pytest.mark.parametrize("state", ["missing", "invalid", "different"])
+def test_an_interrupted_managed_cache_is_preserved_and_recovers_automatically(tmp_path, state):
+    from gpuwm import fetch
+
+    request = {"source": "gfs", "cycle": "2026-07-29T18", "hours": 6,
+               "area": "25,-105,45,-85"}
+    first = go_cli.managed_download_dir(tmp_path, request)
+    first.mkdir(parents=True)
+    (first / "partial-input").write_bytes(b"interrupted transfer evidence")
+    if state == "invalid":
+        (first / fetch.FETCH_MANIFEST_NAME).write_text("{broken", encoding="utf-8")
+    elif state == "different":
+        _record_cached_request(first, request | {"cycle": "2026-07-30T00"})
+    before = {p.name: p.read_bytes() for p in first.iterdir()}
+    repaired = go_cli.managed_download_dir(tmp_path, request)
+    assert repaired != first and not repaired.exists()
+    _record_cached_request(repaired, request)
+    assert go_cli.managed_download_dir(tmp_path, request) == repaired
+    assert {p.name: p.read_bytes() for p in first.iterdir()} == before
+
+
+def test_old_flat_downloads_do_not_break_a_new_quick_forecast(gfs_config, tmp_path):
+    import tomllib
+
+    root = tmp_path / "runs"
+    request = tomllib.loads(gfs_config.read_text(encoding="utf-8"))["fetch"]
+    legacy = root / "data"
+    _record_cached_request(legacy, request | {"cycle": "2026-07-30T00"})
+    before = {p.name: p.read_bytes() for p in legacy.iterdir()}
+    plan = go_cli.plan_from_config(gfs_config, outdir=root)
+    assert plan["data"].parent == root / "downloads"
+    assert not plan["data"].exists()
+    assert {p.name: p.read_bytes() for p in legacy.iterdir()} == before
+
+
+def test_an_active_partial_download_is_shared_instead_of_duplicated(tmp_path, monkeypatch):
+    from gpuwm import fetch_guard
+
+    monkeypatch.setenv(fetch_guard.LOCK_ROOT_ENV, str(tmp_path / "locks"))
+    request = {"source": "gfs", "cycle": "2026-07-29T18", "hours": 6,
+               "area": "25,-105,45,-85"}
+    cache = go_cli.managed_download_dir(tmp_path, request)
+    cache.mkdir(parents=True)
+    (cache / "unfinished.part").write_bytes(b"downloading")
+    with fetch_guard.hold("fetch-out", cache):
+        assert go_cli.managed_download_dir(tmp_path, request) == cache
+    assert go_cli.managed_download_dir(tmp_path, request) != cache
+
+
+def test_table_route_cache_reuses_its_own_real_manifest_schema(tmp_path):
+    from gpuwm import fetch, fetch_routes
+
+    request = {"source": "icon-eu", "cycle": "2026-07-29T18", "hours": 6}
+    cache = go_cli.managed_download_dir(tmp_path, request)
+    cache.mkdir(parents=True)
+    plan = fetch_routes.resolve_request(
+        "icon-eu", cycle=fetch.parse_cycle(request["cycle"], "icon-eu"), hours=6)
+    payload = {"schema": fetch_routes.ROUTE_MANIFEST_SCHEMA,
+               "request": fetch_routes._request_identity(plan), "files": []}
+    (cache / fetch_routes.MANIFEST_NAME).write_text(json.dumps(payload), encoding="utf-8")
+    assert go_cli.managed_download_dir(tmp_path, request) == cache
+    payload["request"]["cycle"] = "2026-07-30T00Z"
+    (cache / fetch_routes.MANIFEST_NAME).write_text(json.dumps(payload), encoding="utf-8")
+    assert go_cli.managed_download_dir(tmp_path, request) != cache
 
 
 def test_a_second_go_into_the_same_tree_is_refused_in_its_own_words(
@@ -1413,8 +1729,7 @@ def test_go_derives_the_statics_corridor_from_a_follow_config(tmp_path,
     two_domain = tmp_path / "follow.toml"
     two_domain.write_text(_write_follow_tree_config(gfs_config),
                           encoding="utf-8")
-    plan = go_cli.plan_from_config(two_domain, outdir=tmp_path / "go",
-                                   allow_tree=True)
+    plan = go_cli.plan_from_config(two_domain, outdir=tmp_path / "go")
     assert plan["statics_corridor"] is True
     command = go_cli.prepare_command(
         plan, tmp_path / "bridge", manifest=tmp_path / "m.json",
@@ -1476,8 +1791,7 @@ def test_the_printed_rw_wps_line_and_go_agree_on_the_corridor(tmp_path,
                       encoding="utf-8")
     config.with_suffix(".namelist.wps").write_bytes(
         gfs_config.with_suffix(".namelist.wps").read_bytes())
-    plan = go_cli.plan_from_config(config, outdir=tmp_path / "go",
-                                   allow_tree=True)
+    plan = go_cli.plan_from_config(config, outdir=tmp_path / "go")
     bridge = tmp_path / "gfs_grib2_bridge"
     bridge.write_bytes(b"stub")
     _stage_a_fetched_directory(plan["data"], config, plan["authority"])
@@ -1625,6 +1939,7 @@ def test_the_announced_download_cache_is_the_one_the_stages_use(
         f"stage writes to {used}")
     # And it is the directory the reader NAMED, not one derived from the
     # run root: equality above would also hold if both had drifted.
-    expected = (tmp_path / "mycache" if named_cache
-                else tmp_path / "out" / "data")
-    assert announced == expected
+    if named_cache:
+        assert announced == tmp_path / "mycache"
+    else:
+        assert announced.parent == tmp_path / "out" / "downloads"

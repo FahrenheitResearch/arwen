@@ -9,7 +9,10 @@
 //! the worker count cannot change an output element's arithmetic.
 
 pub mod dealias;
+pub mod eta;
+pub mod grib2_supplement;
 pub mod quantization;
+pub mod surface_pressure;
 // The static-dataset ingest arm: a WPS intermediate READER (the
 // inverse of src/bin/met_intermediate.rs's writer) and the
 // global-source bilinear the seam of a cyclic lat/lon grid needs.

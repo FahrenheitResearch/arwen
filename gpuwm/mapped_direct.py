@@ -83,7 +83,13 @@ from gpuwm.source_hierarchy import (
 )
 from gpuwm.static.build import GeogSelection, build_static
 from gpuwm.vertical_contract import validate_explicit_eta_grid
-from gpuwm.wrf_direct import export_prepared_wrf
+from gpuwm.wrf_direct import (
+    StockWrfExportUnsupported, export_prepared_wrf,
+    stock_wrf_export_not_requested, stock_wrf_export_refused,
+    validate_stock_wrf_export_config, validate_stock_wrf_export_hierarchy,
+)
+from gpuwm.native_hierarchy import STOCK_WRF_EXPORT_MODES
+from gpuwm.progress import prep_stage
 
 
 PROOF_SCHEMA = "gpuwm-mapped-direct-wrf-proof-v1"
@@ -169,6 +175,50 @@ def _copy_bound_authority(
         raise ValueError(
             f"mapped evidence changed before publication: {source}"
         )
+
+
+def _bound_provenance_authorities(
+    bundle: MappedSourceBundle,
+    composition: Mapping[str, object],
+) -> dict[str, tuple[Path, str]]:
+    """Resolve declared roles to the identities actually used by the decoder.
+
+    ``composition`` is the already hash-verified publication copy.  A donor
+    record names a binding, not its provenance role; only the bound declaration
+    can supply that relationship.  Terrain may itself come from a donor.
+    """
+
+    terrain_identity = (
+        bundle.terrain_provenance_path.resolve(),
+        bundle.terrain_provenance_sha256,
+    )
+    authorities: dict[str, tuple[Path, str]] = {}
+
+    def add(role, identity):
+        previous = authorities.get(role)
+        if previous is not None and previous != identity:
+            raise ValueError(f"decoded provenance identities conflict for role {role!r}")
+        authorities[role] = identity
+
+    terrain = composition["supplements"].get("terrain_height")
+    if terrain is not None:
+        add(terrain["provenance_role"], terrain_identity)
+    bindings = composition.get("field_sources", {})
+    seen = set()
+    for record in bundle.contributing_sources:
+        name = record["binding"]
+        if name not in bindings or name in seen:
+            raise ValueError("decoded contributing source inventory differs from composition")
+        seen.add(name)
+        declaration = bindings[name]
+        provenance = record["provenance"]
+        identity = (Path(provenance["path"]).resolve(), provenance["sha256"])
+        if "terrain_height" in declaration["fields"] and identity != terrain_identity:
+            raise ValueError("decoded terrain provenance differs from its contributing source")
+        add(declaration["provenance_role"], identity)
+    if seen != set(bindings):
+        raise ValueError("decoded contributing source inventory differs from composition")
+    return authorities
 
 
 def _provenance_evidence_name(role: str, suffix: str) -> str:
@@ -257,8 +307,7 @@ def _validate_target_contract(
             f"mapped vertical ladder is missing: {config_name} {counts}, "
             f"{against}.  The mapped route interpolates every forcing "
             "time onto an explicit full-level eta ladder; a level count "
-            "alone does not define one, and WRF's automatic level "
-            "generator (real.exe) is not implemented",
+            "alone does not define one for this entry point",
             remedy=(
                 f"remedy: two doors reconcile this.  Keep your {nz} "
                 f"levels: add an explicit eta_levels ladder of {nz + 1} "
@@ -425,6 +474,7 @@ def prepare_mapped_wrf(
     preprocess_workers: int | None = None,
     cpu_preprocess_bridge: str | Path | None = None,
     hierarchy_workers: int | None = None,
+    stock_wrf_export: str = "optional",
     statics_corridor=None,
     _source_manifest: str | Path | None = None,
     _source_manifest_sha256: str | None = None,
@@ -437,6 +487,11 @@ def prepare_mapped_wrf(
     initialized independently and finalized parent-before-child.  Products
     are published atomically only after source and run-control authorities are
     reverified.
+
+    ``stock_wrf_export`` defaults to an optional companion WRF file set.
+    ``required`` refuses unsupported configurations before ingest; ``off``
+    prepares only the native forecast artifacts. Only the named unsupported
+    export condition is recoverable; I/O and corrupt-array failures still fail.
 
     ``static_input``/``static_receipt`` supply a previously published
     native-static NPZ instead of rebuilding the root domain's geography from
@@ -475,6 +530,8 @@ def prepare_mapped_wrf(
     the two manifests are the same document and nothing changes.
     """
 
+    if stock_wrf_export not in STOCK_WRF_EXPORT_MODES:
+        raise ValueError(f"stock_wrf_export must be one of {STOCK_WRF_EXPORT_MODES}")
     started = time.perf_counter()
     composition = Path(composition).resolve()
     mapping = Path(mapping).resolve()
@@ -660,13 +717,21 @@ def prepare_mapped_wrf(
         run_control_before["cpu_preprocess_bridge"] = _file_receipt(cpu_bridge)
 
     exp = load_experiment(experiment_config)
+    from gpuwm.static.highres_production import (
+        load_static_highres, apply_prepared_highres, static_highres_identity)
+    static_highres = load_static_highres(experiment_config)
+    from gpuwm.case_data import optional_case_data_from_config, preparation_case_policy
+    case_data = optional_case_data_from_config(experiment_config)
+    case_policy = preparation_case_policy(case_data)
+    from gpuwm.ingest.water_overlay import (
+        load_bound_water_overlay, overlay_snapshot_sequence, verify_overlay_sequence)
+    water_overlay, water_overlay_binding = load_bound_water_overlay(
+        None if case_data is None else case_data.water_temperature_overlay)
     from gpuwm.experiment import (
         refuse_unrouted_perturbation, refuse_unrouted_spawn,
     )
     refuse_unrouted_perturbation(exp, "mapped-adapter prepared-cache")
     refuse_unrouted_spawn(exp, "mapped-adapter prepared-cache")
-    from gpuwm.static.highres_production import refuse_inert_highres
-    refuse_inert_highres(experiment_config, lane="mapped adapter")
     hierarchy = len(exp.domains) > 1
     # Refused HERE rather than left to the hierarchy call, because the
     # hierarchy call is the thing that does not happen on a single-domain
@@ -687,6 +752,29 @@ def prepare_mapped_wrf(
         experiment_config=experiment_config,
     )
     cfg = exp.root.run
+    physics_selection = None
+    if not hierarchy:
+        from gpuwm.physics_compat import (
+            acknowledgement_delivery, single_domain_physics_selection,
+        )
+
+        acknowledgements, ack_provenance = acknowledgement_delivery(
+            toml=getattr(exp, "acknowledgements", ()))
+        physics_selection = single_domain_physics_selection(
+            cfg, expert_acknowledgements=acknowledgements,
+            acknowledgement_provenance=ack_provenance)
+    if stock_wrf_export == "required":
+        with prep_stage("export_config", label="Validate requested WRF export"):
+            # A requested WRF product must be representable before expensive
+            # decode/initialization. The exporter reuses this same authority.
+            if hierarchy:
+                validate_stock_wrf_export_hierarchy(exp)
+            for domain in exp.domains:
+                validate_stock_wrf_export_config(
+                    domain.run, root=domain.grid_id == 1,
+                    configured_suite=not hierarchy,
+                    label=("direct-export" if not hierarchy
+                           else f"d{domain.grid_id:02d} direct-export"))
     if hierarchy:
         grids = validate_native_lambert_contracts(
             exp, wps_namelist, source_name="mapped source",
@@ -701,21 +789,24 @@ def prepare_mapped_wrf(
         SimpleNamespace(wps_namelist=wps_namelist, geog_root=geog_root), 1,
     )
 
-    decode_started = time.perf_counter()
-    bundle = decode_composed_source(
-        composition, mapping, primary, supplements, provenance,
-        input_manifest=input_manifest,
-        input_manifest_sha256=input_manifest_sha256,
-        contributing_mappings=contributing,
-        grib1_bridge=decoders.get("grib1_bridge"),
-        grib2_inventory=decoders.get("grib2_inventory"),
-        grib2_dump=decoders.get("grib2_dump"),
-        # The engine's compose scratch holds the whole composed frame
-        # stream; naming this run's destination keeps that stream on the
-        # output's disk-backed filesystem instead of a tmpfs system temp
-        # with a quota smaller than the biggest registered sources.
-        scratch_destination=output_root,
-    )
+    with prep_stage("source_decode", label="Decode and compose source",
+                    backend="rust" if engine_binary is not None else "python"):
+        decode_started = time.perf_counter()
+        bundle = decode_composed_source(
+            composition, mapping, primary, supplements, provenance,
+            input_manifest=input_manifest,
+            input_manifest_sha256=input_manifest_sha256,
+            contributing_mappings=contributing,
+            grib1_bridge=decoders.get("grib1_bridge"),
+            grib2_inventory=decoders.get("grib2_inventory"),
+            grib2_dump=decoders.get("grib2_dump"),
+            # The engine's compose scratch holds the whole composed frame
+            # stream; naming this run's destination keeps that stream on the
+            # output's disk-backed filesystem instead of a tmpfs system temp
+            # with a quota smaller than the biggest registered sources.
+            scratch_destination=output_root,
+            atmospheric_grids=grids,
+        )
     decode_seconds = time.perf_counter() - decode_started
     if bundle.mapping_sha256 != mapping_snapshot.sha256:
         raise ValueError(
@@ -726,6 +817,11 @@ def prepare_mapped_wrf(
         raise ValueError("decoded decoder paths differ from requested decoders")
     composition_receipt = mapped_composition_receipt(bundle)
     snapshots = _forcing_series(bundle)
+    for_grids = getattr(snapshots, "for_grids", None)
+    if for_grids is not None:
+        snapshots = for_grids(grids)
+    snapshots = overlay_snapshot_sequence(snapshots, water_overlay,
+                                          binding=water_overlay_binding)
     times = _forcing_valid_times(snapshots)
     if not times or times[0] != exp.start_time:
         raise ValueError(
@@ -786,21 +882,28 @@ def prepare_mapped_wrf(
                     "source's vertical coverage)."),
             ) from error
 
-    static_started = time.perf_counter()
-    if prebuilt_static is None:
-        static = build_static(grid, geog_root, selection=selection)
-        root_static_provider = "native-wps-geog"
-        root_static_receipt = None
-    else:
-        # The receipt binds native_geometry_contract(grid, cfg) AND the NPZ
-        # SHA-256; the loader then re-derives the geometry fields from the
-        # grid and refuses a stored copy that disagrees.  A cache built for
-        # another domain cannot survive either check.
-        root_static_receipt = verify_native_static_receipt(
-            prebuilt_receipt, prebuilt_static, grid, cfg)
-        static = load_native_static_cache(
-            prebuilt_static, grid, cfg.ny, cfg.nx)
-        root_static_provider = "prebuilt-hash-bound-cache"
+    with prep_stage("root_static", label="Prepare root static fields"):
+        static_started = time.perf_counter()
+        if prebuilt_static is None:
+            static = build_static(grid, geog_root, selection=selection)
+            root_static_provider = "native-wps-geog"
+            root_static_receipt = None
+        else:
+            # The receipt binds native_geometry_contract(grid, cfg) AND the NPZ
+            # SHA-256; the loader then re-derives the geometry fields from the
+            # grid and refuses a stored copy that disagrees.  A cache built for
+            # another domain cannot survive either check.
+            root_static_receipt = verify_native_static_receipt(
+                prebuilt_receipt, prebuilt_static, grid, cfg)
+            static = load_native_static_cache(
+                prebuilt_static, grid, cfg.ny, cfg.nx)
+            root_static_provider = "prebuilt-hash-bound-cache"
+        static, root_static_receipt = apply_prepared_highres(
+            static, grid, config=static_highres, domain_id=1,
+            case_date=exp.start_time.date(),
+            landuse_attrs=(selection.landuse_global_attrs()
+                           if static_highres is not None and static_highres.enabled else None),
+            baseline_receipt=root_static_receipt)
     static_seconds = time.perf_counter() - static_started
 
     preprocess = resolve_preprocess_backend(
@@ -808,129 +911,125 @@ def prepare_mapped_wrf(
         cpu_bridge=cpu_bridge,
     )
     preprocess_receipt = preprocess.receipt()
-    # The surface the water-temperature assembly decides on.  This route
-    # carries no [case_data], so the policy is the default one silence
-    # selects; the mapped compositions declare a skin temperature and no
-    # SST, which is the case where the class-coherent assembly and the
-    # historical selector agree cell for cell, so no policy is reachable
-    # that would change a number here.  What the statics DO change is the
-    # guarantee: with ISLAKE named, a lake and the ocean cannot share a
-    # provider on a target where a coarse coastline joins them.
+    # The same declared policy reaches the root and every child catalog.
     water_statics = WaterTemperatureStatics.for_route(
-        route=_WATER_ROUTE, policy=None,
+        route=_WATER_ROUTE, policy=case_policy["water_temperature_policy"],
         landmask=static["LANDMASK"], lu_index=static["LU_INDEX"],
         landuse_attrs=selection.landuse_global_attrs())
-    initialize_started = time.perf_counter()
-    # ONE forcing time is ever resident.  The start time is built LAST
-    # (start_last_forcing_order) and is the only met/state this loop
-    # retains; every other time contributes its perimeter frames against
-    # its own position and is released before the next one is
-    # interpolated.  Walking the times in order instead meant holding the
-    # start time -- which nothing reads until the boundaries are complete
-    # -- while each later time was built underneath it.  At 800x800x49
-    # with mp=10 and three GFS times that second resident time is 14.67
-    # GiB of device residency against 7.66, a priced peak envelope of
-    # 23.92 GiB against 15.86: the difference between preparing the
-    # domain on a 16 GiB card and OOMing after the whole forcing chain
-    # had already been fetched.
-    initial_result = None
-    initial_met = None
-    forcing = StateBoundaryFrames(
-        spec_bdy_width=cfg.spec_bdy_width,
-        spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
-    coord = make_vertical_coord(
-        cfg.nz, hybrid_opt=cfg.hybrid_opt, etac=cfg.etac,
-        eta_levels=exp.vertical.eta_levels,
-    )
-    mapfac_m, mapfac_u, mapfac_v = (
-        grid.mapfac_m(), grid.mapfac_u(), grid.mapfac_v(),
-    )
-    coriolis_f, coriolis_e = grid.coriolis_m()
-    rotation_sin, rotation_cos = grid.rotation_m()
-    for index in start_last_forcing_order(len(snapshots)):
-        source = snapshots[index]
-        # Metgrid classifies masked-field TARGET cells by the model
-        # (geogrid) landmask; the mapped lane declares it like the ERA5
-        # lanes so soil, skin, snow, and physics share one surface.
-        met = interpolate_era5_to_lambert(
-            source, grid, backend=preprocess,
-            target_landmask=np.asarray(static["LANDMASK"]) >= 0.5,
-            water_temperature_statics=water_statics)
-        initialized = initialize_real(
-            met, cfg, coord, static["HGT_M"], grid=grid,
-            p_top=exp.vertical.p_top, sfcp_to_sfcp=True,
-            preprocess_backend=preprocess,
-            state_backend="preprocess",
-            # THE FRONT DOOR for the mp=28 aerosol default is the "grid="
-            # above (lane/static-dataset-door), and it is the SAME door the
-            # other ten real routes now use.
-            #
-            # lane/wif-default wired this one route by EVALUATING both
-            # runtime inputs here -- wif_grid_latlon=grid.latlon_mass() and
-            # wif_valid_date=source.valid_time.isoformat() -- and doing it
-            # unconditionally, on the argument that both were already to
-            # hand.  Two things were wrong with that, and the merge removes
-            # it rather than carrying both mechanisms:
-            #
-            #  * It is EAGER.  grid.latlon_mass() was called on every mapped
-            #    preparation regardless of mp_physics, so any grid object
-            #    without that method -- the mapped hierarchy tests' own
-            #    _Grid among them -- died with an AttributeError on a line
-            #    no configuration in that test had selected.  Nine tests in
-            #    tests/test_mapped_direct.py were red on it.
-            #  * It is PER-ROUTE.  Repeating it at eleven call sites is
-            #    eleven chances to spell the derivation differently.
-            #
-            # initialize_real now derives both itself, lazily, inside the
-            # mp=28 climatology branch and only there: the valid date from
-            # snapshot.valid_time (the same value source.valid_time
-            # produced) and the lat/lon from the "grid=" carrier.  Nothing
-            # is lost -- this route still reaches the climatology by
-            # default -- and the explicit keywords remain available as
-            # overrides for a caller with a reason to disagree.
+    with prep_stage("root_initialize", label="Initialize root forcing states",
+                    backend=str(preprocess_receipt["backend"]),
+                    count=len(snapshots)):
+        initialize_started = time.perf_counter()
+        # ONE forcing time is ever resident.  The start time is built LAST
+        # (start_last_forcing_order) and is the only met/state this loop
+        # retains; every other time contributes its perimeter frames against
+        # its own position and is released before the next one is
+        # interpolated.  Walking the times in order instead meant holding the
+        # start time -- which nothing reads until the boundaries are complete
+        # -- while each later time was built underneath it.  At 800x800x49
+        # with mp=10 and three GFS times that second resident time is 14.67
+        # GiB of device residency against 7.66, a priced peak envelope of
+        # 23.92 GiB against 15.86: the difference between preparing the
+        # domain on a 16 GiB card and OOMing after the whole forcing chain
+        # had already been fetched.
+        initial_result = None
+        initial_met = None
+        forcing = StateBoundaryFrames(
+            spec_bdy_width=cfg.spec_bdy_width,
+            spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
+        coord = make_vertical_coord(
+            cfg.nz, hybrid_opt=cfg.hybrid_opt, etac=cfg.etac,
+            eta_levels=exp.vertical.eta_levels,
         )
-        initialized.state.set_map_coriolis(
-            mapfac_m, mapfac_u, mapfac_v, coriolis_f, coriolis_e,
-            sina=rotation_sin, cosa=rotation_cos,
+        mapfac_m, mapfac_u, mapfac_v = (
+            grid.mapfac_m(), grid.mapfac_u(), grid.mapfac_v(),
         )
-        forcing.add_state(initialized.state, index=index)
-        if index == 0:
-            initial_met = met
-            initial_result = initialized
-        else:
-            del met, initialized
-            release_backend_memory(preprocess)
-    boundaries = forcing.build(times)
-    attach_lateral_boundaries(initial_result.state, boundaries)
-    # No lake skin override: the masked=both SKINTEMP chain with
-    # static-landmask targets already yields water-source skin at lakes,
-    # matching real.exe's no-TAVGSFC behavior.  The static landmask drives
-    # WRF's process_soil_real land/water branches, and terrain plus the
-    # composition's canonical source orography enable adjust_soil_temp_new's
-    # elevation lapse on skin and soil temperature inputs.  The router
-    # forwards this exact argument list to preprocess_noah_soil for
-    # Noah-geometry schemes.
-    soil = preprocess_land_surface_soil(
-        initial_met.fields,
-        sf_surface_physics=int(cfg.sf_surface_physics),
-        # Resolved, not defaulted: see gpuwm/ingest/hrrr_physics.py.
-        num_soil_layers=soil_layer_count(cfg),
-        soil_type=static["SCT_DOM"],
-        deep_soil_temperature=static["TMN"],
-        soil_layer_contract=bundle.soil_layer_contract,
-        landmask=static["LANDMASK"],
-        terrain=static["HGT_M"],
-        source_orography=initial_met.fields["SOURCE_OROGRAPHY"],
-        water_temperature=getattr(initial_met, "water_temperature", None),
-        water_temperature_policy=water_statics.policy,
-        # Same seam as the elevation lapse above, for moisture and for the
-        # deep temperature: a mapped source's mesh can be coarser than this
-        # grid, and where it is, the soil state gets the target grid's own
-        # soil texture instead of the source cell's average.
-        soil_mesh=soil_mesh_plan_from_case(
-            snapshots[0], grid, experiment_config),
-        route=_WATER_ROUTE,
-    )
+        coriolis_f, coriolis_e = grid.coriolis_m()
+        rotation_sin, rotation_cos = grid.rotation_m()
+        for index in start_last_forcing_order(len(snapshots)):
+            source = snapshots[index]
+            # Metgrid classifies masked-field TARGET cells by the model
+            # (geogrid) landmask; the mapped lane declares it like the ERA5
+            # lanes so soil, skin, snow, and physics share one surface.
+            met = interpolate_era5_to_lambert(
+                source, grid, backend=preprocess,
+                target_landmask=np.asarray(static["LANDMASK"]) >= 0.5,
+                water_temperature_statics=water_statics)
+            initialized = initialize_real(
+                met, cfg, coord, static["HGT_M"], grid=grid,
+                p_top=exp.vertical.p_top, sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
+                preprocess_backend=preprocess,
+                state_backend="preprocess",
+                # THE FRONT DOOR for the mp=28 aerosol default is the "grid="
+                # above (lane/static-dataset-door), and it is the SAME door the
+                # other ten real routes now use.
+                #
+                # lane/wif-default wired this one route by EVALUATING both
+                # runtime inputs here -- wif_grid_latlon=grid.latlon_mass() and
+                # wif_valid_date=source.valid_time.isoformat() -- and doing it
+                # unconditionally, on the argument that both were already to
+                # hand.  Two things were wrong with that, and the merge removes
+                # it rather than carrying both mechanisms:
+                #
+                #  * It is EAGER.  grid.latlon_mass() was called on every mapped
+                #    preparation regardless of mp_physics, so any grid object
+                #    without that method -- the mapped hierarchy tests' own
+                #    _Grid among them -- died with an AttributeError on a line
+                #    no configuration in that test had selected.  Nine tests in
+                #    tests/test_mapped_direct.py were red on it.
+                #  * It is PER-ROUTE.  Repeating it at eleven call sites is
+                #    eleven chances to spell the derivation differently.
+                #
+                # initialize_real now derives both itself, lazily, inside the
+                # mp=28 climatology branch and only there: the valid date from
+                # snapshot.valid_time (the same value source.valid_time
+                # produced) and the lat/lon from the "grid=" carrier.  Nothing
+                # is lost -- this route still reaches the climatology by
+                # default -- and the explicit keywords remain available as
+                # overrides for a caller with a reason to disagree.
+            )
+            initialized.state.set_map_coriolis(
+                mapfac_m, mapfac_u, mapfac_v, coriolis_f, coriolis_e,
+                sina=rotation_sin, cosa=rotation_cos,
+            )
+            forcing.add_state(initialized.state, index=index)
+            if index == 0:
+                initial_met = met
+                initial_result = initialized
+            else:
+                del met, initialized
+                release_backend_memory(preprocess)
+        boundaries = forcing.build(times)
+        attach_lateral_boundaries(initial_result.state, boundaries)
+        # No lake skin override: the masked=both SKINTEMP chain with
+        # static-landmask targets already yields water-source skin at lakes,
+        # matching real.exe's no-TAVGSFC behavior.  The static landmask drives
+        # WRF's process_soil_real land/water branches, and terrain plus the
+        # composition's canonical source orography enable adjust_soil_temp_new's
+        # elevation lapse on skin and soil temperature inputs.  The router
+        # forwards this exact argument list to preprocess_noah_soil for
+        # Noah-geometry schemes.
+        soil = preprocess_land_surface_soil(
+            initial_met.fields,
+            sf_surface_physics=int(cfg.sf_surface_physics),
+            # Resolved, not defaulted: see gpuwm/ingest/hrrr_physics.py.
+            num_soil_layers=soil_layer_count(cfg),
+            soil_type=static["SCT_DOM"],
+            deep_soil_temperature=static["TMN"],
+            soil_layer_contract=bundle.soil_layer_contract,
+            landmask=static["LANDMASK"],
+            terrain=static["HGT_M"],
+            source_orography=initial_met.fields["SOURCE_OROGRAPHY"],
+            water_temperature=getattr(initial_met, "water_temperature", None),
+            water_temperature_policy=water_statics.policy,
+            # Same seam as the elevation lapse above, for moisture and for the
+            # deep temperature: a mapped source's mesh can be coarser than this
+            # grid, and where it is, the soil state gets the target grid's own
+            # soil texture instead of the source cell's average.
+            soil_mesh=soil_mesh_plan_from_case(
+                snapshots[0], grid, experiment_config),
+            route=_WATER_ROUTE,
+        )
     initialize_seconds = time.perf_counter() - initialize_started
 
     # Keep atomic siblings short.  Repeating a user-supplied output name at
@@ -988,7 +1087,15 @@ def prepare_mapped_wrf(
             ),
         ):
             _copy_bound_authority(source, evidence_path / name, digest)
+        provenance_authorities = _bound_provenance_authorities(
+            bundle,
+            _load_json_document(
+                evidence_path / "composition.json", "published mapped composition"),
+        )
+        if set(provenance) != set(provenance_authorities):
+            raise ValueError("decoded provenance role inventory differs from requested roles")
         for role, source in sorted(provenance.items()):
+            expected_path, expected_digest = provenance_authorities[role]
             destination = evidence_path / _provenance_evidence_name(
                 role, source.suffix,
             )
@@ -996,14 +1103,14 @@ def prepare_mapped_wrf(
                 raise ValueError(
                     f"provenance roles collide after filename encoding: {role!r}"
                 )
-            if source != bundle.terrain_provenance_path:
+            if source != expected_path:
                 raise ValueError(
                     f"decoded provenance path differs for role {role!r}"
                 )
             _copy_bound_authority(
                 source,
                 destination,
-                bundle.terrain_provenance_sha256,
+                expected_digest,
             )
         static_output_receipt = write_native_static_cache(
             static_path, native_static_export_fields(static, grid),
@@ -1013,6 +1120,8 @@ def prepare_mapped_wrf(
         )
         source_identity = {
             "adapter": _source_adapter,
+            **({"static_highres": static_highres_identity(static_highres)}
+               if static_highres is not None else {}),
             "mapping_sha256": bundle.mapping_sha256,
             "composition_sha256": bundle.composition_sha256,
             "input_manifest_sha256": published_manifest_sha256,
@@ -1020,6 +1129,8 @@ def prepare_mapped_wrf(
                 "receipt_content_sha256"
             ],
             "preprocessing": preprocess_receipt,
+            "preparation_case_policy": case_policy,
+            "water_temperature_overlay": water_overlay_binding,
         }
         forcing_identity = (
             {"forcing_hours": tuple(
@@ -1082,8 +1193,13 @@ def prepare_mapped_wrf(
                     "../hierarchy-artifacts/domain-artifacts.json"
                 ),
                 statics_corridor=statics_corridor,
+                static_highres=static_highres,
+                sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
+                water_temperature_policy=case_policy["water_temperature_policy"],
+                stock_wrf_export=stock_wrf_export,
             )
             hierarchy_seconds = time.perf_counter() - hierarchy_started
+            verify_overlay_sequence(snapshots)
             run_control_after = {
                 "wps_namelist": _file_receipt(wps_namelist),
                 "experiment_config": _file_receipt(experiment_config),
@@ -1099,6 +1215,7 @@ def prepare_mapped_wrf(
             proof = {
                 "schema": HIERARCHY_PROOF_SCHEMA,
                 "status": "READY_NOT_YET_STOCK_WRF_GATED",
+                "stock_wrf_export": stock_wrf_export,
                 "domain_count": len(exp.domains),
                 "forcing_times": [value.isoformat() for value in times],
                 # The soil-state SOURCE resolution and whether the
@@ -1182,32 +1299,56 @@ def prepare_mapped_wrf(
             **forcing_identity,
             source_identity=source_identity,
         )
-        cache_started = time.perf_counter()
-        cache_receipt = write_prepared_cache(
-            prepared_path, identity=identity,
-            initial_result=initial_result, met=initial_met,
-            boundaries=boundaries, surface=canonical_noah_surface(soil),
-            metadata={
-                "source_adapter": "mapped",
-                "initial_valid_time": times[0].isoformat(),
-                "last_valid_time": times[-1].isoformat(),
-                forcing_key: list(forcing_axis),
-                "boundary_interval_seconds": boundary_interval_seconds,
-                "composition_receipt_sha256": composition_receipt[
-                    "receipt_content_sha256"
-                ],
-            },
-        )
-        cache_receipt = dict(cache_receipt)
-        cache_receipt["path"] = "prepared-cache"
+        with prep_stage("prepared_cache", label="Write prepared cache"):
+            cache_started = time.perf_counter()
+            cache_receipt = write_prepared_cache(
+                prepared_path, identity=identity,
+                initial_result=initial_result, met=initial_met,
+                boundaries=boundaries, surface=canonical_noah_surface(soil),
+                metadata={
+                    "source_adapter": "mapped",
+                    "initial_valid_time": times[0].isoformat(),
+                    "last_valid_time": times[-1].isoformat(),
+                    forcing_key: list(forcing_axis),
+                    "boundary_interval_seconds": boundary_interval_seconds,
+                    "composition_receipt_sha256": composition_receipt[
+                        "receipt_content_sha256"
+                    ],
+                },
+            )
+            cache_receipt = dict(cache_receipt)
+            cache_receipt["path"] = "prepared-cache"
         cache_seconds = time.perf_counter() - cache_started
-        export_started = time.perf_counter()
-        export_receipt = export_prepared_wrf(
-            prepared_path, static_path, geometry_path, wrf_path,
-            valid_time=times[0],
-            boundary_interval_seconds=boundary_interval_seconds,
-        )
+        with prep_stage("wrf_export", label="Companion WRF files") as export_stage:
+            export_started = time.perf_counter()
+            export_schema = "gpuwm-native-direct-wrf-export-v3"
+            export_stage["outcome"] = "produced"
+            if stock_wrf_export == "off":
+                export_receipt = stock_wrf_export_not_requested(schema=export_schema)
+                export_stage["outcome"] = "not_requested"
+            else:
+                try:
+                    export_receipt = export_prepared_wrf(
+                        prepared_path, static_path, geometry_path, wrf_path,
+                        valid_time=times[0],
+                        boundary_interval_seconds=boundary_interval_seconds,
+                        experiment_config_suite=True,
+                        expert_acknowledgements=tuple(physics_selection["acknowledgements"]),
+                        acknowledgement_provenance=physics_selection[
+                            "acknowledgement_provenance"],
+                    )
+                except StockWrfExportUnsupported as error:
+                    if stock_wrf_export == "required":
+                        raise
+                    export_receipt = stock_wrf_export_refused(error, schema=export_schema)
+                    export_stage.update(outcome="refused", reason=str(error))
+                else:
+                    if (export_receipt.get("schema") != export_schema
+                            or export_receipt.get("physics") != physics_selection):
+                        raise RuntimeError(
+                            "mapped export physics differs from the experiment config")
         export_seconds = time.perf_counter() - export_started
+        verify_overlay_sequence(snapshots)
         run_control_after = {
             "wps_namelist": _file_receipt(wps_namelist),
             "experiment_config": _file_receipt(experiment_config),
@@ -1219,6 +1360,7 @@ def prepare_mapped_wrf(
         proof = {
             "schema": PROOF_SCHEMA,
             "status": "READY_NOT_YET_STOCK_WRF_GATED",
+            "stock_wrf_export": stock_wrf_export,
             "forcing_times": [value.isoformat() for value in times],
             # The soil-state SOURCE resolution and whether the
             # sub-source-cell reconstitution ran on it.
@@ -1315,6 +1457,10 @@ def _parser() -> argparse.ArgumentParser:
             "strict mapped GRIB/NetCDF composition without WPS or real.exe."
         ),
     )
+    parser.add_argument(
+        "--stock-wrf-export", choices=STOCK_WRF_EXPORT_MODES, default="optional",
+        help="unchanged-WRF file output: optional (native forecast remains usable "
+             "if its configuration is unrepresentable), required, or off")
     parser.add_argument(
         "--source-format", choices=("grib1", "grib2", "netcdf"),
         required=True,
@@ -1621,9 +1767,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         preprocess_workers=args.preprocess_workers,
         cpu_preprocess_bridge=args.cpu_preprocess_bridge,
         hierarchy_workers=args.hierarchy_workers,
+        stock_wrf_export=args.stock_wrf_export,
         statics_corridor=statics_corridor,
     )
     print(json.dumps(proof, indent=2, sort_keys=True, allow_nan=False))
+    export = proof.get("export", proof.get("wrf_manifest", {}))
+    if export.get("status") == "REFUSED":
+        print("rw-wps: native preparation is complete; the optional WRF "
+              f"export was refused: {export.get('reason')}", file=sys.stderr)
+    elif export.get("status") == "NOT_REQUESTED":
+        print("rw-wps: native preparation is complete; WRF export is off.",
+              file=sys.stderr)
     for line in _next_command_lines(args, proof):
         print(line, file=sys.stderr)
     return 0

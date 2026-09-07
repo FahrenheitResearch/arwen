@@ -202,14 +202,25 @@ class GeogSelection:
         return self.root / relative
 
     def landuse_global_attrs(self) -> dict[str, object]:
-        """WRF global land-use attributes from the selected index file."""
+        """WRF global land-use attributes from the selected index file.
+
+        ``NUM_LAND_CAT`` is geogrid's own derivation -- the dominant
+        land-use field's ``category_max - category_min + 1``, the same
+        count :meth:`_DomainSampler.categorical` refuses to interpolate
+        without -- so a consumer sizing a table off this file reads the
+        selected dataset's category count instead of assuming the 21 of the
+        MODIS default the writer falls back to.
+        """
         index = GeogDataset(self.path("landuse")).index
+        cmin, cmax = index.category_min, index.category_max
         required = {
             "MMINLU": index.mminlu,
             "ISWATER": index.iswater,
             "ISLAKE": index.islake,
             "ISICE": index.isice,
             "ISURBAN": index.isurban,
+            "NUM_LAND_CAT": (None if cmin is None or cmax is None
+                             or cmax < cmin else cmax - cmin + 1),
         }
         missing = [name for name, value in required.items()
                    if value in (None, "")]
@@ -1257,8 +1268,8 @@ def monthly_interp_to_date(monthly, valid_time):
     monthly values are anchored on the 15th of each month at the run
     year's Julian day; the year wrap uses fictitious anchors exactly 31
     days before Jan 15 and after Dec 15 (:8059-8063).  The valid time is
-    reduced to ``year*1000 + julian_day`` — WHOLE days, the clock time is
-    discarded with get_julgmt's fractional ``gmt`` (:8065-8066) — and the
+    reduced to ``year*1000 + julian_day`` â€” WHOLE days, the clock time is
+    discarded with get_julgmt's fractional ``gmt`` (:8065-8066) â€” and the
     two bracketing mid-months (``middle(l) < target <= middle(l+1)``,
     :8067-8068) blend linearly with integer-day weights
     ``(target - middle(l))`` on the later month and
@@ -1488,10 +1499,21 @@ def _build_static(
 
     # --- deep soil temperature, elevation-corrected (real.exe input;
     #     WRF share/module_soil_pre.F:973, land only) ----------------------
-    out["TMN"] = np.where(out["LANDMASK"] > 0.5,
-                          out["SOILTEMP"] - 0.0065 * out["HGT_M"],
-                          out["SOILTEMP"])
+    out["TMN"] = deep_soil_temperature_at_terrain(
+        out["SOILTEMP"], out["HGT_M"], out["LANDMASK"])
     return out
+
+
+def deep_soil_temperature_at_terrain(soiltemp, terrain, landmask):
+    """WRF module_soil_pre.F:973: sea-level climatology to land TMN.
+
+    This is the same expression used by native static preparation. Metgrid
+    carries SOILTEMP before this elevation correction, so its import must
+    pass through the same operation before land-surface initialization.
+    """
+    if np.shape(soiltemp) != np.shape(terrain) or np.shape(soiltemp) != np.shape(landmask):
+        raise ValueError("deep soil climatology, terrain and land mask shapes differ")
+    return np.where(landmask > 0.5, soiltemp - 0.0065 * terrain, soiltemp)
 
 
 _CATALOG_STATIC_CACHE: dict[tuple, dict[str, np.ndarray]] = {}

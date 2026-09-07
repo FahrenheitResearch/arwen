@@ -657,6 +657,75 @@ def test_bigg_rain_freezing_matches_official_wrf_process():
     assert saw_near_complete_freezing
 
 
+def test_bigg_rain_freezing_uses_the_two_moment_graupel_qxmin():
+    """The graupel mass threshold is WRF's 1.0e-12, not the superseded 1e-7.
+
+    ``module_mp_nssl_2mom.F:2095`` sets ``qxmin(lh) = 1.e-7`` and ``:2103``
+    then overwrites it -- ``IF ( lh .gt. 1 .and. lnh .gt. 1 ) qxmin(lh) =
+    1.0e-12`` -- which is unconditionally live for mp_physics=18:
+    ``module_physics_init.F:4633-4641`` selects ``ipconc = 5`` and the index
+    block at ``:1650-1667`` sets ``lnh = lhab+6 = 14`` against ``lh = 7``
+    (``:658``).  Both of this kernel's uses of the constant are real WRF
+    gates, and this test drives one column into each of them, inside the
+    window ``(1e-12, 1e-7)`` where the two values disagree:
+
+    * column 0 -- the Bigg minimum-transfer gate, ``:17654``
+      ``IF ( qrfrz(mgs)*dtp < qxmin(lh) .or. crfrz(mgs)*dtp < cxmin )``.
+      At 248.15 K with 1e-8 kg/kg of rain in 1e-3 drops/kg, the tail lookup
+      returns a mass fraction of 0.9986 and a number fraction of 0.6418, so
+      ``qrfrz*dtp = 9.99e-9`` -- under 1e-7, over 1e-12 -- while
+      ``crfrz*dtp = 6.4e-4`` clears ``cxmin`` comfortably.  WRF freezes
+      essentially the whole rain content; the 1e-7 threshold froze none of
+      it.
+    * column 1 -- the predicted-volume gate, ``:14204-14217``
+      ``ELSEIF ( vx(mgs,lh) == 0.0 .and. qx(mgs,lh) .gt. qxmin(lh) )``, with
+      1e-9 kg/kg of volume-less graupel.  WRF initialises the volume at the
+      500 kg/m3 default; the 1e-7 threshold left it at zero.
+
+    The oracle fixture cannot see either: its 48 rows have a minimum
+    positive transfer of 4.10e-5 kg/kg and a minimum nonzero ``qg_before``
+    of 2.0e-4 kg/kg, both far above 1e-7.
+    """
+    import cupy as cp
+
+    from gpuwm.core.nssl2 import launch_bigg_rain_freezing
+
+    def device(values):
+        return cp.asarray(np.asarray(values, dtype=np.float32))
+
+    step = 20.0
+    theta = device([248.15, 248.15])
+    density = device([1.0, 1.0])
+    exner = device([1.0, 1.0])
+    temperature = device([248.15, 248.15])
+    rain = device([1.0e-8, 0.0])
+    rain_number = device([1.0e-3, 0.0])
+    graupel = device([0.0, 1.0e-9])
+    graupel_number = device([0.0, 2.0e-2])
+    graupel_volume = device([0.0, 0.0])
+    rain_before = rain.copy()
+
+    launch_bigg_rain_freezing(
+        theta, density, exner, temperature, rain, rain_number,
+        graupel, graupel_number, graupel_volume, step)
+    cp.cuda.Stream.null.synchronize()
+
+    transfer = float(graupel[0])
+    assert 1.0e-12 < transfer < 1.0e-7, (
+        "column 0 must sit inside the window where qxmin(lh)=1e-12 and the "
+        f"superseded 1e-7 disagree; transfer was {transfer!r}")
+    assert transfer > 0.9 * float(rain_before[0]), (
+        "the Bigg minimum-transfer gate zeroed a transfer WRF keeps")
+    assert float(rain[0]) < float(rain_before[0])
+    cp.testing.assert_array_max_ulp(
+        rain[:1] + graupel[:1], rain_before[:1], maxulp=1)
+
+    # 1e-9 kg/kg of graupel is above qxmin(lh)=1e-12 and below 1e-7, so the
+    # zero-volume initialisation branch must run: v = rho*q/xdn0(lh), 500.
+    assert float(graupel_volume[1]) == pytest.approx(1.0e-9 / 500.0,
+                                                     rel=1.0e-6)
+
+
 def test_bigg_rain_freezing_validation():
     import cupy as cp
 
@@ -3059,3 +3128,36 @@ def test_fused_gs_enforces_nonnegative_hydromass_writeback():
     assert actual_graupel[0] == np.float32(0.0)
     assert actual_graupel[1] == np.float32(5.0e-13)
     assert actual_graupel[2] == np.float32(0.0)
+
+
+def test_bigg_nearly_frozen_minimum_drops_keep_the_wrf_mass_remainder():
+    """The final number bound amplifies a contracted Euler mass remainder.
+
+    WRF's independent process fixture freezes almost all of each 80-um rain
+    donor. Its separately rounded mass update is the input to the minimum
+    volume limiter. The original fused CUDA update passes the broad mass
+    absolute tolerance but changes final rain number by up to 0.043 percent.
+    """
+    import cupy as cp
+    from gpuwm.core.nssl2 import launch_bigg_rain_freezing
+
+    with _ORACLE.with_name("bigg-rain-freezing.csv").open(
+            newline="", encoding="ascii") as stream:
+        rows = [row for row in csv.DictReader(stream) if int(row["case"]) == 10]
+    assert len(rows) == 4
+    assert {float(row["dt_s"]) for row in rows} == {300.0}
+    names = ("theta_before_k", "rho_kg_m3", "exner", "temperature_k",
+             "qr_before", "qnr_before_per_kg", "qg_before",
+             "qng_before_per_kg", "qvolg_before_m3_per_kg")
+    fields = [cp.asarray(np.array([float(row[name]) for row in rows],
+                                 dtype=np.float32)) for name in names]
+    before = cp.asnumpy(fields[4])
+    want_mass = np.array([float(row["qr_after"]) for row in rows], dtype=np.float32)
+    want_number = np.array([float(row["qnr_after_per_kg"]) for row in rows],
+                           dtype=np.float32)
+    assert np.all((want_mass > 0) & (want_mass < 2.0e-4 * before))
+
+    launch_bigg_rain_freezing(*fields, 300.0)
+    np.testing.assert_array_equal(cp.asnumpy(fields[4]), want_mass)
+    np.testing.assert_allclose(cp.asnumpy(fields[5]), want_number,
+                               rtol=1.0e-6, atol=0.0)

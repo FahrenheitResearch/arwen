@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import contextvars
 from datetime import datetime
 import errno
 import hashlib
@@ -34,10 +36,6 @@ from gpuwm.mapped_engine_bridge import (
 from gpuwm.mapped_source import (_load_json_document, _mapped_engine_choice,
                                  read_input_list)
 from gpuwm.hrrr_forecast import hrrr_source_window
-from gpuwm.hrrr_route_inputs import ROUTE_DEFAULT_PHYSICS_PROFILE
-from gpuwm.physics_compat import (
-    SINGLE_DOMAIN_PHYSICS_PROFILES,
-)
 
 
 EXIT_USAGE = 64
@@ -451,12 +449,17 @@ def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
     # entry as a supplied argument, so a flag whose DEFAULT is True makes
     # `--validate-hrrr-domain` and its siblings believe the caller combined
     # them with something.  Same shape as --author-only for the same reason.
-    gfs.add_argument(
+    exports = parser.add_mutually_exclusive_group()
+    exports.add_argument(
         "--no-stock-wrf-export",
         action="store_true",
         help="prepare the forecast only, and do not attempt the bonus "
              "unchanged-WRF wrfinput/wrfbdy export of a domain tree",
     )
+    exports.add_argument(
+        "--stock-wrf-export", choices=("optional", "required", "off"),
+        help="mapped preparation's WRF file product: optional by default, "
+             "required with early configuration admission, or off")
     gfs.add_argument(
         "--statics-corridor",
         nargs="?",
@@ -818,7 +821,6 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
         "--vtable": args.vtable,
         "--bridge": args.bridge,
         "--static-input": args.static_input,
-        "--experiment-config": args.experiment_config,
         "--gfs-series": args.gfs_series,
         "--cycle": args.cycle,
         "--source-orography-variable": args.source_orography_variable,
@@ -835,7 +837,6 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
         "--composition": args.composition,
         "--input": args.mapped_inputs,
         "--input-list": args.input_list,
-        "--supplement": args.supplement,
         "--contributing-mapping": args.contributing_mapping,
         "--provenance": args.provenance,
         "--grib2-inventory": args.grib2_inventory,
@@ -845,6 +846,11 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
         "--no-stock-wrf-export": args.no_stock_wrf_export or None,
         "--statics-corridor": args.statics_corridor,
     }
+    try:
+        from gpuwm.ingest.native_supplements import supplement_bindings
+        supplement_bindings(args.supplement)
+    except ValueError as error:
+        errors.append(str(error))
     errors.extend(
         f"{flag} is not used by --source hrrr"
         for flag, value in era5_only.items()
@@ -858,9 +864,14 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
         else:
             if parsed.minute != 0 or parsed.second != 0:
                 errors.append("--valid-time must be an exact hourly HRRR cycle")
-    if args.valid_time is not None:
+    if (args.valid_time is not None
+            and (args.run_seconds is not None or args.experiment_config is not None)):
         try:
             cycle = datetime.strptime(args.valid_time, "%Y-%m-%d_%H:%M:%S")
+            run_seconds = args.run_seconds
+            if run_seconds is None:
+                from gpuwm.experiment import load_experiment
+                run_seconds = load_experiment(args.experiment_config).run_seconds
             hrrr_source_window(
                 cycle=cycle,
                 start_hour=(
@@ -868,10 +879,10 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
                     else args.forecast_start_hour
                 ),
                 run_seconds=(
-                    43_200 if args.run_seconds is None else args.run_seconds),
+                    43_200 if run_seconds is None else run_seconds),
                 end_hour=args.forecast_end_hour,
             )
-        except (TypeError, ValueError) as error:
+        except (TypeError, ValueError, OSError) as error:
             errors.append(f"invalid HRRR source forecast window: {error}")
     if (args.pipeline_workers is not None
             and args.pipeline_workers not in range(1, MAX_PIPELINE_WORKERS + 1)):
@@ -884,28 +895,14 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
         or args.history_interval_seconds <= 0.0
     ):
         errors.append("--history-interval-seconds must be positive and finite")
-    if (args.physics_profile is not None
-            and args.physics_profile not in SINGLE_DOMAIN_PHYSICS_PROFILES):
-        # HRRR-route-owned refusal, not a suite whitelist: the HRRR
-        # cold-start evidence contract (tools/prepare_hrrr_wrf.py) is
-        # keyed by shipped profile id and has no entry to consult for
-        # any other name.
-        errors.append(
-            f"--physics-profile {args.physics_profile!r} has no HRRR "
-            f"cold-start evidence contract; this route offers "
-            f"{list(SINGLE_DOMAIN_PHYSICS_PROFILES)!r}")
-    elif args.root_preparation is None:
-        from gpuwm.physics_compat import (
-            validate_single_domain_physics_profile,
-        )
+    if args.physics_profile is not None:
+        from gpuwm.physics_compat import validate_single_domain_physics_profile
         try:
             validate_single_domain_physics_profile(
-                ROUTE_DEFAULT_PHYSICS_PROFILE
-                if args.physics_profile is None else args.physics_profile,
-                expert_acknowledgements=tuple(
-                    args.ack))
+                args.physics_profile, expert_acknowledgements=tuple(args.ack))
         except ValueError as exc:
             errors.append(str(exc))
+
     return errors
 
 
@@ -1305,7 +1302,6 @@ def _required_twentycr_args(args: argparse.Namespace) -> list[str]:
         "--source-orography-variable": args.source_orography_variable,
         "--domain-source-orography": args.domain_source_orography,
         "--no-stock-wrf-export": args.no_stock_wrf_export or None,
-        "--statics-corridor": args.statics_corridor,
     }
     errors.extend(
         f"{flag} is not used by --source 20crv3"
@@ -1525,7 +1521,6 @@ def _required_mapped_args(args: argparse.Namespace) -> list[str]:
         "--domain-source-orography": args.domain_source_orography,
         "--gfs-series": args.gfs_series,
         "--cycle": args.cycle,
-        "--no-stock-wrf-export": args.no_stock_wrf_export or None,
         # NOT here any more: --statics-corridor.  It was listed as
         # unused because the mapped runner had no such flag to forward
         # to, which made every packaged mapped source a static-tree-only
@@ -1660,18 +1655,20 @@ def _hrrr_command(args: argparse.Namespace) -> list[str]:
         "--source-manifest", str(args.source_sha256s),
         "--source-manifest-sha256", str(args.source_sha256s_sha256),
         "--namelist-input", str(args.namelist_input),
-        "--physics-profile", (
-            ROUTE_DEFAULT_PHYSICS_PROFILE
-            if args.physics_profile is None else args.physics_profile),
         "--cycle", str(args.valid_time),
         "--output-root", str(args.output_root),
-        "--run-seconds", str(43_200 if args.run_seconds is None else args.run_seconds),
         "--forecast-start-hour", str(
             0 if args.forecast_start_hour is None
             else args.forecast_start_hour
         ),
         "--pipeline-workers", str(8 if args.pipeline_workers is None else args.pipeline_workers),
     ]
+    if args.run_seconds is not None:
+        command.extend(("--run-seconds", str(args.run_seconds)))
+    if args.physics_profile is not None:
+        command.extend(("--physics-profile", args.physics_profile))
+    if args.experiment_config is not None:
+        command.extend(("--experiment-config", str(args.experiment_config)))
     if args.forecast_end_hour is not None:
         command.extend(("--forecast-end-hour", str(args.forecast_end_hour)))
     if args.history_interval_seconds is not None:
@@ -1707,6 +1704,8 @@ def _hrrr_command(args: argparse.Namespace) -> list[str]:
             str(args.extend_root_preparation)))
     for acknowledgement in args.ack:
         command.extend(("--ack", acknowledgement))
+    for binding in getattr(args, "supplement", ()) or ():
+        command.extend(("--supplement", binding))
     return command
 
 
@@ -1846,6 +1845,10 @@ def _twentycr_command(args: argparse.Namespace) -> list[str]:
         command.extend(("--grib2-dump", str(args.grib2_dump)))
     if args.mapped_engine is not None:
         command.extend(("--mapped-engine", args.mapped_engine))
+    if args.statics_corridor is not None:
+        command.append("--statics-corridor")
+        if args.statics_corridor != "all":
+            command.append(args.statics_corridor)
     _append_preprocess_options(command, args)
     if args.hierarchy_workers is not None:
         command.extend(("--hierarchy-workers", str(args.hierarchy_workers)))
@@ -1876,6 +1879,10 @@ def _mapped_command(args: argparse.Namespace) -> list[str]:
         "--output-root",
         str(args.output_root),
     ]
+    export_mode = ("off" if args.no_stock_wrf_export
+                   else getattr(args, "stock_wrf_export", None))
+    if export_mode is not None:
+        command.extend(("--stock-wrf-export", export_mode))
     if args.input_list is not None:
         # The caller's compact spelling is forwarded as itself: expanding
         # it here would rebuild the exact command line Windows refuses.
@@ -2361,6 +2368,12 @@ def dispatch(args: argparse.Namespace, *,
         print("REFUSED: inconsistent runnable adapter declaration", file=sys.stderr)
         return EXIT_CONFIG
 
+    if (args.stock_wrf_export is not None
+            and adapter.runner != "mapped_composition_v1"):
+        print("--stock-wrf-export is not exposed by this preparation route; "
+              "omit it or use the route's existing export command", file=sys.stderr)
+        return EXIT_USAGE
+
     # A packaged profile decides the mapped route's declarative arguments
     # BEFORE they are validated, so the caller is checked against the
     # arguments they actually have to supply rather than against five the
@@ -2689,7 +2702,10 @@ def dispatch(args: argparse.Namespace, *,
     if args.dry_run:
         print(_quote_command(command))
         return 0
-    return _run_native_adapter(command)
+    if _ADAPTER_OUTPUT.get() is not None:
+        return _run_native_adapter(command)
+    from gpuwm.prep_output import run_preparation
+    return run_preparation(args, lambda: _run_native_adapter(command))
 
 
 #: CreateProcess refuses a command line longer than 32,767 characters and
@@ -2738,6 +2754,27 @@ def _compact_input_argv(command: list[str]) -> tuple[Path, list[str]] | None:
     return Path(name), rest + ["--input-list", name]
 
 
+_ADAPTER_OUTPUT = contextvars.ContextVar("adapter_output", default=None)
+
+
+@contextlib.contextmanager
+def redirect_adapter_output(stdout, stderr):
+    """Let an in-process launch retain output from its adapter subprocess."""
+    token = _ADAPTER_OUTPUT.set((stdout, stderr))
+    try:
+        yield
+    finally:
+        _ADAPTER_OUTPUT.reset(token)
+
+
+def _run_adapter_command(command):
+    streams = _ADAPTER_OUTPUT.get()
+    if streams is None:
+        return subprocess.run(command, check=False)
+    from gpuwm.command_output import run_streamed
+    return run_streamed(command, *streams)
+
+
 def _run_native_adapter(command: list[str]) -> int:
     """Launch the composed adapter command; exit codes pass through.
 
@@ -2752,8 +2789,12 @@ def _run_native_adapter(command: list[str]) -> int:
     exists, so the retry re-runs nothing.
     """
 
+    from gpuwm.command_output import AdapterOutputError
     try:
-        return subprocess.run(command, check=False).returncode
+        return _run_adapter_command(command).returncode
+    except AdapterOutputError as error:
+        print(f"preparation output could not be saved: {error}", file=sys.stderr)
+        return 74
     except OSError as exc:
         compacted = _compact_input_argv(command) \
             if _is_argv_limit_error(exc) else None
@@ -2762,7 +2803,10 @@ def _run_native_adapter(command: list[str]) -> int:
             return 70
         list_file, retry_command = compacted
         try:
-            return subprocess.run(retry_command, check=False).returncode
+            return _run_adapter_command(retry_command).returncode
+        except AdapterOutputError as error:
+            print(f"preparation output could not be saved: {error}", file=sys.stderr)
+            return 74
         except OSError as second:
             print(f"failed to launch native adapter: {second}",
                   file=sys.stderr)

@@ -33,11 +33,165 @@ import pytest
 
 from gpuwm import bridge_assets, bridges
 from tools import build_bridge_bundle, verify_release_artifacts
+from tools import build_linux_release_bridges as linux_build
 
 RELEASE = "v9.8.7"
 VERSION = "9.8.7"
 SOURCE_REV = "b" * 40
 PINS_MEMBER = "gpuwm/data/bridges/bridge-pins.json"
+
+
+@pytest.fixture
+def manylinux_policy():
+    return {"name": "manylinux_2_28", "symbol_versions": {"x86_64": {
+        "GLIBC": ["2.2.5", "2.28"], "GLIBCXX": ["3.4.25"],
+        "GCC": ["7.0.0"], "CXXABI": ["1.3.11"]}},
+        "lib_whitelist": ["libc.so.6", "libm.so.6", "libgcc_s.so.1", "libstdc++.so.6"],
+        "blacklist": {"libc.so.6": ["private_function"]}}
+
+
+def _elf_outputs(version="GLIBC_2.28", library="libc.so.6"):
+    return {"header": "Class: ELF64\nData: 2's complement, little endian\n"
+            "Type: DYN (Shared object file)\nMachine: Advanced Micro Devices X86-64\n",
+            "dynamic": f"0x00000001 (NEEDED) Shared library: [{library}]\n",
+            "versions": "Version needs section '.gnu.version_r' contains 1 entry:\n"
+            f"  0x0000: Version: 1 File: {library} Cnt: 1\n"
+            f"  0x0010: Name: {version} Flags: none Version: 2\n",
+            "symbols": f"  1: 0000000000000000 0 FUNC GLOBAL DEFAULT UND function@{version} (2)\n"}
+
+
+def test_manylinux_accepts_required_baseline_versions_not_unrelated_strings(manylinux_policy):
+    outputs = _elf_outputs()
+    outputs["versions"] = ("Version definition section '.gnu.version_d' contains 1 entry:\n"
+                            "  Name: GLIBC_2.39\n" + outputs["versions"])
+    result = linux_build.inspect_elf(**outputs, policy=manylinux_policy)
+    assert result["required_symbol_versions"] == {"libc.so.6": ["GLIBC_2.28"]}
+
+
+@pytest.mark.parametrize("version,library", [
+    ("GLIBC_2.29", "libc.so.6"), ("GLIBC_2.39", "libc.so.6"),
+    ("GLIBCXX_3.4.26", "libstdc++.so.6"), ("GCC_8.0.0", "libgcc_s.so.1"),
+    ("CXXABI_1.3.12", "libstdc++.so.6"), ("GLIBC_ABI_DT_RELR", "libc.so.6")])
+def test_manylinux_refuses_required_versions_outside_the_policy(manylinux_policy, version, library):
+    with pytest.raises(linux_build.QualificationError, match="unsupported symbol version"):
+        linux_build.inspect_elf(**_elf_outputs(version, library), policy=manylinux_policy)
+
+
+@pytest.mark.parametrize("mutation,message", [
+    ({"dynamic": "0x1 (NEEDED) Shared library: [libprivate.so]\n"}, "DT_NEEDED"),
+    ({"dynamic": "0x1 (RUNPATH) Library runpath: [/opt/build/lib]\n"}, "RPATH/RUNPATH"),
+    ({"header": "Class: ELF32\n"}, "x86-64 ELF"),
+    ({"symbols": "1: 0 0 FUNC GLOBAL DEFAULT UND private_function@GLIBC_2.28 (2)\n"}, "blacklisted")])
+def test_manylinux_refuses_wrong_elf_or_dependencies(manylinux_policy, mutation, message):
+    outputs = _elf_outputs()
+    outputs.update(mutation)
+    with pytest.raises(linux_build.QualificationError, match=message):
+        linux_build.inspect_elf(**outputs, policy=manylinux_policy)
+
+
+def test_manylinux_loader_checks_transitive_dependencies(manylinux_policy):
+    output = (" linux-vdso.so.1 (0x0001)\n"
+              " libc.so.6 => /lib64/libc.so.6 (0x0002)\n"
+              " /lib64/ld-linux-x86-64.so.2 (0x0003)\n")
+    assert [p["soname"] for p in linux_build.loader_closure(output, manylinux_policy)] == [
+        "libc.so.6", "ld-linux-x86-64.so.2"]
+    for extra, message in ((" libprivate.so => /lib64/libprivate.so (0x0004)\n", "transitive"),
+                           (" libm.so.6 => not found\n", "unresolved"),
+                           (" libm.so.6 => /work/libm.so.6 (0x0004)\n", "outside baseline")):
+        with pytest.raises(linux_build.QualificationError, match=message):
+            linux_build.loader_closure(output + extra, manylinux_policy)
+
+
+def test_manylinux_target_reuse_requires_matching_baseline_provenance(tmp_path):
+    target = tmp_path / "target"
+    compiler = {"rustc_vv": "rustc 1.94.0", "cargo_version": "cargo 1.94.0", "files": []}
+    marker, first = linux_build.target_context(target, image=linux_build.IMAGE,
+        toolchain=compiler, revision=SOURCE_REV, reuse=False)
+    (target / "compiled-dependency").write_bytes(b"baseline-built dependency")
+    with pytest.raises(linux_build.QualificationError, match="explicit --reuse-target"):
+        linux_build.target_context(target, image=linux_build.IMAGE, toolchain=compiler,
+                                   revision="c" * 40, reuse=False)
+    with pytest.raises(linux_build.QualificationError, match="provenance mismatch: toolchain"):
+        linux_build.target_context(target, image=linux_build.IMAGE, toolchain={"different": True},
+                                   revision="c" * 40, reuse=True)
+    _, reused = linux_build.target_context(target, image=linux_build.IMAGE,
+        toolchain=compiler, revision="c" * 40, reuse=True)
+    assert reused["initial_source_rev"] == SOURCE_REV
+    assert reused["current_source_rev"] == "c" * 40
+    assert reused["reuse_source_revisions"] == [SOURCE_REV, "c" * 40]
+    assert marker.is_file() and first["target_was_empty"]
+    foreign = tmp_path / "foreign-target"
+    foreign.mkdir()
+    (foreign / "ubuntu-object").write_bytes(b"not baseline-built")
+    with pytest.raises(linux_build.QualificationError, match="unmarked, nonempty"):
+        linux_build.target_context(foreign, image=linux_build.IMAGE, toolchain=compiler,
+                                   revision=SOURCE_REV, reuse=True)
+
+
+def test_manylinux_does_not_emit_partial_or_overwrite_existing_payload(tmp_path):
+    origin = tmp_path / "native"
+    origin.write_bytes(b"qualified bytes")
+    artifact = {"artifact": "native", "file": linux_build.file_identity(origin)}
+    artifact["file"]["sha256"] = "0" * 64
+    output = tmp_path / "artifacts"
+    with pytest.raises(linux_build.QualificationError, match="copy differs"):
+        linux_build.emit_artifacts(output, [artifact])
+    assert not output.exists()
+    output.mkdir()
+    kept = output / "existing"
+    kept.write_bytes(b"keep me")
+    with pytest.raises(linux_build.QualificationError, match="nonempty"):
+        linux_build.emit_artifacts(output, [artifact])
+    assert kept.read_bytes() == b"keep me"
+
+
+def test_manylinux_missing_auditwheel_is_a_refusal(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(linux_build.shutil, "which", lambda *args, **kwargs: None)
+    with pytest.raises(linux_build.QualificationError, match="auditwheel is required"):
+        linux_build.load_policy(SimpleNamespace(environment={}), tmp_path)
+
+
+@pytest.mark.parametrize("failure", [None, "missing", "probe"])
+def test_manylinux_probes_every_declared_artifact_before_output(tmp_path, monkeypatch, manylinux_policy, failure):
+    from gpuwm import doctor
+    release = tmp_path / "release"
+    release.mkdir()
+    for artifact in bridge_assets.BUNDLED_ARTIFACTS:
+        filename = bridge_assets.artifact_filename(artifact, "linux-x86_64")
+        (release / filename).write_bytes(b"\x7fELF" + _artifact_bytes(artifact, filename, SOURCE_REV))
+    if failure == "missing":
+        (release / "arwen-tui").unlink()
+    called = []
+    monkeypatch.setattr(linux_build.shutil, "which", lambda *args, **kwargs: "readelf")
+    def probe(path):
+        called.append(path.name)
+        return (not (failure == "probe" and path.name == "arwen-tui"), "fixture execution result")
+    monkeypatch.setattr(doctor, "_exec_probe", probe)
+    class FixtureCommands:
+        environment = {}
+        abi_calls = []
+        def run(self, label, command, *, cwd):
+            if label.endswith("-abi"):
+                self.abi_calls.append(command[-2])
+                return command[-1]
+            # No DT_NEEDED in this fixture: real loader closure is tested above.
+            fields = _elf_outputs()
+            fields.update(dynamic="There is no dynamic section in this file.\n", versions="")
+            return fields[label.rsplit("-", 1)[1]]
+    commands = FixtureCommands()
+    if failure:
+        with pytest.raises(linux_build.QualificationError, match="missing declared|executable probe failed"):
+            linux_build.qualify_artifacts(release, Path(__file__).resolve().parents[1], SOURCE_REV,
+                                          manylinux_policy, commands)
+    else:
+        result = linux_build.qualify_artifacts(release, Path(__file__).resolve().parents[1], SOURCE_REV,
+                                              manylinux_policy, commands)
+        assert {r["artifact"] for r in result} == {a.name for a in bridge_assets.BUNDLED_ARTIFACTS}
+        assert len(result) == 27
+        assert set(called) == {a.name for a in bridge_assets.BUNDLED_ARTIFACTS if a.kind == "executable"}
+        assert set(commands.abi_calls) == {bridge_assets.library_abi_for(a.name)[0]
+                                          for a in bridge_assets.BUNDLED_ARTIFACTS if a.kind == "library"}
 
 
 def _stamped(name: str, source_rev: str) -> bytes:

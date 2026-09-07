@@ -1,3 +1,40 @@
+# ======================================================================
+# THIRD-PARTY NOTICE.  Parts of this file are hand transcriptions of
+# third-party work.  ArWen distributes the file under the Apache License
+# 2.0; the notices below belong to the transcribed parts and are kept here
+# because their own licences require it.  Full texts are in the repository
+# NOTICE and in the licenses/ directory.
+#
+# For the two libm grants the text also sits beside the code, in
+# gpuwm/core/kernels/LICENSE-third-party.txt.
+#
+#   Arm optimized-routines -- the logf, expf, exp2f and powf cores and
+#   their data tables github.com/ARM-software/optimized-routines:
+#   math/logf.c, math/expf.c, math/exp2f.c, math/powf.c and the matching
+#   math/*_data.c, published August 2017 and imported into glibc for
+#   2.27/2.28 by their own author; transcribed here from glibc 2.39
+#   sysdeps/ieee754/flt-32/.
+#
+#       Copyright (c) 2017-2018, Arm Limited.
+#       SPDX-License-Identifier: MIT
+#
+#   Taken under the MIT branch of Arm's grant.  MIT requires the copyright
+#   notice above and its permission notice to travel with every copy; the
+#   permission notice is reproduced in full in the files named above.
+#
+#   FDLIBM -- expm1f, tanhf, atanf and log10f. Developed at SunPro and
+#   converted to single precision at Cygnus Support; glibc carries it
+#   substantially unmodified and presents it, in its own LICENSES file, as
+#   Sun's code.  The notice below is the whole of the licence: its one
+#   condition is that it be preserved.
+#
+#       Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+#
+#       Developed at SunPro, a Sun Microsystems, Inc. business.
+#       Permission to use, copy, modify, and distribute this
+#       software is freely granted, provided that this notice
+#       is preserved.
+# ======================================================================
 """Bit-faithful reproductions of the glibc 2.39 FP32 libm calls WRF makes.
 
 Not Noah-MP-specific despite the module name (the Noah-MP lane owns the
@@ -359,7 +396,13 @@ def log10f(x) -> np.float32:
     k = 0
     if _as_int32(hx) < 0x00800000:
         if hx & 0x7FFFFFFF == 0:
-            return F(-_TWO25 / abs(value))
+            # glibc spells log10(+-0) as ``-two25 / fabsf(x)``, a division
+            # whose only purpose is to raise divide-by-zero on the way to
+            # -inf; FDLIBM divides by a ``zero`` variable instead.  ArWen
+            # returns the -inf.  Dropped at 2.6.6 -- the two forms were
+            # compared on all 4,294,967,296 float32 bit patterns and differ
+            # on none.
+            return F(-np.inf)
         if _as_int32(hx) < 0:
             return F(np.nan)
         k -= 25
@@ -696,8 +739,11 @@ def tanhf(x) -> np.float32:
     if ix >= 0x7F800000:                                # inf or NaN
         return F(F(one / x) + one) if jx >= 0 else F(F(one / x) - one)
     if ix < 0x41B00000:                                 # |x| < 22
-        if ix == 0:
-            return x
+        # glibc guards zero here with ``if (ix == 0) return x;``.  FDLIBM does
+        # not, and it is redundant: the |x| < 2**-55 branch below returns
+        # x*(1+x), which is x for both signed zeros.  Dropped at 2.6.6 -- the
+        # two forms were compared on all 4,294,967,296 float32 bit patterns
+        # and differ on none.
         if ix < 0x24000000:                             # |x| < 2**-55
             return F(x * F(one + x))
         ax = F(abs(x))

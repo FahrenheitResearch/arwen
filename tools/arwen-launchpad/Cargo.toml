@@ -1,0 +1,24 @@
+[package]
+name = "arwen-launchpad"
+version = "2.7.0"
+edition = "2021"
+rust-version = "1.94"
+license-file = "../../LICENSE"
+description = "Local visual forecast workspace for ArWen"
+
+[dependencies]
+axum = "=0.8.9"
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "net"] }
+serde_json = "1.0"
+toml_edit = "=0.22.27"
+getrandom = "=0.3.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.59.0", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
+
+[profile.release]
+lto = "thin"
+strip = true

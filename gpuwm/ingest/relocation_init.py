@@ -321,6 +321,27 @@ def overlap_mask_for_plan(plan, shape) -> np.ndarray:
 # After the transplant: carry perturbations bitwise, re-derive the EOS
 # ---------------------------------------------------------------------------
 
+def relocation_base_changed_cells(source_state, target_state, plan):
+    """Count changed base bytes independently of the diagnostic backend."""
+    base_changed: dict[str, int] = {}
+    for pert_name, base_name in _SPLIT_PAIRS:
+        pert_target = getattr(target_state, pert_name, None)
+        base_target = getattr(target_state, base_name, None)
+        base_source = getattr(source_state, base_name, None)
+        if any(value is None for value in (pert_target, base_target,
+                                           base_source)):
+            continue
+        window = plan.window(np.shape(pert_target))
+        if window is None:
+            continue
+        (dst_j, src_j), (dst_i, src_i) = window
+        base_out = _host(base_source, np.float32)[..., src_j, src_i]
+        base_in = _host(base_target, np.float32)[..., dst_j, dst_i]
+        differs = base_out.view(np.uint32) != base_in.view(np.uint32)
+        base_changed[pert_name] = int(np.count_nonzero(differs))
+    return base_changed
+
+
 def rederive_after_transplant(*, source_state, target_state,
                               plan, cfg) -> dict[str, object]:
     """Re-derive the EOS on the rebuilt child; perturbations stay bitwise.
@@ -360,22 +381,7 @@ def rederive_after_transplant(*, source_state, target_state,
     """
     from gpuwm.core.diagnostics import update_diagnostics
 
-    base_changed: dict[str, int] = {}
-    for pert_name, base_name in _SPLIT_PAIRS:
-        pert_target = getattr(target_state, pert_name, None)
-        base_target = getattr(target_state, base_name, None)
-        base_source = getattr(source_state, base_name, None)
-        if any(value is None for value in (pert_target, base_target,
-                                           base_source)):
-            continue
-        window = plan.window(np.shape(pert_target))
-        if window is None:
-            continue
-        (dst_j, src_j), (dst_i, src_i) = window
-        base_out = _host(base_source, np.float32)[..., src_j, src_i]
-        base_in = _host(base_target, np.float32)[..., dst_j, dst_i]
-        differs = base_out.view(np.uint32) != base_in.view(np.uint32)
-        base_changed[pert_name] = int(np.count_nonzero(differs))
+    base_changed = relocation_base_changed_cells(source_state, target_state, plan)
     update_diagnostics(target_state, cfg.hypsometric_opt)
     return {
         "pairs": {pert: base for pert, base in _SPLIT_PAIRS},
@@ -508,17 +514,9 @@ def real_relocation_initializer(*, catalog=None, vertical, child_config,
     spec_width = int(cfg.spec_bdy_width)
     blend_width = int(getattr(child_config, "blend_width", 5))
 
-    def initialize(new_dc, parent_node, *, scratch_arena=None,
-                   dycore_state_workspace=None):
-        from gpuwm.ingest.nest_init import (_adjust_and_rederive, _as_like,
-                                            _capture_parent_blend_fields,
-                                            _child_grid,
-                                            _shared_vertical_coord,
-                                            parent_only_init,
-                                            seed_rk_time_t_copies)
-        from gpuwm.core.nest_interp import blend_terrain
-        from gpuwm.ingest.real import _make_real_base
-
+    def prepare_footprint(new_dc, parent_node):
+        from types import SimpleNamespace
+        from gpuwm.ingest.nest_init import _child_grid
         if int(new_dc.grid_id) != int(child_config.grid_id):
             raise RelocationRefusal(
                 f"this initializer serves grid_id {child_config.grid_id}, "
@@ -570,6 +568,48 @@ def real_relocation_initializer(*, catalog=None, vertical, child_config,
                 statics_builder, "highres_applied", False))
         statics_seconds = time.perf_counter() - started
 
+        return SimpleNamespace(domain=new_dc, grid=grid, static_fields=static_fields,
+            static_source=static_source, highres_applied=highres_applied,
+            statics_seconds=statics_seconds, shift_i=shift_i, shift_j=shift_j, drift=drift)
+
+    def initialize(new_dc, parent_node, *, scratch_arena=None,
+                   dycore_state_workspace=None, window=None, footprint=None):
+        from gpuwm.ingest.nest_init import (_adjust_and_rederive, _as_like,
+                                            _capture_parent_blend_fields,
+                                            _child_grid,
+                                            _shared_vertical_coord,
+                                            parent_only_init,
+                                            seed_rk_time_t_copies)
+        from gpuwm.core.nest_interp import blend_terrain
+        from gpuwm.ingest.real import _make_real_base
+
+        footprint = prepare_footprint(new_dc, parent_node) if footprint is None else footprint
+        if footprint.domain != new_dc:
+            raise RelocationRefusal("prepared footprint belongs to another domain placement")
+        grid, static_fields = footprint.grid, footprint.static_fields
+        static_source, highres_applied = footprint.static_source, footprint.highres_applied
+        statics_seconds = footprint.statics_seconds
+        shift_i, shift_j, drift = footprint.shift_i, footprint.shift_j, footprint.drift
+
+        if window is not None:
+            from gpuwm.core.nest_interp import window_registration
+            from gpuwm.ingest.nest_init import _mass_registration
+            window_registration(_mass_registration(new_dc, parent_node), window)
+            sy, sx = window
+            cropped_static = {}
+            for name, value in static_fields.items():
+                array = np.asarray(value)
+                if array.ndim < 2:
+                    cropped_static[name] = value
+                    continue
+                nyf, nxf = array.shape[-2:]
+                if nyf not in (cfg.ny, cfg.ny+1) or nxf not in (cfg.nx, cfg.nx+1):
+                    raise RelocationRefusal(
+                        f"static {name} has unsupported reconstruction extent {array.shape}")
+                cropped_static[name] = array[..., sy.start:sy.stop+(nyf-cfg.ny),
+                                              sx.start:sx.stop+(nxf-cfg.nx)]
+            static_fields = cropped_static
+
         extra = {}
         if scratch_arena is not None:
             extra["scratch_arena"] = scratch_arena
@@ -577,6 +617,8 @@ def real_relocation_initializer(*, catalog=None, vertical, child_config,
             extra["dycore_state_workspace"] = dycore_state_workspace
         sint_started = time.perf_counter()
         initialized = parent_only_init(new_dc, parent_node, grid=grid,
+                                       window=window,
+                                       clamp_undershoot=window is None,
                                        **extra)
         sint_seconds = time.perf_counter() - sint_started
 
@@ -594,18 +636,22 @@ def real_relocation_initializer(*, catalog=None, vertical, child_config,
             int(cfg.hypsometric_opt))
         state.ht[...] = _as_like(fine.terrain_z, state.ht)
         state.mub2d[...] = _as_like(fine.mub, state.mub2d)
-        state.phb[...] = _as_like(fine.phb, state.phb)
+        # Setter, not assignment: same reason as nest_spawn_init's
+        # own-grid arm -- the relocated child's EOS must read the float64
+        # base thickness of the geopotential it just moved onto.
+        state.set_base_geopotential(fine.phb)
         ht_int, mub_int, phb_int = _capture_parent_blend_fields(
-            new_dc, parent_node)
+            new_dc, parent_node, window=window, device_windows=window is not None)
         ht_int = _as_like(ht_int, state.ht)
         mub_int = _as_like(mub_int, state.mub2d)
         phb_int = _as_like(phb_int, state.phb)
-        blend_terrain(ht_int, state.ht, spec_bdy_width=spec_width,
-                      blend_width=blend_width)
-        blend_terrain(mub_int, state.mub2d, spec_bdy_width=spec_width,
-                      blend_width=blend_width)
-        blend_terrain(phb_int, state.phb, spec_bdy_width=spec_width,
-                      blend_width=blend_width)
+        blend_args = dict(spec_bdy_width=spec_width, blend_width=blend_width)
+        if window is not None:
+            blend_args.update(domain_shape=(cfg.ny, cfg.nx),
+                              origin=(window[0].start, window[1].start))
+        blend_terrain(ht_int, state.ht, **blend_args)
+        blend_terrain(mub_int, state.mub2d, **blend_args)
+        blend_terrain(phb_int, state.phb, **blend_args)
         # A MOVE IS NOT AN INITIALIZATION.  WRF blends the same terrain
         # triple here that `med_nest_initial` does, and then stops:
         # `adjust_tempqv` is absent from `share/mediation_nest_move.F`
@@ -648,9 +694,11 @@ def real_relocation_initializer(*, catalog=None, vertical, child_config,
         }
         from dataclasses import replace as _replace
 
-        return _replace(initialized, grid=grid,
+        return _replace(initialized, grid=initialized.grid,
                         static_fields=static_fields,
                         preprocess_receipt=receipt)
+
+    initialize.prepare_footprint = prepare_footprint
 
     def post_transplant(*, source_state, target_state, plan):
         return rederive_after_transplant(

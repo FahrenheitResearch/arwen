@@ -33,7 +33,10 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 from gpuwm import fetch_guard
-from gpuwm.experiment import load_experiment, refuse_delayed_activation
+from gpuwm.experiment import (
+    build_experiment_from_config_tables, load_experiment,
+    refuse_delayed_activation,
+)
 from gpuwm.fetch import (
     FETCH_MANIFEST_SCHEMA,
     HRRR_DEFAULT_MODE,
@@ -53,6 +56,7 @@ from gpuwm.ingest.hrrr_target import load_hrrr_target_domain
 from gpuwm.io.restart import read_restart_header
 from gpuwm.namelist_import import parse_namelist
 from gpuwm.nomads_governor import paced_urlopen
+from gpuwm.toml_document import iter_toml_statements
 
 
 PLAN_SCHEMA = "gpuwm-stream-plan-v1"
@@ -512,11 +516,6 @@ def _materialize_input_namelist(
         .encode("utf-8"))
 
 
-_TOML_ASSIGNMENT = re.compile(
-    r"^(?P<indent>\s*)(?P<key>[A-Za-z_][A-Za-z0-9_-]*)"
-    r"(?P<equal>\s*=\s*)(?P<value>.*?)(?P<comment>\s+#.*)?$")
-
-
 def _toml_datetime(value: datetime) -> str:
     # ExperimentConfig intentionally owns offset-free UTC model instants.
     # A trailing ``Z`` makes TOML produce an aware datetime which the typed
@@ -527,50 +526,56 @@ def _toml_datetime(value: datetime) -> str:
 
 def _materialize_experiment(plan: StreamPlan, destination: Path, *,
                             cycle: datetime, lead: int) -> None:
-    lines = plan.experiment_config.read_text(encoding="utf-8").splitlines()
+    text = plan.experiment_config.read_text(encoding="utf-8")
     delta = cycle - plan.experiment.start_time
     domain_starts = [
         plan.experiment.domain_start_time(domain.grid_id) + delta
         for domain in plan.experiment.domains
     ]
-    section = None
+    section = ()
     domain_index = -1
     replaced = {"start_time": 0, "run_seconds": 0}
     out = []
-    for raw in lines:
-        stripped = raw.strip()
-        if stripped == "[[domain]]":
-            section = "domain"
-            domain_index += 1
-        elif stripped.startswith("[") and stripped.endswith("]"):
-            section = stripped.strip("[]").strip()
-        match = _TOML_ASSIGNMENT.match(raw)
-        if match:
-            key = match.group("key")
+    for kind, path, lines in iter_toml_statements(text):
+        if kind in ("table", "array"):
+            section = path
+            if kind == "array" and path == ("domain",):
+                domain_index += 1
+        if kind == "assignment" and len(path) == 1:
+            key = path[0]
             replacement = None
-            if section == "experiment" and key == "start_time":
+            if section == ("experiment",) and key == "start_time":
                 replacement = _toml_datetime(cycle)
                 replaced["start_time"] += 1
-            elif section == "experiment" and key == "run_seconds":
+            elif section == ("experiment",) and key == "run_seconds":
                 replacement = str(lead * 3600)
                 replaced["run_seconds"] += 1
-            elif section == "domain" and key == "start_time":
+            elif section == ("domain",) and key == "start_time":
                 replacement = _toml_datetime(domain_starts[domain_index])
             if replacement is not None:
-                raw = (f"{match.group('indent')}{match.group('key')}"
-                       f"{match.group('equal')}{replacement}"
-                       f"{match.group('comment') or ''}")
-        out.append(raw)
+                # These decoded clock keys cannot contain '=' or '#'.
+                # Keep their original quoting/spacing and trailing comment,
+                # but replace the entire value, including multiline values.
+                prefix, _, value = lines[0].partition("=")
+                spacing = re.match(r"\s*", value).group()
+                comment = re.search(r"\s*#.*$", lines[-1])
+                lines = [f"{prefix}={spacing}{replacement}"
+                         f"{comment.group() if comment else ''}"]
+        out.extend(lines)
     if replaced != {"start_time": 1, "run_seconds": 1}:
         raise ValueError(
             "experiment template must contain exactly one [experiment] "
             "start_time and run_seconds assignment")
-    payload = ("\n".join(out) + "\n").encode("utf-8")
-    _publish_exact(destination, payload)
-    materialized = load_experiment(destination)
+    rendered = "\n".join(out) + "\n"
+    materialized = build_experiment_from_config_tables(
+        tomllib.loads(rendered), source=str(destination),
+        base_dir=destination.parent)
     if (materialized.start_time != cycle
-            or float(materialized.run_seconds) != lead * 3600.0):
+            or float(materialized.run_seconds) != lead * 3600.0
+            or [materialized.domain_start_time(domain.grid_id)
+                for domain in materialized.domains] != domain_starts):
         raise RuntimeError("materialized experiment timing failed validation")
+    _publish_exact(destination, rendered.encode("utf-8"))
 
 
 def _publish_exact(path: Path, payload: bytes) -> Path:

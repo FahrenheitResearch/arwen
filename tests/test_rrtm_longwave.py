@@ -620,8 +620,8 @@ def test_the_auto_sized_chunk_follows_free_memory() -> None:
     The fixed 512-column default re-dispatched the whole per-chunk CuPy
     op graph hundreds of times per radiation step on a production nest
     (~3.2M kernel launches, ~93% host-dispatch gap -- the task #185
-    profile).  The auto-sizer must scale with free memory, keep the 512
-    floor when the device is starved, cap at the block's own columns,
+    profile).  The auto-sizer must scale with free memory, allow a smaller
+    block when the device is starved, cap at the block's own columns,
     and leave an explicit pin untouched.  Numerics are chunk-invariant,
     which :func:`test_column_chunking_does_not_change_the_answer` pins.
     """
@@ -642,17 +642,17 @@ def test_the_auto_sized_chunk_follows_free_memory() -> None:
         def get_default_memory_pool():
             return _Pool()
 
-    fit = (int(free * rrtm_lw._TRANSIENT_MEMORY_FRACTION)
-           // (rrtm_lw._TRANSIENT_BYTES_PER_COLUMN_LAYER * nlayers))
+    fit = rrtm_lw.auto_column_chunk(200000, nlayers,
+        int(free * rrtm_lw._TRANSIENT_MEMORY_FRACTION))
     assert fit > rrtm_lw.DEFAULT_COLUMN_CHUNK
     resolved = rrtm_lw._resolve_column_chunk(None, 200000, nlayers, _FakeCupy)
     assert resolved == fit
     # Cap: a block smaller than the fit runs in one pass.
     assert rrtm_lw._resolve_column_chunk(None, 96, nlayers, _FakeCupy) == 96
-    # Floor: a starved device falls back to the conservative default.
+    # No artificial floor: a starved device uses the block that fits.
     free = 1 << 20
     assert (rrtm_lw._resolve_column_chunk(None, 200000, nlayers, _FakeCupy)
-            == rrtm_lw.DEFAULT_COLUMN_CHUNK)
+            == rrtm_lw.auto_column_chunk(200000, nlayers, free // 2))
     # An explicit pin wins over the fit.
     free = 8 << 30
     assert rrtm_lw._resolve_column_chunk(2048, 200000, nlayers,
@@ -713,8 +713,8 @@ def test_the_auto_size_is_resolved_once_and_never_inside_capture() -> None:
     adapter.column_chunk = None
     adapter._auto_chunk = {}
 
-    fit = (int(free * rrtm_lw._TRANSIENT_MEMORY_FRACTION)
-           // (rrtm_lw._TRANSIENT_BYTES_PER_COLUMN_LAYER * nlayers))
+    fit = rrtm_lw.auto_column_chunk(200000, nlayers,
+        int(free * rrtm_lw._TRANSIENT_MEMORY_FRACTION))
     # Eager: resolves from free memory and caches -- ONE query.
     assert adapter._column_chunk_for(200000, nlayers, _FakeCupy) == fit
     assert adapter._column_chunk_for(200000, nlayers, _FakeCupy) == fit
@@ -850,11 +850,11 @@ def _radiation_config(lw: int, sw: int) -> RunConfig:
         bl_pbl_physics=1)
 
 
-def test_config_admits_the_classic_pair_and_refuses_the_rest() -> None:
-    validate_run_config(_radiation_config(1, 1))
-    for shortwave in (0, 4, 90):
-        with pytest.raises(ValueError, match="ra_sw_physics=1"):
-            validate_run_config(_radiation_config(1, shortwave))
+def test_config_admits_classic_longwave_with_each_implemented_spectrum() -> None:
+    # The shared factory now composes spectra; the old pair-only guard is
+    # retired by that implementation, not part of classic LW's contract.
+    for shortwave in (0, 1, 4, 90):
+        validate_run_config(_radiation_config(1, shortwave))
 
 
 def _classic_namelist_pair(tmp_path: Path):

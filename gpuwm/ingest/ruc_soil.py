@@ -689,6 +689,7 @@ def preprocess_ruc_soil(
     water_temperature_policy=None,
     soil_mesh=None,
     route=None,
+    fractional_seaice: bool = False,
 ) -> RucSoilState:
     """Build a RUC initial soil state, in ``preprocess_noah_soil``'s signature.
 
@@ -762,6 +763,9 @@ def preprocess_ruc_soil(
     ratio has to be formed against the table the scheme itself integrates.
     The Noah call therefore stays bitwise what it was.
     """
+    if not isinstance(fractional_seaice, bool):
+        raise TypeError("fractional_seaice must be boolean")
+
 
     from gpuwm.ingest.soil import (_host, _soil_temperature_elevation_delta,
                                    preprocess_noah_soil)
@@ -773,7 +777,9 @@ def preprocess_ruc_soil(
      depth_scale) = _source_soil_profiles(fields, soil_layer_contract)
 
     surface = preprocess_noah_soil(
-        fields, soil_type=soil_type,
+        fields,
+        **({"fractional_seaice": True} if fractional_seaice else {}),
+            soil_type=soil_type,
         deep_soil_temperature=deep_soil_temperature,
         lake_mask=lake_mask, lake_skin_temperature=lake_skin_temperature,
         soil_layer_contract=soil_layer_contract,
@@ -873,6 +879,7 @@ def preprocess_land_surface_soil(
     water_temperature_policy=None,
     soil_mesh=None,
     route=None,
+    fractional_seaice: bool = False,
 ):
     """Route a soil source to the selected land surface's own geometry.
 
@@ -891,6 +898,8 @@ def preprocess_land_surface_soil(
     error, and only for the schemes whose counts differ.
     """
 
+    if not isinstance(fractional_seaice, bool):
+        raise TypeError("fractional_seaice must be boolean")
     scheme = int(sf_surface_physics)
     if scheme == RUCLSMSCHEME:
         # The landmask/terrain/source-orography seam is forwarded whole:
@@ -902,7 +911,9 @@ def preprocess_land_surface_soil(
         # unpaired terrain/source_orography, a non-boolean landmask, the
         # Noah-bounds mapped contract -- live in the callees and survive.
         return preprocess_ruc_soil(
-            fields, soil_type=soil_type,
+            fields,
+            **({"fractional_seaice": True} if fractional_seaice else {}),
+            soil_type=soil_type,
             deep_soil_temperature=deep_soil_temperature,
             lake_mask=lake_mask, lake_skin_temperature=lake_skin_temperature,
             soil_layer_contract=soil_layer_contract,
@@ -921,7 +932,9 @@ def preprocess_land_surface_soil(
         # nothing added, so a Noah or Noah-MP run's soil state is the same
         # object it was before this seam existed.
         return preprocess_noah_soil(
-            fields, soil_type=soil_type,
+            fields,
+            **({"fractional_seaice": True} if fractional_seaice else {}),
+            soil_type=soil_type,
             deep_soil_temperature=deep_soil_temperature,
             lake_mask=lake_mask, lake_skin_temperature=lake_skin_temperature,
             soil_layer_contract=soil_layer_contract,

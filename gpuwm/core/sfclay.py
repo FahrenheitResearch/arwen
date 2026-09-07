@@ -4,8 +4,9 @@ The CUDA kernel consumes lowest-model-level fields on mass points, one
 thread per ``(j, i)`` surface column.  It mirrors WRF v4.6.1
 ``module_sf_sfclay.F:SFCLAY1D`` and
 ``physics_mmm/sf_sfclayrev.F90:sf_sfclayrev_run``.  ``xland`` uses WRF's
-convention (1 land, 2 water); ``znt``, ``ust``, ``mol``, ``hfx``, ``qfx``,
-``qsfc`` and ``zol`` are copied as previous-step/inout values before launch.
+convention (1 land, 2 water); ``znt``, ``ust``, ``ustm``, ``mol``, ``hfx``,
+``qfx``, ``qsfc`` and ``zol`` are copied as previous-step/inout values
+before launch.
 
 The high-level :func:`sfclay` allocates and returns every diagnostic and
 exchange field needed by the later LSM/PBL driver.  :func:`launch_sfclay`
@@ -33,6 +34,7 @@ class SFClayResult:
 
     znt: cp.ndarray
     ust: cp.ndarray
+    ustm: cp.ndarray
     mol: cp.ndarray
     hfx: cp.ndarray
     qfx: cp.ndarray
@@ -93,10 +95,10 @@ def _surface_array(value, shape, name: str, default: float | None = None):
     return cp.ascontiguousarray(array)
 
 
-def _allocate_result(shape, *, znt, ust, mol, hfx, qfx, qsfc, zol):
-    initial = {"znt": znt.copy(), "ust": ust.copy(), "mol": mol.copy(),
-               "hfx": hfx.copy(), "qfx": qfx.copy(), "qsfc": qsfc.copy(),
-               "zol": zol.copy()}
+def _allocate_result(shape, *, znt, ust, ustm, mol, hfx, qfx, qsfc, zol):
+    initial = {"znt": znt.copy(), "ust": ust.copy(), "ustm": ustm.copy(),
+               "mol": mol.copy(), "hfx": hfx.copy(), "qfx": qfx.copy(),
+               "qsfc": qsfc.copy(), "zol": zol.copy()}
     arrays = {name: initial.get(name, cp.empty(shape, dtype=DTYPE))
               for name in SFCLAY_OUTPUTS}
     return SFClayResult(**arrays)
@@ -109,8 +111,8 @@ def launch_sfclay(u, v, t, qv, p, dz8w, psfc, tsk, pblh, mavail, xland,
     """Launch into a preallocated :class:`SFClayResult`.
 
     All inputs and result fields must be contiguous FP32 arrays with the same
-    ``(ny,nx)`` shape.  The seven WRF inout values are already held in
-    ``result.znt/ust/mol/hfx/qfx/qsfc/zol``.
+    ``(ny,nx)`` shape.  The eight WRF inout values are already held in
+    ``result.znt/ust/ustm/mol/hfx/qfx/qsfc/zol``.
     """
     _validate_options(option, isftcflx, iz0tlnd)
     shape = u.shape
@@ -123,23 +125,25 @@ def launch_sfclay(u, v, t, qv, p, dz8w, psfc, tsk, pblh, mavail, xland,
     n = int(np.prod(shape))
     blocks = (n + _TPB - 1) // _TPB
     kernel = get_kernel("sfclay", "sfclay_column")
-    # Kernel order: 12 read-only inputs; 7 inout fields; remaining outputs.
+    # Kernel order: 12 read-only inputs; 8 inout fields; remaining outputs.
     kernel((blocks,), (_TPB,), arrays + (
         DTYPE(dx), np.int32(option), np.int32(bool(isfflx)),
         np.int32(isftcflx), np.int32(iz0tlnd), np.int32(n)))
 
 
 def sfclay(u, v, t, qv, p, dz8w, psfc, tsk, znt, pblh, mavail, xland,
-           *, option: int = 91, qsfc=None, zol=None, ust=None, mol=None,
-           hfx=None, qfx=None, lakemask=None, dx: float = 1000.0,
+           *, option: int = 91, qsfc=None, zol=None, ust=None, ustm=None,
+           mol=None, hfx=None, qfx=None, lakemask=None, dx: float = 1000.0,
            isfflx: bool = True, isftcflx: int = 0,
            iz0tlnd: int = 0) -> SFClayResult:
     """Run one WRF MM5 surface-layer call and return FP32 device fields.
 
     Required fields are broadcast-compatible 2-D surface arrays.  Defaults
     match a first WRF call: ``ust=0.1``, ``zol/mol/hfx/qfx/qsfc=0`` and no
-    lake mask.  Classic option 91 preserves incoming ``zol`` in its
-    strong-stable branch, matching WRF's inout semantics.  ``option`` is 91
+    lake mask.  ``ustm`` defaults to 0 because Registry.EM_COMMON:1954
+    declares it plain state and no WRF init routine seeds it.  Classic
+    option 91 preserves incoming ``zol`` in its strong-stable branch,
+    matching WRF's inout semantics.  ``option`` is 91
     (classic) or 1 (revised); configuration value 0 means the future physics
     driver must skip this function entirely.
     """
@@ -155,13 +159,15 @@ def sfclay(u, v, t, qv, p, dz8w, psfc, tsk, znt, pblh, mavail, xland,
     lake = _surface_array(lakemask, shape, "lakemask", 0.0)
     znt_a = _surface_array(znt, shape, "znt")
     ust_a = _surface_array(ust, shape, "ust", 0.1)
+    ustm_a = _surface_array(ustm, shape, "ustm", 0.0)
     mol_a = _surface_array(mol, shape, "mol", 0.0)
     hfx_a = _surface_array(hfx, shape, "hfx", 0.0)
     qfx_a = _surface_array(qfx, shape, "qfx", 0.0)
     qsfc_a = _surface_array(qsfc, shape, "qsfc", 0.0)
     zol_a = _surface_array(zol, shape, "zol", 0.0)
-    result = _allocate_result(shape, znt=znt_a, ust=ust_a, mol=mol_a,
-                              hfx=hfx_a, qfx=qfx_a, qsfc=qsfc_a, zol=zol_a)
+    result = _allocate_result(shape, znt=znt_a, ust=ust_a, ustm=ustm_a,
+                              mol=mol_a, hfx=hfx_a, qfx=qfx_a, qsfc=qsfc_a,
+                              zol=zol_a)
     launch_sfclay(*base, lake, result, option=option, dx=dx,
                    isfflx=isfflx, isftcflx=isftcflx, iz0tlnd=iz0tlnd)
     return result

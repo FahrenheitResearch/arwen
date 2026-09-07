@@ -1,0 +1,11 @@
+# Automatic streaming search
+
+An automatic tree keeps its first admitted road. It does not search for a global minimum number of streamed domains after a valid plan is found. If the initial walk does not fit, it tries each single automatic preference change, then cumulative changes from the last domain toward the root. Each candidate uses the same configured resident envelope, simultaneous streamed and coupling claims, host allowance, and cold device observation.
+
+This order reaches the all-eligible-auto-streamed candidate after at most 2*N-1 forced preference sets for N eligible domains. A set may require another arithmetic walk to reserve the exact configured resident obligation and shrink tiles. There is no arbitrary iteration limit in production. If the fast candidates do not fit, the full remaining subset search is retained so a less obvious mixed road is not rejected. That last resort can still be exponential in the number of automatic domains. Explicit road and tile controls retain their existing meaning.
+
+Before searching, shared fixed allocations are priced once. A host-backed domain whose complete ring store (or two shadow stores) exceeds the entire host allowance cannot stream with any tile shape; it must remain resident. The planner omits only that impossible choice and refuses early if those required resident domains already exceed the GPU admission budget. A resident domain does not need streamed host storage.
+
+CPU regression controls load real public-schema configurations. At 24 GiB declared free VRAM with ample host memory, an 8-domain case fell from221 planner walks to15. The same12/16-domain controls previously exceeded a512-walk bounded review; the fast path admits them in23/34 walks. An independent4-domain control requires a nonprefix mixed road (large root and child streamed, two small siblings resident) and still reaches it through the complete fallback. These are planner measurements, not GPU allocation or forecast timing claims.
+
+The throughput preference tradeoff is deliberate: some automatic layouts may stream more domains than an exhaustive minimum-count search would select. Resource admission and requested scientific settings are unchanged.

@@ -54,10 +54,31 @@ def test_the_job_the_replay_runs_cannot_run_without_setuptools():
 
 
 def test_setuptools_is_seeded_into_the_replay_venv():
-    """The remedy, where the harness can act on it."""
+    """The remedy, where the harness can act on it.
 
-    assert "setuptools" in VENV_SEEDS
+    The seed is the SPEC pyproject's ``[build-system]`` names, not the
+    bare name: ``setuptools>=77`` is the PEP 639 floor that reads the SPDX
+    ``license`` field, and a venv seeded below it builds the packaging
+    tests' wheel against a different reading of the same pyproject than
+    the job it replays.  Read off pyproject so the two cannot drift.
+    """
+
+    import re
+    import tomllib
+
+    build_requires = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )["build-system"]["requires"]
+    seeds = [spec for spec in VENV_SEEDS
+             if re.match(r"setuptools(?![A-Za-z0-9_-])", spec)]
+    assert len(seeds) == 1, VENV_SEEDS
+    seed = seeds[0]
+    assert seed in build_requires, (seed, build_requires)
+    floor = re.fullmatch(r"setuptools>=(\d+)(?:\.\d+)*", seed)
+    assert floor is not None, seed
+    assert int(floor.group(1)) >= 77, seed      # the PEP 639 floor
     assert "build" in VENV_SEEDS
+    assert "wheel" in VENV_SEEDS
 
 
 @pytest.mark.slow

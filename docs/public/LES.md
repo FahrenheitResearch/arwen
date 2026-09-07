@@ -282,7 +282,9 @@ invent a trend that is not there.
 
 The nested child sits on the bold row. **The cost of the shared vertical
 grid is 4.8 points of resolved TKE fraction**: 0.873 against 0.921 at
-`nz=128`, which is the finest vertical grid ArWen can run at all (§4).
+`nz=128`. That is the deepest rung of this sweep, not the model's ceiling —
+§4 records receipted runs at nz=160 and nz=192 and a solver that admits 256,
+with radiation the binding constraint on a real-data column.
 Put the other way round, the subgrid model carries **12.7% of the
 turbulence instead of 7.9% — about 60% more of it is parameterized** than
 at the ceiling. Peak resolved `var(w)` normalised by w² is 15% low
@@ -324,28 +326,66 @@ TOML. The parameter row is importable from a WRF namelist, so an existing
 
 These are limits of the current build, not opinions about LES.
 
-- **`nz <= 128` is what has been RUN; the solver now admits 256.** The
+- **`nz <= 192` has been RUN and receipted; the solver admits 256.** The
   acoustic solver carries one per-thread stack column sized `WPHI_MAX_LEV`
   (`gpuwm/core/kernels/acoustic.cu`), and that bound is compiled from a tier
   ladder chosen by `nz` (`gpuwm/core/acoustic.py`, tiers 129/193/257). Every
   `nz <= 128` configuration compiles the same kernel it always did — the
   unspecialized module, no define injected. Above 256 the host raises before
   any launch, so it is a loud refusal and not a silently skipped kernel.
-  Nothing above 128 has a run receipt yet: the level sweep, the perf
-  numbers and the `nz=160` acceptance battery are registered but unrun
-  (`docs/superpowers/specs/2026-08-04-p2-nz-tier-acceptance.md`), and
-  `cu_physics=1` is still refused above 128 by Kain-Fritsch's own bound,
-  and so is every PBL scheme except MYNN: YSU, Shin-Hong, MYJ and SASE all
-  hold one column per thread at a compiled `KMAX = 128`. `gpuwm check`
-  refuses those combinations by name before a run starts.
+  The `nz=160` acceptance battery registered at
+  `docs/superpowers/specs/2026-08-04-p2-nz-tier-acceptance.md` **ran on
+  2026-08-04 and passed every leg**: mass drift 6.27e-08, TKE budget residual
+  1.23e-09, restart bit-identical member for member, and a determinism pair
+  with 0 of 54 screened receipt fields differing. The level sweep and the
+  perf numbers ran with it. `steps/s x nz` is flat to 4.5% peak to peak from
+  nz=64 to nz=192 with no step at the 129->193 tier boundary, and no rung
+  reserves any local-memory backing store — the widest frame is 800 B against
+  the 1,024 B default stack limit, so the ~8.0 MiB reservation the acceptance
+  document prices arrives only above nz=192. Receipt:
+  `docs/superpowers/receipts/les/p2-nz-tier-2026-08-04/P2-DEVICE-ACCEPTANCE.md`.
+  **`nz > 192` is still unrun**: the 257 tier is compiled, frame-measured
+  (1,056 B) and gated, but no integration has been run there.
+- **Radiation, not the acoustic solver, is the vertical ceiling on a
+  real-data run.** Every bound below is refused by name at the door
+  (`gpuwm check`; `gpuwm/physics_compat.py`, single-sourced from
+  `gpuwm/physics_vertical_contract.py`). The radiation bounds count model
+  levels PLUS the cap layers above the model top, so they move with `p_top`:
+
+  | component | the bound | max `nz` at `p_top = 5,000 Pa` |
+  |---|---|---|
+  | legacy RRTMG, shortwave | model + wrapper layers <= 64 | **63** |
+  | RTE+RRTMGP, longwave | model + cap layers <= 128 | **115** |
+  | legacy RRTMG, longwave | model + cap layers <= 128 | **115** |
+  | WSM6 microphysics | `nz <= 80` | 80 |
+  | Kain-Fritsch cumulus | `nz <= 128` | 128 |
+  | YSU / Shin-Hong / MYJ PBL, SASE | `nz <= 128` | 128 |
+  | Kessler / Thompson / Thompson-aerosol / Morrison / NSSL-2 | `nz <= 256` | 256 |
+  | MYNN PBL, Grell-Freitas cumulus | none | 256 (the solver's) |
+  | acoustic solve | `nz <= 256` | 256 |
+
+  The deep runs above were idealized dry CBL cases with radiation off, which
+  is why they reached 160 and 192. **A full-physics real-data column is capped
+  at 115 levels by RRTMGP at the usual `p_top`, and at 63 if legacy RRTMG
+  shortwave is selected** — both below the acoustic solver's 256, and the
+  shortwave one below every other ceiling in the model. The cap-layer counts
+  fall as `p_top` rises: at `p_top = 10,000 Pa` the RRTMGP ceiling is 103.
   §2 prices what the vertical grid costs: at 128 the resolved fraction is
   0.921, and the nested child's shared 49-level grid gives up 4.8 points
-  of it.
-- **Vertical nesting is impossible by construction.** The vertical grid is
-  single-sourced from `ExperimentConfig.vertical`, and per-domain vertical
-  keys are rejected outright (`gpuwm/experiment.py`,
-  `_DOMAIN_VERTICAL_KEYS`). A 250 m LES child therefore runs its parents'
-  level count. It cannot be given more levels than the 3 km domain above it.
+  of it. The battery extends that sweep, strictly monotone: **0.92476 at
+  nz=160 and 0.92941 at nz=192**.
+- **Vertical nesting is impossible in an INLINE nest tree, and available
+  offline.** The vertical grid of a running tree is single-sourced from
+  `ExperimentConfig.vertical`, and per-domain vertical keys are rejected
+  outright (`gpuwm/experiment.py`, `_DOMAIN_VERTICAL_KEYS`): the inline
+  corridor interpolates boundaries every parent step on the GPU and has no
+  vertical operator there. A 250 m child running *inside* the tree does
+  therefore run its parents' level count. To give it more, run it as an
+  offline child off archived parent history: `gpuwm downscale
+  --child-levels 128,2.5` builds it on its own ladder, remapping the
+  initial state and the whole lateral-boundary table set once at
+  preparation in FP64. That is the door that recovers the 4.8 points of
+  resolved TKE the shared 49-level grid gives up, measured in §2 above.
 - **`km_opt=2` is refused only under a `km_opt=2` PARENT.** WRF gives
   `tke` no `i` (nest-interpolation) and no `f` (feedback) Registry flag,
   so a child cold-starts its own TKE and never feeds it back. Under a

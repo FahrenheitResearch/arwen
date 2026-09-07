@@ -113,6 +113,35 @@ def test_the_clean_base_is_an_ancestor_of_head() -> None:
         "branch-diff scan is measuring the wrong thing while passing.")
 
 
+@pytest.mark.parametrize("available, expected", [
+    ((scan.PUBLIC_CLEAN_BASE, scan.PRIVATE_CLEAN_BASE), scan.PUBLIC_CLEAN_BASE),
+    ((scan.PRIVATE_CLEAN_BASE,), scan.PRIVATE_CLEAN_BASE),
+    ((), scan.PUBLIC_CLEAN_BASE),
+])
+def test_history_selection_never_substitutes_an_arbitrary_tip(monkeypatch, available, expected):
+    from types import SimpleNamespace
+    queried = []
+
+    def run(command, **kwargs):
+        assert command[:3] == ["git", "merge-base", "--is-ancestor"]
+        assert command[-1] == "HEAD"
+        queried.append(command[3])
+        return SimpleNamespace(returncode=0 if command[3] in available else 1)
+
+    monkeypatch.setattr(scan.subprocess, "run", run)
+    assert scan._history_base() == expected
+    assert set(queried) <= {scan.PUBLIC_CLEAN_BASE, scan.PRIVATE_CLEAN_BASE}
+
+
+def test_vendor_policy_does_not_hide_the_same_token_in_authored_code():
+    token = "".join(("wx", "mod"))
+    diff = ("+++ b/tools/arwen-ui-vendor/crates-io/example/lib.rs\n+" + token + "\n"
+            "+++ b/gpuwm/new_module.py\n+" + token + "\n")
+    offenders = scan._diff_offenders(diff)
+    assert len(offenders) == 1
+    assert offenders[0].startswith("gpuwm/new_module.py:")
+
+
 @pytest.mark.parametrize("index", range(len(scan._TIER1)))
 def test_every_tier1_literal_is_individually_detected(index: int) -> None:
     """F22.  One parametrised case per literal, so narrowing the set fails.

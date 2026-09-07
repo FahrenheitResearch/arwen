@@ -174,6 +174,28 @@ refused precisely when they do not.
 `--print-command` prints the exact runner line and exits, running
 nothing and requiring no GPU.
 
+### Continuing a prepared hierarchy
+
+Pass any member of the earlier tree's checkpoint set and a fresh output folder:
+
+```sh
+gpuwm sim PREPARED_ROOT --experiment-config experiment.toml \
+  --restart previous/run/gpuwmrst_d01_TIME.npz --outdir continued
+```
+
+The same tree runner validates the preparation, scientific configuration and
+complete checkpoint set. Its existing permitted changes to forecast length,
+output/restart cadence and adaptive-controller targets still apply. Use
+`--sealed-forcing-extension` when writing or restoring under the existing
+append-only forcing-prefix contract. `--print-command` includes both operands.
+The original run directory remains protected from output mixing.
+
+This exposes the existing hierarchy checkpoint format. The single prepared
+bundle runner does not yet have a checkpoint writer/restore adapter for that
+format; selecting `--runner tree` does not create the missing hierarchy
+receipts. Ordinary `gpuwm run --restart` and `gpuwm resume` retain their own
+shared checkpoint path. `gpuwm go` has no checkpoint operand yet.
+
 ### Output contract
 
 Under `--outdir`:
@@ -320,3 +342,32 @@ The shape that works:
 Every stage exits nonzero on refusal and prints one sentence saying
 why; add `--explain` to any command for the mechanism behind the
 sentence.
+
+
+### Reuse a prepared bundle or continue its checkpoint
+
+Run an existing prepared bundle directly, keeping the original preparation intact:
+
+```sh
+gpuwm go CONFIG.toml --prepared-root PREPARED --outdir NEW_OUTPUT --products none
+```
+
+For a prepared hierarchy checkpoint, add `--restart CHECKPOINT`. Use a fresh output
+folder beside the earlier run. The command verifies the existing bundle and restores
+through the same runner as `gpuwm sim`; it does not fetch inputs or repeat preparation.
+If your usual command also supplies `--data-dir` or `--geog-root`, those paths
+remain in the plan and are reported unused; the existing bundle is the input.
+All checkpoint siblings must remain together. The configuration and prepared inputs
+must satisfy the runner's existing identity checks.
+
+A single-domain portable bundle additionally needs `--wps-namelist ORIGINAL.wps`,
+its exact prepared WPS authority. Fresh simulation works; that bundle format's runner
+currently has no checkpoint writer or restore adapter. Configs with `[case_data]`
+can use `gpuwm go CONFIG.toml --restart CHECKPOINT` through the ordinary experiment
+runtime without a prepared-root operand.
+
+The same operation is available in a `route: "prepared"` run plan using
+`run_options.prepared_root`, optional `run_options.restart`, and
+`run_options.wps_namelist` for a portable single-domain bundle. `output_root` names
+this new run's own directory. Inspect `go` with `--dry-run`, or inspect a plan
+with `gpuwm run-plan PLAN.json --resolve`, before running.

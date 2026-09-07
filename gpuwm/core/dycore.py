@@ -30,10 +30,12 @@ from __future__ import annotations
 
 from functools import lru_cache
 import math
+import os
 
 import cupy as cp
 import numpy as np
 
+from gpuwm.grid_requirements import FIFTH_ORDER_STENCIL_AXIS, boundary_axis
 from gpuwm.config import RunConfig, validate_km_opt
 from gpuwm.core import constants as c
 from gpuwm.core.acoustic import (prepare_acoustic_coefficients,
@@ -443,7 +445,7 @@ def _validate_geopotential_config(cfg: RunConfig, nx: int, ny: int) -> None:
             raise NotImplementedError(
                 "h_sca_adv_order=5 with radiative open boundaries is not "
                 "wired (periodic and specified only)")
-        if nx < 7 or ny < 7:
+        if nx < FIFTH_ORDER_STENCIL_AXIS or ny < FIFTH_ORDER_STENCIL_AXIS:
             raise ValueError(
                 f"h_sca_adv_order=5 needs nx, ny >= 7 (7-point stencil), "
                 f"got {nx} x {ny}")
@@ -1275,6 +1277,61 @@ def diff6_exempt_slots(cfg: RunConfig) -> frozenset[str]:
     return frozenset("smag_r" + name for name in WRF_MOIST_ARRAY_SPECIES)
 
 
+# The four rows WRF filters from ``rk_tendency`` (dyn_em/module_em.F:882,
+# :894, :907, :919); every other diff6 row is filtered from
+# ``rk_scalar_tend`` (:1425).
+_DIFF6_DRY_SLOTS = frozenset(("smag_ru", "smag_rv", "smag_rw", "smag_rth"))
+
+
+def _diff6_dt(cfg: RunConfig, slot: str) -> float:
+    """The ``dt`` WRF hands ``sixth_order_diffusion`` for one row.
+
+    ``diff_6th_coef = diff_6th_factor*0.015625/(2.0*dt)``
+    (module_big_step_utilities_em.F:6321), so this argument sets the
+    filter's strength and WRF does not use one value for it.
+    ``rk_tendency`` is called with ``grid%dt`` (solve_em.F:892) and passes
+    it to the u/v/w/theta calls; ``rk_scalar_tend`` is called with
+    ``dt_rk`` (solve_em.F:2211, :2380, :2473, :2635, :2777) and passes it
+    on as ``dt_step`` for the moist/scalar/tke rows.  Both diff6 blocks sit
+    under ``rk_step == 1`` (module_em.F:800, :1378), where
+    ``dt_rk = grid%dt/3.`` for ``rk_ord = 3`` (solve_em.F:596-600) -- the
+    only order this dycore integrates (namelist_import.py pins it).  WRF's
+    scalar filter is therefore three times the strength of its dry filter.
+    """
+    return cfg.dt if slot in _DIFF6_DRY_SLOTS else cfg.dt / 3.0
+
+
+def _couple_dry_mixing_map_factor(state: DomainState, specs) -> None:
+    """Apply ``rk_addtend_dry``'s ``1/msf`` to the mixing package only.
+
+    WRF's dry mixing tendencies reach ``ru_tendf``/``rv_tendf``/
+    ``rw_tendf``/``t_tendf`` already carrying the target's map factor --
+    ``horizontal_diffusion_u_2`` builds ``mrdx=msfux(i,j)*rdx``
+    (module_diffusion_em.F:3304-3312), which ``wrf_smag_hd_u``
+    (kernels/smag2d.cu:786-792) transcribes, and the vertical rows carry
+    none in either code -- and ``rk_addtend_dry`` divides the sum by it
+    once (module_em.F:1043, :1054, :1065, :1078).
+
+    ``sixth_order_diffusion`` also multiplies by the map factor
+    (module_big_step_utilities_em.F:6509/:6522/:6531 and :6599/:6605/
+    :6614), so WRF's net diff6 contribution to the dry tendencies carries
+    no map factor at all -- and kernels/diff6.cu omits both operations to
+    the same end.  The two packages share one carrying buffer here, so the
+    division belongs to the mixing half alone and is taken before diff6
+    accumulates into the same slot.
+
+    Only the four rows ``rk_addtend_dry`` owns are coupled; the moisture
+    rows have no state tendency and go to ``rk_update_scalar``, which adds
+    ``sc_tend`` raw.
+    """
+    if not state.has_msf:
+        return
+    msf = {"x": state.msfu, "y": state.msfv, "z": state.msft, "": state.msft}
+    for f0, tend, _xk, _c1, _c2, slot, stag in specs:
+        if tend is not None:
+            state.scratch(f0.shape, slot)[:] /= msf[stag][None]
+
+
 def _compute_wrf_smag_tendencies(state: DomainState, cfg: RunConfig,
                                   km, kh, specs, *, time_t: bool) -> None:
     """Build the once-per-step WRF metric/stress forward tendencies.
@@ -1438,6 +1495,8 @@ def prepare_fixed_tendencies(state: DomainState, cfg: RunConfig) -> None:
     if include_smag:
         _compute_wrf_smag_tendencies(
             state, cfg, km, kh, specs, time_t=True)
+        # rk_addtend_dry's 1/msf, taken before diff6 shares these buffers.
+        _couple_dry_mixing_map_factor(state, specs)
 
     if include_diff6:
         factor = _clock_scaled_diff6_factor(cfg)
@@ -1455,7 +1514,8 @@ def prepare_fixed_tendencies(state: DomainState, cfg: RunConfig) -> None:
         for f0, _tend, _xk, c1, c2, slot, stag in diff6_rows:
             tmp = state.scratch(f0.shape, temp_slot[stag])
             tmp[...] = 0
-            launch_diff6(f0, tmp, mu_t, c1, c2, factor, cfg.dt,
+            launch_diff6(f0, tmp, mu_t, c1, c2, factor,
+                         _diff6_dt(cfg, slot),
                          cfg.diff_6th_opt, stagger=stag,
                          phb=state.phb, msfu=state.msfu, msfv=state.msfv,
                          slopeopt=cfg.diff_6th_slopeopt,
@@ -1475,7 +1535,16 @@ def prepare_fixed_tendencies(state: DomainState, cfg: RunConfig) -> None:
 
 
 def add_fixed_dry_tendencies(state: DomainState, cfg: RunConfig) -> None:
-    """Add the held time-t forward tendencies to one RK slow pass."""
+    """Add the held time-t forward tendencies to one RK slow pass.
+
+    WRF ``rk_addtend_dry`` divides each held ``*_tendf`` by the target's
+    own map factor here (module_em.F:1043 ``/msfuy``, :1054
+    ``*msfvx_inv``, :1065 and :1078 ``/msfty``).  gpuwm applies that
+    division to the Smagorinsky/vertical-mixing package alone, at the
+    point of production -- see :func:`_couple_dry_mixing_map_factor` --
+    because the two source packages share one carrying buffer and only the
+    mixing package carries WRF's map factor into it.
+    """
     if cfg.km_opt not in (2, 3, 4) and cfg.diff_6th_opt <= 0:
         return
     # K values are not consumed here; the specs provide shapes/targets.
@@ -1875,11 +1944,10 @@ def apply_diff6(state: DomainState, cfg: RunConfig) -> None:
     ``bnd_y``), and the width-3 host mask is then precisely WRF's loop
     exclusion on every axis and stagger.
 
-    The real74 compatibility driver advances eight internal dynamics steps
-    per 60 s WRF model-clock interval.  In that case the per-call factor is
-    the eighth-root retention equivalent, so the eight 2dx applications
-    compose to exactly the namelist ``diff_6th_factor`` instead of applying
-    that 60 s factor eight times.
+    Row normalization is the production normalization: dry rows use
+    ``dt`` and moisture rows use ``dt/3`` through :func:`_diff6_dt`.
+    A shared mass-grid scratch slot does not imply a shared coefficient:
+    theta and moisture use that same temporary but different WRF callers.
 
     Applied to u, v, w, theta' and all allocated transported moisture
     scalars.  WRF diffuses theta up to a constant offset, which is
@@ -1898,24 +1966,26 @@ def apply_diff6(state: DomainState, cfg: RunConfig) -> None:
     chm = c1h * mu[None] + c2h                     # mass-point coupling
     targets = [
         (state.u0, state.u, "x", state.c1h, state.c2h,
-         c1h * mu_at_u_faces(mu)[None] + c2h, "diff6_x"),
+         c1h * mu_at_u_faces(mu)[None] + c2h, "diff6_x", "smag_ru"),
         (state.v0, state.v, "y", state.c1h, state.c2h,
-         c1h * mu_at_v_faces(mu)[None] + c2h, "diff6_y"),
+         c1h * mu_at_v_faces(mu)[None] + c2h, "diff6_y", "smag_rv"),
         (state.w0, state.w, "z", state.c1f, state.c2f,
-         c1f * mu[None] + c2f, "diff6_z"),
-        (state.thp0, state.thp, "", state.c1h, state.c2h, chm, "diff6_m"),
+         c1f * mu[None] + c2f, "diff6_z", "smag_rw"),
+        (state.thp0, state.thp, "", state.c1h, state.c2h, chm,
+         "diff6_m", "smag_rth"),
     ]
     if state.qv is not None:
         exempt = diff6_exempt_slots(cfg)
         names = [name for name in SPECIES + tuple(extra_moist_species(state))
                  if "smag_r" + name not in exempt]
         targets += [(getattr(state, name + "0"), getattr(state, name), "",
-                     state.c1h, state.c2h, chm, "diff6_m")
+                     state.c1h, state.c2h, chm, "diff6_m", "smag_r" + name)
                     for name in names]
-    for f0, f, stag, c1, c2, chmf, slot in targets:
+    for f0, f, stag, c1, c2, chmf, slot, normalization_slot in targets:
         tendf = state.scratch(f0.shape, slot)
         tendf[...] = 0
-        launch_diff6(f0, tendf, mu_t, c1, c2, factor, cfg.dt, opt,
+        launch_diff6(f0, tendf, mu_t, c1, c2, factor,
+                     _diff6_dt(cfg, normalization_slot), opt,
                      stagger=stag,
                      # WRF diff_6th_slopeopt terrain taper (no-op with the
                      # default 0 or a flat 1-D phb; the base-state slope
@@ -2165,6 +2235,394 @@ def apply_w_damping(state: DomainState, cfg: RunConfig,
            (state.rw_t, ww, state.w, state.mup, state.mub2d,
             state.c1f, state.c2f, state.rdnw, DTYPE(cfg.dt),
             np.int32(nz), np.int32(ny), np.int32(nx)))
+
+
+def _env_flag(name: str) -> bool:
+    """An environment switch that reads ``0``/``false``/``off`` as OFF.
+
+    ``bool(os.environ.get(name))`` is true for the string ``"0"``, so a
+    user who turns a probe off the obvious way turns it on.  Defined here
+    rather than imported because the twin lives in
+    :mod:`gpuwm.core.adaptive_clock`, which sits ABOVE this module and
+    may not be imported from it.
+    """
+    value = os.environ.get(name)
+    if value is None:
+        return False
+    return value.strip().lower() not in ("", "0", "false", "no", "off")
+
+
+# --- WRF vertical-CFL measurement (off unless GPUWM_WRF_CFL_PROBE=1) ----
+#
+# health.cu reports a GEOMETRIC vertical Courant number, max |w|/dz over
+# EVERY level, and that is not the quantity WRF's target_cfl grades.  WRF
+# grades the eta-coordinate form |ww/(c1f*mut+c2f)*rdnw*dt| over
+# k = 2..kde-1 -- which apply_w_damping already computes per cell and
+# throws away.  The two differ by the vertical velocity used AND by the
+# index range: the geometric form includes the thin near-surface layer
+# that WRF's loop excludes -- a 26 m first mass level on the trees this
+# was measured on -- and that layer dominates it.  Reading a controller
+# target against the wrong one of these is how a timestep decision goes
+# wrong quietly, so
+# this reduces the RIGHT one, from the same ww, at the same stage.
+#
+# Off by default and free when off: no allocation, no launch.
+_WRF_CFL_PROBE = _env_flag("GPUWM_WRF_CFL_PROBE")
+#: Force a device->host readback at the end of every model step, which is
+#: what a REAL controller must do: it has to know this step's CFL on the
+#: host before it can choose the next dt.  The reduction itself is free
+#: (measured), but the readback is a synchronisation point, and gpuwm
+#: otherwise queues work asynchronously -- so this is the one cost that
+#: could make an adaptive dt SLOWER than the steps it saves.  Separate
+#: env var precisely so it can be A/B'd against the reduction alone.
+_WRF_CFL_PROBE_SYNC = _env_flag("GPUWM_WRF_CFL_PROBE_SYNC")
+#: id(state) -> [uint32 max-bits, damped cells, cells visited] on device.
+_WRF_CFL_STAT: dict[int, object] = {}
+_WRF_CFL_LABEL: dict[int, str] = {}
+#: Last read-back CFL per domain, populated only under the sync probe.
+_WRF_CFL_LAST: dict[int, float] = {}
+
+
+#: Per-step slots, used as a RING.  One row per model step per domain,
+#: so the dump is a TIME SERIES and not just a running max -- a single
+#: max says the peak happened, never when, and a controller is designed
+#: by how fast the number MOVES.  Written by the same atomics with no
+#: host sync during the run.
+#:
+#: THE RING IS NOT A CONVENIENCE.  Saturating the slot index at the last
+#: row instead -- which is what this did -- lands every fold past step
+#: 32768 in one row that nothing ever clears, and `atomicMax` then makes
+#: the CFL the controller reads a monotonically non-decreasing running
+#: maximum.  From that step on the controller can only shrink dt, and a
+#: long run (a 24 h nest at dt = 2 s is 43,200 steps; a 72 h root at
+#: dt = 8 s is 32,400) collapses toward min_time_step for a reason no
+#: diagnostic reports.  The two halves of the fix must go together: the
+#: ring keeps the series, and clearing the row at each step's first fold
+#: is what makes out[0] THIS step's maximum and stops out[1]/out[2]
+#: accumulating without bound in a uint32.
+from gpuwm.core.cfl_inventory import (
+    WRF_CFL_SLOTS as _WRF_CFL_SLOTS, CFL_HIST_BINS as _CFL_HIST_BINS,
+    WRF_CFL_WORDS as _WRF_CFL_WORDS,
+)
+
+#: Histogram bins in ``w_cfl_stat``.  MUST match CFL_HIST_BINS and
+#: CFL_HIST_SCALE in kernels/openbc.cu -- bin b covers vert_cfl in
+#: [b/SCALE, (b+1)/SCALE), and the top bin absorbs >= BINS/SCALE and NaN.
+#: There is no way for NVRTC to check that agreement, so
+#: :func:`wrf_cfl_histogram_edges` is asserted against the kernel's own
+#: arithmetic in tests/test_wrf_cfl_histogram.py rather than trusted.
+_CFL_HIST_SCALE = 16.0
+#: 4 scalar words + the histogram.  32768 rows x 36 words x 4 B = 4.7 MB
+#: per domain, ~14 MB for a three-domain tree.  Against standing rule 3
+#: (do not raise VRAM) that is under the 50 MiB bar a change has to earn,
+#: and it is diagnostic memory that buys the distribution behind out[0].
+_WRF_CFL_CALLS: dict[int, int] = {}
+
+
+
+# A tile sweep owns one diagnostic row, just as a resident dycore step does.
+# Each kernel reduces its owned mass columns into that same row with atomics.
+# No additional device arrays: the existing ring is the accumulator.
+_WRF_CFL_DOMAIN_STEP: dict[int, dict] = {}
+
+
+def _wrf_cfl_buffer(cfg):
+    key = int(cfg.grid_id)
+    buf = _WRF_CFL_STAT.get(key)
+    if buf is None:
+        buf = cp.zeros((_WRF_CFL_SLOTS, _WRF_CFL_WORDS), dtype=cp.uint32)
+        _WRF_CFL_STAT[key] = buf
+        _WRF_CFL_CALLS[key] = 0
+        _WRF_CFL_LABEL[key] = f"d{key:02d} {cfg.nx}x{cfg.ny}x{cfg.nz} dx={cfg.dx:g}"
+    return buf
+
+
+def begin_wrf_cfl_domain_step(cfg) -> None:
+    if not _WRF_CFL_PROBE:
+        return
+    key = int(cfg.grid_id)
+    if key in _WRF_CFL_DOMAIN_STEP:
+        raise RuntimeError(f"d{key:02d} already has an open CFL domain step")
+    buf = _wrf_cfl_buffer(cfg)
+    calls = _WRF_CFL_CALLS[key]
+    if calls % 3:
+        raise RuntimeError(f"d{key:02d} CFL step starts inside an RK-stage group")
+    slot = (calls // 3) % _WRF_CFL_SLOTS
+    buf[slot].fill(0)
+    ready = cp.cuda.Event(disable_timing=True)
+    ready.record()
+    _WRF_CFL_DOMAIN_STEP[key] = dict(slot=slot, ready=ready, window=None,
+                                     events={})
+
+
+def set_wrf_cfl_tile_window(grid_id, spec) -> None:
+    ctx = _WRF_CFL_DOMAIN_STEP.get(int(grid_id))
+    if ctx is None:
+        return
+    ctx["window"] = (int(spec.i0 - spec.ci0), int(spec.i1 - spec.ci0),
+                     int(spec.j0 - spec.cj0), int(spec.j1 - spec.cj0))
+    cp.cuda.get_current_stream().wait_event(ctx["ready"])
+
+
+def finish_wrf_cfl_tile(grid_id) -> None:
+    ctx = _WRF_CFL_DOMAIN_STEP.get(int(grid_id))
+    if ctx is not None:
+        stream = cp.cuda.get_current_stream()
+        event = cp.cuda.Event(disable_timing=True)
+        event.record(stream)
+        ctx["events"][stream.ptr] = event
+
+
+def wrf_cfl_capture_key(grid_id):
+    ctx = _WRF_CFL_DOMAIN_STEP.get(int(grid_id))
+    return None if ctx is None else (ctx["slot"], ctx["window"])
+
+
+def finish_wrf_cfl_domain_step(grid_id, *, commit=True) -> None:
+    key = int(grid_id)
+    ctx = _WRF_CFL_DOMAIN_STEP.pop(key, None)
+    if ctx is None:
+        return
+    stream = cp.cuda.get_current_stream()
+    for event in ctx["events"].values():
+        stream.wait_event(event)
+    if commit:
+        _WRF_CFL_CALLS[key] += 3
+        if _WRF_CFL_PROBE_SYNC:
+            _WRF_CFL_LAST[key] = take_wrf_cfl(key)[0]
+
+def record_wrf_vertical_cfl(state: DomainState, cfg: RunConfig,
+                            ww: cp.ndarray) -> None:
+    """Fold this stage's WRF vertical CFL into this step's slot."""
+    if not _WRF_CFL_PROBE:
+        return
+    # KEYED ON grid_id, not id(state).  Relocation replaces the state
+    # object -- measured: a 4-hour run split d02's series into SEVEN
+    # segments -- so an id(state) key loses the domain's history on every
+    # move.  A controller keyed that way would reset its dt at each
+    # relocation, which is invariant (e) of the brief exactly.
+    key = int(cfg.grid_id)
+    buf = _wrf_cfl_buffer(cfg)
+    ctx = _WRF_CFL_DOMAIN_STEP.get(key)
+    calls = _WRF_CFL_CALLS[key]
+    if ctx is None:
+        _WRF_CFL_CALLS[key] = calls + 1
+        slot = (calls // 3) % _WRF_CFL_SLOTS
+        if calls % 3 == 0:
+            buf[slot].fill(0)
+    else:
+        slot = ctx["slot"]
+        if ctx["window"] is None:
+            raise RuntimeError("CFL tile step has no owned-column window")
+    nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
+    window = None if ctx is None else ctx["window"]
+    kernel = get_kernel("openbc", "w_cfl_stat" if window is None
+                        else "w_cfl_stat_window")
+    columns = ny * nx if window is None else (window[1]-window[0])*(window[3]-window[2])
+    blocks = ((nz - 1) * columns + _BC_THREADS - 1) // _BC_THREADS
+    args = (ww, state.mup, state.mub2d, state.c1f, state.c2f, state.rdnw,
+            state.u, state.v, state.msfu, state.msfv,
+            buf[slot], DTYPE(cfg.dt), DTYPE(1.0 / cfg.dx), DTYPE(1.0 / cfg.dy),
+            np.int32(nz), np.int32(ny), np.int32(nx))
+    if window is not None:
+        args += tuple(np.int32(v) for v in window)
+    kernel((blocks,), (_BC_THREADS,), args)
+    if ctx is None and _WRF_CFL_PROBE_SYNC and (calls + 1) % 3 == 0:
+        # End of a model step: read this step's CFL back the way a
+        # controller would have to.  float() on a device scalar is a
+        # blocking copy, which is the whole point of measuring it.
+        _WRF_CFL_LAST[key] = float(
+            np.uint32(int(buf[slot][0])).view(np.float32))
+
+
+def take_wrf_cfl(grid_id: int) -> tuple[float, float]:
+    """This step's (vertical, horizontal) WRF CFL for one domain.
+
+    The row is cleared by the NEXT step's first fold rather than here, so
+    that a reader is never racing the clear against a queued kernel.
+
+    The accumulator is folded on the device every RK stage and read back
+    ONCE per model step, here.  That readback is a synchronisation point
+    and it is the one cost that could make an adaptive dt slower than the
+    steps it saves -- measured at +1.1% on the median against a 2.5% SE,
+    i.e. under the measurement host's noise floor
+    (docs/ADAPTIVE-TIMESTEP.md section 10).
+
+    Returns ``(0.0, 0.0)`` when the domain has folded nothing yet, which
+    is the state before its first solve.  A controller reading that takes
+    calc_dt's ``max_cfl < 0.001`` branch and grows by the full increase
+    factor -- correct at t=0, where there is no CFL to respect, and
+    exactly the overshoot the restart path must avoid (section 5).
+    """
+    buf = _WRF_CFL_STAT.get(int(grid_id))
+    if buf is None:
+        return 0.0, 0.0
+    calls = _WRF_CFL_CALLS.get(int(grid_id), 0)
+    if calls == 0:
+        return 0.0, 0.0
+    slot = ((calls - 1) // 3) % _WRF_CFL_SLOTS
+    words = cp.asnumpy(buf[slot])
+    vert = float(np.uint32(words[0]).view(np.float32))
+    horiz = float(np.uint32(words[3]).view(np.float32))
+    return vert, horiz
+
+
+def enable_wrf_cfl_recording() -> None:
+    """Turn the CFL fold on for a run that is not using the env probe.
+
+    The adaptive controller needs the same reduction the probe reads, so
+    it switches it on rather than carrying a second copy of the kernel.
+    """
+    global _WRF_CFL_PROBE
+    _WRF_CFL_PROBE = True
+
+
+def reset_wrf_cfl_recording() -> None:
+    """Put the fold back where the environment left it and free its rows.
+
+    Prevents a SECOND experiment in the same process inheriting the
+    first's: the enable above is a module global and the accumulators are
+    module dicts keyed on grid_id, so without this a chained run that
+    never asked for the probe kept launching w_cfl_stat every RK stage,
+    held 4.72 MB per domain for nothing, and -- because grid_ids repeat
+    across experiments -- read the PREVIOUS run's row until its own first
+    three folds had landed.
+    """
+    global _WRF_CFL_PROBE
+    _WRF_CFL_PROBE = _env_flag("GPUWM_WRF_CFL_PROBE")
+    _WRF_CFL_DOMAIN_STEP.clear()
+    _WRF_CFL_STAT.clear()
+    _WRF_CFL_CALLS.clear()
+    _WRF_CFL_LABEL.clear()
+    _WRF_CFL_LAST.clear()
+
+
+def wrf_cfl_histogram_edges() -> list[float]:
+    """Lower edge of each vert_cfl histogram bin, matching openbc.cu.
+
+    The kernel computes ``bin = (int)(vert_cfl * CFL_HIST_SCALE)``, so bin
+    ``b`` starts at ``b / CFL_HIST_SCALE``.  Exposed as a function rather
+    than a literal table because the two constants live in a .cu file that
+    nothing type-checks against this module.
+    """
+    return [b / _CFL_HIST_SCALE for b in range(_CFL_HIST_BINS)]
+
+
+def _hist_quantile(cum: np.ndarray, total: np.ndarray, q: float) -> np.ndarray:
+    """Per-step upper bound on the ``q`` quantile of vert_cfl.
+
+    Returns each bin's UPPER edge, which bounds the true quantile from
+    above -- the conservative direction for anything that sizes a
+    timestep off it.  The top bin is open-ended (it absorbs >= 2.0, and
+    NaN, by construction in the kernel), so a quantile landing there is
+    reported as ``inf`` rather than as a number the histogram cannot
+    support.  Steps that folded nothing give NaN, not a spurious 0.
+    """
+    target = q * total
+    idx = (cum < target[:, None]).sum(axis=1)          # first bin reaching q
+    edge = (idx + 1).astype(float) / _CFL_HIST_SCALE
+    edge[idx >= _CFL_HIST_BINS - 1] = float("inf")
+    edge[total <= 0] = float("nan")
+    return edge
+
+
+def wrf_vertical_cfl_report() -> list[dict]:
+    """Per-domain WRF vertical-CFL series, one entry per model step."""
+    out = []
+    for key, buf in _WRF_CFL_STAT.items():
+        words = cp.asnumpy(buf)
+        steps = max(1, (_WRF_CFL_CALLS.get(key, 0) + 2) // 3)
+        steps = min(steps, _WRF_CFL_SLOTS)
+        rows = words[:steps]
+        series = rows[:, 0].view(np.float32).astype(float).tolist()
+        hseries = rows[:, 3].view(np.float32).astype(float).tolist()
+        damped = rows[:, 1].astype(np.int64)
+        visited = rows[:, 2].astype(np.int64)
+
+        # The distribution behind the max.  out[0] is an order statistic:
+        # one cell sets it, and a controller reading it cannot separate
+        # "the flow sped up" from "one column is having a moment".  The
+        # ratio max/p99.99 is the number that settles whether a quantile
+        # controller is worth building -- near 1.0 and the max IS the
+        # distribution, so the idea is dead and this says so.
+        hist = rows[:, 4:].astype(np.int64)
+        cum = np.cumsum(hist, axis=1)
+        total = cum[:, -1] if cum.shape[1] else np.zeros(len(rows), np.int64)
+        p999 = _hist_quantile(cum, total, 0.999)
+        p9999 = _hist_quantile(cum, total, 0.9999)
+        vmax = np.asarray(series, dtype=float)
+        # np.isfinite on p9999 decides the branch, not defends it.  A quantile
+        # landing in the open top bin is +inf, and vmax/inf is 0.0 -- which
+        # is FINITE, so it would survive the filter below and drag the
+        # median toward zero, reporting "the max is the distribution" for
+        # exactly the saturated steps where it is least true.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.where(np.isfinite(p9999) & (p9999 > 0),
+                             vmax / p9999, np.nan)
+        ratio = ratio[np.isfinite(ratio)]
+        finite = [v for v in series if math.isfinite(v)]
+        mean = (sum(finite) / len(finite)) if finite else float("nan")
+        if len(finite) > 1:
+            var = sum((v - mean) ** 2 for v in finite) / (len(finite) - 1)
+            se = (var / len(finite)) ** 0.5
+        else:
+            se = 0.0
+        out.append({"domain": _WRF_CFL_LABEL.get(key, "?"),
+                    "steps": int(steps),
+                    "mean_vert_cfl": mean,
+                    "se_vert_cfl": se,
+                    "max_vert_cfl_wrf": max(finite) if finite else float("nan"),
+                    "min_vert_cfl_wrf": min(finite) if finite else float("nan"),
+                    "damped_cells": int(damped.sum()),
+                    "cells_visited": int(visited.sum()),
+                    "steps_with_damping": int((damped > 0).sum()),
+                    "max_horiz_cfl_wrf": max(
+                        (h for h in hseries if math.isfinite(h)),
+                        default=float("nan")),
+                    # How far the max sits above the bulk.  A median ratio
+                    # near 1 kills the quantile-controller idea outright.
+                    "median_max_over_p9999": (
+                        float(np.median(ratio)) if ratio.size
+                        else float("nan")),
+                    "hist_edges": wrf_cfl_histogram_edges(),
+                    "hist_total": hist.sum(axis=0).tolist(),
+                    "p999_series": p999.tolist(),
+                    "p9999_series": p9999.tolist(),
+                    "series": series,
+                    "horiz_series": hseries})
+    return out
+
+
+if _WRF_CFL_PROBE:                       # dump on exit; probe-only path
+    import atexit as _atexit
+    import json as _json
+
+    @_atexit.register
+    def _dump_wrf_cfl_report() -> None:
+        try:
+            rows = wrf_vertical_cfl_report()
+        except Exception:                # a probe must never fail a run
+            return
+        if not rows:
+            return
+        # stdout gets the SUMMARY; the per-step arrays go to the file.
+        # "series" was the only name filtered here, which was already
+        # letting horiz_series print 900+ floats into a run log, and the
+        # quantile series would have made that four such arrays.
+        bulky = {"series", "horiz_series", "p999_series", "p9999_series",
+                 "hist_edges"}
+        text = _json.dumps([{k: v for k, v in row.items() if k not in bulky}
+                            for row in rows], indent=2, sort_keys=True)
+        path = os.environ.get("GPUWM_WRF_CFL_PROBE_OUT")
+        if path:
+            try:
+                io_open = open(path, "w", encoding="utf-8")
+            except OSError:
+                io_open = None
+            if io_open is not None:
+                with io_open as handle:      # the FULL series goes to file
+                    handle.write(_json.dumps(rows, indent=1, sort_keys=True))
+        print("WRF_VERT_CFL_PROBE " + text, flush=True)
 
 
 def apply_open_zero_gradient(state: DomainState, cfg: RunConfig) -> None:
@@ -2466,6 +2924,11 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
                 "call gpuwm.core.physics.initialize_physics first")
         update_diagnostics(state, cfg.hypsometric_opt)
         physics_tendencies = state.physics.compute(state, cfg)
+    elif getattr(getattr(state, "physics", None), "cam_ozone", None) is not None:
+        # A nested consumer can require root CAM ozone even with all local
+        # schemes disabled. Run its common cadence, adding no tendencies.
+        update_diagnostics(state, cfg.hypsometric_opt)
+        state.physics.compute(state, cfg)
 
     if not acoustic:
         if state.qv is not None:
@@ -2550,6 +3013,7 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
             add_diffusion_tendencies(state, cfg)      # RK stage
         add_fixed_dry_tendencies(state, cfg)           # held Smag/diff6 tendf
         apply_w_damping(state, cfg, ww)               # w_damping=1 only
+        record_wrf_vertical_cfl(state, cfg, ww)      # probe; off by default
         apply_state_lateral_boundaries(state, cfg, rk_stage=istage)
         apply_open_radiative_bc(state, cfg)           # open_x/open_y only
         launch_small_step_init()                     # additive stage seed
@@ -2698,7 +3162,7 @@ def stability_report(state: DomainState, cfg: RunConfig | None = None,
         ny, nx = state.w.shape[1:]
         if width <= 0:
             raise ValueError("boundary_width must be positive")
-        if ny - 2 * width <= 0 or nx - 2 * width <= 0:
+        if min(ny, nx) < boundary_axis(width, interior_points=1):
             raise ValueError(
                 f"boundary_width={width} leaves an empty w interior for "
                 f"{ny} x {nx}")
@@ -2749,7 +3213,22 @@ def decode_stability_record(host, cfg: RunConfig | None = None, *,
     if cfg is not None and not nan:
         horizontal_cfl = cfg.dt * u_max / cfg.dx
         vertical_cfl = cfg.dt * float(host[5])
-        cfl = max(horizontal_cfl, vertical_cfl)
+        # NOT max(): CPython seeds the running maximum with the FIRST
+        # argument and replaces it only when ``item > maxval``, and
+        # ``nan > x`` is False -- so ``max(horizontal, nan)`` returns the
+        # HORIZONTAL number and silently discards the NaN.  That NaN is
+        # the ONLY channel ``health_final`` has for bad layer geometry
+        # (``health.cu`` sets mask bit 32 when a mass cell's live
+        # thickness is non-positive or non-finite and writes
+        # ``result[5] = nanf("")`` for it), so discarding it left a
+        # collapsed or folded model layer -- the classic precursor of an
+        # ARW vertical blow-up -- with no observer at all, while every
+        # field was still finite and this function's own docstring said
+        # the CFL went non-finite.  A non-finite vertical rate has to
+        # survive into ``cfl``, which is the number
+        # :func:`stability_gate_failed` tests for finiteness.
+        cfl = (vertical_cfl if not math.isfinite(vertical_cfl)
+               else max(horizontal_cfl, vertical_cfl))
     report = {"u_max": u_max, "w_max": w_max, "th_max": th_max,
               "cfl": cfl, "horizontal_cfl": horizontal_cfl,
               "vertical_cfl": vertical_cfl, "nan": nan}

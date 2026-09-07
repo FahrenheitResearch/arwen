@@ -275,3 +275,102 @@ branches, which is the accounting working.
 | worktree-wf_c142aa28-ef6-9 | merged-content-elsewhere | clean per the 2026-08-31 triage (landed under different shas, superseded, or spent); sweep-grade, not an individual verdict |
 | worktree-wf_d95e83bb-c5c-1 | merged-content-elsewhere | clean per the 2026-08-31 triage (landed under different shas, superseded, or spent); sweep-grade, not an individual verdict |
 | worktree-wf_dac365b4-068-2 | merged-content-elsewhere | clean per the 2026-08-31 triage (landed under different shas, superseded, or spent); sweep-grade, not an individual verdict |
+
+## Isolated 2.7 development branches (2026-09-05)
+
+These rows account for the current 2.7 work in the isolated clone, evaluated
+against `integration/2.7.0` at `1fc1fbebf69ecd4d51aaf89a2d75f9368842e893`. The gate still compares local
+branches with `integration/release-2.5.0`; that comparison is unchanged.
+Here, `merged-content-elsewhere` means that the content already landed on
+the 2.7 integration line, by ancestry or Git patch equivalence. It does not
+claim that this work landed on the old 2.5 line or passed release acceptance.
+
+Each completed row has a per-branch Git basis. Branches with unmatched
+patches remain `active-lane` for an explicit remaining-content audit;
+this records uncertainty instead of declaring them merged or spent.
+The main and global composition lanes remain active. Existing rows retain
+their earlier scope and classifications.
+
+| branch | disposition | note |
+|---|---|---|
+| feature/2.7-launchpad | merged-content-elsewhere | tip e36d8ac6c; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) f6d035393 |
+| feature/2.7-launchpad-console | merged-content-elsewhere | tip 83d9bbcd0; all 2 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 526035f2b, 5455a9483 |
+| feature/2.7-tui | merged-content-elsewhere | tip 5c2906941; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) daf0b7834 |
+| feature/starter-template | active-lane | 2.7 remaining-content audit at tip af82154d6; 1 patch-equivalent commit(s), 1 unmatched (af82154d6); do not treat rewritten or WIP content as integrated |
+| feature/streamed-move-bounded | merged-content-elsewhere | tip 295d6ec0a; all 12 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) e1bdd7741, 3e9e02cef, 30bd07fd3, d8421b8d9, 3de087a03, d17f1d08b, 0a30d836d, 6857bf2c3, 14367aff2, b18b9f994, 14ee6453a, 993609818 |
+| feature/streamed-reconstruction | active-lane | 2.7 remaining-content audit at tip ea058bffa; 2 patch-equivalent commit(s), 1 unmatched (ea058bffa); do not treat rewritten or WIP content as integrated |
+| fix/2.7-adaptive-stream | merged-content-elsewhere | tip 0d2a79ed4; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 6d9c9b999 |
+| fix/2.7-analyzed-boundaries | merged-content-elsewhere | tip 1b0c191d0; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 3afc4fe9a |
+| fix/2.7-auto-admission | merged-content-elsewhere | tip 07f4fd09e; all 5 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 836e93f7f, 73fc2406f, b2c58712e, 12aa8115c, 8e795ff90 |
+| fix/2.7-auto-search-host-floor | merged-content-elsewhere | tip dcfd13c27; all 4 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 836e93f7f, 73fc2406f, bd8f708a9, 33bb3ff10 |
+| fix/2.7-both-streamed-nesting | merged-content-elsewhere | tip e1a803cbf; all 4 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 6d9c9b999, b51cea2a6, 3458a5764, 90aee6fe7 |
+| fix/2.7-ci | merged-content-elsewhere | tip ce7620bf6 is an ancestor of 2.7 snapshot 1fc1fbebf; no branch-only commits remain |
+| fix/2.7-classic-trace-gas | merged-content-elsewhere | tip bcfd1239c is an ancestor of 2.7 snapshot 1fc1fbebf; no branch-only commits remain |
+| fix/2.7-correctness | merged-content-elsewhere | tip 55723d168; all 2 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 8156dd58f, 22f09e837 |
+| fix/2.7-decoders | merged-content-elsewhere | tip f30b87245 is an ancestor of 2.7 snapshot 1fc1fbebf; no branch-only commits remain |
+| fix/2.7-explicit-polygon-footprint | active-lane | 2.7 remaining-content audit at tip acabd6c5c; 4 patch-equivalent commit(s), 4 unmatched (13bd8b226, afda95f08, 6ef2d1a24, be03a815d); do not treat rewritten or WIP content as integrated |
+| fix/2.7-fieldwise-packing | merged-content-elsewhere | tip d237f3811; all 2 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) f2c609b0f, ee15eed6c |
+| fix/2.7-flat-streaming | merged-content-elsewhere | tip e717863eb; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) d7c16b0d6 |
+| fix/2.7-generic-mapped | merged-content-elsewhere | tip 2e50d6a4d; all 5 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 6c64eac8c, 4f4c4ee81, 24f747a64, f99b144b7, 223f1f7a6 |
+| fix/2.7-go-case | merged-content-elsewhere | tip de8e4f603; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) a44740ea5 |
+| fix/2.7-gpu-marker-fixtures | active-lane | 2.7 remaining-content audit at tip e50eaeddc; 3 patch-equivalent commit(s), 1 unmatched (86b9c93b5); do not treat rewritten or WIP content as integrated |
+| fix/2.7-installed-tui | merged-content-elsewhere | tip f00deb342; all 2 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 6dbd581bf, 6fd5a2581 |
+| fix/2.7-lambert-oracle | merged-content-elsewhere | tip e44f66dbd; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 11f84b9bb |
+| fix/2.7-launch | merged-content-elsewhere | tip d5b471440; all 3 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) be11fc00a, 09baae706, 2b3b6b78c |
+| fix/2.7-lbc-frame | merged-content-elsewhere | tip 3b829eb20; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 79633b286 |
+| fix/2.7-legacy-sw | merged-content-elsewhere | tip d8ef9d086; all 3 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 353723e91, 4d9f0c1f2, f7c2aadea |
+| fix/2.7-lifecycle-store-restart | merged-content-elsewhere | tip 00c6501ed; all 2 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 3f6cc8eff, 92b1726ef |
+| fix/2.7-mapped-provenance | merged-content-elsewhere | tip 9d41e1ec1; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) e39b36e3f |
+| fix/2.7-metem | merged-content-elsewhere | tip 7ae6ba554; all 4 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) a2f08f5a2, 1d5befd66, 353723e91, 4d9f0c1f2 |
+| fix/2.7-moving-streamed-transport | merged-content-elsewhere | tip 1e5fca7cb; all 3 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) a9fe8de9f, 21611ea8a, 1228656b0 |
+| fix/2.7-namelist-receipt | merged-content-elsewhere | tip aecca0f8c; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) b6b00096e |
+| fix/2.7-native-companions | merged-content-elsewhere | tip 60fef4b56; all 8 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 4637257ff, ccea613cd, 4687a2289, 267900003, 43ca9a01f, ae266d234, 90919f2d0, 81ff33c36 |
+| fix/2.7-nested-stage-reuse | merged-content-elsewhere | tip 3a785a342; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) df43e97c4 |
+| fix/2.7-oracle-arithmetic | merged-content-elsewhere | tip 169991939; all 3 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 9a8b0da23, b10e1ec7e, 89d449a53 |
+| fix/2.7-physics | merged-content-elsewhere | tip 82b63da84 is an ancestor of 2.7 snapshot 1fc1fbebf; no branch-only commits remain |
+| fix/2.7-physics-capabilities | active-lane | 2.7 remaining-content audit at tip aab9621c8; 15 patch-equivalent commit(s), 8 unmatched (d61a639a9, c64d67af5, d2b6333f3, 741d9b11a, 5f6c0a868, 18d33d6bf, 43e57f1c2, 6d396a109); do not treat rewritten or WIP content as integrated; 3 branch-only merge(s) also need audit |
+| fix/2.7-pmsl | merged-content-elsewhere | tip 90aee6fe7 is an ancestor of 2.7 snapshot 1fc1fbebf; no branch-only commits remain |
+| fix/2.7-pmsl-supplement | merged-content-elsewhere | tip c48ccd253; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) da19e4e2d |
+| fix/2.7-prep-output-review | merged-content-elsewhere | tip 07d7c3aa4; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 8089d4ea0 |
+| fix/2.7-prep-profile | merged-content-elsewhere | tip 14e55d8a6; all 6 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 5bbdb8df5, d8142be2f, a21a0c517, f2b086c34, d2418ef44, 5fa37454c |
+| fix/2.7-prepared-followers | merged-content-elsewhere | tip 27e05bdd0; all 8 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) a9fe8de9f, 21611ea8a, 1228656b0, 1ad91a8ea, 8ce86b513, b82100a7e, 4336c7e23, ce07ece15 |
+| fix/2.7-prepared-relocation-history | merged-content-elsewhere | tip 46e36b557; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 41fb6008c |
+| fix/2.7-public-prepared-resume | merged-content-elsewhere | tip a7937c70c; all 3 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 25492886d, fab090b5f, ec07bf186 |
+| fix/2.7-public-sim-restart | merged-content-elsewhere | tip 859c40320; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 1ad91a8ea |
+| fix/2.7-qnn-physics-ingest | merged-content-elsewhere | tip 13f3d787a; all 2 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 4febd041f, 712176510 |
+| fix/2.7-readiness | merged-content-elsewhere | tip 212523619 is an ancestor of 2.7 snapshot 1fc1fbebf; no branch-only commits remain |
+| fix/2.7-rrtm-memory | active-lane | 2.7 remaining-content audit at tip db2e74650; 1 patch-equivalent commit(s), 6 unmatched (d61a639a9, c64d67af5, d2b6333f3, 741d9b11a, 5f6c0a868, 18d33d6bf); do not treat rewritten or WIP content as integrated; 3 branch-only merge(s) also need audit |
+| fix/2.7-runtime-store | merged-content-elsewhere | tip 9fb159281; all 2 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 8b5f3e584, 810b71117 |
+| fix/2.7-sase-cadence | merged-content-elsewhere | tip 91f0c41be; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) d4ec65c0a |
+| fix/2.7-single-adaptive | merged-content-elsewhere | tip 2759ec78f; all 4 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 3458a5764, 3f6cc8eff, e51922fb1, e8730465c |
+| fix/2.7-single-prepared-clock | merged-content-elsewhere | tip 941621424; all 2 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 102031c50, 38943db08 |
+| fix/2.7-single-prepared-restart | merged-content-elsewhere | tip d934d767d; all 2 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) f0a7021ef, 585745527 |
+| fix/2.7-snapshot-lifetime | merged-content-elsewhere | tip b6f9b6334; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 08bb604f7 |
+| fix/2.7-static-companions | merged-content-elsewhere | tip 7e24270da; all 2 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) b813613e7, 66969807d |
+| fix/2.7-static-platform-parity | merged-content-elsewhere | tip 9589784ad; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 2be5ccc43 |
+| fix/2.7-stream-arithmetic | merged-content-elsewhere | tip 6b7836113; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 3a37558fa |
+| fix/2.7-streamed-child-coupling | merged-content-elsewhere | tip cf2e20565; all 4 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 3afc4fe9a, e1bdd7741, d17f1d08b, 0a30d836d |
+| fix/2.7-streamed-child-move | merged-content-elsewhere | tip 5ed2f9425; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 007cb8694 |
+| fix/2.7-surface-pressure | merged-content-elsewhere | tip 599318fd1; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) e44be07b0 |
+| fix/2.7-water-companions | merged-content-elsewhere | tip e12439cce; all 4 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) cf110056d, e44be07b0, 30339dd59, 2beb431ba |
+| fix/2.7-wizard | merged-content-elsewhere | tip dd5ceb0bf is an ancestor of 2.7 snapshot 1fc1fbebf; no branch-only commits remain |
+| fix/2.7-wizard-contract-tests | active-lane | 2.7 remaining-content audit at tip 414be2f65; 0 patch-equivalent commit(s), 2 unmatched (f09b0e85d, 414be2f65); do not treat rewritten or WIP content as integrated |
+| fix/2.7-wizard-default-clock | merged-content-elsewhere | tip d2c2489c1; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) b3b8cb0cb |
+| fix/2.7-wrf-boundaries | merged-content-elsewhere | tip 3eb49b2fd is an ancestor of 2.7 snapshot 1fc1fbebf; no branch-only commits remain |
+| fix/2.7-wrf-eta | merged-content-elsewhere | tip ca24fb93b; all 2 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 130b0bdcc, 3f4ad0ad6 |
+| fix/2.7-wrf-native | merged-content-elsewhere | tip da2e1dd8f is an ancestor of 2.7 snapshot 1fc1fbebf; no branch-only commits remain |
+| integrate/global-2.7-snapshot | active-lane | global composition lane at 84f3bda6f; owner integration and qualification remain active |
+| integration/2.7.0 | active-lane | main 2.7 integration and acceptance lane; audited snapshot 1fc1fbebf; ongoing work |
+| lane/2.7-cli-first-use | merged-content-elsewhere | tip 70726ff7f; all 2 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) b59b69727, 7153e1179 |
+| lane/2.7-trace-gas | active-lane | 2.7 remaining-content audit at tip 86b9c93b5; 2 patch-equivalent commit(s), 1 unmatched (86b9c93b5); do not treat rewritten or WIP content as integrated |
+| perf/2.7-atmospheric-window | merged-content-elsewhere | tip 9cfb43936; all 3 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 36dcc5bed, 8fb59c860, 94dff9610 |
+| perf/2.7-frame-field-streaming | merged-content-elsewhere | tip e3a6c2798; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 2689ff3da |
+| perf/2.7-preparation-reuse-controls | merged-content-elsewhere | tip 16d557e08; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) a460eca7c |
+| perf/2.7-prepared-delayed-activation | merged-content-elsewhere | tip 28f727ca7; all 2 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 14367aff2, b18b9f994 |
+| perf/mapped-owned-field | merged-content-elsewhere | tip 645a930da; all 2 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 14de28143, 9277f409b |
+| proof/2.7-metem | merged-content-elsewhere | tip 7a7812dcd; all 2 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 353723e91, 4d9f0c1f2 |
+| test/2.7-pmsl-linux-install | merged-content-elsewhere | tip 8e795ff90 is an ancestor of 2.7 snapshot 1fc1fbebf; no branch-only commits remain |
+| test/2.7-runplan-contracts | merged-content-elsewhere | tip bfbbc0568; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) e445110e8 |
+| test/2.7-streaming-memory-pin | merged-content-elsewhere | tip 2508e576b; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) 016948251 |
+| ui/console-3d | active-lane | 2.7 remaining-content audit at tip 0d157a3cc; 0 patch-equivalent commit(s), 2 unmatched (bed5d33b9, 0d157a3cc); do not treat rewritten or WIP content as integrated |
+| ui/tui-hybrid | merged-content-elsewhere | tip bb11dac4e; all 1 branch-only non-merge commit(s) are Git patch-equivalent on 2.7; landing(s) ad8ed7065 |

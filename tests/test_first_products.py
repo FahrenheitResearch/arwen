@@ -636,7 +636,7 @@ def test_the_hrrr_chain_arms_with_the_dict_its_finalize_stage_uses(
 
     seen = []
     monkeypatch.setattr(go_cli, "_render_stage",
-                        lambda p, **kw: seen.append(dict(p)))
+                        lambda p, **kw: seen.append(dict(p)) or True)
     monkeypatch.setattr(runplan, "_chain_summary", lambda *a, **kw: {})
     events = EventStream(tmp_path / "events.jsonl", mirror=None)
     runplan._chain_render(
@@ -741,6 +741,23 @@ def test_an_unproven_receipt_is_not_honoured_without_a_trigger_either(
     printed = capsys.readouterr().out
     assert "early-render receipt not used" in printed
     assert (plan["render"] / FIRST_PRODUCTS_RECEIPT).is_file()
+
+
+def test_finalize_keeps_verified_early_frame_as_series_context(
+        tmp_path, monkeypatch):
+    from gpuwm import go_cli
+
+    _a_box_that_can_draw(monkeypatch)
+    plan, first, _receipt = _published(tmp_path)
+    later = _frame(tmp_path, name="wrfout_d01_1974-04-03_19_00_00")
+    commands = []
+    monkeypatch.setattr(go_cli, "_run_stage",
+                        lambda label, command, **kw: commands.append(list(command)))
+    assert go_cli._render_stage(plan, explain=False, observer=None)
+    assert len(commands) == 1
+    command = commands[0]
+    assert "--series" in command and str(later) in command
+    assert command[command.index("--context-wrfout") + 1] == str(first)
 
 
 # ---------------------------------------------------------------------------

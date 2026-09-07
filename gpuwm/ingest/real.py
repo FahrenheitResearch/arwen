@@ -35,6 +35,16 @@ from gpuwm.ingest.horiz import (
 from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
 
 
+def surface_fields_to_device(met, array_module):
+    """Upload restored or freshly mapped near-surface fields to a device."""
+
+    return {
+        name: array_module.asarray(
+            met.fields[name], dtype=array_module.float32)
+        for name in ("T2", "U10", "V10")
+    }
+
+
 def _column_worker_count(value) -> int:
     """Validate an explicit setup-only CPU column-worker count."""
     if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
@@ -82,6 +92,7 @@ def _host(value) -> np.ndarray:
 
 
 HRRR_ANALYZED_HYDROMETEORS = ("QC", "QR", "QI", "QS", "QG")
+DECLARED_ANALYZED_HYDROMETEORS = (*HRRR_ANALYZED_HYDROMETEORS, "QH")
 
 HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V1 = (
     "gpuwm-real-hydrometeor-correspondence-v1")
@@ -2191,13 +2202,22 @@ def _slice_base_rows(base: BaseState, start: int, stop: int) -> BaseState:
         terrain_z=base.terrain_z[start:stop])
 
 
-def _rebalance_moist_pressure_serial(pressure_guess, qv, dry_mass, base,
+def _rebalance_moist_pressure_serial(pressure_guess, qtot, dry_mass, base,
                                      coord, *, out=None):
     """Integrate the discrete WRF moist w-balance pressure recurrence.
 
     This is the initialization counterpart of ``pg_buoy_w``: it chooses
     perturbation-pressure differences so the large-step vertical pressure
-    gradient, dry-mass perturbation, and vapor loading cancel row by row.
+    gradient, dry-mass perturbation, and moisture loading cancel row by row.
+
+    ``qtot`` is TOTAL water, not vapour: WRF accumulates
+    ``qtot = sum(moist(i,kk,j,im), im = PARAM_FIRST_SCALAR, num_3d_m)``
+    over the whole active moist package before forming ``qvf2 = 1./(1.+qtot)``
+    and ``qvf1 = qtot*qvf2`` (module_initialize_real.F:3913-3916 for the
+    top row, :3931-3935 for the downward leg), and the runtime it hands the
+    state to agrees -- ``calc_cq``/``cq_pair`` build ``cqw`` from the same
+    species list.  Vapour alone would leave the analyzed condensate's
+    weight out of the column.
     """
     if out is None:
         out = np.empty_like(pressure_guess)
@@ -2210,15 +2230,15 @@ def _rebalance_moist_pressure_serial(pressure_guess, qv, dry_mass, base,
     # then integrates downward (module_initialize_real/ideal qvf1/qvf2
     # recurrence).  Anchoring at the top avoids importing horizontally
     # varying surface interpolation error into every pressure level.
-    cq = 1.0 / (1.0 + qv[-1])
-    load = qv[-1] * cq
+    cq = 1.0 / (1.0 + qtot[-1])
+    load = qtot[-1] * cq
     perturbation[-1] = (
         -0.5 * (coord.c1f[nz] * mup
                 + load * (coord.c1f[nz] * base.mub + coord.c2f[nz]))
         / coord.rdnw[nz - 1] / cq)
     for k in range(nz - 2, -1, -1):
         kw = k + 1
-        qbar = 0.5 * (qv[k] + qv[k + 1])
+        qbar = 0.5 * (qtot[k] + qtot[k + 1])
         cq = 1.0 / (1.0 + qbar)
         load = qbar * cq
         perturbation[k] = (
@@ -2232,21 +2252,21 @@ def _rebalance_moist_pressure_serial(pressure_guess, qv, dry_mass, base,
     return out
 
 
-def _rebalance_moist_pressure(pressure_guess, qv, dry_mass, base, coord, *,
+def _rebalance_moist_pressure(pressure_guess, qtot, dry_mass, base, coord, *,
                               column_workers=1):
     """Run the unchanged vertical recurrence over parallel row slabs."""
     workers = _column_worker_count(column_workers)
     pressure = np.empty_like(pressure_guess)
     if workers == 1 or pressure_guess.shape[1] < 2:
         return _rebalance_moist_pressure_serial(
-            pressure_guess, qv, dry_mass, base, coord, out=pressure)
+            pressure_guess, qtot, dry_mass, base, coord, out=pressure)
 
     chunks = _axis0_chunks(pressure_guess.shape[1], workers)
     with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
         futures = [
             executor.submit(
                 _rebalance_moist_pressure_serial,
-                pressure_guess[:, start:stop], qv[:, start:stop],
+                pressure_guess[:, start:stop], qtot[:, start:stop],
                 dry_mass[start:stop], _slice_base_rows(base, start, stop),
                 coord, out=pressure[:, start:stop])
             for start, stop in chunks
@@ -2314,11 +2334,31 @@ def _fp32_geopotential_split_serial(base, coord, dry_mass, alpha,
     (module_initialize_real.F:3970-3981) and diagnoses ``alt =
     d(phi)/phm/LOG(pfd/pfu)`` (F:4002-4010), all in the FP32 arithmetic
     the device kernel uses.
+
+    "Matches the runtime EOS" is the whole contract, so the two
+    cancellations calc_p_alpha stopped spelling are gone from here too:
+    the layer thickness is the exact FP32 base difference plus the
+    float64 residual the state carries as ``dphb_resid``, and opt 2's log
+    ratio is ``log1p((pfd - pfu)/pfu)`` off the float64-differenced
+    coefficient drops.  Measured on the 12-level hybrid opt-2 probe in
+    tests/test_hypsometric.py (``_real_base_inputs``, terrain 200-350 m),
+    re-diagnosing with the operator calc_p_alpha actually runs: quantizing
+    against THIS operator leaves 1.46 ulps of the target alpha, quantizing
+    against the pre-change one leaves 15.17 -- a tenth of that test's
+    16-ulp bound versus within 5 % of it.  The search would otherwise be
+    optimizing a rounding tree nobody runs.
     """
     if hypsometric_opt not in (1, 2):
         raise ValueError(
             f"hypsometric_opt must be 1 or 2, got {hypsometric_opt}")
+    phb64 = np.asarray(base.phb, dtype=np.float64)
     phb = np.asarray(base.phb, dtype=np.float32)
+    # The state's dphb_resid, built here by the same two lines
+    # DomainState.set_base_geopotential uses, so the search optimizes the
+    # exact thickness the kernel will reconstruct.
+    resid = np.asarray(np.diff(phb64, axis=0)
+                       - np.diff(phb, axis=0).astype(np.float64),
+                       dtype=np.float32)
     dnw = np.asarray(coord.dnw, dtype=np.float32)
     rdnw = np.asarray(coord.rdnw, dtype=np.float32)
     increment = np.asarray(
@@ -2328,37 +2368,47 @@ def _fp32_geopotential_split_serial(base, coord, dry_mass, alpha,
     if hypsometric_opt == 2:
         # Per-layer reference dry pressures on the TOTAL dry mass (WRF
         # MU0 = mub + mu'), in the kernel's FP32 arithmetic.
+        c3f64 = np.asarray(coord.c3f, dtype=np.float64)
+        c4f64 = np.asarray(coord.c4f, dtype=np.float64)
         c3f = np.asarray(coord.c3f, dtype=np.float32)
         c4f = np.asarray(coord.c4f, dtype=np.float32)
         c3h = np.asarray(coord.c3h, dtype=np.float32)
         c4h = np.asarray(coord.c4h, dtype=np.float32)
+        dc3f = np.asarray(c3f64[:-1] - c3f64[1:], dtype=np.float32)
+        dc4f = np.asarray(c4f64[:-1] - c4f64[1:], dtype=np.float32)
         mu32 = np.asarray(dry_mass, dtype=np.float32)
         pt32 = np.float32(base.p_top)
     php = np.zeros_like(phb, dtype=np.float32)
-    total_low = np.asarray(phb[0] + php[0], dtype=np.float32)
     for k in range(coord.dnw.size):
+        # The kernel's own base thickness: an exact FP32 difference plus
+        # the float64 residual.
+        dphb = np.asarray(
+            np.asarray(phb[k + 1] - phb[k], dtype=np.float32) + resid[k],
+            dtype=np.float32)
         if hypsometric_opt == 2:
             pfu = c3f[k + 1] * mu32 + c4f[k + 1] + pt32
-            pfd = c3f[k] * mu32 + c4f[k] + pt32
             phm = c3h[k] * mu32 + c4h[k] + pt32
-            log_ratio = np.log(pfd / pfu)              # float32
+            dpf = np.asarray(dc3f[k] * mu32 + dc4f[k],   # = pfd - pfu
+                             dtype=np.float32)
+            log_ratio = np.log1p(np.asarray(dpf / pfu, dtype=np.float32))
             desired_dphi = np.asarray(target[k] * phm * log_ratio,
                                       dtype=np.float32)
         else:
             desired_dphi = np.asarray(-dnw[k] * increment[k] * target[k],
                                       dtype=np.float32)
-        desired_total = np.asarray(total_low + desired_dphi, dtype=np.float32)
-        centre = np.asarray(desired_total - phb[k + 1], dtype=np.float32)
+        centre = np.asarray(
+            php[k] + np.asarray(desired_dphi - dphb, dtype=np.float32),
+            dtype=np.float32)
         candidates = (
             np.nextafter(centre, np.float32(-np.inf)), centre,
             np.nextafter(centre, np.float32(np.inf)),
         )
         best = None
         best_error = None
-        best_total = None
         for candidate in candidates:
-            total = np.asarray(phb[k + 1] + candidate, dtype=np.float32)
-            dphi = np.asarray(total - total_low, dtype=np.float32)
+            dphi = np.asarray(
+                dphb + np.asarray(candidate - php[k], dtype=np.float32),
+                dtype=np.float32)
             if hypsometric_opt == 2:
                 diagnosed = np.asarray(
                     np.asarray(dphi / phm, dtype=np.float32) / log_ratio,
@@ -2370,14 +2420,12 @@ def _fp32_geopotential_split_serial(base, coord, dry_mass, alpha,
             error = np.abs(diagnosed.astype(np.float64)
                            - target[k].astype(np.float64))
             if best is None:
-                best, best_error, best_total = candidate, error, total
+                best, best_error = candidate, error
             else:
                 choose = error < best_error
                 best = np.where(choose, candidate, best)
                 best_error = np.where(choose, error, best_error)
-                best_total = np.where(choose, total, best_total)
         php[k + 1] = best
-        total_low = best_total
     return php
 
 
@@ -2490,6 +2538,9 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                     coord: VerticalCoord, terrain, *, source_orography=None,
                     p_top=5000.0, sfcp_to_sfcp=True,
                     use_sh_qv=False,
+                    analyzed_species=None,
+                    analyzed_number_fields=(),
+                    analyzed_surface_fields=(),
                     column_workers=1,
                     preprocess_backend="cuda",
                     preprocess_workers=None,
@@ -2505,9 +2556,22 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                     wif_valid_date=None) -> RealInitResult:
     """Construct a moist, discretely hydrostatic :class:`DomainState`.
 
+    ``analyzed_species`` optionally declares the actual analyzed mass inventory
+    from source metadata. An empty tuple declares no analyzed mass fields;
+    absent species retain WRF's allocated zero. None preserves the established
+    native caller contract, including its required five-species inventory.
+
+    ``analyzed_number_fields`` declares flagged metgrid QNI/QNC/QNR/QNS/QNG/QNH
+    inputs. They use WRF's same linear Q vertical operator and selected scalar
+    package, with the supplied NAME_SFC surface pseudo-level. They do not contribute condensate to
+    the pressure recurrence. Omission retains source-absent initialization.
+
+    ``analyzed_surface_fields`` selects supplied NAME_SFC mass pseudo-levels.
+    Native HRRR callers retain their established exact-zero surface policy.
+
     The pressure-level/RH lane requires TT, RH, GHT, UU, VV, PSFC, T2,
     exactly one of D2 or RH2, U10, and V10.  Native HRRR requires
-    per-column PRES, SPFH, RH, and Q2, and for
+    per-column PRES, SPFH, and Q2, and for
     WSM6/Thompson/Morrison/NSSL-2 requires analyzed QC/QR/QI/QS/QG.
     Kessler requires the same decoded inventory, retains QC/QR, and records
     WRF-real's explicit active-moist-package discard of QI/QS/QG.  MP off is
@@ -2560,11 +2624,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             timing_report[name] = now - timing_last
         timing_last = now
 
-    if not sfcp_to_sfcp:
-        raise ValueError(
-            "sfcp_to_sfcp=false branch is not implemented: WRF requires "
-            "the PMSL and pressure/GHT profile sfcprs3 reconstruction; "
-            "copying the input PSFC is not supported")
+    if not isinstance(sfcp_to_sfcp, (bool, np.bool_)):
+        raise TypeError("sfcp_to_sfcp must be a boolean")
     if not cfg.moist:
         raise ValueError("real initialization requires cfg.moist=True")
     if cfg.mp_physics == 28:
@@ -2601,11 +2662,36 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             "partial specific-humidity forcing inventory: "
             f"present={present}, missing={missing_specific}")
     has_specific_humidity = marker_count == len(specific_markers)
+    from gpuwm.ingest.analyzed_numbers import METGRID_NUMBER_FIELDS, metgrid_number_targets
+    if (not isinstance(analyzed_number_fields, (tuple, list))
+            or any(name not in METGRID_NUMBER_FIELDS for name in analyzed_number_fields)
+            or len(set(analyzed_number_fields)) != len(analyzed_number_fields)):
+        raise ValueError("analyzed_number_fields must list distinct supported metgrid number fields")
+    decoded_numbers = tuple(name for name in METGRID_NUMBER_FIELDS if name in analyzed_number_fields)
+    number_targets = metgrid_number_targets(cfg) if decoded_numbers else {}
     if use_sh_qv and not has_specific_humidity:
         raise ValueError(
             "use_sh_qv=True requires PRES, SPFH, and Q2 forcing")
+    if analyzed_species is None:
+        decoded_species = (HRRR_ANALYZED_HYDROMETEORS
+                           if has_specific_humidity and cfg.mp_physics in HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS
+                           else ())
+    else:
+        if not isinstance(analyzed_species, (tuple, list)) or any(
+                name not in DECLARED_ANALYZED_HYDROMETEORS for name in analyzed_species):
+            raise ValueError("analyzed_species must explicitly list supported analyzed mass fields")
+        if len(set(analyzed_species)) != len(analyzed_species):
+            raise ValueError("analyzed_species repeats a field")
+        decoded_species = tuple(name for name in DECLARED_ANALYZED_HYDROMETEORS if name in analyzed_species)
+        if decoded_species and cfg.mp_physics != 0 and cfg.mp_physics not in HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE:
+            raise ValueError(f"mp_physics={cfg.mp_physics} has no analyzed-mass disposition contract for {decoded_species}")
+    if (not isinstance(analyzed_surface_fields, (tuple, list))
+            or any(name not in decoded_species for name in analyzed_surface_fields)
+            or len(set(analyzed_surface_fields)) != len(analyzed_surface_fields)):
+        raise ValueError("analyzed_surface_fields must list distinct declared analyzed mass fields")
+    supplied_mass_surfaces = tuple(name for name in decoded_species if name in analyzed_surface_fields)
     if has_specific_humidity:
-        if cfg.mp_physics == 0:
+        if cfg.mp_physics == 0 and analyzed_species is None:
             raise ValueError(
                 "native HRRR preparation with mp_physics=0 is refused: "
                 "the MP-off state cannot faithfully retain analyzed "
@@ -2613,8 +2699,6 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                 "carrier is out of scope")
         required = ("TT", "PRES", "SPFH", "GHT", "UU", "VV", "PSFC",
                     "T2", "Q2", "U10", "V10")
-        if cfg.mp_physics in HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS:
-            required += HRRR_ANALYZED_HYDROMETEORS
     else:
         surface_rh_markers = tuple(
             name for name in ("D2", "RH2") if name in snapshot.fields)
@@ -2624,6 +2708,9 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         surface_rh_name = surface_rh_markers[0]
         required = ("TT", "RH", "GHT", "UU", "VV", "PSFC", "T2",
                     surface_rh_name, "U10", "V10")
+    required += decoded_species + decoded_numbers + tuple(name+"_SFC" for name in (*decoded_numbers, *supplied_mass_surfaces))
+    if not sfcp_to_sfcp:
+        required += ("PMSL",)
     missing = [name for name in required if name not in snapshot.fields]
     if missing:
         raise KeyError(f"missing real-data field(s): {missing}")
@@ -2633,6 +2720,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     # FP32 -> host-FP64 -> device-FP32 round trip changed no bits but cost
     # gigabytes of transfer and host residency on large domains.
     host_required = {"TT", "GHT", "PSFC", "T2"}
+    if not sfcp_to_sfcp:
+        host_required.add("PMSL")
     if has_specific_humidity:
         host_required.update({"PRES", "SPFH", "Q2"})
     else:
@@ -2657,12 +2746,14 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     mass_shape = (nsource, cfg.ny, cfg.nx)
     mass_names = ["TT", "GHT"]
     mass_names += (["PRES", "SPFH"] if has_specific_humidity else ["RH"])
-    if (cfg.mp_physics in HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS
-            and has_specific_humidity):
-        mass_names += list(HRRR_ANALYZED_HYDROMETEORS)
+    mass_names += list(decoded_species) + list(decoded_numbers)
     if any(fields[name].shape != mass_shape for name in mass_names):
         raise ValueError(
             f"mass-field shapes do not match levels and mass grid: {mass_names}")
+    if any(fields[name+"_SFC"].shape != (cfg.ny, cfg.nx) for name in decoded_numbers):
+        raise ValueError("number-field surface pseudo-levels must match the mass grid")
+    if any(fields[name+"_SFC"].shape != (cfg.ny, cfg.nx) for name in supplied_mass_surfaces):
+        raise ValueError("hydrometeor surface pseudo-levels must match the mass grid")
     if fields["UU"].shape != (nsource, cfg.ny, cfg.nx + 1):
         raise ValueError("UU does not have WRF u staggering")
     if fields["VV"].shape != (nsource, cfg.ny + 1, cfg.nx):
@@ -2708,10 +2799,14 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                 column_workers=column_workers),
             pressure, column_workers=column_workers)
     if source_orography is None:
-        raise ValueError(
-            "source_orography is required when sfcp_to_sfcp=True")
-    surface_pressure = surface_pressure_from_surface(
-        fields["PSFC"], source_orography, terrain, fields["T2"], surface_qv)
+        raise ValueError("source_orography is required for the analyzed surface and column moisture")
+    if sfcp_to_sfcp:
+        surface_pressure = surface_pressure_from_surface(
+            fields["PSFC"], source_orography, terrain, fields["T2"], surface_qv)
+    else:
+        from gpuwm.ingest.cpu_backend import CpuPreprocessBackend
+        surface_pressure = _host(CpuPreprocessBackend().surface_pressure_from_sea_level(
+            pressure, fields["GHT"], terrain, fields["PMSL"], workers=column_workers))
     # WRF integrates moisture on the ORIGINAL met surface (integ_moist is
     # called with p_gc whose level 1 is the met PSFC on SOILHGT,
     # module_initialize_real.F:1457/7022); only p_dts (:1482) pairs the
@@ -2829,8 +2924,38 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     temperature_h = _host(temperature).astype(np.float64)
     rh_h = (None if rh is None else
             _host(rh).astype(np.float64))
-    total_pressure_h = np.maximum(
-        _host(total_pressure).astype(np.float64), dry_pressure)
+    total_pressure_h = _host(total_pressure).astype(np.float64)
+    # NOT clamped to the target dry pressure.  This line used to read
+    # ``np.maximum(total_pressure_h, dry_pressure)``; real.exe has no such
+    # step.  WRF interpolates p_gc onto pd_gc with var_type 'T' and
+    # t_extrap_type=2 (module_initialize_real.F:1795-1807) and hands the
+    # RESULT straight to rh_to_mxrat1 (:1827) and t_to_theta (:1850-1853)
+    # -- there is no MAX, no floor and no comparison against grid%pb
+    # anywhere between the vert_interp call and those two uses.  The clamp
+    # mattered because theta is formed HERE, once, and never recomputed:
+    # the two-pass moist rebalance below replaces total_pressure_h but
+    # leaves theta_h standing, so a pressure raised at this line is baked
+    # into the initial state permanently.  It fired exactly where the
+    # target column's lowest eta levels fall BELOW the source column's
+    # surface pseudo-level, which is the below-surface extrapolation
+    # branch, and in that branch WRF's own CRC formula deliberately
+    # returns a pressure lower than the target dry pressure.  Measured
+    # against the real.exe that read the same forcing, on the 2021-12-30
+    # 3 km case, the clamp displaced theta by up to 3.56 K over 3229
+    # columns; the oracle that measured it is
+    # gpuwm/verify/metem_differential.py, graded by
+    # tests/test_metem_differential.py.  (The upstream file token for
+    # that forcing is deliberately not spelled here: tests/test_runtime.py
+    # ::test_generic_ingest_and_runtime_have_no_metgrid-output_reader asserts
+    # nothing under gpuwm/ingest names it, and a comment that did would
+    # retire that instrument.)
+    if (not np.isfinite(total_pressure_h).all()
+            or np.any(total_pressure_h <= 0.0)):
+        raise ValueError(
+            "interpolated total pressure is non-finite or non-positive: "
+            "the vertical interpolation of p_gc produced a value no "
+            "thermodynamic conversion can use.  This is a defect in the "
+            "forcing column, not a value to be clamped away")
     theta_h = _potential_temperature_from_temperature(
         temperature_h, total_pressure_h,
         column_workers=column_workers)
@@ -2846,6 +2971,169 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             total_pressure_h, column_workers=column_workers)
     mark_timing("thermodynamic_vertical_interpolation")
 
+    # WRF interpolates the analyzed hydrometeors BEFORE the moist
+    # pressure recurrence -- the vert_interp calls for QR/QC/QI/QS/QG/QH
+    # are at module_initialize_real.F:1862-1982 and the recurrence at
+    # :3908 -- because that recurrence loads TOTAL water (:3913-3916),
+    # not vapour.  The order is load-bearing, not cosmetic.
+    hydrometeors = {}
+    hydrometeor_initialization: dict[str, object] = {}
+    if decoded_species:
+        # WRF's Q interpolation uses the metgrid surface pseudo-level.
+        # Native HRRR has no supplied surface analysis and retains zero.
+        # vboundb above the target keeps the shared kernel linear throughout.
+        zero_surface = backend_xp.zeros(
+            (cfg.ny, cfg.nx), dtype=backend_xp.float32)
+
+        def replay_hydrometeor_support(ordered_mask):
+            return mass_vertical_plan.apply(
+                backend_xp.asarray(ordered_mask, dtype=backend_xp.float32),
+                zero_surface,
+                interp_in_logp=True, extrap="constant",
+                vboundb=cfg.nz + 1, values_are_finite=True)
+
+        invalid_source = []
+        for name in decoded_species:
+            source_value = preprocess.float32(fields[name])
+            if (not bool(backend_xp.isfinite(source_value).all())
+                    or bool((source_value < 0.0).any())):
+                invalid_source.append(name)
+            if name in supplied_mass_surfaces:
+                surface = preprocess.float32(fields[name+"_SFC"])
+                if not bool(backend_xp.isfinite(surface).all()) or bool((surface < 0).any()):
+                    invalid_source.append(name+"_SFC")
+        if invalid_source:
+            raise ValueError(
+                "mapped HRRR hydrometeor forcing is non-finite or negative: "
+                f"{invalid_source}")
+        source_fingerprints = {
+            name: array_correspondence_fingerprint(
+                preprocess.float32(fields[name]))
+            for name in decoded_species
+        }
+        # Retention is READ from the Registry-package mapping, never decided
+        # here: the membership test above and the species this loop writes
+        # have to be answers to the same question, and an if-ladder is how
+        # they stop being.  The lookup cannot miss -- the mapping's keys ARE
+        # HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS, pinned by
+        # test_the_analyzed_inventory_tuple_and_its_moist_packages_agree.
+        moist_package = ({"registry_citation": "Registry/Registry.EM_COMMON:3014",
+                          "retained": ()}
+                         if analyzed_species is not None and cfg.mp_physics == 0
+                         else HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE[int(cfg.mp_physics)])
+        retained_names = tuple(name for name in moist_package["retained"] if name in decoded_species)
+        if "QH" in decoded_species:
+            from gpuwm.core.nest_fields import nest_field_kinds
+            if "qh" in nest_field_kinds(cfg):
+                retained_names += ("QH",)
+        for name in retained_names:
+            value = mass_vertical_plan.apply(
+                backend_ordered_levels(fields[name]),
+                (preprocess.float32(fields[name+"_SFC"])
+                 if name in supplied_mass_surfaces else zero_surface),
+                interp_in_logp=True, extrap="constant",
+                vboundb=cfg.nz + 1, values_are_finite=True)
+            if (not bool(backend_xp.isfinite(value).all())
+                    or bool((value < 0.0).any())):
+                raise ValueError(
+                    f"interpolated HRRR hydrometeor {name} is invalid")
+            hydrometeors[name] = value
+        # Everything decoded and not retained is discarded BY THE PACKAGE,
+        # and is named as such with that package's own Registry line.  The
+        # partition is derived from one source (retained + discarded is the
+        # decoded inventory, always, for every id) rather than listed twice.
+        discarded = {
+            name: {
+                "source": source_fingerprints[name],
+                **WRF_REAL_PACKAGE_ABSENT_SPECIES_POLICY,
+                "registry_citation": moist_package["registry_citation"],
+            }
+            for name in decoded_species
+            if name not in retained_names
+        }
+        vertical_disposition = build_hrrr_hydrometeor_vertical_disposition(
+            {name: fields[name] for name in retained_names},
+            order,
+            mass_source_pd_f32,
+            mass_surface_pd_f32,
+            mass_target_pd_f32,
+            hydrometeors,
+            operator_replay=replay_hydrometeor_support,
+        ) if retained_names and not supplied_mass_surfaces else {}
+        hydrometeor_initialization = {
+            "schema": HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V2,
+            "source": "native-hrrr-horizontal-decoder-output",
+            "mp_physics": int(cfg.mp_physics),
+            "decoded_source_species": source_fingerprints,
+            "retained_correspondence": {
+                name: name.lower() for name in retained_names
+            },
+            "discarded_source_species": discarded,
+            "vertical_disposition": vertical_disposition,
+        }
+        if supplied_mass_surfaces:
+            hydrometeor_initialization["schema"] = "gpuwm-metgrid-hydrometeor-initialization-v1"
+            hydrometeor_initialization.pop("vertical_disposition")
+            hydrometeor_initialization["surface_pseudo_levels"] = {
+                name: array_correspondence_fingerprint(preprocess.float32(fields[name+"_SFC"]))
+                for name in supplied_mass_surfaces}
+            hydrometeor_initialization["vertical_operator"] = {
+                "source": "WRF module_initialize_real.F:1862-1997",
+                "operation": "linear Q interpolation with supplied surface before moist-pressure recurrence",
+                "source_level_order": order.tolist(),
+                "source_dry_pressure": array_correspondence_fingerprint(mass_source_pd_f32),
+                "surface_dry_pressure": array_correspondence_fingerprint(mass_surface_pd_f32),
+                "target_dry_pressure": array_correspondence_fingerprint(mass_target_pd_f32),
+            }
+    mark_timing("hydrometeor_vertical_interpolation")
+
+    number_moments, number_receipt = {}, {}
+    if decoded_numbers:
+        source_numbers, surface_numbers = {}, {}
+        for name in decoded_numbers:
+            source = preprocess.float32(fields[name])
+            surface = preprocess.float32(fields[name+"_SFC"])
+            if any(not bool(backend_xp.isfinite(value).all()) or bool((value < 0).any())
+                   for value in (source, surface)):
+                raise ValueError(f"analyzed number field {name} is non-finite or negative")
+            source_numbers[name] = array_correspondence_fingerprint(source)
+            surface_numbers[name] = array_correspondence_fingerprint(surface)
+            if name not in number_targets:
+                continue
+            value = mass_vertical_plan.apply(
+                backend_ordered_levels(fields[name]), surface,
+                interp_in_logp=True, extrap="constant",
+                vboundb=cfg.nz + 1, values_are_finite=True)
+            if not bool(backend_xp.isfinite(value).all()) or bool((value < 0).any()):
+                raise ValueError(f"interpolated number field {name} is invalid")
+            number_moments[number_targets[name]] = value
+        number_receipt = {
+            "schema": "gpuwm-metgrid-number-initialization-v1",
+            "source": source_numbers,
+            "surface_pseudo_level": surface_numbers,
+            "retained_correspondence": {name: number_targets[name] for name in decoded_numbers if name in number_targets},
+            "discarded_inactive_package_fields": [name for name in decoded_numbers if name not in number_targets],
+            "operator": "WRF module_initialize_real.F:1999-2120; linear Q vertical interpolation with supplied surface pseudo-level",
+            "boundary_policy": "initial analysis; default flow-dependent scalar boundaries are unchanged",
+        }
+        mark_timing("number_moment_vertical_interpolation")
+
+    # WRF's qtot for the pressure recurrence is a sum over the ACTIVE moist
+    # package (module_initialize_real.F:3913-3916, PARAM_FIRST_SCALAR ..
+    # num_3d_m = num_moist at :1856), so a species the package does not
+    # carry contributes nothing there either -- ``hydrometeors`` holds
+    # exactly the retained set, in the package's own qc/qr/qi/qs/qg order,
+    # and the accumulation below is WRF's own left-to-right one.
+    condensate_h = None
+    for analyzed in hydrometeors.values():
+        contribution = _host(analyzed).astype(np.float64)
+        condensate_h = (contribution if condensate_h is None
+                        else condensate_h + contribution)
+
+    def moist_total(vapour):
+        """WRF ``qtot``: vapour plus every analyzed condensate species."""
+        return vapour if condensate_h is None else vapour + condensate_h
+
     base = _make_real_base(coord, terrain, float(p_top), cfg.base_temp,
                            hypsometric_opt=cfg.hypsometric_opt,
                            column_workers=column_workers)
@@ -2853,7 +3141,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         # WRF use_sh_qv retains the directly interpolated dry-air mixing
         # ratio while diagnosing the final moist-hydrostatic pressure.
         total_pressure_h = _rebalance_moist_pressure(
-            total_pressure_h, qv_h, dry_mass, base, coord,
+            total_pressure_h, moist_total(qv_h), dry_mass, base, coord,
             column_workers=column_workers)
     else:
         # WRF diagnoses qv from interpolated RH, then recomputes a
@@ -2862,7 +3150,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         # precision.
         for _ in range(2):
             total_pressure_h = _rebalance_moist_pressure(
-                total_pressure_h, qv_h, dry_mass, base, coord,
+                total_pressure_h, moist_total(qv_h), dry_mass, base, coord,
                 column_workers=column_workers)
             temperature_h = _temperature_from_potential_temperature(
                 theta_h, total_pressure_h,
@@ -2873,7 +3161,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                     column_workers=column_workers),
                 total_pressure_h, column_workers=column_workers)
         total_pressure_h = _rebalance_moist_pressure(
-            total_pressure_h, qv_h, dry_mass, base, coord,
+            total_pressure_h, moist_total(qv_h), dry_mass, base, coord,
             column_workers=column_workers)
         # WRF invokes rh_to_mxrat1 again against its final hydrostatic
         # pressure; apply the strict pressure-side cap once more in case a
@@ -2909,93 +3197,6 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         preprocess.float32(fields["V10"]),
         interp_in_logp=True, extrap="constant")
 
-    hydrometeors = {}
-    hydrometeor_initialization: dict[str, object] = {}
-    if (has_specific_humidity
-            and cfg.mp_physics in HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS):
-        # WRF's hydrometeor vert_interp calls use var_type='Q' with
-        # linear_interp and no dedicated surface analysis.  The metgrid
-        # surface pseudo-level is therefore zero; setting vboundb above the
-        # target column keeps the shared kernel linear at every eta level.
-        zero_surface = backend_xp.zeros(
-            (cfg.ny, cfg.nx), dtype=backend_xp.float32)
-
-        def replay_hydrometeor_support(ordered_mask):
-            return mass_vertical_plan.apply(
-                backend_xp.asarray(ordered_mask, dtype=backend_xp.float32),
-                zero_surface,
-                interp_in_logp=True, extrap="constant",
-                vboundb=cfg.nz + 1, values_are_finite=True)
-
-        invalid_source = []
-        for name in HRRR_ANALYZED_HYDROMETEORS:
-            source_value = preprocess.float32(fields[name])
-            if (not bool(backend_xp.isfinite(source_value).all())
-                    or bool((source_value < 0.0).any())):
-                invalid_source.append(name)
-        if invalid_source:
-            raise ValueError(
-                "mapped HRRR hydrometeor forcing is non-finite or negative: "
-                f"{invalid_source}")
-        source_fingerprints = {
-            name: array_correspondence_fingerprint(
-                preprocess.float32(fields[name]))
-            for name in HRRR_ANALYZED_HYDROMETEORS
-        }
-        # Retention is READ from the Registry-package mapping, never decided
-        # here: the membership test above and the species this loop writes
-        # have to be answers to the same question, and an if-ladder is how
-        # they stop being.  The lookup cannot miss -- the mapping's keys ARE
-        # HRRR_ANALYZED_HYDROMETEOR_MP_PHYSICS, pinned by
-        # test_the_analyzed_inventory_tuple_and_its_moist_packages_agree.
-        moist_package = HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE[
-            int(cfg.mp_physics)]
-        retained_names = moist_package["retained"]
-        for name in retained_names:
-            value = mass_vertical_plan.apply(
-                backend_ordered_levels(fields[name]),
-                zero_surface,
-                interp_in_logp=True, extrap="constant",
-                vboundb=cfg.nz + 1, values_are_finite=True)
-            if (not bool(backend_xp.isfinite(value).all())
-                    or bool((value < 0.0).any())):
-                raise ValueError(
-                    f"interpolated HRRR hydrometeor {name} is invalid")
-            hydrometeors[name] = value
-        # Everything decoded and not retained is discarded BY THE PACKAGE,
-        # and is named as such with that package's own Registry line.  The
-        # partition is derived from one source (retained + discarded is the
-        # decoded inventory, always, for every id) rather than listed twice.
-        discarded = {
-            name: {
-                "source": source_fingerprints[name],
-                **WRF_REAL_PACKAGE_ABSENT_SPECIES_POLICY,
-                "registry_citation": moist_package["registry_citation"],
-            }
-            for name in HRRR_ANALYZED_HYDROMETEORS
-            if name not in retained_names
-        }
-        vertical_disposition = build_hrrr_hydrometeor_vertical_disposition(
-            {name: fields[name] for name in retained_names},
-            order,
-            mass_source_pd_f32,
-            mass_surface_pd_f32,
-            mass_target_pd_f32,
-            hydrometeors,
-            operator_replay=replay_hydrometeor_support,
-        )
-        hydrometeor_initialization = {
-            "schema": HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V2,
-            "source": "native-hrrr-horizontal-decoder-output",
-            "mp_physics": int(cfg.mp_physics),
-            "decoded_source_species": source_fingerprints,
-            "retained_correspondence": {
-                name: name.lower() for name in retained_names
-            },
-            "discarded_source_species": discarded,
-            "vertical_disposition": vertical_disposition,
-        }
-
     # -- Configured initial-state perturbation (theta bubbles) ----------
     # Applied ONCE, here, after the base real-data state is final (the
     # WRF two-pass moist rebalance above) and BEFORE the specific volume
@@ -3024,7 +3225,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     alpha = _moist_specific_volume(
         theta_h, qv_h, total_pressure_h,
         column_workers=column_workers)
-    mark_timing("wind_hydrometeor_interpolation_and_alpha")
+    mark_timing("wind_interpolation_and_alpha")
 
     state_kwargs = {}
     if scratch_arena is not None:
@@ -3049,6 +3250,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     state.qv[...] = state_xp.asarray(qv_h, dtype=state_xp.float32)
     if hydrometeors:
         for source_name, value in hydrometeors.items():
+            if state_xp is np:
+                value = _host_float32(value)
             getattr(state, source_name.lower())[...] = state_xp.asarray(
                 value, dtype=state_xp.float32)
         hydrometeor_initialization["initialized_state_species"] = {
@@ -3068,6 +3271,24 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     else:
         state.qc[...] = 0.0
         state.qr[...] = 0.0
+    if analyzed_species is not None:
+        # WRF only interpolates species whose metgrid FLAG_* is set. Missing
+        # species retain the allocated zero state, never a fabricated analysis.
+        if not hydrometeor_initialization:
+            hydrometeor_initialization = {
+                "schema": "gpuwm-declared-initial-species-v1",
+                "mp_physics": int(cfg.mp_physics),
+            }
+        hydrometeor_initialization["source"] = ("supplied-metgrid-mass-and-surface-analysis"
+            if supplied_mass_surfaces else "declared-analyzed-field-inventory")
+        hydrometeor_initialization["declared_analyzed_species"] = list(decoded_species)
+        hydrometeor_initialization["source_absent_state_fields"] = {
+            name.lower(): array_correspondence_fingerprint(getattr(state, name.lower()))
+            for name in DECLARED_ANALYZED_HYDROMETEORS
+            if name not in decoded_species and getattr(state, name.lower(), None) is not None
+        }
+        hydrometeor_initialization["source_absent_policy"] = (
+            "WRF module_initialize_real.F:1862-1997 only interpolates fields with FLAG_*=1; others retain allocated zero")
     aerosol_initialization: dict[str, object] = {}
     if cfg.mp_physics == 28:
         # Aerosol-aware Thompson.  Its Registry package
@@ -3088,10 +3309,9 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         # owns from its first step.  These are written explicitly rather
         # than left to the allocator: the value is a policy, and a policy
         # that is only ever an allocation default is one nobody can find.
-        # qnbca is NOT a gpuwm state field at all -- the port scopes
-        # wif_input_opt=0, which is the only value the refusal above
-        # admits, and Registry/registry.new3d_wif:82 allocates qnbca only
-        # under wif_input_opt==2.
+        # qnbca is not a gpuwm state field. WRF's mp=28 Registry package
+        # writes it, but Thompson consumes it only at wif_input_opt=2;
+        # that black-carbon operation remains unimplemented here.
         state.ni[...] = state_xp.float32(0.0)
         state.nr[...] = state_xp.float32(0.0)
         state.nc[...] = state_xp.float32(0.0)
@@ -3294,6 +3514,13 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                         "the synthetic profile. The one ingest that MAY "
                         "populate them is the wif-climatology branch "
                         "above, which this run did not select.")
+        # Record the final resolution, including a resolved dataset which
+        # could not be used without grid metadata. Zero supplied aerosol
+        # remains input. Immutable LBC field names/bytes carry the decision
+        # through preparation/cache/streaming/restart; tiles need no flag.
+        from gpuwm.boundary_fields import external_scalar_fields
+        state._external_scalar_boundary_fields = external_scalar_fields(
+            cfg, aerosol_from_input=wif_climatology_selected)
         aerosol_initialization = _mp28_aerosol_source_policy(cfg, state)
         aerosol_initialization["mp28_aerosol_source"] = _source_choice
         if wif_receipt is not None:
@@ -3331,6 +3558,21 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                     wif_resolution)
             _warn_synthetic_aerosol_fallback(
                 _source_choice, wif_resolution)
+    # Install supplied moments after the explicit source-absent MP8/28
+    # branches. The analysis must never be overwritten by their zero policy.
+    if decoded_numbers:
+        for name, value in number_moments.items():
+            if state_xp is np:
+                value = _host_float32(value)
+            getattr(state, name)[...] = state_xp.asarray(value, dtype=state_xp.float32)
+        number_receipt["initialized_state_fields"] = {
+            name: array_correspondence_fingerprint(getattr(state, name))
+            for name in number_moments}
+        hydrometeor_initialization["number_moments"] = number_receipt
+    # CUDA transforms may feed a host setup state. Transfer their FP32
+    # wind arrays explicitly; NumPy cannot implicitly consume a CuPy array.
+    if state_xp is np:
+        u, v = _host_float32(u), _host_float32(v)
     state.u[...] = state_xp.asarray(u, dtype=state_xp.float32)
     state.v[...] = state_xp.asarray(v, dtype=state_xp.float32)
     state.w[...] = 0.0
@@ -3374,9 +3616,27 @@ def hydrostatic_residual(result: RealInitResult) -> np.ndarray:
     dry mass, potential temperature, vapor, coefficients, and arithmetic inputs
     are read back from the initialized :class:`DomainState`.  This makes the
     gate sensitive to the actual ``state.php`` quantization loaded on device.
+
+    The discrete operator is the one ``calc_p_alpha`` runs, which is what
+    makes this a measurement of the state rather than of a rounding tree
+    nobody executes: the layer geopotential difference is the exact
+    float32 base difference plus ``state.dphb_resid``, and opt 2's log
+    ratio is ``log1p((pfd - pfu)/pfu)`` off the float64-differenced
+    coefficient drops.  Measured on the seven-level probe in
+    tests/test_real_init.py
+    (test_real_init_builds_nonnegative_balanced_fp32_domain_state), max
+    residual 2.4934e-2 grading that state with the pre-2.6.6 operator and
+    6.9648e-3 grading the same state with this one.
     """
     state = result.state
-    total_phi = _host(state.phb + state.php)
+    phb = _host(state.phb)
+    php = _host(state.php)
+    dphb = np.asarray(
+        np.asarray(phb[1:] - phb[:-1], dtype=np.float32)
+        + _host(state.dphb_resid), dtype=np.float32)
+    dphi = np.asarray(dphb + np.asarray(php[1:] - php[:-1],
+                                        dtype=np.float32),
+                      dtype=np.float32).astype(np.float64)
     dry_mass = _host(state.mub2d + state.mup)
     theta = _host(state.thb + state.thp)
     qv = _host(state.qv)
@@ -3391,18 +3651,19 @@ def hydrostatic_residual(result: RealInitResult) -> np.ndarray:
         c4h = _host(state.c4h)[:, None, None]
         c3f = _host(state.c3f)[:, None, None]
         c4f = _host(state.c4f)[:, None, None]
+        dc3f = _host(state.dc3f)[:, None, None]
+        dc4f = _host(state.dc4f)[:, None, None]
         p_top = float(state.p_top)
         pfu = c3f[1:] * dry_mass[None] + c4f[1:] + p_top
-        pfd = c3f[:-1] * dry_mass[None] + c4f[:-1] + p_top
+        dpf = dc3f * dry_mass[None] + dc4f          # = pfd - pfu
         phm = c3h * dry_mass[None] + c4h + p_top
-        residual = (np.diff(total_phi, axis=0)
-                    - alpha * phm * np.log(pfd / pfu))
+        residual = dphi - alpha * phm * np.log1p(dpf / pfu)
     else:
         c1h = _host(state.c1h)[:, None, None]
         c2h = _host(state.c2h)[:, None, None]
         dnw = _host(state.dnw)[:, None, None]
         increment = c1h * dry_mass[None] + c2h
-        residual = np.diff(total_phi, axis=0) + dnw * increment * alpha
+        residual = dphi + dnw * increment * alpha
     return np.max(np.abs(residual), axis=0)
 
 

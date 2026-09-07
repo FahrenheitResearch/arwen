@@ -870,10 +870,19 @@ def boundary_zone_blowup_value(
     boundary_max = float(run_summary["boundary_w_max_ms"])
     interior_max = float(run_summary["interior_w_max_ms"])
     fired = bool(run_summary["boundary_zone_blowup"])
+    unmeasured = (not math.isfinite(boundary_max)
+                  or not math.isfinite(interior_max))
+    if unmeasured:
+        # The bound normalises the boundary against the same run's interior,
+        # so a non-finite maximum on either side is the yardstick going
+        # missing, not the boundary being quiet.  Fire here whatever the
+        # producer recorded: this is the value the registered gate consumes.
+        fired = True
     return float(fired), {
         "boundary_w_max_ms": boundary_max,
         "interior_w_max_ms": interior_max,
         "diagnostic_fired": bool(fired),
+        "unmeasured_w_maximum": bool(unmeasured),
         "source": "production RunSummary accumulated over every dynamics substep",
     }
 
@@ -1158,6 +1167,7 @@ def score_statistical_frame(
     fss_pair = reference if fss_reference is None else fss_reference
     fss_evidence: list[dict[str, object]] = []
     fss_passed = True
+    scored_rows = 0
     try:
         candidate_refl = _composite_reflectivity(candidate)
         reference_refl = _composite_reflectivity(fss_pair)
@@ -1189,24 +1199,38 @@ def score_statistical_frame(
                     candidate_refl, event_dbz)
                 reference_coverage = _event_coverage(
                     reference_refl, event_dbz)
-            degenerate = coverage_is_valid and (
-                candidate_coverage < nest_gates.FSS_DEGENERATE_EVENT_FLOOR
-                or reference_coverage < nest_gates.FSS_DEGENERATE_EVENT_FLOOR)
+            # F24 degeneracy is one-sided.  Only a REFERENCE without events
+            # makes the row meteorologically meaningless -- there is then
+            # nothing to be skilful about.  A candidate below the floor while
+            # the reference is above it is the model failing to produce the
+            # convection the row exists to detect, and it fails the row.
+            degenerate = (
+                coverage_is_valid
+                and reference_coverage < nest_gates.FSS_DEGENERATE_EVENT_FLOOR)
+            # F27 documents the deficiency it measured (0.7047-0.7084), not
+            # every deficiency: without the floor this disjunct and
+            # ``value >= effective_minimum`` partition the finite reals and
+            # the row cannot fail for any finite score.
             documented_deficiency = (
                 not degenerate
                 and envelope_minimum is not None
                 and math.isfinite(value)
-                and value < envelope_minimum)
+                and nest_gates.F27_DOCUMENTED_DEFICIENCY_FLOOR
+                <= value < envelope_minimum)
             accepted = math.isfinite(value) and (
                 value >= effective_minimum or documented_deficiency)
             row: dict[str, object] = {
                 "event_dbz": event_dbz, "radius_km": radius_km,
                 "minimum": effective_minimum, "value": value,
-                "passed": bool(accepted or degenerate),
+                # A held row measured nothing, so it is INCOMPLETE and never
+                # reads as agreement; the F24 ensemble adjudicator is what
+                # disposes of it.
+                "passed": bool(accepted and not degenerate),
             }
             if degenerate:
                 row.update({
                     "degenerate": True,
+                    "status": "incomplete",
                     "candidate_coverage": candidate_coverage,
                     "reference_coverage": reference_coverage,
                     "adjudication": "held-for-ensemble-envelope-f24",
@@ -1217,6 +1241,7 @@ def score_statistical_frame(
                     row.pop("value")
                     row["fss"] = None
             else:
+                scored_rows += 1
                 if documented_deficiency:
                     row.update({
                         "documented_deficiency": True,
@@ -1226,6 +1251,11 @@ def score_statistical_frame(
                     })
                 fss_passed &= accepted
             fss_evidence.append(row)
+        if not scored_rows:
+            # Every leg was held: the conjunction above quantified over
+            # nothing, and a universal quantifier over nothing is true.  That
+            # is the absence of a measurement, not a pass.
+            fss_passed = False
     except (KeyError, ValueError, OSError) as exc:
         fss_passed = False
         fss_evidence.append({"error": str(exc)})
@@ -1648,6 +1678,9 @@ def execute_production_run(
         interior_max = float(summary["interior_w_max_ms"])
         summary["boundary_zone_blowup"] = bool(
             not math.isfinite(boundary_max)
+            # max(nan, 1.0) is nan, so an unmeasurable interior would make
+            # the comparison below false and switch the detector off.
+            or not math.isfinite(interior_max)
             or boundary_max > 5.0 * max(interior_max, 1.0))
     prefix_provenance = {
         str(count): experiment_prefix_provenance(

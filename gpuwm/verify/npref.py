@@ -4251,7 +4251,7 @@ def np_advect_1d_rk3(q0, u0, dx, t_end, cfl):
 # ---------------------------------------------------------------------------
 
 _SFCLAY_OUTPUTS = (
-    "znt", "ust", "mol", "hfx", "qfx", "qsfc", "zol", "regime",
+    "znt", "ust", "ustm", "mol", "hfx", "qfx", "qsfc", "zol", "regime",
     "psim", "psih", "fm", "fh", "lh", "u10", "v10", "th2", "t2",
     "q2", "chs", "chs2", "cqs2", "flhc", "flqc", "qgh", "rmol",
     "wspd", "br", "gz1oz0", "cpm", "ck", "cka", "cd", "cda",
@@ -4420,9 +4420,9 @@ def _sf_rev_heat_psi(zol, za, roughness, height):
 
 
 def _np_sfclay_point(u, v, temp, qv, pressure, dz8w, psfc, tsk, znt,
-                      pblh, mavail, xland, qsfc, zol, ust, mol, hfx_old,
-                      qfx_old, lakemask, dx, option, isfflx, isftcflx,
-                      iz0tlnd):
+                      pblh, mavail, xland, qsfc, zol, ust, ustm, mol,
+                      hfx_old, qfx_old, lakemask, dx, option, isfflx,
+                      isftcflx, iz0tlnd):
     """One float64 surface point, line-for-line with the two WRF files."""
     karman = 0.4
     # WRF's EP_1, which is rvovrd - 1 with rvovrd the float32 quotient.
@@ -4434,6 +4434,7 @@ def _np_sfclay_point(u, v, temp, qv, pressure, dz8w, psfc, tsk, znt,
     salinity = 0.98
     land = xland < 1.5
     old_ust, old_mol, old_zol = ust, mol, zol
+    old_ustm = ustm
 
     psfc_kpa = psfc / 1000.0
     thgb = tsk * (c.P0 / psfc) ** c.RCP
@@ -4681,6 +4682,12 @@ def _np_sfclay_point(u, v, temp, qv, pressure, dz8w, psfc, tsk, znt,
             psiq2 = psit2 = np.log((2.0 + z0t) / z0t) - psih2
 
     ust = 0.5 * old_ust + 0.5 * karman * wspd / psix
+    # TKE coupling (module_sf_sfclay.F:800-804,
+    # physics_mmm/sf_sfclayrev.F90:759-763): the same relaxation on the
+    # wind speed WITHOUT vconv/vsgd and without WSPD's 0.1 floor, and with
+    # none of the land floor UST takes below.
+    wspdi = np.sqrt(u * u + v * v)
+    ustm = 0.5 * old_ustm + 0.5 * karman * wspdi / psix
     u10, v10 = u * psix10 / psix, v * psix10 / psix
     th2 = thgb + dtg * psit2 / psit
     q2 = qsfc + (qv - qsfc) * psiq2 / psiq
@@ -4720,7 +4727,7 @@ def _np_sfclay_point(u, v, temp, qv, pressure, dz8w, psfc, tsk, znt,
         hfx = qfx = lh = flhc = flqc = chs = cqs2 = chs2 = 0.0
 
     return {
-        "znt": znt_out, "ust": ust, "mol": mol, "hfx": hfx,
+        "znt": znt_out, "ust": ust, "ustm": ustm, "mol": mol, "hfx": hfx,
         "qfx": qfx, "qsfc": qsfc, "zol": zol, "regime": regime,
         "psim": psim, "psih": psih, "fm": fm, "fh": fh, "lh": lh,
         "u10": u10, "v10": v10, "th2": th2, "t2": t2, "q2": q2,
@@ -4733,16 +4740,18 @@ def _np_sfclay_point(u, v, temp, qv, pressure, dz8w, psfc, tsk, znt,
 
 
 def np_sfclay(u, v, t, qv, p, dz8w, psfc, tsk, znt, pblh, mavail,
-              xland, *, option=91, qsfc=None, zol=None, ust=None, mol=None,
-              hfx=None, qfx=None, lakemask=None, dx=1000.0, isfflx=True,
-              isftcflx=0, iz0tlnd=0):
+              xland, *, option=91, qsfc=None, zol=None, ust=None, ustm=None,
+              mol=None, hfx=None, qfx=None, lakemask=None, dx=1000.0,
+              isfflx=True, isftcflx=0, iz0tlnd=0):
     """Float64 mirror of :mod:`gpuwm.core.sfclay` and ``sfclay.cu``.
 
     Inputs are broadcast-compatible surface arrays (normally ``(ny,nx)``)
     containing WRF's lowest mass-level wind, temperature, vapor, pressure,
     layer depth and surface/LSM fields.  ``xland`` follows WRF (1 land,
     2 water).  Incoming ``ust``/``mol`` and heat/moisture fluxes are the
-    previous-step values used by the WRF stability iteration.  Incoming
+    previous-step values used by the WRF stability iteration, as is the
+    incoming ``ustm`` the TKE-coupling relaxation averages against
+    (Registry.EM_COMMON:1954 state, cold-started at zero).  Incoming
     ``zol`` is also preserved by classic option 91's strong-stable branch.
     The returned dictionary contains float64 arrays for every device result
     plus ``theta_air``/``theta_ground`` verification intermediates.
@@ -4765,7 +4774,8 @@ def np_sfclay(u, v, t, qv, p, dz8w, psfc, tsk, znt, pblh, mavail,
         return np.broadcast_to(np.asarray(value, dtype=np.float64), shape)
 
     values = [arr(a, 0.0) for a in base]
-    extras = [arr(qsfc, 0.0), arr(zol, 0.0), arr(ust, 0.1), arr(mol, 0.0),
+    extras = [arr(qsfc, 0.0), arr(zol, 0.0), arr(ust, 0.1),
+              arr(ustm, 0.0), arr(mol, 0.0),
               arr(hfx, 0.0), arr(qfx, 0.0), arr(lakemask, 0.0)]
     result = {name: np.empty(shape, dtype=np.float64)
               for name in _SFCLAY_OUTPUTS + ("theta_air", "theta_ground")}
@@ -5939,7 +5949,7 @@ def _noah_sflx(ffrozp, dt, nsoil, sldpth, lwdn, soldn, solnet, sfcprs,
                         cmc, cmcmax, nsoil, dt, shdfac, sbeta, q2, t1,
                         sfctmp, t24, th2, fdown, f1, emissi, stc,
                         epsca, bexp, pc, rch, rr, cfactr, sh2o, slope,
-                        kdt, frzfact, psisat, zsoil, dksat, dwsat,
+                        kdt, frzx, psisat, zsoil, dksat, dwsat,
                         tbot, zbot, nroot, rtdis, quartz, fxexp,
                         csoil, vegtyp, isurban, soiltyp, opt_thcnd,
                         flags)
@@ -5954,7 +5964,7 @@ def _noah_sflx(ffrozp, dt, nsoil, sldpth, lwdn, soldn, solnet, sfcprs,
                          q2, t1, sfctmp, t24, th2, fdown, f1, stc,
                          epsca, sfcprs, bexp, pc, rch, rr, cfactr,
                          sncovr, sneqv, sndens, snowh, sh2o, slope,
-                         kdt, frzfact, psisat, zsoil, dwsat, dksat,
+                         kdt, frzx, psisat, zsoil, dwsat, dksat,
                          tbot, zbot, shdfac, nroot, rtdis, quartz,
                          fxexp, csoil, emissi, ribb, flx2, isurban,
                          vegtyp, soiltyp, opt_thcnd, flags)
@@ -6357,8 +6367,14 @@ def np_ysu_column(u, v, theta, qv, qc, qi, p, p_interface, exner, dz, *,
     sflux = hfx / rho / c.CP + qfx / rho * ep1 * theta[0]
     dt2, rdt = 2.0 * dt, 1.0 / (2.0 * dt)
 
-    def diagnose(thermal, brcrit):
-        """WRF bulk-Richardson crossing; returns hpbl and 1-based kpbl."""
+    def diagnose(thermal, brcrit, clamp=True):
+        """WRF bulk-Richardson crossing; returns hpbl and 1-based kpbl.
+
+        ``clamp`` is bl_ysu.F90's ``if(hpbl(i).lt.zq(i,2)) kpbl(i) = 1``,
+        which follows the sweep at :646 and :823 but NOT at :718-728 --
+        that sweep's result reaches the theta-li scan unclamped, and WRF
+        interpolates and clamps it once afterwards at :764-765.
+        """
         brup = float(br)
         brdn = brup
         kp = 1
@@ -6379,7 +6395,7 @@ def np_ysu_column(u, v, theta, qv, qc, qi, p, p_interface, exner, dz, *,
             frac = (brcrit - brdn) / (brup - brdn)
         kh = kp - 1                          # Python index of upper level
         hp = za[kh - 1] + frac * (za[kh] - za[kh - 1])
-        if hp < zq[1]:
+        if clamp and hp < zq[1]:
             kp = 1
         return float(hp), int(kp), brdn, brup
 
@@ -6420,8 +6436,23 @@ def np_ysu_column(u, v, theta, qv, qc, qi, p, p_interface, exner, dz, *,
         cg = (-15.9 * ust * ust / max(wspd, 1.0e-9) * wstar3
               / max(wscale ** 4, 1.0e-20))
         hgamu, hgamv = cg * u[0], cg * v[0]
-        hpbl, kpbl, brdn, brup = diagnose(thermal, brcr_ub)
-        pblflg = kpbl > 1
+        # bl_ysu.F90:703-728 guards all three thermal-enhanced statements
+        # with if(pblflg(i)), and :684-698 can only LOWER pblflg -- WRF has
+        # no path that raises it here.  A column whose FIRST guess sat below
+        # zq(i,2) (:646-647) therefore keeps kpbl=1 and stays in the local-K
+        # regime for the whole step, however far the thermal excess could
+        # have pushed the enhanced sweep.
+        #
+        # The sweep is the WHOLE of :703-728: it leaves hpbl at the
+        # zq(i,1) of :706 and never touches pblflg.  WRF interpolates hpbl
+        # and applies the zq(i,2) clamp exactly once, at :754-768, AFTER
+        # the theta-li scan -- so the scan below must see this sweep's
+        # kpbl >= 2 and an unchanged pblflg.  The hpbl this returns is
+        # dead for this call: the post-scan ``if pblflg`` block recomputes
+        # it from the same brdn/brup before any reader, as :764 does.
+        if pblflg:
+            hpbl, kpbl, brdn, brup = diagnose(thermal, brcr_ub,
+                                              clamp=False)
     else:
         pblflg = False
 
@@ -6453,8 +6484,17 @@ def np_ysu_column(u, v, theta, qv, qc, qi, p, p_interface, exner, dz, *,
             frac = (brcr_ub - brdn) / (brup - brdn)
         kh = kpbl - 1
         hpbl = za[kh - 1] + frac * (za[kh] - za[kh - 1])
+        # bl_ysu.F90:765 and :766 are two INDEPENDENT statements.  The
+        # second kills pblflg whenever kpbl <= 1, whatever hpbl came back
+        # as -- including the case where hpbl was interpolated from WRF's
+        # own za(i,0) overrun above and came back large.  Nesting :766
+        # inside :765 let the theta-li revival (:745-749 raises pblflg on a
+        # final unstable iteration without ever reassigning kpbl) survive
+        # with kpbl == 1, and :833's k = kpbl(i)-1 is then one level below
+        # the column.
         if hpbl < zq[1]:
             kpbl = 1
+        if kpbl <= 1:
             pblflg = False
 
     # WRF stable-boundary-layer enhancement when the first diagnosis falls
@@ -8995,8 +9035,14 @@ def np_kf_column(u, v, temperature, qv, qc, pressure, exner, dz, w, *,
         der[:] = unit_der * ainc
         ddr[:] = unit_ddr * ainc
 
+    # WRF 2571-2573: the shallow arm RE-SETS TIMEC to exactly 2400 here,
+    # discarding the FLOAT(NINT(TIMEC/DT))*DT rounding of :1600.  Every
+    # feedback tendency from :2603 to :2640 then divides by the un-rounded
+    # value, while the closure and advection arithmetic above, TIMEC_KF
+    # (:2387) and the TADVEC comparison (:2569) all keep the rounded one.
+    tendency_timec = 2400.0 if shallow else timec
     output["rqvcuten"][:cloud_top + 1] = (
-        (qg[:cloud_top + 1] - qenv[:cloud_top + 1]) / timec)
+        (qg[:cloud_top + 1] - qenv[:cloud_top + 1]) / tendency_timec)
     output["closure_scale"] = float(ainc)
     output["closure_iterations"] = int(closure_iterations)
     output["closure_fabe"] = float(fabe)
@@ -9081,8 +9127,10 @@ def np_kf_column(u, v, temperature, qv, qc, pressure, exner, dz, w, *,
     rlf = 3.339e5
     if phase_mode == KFPhaseMode.WARM_RAIN:
         tg[active] -= (qipa[active] + qspa[active]) * rlf / cpm
-        output["rqccuten"][active] = (qlpa[active] + qipa[active]) / timec
-        output["rqrcuten"][active] = (qrpa[active] + qspa[active]) / timec
+        output["rqccuten"][active] = (
+            (qlpa[active] + qipa[active]) / tendency_timec)
+        output["rqrcuten"][active] = (
+            (qrpa[active] + qspa[active]) / tendency_timec)
     elif phase_mode == KFPhaseMode.NO_SEPARATE_SNOW:
         warm_levels = np.flatnonzero(temperature[active] > 273.16)
         melting_level = int(warm_levels[-1]) if warm_levels.size else -1
@@ -9095,19 +9143,22 @@ def np_kf_column(u, v, temperature, qv, qc, pressure, exner, dz, w, *,
         tg_active[~below_melting] += (
             (qlpa[active][~below_melting] + qrpa[active][~below_melting])
             * rlf / cpm[~below_melting])
-        output["rqccuten"][active] = (qlpa[active] + qipa[active]) / timec
-        output["rqrcuten"][active] = (qrpa[active] + qspa[active]) / timec
+        output["rqccuten"][active] = (
+            (qlpa[active] + qipa[active]) / tendency_timec)
+        output["rqrcuten"][active] = (
+            (qrpa[active] + qspa[active]) / tendency_timec)
     elif phase_mode == KFPhaseMode.SEPARATE_SNOW:
-        output["rqccuten"][active] = qlpa[active] / timec
-        output["rqrcuten"][active] = qrpa[active] / timec
-        output["rqscuten"][active] = (qspa[active] + qipa[active]) / timec
+        output["rqccuten"][active] = qlpa[active] / tendency_timec
+        output["rqrcuten"][active] = qrpa[active] / tendency_timec
+        output["rqscuten"][active] = (
+            (qspa[active] + qipa[active]) / tendency_timec)
     else:
-        output["rqccuten"][active] = qlpa[active] / timec
-        output["rqicuten"][active] = qipa[active] / timec
-        output["rqrcuten"][active] = qrpa[active] / timec
-        output["rqscuten"][active] = qspa[active] / timec
+        output["rqccuten"][active] = qlpa[active] / tendency_timec
+        output["rqicuten"][active] = qipa[active] / tendency_timec
+        output["rqrcuten"][active] = qrpa[active] / tendency_timec
+        output["rqscuten"][active] = qspa[active] / tendency_timec
     output["rthcuten"][active] = (
-        (tg[active] - temperature[active]) / (exner[active] * timec))
+        (tg[active] - temperature[active]) / (exner[active] * tendency_timec))
     output["closure_temperature"] = tg.copy()
     output["closure_liquid"] = qlpa.copy()
     output["closure_ice"] = qipa.copy()
@@ -9135,7 +9186,7 @@ def np_kf_column(u, v, temperature, qv, qc, pressure, exner, dz, w, *,
     raw_rthcuten = np.zeros(nz, dtype=np.float64)
     raw_rthcuten[:cloud_top + 1] = (
         (tg[:cloud_top + 1] - temperature[:cloud_top + 1])
-        / (timec * exner[:cloud_top + 1]))
+        / (tendency_timec * exner[:cloud_top + 1]))
     output["raw_rthcuten"] = raw_rthcuten
     output["reported_mse_residual"] = reported_mse_residual
 

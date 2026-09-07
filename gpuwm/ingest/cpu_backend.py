@@ -175,30 +175,39 @@ class _CpuRegularPlan:
         self.target_shape = tuple(map(int, y.shape))
         self.y = np.ascontiguousarray(y, dtype=np.float32)
         self.x = np.ascontiguousarray(x, dtype=np.float32)
+        from gpuwm.ingest.interpolation_support import regular_source_support
+        self._source_support = regular_source_support(
+            self.source_shape, self.y, self.x)
 
     def apply(self, field, method: str = "parabolic", *,
-              workers: int | None = None) -> np.ndarray:
+              workers: int | None = None,
+              source_support: bool = False) -> np.ndarray:
         """Apply this geometry while preserving leading field dimensions."""
 
         methods = {"nearest": 0, "bilinear": 1, "parabolic": 2}
         if method not in methods:
             raise ValueError(
                 "method must be 'nearest', 'bilinear', or 'parabolic'")
+        support = self._source_support if source_support and method != "nearest" else None
+        shape, y, x = self.source_shape, self.y, self.x
+        if support is not None:
+            field = support.crop(field, self.source_shape)
+            shape, y, x = support.shape, support.y, support.x
         source = _host_f32(field)
-        if source.ndim < 2 or source.shape[-2:] != self.source_shape:
+        if source.ndim < 2 or source.shape[-2:] != shape:
             raise ValueError(
                 "field trailing dimensions do not match source axes")
         leading_shape = source.shape[:-2]
         nlead = int(np.prod(leading_shape, dtype=np.int64)) or 1
-        source = source.reshape((nlead, *self.source_shape))
-        output = np.empty((nlead, self.y.size), dtype=np.float32)
-        count = _workers(workers, self.y.size)
+        source = source.reshape((nlead, *shape))
+        output = np.empty((nlead, y.size), dtype=np.float32)
+        count = _workers(workers, y.size)
         code = int(self.backend._library.gpuwm_regular_interp_f32(
             ctypes.c_void_p(source.ctypes.data),
-            ctypes.c_void_p(self.y.ctypes.data),
-            ctypes.c_void_p(self.x.ctypes.data),
+            ctypes.c_void_p(y.ctypes.data),
+            ctypes.c_void_p(x.ctypes.data),
             ctypes.c_void_p(output.ctypes.data),
-            nlead, self.source_shape[0], self.source_shape[1], self.y.size,
+            nlead, shape[0], shape[1], y.size,
             methods[method], count,
         ))
         self.backend._raise(code, "horizontal interpolation")
@@ -257,8 +266,9 @@ class _CpuIndexedDonorPlan:
         self.fraction_x = np.ascontiguousarray(fraction_x, dtype=np.float32)
 
     def apply(self, field, method: str = "parabolic", *,
-              workers: int | None = None) -> np.ndarray:
-        """Apply this geometry while preserving leading field dimensions."""
+              workers: int | None = None,
+              source_support: bool = False) -> np.ndarray:
+        """Apply the distinct indexed-donor arithmetic on the full source."""
 
         if method not in self._METHODS:
             raise ValueError(
@@ -377,6 +387,79 @@ class CpuPreprocessBackend:
         ]
         indexed.restype = ctypes.c_int32
         self.indexed_donor_interp = True
+
+    def generate_wrf_eta(self, e_vert: int, *, auto_levels_opt=2,
+                         p_top=5000.0, max_dz=1000.0, dzbot=50.0,
+                         dzstretch_s=1.3, dzstretch_u=1.1,
+                         base_temp=290.0) -> np.ndarray:
+        """Materialize WRF's automatic full eta levels with its REAL arithmetic.
+
+        Explicit eta arrays bypass this function. This additive symbol leaves
+        all existing ABI-v1 interpolation callers valid with older libraries.
+        """
+        for name, value in (("e_vert", e_vert), ("auto_levels_opt", auto_levels_opt)):
+            if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+                raise ValueError(f"{name} must be an integer")
+        if e_vert < 3:
+            raise ValueError("automatic eta generation requires e_vert >= 3")
+        if auto_levels_opt not in (1, 2):
+            raise ValueError("auto_levels_opt must be 1 or 2")
+        try:
+            call = self._library.gpuwm_wrf_eta_f32
+        except AttributeError as exc:
+            raise ValueError("CPU preprocessing bridge lacks WRF eta generation; rebuild tools/grib1_bridge or install the matching native bridges") from exc
+        call.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int32,
+                         *([ctypes.c_float] * 6), ctypes.c_void_p, ctypes.c_size_t]
+        call.restype = ctypes.c_int32
+        out = np.empty(e_vert, dtype=np.float32)
+        message = ctypes.create_string_buffer(512)
+        code = int(call(out.ctypes.data, e_vert, auto_levels_opt, p_top,
+                        max_dz, dzbot, dzstretch_s, dzstretch_u, base_temp,
+                        ctypes.addressof(message), len(message)))
+        if code:
+            reason = message.value.decode("utf-8", "replace")
+            raise ValueError(reason or f"WRF eta generation failed with native code {code}")
+        return out
+
+    def surface_pressure_from_sea_level(self, pressure, height, terrain, slp, *, workers=1):
+        """WRF sfcprs3, parallel by column with strict REAL arithmetic.
+
+        Accept setup's existing f64 storage. The native routine casts each
+        scalar in place and follows an index permutation, avoiding two full
+        f32 copies and a reordered copy of both atmospheric profiles.
+        """
+        pressure, height, terrain, slp = (
+            np.require(value, dtype=np.float64, requirements=("C", "A"))
+            for value in (pressure, height, terrain, slp))
+        if pressure.ndim != 3 or height.shape != pressure.shape:
+            raise ValueError("sfcprs3 requires matching level/row/column pressure and GHT arrays")
+        if pressure.shape[0] < 2 or not all(pressure.shape):
+            raise ValueError("sfcprs3 requires at least two profile levels and a nonempty grid")
+        if terrain.shape != pressure.shape[1:] or slp.shape != terrain.shape:
+            raise ValueError("sfcprs3 terrain and PMSL must match the profile's horizontal grid")
+        try:
+            call = self._library.gpuwm_wrf_sfcprs3_from_f64
+        except AttributeError as exc:
+            raise ValueError("CPU preprocessing bridge lacks WRF sea-level pressure reconstruction; rebuild tools/grib1_bridge or install the matching native bridges") from exc
+        pointer, size = ctypes.c_void_p, ctypes.c_size_t
+        call.argtypes = [pointer] * 6 + [size] * 3 + [pointer]
+        call.restype = ctypes.c_int32
+        order = np.argsort(-pressure[:, 0, 0]).astype(np.uint64)
+        out = np.empty(terrain.shape, dtype=np.float32)
+        failed_column = size()
+        code = int(call(height.ctypes.data, pressure.ctypes.data, terrain.ctypes.data,
+                        slp.ctypes.data, order.ctypes.data, out.ctypes.data,
+                        pressure.shape[0], terrain.size, _workers(workers, terrain.size),
+                        ctypes.addressof(failed_column)))
+        if code:
+            if failed_column.value < terrain.size:
+                row, column = divmod(failed_column.value, terrain.shape[1])
+                position = f" at row {row}, column {column}"
+            else:
+                position = ""
+            reason = _ERRORS.get(code, f"native error {code}")
+            raise ValueError(f"WRF sfcprs3 pressure reconstruction{position}: {reason}")
+        return out
 
     def _native_message(self) -> str:
         """The sentence behind the last nonzero static-dataset return."""

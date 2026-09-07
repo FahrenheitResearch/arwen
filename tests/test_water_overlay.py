@@ -115,8 +115,21 @@ _PRE_SASE_FLIP_FINGERPRINT = (
 #: SASE flip fails here instead of being rebound on faith.  A default
 #: that changes the integration belongs in the run provenance, so the
 #: hash moving was the fingerprint working.
-_ANCHOR_FINGERPRINT = (
+_PRE_TIEDTKE_KEY_FINGERPRINT = (
     "577998f0fc3e1c17f6a082346d7b803f404f3bbe7ed66d50b0449d9e023c6c7a")
+
+#: The anchor after d0c23dad0 (2.6.4, the New Tiedtke port) appended
+#: ``ntiedtke_tiedtke_closure`` to RunConfig UNSCOPED: the restart identity
+#: scopes fields by mp_physics (gpuwm.core.model.SCHEME_SCOPED_RUN_FIELDS)
+#: and has no cumulus row, so a cu_physics = 16 knob binds every
+#: experiment's fingerprint at its False default, this scaffold's included
+#: (cu_physics = 0 on both domains).  That key is the ONLY reason this
+#: hash moved, and it is measured rather than asserted: the test below
+#: drops the key from the identity payload and recovers the pre-2.6.4
+#: anchor byte for byte, then flips SASE back and recovers the original.
+#: Re-pinned on lane/release-reds-266; the port re-pinned nothing.
+_ANCHOR_FINGERPRINT = (
+    "b288ea01ca75ea49b0c3d0d8c4779d2997fb550b5af8b32bcb6f7236315a3b76")
 
 
 def _stability_anchor_catalog():
@@ -126,30 +139,105 @@ def _stability_anchor_catalog():
                    "size": 1, "product_id": "era5", "provenance": ""},)})
 
 
-def test_no_overlay_keeps_the_experiment_fingerprint():
+def test_no_overlay_keeps_the_experiment_fingerprint(monkeypatch):
     """The option must not move any existing fingerprint when off.
 
     The overlay lives on [case_data]/prepare kwargs, never
     ExperimentConfig, so the restart identity payload does not see it.
     The hash below therefore moves only when something else that IS bound
-    to run identity changes -- so far exactly once, for the SASE flip
-    named above.
+    to run identity changes -- so far exactly twice, for the SASE flip
+    and the unscoped 2.6.4 cumulus key named above, each attributed by
+    reconstruction below.
     """
     from gpuwm.core.model import experiment_fingerprint
     from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
 
     exp = load_scaffold()
+    _without_the_later_eta_key(monkeypatch, exp)
     assert experiment_fingerprint(
         exp, _stability_anchor_catalog()) == _ANCHOR_FINGERPRINT
 
 
-def test_the_anchor_moved_for_the_sase_default_flip_and_nothing_else():
-    """Name the provenance of the rebind, mechanically.
+def _without_the_later_eta_key(monkeypatch, exp):
+    """Reconstruct the recorded payload before 80a3009c28e63936a6d1219898fca4ea387ae0c7.
+
+    That later offline-child commit added RunConfig.eta_levels=None. Dropping
+    exactly this inert key reproduces all three original recorded hashes;
+    neither their receipts nor any production identity rule is changed here.
+    """
+    import gpuwm.core.model as model
+    assert all(domain.run.eta_levels is None for domain in exp.domains)
+    assert "eta_levels" not in model.RESTART_TOLERATED_RUN_FIELDS
+    monkeypatch.setattr(model, "RESTART_TOLERATED_RUN_FIELDS", (
+        *model.RESTART_TOLERATED_RUN_FIELDS, "eta_levels"))
+
+
+def test_current_fingerprint_still_binds_the_later_eta_ladder():
+    from dataclasses import replace
+    from gpuwm.core.model import experiment_fingerprint
+    from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
+    exp = load_scaffold()
+    changed = replace(exp, domains=tuple(replace(domain, run=replace(
+        domain.run, eta_levels=tuple(np.linspace(1., 0., domain.run.nz + 1))))
+        for domain in exp.domains))
+    assert experiment_fingerprint(exp, _stability_anchor_catalog()) != (
+        experiment_fingerprint(changed, _stability_anchor_catalog()))
+
+
+def _without_the_tiedtke_key(monkeypatch):
+    """Drop ``ntiedtke_tiedtke_closure`` from the identity payload.
+
+    ``restart_identity_payload`` pops RESTART_TOLERATED_RUN_FIELDS from
+    every domain's run table at call time, so widening that tuple for the
+    duration of a test reproduces the payload every fingerprint carried
+    before the key existed -- the same hashing, the same catalog, one key
+    fewer.  A reconstruction that edited the hash input by hand would
+    prove nothing about the writer.
+    """
+    import gpuwm.core.model as model
+
+    assert "ntiedtke_tiedtke_closure" not in model.RESTART_TOLERATED_RUN_FIELDS
+    monkeypatch.setattr(model, "RESTART_TOLERATED_RUN_FIELDS", (
+        *model.RESTART_TOLERATED_RUN_FIELDS, "ntiedtke_tiedtke_closure"))
+
+
+def test_the_anchor_moved_for_the_unscoped_cumulus_key_and_nothing_else(
+        monkeypatch):
+    """Name the provenance of the 2.6.4 rebind, mechanically.
+
+    With the one appended key removed from the payload, the anchor is the
+    pre-2.6.4 value byte for byte.  Had a second identity-bound default
+    moved in that release -- or had the field been placed somewhere the
+    payload orders by -- this reconstruction would miss and the rebind
+    above would be exposed as unexplained rather than attributed.
+    """
+    from gpuwm.core.model import experiment_fingerprint
+    from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
+
+    exp = load_scaffold()
+    assert all(domain.run.cu_physics == 0 for domain in exp.domains), (
+        "the anchor scaffold selects no cumulus scheme, which is what makes "
+        "an unscoped cumulus knob moving it identity churn rather than a "
+        "trajectory change")
+    assert all(
+        domain.run.ntiedtke_tiedtke_closure is False for domain in exp.domains)
+    _without_the_later_eta_key(monkeypatch, exp)
+    _without_the_tiedtke_key(monkeypatch)
+    assert experiment_fingerprint(
+        exp, _stability_anchor_catalog()) == _PRE_TIEDTKE_KEY_FINGERPRINT
+
+
+def test_the_anchor_moved_for_the_sase_default_flip_and_nothing_else(
+        monkeypatch):
+    """Name the provenance of the rebind before that one, mechanically.
 
     Putting the pre-flip default back reproduces the pre-flip anchor
     byte-for-byte.  That is the whole diff: had a second identity-bound
     default moved as well, this reconstruction would miss and the rebind
-    above would be exposed as unexplained rather than attributed.
+    above would be exposed as unexplained rather than attributed.  The
+    2.6.4 key is dropped first, so the chain of attributions runs all the
+    way back to the pre-overlay anchor rather than stopping one rebind
+    short.
     """
     from dataclasses import replace
 
@@ -164,6 +252,8 @@ def test_the_anchor_moved_for_the_sase_default_flip_and_nothing_else():
         replace(domain, run=replace(
             domain.run, sase_additive_dissipation=False))
         for domain in exp.domains))
+    _without_the_later_eta_key(monkeypatch, exp)
+    _without_the_tiedtke_key(monkeypatch)
     assert experiment_fingerprint(
         pre_flip, _stability_anchor_catalog()) == _PRE_SASE_FLIP_FINGERPRINT
 

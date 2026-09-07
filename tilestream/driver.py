@@ -426,8 +426,23 @@ def setup_window_mismatches(tile_state, parent_state, spec) -> dict[str, float]:
 _SCHEME_GEOGRAPHY: tuple[tuple[str, str], ...] = (
     ("radiation", "radiation_callable"),
     ("noahmp", "noahmp_geometry"),
+    ("cam_ozone", "cam_ozone"),
 )
 _SCHEME_GEOGRAPHY_ATTRS: tuple[str, ...] = ("latitude_deg", "longitude_deg")
+
+
+def _scheme_geography_owners(driver):
+    """Each live scheme setup, including independently selected spectra."""
+    from gpuwm.core.radiation_composition import radiation_adapters
+    for prefix, attr in _SCHEME_GEOGRAPHY:
+        scheme = getattr(driver, attr, None)
+        if scheme is None:
+            continue
+        yield prefix, scheme
+        if attr == "radiation_callable":
+            for index, component in enumerate(radiation_adapters(scheme)):
+                if component is not scheme:
+                    yield f"{prefix}/component_{index}", component
 
 #: The two STATE_SETUP_SCALARS a tile must INHERIT rather than recompute.
 #: ``set_map_coriolis`` derives both from ``.any()`` over whatever window it
@@ -457,7 +472,8 @@ def geography_inventory(obj, names=None) -> dict:
     """
     import cupy as cp
 
-    from gpuwm.state_serialization_contract import STATE_SETUP_ARRAYS
+    from gpuwm.state_serialization_contract import (
+        STATE_DERIVED_SETUP_ARRAYS, STATE_SETUP_ARRAYS)
 
     inner = getattr(obj, "arrays", None)
     if isinstance(inner, dict):
@@ -470,14 +486,18 @@ def geography_inventory(obj, names=None) -> dict:
             if value is not None and _gather._is_array(value):
                 out[key] = value
     else:
-        for name in STATE_SETUP_ARRAYS:
+        # The DERIVED entries gather with the base state they came from:
+        # over terrain dphb_resid is 3-D like phb, and a tile that gathered
+        # phb without it would hold a correction describing a different
+        # column.  They sit outside STATE_SETUP_ARRAYS only to keep the
+        # restart setup digest's byte stream stable.
+        for name in STATE_SETUP_ARRAYS + STATE_DERIVED_SETUP_ARRAYS:
             value = getattr(obj, name, None)
             if (isinstance(value, (cp.ndarray, np.ndarray))
                     and value.ndim >= 2):
                 out[f"setup/{name}"] = value
         phys = getattr(obj, "physics", None)
-        for prefix, attr in _SCHEME_GEOGRAPHY:
-            scheme = getattr(phys, attr, None)
+        for prefix, scheme in _scheme_geography_owners(phys):
             for field in _SCHEME_GEOGRAPHY_ATTRS:
                 value = getattr(scheme, field, None)
                 if isinstance(value, (cp.ndarray, np.ndarray)):
@@ -559,8 +579,7 @@ def _pin_scheme_geography(state) -> None:
     shape is invisible to them.
     """
     driver = getattr(state, "physics", None)
-    for _prefix, attr in _SCHEME_GEOGRAPHY:
-        scheme = getattr(driver, attr, None)
+    for _prefix, scheme in _scheme_geography_owners(driver):
         for field in _SCHEME_GEOGRAPHY_ATTRS:
             value = getattr(scheme, field, None)
             if (isinstance(value, np.ndarray)
@@ -598,16 +617,13 @@ def assert_geography_gathered(state, driver=None, *, keys=None,
         gathered.
 
     ``(ny*nx, ...)`` -- horizontal axes FLATTENED into a leading column index
-        the transport windows TRAILING axes and cannot touch this layout, and
-        no halo helps.  Its live example is legacy RRTMG's
-        ``_ozone_lat_interp`` -- ``interp_ozone_to_latitudes(
-        latitude_deg.reshape(-1), climo)`` at rrtmg_legacy.py:636, shape
-        ``(ny*nx, 59, 12)``, 57.8 B per mass cell, 82% relative error at a
-        corner tile.  ``physics_inventory.geography_report`` is structurally
-        blind to it because its test is ``shape[-2:] in horiz_shapes``, and
-        gathering ``latitude_deg`` would NOT fix it: the cache is built once,
-        at construction, from the extents the constructor saw.  Uniform
-        caches are exempt -- a uniform-latitude rung rebuilds one exactly.
+        the transport windows trailing axes and cannot touch this layout.
+        An owner may declare a cache bound to gathered inputs through
+        ``geography_cache_dependencies`` and refresh it before every read.
+        Those caches need no transport; their live inputs must be gathered
+        and their retained input snapshots must be present. Undeclared
+        varying flattened arrays are still refused. Uniform constants are
+        exempt, but uniformity never exempts a declared live dependency.
     """
     import cupy as cp
 
@@ -621,11 +637,12 @@ def assert_geography_gathered(state, driver=None, *, keys=None,
     ncol = ny * nx
     gathered = {id(v) for v in geography_inventory(state, keys).values()}
     allow = set(allow)
+    bound_caches: set[int] = set()
     seen: set[int] = {id(state)}
     bad: list[tuple] = []
 
     def note(array, path, family) -> None:
-        if id(array) in gathered or path in allow:
+        if id(array) in gathered or id(array) in bound_caches or path in allow:
             return
         if family == "flattened-column":
             flat = np.asarray(_as_host(array)).reshape(ncol, -1)
@@ -654,6 +671,31 @@ def assert_geography_gathered(state, driver=None, *, keys=None,
         members = getattr(obj, "__dict__", None)
         if members is None:
             return
+        # This declaration is a read-time invalidation contract, not a
+        # claim that the cached layout itself is transported by the gather.
+        for cache_name, dependencies in getattr(
+                obj, "geography_cache_dependencies", {}).items():
+            cache = getattr(obj, cache_name, None)
+            if cache is None:
+                continue
+            valid = bool(dependencies)
+            for live_name, snapshot_name in dependencies:
+                live = getattr(obj, live_name, None)
+                snapshot = getattr(obj, snapshot_name, None)
+                if (id(live) not in gathered
+                        or not isinstance(snapshot, np.ndarray)):
+                    valid = False
+                    bad.append((f"{path}.{cache_name} <- {live_name}",
+                                tuple(getattr(live, "shape", ())),
+                                str(getattr(live, "dtype", "missing")),
+                                "cache input not gathered or snapshot missing"))
+            if valid:
+                bound_caches.add(id(cache))
+                bound_caches.update(id(getattr(obj, snapshot))
+                                    for _live, snapshot in dependencies)
+            elif not dependencies:
+                bad.append((f"{path}.{cache_name}", (), "missing",
+                            "cache has no declared inputs"))
         for field in _SCHEME_GEOGRAPHY_ATTRS:
             value = members.get(field)
             if isinstance(value, (cp.ndarray, np.ndarray)):
@@ -671,11 +713,10 @@ def assert_geography_gathered(state, driver=None, *, keys=None,
         "this configuration DERIVES horizontally-varying geography that the "
         "per-tile gather does not reach, so every tile except the one centred "
         "on the domain would integrate a different problem:\n" + lines
-        + "\n  A 'flattened-column' entry is unfixable by gathering -- the "
-          "horizontal axes are the LEADING axis and the array is built once "
-          "at construction (legacy RRTMG's ozone cache is the live example: "
-          "82% relative error at a corner tile).  Select a scheme without "
-          "one, or window it at construction time.")
+        + "\n  Gather each live geography input. Derived caches must bind "
+          "their retained input snapshots and refresh before use through "
+          "geography_cache; a flattened-column cache cannot be repaired "
+          "by widening a halo.")
 
 
 def geography_window_mismatches(tile_state, parent_state, spec,
@@ -1324,7 +1365,9 @@ class TiledRun:
                  on_sweep=None) -> None:
         import cupy as cp
 
-        from gpuwm.core.dycore import step
+        from gpuwm.core.dycore import (step, begin_wrf_cfl_domain_step,
+            set_wrf_cfl_tile_window, finish_wrf_cfl_tile,
+            finish_wrf_cfl_domain_step)
 
         # SETUP IS NOT A PER-STEP COST.  Tile buffers, the ring arena and the
         # transfer plans are built ONCE -- here -- and then serve every sweep,
@@ -1934,7 +1977,10 @@ class TiledRun:
         if clock is not None:
             from tilestream import physics_inventory as _physics
 
-        def _sweep(nsteps, step_kwargs, report, progress):
+        sweep_sequence = 0
+
+        def _sweep(nsteps, step_kwargs, report, progress, physics_control):
+            nonlocal sweep_sequence
             # The byte counters are nonlocal AND reset here: they live in
             # __init__ because _gather_into writes them, and they are
             # per-call because that is what a caller timing one model step
@@ -1974,7 +2020,9 @@ class TiledRun:
             sweep_seconds: list[float] = []
             sweep_clocks: list[dict] = []
             for istep in range(nsteps):
+                sweep_sequence += 1
                 _t_sweep = _time.perf_counter()
+                begin_wrf_cfl_domain_step(cfg)
                 if graph_steppers is not None:
                     # Under graph_reuse="sweep" the sweep index IS the cache
                     # key's clock component: every tile of one sweep steps
@@ -1990,15 +2038,10 @@ class TiledRun:
                     # earlier step's sun; that is the whole reason the default
                     # keys on the sweep.
                     #
-                    # SWEEP-GLOBAL, not per-model-run: `istep` restarts at 0
-                    # on every `sweep()` call, which is correct because the
-                    # cache is also keyed on the cadence flags and a caller
-                    # that sweeps one step at a time never reuses across
-                    # steps anyway (its keys differ by cadence or not at all,
-                    # and `reuse="run"` is the mode that deliberately lifts
-                    # this).
+                    # Monotonic across calls: repeated sweep(1) must not
+                    # reuse a graph containing the preceding absolute time.
                     for gstepper in graph_steppers:
-                        gstepper.sweep = istep
+                        gstepper.set_sweep(sweep_sequence)
                 if health is not None and health.enabled:
                     health.begin()
                 # Prime the pipeline.  Never across a sweep boundary: the
@@ -2020,6 +2063,8 @@ class TiledRun:
                     stream = streams[b]
                     if clock is not None:
                         _physics.set_carrier_scalars(tiles[b], clock)
+                    if physics_control is not None:
+                        physics_control.apply(tiles[b])
                     with stream:
                         if sched is not None and chained:
                             # The step reads the window the copy-in stream
@@ -2029,6 +2074,7 @@ class TiledRun:
                             stream.wait_event(ev_save[itile])
                         if chain and compute_done is not None:
                             stream.wait_event(compute_done)
+                        set_wrf_cfl_tile_window(cfg.grid_id, tspec)
                         if timeline:
                             began = cp.cuda.Event()
                             began.record(stream)
@@ -2102,6 +2148,7 @@ class TiledRun:
                                     "without graph capture, or capture a "
                                     "step that takes them.")
                             graph_steppers[b].run(tiles[b], stream)
+                        finish_wrf_cfl_tile(cfg.grid_id)
                         if timeline:
                             ended = cp.cuda.Event()
                             ended.record(stream)
@@ -2174,6 +2221,7 @@ class TiledRun:
                     scattered += splan.nbytes
                     if progress is not None:
                         progress(istep, itile, tspec)
+                finish_wrf_cfl_domain_step(cfg.grid_id)
                 if defer_seam:
                     # THE DEFERRED SEAM: nothing here waits.  The last
                     # tiles' scatters drain UNDER the next step's gathers
@@ -2367,6 +2415,33 @@ class TiledRun:
                 scalars.clear()
                 scalars.update(clock)
 
+        def _set_live_config(incoming):
+            nonlocal cfg, tile_cfg
+            from dataclasses import fields, replace
+            from gpuwm.core.adaptive_clock import ADAPTIVE_DERIVED_RUN_FIELDS
+
+            changed = {field.name for field in fields(cfg)
+                       if getattr(cfg, field.name) != getattr(incoming, field.name)}
+            structural = changed - ADAPTIVE_DERIVED_RUN_FIELDS
+            if structural:
+                raise TiledRunError(
+                    "a prepared streamed domain cannot change "
+                    f"{sorted(structural)} between steps; rebuild its state and tiles")
+            required = _harness.halo_radius(incoming)
+            if required > int(halo):
+                raise TiledRunError(
+                    f"live time_step_sound={incoming.time_step_sound} needs "
+                    f"halo {required}, but these tile buffers allocated halo "
+                    f"{halo}; construct the plan with the adaptive acoustic "
+                    "ceiling before allocating its boundary windows")
+            cfg = incoming
+            tile_cfg = replace(tile_cfg, **{
+                name: getattr(cfg, name) for name in changed})
+            self.cfg, self.tile_cfg = cfg, tile_cfg
+            for graph in graph_steppers or ():
+                graph.set_config(tile_cfg)
+
+        self._set_live_config = _set_live_config
         self._sweep = _sweep
         self._reseed_clock = _reseed_clock
         self.cfg = cfg
@@ -2390,6 +2465,7 @@ class TiledRun:
         #: two doors, and both leave this False.
         self._pending = False
         self.geography_fields = geo_fields
+        self._closed = False
         self.scalars = scalars
         self.observer = observer
         self.nz = int(nz)
@@ -2425,8 +2501,44 @@ class TiledRun:
         loop itself holds the raw mapping and never pays for it.  Costs one
         flag test when nothing is pending.
         """
+        self._require_open()
         self.drain()
         return self._home
+
+    def _require_open(self) -> None:
+        if getattr(self, "_closed", False):
+            raise TiledRunError("this tiled run is closed; rebuild its owner before reuse")
+
+    @property
+    def closed(self) -> bool:
+        return bool(getattr(self, "_closed", False))
+
+    def close(self) -> None:
+        """Drain and relinquish this run's allocation owners, exactly once.
+
+        This is a lifecycle operation, not a relocation implementation. A
+        caller must preserve its canonical carriers/scalars before closing.
+        No borrowed array is mutated and no process-wide memory pool is freed.
+        In particular, the sweep/config/clock closures retain the tile factory,
+        ring arena, packed boundary windows and geography even when ``tiles``
+        alone is dropped; all three closures must be released together.
+
+        A drain failure leaves the owner open and intact. Once drained, this
+        object cannot read or advance a stale store. External borrowers retain
+        their own references; dropping this owner does not invalidate them.
+        """
+        if self.closed:
+            return
+        # A failed sweep can leave transfers in flight before reaching the
+        # deferred-seam flag write. Closing is a terminal boundary: wait on
+        # every owned stream even when that ordinary fast-path flag is clear.
+        self._pending = True
+        self.drain()
+        for name in ("_sweep", "_set_live_config", "_reseed_clock", "tiles",
+                     "_home", "_streams", "_copy_in", "_copy_out",
+                     "graph_steppers", "health", "observer"):
+            setattr(self, name, None)
+        self._closed = True
 
     def drain(self) -> None:
         """Wait until nothing this run issued is still in flight.
@@ -2436,7 +2548,7 @@ class TiledRun:
         history frame, a restart capture, a timing window's edge.  Idempotent
         and cheap when nothing is pending.
         """
-        if not self._pending:
+        if self.closed or not self._pending:
             return
         import cupy as cp
 
@@ -2456,6 +2568,7 @@ class TiledRun:
         streams, and waiting for the scatter tail as well would re-expose
         exactly the drain the deferred seam hides.
         """
+        self._require_open()
         if not self._pending:
             return
         for stream in self._streams:
@@ -2469,10 +2582,12 @@ class TiledRun:
         advance it once per SWEEP; a restore is the one event that legally
         moves the domain clock from outside the sweep, and it has to say so.
         """
+        self._require_open()
         self._reseed_clock(scalars)
 
     def sweep(self, nsteps: int = 1, *, step_kwargs=None,
-              report: dict | None = None, progress=None) -> None:
+              report: dict | None = None, progress=None,
+              live_config=None, physics_control=None) -> None:
         """Advance the store by ``nsteps`` model steps, in place.
 
         ``step_kwargs`` is forwarded verbatim to every tile's
@@ -2506,6 +2621,7 @@ class TiledRun:
         so it is refused here and the reason is in
         :mod:`tilestream.receipts`.
         """
+        self._require_open()
         for name in ("mass_flux_observer", "mass_flux_accumulator"):
             if (step_kwargs or {}).get(name) is not None:
                 raise TiledRunError(
@@ -2515,7 +2631,16 @@ class TiledRun:
                     "clamped windows overlap along a shared domain edge by "
                     "2*halo.  See tilestream.receipts for what a streamed "
                     "domain can and cannot report.")
-        self._sweep(nsteps, step_kwargs, report, progress)
+        if live_config is not None and live_config != self.cfg:
+            # A previous deferred sweep may still reference its old scalar
+            # kernel arguments and graph workspaces. Finish it before rebinding.
+            self.drain()
+            self._set_live_config(live_config)
+        try:
+            self._sweep(nsteps, step_kwargs, report, progress, physics_control)
+        finally:
+            from gpuwm.core.dycore import finish_wrf_cfl_domain_step
+            finish_wrf_cfl_domain_step(self.cfg.grid_id, commit=False)
 
 
 def run_tiled(store, cfg, tile_nx, tile_ny, halo: int = 16,
@@ -2579,11 +2704,20 @@ def run_tiled(store, cfg, tile_nx, tile_ny, halo: int = 16,
         graph_verify_topology=graph_verify_topology,
         on_sweep=on_sweep,
     )
-    run.sweep(nsteps, report=report, progress=progress)
-    # The whole-run entry point returns with the CALLER's store handles
-    # current: the caller passed the mapping in and will read it directly,
-    # so the deferred seam's in-flight tail must land before this returns.
-    run.drain()
+    try:
+        run.sweep(nsteps, report=report, progress=progress)
+    except BaseException as error:
+        try:
+            run.close()
+        except BaseException as cleanup_error:
+            error.add_note(
+                f"tiled-run cleanup also failed: {type(cleanup_error).__name__}: {cleanup_error}")
+        raise
+    else:
+        # This whole-run entry point owns its temporary buffers, closures
+        # and transfers, not the caller's store or borrowed tile_states.
+        # Drain on both success and failure, then release only our references.
+        run.close()
 
 def _advance_clock(clock, tiles, last_b, _physics) -> dict:
     """The domain's scalar carriers after ONE sweep, cross-checked per buffer.

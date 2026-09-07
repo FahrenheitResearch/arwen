@@ -112,12 +112,14 @@ from dataclasses import dataclass
 import numpy as np
 
 from gpuwm.core import streaming, uh_diag
+from gpuwm.core.attribute_tracking import (ATTRIBUTE_KEYS, attribute_metadata,
+                                           attribute_plane, validate_attribute_config)
 
 #: Versioned label carried by every receipt this module emits.
 FOLLOW_CONTRACT = "gpuwm-storm-follow.v1"
 
 #: The signals the tracker knows how to read off a parent state.
-TRACKED_FIELDS = ("uh", "reflectivity", "pressure")
+TRACKED_FIELDS = ("uh", "reflectivity", "pressure", "attribute")
 
 #: Fields whose plane is a MICROPHYSICS STASH rather than something the
 #: tracker can derive on demand.  Only these are subject to the
@@ -263,7 +265,7 @@ RADIUS_KM_MIN = 1.0
 RADIUS_KM_MAX = 500.0
 
 #: Keys of ``[relocation.follow]``.  All required; unknown keys refuse.
-FOLLOW_KEYS = frozenset({
+FOLLOW_KEYS = ATTRIBUTE_KEYS | frozenset({
     # OPTIONAL: how far from the extremum the centroid may draw.
     # Omitting it takes DEFAULT_CENTROID_RADIUS_KM, which is a real
     # radius -- there is no "unbounded" setting, because unbounded is
@@ -353,8 +355,13 @@ class FollowConfig:
     #: surface nobody asked to print would then be paid for and thrown
     #: away.
     report_level_hpa: tuple = ()
+    attribute: str | None = None
+    extremum: str | None = None
+    reduction: str | None = None
+    model_level: int | None = None
 
     def __post_init__(self) -> None:
+        validate_attribute_config(self)
         if self.field not in TRACKED_FIELDS:
             raise ValueError(
                 f"follow field must be one of {TRACKED_FIELDS}, got "
@@ -462,6 +469,10 @@ class FollowConfig:
         }
         if self.fallback_threshold is not None:
             out["fallback_threshold"] = float(self.fallback_threshold)
+        if self.field == "attribute":
+            out.update(attribute_metadata(self))
+            if self.refine_grid_id is not None:
+                out["refine_grid_id"] = self.refine_grid_id
         if self.level_hpa is not None or self.field == "pressure":
             out.update(pressure_surface_json(
                 self.level_hpa,
@@ -684,7 +695,7 @@ def build_follow_config(table: dict, source: str) -> FollowConfig:
             "no key is ignored, because a dropped key tracks a storm with a "
             "value nobody chose.")
     required = sorted(
-        FOLLOW_KEYS - {"fallback_threshold", "level_hpa", "refine_grid_id",
+        FOLLOW_KEYS - ATTRIBUTE_KEYS - {"fallback_threshold", "level_hpa", "refine_grid_id",
                        "radius_km"})
     missing = [key for key in required if key not in table]
     if missing:
@@ -693,6 +704,8 @@ def build_follow_config(table: dict, source: str) -> FollowConfig:
             f"{missing}; present: {sorted(table)}. Every follow key is "
             "chosen deliberately -- there are no defaults to inherit.")
     field = table["field"]
+    if field != "attribute" and set(table) & ATTRIBUTE_KEYS:
+        raise ValueError(f"[relocation.follow] of {source}: attribute keys require field = 'attribute'")
     if not isinstance(field, str):
         raise ValueError(
             f"field in [relocation.follow] of {source} must be a string, "
@@ -740,6 +753,7 @@ def build_follow_config(table: dict, source: str) -> FollowConfig:
                 table, "cooldown_seconds", source)),
             level_hpa=level_hpa,
             refine_grid_id=refine_grid_id,
+            **{key: table[key] for key in ATTRIBUTE_KEYS if key in table},
             radius_km=radius_km)
     except ValueError as err:
         raise ValueError(f"[relocation.follow] of {source}: {err}") from None
@@ -1347,6 +1361,11 @@ def planes_for(state, config, *, uh_slot: str = UH_SLOT,
     means :meth:`StormTracker.locate` and :meth:`StormTracker._refine`
     share it and cannot drift.
     """
+    if config.field == "attribute":
+        try:
+            return [(None, attribute_plane(state, config, window=window))]
+        except ValueError as error:
+            raise TrackerRefusal(str(error)) from error
     levels = all_levels_of(config)
     if not levels:
         return [(None, _plane_from_state(state, config.field,
@@ -1786,10 +1805,19 @@ def centre_over_levels(planes, config, box, radius_cells):
                 })
                 continue
         try:
-            found = locate_signal(plane, config.field,
-                                  float(config.threshold), box,
-                                  relative_to_minimum=relative,
-                                  radius_cells=radius_cells)
+            if config.field == "attribute":
+                minimum = config.extremum == "min"
+                found = weighted_centroid(
+                    -plane if minimum else plane,
+                    -float(config.threshold) if minimum else float(config.threshold),
+                    box, radius_cells)
+                if found is not None:
+                    found["attribute_extremum"] = config.extremum
+            else:
+                found = locate_signal(plane, config.field,
+                                      float(config.threshold), box,
+                                      relative_to_minimum=relative,
+                                      radius_cells=radius_cells)
         except TrackerRefusal as error:
             declined.append({"level_hpa": level, "reason": str(error)})
             continue
@@ -1835,7 +1863,8 @@ def signal_extremum(found: dict, field: str) -> float:
     records the minimum MSLP in hPa rather than its negative.
     """
     value = float(found["max_value"])
-    return -value if field == "pressure" else value
+    return -value if (field == "pressure" or
+                      (field == "attribute" and found.get("attribute_extremum") == "min")) else value
 
 
 def radius_in_cells(radius_km: float, dx_m: float | None) -> float | None:
@@ -2200,6 +2229,9 @@ class StormTracker:
             "refine_cells_above_threshold": fine["cells"],
             "refine_extremum": round(signal_extremum(fine, cfg.field), 3),
         }
+        if cfg.field == "attribute":
+            evidence["refinement"].update(attribute_metadata(cfg))
+            evidence["refinement"]["refine_extremum"] = signal_extremum(fine, cfg.field)
         # The refine grid is the one that RESOLVES the vortex, so its
         # convergence and its rival are the ones worth reading -- a
         # competing centre on a 4.5 km parent is two cells apart and
@@ -2300,6 +2332,11 @@ class StormTracker:
                                      for c in fp.center_parent_ij],
             },
         }
+        if cfg.field == "attribute":
+            evidence.update(attribute_metadata(cfg))
+            evidence["signal"] = f"{cfg.attribute} {cfg.reduction} ({evidence['threshold_units']})"
+            evidence["extremum_kind"] = "minimum" if cfg.extremum == "min" else "maximum"
+            evidence["extremum_units"] = evidence["threshold_units"]
         # The box's own span, recorded whether or not it was a problem:
         # it is the one number that distinguishes "centred on the storm"
         # from "the storm is gone" on a held receipt.
@@ -2387,6 +2424,10 @@ class StormTracker:
             "raw_shift_parent_cells": [round(raw_di, 3), round(raw_dj, 3)],
         })
         from dataclasses import replace as _replace
+        if cfg.field == "attribute":
+            evidence["extremum_kind"] = "minimum" if cfg.extremum == "min" else "maximum"
+            evidence["extremum_units"] = evidence["threshold_units"]
+            evidence["max_value"] = signal_extremum(found, field_used)
         self.last_fix = _replace(blank, found=found,
                                  raw_shift=(raw_di, raw_dj),
                                  refined_on=refined_on,

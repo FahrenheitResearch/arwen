@@ -22,10 +22,17 @@ Run from anywhere:  python3 tools/gf_wrf461_oracle/gf_host_parity.py
 
 Measured 2026-08-04 on WSL Ubuntu-24.04 (gcc 13.3.0, glibc 2.39-0ubuntu8.7,
 the oracle's own toolchain): 83/83 level fields, 69/69 float scalars and
-39/39 integer fields bitwise over all 216 columns with fzu COMPUTED, plus
-0 word mismatches on the four gf-libm sweeps (65638/32768/16385/16385
-arguments), the 254 powf answer-sheet rows, the 100 pgamma fzu rows and
-the 123-word constant table.
+39/39 integer fields bitwise over all 216 columns, plus 0 word mismatches
+on the gf-libm sweeps, the 254 powf answer-sheet rows, the pgamma fzu rows
+and the 123-word constant table.
+
+fzu IS PINNED from the WRF capture, and that changed at 2.6.6: the LGPL
+transcription of glibc's tgammaf was removed, ArWen's gamma is correctly
+rounded and glibc's is not, so the computed fzu is deliberately not WRF's
+(docs/gf_gamma_known_delta.md).  The pin is the same fzu_override the CPU
+reference has used since the port landed; it is what keeps every OTHER
+transcribed line graded bitwise.  gamma itself is graded against a 113-bit
+oracle in tests/test_gf_gamma_correctly_rounded.py, not here.
 """
 
 import csv
@@ -45,9 +52,10 @@ from gpuwm.verify.gf_oracle import (                             # noqa: E402
 )
 
 from gf_field_lists import (                                     # noqa: E402
-    DRV_IN_LEV, DRV_IN_SCA, DRV_ISCA_FIELDS, DRV_LEV_FIELDS, DRV_SCA_FIELDS,
+    DRV_IN_LEV, DRV_ISCA_FIELDS, DRV_LEV_FIELDS, DRV_SCA_FIELDS,
     IN_LEV, IN_SCA, ISCA_FIELDS, LEV_FIELDS, SCA_FIELDS,
     SH_IN_LEV, SH_IN_SCA, SH_ISCA_FIELDS, SH_LEV_FIELDS, SH_SCA_FIELDS,
+    captured_fzu, drv_scalar_inputs,
 )
 
 NZ = GF_NZ
@@ -106,6 +114,7 @@ def main():
     lv = fixture.stage_levels
     sf = fixture.stage_surface
     gs = fixture.surface
+    fzu_up, fzu_dn, fzu_sh = captured_fzu(fixture)   # WRF's own words
     lvin = np.zeros((n, len(IN_LEV), NZ), dtype=np.float32)
     for j, name in enumerate(IN_LEV):
         lvin[:, j, :] = lv[name]
@@ -113,8 +122,10 @@ def main():
     for j, name in enumerate(IN_SCA):
         if name == "dx":
             scin[:, j] = gs["dx"].astype(np.float32)
-        elif name in ("fzu_up", "fzu_dn"):
-            scin[:, j] = 0.0
+        elif name == "fzu_up":
+            scin[:, j] = fzu_up
+        elif name == "fzu_dn":
+            scin[:, j] = fzu_dn
         else:
             scin[:, j] = sf[name].astype(np.float32)
     iin = np.ascontiguousarray(sf["kpbli"].astype(np.int32))
@@ -211,18 +222,24 @@ def main():
             print(f"INT {name}: differs on {neq} columns")
     print(f"int fields exact: {len(ISCA_FIELDS) - fail_i}/{len(ISCA_FIELDS)}")
 
-    slot = {"tgammaf": 0, "lgammaf": 2, "expm1f": 3, "exp2f": 4}
-    for fn_name, s in sorted(slot.items()):
-        x, wantw = _load_word_csv(f"gf-libm-{fn_name}.csv")
+    # The unary probe is 4 slots since 2.6.6: gfk_tgamma, CUDA's builtin (a
+    # negative control with no meaning on the host), gfk_exp, gfk_log.
+    # gfk_lgamma_pos / gfk_expm1 / gfk_exp2 and their gf-libm sweeps went
+    # with the LGPL gamma block that was their only caller.  tgammaf is
+    # graded against the CORRECTLY ROUNDED reference, not against glibc.
+    for fn_name, csv_name, slot in (
+            ("tgammaf", "gf-crgamma-tgammaf.csv", 0),):
+        x, wantw = _load_word_csv(csv_name)
         x = np.ascontiguousarray(x)
-        out = np.zeros(7 * x.size, dtype=np.float32)
+        out = np.zeros(4 * x.size, dtype=np.float32)
         lib.host_gf_libm_unary(_fp(x), _fp(out), x.size)
-        got = out.reshape(-1, 7)[:, s].copy().view(np.uint32)
+        got = out.reshape(-1, 4)[:, slot].copy().view(np.uint32)
         nd = int(np.count_nonzero(got != wantw))
-        print(f"libm {fn_name}: {x.size} args, {nd} word mismatches")
+        print(f"libm {fn_name} vs correctly rounded: {x.size} args, "
+              f"{nd} word mismatches")
         failures += (nd != 0)
 
-    # ---- the shallow stage, WRF-faithful k22, fzu computed ----------------
+    # ---- the shallow stage, WRF-faithful k22, fzu pinned ------------------
     ncase = 18
     col_of_case = {}
     for ci, (case, idx, arm) in enumerate(fixture.key):
@@ -235,7 +252,8 @@ def main():
         for j, name in enumerate(SH_IN_LEV):
             shin[case - 1, j, :] = lv[name][ci]
         for j, name in enumerate(SH_IN_SCA):
-            shsc[case - 1, j] = 0.0 if name == "fzu_sh" else sf[name][ci]
+            shsc[case - 1, j] = (fzu_sh[ci] if name == "fzu_sh"
+                                 else sf[name][ci])
         shii[case - 1] = int(sf["kpbli"][ci])
     shin = np.ascontiguousarray(shin)
     shsc = np.ascontiguousarray(shsc)
@@ -287,16 +305,14 @@ def main():
           f"{len(SH_LEV_FIELDS) + len(SH_SCA_FIELDS) + len(SH_ISCA_FIELDS) - fail_sh}"
           f"/{len(SH_LEV_FIELDS) + len(SH_SCA_FIELDS) + len(SH_ISCA_FIELDS)}")
 
-    # ---- the whole driver, WRF-faithful k22, fzu computed -----------------
+    # ---- the whole driver, WRF-faithful k22, fzu pinned -------------------
     gl = fixture.levels
     gs = fixture.surface
     din = np.zeros((n, len(DRV_IN_LEV), NZ), dtype=np.float32)
-    dsc = np.zeros((n, len(DRV_IN_SCA)), dtype=np.float32)
+    dsc = drv_scalar_inputs(fixture, True)
     dii = np.zeros((n, 3), dtype=np.int32)
     for j, name in enumerate(DRV_IN_LEV):
         din[:, j, :] = gl[name]
-    for j, name in enumerate(DRV_IN_SCA):
-        dsc[:, j] = gs[name].astype(np.float32)
     dii[:, 0] = gs["kpbl"].astype(np.int32)
     dii[:, 1] = gs["ishallow"].astype(np.int32)
     dii[:, 2] = gs["ichoice"].astype(np.int32)

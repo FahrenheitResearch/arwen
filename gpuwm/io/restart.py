@@ -44,7 +44,7 @@ Classification argument (audit2 restart findings, adjudicated here):
 * REBUILT — overwritten before every read: the RK time-t copies (written
   from prognostics at each ``dycore.step`` entry), the slow-tendency slots
   (zeroed each RK stage), the acoustic perturbations (reseeded by
-  ``_init_small_steps`` each stage; ``ww_pp`` rediagnosed every substep),
+  ``_init_small_steps`` each stage; ``ww_pp`` is checkpoint-only instead),
   and the per-call scratch work buffers (Morrison/Kessler prep, refl,
   advection, diffusion, LBC helpers).  The driver's one-frame
   ``refl_10cm`` handoff is also rebuilt: normal output consumes it before
@@ -97,9 +97,11 @@ import numpy as np
 from gpuwm import perf_timing
 from gpuwm.config import (MIX_ISOTROPIC_RESTART_BREAK_NOTICE,
                           radiation_scheme_ids)
-from gpuwm.supervisor import fsync_file
+from gpuwm.supervisor import _fsync_directory, fsync_file, unique_temp_path
 from gpuwm.physics_compat import (RRTMG_VARIANT_LEGACY,
                                   RRTMG_VARIANT_RTE_RRTMGP, rrtmg_variant)
+from gpuwm.core.adaptive_clock import ADAPTIVE_DERIVED_RUN_FIELDS
+from gpuwm.core.model import ADAPTIVE_POLICY_RUN_FIELDS
 from gpuwm.core.uh_diag import (
     TRACKER_WINDOW_SLOTS as _TRACKER_WINDOW_SLOTS,
     UH_FOLLOW_WINDOW_PREFIX as _UH_FOLLOW_WINDOW_PREFIX,
@@ -118,6 +120,7 @@ from gpuwm.state_serialization_contract import (
     CHECKPOINT_ONLY_STATE,
     LATERAL_BOUNDARY_PREFIX_SCHEMA,
     STATE_SERIALIZED_ATTRS,
+    STATE_DERIVED_SETUP_ARRAYS,
     STATE_SETUP_ARRAYS,
     STATE_SETUP_SCALARS,
     lateral_boundary_prefix_identity as _lateral_boundary_prefix_identity,
@@ -539,10 +542,11 @@ STATE_REBUILT_ATTRS = frozenset({
     "qir0", "qib0",
     # Slow-tendency slots, zeroed at the top of every RK stage.
     "ru_t", "rv_t", "rw_t", "rth_t", "rph_t", "rmu_t",
-    # Acoustic perturbations, reseeded by _init_small_steps each stage
-    # (ww_pp is rediagnosed by advance_mu_th on every substep).
+    # Acoustic perturbations reseeded by _init_small_steps each stage.
+    # ww_pp is checkpoint-only: advance_mu_th skips its forced outer column,
+    # so it must retain domain-owned values between acoustic loops.
     "u_pp", "v_pp", "w_pp", "th_pp", "ph_pp", "mu_pp",
-    "p_pp", "p_pp_old", "ww_pp", "al_pp",
+    "p_pp", "p_pp_old", "al_pp",
 })
 
 #: Deterministic setup arrays covered by the header fingerprint.
@@ -550,6 +554,10 @@ STATE_REBUILT_ATTRS = frozenset({
 #: Machinery: handled by dedicated sections (scratch, physics, clock) or
 #: rebuilt by attach/prepare (LBC device mirrors, host caches).
 STATE_INFRA_ATTRS = frozenset({
+    # Used only by analysis snapshot producers. The published LBC field
+    # names/bytes, not this preparation selector, own forecast forcing and
+    # are already covered by setup_fingerprint/lateral prefix identity.
+    "_external_scalar_boundary_fields",
     "_scratch", "_scratch_arena", "_phb_host", "_dz_min",
     "_host_setup_state",
     "physics", "lateral_boundaries", "_lateral_boundary_device",
@@ -715,31 +723,13 @@ CARRIED_SCRATCH_PREFIXES = (_UH_FOLLOW_WINDOW_PREFIX,)
 #: ``tilestream.physics_inventory`` for the reason stated above: this file is
 #: where the classification lives, so its classes stay exhaustive.
 #:
-#: ``radiation/o33d_grid`` is the whole membership, and it is not carried
-#: state at all in the sense the sweep means.  Legacy RRTMG recomputes it
-#: from the CAM climatology and the current pressure on EVERY radiation call
-#: (gpuwm/core/rrtmg_legacy.py:1010-1020), never reads its own previous
-#: value, and retains it only so a CHILD domain's ParentOzoneProvider can
-#: interpolate the parent's most recent field (rrtmg_legacy.py:578).  A
-#: checkpoint carries it so that child routing resumes bit-identically across
-#: a restart, which is a real requirement and is untouched here.
-#:
-#: A sweep must not, for three independent reasons.  It is HOST memory on the
-#: adapter, not a device array on the state.  It is per-ADAPTER derived
-#: geography -- the same category as the adapter's own latitude_deg/
-#: longitude_deg, which the transport already handles as geography rather
-#: than as carried state -- so each tile buffer's twin computes its own
-#: tile-shaped field and the domain's domain-shaped one is not the same
-#: quantity.  And its only reader is a nested domain, which streaming refuses
-#: outright (gpuwm/core/streaming.py: "[tiles] fired on grid N, which is a
-#: NEST").
-#:
-#: MEASURED CONSEQUENCE of it having been in the sweep's set: a tile buffer
-#: warms up, which fires radiation and allocates the field, while the
-#: prepared domain the store is sized from has not run a step and so has
-#: not.  The inventories then differ by exactly this key and TiledRun refuses
-#: the run -- which is what every [tiles] forecast of the shipped DEFAULT
-#: physics suite did, once its radiation could be twinned at all.
+#: ``radiation/o33d_grid`` is restart-only for a standalone legacy
+#: radiation adapter: it is a host output rebuilt at every radiation call.
+#: A tree with nested CAM consumers attaches PhysicsDriver.o3rad instead,
+#: under the SAME checkpoint key. That device field is carried by sweeps
+#: because children read the parent's last radiation-time value through
+#: FORCE. tilestream.physics_inventory keeps it when that owner exists;
+#: no uninitialized adapter field is invented during buffer warmup.
 RESTART_ONLY_DRIVER_SLOTS = frozenset({
     "radiation/o33d_grid",
 })
@@ -885,7 +875,7 @@ REBUILT_SCRATCH_PREFIXES = (
 DRIVER_TENDENCY_ATTRS = ("pbl_tendencies", "radiation_tendencies",
                          "cumulus_tendencies")
 TENDENCY_COMPONENTS = ("ru", "rv", "rtheta", "rqv", "rqc", "rqr", "rqi",
-                       "rqs")
+                       "rqs", "rw")
 TENDENCY_REQUIRED_COMPONENTS = ("ru", "rv", "rtheta", "rqv", "rqc")
 
 MICROPHYSICS_COMPONENTS = ("rainnc", "rainncv", "sr", "snownc", "snowncv",
@@ -894,8 +884,10 @@ MICROPHYSICS_REQUIRED_COMPONENTS = ("rainnc", "rainncv", "sr")
 
 #: Driver attributes serialized into the file/header.
 DRIVER_SERIALIZED_ATTRS = frozenset({
+    "o3rad",
     "pbl_tendencies", "radiation_tendencies", "cumulus_tendencies",
     "rthratenlw", "rthratensw", "_pending_rainbl",
+    "gf_rthblten", "gf_rqvblten", "pbl_raw_rates",
     "microphysics_updates", "call_counts", "ysu_nan_guard_fires",
     "fields",
     # THE SURFACE-RADIATION CARRIER CONTRACT
@@ -972,7 +964,14 @@ DRIVER_SERIALIZED_ATTRS = frozenset({
 #: the first call of a run; it is the middle of one.
 DRIVER_CHECKPOINT_ONLY_ATTRS = frozenset({"olr"})
 
+#: Raw PBL rates read by GF and New Tiedtke between producer calls.
+#: WRF Registry RTHBLTEN/RQVBLTEN are restart-carried for the same reason.
+#: The shared driver manifest includes them in resident, tile, host-store
+#: and checkpoint inventories, with stable storage from construction.
+DRIVER_HELD_FORCING_ATTRS = frozenset({"gf_rthblten", "gf_rqvblten"})
+
 DRIVER_REBUILT_ATTRS = frozenset({
+    "cam_ozone",
     # SASE: the active flag and the kernel-module tuple are re-derived
     # from the resumed RunConfig at driver init; the ledger is a
     # per-step diagnostic replaced before any consumer reads it; the
@@ -980,6 +979,19 @@ DRIVER_REBUILT_ATTRS = frozenset({
     # step after the resume.
     "sase_active", "last_sase_ledger", "sase_flux_diag",
     "sase_nan_guard_fires",
+    # The adaptive clock's radiation decision
+    # (gpuwm.core.adaptive_clock._drive_radiation_on_time).  REBUILT, and
+    # it could not be anything else: it is recomputed from elapsed model
+    # time before every solve, so a resumed run derives it from its own
+    # clock on its first step and a serialized copy would be overwritten
+    # before it was ever read.  Absent on every fixed-dt driver -- the
+    # attribute only exists once an adaptive controller has set it, and
+    # the predicate it feeds treats absent as "decide normally".
+    "radiation_due_override",
+    # Its cumulus twin, on identical terms: recomputed from elapsed model
+    # time before every solve, absent on every fixed-dt driver, and
+    # "absent" is what the predicate it feeds reads as "decide normally".
+    "cumulus_due_override",
     # The horizontal eddy-viscosity diagnostic, on the SAME terms as the
     # flux-diagnostic buffers beside it: output-only, never read back by
     # the physics, and refilled by the first step after a resume (the
@@ -1046,42 +1058,10 @@ DRIVER_REBUILT_ATTRS = frozenset({
     "carriers_need_producer_refresh",
     "tendencies", "last_ysu", "refl_10cm", "microphysics",
     "nssl2_binding",
-    # Grell-Freitas' four auxiliary forcing lanes and its per-column dx
-    # (WRF GFDRV's RTHFTEN/RQVFTEN/RTHBLTEN/RQVBLTEN inputs and dx(i,j)).
-    # All five are rebuilt, and each for its own reason:
-    #
-    #   gf_dx_column is a sealed STATIC.  The caller supplies it at
-    #   construction and it never changes during a run, so a resume gets
-    #   the identical vector from the identical constructor argument --
-    #   carrying it would archive a constant.
-    #
-    #   gf_rthdynten/gf_rqvdynten are BOUND REFERENCES to the integrator's
-    #   own buffers, never storage this driver owns, so archiving them
-    #   here would write the same numbers twice under two names.  On the
-    #   ARW path they alias state.rthften/state.rqvften, which ARE
-    #   serialized -- as STATE, in STATE_SERIALIZED_ATTRS, and rebound by
-    #   the resumed driver's constructor.  On the MPAS path they alias
-    #   seam-owned buffers the caller REFILLS at every run_phase1 before
-    #   GF reads them (gpuwm/core/mpas_column_batch.py), so a resumed
-    #   run's first phase-1 call overwrites whatever a checkpoint could
-    #   have carried.  Neither owner loses anything by this entry.
-    #
-    #   gf_rthblten/gf_rqvblten are the PBL slot's retained RAW rates --
-    #   whichever of YSU, MYJ, MYNN, Shin-Hong or SASE holds the slot --
-    #   refilled by the next due PBL call.  Divergence recorded, not
-    #   hidden: WRF's
-    #   Registry keeps RTHBLTEN/RQVBLTEN across a restart, and gpuwm does
-    #   not, so a resumed run whose cumulus call falls BEFORE its first
-    #   post-resume PBL call feeds GF zero boundary-layer forcing for that
-    #   one step.  That is native MPAS's own t=0 tend_physics state rather
-    #   than an invented one, it cannot occur at all when the PBL runs
-    #   every step (bldt == dt, the MPAS seam's own cadence), and the
-    #   alternative -- adding four full [nz,ny,nx] rate fields to the
-    #   archive -- changes the key layout and rejects every checkpoint
-    #   already on disk, which is not a price a one-step transient gets to
-    #   charge.
-    "gf_rthdynten", "gf_rqvdynten", "gf_rthblten", "gf_rqvblten",
-    "gf_dx_column",
+    # Dynamics forcing is integrator-owned: the restart-carried state pair
+    # on ARW, or buffers refilled before phase 1 on MPAS. Column spacing is
+    # static constructor input. Raw PBL forcing is serialized above.
+    "gf_rthdynten", "gf_rqvdynten", "gf_dx_column",
     # The Shin-Hong passenger-repair advisory latch (task #206): a
     # print-once flag, not state.  Rebuilt False at driver init, so a
     # resumed run that needs the repair says so once again -- an
@@ -1114,14 +1094,15 @@ CUMULUS_CALLABLE_ARRAYS = frozenset({"w0avg"})
 RADIATION_CALLABLE_ARRAYS = frozenset({
     "latitude_deg", "longitude_deg", "_ozone_logp", "_ozone_vmr",
     # Legacy-RRTMG adapter: _ozone_lat_interp is setup state (a
-    # deterministic construction-time interpolation of the packaged CAM
-    # climatology onto the static latitude grid); _o33d_grid is
+    # deterministic interpolation of the packaged CAM climatology onto
+    # latitude); _ozone_latitude binds that cache to its actual input and
+    # is rebuilt with it after a changed tile or grid move. _o33d_grid is
     # SERIALIZED state -- WRF's O3RAD is a restart-carried field (rdf),
     # and a child domain's first post-restore radiation call consumes
     # the parent's retained o33d BEFORE the parent's next radiation
     # cadence tick, so rebuild-on-resume would orphan it (and break
     # resumed-vs-uninterrupted bit equality).
-    "_ozone_lat_interp", "_o33d_grid"})
+    "_ozone_lat_interp", "_ozone_latitude", "_o33d_grid"})
 #: Containers CLASSIFIED as acceptable, deliberately (review F2 — no
 #: silent blind spots): the RRTMGP gas/cloud table objects are
 #: rebuild-on-load (module-level ``lru_cache`` loads of packaged
@@ -1497,7 +1478,7 @@ def classify_state_attr(name: str) -> str:
     """Classify one ``DomainState`` attribute name.
 
     Returns ``"serialize"``, ``"checkpoint_only"``, ``"rebuild"``,
-    ``"setup"``, or ``"infra"``;
+    ``"setup"``, ``"derived_setup"``, or ``"infra"``;
     raises :class:`RestartManifestError` for anything unclassified so new
     state cannot silently skip the restart stream.
     """
@@ -1511,13 +1492,18 @@ def classify_state_attr(name: str) -> str:
         return "rebuild"
     if name in STATE_SETUP_ARRAYS or name in STATE_SETUP_SCALARS:
         return "setup"
+    if name in STATE_DERIVED_SETUP_ARRAYS:
+        # Rebuilt from a fingerprinted setup array by the same load_base
+        # call that installs it, and carrying no information of its own.
+        return "derived_setup"
     if name in STATE_INFRA_ATTRS:
         return "infra"
     raise RestartManifestError(
         f"DomainState attribute {name!r} is not classified in the restart "
         "manifest (gpuwm/io/restart.py): declare it serialized (cross-step "
         "state), rebuilt (overwritten before every read), setup "
-        "(fingerprint-validated), or infra")
+        "(fingerprint-validated), derived_setup (a function of a setup "
+        "array, rebuilt with it), or infra")
 
 
 def classify_scratch_slot(slot: str) -> str:
@@ -1741,12 +1727,12 @@ def _active_asset_identity(cfg, driver) -> dict[str, dict]:
     radiation = None if driver is None else driver.radiation_callable
     radiation_class = (None if radiation is None
                        else _callable_class_name(radiation))
-    if (radiation_scheme_ids(cfg) == (4, 4)
-            and radiation_class == "gpuwm.core.rrtmgp.RRTMGPRadiation"):
+    from gpuwm.core.radiation_composition import modern_radiation_adapters
+    if 4 in radiation_scheme_ids(cfg) and modern_radiation_adapters(radiation):
         roles.extend(("rrtmgp_gas_lw", "rrtmgp_gas_sw",
                       "rrtmgp_cloud_lw", "rrtmgp_cloud_sw",
                       "rrtmgp_rfmip"))
-    if (radiation_scheme_ids(cfg) == (4, 4)
+    if (4 in radiation_scheme_ids(cfg)
             and rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY):
         roles.extend(("wrf_rrtmg_lw_data", "wrf_rrtmg_lw_statics",
                       "wrf_rrtmg_sw_data",
@@ -1754,6 +1740,10 @@ def _active_asset_identity(cfg, driver) -> dict[str, dict]:
                       "wrf_ozone_plev"))
     if radiation_scheme_ids(cfg)[0] == 1:
         roles.append("wrf_rrtm_data")
+    if (getattr(driver, "cam_ozone", None) is not None
+            and not (4 in radiation_scheme_ids(cfg)
+                     and rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY)):
+        roles.extend(("wrf_ozone_data", "wrf_ozone_lat", "wrf_ozone_plev"))
     land_scheme = int(cfg.sf_surface_physics)
     if land_scheme != 0:
         try:
@@ -1890,6 +1880,13 @@ def _radiation_setup_identity(driver, cfg) -> dict:
         sw_policy = _scheme_algorithm(
             SHORTWAVE_ABOVE_ATMOSPHERE_POLICIES, sw_id,
             "shortwave above-atmosphere policy")
+    if 4 in (lw_id, sw_id) and rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY:
+        if lw_id == 4:
+            lw_algorithm = RRTMG_LEGACY_LW_ALGORITHM_IDENTITY
+            lw_policy = RRTMG_LEGACY_ABOVE_ATMOSPHERE_POLICY
+        if sw_id == 4:
+            sw_algorithm = RRTMG_LEGACY_SW_ALGORITHM_IDENTITY
+            sw_policy = RRTMG_LEGACY_ABOVE_ATMOSPHERE_POLICY
     algorithm = (lw_algorithm if lw_algorithm == sw_algorithm else
                  f"lw={lw_algorithm};sw={sw_algorithm}")
     policy = (lw_policy if lw_policy == sw_policy else
@@ -1911,6 +1908,7 @@ def _radiation_setup_identity(driver, cfg) -> dict:
             "attached PhysicsDriver")
     scheme = driver.radiation_callable
     expected = {
+        (1, 1): "gpuwm.core.rrtm_lw.RRTMDudhiaRadiation",
         (4, 4): "gpuwm.core.rrtmgp.RRTMGPRadiation",
         (90, 90): "gpuwm.core.analytic_radiation.AnalyticClearSkyRadiation",
         (0, 1): "gpuwm.core.dudhia.DudhiaShortwaveRadiation",
@@ -1960,6 +1958,18 @@ def _radiation_setup_identity(driver, cfg) -> dict:
         "latitude": _array_setup_identity(latitude),
         "longitude": _array_setup_identity(longitude),
     })
+    if legacy_rrtmg and getattr(scheme, "trace_gas_overrides", None):
+        # Stock dispatch does not consume the adapter's declared identity.
+        # Add only explicit overrides, preserving historical default headers.
+        identity["trace_gas_overrides"] = _float_mapping(
+            scheme.trace_gas_overrides, "radiation.trace_gas_overrides")
+    if (lw_id, sw_id) == (1, 1):
+        # The stock classic pair's historical adapter declaration is retained
+        # unchanged. It predates the custom above-atmosphere-policy contract;
+        # recognize this stock implementation and bind its actual operands
+        # through the same leaf identity used by mixed-spectrum compositions.
+        from gpuwm.core.radiation_composition import adapter_restart_identity
+        identity["classic"] = adapter_restart_identity(scheme)
     if (lw_id, sw_id) == (4, 4) and not legacy_rrtmg:
         try:
             identity.update({
@@ -2096,6 +2106,41 @@ def _configuration_fingerprint(cfg) -> str:
     values = {key: value for key, value in dataclasses.asdict(cfg).items()
               if key not in CONFIG_RUN_LENGTH_FIELDS
               and key not in CONFIG_DIAGNOSTIC_FIELDS}
+    if values.get("use_adaptive_time_step"):
+        # A LIVE dt is not part of what the run IS -- it is where the
+        # controller happened to be at the instant the checkpoint was
+        # written, and the next instant it is different.  Binding it here
+        # would make every adaptive checkpoint resumable only by a run
+        # that had adapted to the identical step, i.e. by nothing.
+        #
+        # `use_adaptive_time_step` stays IN, so a fixed-clock
+        # fingerprint still binds dt exactly and a resume that flips the
+        # feature is still refused.  The live value is carried separately
+        # and restored -- it is state, not identity.
+        #
+        # AND SO IS time_step_sound, for exactly the same reason and one
+        # step further out: upstream zeroes it whenever the adaptive
+        # clock is on (start_em.F:966) so that solve_em derives the
+        # acoustic substep count from the LIVE dt, and this port does the
+        # same in adaptive_clock._apply via wrf_num_sound_steps.  It is
+        # therefore a function of dt, not a setting: a checkpoint written
+        # at dt ~ 76 s carries 6 where the experiment configured 4.  Under
+        # a FIXED clock it stays bound, where it really is a setting.
+        #
+        # THE SAME ARGUMENT REACHES FURTHER, and this fingerprint is the
+        # third gate it had to be made in.  `time_step_sound` is derived
+        # from the live dt every root step, so it is state for the same
+        # reason dt is; the controller's targets and clamps govern future
+        # steps rather than describing the run, which is why the identity
+        # walk above reports a change in them instead of refusing.  A
+        # fingerprint that still bound either would refuse the resume the
+        # walk had just allowed -- which is exactly what happened, with a
+        # message that named no field at all.
+        #
+        # Popped from the two published sets rather than by name here, so
+        # this cannot drift from the walk the way it just did.
+        for name in ADAPTIVE_DERIVED_RUN_FIELDS | ADAPTIVE_POLICY_RUN_FIELDS:
+            values.pop(name, None)
     return _json_sha256(_json_value(values, "RunConfig"))
 
 
@@ -2467,12 +2512,31 @@ def physics_setup_identity(state, cfg) -> dict:
             "surface_enabled": bool(driver.surface_enabled),
         }
         cadence = {}
+        # Under an adaptive clock the STEP COUNTS and the seconds derived
+        # from them move with dt, so they describe where the run had got
+        # to rather than what it is.  The MINUTES -- what the namelist
+        # asked for -- stay bound in both cases, which is the part that
+        # says "radiation every 12 minutes" and must not change across a
+        # resume.
+        derived = ("radt_seconds", "stepra", "cudt_seconds", "stepcu",
+                   "bldt_seconds", "stepbl")
+        adaptive = bool(getattr(cfg, "use_adaptive_time_step", False))
         for name in ("bldt_seconds", "stepbl", "radt_minutes",
                      "radt_seconds", "stepra", "cudt_minutes",
                      "cudt_seconds", "stepcu"):
+            if adaptive and name in derived:
+                continue
             cadence[name] = _json_value(
                 getattr(driver, name), f"PhysicsDriver.{name}")
         driver_identity["cadence"] = cadence
+        owner = getattr(driver, "cam_ozone", None)
+        if owner is not None and not (4 in radiation_scheme_ids(cfg)
+                and rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY and cfg.o3input == 2):
+            driver_identity["cam_ozone"] = {
+                "producer": owner.restart_identity,
+                "latitude": _array_setup_identity(owner.latitude_deg),
+                "longitude": _array_setup_identity(owner.longitude_deg),
+            }
 
     return {
         "schema_version": PHYSICS_SETUP_SCHEMA_VERSION,
@@ -2659,6 +2723,56 @@ def _any_on_owning_device(array) -> bool:
         return bool(array.any())
 
 
+def pbl_raw_manifest(driver) -> dict[str, object]:
+    """Canonical restart names, sharing GF's pair without duplicate payloads."""
+    from gpuwm.core.physics_inventory import PBL_SHARED_FORCING
+
+    manifest = {}
+    for name, value in getattr(driver, "pbl_raw_rates", {}).items():
+        shared = PBL_SHARED_FORCING.get(name)
+        key = (f"held/{shared}" if shared and value is getattr(driver, shared, None)
+               else f"pbl/{name}")
+        manifest[key] = value
+    return manifest
+
+
+PBL_DIAGNOSTIC_GROUPS = {
+    "sase_flux_diag": ("fqv_vent", "fqv_diff", "fth_vent", "fth_diff"),
+    "hmix_k_diag": ("SASE_KMH", "SASE_KHH"),
+}
+
+
+def pbl_diagnostic_manifest(driver) -> dict[str, object]:
+    """Optional output fields whose PBL producer can skip a model step.
+
+    The default every-step path still rebuilds these output-only values.
+    Positive cadence carries the last due-call value across tiles/restart.
+    """
+    if not getattr(driver, "sase_active", False) or not getattr(driver, "pbl_raw_rates", {}):
+        return {}
+    return {f"pbl/diagnostics/{group}/{name}": value
+            for group in PBL_DIAGNOSTIC_GROUPS
+            for name, value in (getattr(driver, group, None) or {}).items()}
+
+
+def _validate_pbl_diagnostics(stored, header, state, driver) -> None:
+    prefix = "pbl/diagnostics/"
+    known = {f"{prefix}{group}/{name}": group
+             for group, names in PBL_DIAGNOSTIC_GROUPS.items() for name in names}
+    for key in sorted(k for k in stored if k.startswith(prefix)):
+        if key not in known:
+            raise RestartMismatchError(f"restart carries unknown PBL diagnostic {key}")
+        target = state.w if known[key] == "sase_flux_diag" else state.p
+        _check_array(stored[key], target, key)
+    for key in pbl_diagnostic_manifest(driver):
+        # This existing diagnostic toggle is trajectory-inert and can be
+        # enabled at restart; zero is then its established cold value.
+        newly_enabled = (key.startswith(prefix + "sase_flux_diag/")
+                         and not header["config"].get("sase_flux_diag", False))
+        if key not in stored and not newly_enabled:
+            raise RestartMismatchError(f"restart is missing held PBL diagnostic {key}")
+
+
 def _driver_manifest(driver) -> dict[str, object]:
     """Serialized driver arrays; enforces driver attribute coverage."""
     for name in sorted(vars(driver)):
@@ -2696,6 +2810,12 @@ def _driver_manifest(driver) -> dict[str, object]:
         value = getattr(driver, name, None)
         if value is not None:
             manifest[f"diag/{name}"] = value
+    for name in sorted(DRIVER_HELD_FORCING_ATTRS):
+        value = getattr(driver, name, None)
+        if value is not None:
+            manifest[f"held/{name}"] = value
+    manifest.update(pbl_raw_manifest(driver))
+    manifest.update(pbl_diagnostic_manifest(driver))
     for tend_name in DRIVER_TENDENCY_ATTRS:
         tend = getattr(driver, tend_name)
         _require_dataclass_components(
@@ -2745,6 +2865,13 @@ def _driver_manifest(driver) -> dict[str, object]:
                     f"{attribute}.{field.name} does not alias fields[{key!r}]: "
                     "the in-place MYNN surface-field restore depends on that "
                     "aliasing")
+    from gpuwm.core.radiation_composition import radiation_adapters
+    # Nested engines keep the same explicit inventory checks as standalone
+    # engines; composition cannot hide an unclassified array-bearing member.
+    for adapter in radiation_adapters(driver.radiation_callable):
+        if adapter is not driver.radiation_callable:
+            _callable_state_check(adapter, RADIATION_CALLABLE_ARRAYS,
+                                  RADIATION_CALLABLE_CONTAINERS, "radiation component")
     _callable_state_check(driver.radiation_callable,
                           RADIATION_CALLABLE_ARRAYS,
                           RADIATION_CALLABLE_CONTAINERS, "radiation")
@@ -2754,7 +2881,9 @@ def _driver_manifest(driver) -> dict[str, object]:
     w0avg = getattr(driver.cumulus_callable, "w0avg", None)
     if w0avg is not None:
         manifest["cumulus/w0avg"] = w0avg
-    o33d_grid = getattr(driver.radiation_callable, "_o33d_grid", None)
+    o33d_grid = getattr(driver, "o3rad", None)
+    if o33d_grid is None:
+        o33d_grid = getattr(driver.radiation_callable, "_o33d_grid", None)
     if o33d_grid is not None:
         # Legacy-RRTMG root o33d field (WRF's restart-carried O3RAD
         # analogue): serialized so child-domain ozone routing resumes
@@ -2897,7 +3026,8 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
     path.parent.mkdir(parents=True, exist_ok=True)
     # Atomic publish: a crash mid-write must not leave a truncated file
     # under the valid gpuwmrst name (review F4).
-    temp = path.with_name(path.name + ".tmp")
+    # Separate concurrent writers; each publishes one complete archive.
+    temp = unique_temp_path(path)
     try:
         with temp.open("wb") as stream:
             np.savez(stream, **payload)
@@ -2909,6 +3039,7 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
         # crash is supposed to leave behind.
         fsync_file(temp)
         os.replace(temp, path)
+        _fsync_directory(path.parent)
     except BaseException:
         temp.unlink(missing_ok=True)
         raise
@@ -2951,8 +3082,68 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
     live_config = dataclasses.asdict(cfg)
     absent = object()
     differences = []
+    policy_changes: list[str] = []
+    # THE LIVE dt LEGITIMATELY DIFFERS FROM THE CONFIGURED ONE, and only
+    # under an adaptive clock.  The checkpoint's `dt` is what the model
+    # was integrating with at the instant it was written; the experiment's
+    # is where the ramp STARTED.  A resume that demanded they match could
+    # only ever resume a run that had not adapted yet -- which is
+    # the resume invariant docs/ADAPTIVE-TIMESTEP.md states, and it refused a real
+    # resume at dt=36.55 against a configured 30.0.
+    #
+    # `time_step_sound` rides with it: adaptive_clock._apply rewrites it
+    # from the live dt on every period (wrf_num_sound_steps, which is what
+    # upstream's `time_step_sound = 0` under an adaptive clock asks
+    # solve_em to do), so a checkpoint taken after dt grew past the
+    # 4-substep floor carries a value the resuming experiment cannot have.
+    # Measured: the doc's 10 km case reaches dt ~ 76 s, where the count is
+    # 6 against a configured 4, and the resume was refused on a field
+    # nothing had configured.
+    #
+    # Both sides must agree the feature is ON.  `use_adaptive_time_step`
+    # itself stays compared exactly, so a fixed-clock checkpoint's dt is
+    # still required to match to the bit, and a resume that flips the
+    # feature is still refused.
+    adaptive_both = (bool(stored_config.get("use_adaptive_time_step"))
+                     and bool(live_config.get("use_adaptive_time_step")))
     for key in sorted(set(stored_config) | set(live_config)):
         if key in CONFIG_RUN_LENGTH_FIELDS:
+            continue
+        if key in ADAPTIVE_DERIVED_RUN_FIELDS and adaptive_both:
+            # Exactly the set the adaptive clock overwrites every root
+            # step, imported rather than restated -- see that constant for
+            # why listing them here by hand made adaptive checkpoints
+            # unrestartable.
+            continue
+        if key in ADAPTIVE_POLICY_RUN_FIELDS and adaptive_both:
+            # CONTROLLER POLICY, not model state.  Changing a target or a
+            # clamp does mean the resumed leg integrates on a different
+            # clock from the leg that wrote the checkpoint -- but that is
+            # exactly what a recovery resume is FOR, and refusing it made
+            # restart_interval_s useless for its most valuable case: a run
+            # that died because of the setting you now want to change.
+            #
+            # Allowed, and recorded rather than silent: the change is
+            # reported so a resumed run's provenance still says the clock
+            # policy moved and by how much.  `use_adaptive_time_step`
+            # itself is NOT in this set -- flipping the feature leaves the
+            # carried controller state meaningless and is still refused.
+            stored_v = stored_config.get(key, absent)
+            live_v = live_config.get(key, absent)
+            if stored_v != live_v:
+                # Name an ABSENT side rather than repr()-ing the
+                # sentinel -- the same ruling the refusal branch below
+                # already carries, and reachable here too: a header
+                # written between two builds carries
+                # `use_adaptive_time_step` but not every policy field
+                # beside it, and then the one notice whose whole job is
+                # to state the old value precisely printed
+                # "<object object at 0x...>" as that value.
+                was = ("absent from the restart file"
+                       if stored_v is absent else repr(stored_v))
+                now = ("absent from this build"
+                       if live_v is absent else repr(live_v))
+                policy_changes.append(f"{key}: {was} -> {now}")
             continue
         if key in CONFIG_DIAGNOSTIC_FIELDS:
             continue
@@ -2992,6 +3183,37 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
             else:
                 differences.append(
                     f"{key}: restart={stored!r} run={live!r}")
+    if policy_changes:
+        # Reported, not refused.  Retuning the controller on a resume is
+        # a legitimate and often the ONLY useful recovery action, but the
+        # resumed leg does integrate on a different clock from the leg
+        # that wrote the checkpoint, so it must not be silent: this is
+        # what tells a later reader the trajectory has a seam, and where.
+        # ONE LINE, joined with "; ": gpuwm.explain.warn collapses runs of
+        # whitespace into single spaces, so a newline-separated list would
+        # arrive as an unreadable run-on.  Each field still carries both
+        # of its values, which is what the notice is for.
+        joined = "; ".join(policy_changes)
+        #
+        # THE PROJECT'S OWN NOTICE CHANNEL, not warnings.warn.  A
+        # warnings.warn here is a refusal in disguise under any
+        # caller running -W error or simplefilter("error"): the
+        # ALLOWED retune then raises UserWarning out of the middle
+        # of the identity gate, so the one recovery this branch
+        # exists to permit fails with a traceback instead of a
+        # named refusal.  It was also routed nowhere a reader looks,
+        # while the rest of the restore account already goes to
+        # gpuwm.explain.warn -- including the relocation banner this
+        # notice sits beside.
+        from gpuwm.explain import warn as _explain_warn
+
+        _explain_warn(
+            f"restart file {path} was written under different adaptive "
+            f"controller policy; continuing with the LIVE configuration, "
+            f"which changes the clock from this point on: {joined}.  "
+            f"(model state is unaffected -- these govern future "
+            "steps only; flipping use_adaptive_time_step is still "
+            "refused.)")
     if differences:
         message = (
             f"restart file {path} was written under a different "
@@ -3034,17 +3256,56 @@ def _require_physics_setup_match(header: dict, state, cfg, path) -> None:
             f"build (expected {PHYSICS_SETUP_SCHEMA_VERSION})")
     try:
         live = physics_setup_identity(state, cfg)
-        live_fingerprint = _json_sha256(live)
+        # Serialisability is part of the contract, and the comparison
+        # below no longer hashes the live side, so it is asserted here:
+        # an identity this build cannot hash is not one it can compare,
+        # and that must surface as a named malformed-identity refusal
+        # rather than as a bare inequality.
+        _json_sha256(live)
     except RestartManifestError as exc:
         raise RestartMismatchError(
             f"resuming model has no complete physics setup identity: {exc}") \
             from exc
-    if stored_fingerprint != live_fingerprint or stored != live:
+    # ONE RULE SET ON BOTH SIDES.  `configuration_sha256` is a hash the
+    # WRITING build computed under whatever exemptions it had, so any
+    # change to those exemptions silently invalidates every checkpoint
+    # already on disk -- the comparison stops asking "is this the same
+    # configuration" and starts asking "was it hashed by this build".
+    # Measured: widening the adaptive exemptions correctly made a retuned
+    # resume legal at the identity walk and this gate refused it anyway,
+    # naming nothing.  Recomputing the stored side from the RunConfig the
+    # header already carries puts both sides under the current rules.
+    #
+    # The self-consistency check above deliberately stays on the RAW
+    # stored dict: that one asks whether the file is intact, which is a
+    # different question and must not be normalised away.
+    stored_cmp = stored
+    raw_config = header.get("config")
+    if isinstance(raw_config, Mapping):
+        try:
+            from gpuwm.config import RunConfig
+
+            names = {f.name for f in dataclasses.fields(RunConfig)}
+            rebuilt = RunConfig(**{k: v for k, v in raw_config.items()
+                                   if k in names})
+        except (TypeError, ValueError):
+            # A header this build cannot rebuild a RunConfig from falls
+            # back to the RAW stored hash, which is the STRICTER of the
+            # two: it can only refuse a resume this normalisation would
+            # have allowed, never allow one it would have refused.
+            rebuilt = None
+        if rebuilt is not None:
+            stored_cmp = dict(stored)
+            stored_cmp["configuration_sha256"] = _configuration_fingerprint(
+                rebuilt)
+
+    if stored_cmp != live:
+        moved = [key for key in sorted(set(stored_cmp) | set(live))
+                 if stored_cmp.get(key) != live.get(key)]
         raise RestartMismatchError(
             f"restart file {path} was written under a different physics "
-            "setup (algorithm/policy, resolved radiation/gas/Noah values, "
-            "driver cadence, or active asset digest mismatch); rebuild the "
-            "identical physics preparation before restoring")
+            f"setup; these components differ: {', '.join(moved)}.  Rebuild "
+            "the identical physics preparation before restoring")
 
 
 def _require_nssl2_restart_contract(header: dict, cfg, path) -> None:
@@ -3081,6 +3342,70 @@ def _check_array(stored: np.ndarray, target, key: str) -> None:
         raise RestartMismatchError(
             f"{key}: restart dtype {stored.dtype} does not match state "
             f"dtype {target.dtype}")
+
+
+# Every namespace this build can restore. Newer unknown carriers must
+# refuse instead of silently losing state at a cross-version resume.
+RESTART_MEMBER_NAMESPACES = (
+    "state/", "acoustic/", "scratch/", "driver/", "fields/", "cumulus/",
+    "diag/", "held/", "pbl/", "radiation/",
+)
+
+
+def _validate_member_namespaces(stored, state, driver, path, format_version) -> None:
+    """Close the member inventory and validate carriers before mutation.
+
+    Known optional diagnostics preserve their documented absence/drop
+    policy. Unknown names have no restore route and must be refused.
+    """
+    for key in sorted(stored):
+        if not key.startswith(RESTART_MEMBER_NAMESPACES):
+            raise RestartMismatchError(
+                f"restart file {path} carries member {key!r} under no member "
+                "namespace this build knows how to restore; resume with the "
+                "build that wrote it or start from prepared state")
+    for prefix, names, owner, description in (
+            ("acoustic/", CHECKPOINT_ONLY_STATE, state, "checkpoint-only state"),
+            ("diag/", DRIVER_CHECKPOINT_ONLY_ATTRS, driver, "a checkpoint-only driver"),
+            ("held/", DRIVER_HELD_FORCING_ATTRS, driver, "a held physics forcing")):
+        for key in sorted(key for key in stored if key.startswith(prefix)):
+            name = key[len(prefix):]
+            if name not in names:
+                raise RestartMismatchError(
+                    f"restart file {path} carries {key}, which this build "
+                    f"does not classify as {description} carrier")
+            target = getattr(owner, name, None)
+            if target is not None:
+                _check_array(stored[key], target, key)
+    allowed_driver = {
+        "driver/rthratenlw", "driver/rthratensw", "driver/pending_rainbl",
+        *(f"driver/{group}/{component}" for group in DRIVER_TENDENCY_ATTRS
+          for component in TENDENCY_COMPONENTS),
+    }
+    if format_version == 2:
+        allowed_driver.update(f"driver/microphysics/{name}"
+                              for name in MICROPHYSICS_COMPONENTS)
+    for key in sorted(key for key in stored if key.startswith("driver/")):
+        if key not in allowed_driver:
+            raise RestartMismatchError(
+                f"restart file {path} carries {key}, which this build has "
+                "no driver restore route for")
+        if key.startswith("driver/microphysics/"):
+            _check_array(stored[key], state.mup, key)
+    allowed_cumulus = {f"cumulus/{name}" for name in CUMULUS_CALLABLE_ARRAYS}
+    for key in sorted(key for key in stored if key.startswith("cumulus/")):
+        if key not in allowed_cumulus:
+            raise RestartMismatchError(
+                f"restart file {path} carries {key}, which this build has "
+                "no cumulus restore route for")
+    for key in sorted(key for key in stored if key.startswith("radiation/")):
+        if key not in RESTART_ONLY_DRIVER_SLOTS:
+            raise RestartMismatchError(
+                f"restart file {path} carries {key}, which is not one of "
+                "this build's restart-only driver slots")
+        if driver is None:
+            raise RestartMismatchError(
+                f"restart file {path} carries {key} but this state has no PhysicsDriver")
 
 
 def _validate_nssl2_stored_restart_state(
@@ -3309,6 +3634,50 @@ def _mix_isotropic_autoswitch_flip(stored, live) -> bool:
     return False
 
 
+def _identity_matches_under_current_rules(header, model) -> bool:
+    """Do stored and live identity agree once BOTH are normalised?
+
+    The stored components were produced by the WRITING build, under
+    whatever exemptions it had.  Comparing a stored digest against one the
+    reading build computes therefore asks "was this hashed by this build",
+    not "is this the same run" -- so every widening of the exemptions
+    silently invalidates every checkpoint already on disk.
+
+    This is the same defect as the stored ``configuration_sha256``, met a
+    second time one layer out and pointing the other way: there the STORED
+    side carried a hash over unexempted fields, here the stored components
+    carry the fields themselves while the live side now drops them.
+    Normalising both under the current rules is the general fix, and the
+    reason this helper exists rather than a third bespoke exemption.
+
+    Conservative by construction.  It can only ever ALLOW a resume the
+    digest comparison already rejected, and only when every component
+    matches once the fields this build no longer binds are removed from
+    BOTH sides.  Anything else still refuses, by name.
+    """
+    stored = header.get("experiment_fingerprint_components")
+    live = _fingerprint_components(model)
+    if not isinstance(stored, Mapping) or not isinstance(live, Mapping):
+        return False
+
+    def normalise(payload):
+        if not isinstance(payload, Mapping):
+            return payload
+        out = json.loads(json.dumps(payload, default=str))
+        identity = out.get("experiment_identity")
+        if isinstance(identity, dict):
+            for domain in identity.get("domains", ()) or ():
+                run = domain.get("run") if isinstance(domain, dict) else None
+                if not isinstance(run, dict):
+                    continue
+                if run.get("use_adaptive_time_step") in (True, "True"):
+                    for name in ADAPTIVE_POLICY_RUN_FIELDS:
+                        run.pop(name, None)
+        return out
+
+    return normalise(stored) == normalise(live)
+
+
 def tree_fingerprint_mismatch_reason(gid: int, header, model) -> str:
     """Name what actually differs, and what a restart is allowed to change.
 
@@ -3329,9 +3698,29 @@ def tree_fingerprint_mismatch_reason(gid: int, header, model) -> str:
         # computes it, and that refusal is the ruled posture rather than
         # an unexplained hash.
         moved = header["relocation"]
+        # NAME WHAT DIFFERS HERE TOO.  This branch used to stop at the
+        # move count, so every fingerprint mismatch on a relocated tree
+        # read as "relocating runs cannot be resumed" -- which is not
+        # true, and sent the diagnosis of a base-hash change into the
+        # move history for hours.  The chain is replayed from the
+        # checkpoint's own stored base by the tree runner before this is
+        # ever reached, so by the time this speaks the move history has
+        # already been ruled out.
+        detail = ""
+        if isinstance(stored, Mapping) and isinstance(live, Mapping):
+            _moved_absent = object()
+            changed = sorted(
+                name for name in set(stored) | set(live)
+                if stored.get(name, _moved_absent)
+                != live.get(name, _moved_absent))
+            detail = (f"  These components differ: {', '.join(changed)}."
+                      if changed else
+                      "  Every named component matches, so the digest "
+                      "itself moved: the checkpoint predates this "
+                      "restart-identity format.")
         return (f"{prefix}: it was written after "
                 f"{moved.get('moves')} nest relocation(s) "
-                f"(segment {moved.get('segment_id')!r}).  "
+                f"(segment {moved.get('segment_id')!r}).{detail}  "
                 f"{moved.get('posture', '')}")
     if not isinstance(stored, Mapping) or not isinstance(live, Mapping):
         return (f"{prefix} (experiment fingerprint mismatch); a checkpoint "
@@ -3500,32 +3889,16 @@ def _publish_streamed_lifecycle_windows(nodes) -> None:
     than a stepper already uses (``gpuwm/io/wrfout.py``); the checkpoint
     writer holds nodes.
 
-    Only the two FIXED windows can be projected: they are in the
-    streaming carrier manifest and the generated per-follower family is
-    not.  A per-follower window on a streamed parent is refused here
-    rather than written stale -- the run configuration that produces one
-    is already refused at its cadence boundary
-    (``gpuwm/core/model.py``), so this closes the same door on the
-    checkpoint path.
+    Every allocated tracker slot uses the same carrier contract, including
+    generated per-follower names. The store remains the value authority.
     """
     from gpuwm.core import streaming as _streaming
 
-    names = tuple(f"scratch/{slot}" for slot in _TRACKER_WINDOW_SLOTS)
     for node in nodes:
         streamed = getattr(node.state, "_streamed_domain", None)
         if streamed is None:
             continue
-        generated = [slot for slot in lifecycle_window_slots(node.state)
-                     if slot not in _TRACKER_WINDOW_SLOTS]
-        if generated:
-            raise RestartManifestError(
-                f"d{int(node.cfg.grid_id):02d} is STREAMED and owns the "
-                f"per-follower window(s) {generated}; those names are "
-                "generated per declared child and are not in the fixed "
-                "streaming carrier manifest, so there is no way to project "
-                "one out of the store and the checkpoint would serialize "
-                "the attach-time zeros as a live window. Keep that parent "
-                "resident or use legacy [relocation]")
+        names = tuple(f"scratch/{slot}" for slot in lifecycle_window_slots(node.state))
         present = _streaming.allocated_planes(node.state, names)
         if present:
             streamed.publish(present)
@@ -4050,6 +4423,31 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
                     "REBUILT" if started or node.parent is None
                     else "NOT_STARTED"),
                 "dtbc_fp32_bits": bits,
+                # THE LIVE CLOCK, for a resume under
+                # use_adaptive_time_step.  ABSENT when the feature is off,
+                # on the same convention [relocation] uses below and
+                # [perturbation] uses in the identity payload: a key that
+                # appears as null in every checkpoint would move every
+                # pre-feature digest for a field those runs never had.
+                # The reader treats absent as "the configured step",
+                # which is exactly what those runs were integrating.
+                #
+                # step_count is STORED, not derived.  The restore path
+                # recomputes it as (ticks - start) // step_ticks, which is
+                # exact only while every step was the same size; after a
+                # run whose step varied it is simply a wrong number, and
+                # it is what the physics driver's itimestep is built from.
+                **({} if not bool(node.cfg.run.use_adaptive_time_step)
+                   else {"adaptive_clock": {
+                       "step_ticks": int(node.clock.step_ticks),
+                       "dt_fp32_bits": int(
+                           np.float32(node.clock.dt_fp32).view(np.uint32)),
+                       "step_count": int(node.clock.step_count),
+                       # The controller's own memory, including the CFL
+                       # state WRF does NOT checkpoint.
+                       "controller": getattr(
+                           node.clock, "adaptive_state", None),
+                   }}),
                 # WHERE THIS DOMAIN ACTUALLY WAS.  A nest that has moved
                 # is not where its config says it is, and every setup
                 # array -- terrain, map factors, base state -- belongs to
@@ -4086,11 +4484,21 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
             member = base.with_name(
                 f"{base.stem}__{checkpoint_set_id}{base.suffix}")
             path = directory / member
-            paths[gid] = write_restart(
-                path, node.state, node.cfg.run,
-                run_trackers=trackers.get(gid), tree_header=tree_header,
-                extra_scratch_slots=window_slots_by_gid.get(gid, ()),
-                sealed_forcing_extension=sealed_forcing_extension)
+            streamed = getattr(node.state, "_streamed_domain", None)
+            if streamed is not None and not sealed_forcing_extension:
+                # Publish the canonical store, without refreshing a full GPU
+                # state. Bind the exact domain time, not the tile FP32 sum.
+                streamed.impose_clock(ticks / tick_den)
+                paths[gid] = streamed.write_restart(
+                    path, node.cfg.run, run_trackers=trackers.get(gid),
+                    tree_header=tree_header,
+                    extra_scratch_slots=window_slots_by_gid.get(gid, ())).path
+            else:
+                paths[gid] = write_restart(
+                    path, node.state, node.cfg.run,
+                    run_trackers=trackers.get(gid), tree_header=tree_header,
+                    extra_scratch_slots=window_slots_by_gid.get(gid, ()),
+                    sealed_forcing_extension=sealed_forcing_extension)
             published.append(paths[gid])
     except BaseException:
         # These names are unique to this uncommitted generation, so cleanup
@@ -4188,10 +4596,16 @@ def restore_tree_restart(path, model, *,
         # Preserve the historical default call shape as well as its exact
         # semantics.  A few out-of-tree diagnostic wrappers substitute this
         # private validator with the original three-argument signature.
-        validated = {
-            gid: _validate_restart(paths[gid], node.state, node.cfg.run)
-            for gid, node in nodes.items()
-        }
+        validated = {}
+        for gid, node in nodes.items():
+            streamed = getattr(node.state, "_streamed_domain", None)
+            if streamed is not None:
+                options = ({"extra_scratch_slots": lifecycle_window_slots(node.state)}
+                           if _declares_nest_lifecycle(model) else {})
+                validated[gid] = streamed.validate_restart(
+                    paths[gid], node.cfg.run, **options)
+            else:
+                validated[gid] = _validate_restart(paths[gid], node.state, node.cfg.run)
     headers = {gid: member.header for gid, member in validated.items()}
 
     # A checkpoint set written after a nest relocation carries the ruled
@@ -4226,8 +4640,9 @@ def restore_tree_restart(path, model, *,
             raise RestartMismatchError(
                 f"tree restart d{gid:02d} was not intentionally sealed for "
                 "forcing extension")
-        if header.get("experiment_fingerprint") != \
-                model.experiment_fingerprint:
+        if (header.get("experiment_fingerprint")
+                != model.experiment_fingerprint
+                and not _identity_matches_under_current_rules(header, model)):
             raise RestartMismatchError(
                 tree_fingerprint_mismatch_reason(gid, header, model))
         checkpoint_set_id = header.get("checkpoint_set_id")
@@ -4347,11 +4762,26 @@ def restore_tree_restart(path, model, *,
 
     # All refusal checks over all members precede the first mutation.
     for gid, node in nodes.items():
-        _apply_validated_restart(validated[gid], node.state, node.cfg.run)
+        from tilestream.restart_stream import ValidatedStreamedRestart
+        if isinstance(validated[gid], ValidatedStreamedRestart):
+            node.state._streamed_domain.apply_restart(validated[gid])
+        else:
+            _apply_validated_restart(validated[gid], node.state, node.cfg.run)
         clock = node.clock
         clock.ticks = ticks
-        clock.step_count = max(
-            0, (ticks - clock.spec.start_ticks) // clock.spec.step_ticks)
+        adaptive = headers[gid].get("adaptive_clock")
+        if adaptive is None:
+            clock.step_count = max(
+                0, (ticks - clock.spec.start_ticks) // clock.spec.step_ticks)
+        else:
+            # A varying step makes that division meaningless -- it answers
+            # "how many CONFIGURED steps fit in the elapsed time", which is
+            # not how many were taken.  The writer stored the real count.
+            clock.step_count = int(adaptive["step_count"])
+            clock.step_ticks = int(adaptive["step_ticks"])
+            clock.dt_fp32 = np.uint32(
+                adaptive["dt_fp32_bits"]).view(np.float32)
+            clock.adaptive_state = adaptive.get("controller")
         bits = headers[gid]["dtbc_fp32_bits"]
         clock.dtbc_fp32 = np.asarray(bits, dtype=np.uint32).view(np.float32)
         node.state.elapsed_seconds = ticks / tick_den
@@ -4403,6 +4833,34 @@ def _validate_scratch_target(state, slot: str, host: np.ndarray,
 def _validate_driver_payload(stored, header, state, driver, elapsed,
                              format_version: int) -> None:
     """Hoist every PhysicsDriver refusal without mutating the driver."""
+    expected_held = {f"held/{name}" for name in DRIVER_HELD_FORCING_ATTRS
+                     if getattr(driver, name, None) is not None}
+    stored_held = {key for key in stored if key.startswith("held/")}
+    if stored_held != expected_held:
+        raise RestartMismatchError(
+            "restart held PBL forcing inventory does not match the resuming "
+            f"driver (missing {sorted(expected_held - stored_held)}, "
+            f"extra {sorted(stored_held - expected_held)}). "
+            "GF/New Tiedtke read these raw rates between PBL calls; they "
+            "cannot be reconstructed from coupled tendencies. Resume from "
+            "a checkpoint written by this build or start from prepared state.")
+    for key in sorted(expected_held):
+        _check_array(stored[key], getattr(driver, key[5:]), key)
+
+    raw_pbl = pbl_raw_manifest(driver)
+    expected_pbl = {key for key in raw_pbl if key.startswith("pbl/")}
+    stored_pbl = {key for key in stored if key.startswith("pbl/")
+                  and not key.startswith("pbl/diagnostics/")}
+    _validate_pbl_diagnostics(stored, header, state, driver)
+    if stored_pbl != expected_pbl:
+        raise RestartMismatchError(
+            "restart raw PBL inventory does not match this configuration "
+            f"(missing {sorted(expected_pbl - stored_pbl)}, "
+            f"extra {sorted(stored_pbl - expected_pbl)}); use a checkpoint "
+            "from this build or start from prepared state")
+    for key, target in raw_pbl.items():
+        _check_array(stored[key], target, key)
+
     stored_fields = {key[len("fields/"):]: value
                      for key, value in stored.items()
                      if key.startswith("fields/")}
@@ -4433,7 +4891,22 @@ def _validate_driver_payload(stored, header, state, driver, elapsed,
             host = stored.get(key)
             if format_version == RESTART_FORMAT_VERSION:
                 live = getattr(getattr(driver, tend_name), comp)
-                if (host is not None) != (live is not None):
+                # Older SASE checkpoints could omit w only under the
+                # then-mandatory every-step cadence. That next due call
+                # rebuilds it before use; a skipped-call run needs it.
+                rebuilt_legacy_w = (comp == "rw" and host is None
+                    and tend_name == "pbl_tendencies"
+                    and header["config"].get("bldt") == 0.0)
+                # Historical SASE also published a zero-ice placeholder
+                # as rqi even when no state ice existed. It has no
+                # consumer; the every-step rebuild removes it.
+                legacy_absent_ice = (comp == "rqi" and live is None
+                    and tend_name == "pbl_tendencies"
+                    and getattr(driver, "sase_active", False)
+                    and getattr(state, "qi", None) is None
+                    and header["config"].get("bldt") == 0.0)
+                if ((host is not None) != (live is not None)
+                        and not rebuilt_legacy_w and not legacy_absent_ice):
                     disposition = ("missing" if host is None
                                    else "unexpected")
                     raise RestartMismatchError(
@@ -4441,7 +4914,8 @@ def _validate_driver_payload(stored, header, state, driver, elapsed,
                         f"canonical member {key}")
             if host is not None:
                 target = (state.u if comp == "ru" else
-                          state.v if comp == "rv" else state.p)
+                          state.v if comp == "rv" else
+                          state.w if comp == "rw" else state.p)
                 _check_array(host, target, key)
 
     from gpuwm.core.physics import microphysics_scratch_slots
@@ -4515,14 +4989,19 @@ def _validate_driver_payload(stored, header, state, driver, elapsed,
             "restart carries no cumulus W0AVG history but the resuming "
             "driver already has live W0AVG state; prepare a fresh adapter")
     if "radiation/o33d_grid" in stored:
-        if getattr(driver.radiation_callable, "_o33d_grid", "absent") \
-                == "absent":
+        if (getattr(driver, "o3rad", None) is None
+                and not hasattr(driver.radiation_callable, "_o33d_grid")):
             raise RestartMismatchError(
                 "restart carries the legacy-RRTMG o33d field but the "
                 "resuming radiation callable has no _o33d_grid slot "
                 "(variant mismatch should have refused earlier)")
         _check_array(stored["radiation/o33d_grid"], state.p,
                      "radiation/o33d_grid")
+    elif (getattr(driver, "cam_ozone", None) is not None
+          and int(call_counts.get("cam_ozone", call_counts.get("radiation", 0))) > 0):
+        raise RestartMismatchError(
+            "restart omits retained CAM ozone after its producer ran; "
+            "the next child radiation call requires that held field")
 
 
 def _validated_forcing_prefix(value, *, label: str, path: Path):
@@ -4539,7 +5018,8 @@ def _validated_forcing_prefix(value, *, label: str, path: Path):
         raise RestartMismatchError(
             f"restart file {path} has malformed {label} forcing document "
             f"(missing {missing}, extra {extra})")
-    if value.get("schema") != LATERAL_BOUNDARY_PREFIX_SCHEMA:
+    if value.get("schema") not in (
+            LATERAL_BOUNDARY_PREFIX_SCHEMA, "gpuwm-lateral-boundary-prefix-v3"):
         raise RestartMismatchError(
             f"restart file {path} has unknown {label} forcing schema "
             f"{value.get('schema')!r}")
@@ -4839,8 +5319,9 @@ def _validate_restart(path, state, cfg, *,
         _validate_scratch_target(state, slot, host, key)
 
     driver = getattr(state, "physics", None)
+    _validate_member_namespaces(stored, state, driver, path, format_version)
     driver_keys = [key for key in stored
-                   if key.startswith(("driver/", "fields/", "cumulus/"))]
+                   if key.startswith(("driver/", "fields/", "cumulus/", "held/", "pbl/"))]
     if driver is None:
         if driver_keys:
             raise RestartMismatchError(
@@ -5038,6 +5519,22 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
         _check_array(host, target, f"diag/{name}")
         target[...] = asarray(host)
 
+    # Preserve the constructor's carrier identities for tile buffers and
+    # adapters. The complete pair was validated before any state mutation.
+    for name in sorted(DRIVER_HELD_FORCING_ATTRS):
+        target = getattr(driver, name, None)
+        if target is not None:
+            target[...] = asarray(stored[f"held/{name}"])
+
+    for key, target in pbl_raw_manifest(driver).items():
+        target[...] = asarray(stored[key])
+
+    for key, target in pbl_diagnostic_manifest(driver).items():
+        if key in stored:
+            target[...] = asarray(stored[key])
+        else:
+            target[...] = 0.0  # newly enabled output-only diagnostic
+
     # Held tendencies: rebind with the stored COUPLED arrays (no
     # recoupling — see the manifest argument).  compute() recomposes the
     # working sum from these components before the next consumption.
@@ -5046,9 +5543,17 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
         live_tendency = getattr(driver, tend_name)
         for comp in TENDENCY_COMPONENTS:
             comp_key = f"driver/{tend_name}/{comp}"
-            if comp_key in stored:
+            legacy_absent_ice = (comp == "rqi"
+                and tend_name == "pbl_tendencies"
+                and getattr(driver, "sase_active", False)
+                and getattr(state, "qi", None) is None
+                and header["config"].get("bldt") == 0.0)
+            if legacy_absent_ice:
+                components[comp] = None
+            elif comp_key in stored:
                 components[comp] = asarray(stored[comp_key])
-            elif format_version == 2:
+            elif format_version == 2 or (comp == "rw"
+                    and header["config"].get("bldt") == 0.0):
                 # Legacy absence meant an identically zero optional held
                 # category.  Preserve the constructor's eager canonical
                 # buffer so a supported v2 resume cannot grow its inventory
@@ -5134,6 +5639,11 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
     driver.call_counts.update(
         {key: int(value)
          for key, value in driver_header["call_counts"].items()})
+    if (getattr(driver, "cam_ozone", None) is not None
+            and "cam_ozone" not in driver_header["call_counts"]):
+        # Older legacy checkpoints retained this same field under the same
+        # key; their radiation counter is its producer/consumer history.
+        driver.call_counts["cam_ozone"] = int(driver.call_counts["radiation"])
     driver.ysu_nan_guard_fires = int(driver_header["ysu_nan_guard_fires"])
     driver.microphysics_updates = int(
         driver_header["microphysics_updates"])
@@ -5166,7 +5676,11 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
         radiation = driver.radiation_callable
         restored_o33d = np.asarray(
             stored["radiation/o33d_grid"], dtype=np.float32)
-        radiation._o33d_grid = np.ascontiguousarray(restored_o33d)
+        carrier = getattr(driver, "o3rad", None)
+        if carrier is not None:
+            carrier.set(np.ascontiguousarray(restored_o33d))
+        elif radiation is not None:
+            radiation._o33d_grid = np.ascontiguousarray(restored_o33d)
 
 
 __all__ = [
@@ -5174,6 +5688,7 @@ __all__ = [
     "CONFIG_RUN_LENGTH_FIELDS", "DRIVER_REBUILT_ATTRS",
     "DRIVER_CHECKPOINT_ONLY_ATTRS",
     "DRIVER_SERIALIZED_ATTRS", "DRIVER_TENDENCY_ATTRS",
+    "DRIVER_HELD_FORCING_ATTRS",
     "CUMULUS_ALGORITHM_IDENTITIES", "LAND_SURFACE_ALGORITHM_IDENTITIES",
     "LAND_SURFACE_PARAMETER_SOURCES",
     "MICROPHYSICS_COMPONENTS", "REBUILT_SCRATCH_PREFIXES",
@@ -5186,7 +5701,8 @@ __all__ = [
     "RADIATION_ALGORITHM_IDENTITIES",
     "SURFACE_LAYER_ALGORITHM_IDENTITIES",
     "READABLE_RESTART_FORMAT_VERSIONS", "REBUILT_SCRATCH_SLOTS",
-    "RESTART_FORMAT_VERSION", "ROOT_EXTERNAL_LBC_CLOCK_IDENTITY",
+    "RESTART_FORMAT_VERSION", "RESTART_MEMBER_NAMESPACES",
+    "ROOT_EXTERNAL_LBC_CLOCK_IDENTITY",
     "ROOT_EXTERNAL_LBC_CLOCK_LEGACY", "RestartInfo", "TreeRestartInfo",
     "SEALED_FORCING_EXTENSION_MODE",
     "RestartManifestError", "RestartMismatchError",
@@ -5194,6 +5710,7 @@ __all__ = [
     "carried_scratch_manifest",
     "RESTART_ONLY_DRIVER_SLOTS",
     "SERIALIZED_SCRATCH_SLOTS", "STATE_REBUILT_ATTRS",
+    "STATE_DERIVED_SETUP_ARRAYS",
     "STATE_SERIALIZED_ATTRS", "STATE_SETUP_ARRAYS", "STATE_SETUP_SCALARS",
     "THOMPSON_AEROSOL_RESTART_STATE",
     "THOMPSON_AEROSOL_RESTART_SURFACE_STATE",

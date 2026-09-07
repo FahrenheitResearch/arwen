@@ -196,14 +196,20 @@ def cadence_key(state, cfg) -> tuple:
     # dycore.step -> PhysicsDriver.compute, physics.py:3399-3400.  The
     # rounding matters: elapsed_seconds accumulates in float and the +0.5
     # floor is what makes step k's itimestep exactly k+1.
-    itimestep = int(np.floor(float(state.elapsed_seconds) / cfg.dt + 0.5)) + 1
+    epoch = float(getattr(state, "domain_start_offset", 0.0) or 0.0)
+    itimestep = int(np.floor((float(state.elapsed_seconds) - epoch) / cfg.dt + 0.5)) + 1
     stepra = _physics_interval_steps(drv.radt_minutes, cfg.dt)
-    radiation = bool(radiation_enabled(cfg) and _radiation_step_due(
-        itimestep, stepra, drv.radt_minutes))
+    override = getattr(drv, "radiation_due_override", None)
+    radiation = bool(radiation_enabled(cfg) and (
+        _radiation_step_due(itimestep, stepra, drv.radt_minutes)
+        if override is None else override))
     surface = bool(drv.surface_enabled and _surface_pbl_step_due(
         itimestep, drv.stepbl, cfg.bldt))
-    cumulus = bool(cfg.cu_physics and _cumulus_step_due(
-        itimestep, drv.stepcu, drv.cudt_minutes))
+    override = getattr(drv, "cumulus_due_override", None)
+    stepcu = _physics_interval_steps(drv.cudt_minutes, cfg.dt)
+    cumulus = bool(cfg.cu_physics and (
+        _cumulus_step_due(itimestep, stepcu, drv.cudt_minutes)
+        if override is None else override))
     # physics.py:2103-2107, ``_advance_cumulus_clock``: WRF's advance_ppt
     # runs once per MODEL CLOCK step, which is not once per dycore step when
     # cfg.clock_dt > cfg.dt (the real74 compatibility integrator).  It is a
@@ -816,8 +822,39 @@ class GraphStepper:
         if self.ledger is not None:
             self.ledger.drain()
 
+    def set_sweep(self, sweep: int) -> None:
+        """Expire graphs whose absolute-time operands belong to the prior step.
+
+        TiledRun synchronizes every graph sweep before entering this boundary;
+        the private pool can then reuse the released graphs' workspace blocks.
+        """
+        if self.reuse == "sweep" and self.sweep != sweep:
+            self.graphs.clear()
+        self.sweep = sweep
+
+    def set_config(self, cfg) -> None:
+        """Rebind scalar kernel arguments after the caller drains the buffer.
+
+        Captured graphs retain dt/acoustic-loop operands and workspaces.
+        They cannot be replayed after those operands change.
+        """
+        if cfg == self.cfg:
+            return
+        self.graphs.clear()
+        self._verified.clear()
+        self._uncapturable.clear()
+        self.reason = None
+        self.cfg = cfg
+
     def _key(self, state) -> tuple:
         base = self.key_fn(state, self.cfg)
+        from gpuwm.core.dycore import wrf_cfl_capture_key
+        base += (wrf_cfl_capture_key(self.cfg.grid_id),)
+        # The cadence booleans choose topology; these intervals are scalar
+        # kernel operands even when that topology is unchanged.
+        driver = getattr(state, "physics", None)
+        base += tuple(getattr(driver, name, None) for name in (
+            "radt_seconds", "cudt_seconds", "bldt_seconds"))
         if self.reuse == "run":
             return base
         if self.reuse != "sweep":

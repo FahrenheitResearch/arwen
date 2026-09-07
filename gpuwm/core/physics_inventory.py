@@ -81,11 +81,14 @@ def physics_retains_ysu_output(cfg: RunConfig) -> bool:
     """Whether the raw YSU output dict crosses a model-step boundary.
 
     Positive ``bldt`` keeps the historical diagnostic object untouched.
+    SASE never creates that object; its actual raw rates and diagnostics
+    have their own canonical buffers.
     At ``bldt == 0`` every configured PBL call is immediately consumed by
     :meth:`PhysicsDriver._run_ysu`, so retaining the raw rates duplicates the
     coupled PBL tendencies without serving a later reader.
     """
-    return bool(cfg.bl_pbl_physics and cfg.bldt > 0.0)
+    return bool(cfg.bl_pbl_physics and cfg.bl_pbl_physics != SASE_PBL_SCHEME
+                and cfg.bldt > 0.0)
 
 
 def physics_reuses_pbl_composition(cfg: RunConfig) -> bool:
@@ -111,6 +114,22 @@ def physics_reuses_pbl_composition(cfg: RunConfig) -> bool:
 #: measurement constructs).  They used to be three literal tuples, and
 #: mp=16 reached production having moved only two of them.
 PBL_RQI_MICROPHYSICS = (6, 8, 9, 10, 16, 18, 28, 50)
+
+
+#: The raw PBL fields needed to repeat mass coupling after a grid move.
+PBL_RAW_RATE_NAMES = ("du", "dv", "dtheta", "dqv", "dqc", "dqi")
+PBL_SHARED_FORCING = {"dtheta": "gf_rthblten", "dqv": "gf_rqvblten"}
+
+
+def pbl_raw_rate_names(cfg: RunConfig) -> tuple[str, ...]:
+    """Rates held only when a PBL call can be skipped after relocation."""
+    if not cfg.bl_pbl_physics or cfg.bldt == 0.0:
+        return ()
+    names = (PBL_RAW_RATE_NAMES if cfg.mp_physics in PBL_RQI_MICROPHYSICS
+             else PBL_RAW_RATE_NAMES[:-1])
+    # SASE returns a physical half-level vertical acceleration too.
+    # Relocation couples it onto z faces using the transplanted mass.
+    return names + (("dw",) if cfg.bl_pbl_physics == SASE_PBL_SCHEME else ())
 
 
 def microphysics_scratch_slots(
@@ -179,7 +198,10 @@ def microphysics_scratch_slots(
 # ---------------------------------------------------------------------------
 
 SFCLAY_OUTPUTS = (
-    "znt", "ust", "mol", "hfx", "qfx", "qsfc", "zol", "regime",
+    # USTM is Registry.EM_COMMON:1954 state ("U* IN SIMILARITY THEORY
+    # WITHOUT VCONV"), unconditional and restart-carried, and SFCLAY1D
+    # writes it beside UST on every column (module_sf_sfclay.F:799-804).
+    "znt", "ust", "ustm", "mol", "hfx", "qfx", "qsfc", "zol", "regime",
     "psim", "psih", "fm", "fh", "lh", "u10", "v10", "th2", "t2",
     "q2", "chs", "chs2", "cqs2", "flhc", "flqc", "qgh", "rmol",
     "wspd", "br", "gz1oz0", "cpm", "ck", "cka", "cd", "cda",

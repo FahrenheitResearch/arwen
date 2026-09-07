@@ -78,6 +78,9 @@ _DECODERS = {
 #:                finiteness screen.  Not meteorological data, and the
 #:                bridge costs one process launch plus one full f64 temp
 #:                file PER VARIABLE, on a door a user runs before a run.
+#: "independent-oracle" -- verification-only field reads of the external
+#:                reference, kept independent of the production decoder so
+#:                a shared decoder defect cannot validate itself.
 _PLUMBING_OR_BLOCKED = {
     "gpuwm/certify/pins.py": "plumbing",
     "gpuwm/downscale.py": "plumbing",
@@ -102,6 +105,7 @@ _PLUMBING_OR_BLOCKED = {
     "gpuwm/verify/cases/real74_n5b.py": "plumbing",
     "gpuwm/verify/cases/real74_n5s.py": "char",
     "gpuwm/verify/obs/cross_reader.py": "char",
+    "gpuwm/verify/metem_differential.py": "independent-oracle",
     "gpuwm/wrf_backend_parity.py": "bytes",
 }
 

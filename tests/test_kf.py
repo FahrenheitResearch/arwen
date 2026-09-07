@@ -629,6 +629,73 @@ def test_kf_source_depth_and_shear_denominator_match_wrf_strict_forms():
         assert z[result["cloud_top"]] > z[result["cloud_base"]]
 
 
+def test_shallow_feedback_tendencies_divide_by_an_unrounded_2400():
+    """``module_cu_kfeta.F`` carries TWO values of TIMEC, one layer apart.
+
+    ``:1598-1600`` sets ``IF(ISHALL.EQ.1)TIMEC=2400.`` and then ROUNDS it,
+    ``NIC=NINT(TIMEC/DT)`` / ``TIMEC=FLOAT(NIC)*DT``.  That rounded value is
+    what the closure and advection arithmetic use -- ``AINCM1`` (:1883),
+    ``AINC`` (:1935), ``DTT``/``NSTEP``/``DTIME`` (:1961-1979) -- and what
+    ``TIMEC_KF`` (:2387) and the ``TADVEC.LT.TIMEC`` test (:2569) see.
+
+    Then ``:2571-2573`` RE-SETS it::
+
+        IF(ISHALL.EQ.1)THEN
+           TIMEC = 2400.
+
+    and every feedback tendency from ``:2603`` to ``:2640`` -- DQCDT, DQIDT,
+    DQRDT, DQSDT, DTDT, DQDT -- divides by that un-rounded 2400.
+
+    Named breakage: one ``timec`` for both is a systematic, one-signed bias
+    on RTHCUTEN/RQVCUTEN/RQCCUTEN/RQRCUTEN/RQICUTEN/RQSCUTEN for every
+    shallow column for the whole run, whenever DT does not divide 2400.  It
+    is invisible at the suite's default DT=60 s, which divides 2400 exactly
+    -- hence DT=90 s here, where NINT(2400/90)*90 = 2430 and the error is
+    2400/2430, i.e. **-1.23 per cent**.  The deep branch is unaffected.
+
+    The assertion is exact rather than tolerant: RTHCUTEN is rebuilt from
+    the mirror's own returned ``closure_temperature`` (WRF's TG after the
+    phase-dependent latent-fusion branch), which is the numerator of
+    ``:2640`` verbatim.
+    """
+    from gpuwm.verify.npref import np_kf_column
+
+    sounding = dict(_shallow_sounding())
+    sounding["dt"] = 90.0
+    result = np_kf_column(**sounding)
+    assert result["triggered"] and result["shallow"]
+    assert result["timec"] == 2430.0, (
+        "DT=90 no longer rounds TIMEC away from 2400, so this gate would "
+        f"pass on a mirror that divides by the rounded value: {result['timec']}")
+
+    active = slice(0, result["cloud_top"] + 1)
+    wrf = ((result["closure_temperature"][active] - sounding["temperature"][active])
+           / (sounding["exner"][active] * 2400.0))
+    rounded = ((result["closure_temperature"][active] - sounding["temperature"][active])
+               / (sounding["exner"][active] * result["timec"]))
+    assert not np.allclose(wrf, rounded, rtol=1.0e-3), (
+        "the two divisors agree here, so the gate cannot tell them apart")
+    np.testing.assert_array_equal(result["rthcuten"][active], wrf)
+    np.testing.assert_array_equal(result["raw_rthcuten"][active], wrf)
+
+    # The moisture tendency has no exported numerator, so it is held by the
+    # invariant instead: a shallow tendency cannot depend on DT at all.
+    at_60 = np_kf_column(**dict(_shallow_sounding(), dt=60.0))
+    assert at_60["timec"] == 2400.0
+    peak = int(np.abs(at_60["rqvcuten"]).argmax())
+    assert at_60["rqvcuten"][peak] != 0.0
+    ratio = result["rqvcuten"][peak] / at_60["rqvcuten"][peak]
+    assert abs(ratio - 1.0) < 1.0e-9, (
+        f"RQVCUTEN moved {100.0 * (ratio - 1.0):+.3f} per cent between "
+        "DT=60 s and DT=90 s; WRF divides both by exactly 2400")
+
+    kernel = (Path(__file__).parents[1] / "gpuwm" / "core" / "kernels"
+              / "kf.cu").read_text(encoding="utf-8")
+    assert "float tendency_timec = shallow ? 2400.0f : timec;" in kernel
+    assert "/timec" not in kernel.split("float tendency_timec")[1], (
+        "a feedback tendency in kf.cu still divides by the rounded timec")
+
+
 def test_real74_12z_extracted_column_gates_and_provenance():
     """The plan's actual Phase-3 d01 warm-sector/northern column gates."""
     from gpuwm.verify.npref import np_kf_column

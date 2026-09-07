@@ -34,10 +34,9 @@ The gate skips, naming why, when git is not on PATH, when this tree is
 not a checkout (an sdist or wheel install has no branches to strand),
 and when ``integration/release-2.5.0`` does not exist locally (a
 mergedness question needs the thing to be merged into).  Enumeration
-uses ``git branch --format=%(refname:short) --no-merged <line>``, which
-neither prefixes the current branch with ``*`` nor cares what HEAD is,
-so the gate reads the same from any worktree branch or from a detached
-HEAD.
+uses ``git for-each-ref --no-merged <line> refs/heads/``, which reads
+actual local branch refs. A detached HEAD is not a branch and must not
+introduce the pseudo-row printed by ``git branch``.
 """
 
 from __future__ import annotations
@@ -192,8 +191,8 @@ def _unmerged_branches() -> list[str]:
     except subprocess.CalledProcessError:
         pytest.skip(f"{RELEASE_LINE} does not exist locally; mergedness "
                     f"into it cannot be measured")
-    out = _git("branch", "--format=%(refname:short)", "--no-merged",
-               RELEASE_LINE)
+    out = _git("for-each-ref", "--format=%(refname:short)", "--no-merged",
+               RELEASE_LINE, "refs/heads/")
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
@@ -272,6 +271,27 @@ def test_red_path_names_the_breakage_and_the_branches() -> None:
     assert "lane/example-stranded" in message
     assert "lane/example-accounted" not in message
     assert _VOCABULARY_HELP in message
+
+
+def test_detached_head_keeps_real_unmerged_branches_without_a_pseudo_row(
+    tmp_path, monkeypatch,
+) -> None:
+    import shutil
+    import sys
+
+    if shutil.which("git") is None:
+        pytest.skip("git executable not on PATH")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    _git("init", "--quiet")
+    _git("-c", "user.name=Branch Gate", "-c", "user.email=gate@example.invalid",
+         "commit", "--quiet", "--allow-empty", "-m", "base")
+    _git("branch", "-M", RELEASE_LINE)
+    _git("checkout", "--quiet", "-b", "lane/unmerged")
+    _git("-c", "user.name=Branch Gate", "-c", "user.email=gate@example.invalid",
+         "commit", "--quiet", "--allow-empty", "-m", "unmerged work")
+    assert _unmerged_branches() == ["lane/unmerged"]
+    _git("checkout", "--quiet", "--detach")
+    assert _unmerged_branches() == ["lane/unmerged"]
 
 
 def test_stale_rows_do_not_trip_the_gate() -> None:

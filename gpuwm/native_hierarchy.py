@@ -9,6 +9,7 @@ import time
 from typing import Mapping, Sequence
 
 from gpuwm.ingest.nest_init import initialize_child_chain_parallel
+from gpuwm.progress import prep_stage
 from gpuwm.native_domain_artifacts import (
     NativeHierarchyArtifactBuild,
     write_native_hierarchy_artifacts,
@@ -130,28 +131,31 @@ def initialize_and_export_native_hierarchy(
             raise FileExistsError(f"refusing to overwrite {label} path {path}")
     timings: dict[str, float] = {}
     started = time.perf_counter()
-    child_results = initialize_child_chain_parallel(
-        exp, root_node, catalog, source_orography,
-        workers=workers, preprocess_backend=preprocess_backend,
-        cpu_bridge=cpu_bridge, scratch_arena=scratch_arena,
-        dycore_state_workspace=dycore_state_workspace,
-        state_backend="preprocess",
-        sfcp_to_sfcp=sfcp_to_sfcp,
-        soil_layer_contract=soil_layer_contract)
+    with prep_stage("child_initialize", label="Initialize child domains",
+                    backend=preprocess_backend, count=len(exp.domains) - 1):
+        child_results = initialize_child_chain_parallel(
+            exp, root_node, catalog, source_orography,
+            workers=workers, preprocess_backend=preprocess_backend,
+            cpu_bridge=cpu_bridge, scratch_arena=scratch_arena,
+            dycore_state_workspace=dycore_state_workspace,
+            state_backend="preprocess",
+            sfcp_to_sfcp=sfcp_to_sfcp,
+            soil_layer_contract=soil_layer_contract)
     timings["parallel_child_initialization"] = time.perf_counter() - started
 
     started = time.perf_counter()
-    artifact_build = write_native_hierarchy_artifacts(
-        artifact_output, exp=exp, root_grid=root_node.grid,
-        root_initial_result=root_initial_result, root_met=root_met,
-        root_soil=root_soil, root_static_fields=root_static_fields,
-        root_boundaries=root_boundaries, child_results=child_results,
-        bridge_manifest_sha256=bridge_manifest_sha256,
-        source_manifest_sha256=source_manifest_sha256,
-        namelist_sha256=namelist_sha256, forcing_hours=forcing_hours,
-        forcing_offsets_seconds=forcing_offsets_seconds,
-        source_identity=source_identity, valid_time=exp.start_time,
-        root_metadata=root_metadata)
+    with prep_stage("hierarchy_artifacts", label="Write hierarchy artifacts"):
+        artifact_build = write_native_hierarchy_artifacts(
+            artifact_output, exp=exp, root_grid=root_node.grid,
+            root_initial_result=root_initial_result, root_met=root_met,
+            root_soil=root_soil, root_static_fields=root_static_fields,
+            root_boundaries=root_boundaries, child_results=child_results,
+            bridge_manifest_sha256=bridge_manifest_sha256,
+            source_manifest_sha256=source_manifest_sha256,
+            namelist_sha256=namelist_sha256, forcing_hours=forcing_hours,
+            forcing_offsets_seconds=forcing_offsets_seconds,
+            source_identity=source_identity, valid_time=exp.start_time,
+            root_metadata=root_metadata)
     timings["verified_hierarchy_artifacts"] = time.perf_counter() - started
 
     started = time.perf_counter()
@@ -163,25 +167,29 @@ def initialize_and_export_native_hierarchy(
         "native_artifact_manifest_sha256": artifact_build.receipt[
             "manifest"]["sha256"],
     })
-    if stock_wrf_export == "off":
-        wrf_manifest = stock_wrf_export_not_requested()
-    else:
-        try:
-            wrf_manifest = export_prepared_wrf_hierarchy(
-                exp, artifact_build.artifacts, wrf_output,
-                valid_time=exp.start_time,
-                boundary_interval_seconds=boundary_interval_seconds,
-                input_provenance=provenance)
-        except StockWrfExportUnsupported as error:
-            if stock_wrf_export == "required":
-                raise
-            # The forecast is already prepared: `artifact_build` above is
-            # the complete, verified hierarchy the GPU runner consumes.
-            # Only the unchanged-WRF file set cannot represent this
-            # physics, so only that is refused.  The exporter cleans up
-            # its own staging on any failure, so `wrf_output` stays
-            # absent rather than half-written.
-            wrf_manifest = stock_wrf_export_refused(error)
+    with prep_stage("hierarchy_export", label="Companion WRF hierarchy") as export_stage:
+        export_stage["outcome"] = "produced"
+        if stock_wrf_export == "off":
+            wrf_manifest = stock_wrf_export_not_requested()
+            export_stage["outcome"] = "not_requested"
+        else:
+            try:
+                wrf_manifest = export_prepared_wrf_hierarchy(
+                    exp, artifact_build.artifacts, wrf_output,
+                    valid_time=exp.start_time,
+                    boundary_interval_seconds=boundary_interval_seconds,
+                    input_provenance=provenance)
+            except StockWrfExportUnsupported as error:
+                if stock_wrf_export == "required":
+                    raise
+                # The forecast is already prepared: `artifact_build` above is
+                # the complete, verified hierarchy the GPU runner consumes.
+                # Only the unchanged-WRF file set cannot represent this
+                # physics, so only that is refused.  The exporter cleans up
+                # its own staging on any failure, so `wrf_output` stays
+                # absent rather than half-written.
+                wrf_manifest = stock_wrf_export_refused(error)
+                export_stage.update(outcome="refused", reason=str(error))
     timings["direct_stock_wrf_export"] = time.perf_counter() - started
     timings["total"] = sum(timings.values())
     return NativeHierarchyExportResult(

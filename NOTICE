@@ -7,6 +7,36 @@ and notices. Per-asset provenance (sources, generation recipes, SHA-256
 pins) is recorded in PROVENANCE.md and in the gpuwm/data/*/PROVENANCE.md
 files beside each packaged asset.
 
+Where a licence requires its text to be reproduced rather than merely
+named, this file reproduces it. Short texts appear in the sections
+below; longer ones are in the licenses/ directory, which ships in every
+source and binary distribution through the license-files declaration in
+pyproject.toml and lands in an installed wheel at
+gpuwm-<version>.dist-info/licenses/licenses/ (PEP 639 keeps the source
+path, hence the doubled component). Every section below names the file
+that carries its text.
+
+Notices also sit beside the code they belong to, which is what several of
+these licences ask for and what a reader looking at one file rather than
+at the whole distribution will find first. Each shipped Python module
+that carries transcribed work opens with the notice for what it carries;
+so do gpuwm/core/kernels/glibc_flt32.cuh and
+gpuwm/core/kernels/thompson_aerosol_common.cuh. Other CUDA translation
+units and prepended headers are covered by the source-freeze manifests
+checked by tests/test_mp8_frozen.py and
+tests/test_kernel_source_freeze_per_module.py; adding a notice comment
+would change their pinned source bytes. Their adjacent notice is
+gpuwm/core/kernels/LICENSE-third-party.txt, which sits in the same
+directory, covers all five grants present there, and is named explicitly
+in pyproject.toml's package-data so that it ships with the code it
+belongs to. Packaged data assets carry theirs the same way, in
+LICENSE*.txt files beside them.
+
+One carve-out, stated at the top because a blanket claim would be wrong:
+the two Source Sans 3 font files embedded in the renderer binaries are
+under the SIL Open Font License 1.1 and are NOT offered under Apache-2.0.
+See "Source Sans 3" below.
+
 --------------------------------------------------------------------------
 
 WRF / NCAR / UCAR
@@ -16,54 +46,649 @@ endorsed by the National Center for Atmospheric Research (NCAR) or the
 University Corporation for Atmospheric Research (UCAR). The Weather
 Research and Forecasting (WRF) model, developed at NCAR, is the
 transcription and verification authority for ArWen's WRF-derived
-mechanisms (WRF v4.6.1, https://github.com/wrf-model/WRF, released by
-UCAR as open source per its own notice).
+mechanisms (WRF v4.6.1, https://github.com/wrf-model/WRF). 167 of the
+shipped source files under gpuwm/ cite a WRF Fortran path by name and
+line.
+
+WRF is not released under an open-source licence: UCAR places it in the
+public domain and requests a notice. That request is honoured here by
+reproduction rather than paraphrase. WRF v4.6.1 LICENSE.txt, in full:
+
+    WRF was developed at the National Center for Atmospheric Research
+    (NCAR) which is operated by the University Corporation for
+    Atmospheric Research (UCAR). NCAR and UCAR make no proprietary
+    claims, either statutory or otherwise, to this version and release
+    of WRF and consider WRF to be in the public domain for use by any
+    person or entity for any purpose without any fee or charge. UCAR
+    requests that any WRF user include this notice on any partial or
+    full copies of WRF. WRF is provided on an "AS IS" basis and any
+    warranties, either express or implied, including but not limited to
+    implied warranties of non-infringement, originality, merchantability
+    and fitness for a particular purpose, are disclaimed. In no event
+    shall UCAR be liable for any damages, whatsoever, whether direct,
+    indirect, consequential or special, that arise out of or in
+    connection with the access, use or performance of WRF, including
+    infringement actions.
+
+    WRF(R) is a registered trademark of the University Corporation for
+    Atmospheric Research (UCAR).
+
+The unwrapped text, byte-identical to WRF v4.6.1's own LICENSE.txt
+(md5 ea0d72123846bafa972b29ca41f89b1a) and carrying the registered
+trademark symbol as UCAR writes it, is at
+licenses/LICENSE-WRF-public-domain.txt and beside each packaged
+WRF-derived asset directory.
+
+UCAR's declaration disclaims UCAR's own claims. It cannot and does not
+dispose of anyone else's, and WRF says so itself by preserving foreign
+notices inside phys/. ArWen transcribes two of those bodies of code and
+reproduces both notices below: AER's RRTMG, and Numerical Recipes'
+GAMMLN. It transcribes neither of the other two -- the Mersenne Twister
+in module_ra_rrtmg_lw.F (ArWen's McICA implements the kissvec path only;
+a repository-wide search for the Mersenne Twister constant 0x9908b0df
+finds it nowhere but in this sentence) nor Ooura's derf in
+module_cu_mskf.F (the MSKF cumulus scheme is not ported, and the string
+"mskf" appears nowhere under gpuwm/).
+
+The WRF Preprocessing System (WPS) is the transcription authority for the
+preprocessing half in the same way, and is named here so that a reader who
+greps for it finds an answer rather than a silence. WPS ships no LICENSE
+file; its sources carry no copyright line, no licence statement and no
+author attribution. UCAR distributes it as part of the WRF modelling
+system, and the declaration above is the only statement either half of that
+system carries.
+
+Nine WPS sources with no WRF counterpart -- rrpr.F, gribcode.F, output.F,
+rd_grib1.F, rd_grib2.F, new_storage.F, process_tile_module.F,
+interp_module.F and read_met_module.F90 -- are cited 48 times across four
+first-party Rust crates, 42 of those in tools/grib1_bridge. Its
+met_intermediate reimplements ungrib: it decodes GRIB by the user's own
+Vtable, applies ungrib's repairs, derives the fields ungrib derives, and
+writes the version-5 intermediate format. The projection math in
+tools/rustwx/crates/static-fields and tools/rw_wps/crates/mapped-engine is a
+separate case: it comes from module_llxy.F, which is a WRF file --
+share/module_llxy.F -- so it sits inside the declaration above, and its own
+header records that it was adapted from NCEP's w3 library, a work of the
+United States Government.
 
 This distribution packages certain data assets generated with or copied
 from the WRF v4.6.1 distribution, including: Thompson microphysics
 lookup tables (generated with WRF's own table generator and
-SHA-256-pinned), Noah land-surface parameter tables (VEGPARM.TBL,
-SOILPARM.TBL, GENPARM.TBL; byte-identical to WRF's run directory), the
-Kain-Fritsch lookup table, an ERA5 Vtable, and the RRTMG radiation data
-files named below.
+SHA-256-pinned), Noah and Noah-MP land-surface parameter tables
+(VEGPARM.TBL, SOILPARM.TBL, GENPARM.TBL, LANDUSE.TBL, MPTABLE.TBL;
+byte-identical to WRF's run directory), the Kain-Fritsch lookup table,
+the P3 lookup table, an ERA5 Vtable, two WRF Fortran radiation sources
+kept as transcription authorities, and the RRTMG radiation data files
+named below.
 
 --------------------------------------------------------------------------
 
 RRTMG (Atmospheric and Environmental Research, Inc.)
 
 The legacy-RRTMG radiation option transcribes WRF v4.6.1's RRTMG
-longwave and shortwave schemes and packages the RRTMG_LW_DATA and
-RRTMG_SW_DATA coefficient files and the ozone climatology files
-distributed with WRF. RRTMG was developed by Atmospheric and
-Environmental Research, Inc. (AER); its code and data carry AER's
-copyright and license notices, which are retained with the assets.
+longwave and shortwave schemes -- about 18,800 lines across thirteen
+shipped files, beginning with gpuwm/core/rrtmg_lw.py, whose docstring
+names phys/module_ra_rrtmg_lw.F and its source SHA-256 -- and packages
+the RRTMG_LW_DATA and RRTMG_SW_DATA coefficient files and the ozone
+climatology files distributed with WRF.
+
+RRTMG is the work of Atmospheric and Environmental Research, Inc.
+(AER), not of UCAR. WRF's copy carries AER's own notice: "Copyright
+2002-2008, Atmospheric & Environmental Research, Inc. (AER). This
+software may be used, copied, or redistributed as long as it is not
+sold and this copyright notice is reproduced on each copy made." That
+notice appears seven times in module_ra_rrtmg_lw.F and nine times in
+module_ra_rrtmg_sw.F, in three copyright-year spans. All three spans
+are reproduced verbatim in
+licenses/NOTICE-AER-RRTMG-as-distributed-with-WRF.txt and beside the
+packaged data in gpuwm/data/wrf_radiation/.
+
+ArWen takes this material under AER's own current grant instead. AER
+publishes RRTMG_LW and RRTMG_SW at https://github.com/AER-RC under the
+BSD 3-Clause licence, "Copyright (c) 2020, Atmospheric and
+Environmental Research"; that offer is public, current and
+unconditional, and a copyright holder may licence its own work on any
+terms it chooses. The BSD-3-Clause text is reproduced in full at
+licenses/LICENSE-AER-RRTMG-BSD-3-Clause.txt, which is how its clause 1
+(source) and clause 2 (binary) notice conditions are performed.
+
+The four legacy non-RRTMG files (gpuwm/core/rrtm_lw.py, rrtm_taumol.py,
+rrtm_tables.py, rrtm.py) transcribe WRF's phys/module_ra_rrtm.F, and
+the packaged RRTM_DATA belongs with them. That WRF file carries AER
+banner blocks and author names -- Eli J. Mlawer, Steven J. Taubman,
+Shepard A. Clough -- but no copyright line and no
+licence clause, so it falls under WRF's public-domain declaration. AER
+is credited here as a matter of accuracy rather than of condition.
+
+An earlier version of this file said that AER's "code and data carry
+AER's copyright and license notices, which are retained with the
+assets". That was not true: RRTMG_LW_DATA and RRTMG_SW_DATA are
+unformatted Fortran binaries that carry no notice, and no AER notice
+existed anywhere in the distribution. The sentence is withdrawn and
+replaced by the reproductions named above.
 
 --------------------------------------------------------------------------
 
 RTE+RRTMGP
 
-The default radiation option uses k-distribution data from the
-RTE+RRTMGP project (https://github.com/earth-system-radiation),
-distributed under the BSD-3-Clause license, Copyright Atmospheric and
-Environmental Research and contributors. The license text is retained
-with the packaged data under gpuwm/data/rrtmgp.
+Two separate works, with two different copyright lines, are involved
+and both are reproduced.
+
+The software: about 5,700 lines in gpuwm/core/rrtmgp.py and the
+rrtmgp_*.cu / rrtmgp_planck_common.cuh kernels transcribe
+earth-system-radiation/rte-rrtmgp at the commit their headers cite.
+That project is BSD 3-Clause, "Copyright (c) 2015-2025, Atmospheric and
+Environmental Research, Regents of the University of Colorado, Trustees
+of Columbia University in the City of New York". Its text is at
+licenses/LICENSE-RTE-RRTMGP-BSD-3-Clause.txt.
+
+The data: the k-distribution files packaged by the companion gpuwm-data
+distribution come from the rrtmgp-data repository and are BSD 3-Clause
+under a different copyright line, "Copyright (c) 2015-2018, Atmospheric
+and Environmental Research and Regents of the University of Colorado".
+That text ships beside the data at gpuwm_data/data/rrtmgp/LICENSE with
+a per-file PROVENANCE.md giving URLs, tag, commit and SHA-256.
 
 --------------------------------------------------------------------------
 
-wrf-rust
+Numerical Recipes Software
 
-Product rendering (gpuwm render) uses the "wrf-rust" Python package
-(imported as "wrf") as its diagnostic core. wrf-rust is a separate
-project with its own license and is installed via the optional
-[render] extra; it is not vendored in this distribution.
+WRF's phys/module_mp_thompson.F carries "(C) Copr. 1986-92 Numerical
+Recipes Software 2.02" immediately above and below its REAL FUNCTION
+GAMMLN(XX). ArWen transcribes that routine's Lanczos coefficients and
+evaluation in three shipped files -- thompson_aerosol_contract.py and
+milbrandt2_constants.py under gpuwm/core/, and
+gpuwm/core/kernels/nssl2_fused_gs.cu -- and bakes its values into the
+tables in gpuwm/core/kernels/thompson_aerosol_common.cuh.
+
+The notice is reproduced, and ArWen's position on it is stated rather
+than left silent, at licenses/NOTICE-Numerical-Recipes.txt.
+
+--------------------------------------------------------------------------
+
+FP32 libm transcriptions -- Arm optimized-routines
+
+Several schemes are graded bitwise against a gfortran/glibc reference,
+so ArWen carries hand transcriptions of the standard single-precision
+libm routines rather than calling CUDA's, whose expf, powf and tgammaf
+are measurably different functions. The transcriptions live in
+gpuwm/core/noahmp_libm.py, gpuwm/core/mynn_pbl.py, gpuwm/core/ruc.py,
+in gpuwm/core/kernels/glibc_flt32.cuh, and -- duplicated per kernel,
+because CUDA translation units do not share device code -- in the .cu
+files under gpuwm/core/kernels/.
+tests/test_cuda_libm_table_copies.py enumerates the table copies and
+holds them to one spelling, so the scope of this section is
+machine-checkable rather than prose.
+
+The logf, expf, exp2f and powf cores, and their data tables, are Arm's
+work. They were written by Szabolcs Nagy and published at
+https://github.com/ARM-software/optimized-routines (math/logf.c,
+math/expf.c, math/exp2f.c, math/powf.c and the corresponding
+math/*_data.c) in August 2017, then imported into glibc for 2.27/2.28
+by their own author. ArWen transcribed them from glibc's copy at
+sysdeps/ieee754/flt-32/, which reproduces Arm's text unchanged apart
+from symbol renaming, branch-hint and cast macro spellings, and
+symbol-versioning declarations -- none of which ArWen reproduces. Those
+transcriptions appear in fourteen files under gpuwm/core/kernels/ --
+glibc_flt32.cuh,
+mynn_dmp_sibling.cu, mynn_pbl.cu, noahmp_bareflux.cu,
+noahmp_fluxprep.cu, noahmp_leaves.cu, noahmp_radiation.cu,
+noahmp_snow.cu, noahmp_soilwater.cu, noahmp_vegeflux.cu,
+noahmp_vegprecip.cu, noahmp_water.cu, rrtmg_lw.cu and rrtmg_sw.cu -- and
+once more, in Python, in gpuwm/core/noahmp_libm.py. Fifteen files, and the
+count is machine-derived: those are exactly the files that reproduce Arm's
+coefficient tables.
+
+The grant ArWen elects is Arm's MIT, and the sequence matters enough to
+state exactly rather than compress. At the vintage glibc imported -- Arm
+86067a740541, 2017-08-11, taken into glibc at 4ea49f4c08ee on 2017-09-04
+-- those files read "Copyright (C) 2017, ARM Limited" under Apache-2.0.
+Arm relicensed the same work to MIT fifteen months later, at 11253b0b9d6b
+on 2018-11-12, and from there each file carries
+
+    Copyright (c) 2017-2018, Arm Limited.
+    SPDX-License-Identifier: MIT
+
+A copyright holder may licence its own work on any terms it chooses, and
+Arm's MIT offer over this code is public, current, and made by the
+retained copyright holder; that is the offer ArWen takes. (Current Arm
+upstream offers it under MIT OR Apache-2.0 WITH LLVM-exception. MIT is
+elected over the Apache branch because the LLVM exception waives
+Apache-2.0's notice duties only for object code, whereas ArWen ships
+these transcriptions as source. The Apache-2.0 the 2017 files carried
+would also have been compatible with this distribution, so nothing turns
+on the election except which text this file has to reproduce.) Arm's
+LICENSE, reproduced in full as MIT requires -- the same text is at
+licenses/LICENSE-Arm-optimized-routines-MIT.txt and beside the code at
+gpuwm/core/kernels/LICENSE-third-party.txt:
+
+    MIT License
+
+    Copyright (c) 1999-2019, Arm Limited.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+--------------------------------------------------------------------------
+
+FP32 libm transcriptions -- FDLIBM (Sun Microsystems, Inc.)
+
+The expm1f, tanhf, atanf and log10f reductions descend from FDLIBM,
+developed at SunPro, a Sun Microsystems, Inc. business, and converted to
+single precision at Cygnus Support by Ian Lance Taylor; glibc carries them
+substantially unmodified and presents them, in its own LICENSES file, as
+Sun's code. They appear in twelve shipped files: nine under
+gpuwm/core/kernels/ -- mynn_dmp_sibling.cu, mynn_pbl.cu,
+noahmp_bareflux.cu, noahmp_energy.cu, noahmp_fluxprep.cu,
+noahmp_glacier.cu, noahmp_leaves.cu, noahmp_vegeflux.cu and ruc.cu -- and
+three in Python: gpuwm/core/noahmp_libm.py, gpuwm/core/mynn_pbl.py and
+gpuwm/core/ruc.py.
+
+Two entries left that list in the ArWen 2.6.6 development lane, included
+in 2.7.0, and the reason is recorded here
+rather than left as a silent shrinkage. gpuwm/core/kernels/glibc_flt32.cuh
+carried FDLIBM's expm1f (s_expm1f.c) and lgammaf reduction (e_lgammaf_r.c)
+until the LGPL gamma transcription that was their only caller was deleted;
+they went with it. That deletion removed the only transcription of
+e_lgammaf_r.c anywhere in this repository, which is why lgammaf no longer
+appears in the list of routines above. The notice below is unchanged and
+still required by, and reproduced for, the twelve files that remain.
+
+FDLIBM's notice, preserved here as its sole condition requires, and
+also at licenses/LICENSE-FDLIBM-SunPro.txt and beside the code at
+gpuwm/core/kernels/LICENSE-third-party.txt:
+
+    Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+
+    Developed at SunPro, a Sun Microsystems, Inc. business.
+    Permission to use, copy, modify, and distribute this
+    software is freely granted, provided that this notice
+    is preserved.
+
+Where ArWen must match a glibc 2.39 reference bit for bit, these
+transcriptions follow glibc's versions of these files, which differ from
+other FDLIBM descendants at a small number of points. Through 2.6.5 there
+were three: atanf's 2**25 large-argument threshold, the fabsf spelling in
+log10f's zero path, and a redundant zero guard in tanhf. Two of the three
+are gone at 2.6.6, because neither did any work. tanhf's guard is
+unreachable -- the |x| < 2**-55 branch below it returns x*(1+x), which is x
+for both signed zeros -- and log10f's zero path divided -2**25 by |x| only
+to raise divide-by-zero on the way to -inf, where ArWen now returns the -inf.
+Both forms were compiled side by side against the shipped kernel bodies and
+compared on all 4,294,967,296 float32 bit patterns: zero differ. Nothing in
+this distribution reproduces either spelling any more.
+
+atanf's threshold stays, and the reason is the opposite one: it is a fact a
+black-box measurement recovers, not a spelling read from a source. It was
+measured from the running library, and gpuwm/core/noahmp_libm.py records the
+measurement at the point of use. lgammaf's 2**26 and 2**-30 thresholds were
+on the list until 2.6.6 as well; the lgammaf transcription is deleted, so
+nothing reproduces them either.
+
+The two grants above are scoped by function name on purpose. They
+cover the routines named in them and nothing else; no other code in
+those files takes anything from Arm or from Sun, and none of it is
+offered to a reader on the strength of these two notices.
+
+--------------------------------------------------------------------------
+
+Material removed during 2.6.6 development and included in 2.7.0
+
+Through ArWen 2.6.5, gpuwm/core/kernels/glibc_flt32.cuh carried a
+transcription of glibc's own tgammaf -- gammaf_positive, gamma_product and
+the tgamma wrapper over them, about 85 lines. That code is glibc's own
+work and neither FDLIBM's nor Arm's: gamma_productf.c was written from
+nothing for glibc in 2013, at commit d8cd06db62d9, and has no FDLIBM,
+SunPro, Cygnus or Arm ancestor anywhere. It is FSF-copyright and
+LGPL-2.1-or-later. An Apache-2.0 distribution cannot carry that under its
+own grant, and no notice entry cures it, so it is deleted at 2.6.6 --
+together with the expm1f, exp2f and lgammaf helpers it was the only caller
+of -- and replaced by ArWen's own gamma, which shares none of glibc's
+machinery and is correctly rounded where glibc's is not. The replacement,
+and the deliberate divergence from WRF it creates, are documented in
+docs/gf_gamma_known_delta.md.
+
+The deletion is prospective, and saying so is part of the fix rather than
+an afterthought. Every gpuwm sdist and wheel up to and including 2.6.5,
+and every commit of the public repository up to the 2.6.5 tag, contains
+that transcription; a later commit does not undistribute an earlier one.
+The 2.7.0 distribution contains the removal. Anyone redistributing a gpuwm
+artifact at 2.6.5 or earlier is redistributing LGPL-2.1-or-later material
+under a notice that does not mention it, and should take 2.7.0 or later
+instead.
+
+--------------------------------------------------------------------------
+
+Py-ART (UChicago Argonne, LLC)
+
+tools/region_global_dealias/ is a Rust port of Py-ART's
+dealias_region_based, driven from gpuwm/obs/dealias_region.py and
+shipped as a compiled library in the release bridge bundles and in
+platform wheels. Py-ART is "Copyright (c) 2013, UChicago Argonne, LLC",
+produced under U.S. Government contract DE-AC02-06CH11357 for Argonne
+National Laboratory, and is BSD 3-Clause with an added government-rights
+paragraph requiring that modified derivatives be clearly marked so as
+not to be confused with the version available from ANL. ArWen's port is
+a modified derivative and is named accordingly: it is
+region_global_dealias, not Py-ART.
+
+The full text is at licenses/LICENSE-PyART-Argonne-BSD-3-Clause.txt and
+in the port's own tree at tools/region_global_dealias/PYART-LICENSE.txt.
+Because the library ships COMPILED, and BSD-3-Clause clause 2 attaches to
+that form separately, the same text is reproduced in the binary-form
+notice described under "Compiled artifacts" below -- which is what the
+port's own THIRD-PARTY-NOTICES.md asks for in terms. The port is offered
+under (MIT OR Apache-2.0) AND BSD-3-Clause; its LICENSE-MIT,
+LICENSE-APACHE, THIRD-PARTY-NOTICES.md and VENDORED.md sit beside it.
+
+--------------------------------------------------------------------------
+
+MPAS (Los Alamos National Security, LLC and UCAR)
+
+tools/rustwx/crates/rw-mpas is a Rust port of parts of MPAS-Atmosphere
+v8.4.1. It is 44,768 lines and it names what it takes: init_atm_case_lbc
+from core_init_atmosphere/mpas_init_atm_cases.F, the vertical
+interpolation of mpas_init_atm_vinterp.F, the horizontal interpolation and
+latlon_to_ij of mpas_init_atm_hinterp.F and mpas_init_atm_llxy.F, the
+gravity-wave-drag fields of mpas_init_atm_gwd.F, the deformation and
+advection weights of mpas_atm_advection.F and core_sw/mpas_sw_advection.F,
+mpas_in_cell from mpas_geometry_utils.F, the constants of mpas_constants.F,
+and the soil and surface companions of
+core_atmosphere/physics/mpas_atmphys_initialize_real.F. It builds the five
+rw_mpas_* executables -- mesh, static, init, convert, lbc -- which are
+distributed COMPILED, in the release bridge bundles and in platform wheels
+at gpuwm/libexec/bridges/.
+
+MPAS-Model is BSD 3-Clause, "Copyright (c) 2013-2019, Los Alamos National
+Security, LLC (LANS) ... and the University Corporation for Atmospheric
+Research (UCAR)", with a U.S. Government rights paragraph that additionally
+requires a modified derivative to be clearly marked so as not to be
+confused with the version available from LANS and UCAR. ArWen's port is
+such a derivative and is named accordingly: it is rw_mpas, not MPAS, and
+the binaries, the crate and the CLI all carry that name. Clause 3 forbids
+using the names of LANS, UCAR or their contributors to endorse or promote;
+MPAS is named here only to say what was transcribed, and the WRF section
+above already records that ArWen is not affiliated with or endorsed by
+UCAR.
+
+The full text is at licenses/LICENSE-MPAS-BSD-3-Clause.txt and beside the
+code at tools/rustwx/crates/rw-mpas/LICENSE-MPAS-BSD-3-Clause.txt. Because
+the port ships compiled and clause 2 attaches to that form separately, the
+same text is reproduced in the binary-form notice described under
+"Compiled artifacts" below.
+
+Two neighbours are NOT covered by this and the difference is worth stating.
+The MPAS column-batch physics seam -- gpuwm/core/mpas_column_batch.py,
+mpas_cycle_bridge/ and MPAS-SEAM-CONTRACT.md -- transcribes no MPAS code
+at all: it presents an MPAS-shaped interface onto ArWen's own physics, and
+its only references to the MPAS sources are three citations of file and
+line for behavioural facts (mpas_atmphys_vars.F:340,
+mpas_atmphys_driver_convection.F:718, mpas_atmphys_interface.F:653-702).
+And ArWen writes MPAS-format NetCDF files and reads MPAS meshes; a file
+format is not expression and no notice is owed for speaking one.
+
+--------------------------------------------------------------------------
+
+NumPy
+
+tools/rustwx/crates/static-fields/src/projection/npmath.rs ports four of
+NumPy's own float32 SIMD kernels -- sin, cos, exp and log. The static-field
+builder's contract is byte parity with NumPy on the deployment platform,
+and NumPy does not route those four through libm; it routes them through
+its own kernels, so parity means porting them. The port is deliberate
+reproduction and says so: same constants, same fused-multiply-add
+sequence, from numpy/_core/src/umath/loops_trigonometric.dispatch.cpp and
+numpy/_core/src/umath/loops_exponent_log.dispatch.c.src at v2.2.6, with
+coefficients from npy_simd_data.h. Verbatim reference copies of those
+three upstream files, 1,973 lines, are kept at
+tools/static_rust_port/numpy_src/.
+
+NumPy is BSD 3-Clause, "Copyright (c) 2005-2024, NumPy Developers" at
+v2.2.6. Both notice clauses attach and both are performed. Clause 1,
+source form: the text is at licenses/LICENSE-NumPy-BSD-3-Clause.txt and
+beside the code at tools/static_rust_port/numpy_src/ and
+tools/rustwx/crates/static-fields/. Clause 2, binary form: static_fields
+is one of the artifacts named in gpuwm.bridge_assets.BUNDLED_ARTIFACTS and
+the rw_mpas_* executables link it, so it reaches users compiled, in the
+release bridge bundles and in platform wheels; the same text is reproduced
+in the binary-form notice described under "Compiled artifacts" below.
+
+This entry arrived late and the reason is recorded because it is the shape
+of gap a licence census misses. The census sorted third-party code into
+vendored crates and pip dependencies. NumPy is a pip dependency, so it was
+classified as installed rather than redistributed -- true of the Python
+package, false of a first-party crate that ports NumPy's kernels into
+itself. A file carrying third-party expression while belonging to no
+dependency tree is in neither bucket. MPAS above was found the same way and
+in the same pass.
+
+--------------------------------------------------------------------------
+
+Source Sans 3 (Adobe) -- SIL Open Font License 1.1
+
+tools/rustwx/crates/rustwx-render/assets/fonts/SourceSans3-Regular.ttf
+and SourceSans3-Semibold.ttf are compiled into the renderer binaries
+with include_bytes!, so every distributed renderer contains them.
+They are "Copyright 2010-2024 Adobe (http://www.adobe.com/), with
+Reserved Font Name 'Source'", licensed under the SIL Open Font License,
+Version 1.1.
+
+The OFL requires its notice and licence to accompany every copy, source
+or binary, and clause 5 forbids releasing the Font Software under any
+other licence. The Apache-2.0 grant this distribution makes over its own
+work therefore does not extend to these two files: they remain under the
+OFL alone. Their text is at
+licenses/LICENSE-SIL-OFL-1.1-SourceSans3.txt and beside the fonts at
+tools/rustwx/crates/rustwx-render/assets/fonts/SourceSans3-LICENSE.md.
+Because the fonts travel inside a compiled binary, the same text is also
+reproduced in the binary-form notice described under "Compiled artifacts"
+below; a renderer shipped without it would satisfy clause 2 nowhere.
+
+--------------------------------------------------------------------------
+
+Compiled artifacts (release bridge bundles and platform wheels)
+
+Twenty-seven Rust executables and libraries (gpuwm.bridge_assets
+.BUNDLED_ARTIFACTS) are distributed in compiled form: as GitHub release
+bridge bundles, and staged into platform wheels at gpuwm/libexec/bridges/.
+They are built from the three bridge dependency trees and the terminal
+dependency tree below, and from
+first-party crates that carry ported third-party expression of their own:
+they statically link the Py-ART-derived dealiaser, the rw_mpas_* five are
+built from the MPAS port, static_fields carries the NumPy kernel port, and
+the renderer among them embeds two Source Sans 3 fonts with include_bytes!.
+The vendored trees are not the whole of what a binary here contains, and
+reading them as if they were is what left MPAS and NumPy unnotified until
+the 2.6.6 development lane, included in 2.7.0.
+
+Every licence involved conditions redistribution IN BINARY FORM on the
+notice accompanying the distribution -- BSD-3-Clause clause 2, Apache-2.0
+section 4, MIT, ISC, Zlib, the Unicode licence, SIL OFL 1.1 clause 2. That
+is a separate condition from the source-form one, and until now nothing
+performed it: the bundles carried no licence text at all.
+
+They do now. licenses/THIRD-PARTY-LICENSES-bridge-binaries.txt reproduces,
+in one file, the licence texts of the 264 original bridge dependencies (179 distinct
+texts, deduplicated by SHA-256 so that no copyright line is lost), the
+Py-ART/Argonne notice, the MPAS and NumPy notices for the first-party
+ports, and the SIL OFL. Section 5 adds the locked terminal dependency
+inventory and its licence and attribution texts. That inventory is
+resolved for the supported Linux and Windows targets and includes build
+dependencies; it is not a count of linked runtime crates. Regenerate or
+check it with tools/update_tui_license_notice.py (use --check to verify).
+Each inventory says which text belongs to which crate.
+The same bytes reach a bundle consumer at
+assets/basemap/THIRD-PARTY-LICENSES.txt inside the archive -- that
+directory is what tools/build_bridge_bundle.py walks, so the notice
+travels with the binaries -- and a wheel consumer at
+gpuwm-<version>.dist-info/licenses/licenses/, under the same file name.
+The two copies are generated together and are byte-identical; the file
+carries its own regeneration recipe.
 
 --------------------------------------------------------------------------
 
 Vendored Rust crates
 
-The GRIB decode workspace (tools/grib1_bridge) vendors its Rust
-dependency sources for offline, locked builds. Each vendored crate
-retains its own license; see tools/grib1_bridge/vendor.
+Three Rust workspaces vendor their dependency sources for offline,
+locked builds: tools/rustwx/vendor, tools/grib1_bridge/vendor and
+tools/rw_wps/vendor. Together they hold 348 crate directories, 264
+distinct name-and-version pairs. Each vendored crate retains its own
+licence and, where upstream shipped a licence file, that file. Those
+files are also reproduced, deduplicated and indexed by crate, in the
+binary-form notice described under "Compiled artifacts" above, because a
+compiled consumer never sees the vendor tree.
+
+The terminal workspace has its own vendored sources at
+tools/arwen-ui-vendor/crates-io. Its separate target-resolved inventory is
+in section 5 of the binary-form notice; it is additional to the original
+bridge-tree census above, with shared packages listed in each applicable
+inventory.
+
+The census contains no GPL, LGPL, AGPL, SSPL, CDDL, EPL or MPL grant.
+The single copyleft token anywhere in it is r-efi's disjunctive
+"MIT OR Apache-2.0 OR LGPL-2.1-or-later"; ArWen elects MIT and the
+copyleft branch is not taken.
+
+Two facts are recorded here because they are gaps rather than
+performances, and a notice that omitted them would be worth less:
+
+  * Twenty of the 348 crate directories carry no licence text file.
+    Twelve of those directories hold the project's own crates
+    (metrust x2, wx-core x2, wx-field x2, wx-math x2, wx-radar x2,
+    wrf-core, grib-core), where the only obligation is to ourselves.
+    The other eight hold four genuine third-party upstreams, and their
+    text is therefore not being reproduced in the vendored tree:
+    puffin (Embark Studios, MIT OR Apache-2.0), r-efi (MIT elected from
+    its disjunction), and netcdf-reader and hdf5-reader (roteiro-gis,
+    https://github.com/roteiro-gis/netcdf-rust, MIT OR Apache-2.0).
+    Their grants are stated here, which is the substance of what those
+    grants ask for; restoring the files themselves is a re-vendor
+    operation rather than an edit, because six of those eight
+    directories carry a .cargo-checksum.json that writing into them
+    would invalidate, breaking the locked offline build.
+  * wrf-core 0.1.0 and grib-core 0.1.0 declare no licence field. Both
+    are Fahrenheit Research's own work. grib-core is an export of
+    https://github.com/FahrenheitResearch/rusty-weather, MIT as
+    declared by that workspace's Cargo.toml at the pinned revision
+    recorded in tools/grib1_bridge/vendor/VENDOR.md; wrf-core is the
+    core of wrf-rust, MIT as published on PyPI. Those declarations are
+    reproduced rather than invented here, and the crate metadata is
+    deliberately left as vendored so that the vendored tree stays a
+    faithful copy of what was vendored.
+
+tools/rustwx and tools/rw_wps declare license = "MIT" in their own
+Cargo.toml files, with the text at tools/rustwx/LICENSE. Those subtrees
+are MIT-licensed inside an Apache-2.0 repository; MIT permits that, and
+this sentence is here so the root LICENSE is not read as overriding
+them. tools/grib1_bridge declares no licence field of its own and takes
+the repository's Apache-2.0 grant, as any subtree that declares nothing
+does.
+
+--------------------------------------------------------------------------
+
+wrf-rust and wrf-core
+
+Product rendering (gpuwm render) uses the "wrf-rust" Python package
+(imported as "wrf") as its diagnostic core. wrf-rust is a separate
+project with its own MIT licence and is installed via the optional
+[render] extra; the Python package is not vendored.
+
+An earlier version of this file said wrf-rust "is not vendored in this
+distribution" without qualification. That was inaccurate: the Rust
+crate wrf-core 0.1.0, the library underneath it, IS vendored, at
+tools/rustwx/vendor/crates-io/wrf-core. See "Vendored Rust crates".
+
+--------------------------------------------------------------------------
+
+Observation network and radar site tables
+
+gpuwm/obs/data/surface_networks.json is frozen from the Iowa
+Environmental Mesonet's networks feed at Iowa State University
+(https://mesonet.agron.iastate.edu/geojson/networks.geojson), with the
+source URL, byte count and SHA-256 recorded in the file itself. IEM
+data are made freely available and attribution is requested; this is
+that attribution.
+
+gpuwm/obs/data/radar_sites_odim.json is frozen from the EUMETNET
+weather-radar locations collection served by MeteoGate
+(https://api.meteogate.eu/), with the same provenance fields. The
+elevations were harvested separately from ODIM polar volumes, as the
+file records. EUMETNET and MeteoGate are credited as the source; the
+terms of the underlying feed are between the user and the provider for
+any further retrieval.
+
+--------------------------------------------------------------------------
+
+GRIB parameter tables
+
+The vendored grib-core decoder carries ECMWF GRIB1 local table 128
+parameter rows and NCEP GRIB2 Code Table 4.2 entries in
+src/grib1/tables.rs and src/grib2/tables.rs. The ECMWF parameter
+database is published by the European Centre for Medium-Range Weather
+Forecasts under CC-BY-4.0 and is credited here; the NCEP and WMO tables
+are United States Government work. Parameter names, abbreviations and
+units are facts about a published standard rather than expression, but
+the attribution costs nothing and its absence would be noticed.
+
+--------------------------------------------------------------------------
+
+Map and boundary data
+
+The renderer's basemap assets, carried in the release bridge bundles,
+are Natural Earth 110m and 10m vector layers (public domain,
+https://www.naturalearthdata.com/) and the U.S. Census Bureau
+cartographic boundary file cb_2023_us_county_5m (a work of the United
+States Government, not subject to copyright under 17 U.S.C. 105).
+Neither carries a redistribution condition. Source URLs and status are
+recorded in the asset directories' README files.
+
+--------------------------------------------------------------------------
+
+Reference results under non-commercial terms
+
+The RFMIP clear-sky reference results in the gpuwm-data repository
+(rfmip-clear-sky-reference-{lw,sw}-{up,down}.nc) are CC-BY-NC-SA-4.0:
+NonCommercial and ShareAlike, which is incompatible with Apache-2.0.
+They are excluded from both the gpuwm-data wheel and its source
+distribution, by exclude-package-data and MANIFEST.in respectively, and
+the licence text ships beside them at
+gpuwm_data/data/rrtmgp/LICENSE-CC-BY-NC-SA-4.0.
+
+They remain present in the public git repository as a verification
+fixture. The Apache-2.0 grant in the root LICENSE does not extend to
+them and is not offered over them; anyone taking them from the
+repository takes them under CC-BY-NC-SA-4.0 alone.
+
+The related rfmip-clear-sky-inputs.nc carries an internal attribute
+naming CC-BY-4.0 and a link to CC-BY-SA-4.0. The ambiguity is recorded
+in that directory's PROVENANCE.md and both texts ship beside the file.
+
+--------------------------------------------------------------------------
+
+Optional NVIDIA components
+
+The gpu, gpu-cu12 and gpu-cu13 extras install CuPy (MIT) with its
+[ctk] marker, which pulls the NVIDIA CUDA redistributable wheels
+(nvidia-*) as dependencies. Those NVIDIA components are
+proprietary and are governed by the NVIDIA Software License Agreement,
+not by this distribution's Apache-2.0 grant. They are installed by the
+user's package manager and are not redistributed here; the extra is
+named so that "open licence" is not read as covering the whole install.
 
 --------------------------------------------------------------------------
 

@@ -209,7 +209,10 @@ class TileHealthFold:
         by the finiteness of the three MAXIMA rather than by the kernel's mask
         -- ``health_final`` already turns a masked field into a NaN maximum,
         and reproducing the same expression here keeps the two paths from
-        drifting apart.
+        drifting apart.  The vertical term's NaN guard is identical for the
+        same reason: see :func:`gpuwm.core.dycore.decode_stability_record`
+        for why ``max()`` is not a NaN-propagating reduction in Python and
+        what mask bit 32 loses when it is used as one.
         """
         cfg = self.cfg
         u_max, w_max, th_max = (float(v) for v in host[:3])
@@ -219,7 +222,8 @@ class TileHealthFold:
         if cfg is not None and not nan:
             horizontal_cfl = cfg.dt * u_max / cfg.dx
             vertical_cfl = cfg.dt * float(host[5])
-            cfl = max(horizontal_cfl, vertical_cfl)
+            cfl = (vertical_cfl if not math.isfinite(vertical_cfl)
+                   else max(horizontal_cfl, vertical_cfl))
         report = {"u_max": u_max, "w_max": w_max, "th_max": th_max,
                   "cfl": cfl, "horizontal_cfl": horizontal_cfl,
                   "vertical_cfl": vertical_cfl, "nan": nan}

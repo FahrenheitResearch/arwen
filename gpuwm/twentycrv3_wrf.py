@@ -45,6 +45,7 @@ def prepare_20crv3_wrf(
     preprocess_workers: int | None = None,
     cpu_preprocess_bridge: str | Path | None = None,
     hierarchy_workers: int | None = None,
+    statics_corridor=None,
 ) -> dict[str, object]:
     """Decode one filename-authoritative member and prepare a WRF hierarchy.
 
@@ -183,6 +184,7 @@ def prepare_20crv3_wrf(
             preprocess_workers=preprocess_workers,
             cpu_preprocess_bridge=cpu_preprocess_bridge,
             hierarchy_workers=hierarchy_workers,
+            statics_corridor=statics_corridor,
             _source_manifest=manifest,
             _source_manifest_sha256=manifest_sha256,
             _source_adapter=SOURCE_ADAPTER,
@@ -223,6 +225,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--preprocess-workers", type=int)
     parser.add_argument("--cpu-preprocess-bridge", type=Path)
     parser.add_argument("--hierarchy-workers", type=int)
+    parser.add_argument("--statics-corridor", nargs="?", const="all", default=None,
+                        help="seal child-resolution statics for the configured moving hierarchy")
     return parser
 
 
@@ -295,6 +299,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         preprocess_workers=args.preprocess_workers,
         cpu_preprocess_bridge=args.cpu_preprocess_bridge,
         hierarchy_workers=args.hierarchy_workers,
+        statics_corridor=(args.statics_corridor if args.statics_corridor in (None, "all")
+                          else tuple(int(gid) for gid in args.statics_corridor.split(","))),
     )
     print(json.dumps(proof, indent=2, sort_keys=True, allow_nan=False))
     # Parity with the GFS front door: a complete, hash-bound run command,

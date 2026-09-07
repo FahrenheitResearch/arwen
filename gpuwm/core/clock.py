@@ -185,6 +185,11 @@ STEP = "STEP"
 FORCE = "FORCE"
 FEEDBACK = "FEEDBACK"
 
+#: The denominator an adaptive clock needs as a factor: WRF requantises
+#: every adaptive interval to hundredths, so the tick lattice must hold
+#: them exactly or the controller's dt cannot be represented at all.
+_ADAPTIVE_TICK_DEN = 100
+
 #: Binary32 represents every integer through 2**24 inclusive.  Larger even
 #: integers can also be exactly representable, so this is a conservative
 #: all-integers-exact bound, not the definition of FP32 representability.
@@ -302,7 +307,8 @@ class DomainClock:
     """
 
     __slots__ = ("spec", "tick_den", "run_ticks", "ticks", "step_count",
-                 "dtbc_fp32")
+                 "dtbc_fp32", "step_ticks", "dt_fp32",
+                 "adaptive_state")
 
     def __init__(self, spec: DomainTicks, tick_den: int, run_ticks: int):
         self.spec = spec
@@ -311,10 +317,42 @@ class DomainClock:
         self.ticks = 0
         self.step_count = 0
         self.dtbc_fp32 = np.float32(0.0)
+        # THE LIVE STEP, distinct from the CONFIGURED one.
+        #
+        # ``spec.step_ticks`` is config-resolution output and stays frozen:
+        # it is what the namelist asked for, and the prepared-cache and
+        # restart identities are stated against it.  ``self.step_ticks`` is
+        # what the model is integrating with RIGHT NOW.  Under a fixed
+        # namelist clock they are equal for the whole run and every
+        # consumer sees exactly what it saw before; under
+        # ``use_adaptive_time_step`` only this one moves.
+        #
+        # The distinction has to be pushed to every reader, because
+        # reading the configured value where the live one was meant is a
+        # silent wrong answer rather than a crash -- a nest forced with
+        # the wrong parent interval, or a diagnostic timestamped a step
+        # off.  docs/ADAPTIVE-TIMESTEP.md section 9 carries the inventory.
+        self.step_ticks = spec.step_ticks
+        # THE LIVE KERNEL dt, on the same footing as step_ticks and for a
+        # sharper reason: dt_fp32 is WRF's REAL grid%dt, and it drives the
+        # BOUNDARY clock (dtbc, :407), the nest boundary interpolation
+        # weight (core/nest.py:592) and the Davies relaxation
+        # (ingest/lateral_bc.py:418).  Leaving it on the configured value
+        # under an adaptive clock forces the lateral boundaries at one dt
+        # while the interior integrates at another -- which corrupts the
+        # boundary zone rather than raising anything, and is what killed
+        # the first live adaptive runs.
+        self.dt_fp32 = spec.dt_fp32
+        #: The adaptive controller's memory, or None.  Parked on the CLOCK
+        #: because that is the object relocation does not replace and the
+        #: checkpoint writer can already see -- the controller itself
+        #: lives on the driver, which the writer cannot reach.  None on
+        #: every fixed-clock run, and absent from those checkpoints.
+        self.adaptive_state = None
 
     def advance(self) -> None:
         """One model step: integer tick increment (clockadvance :396)."""
-        self.ticks += self.spec.step_ticks
+        self.ticks += self.step_ticks
         self.step_count += 1
 
     @property
@@ -383,7 +421,7 @@ class DomainClock:
         reset and before the solve callback, so boundary consumers see the
         post-increment FP32 value for every ratio chain.
         """
-        self.dtbc_fp32 = np.float32(self.dtbc_fp32 + self.spec.dt_fp32)
+        self.dtbc_fp32 = np.float32(self.dtbc_fp32 + self.dt_fp32)
 
     @property
     def dtbc(self) -> float:
@@ -418,7 +456,7 @@ class DomainClock:
         Integer arithmetic only; advisory helper for T14 so the stash
         predicate is not re-derived per consumer."""
         return (self.ticks >= self.spec.start_ticks
-                and (self.ticks + self.spec.step_ticks
+                and (self.ticks + self.step_ticks
                      - self.spec.start_ticks)
                 % self.spec.history_ticks == 0)
 
@@ -495,6 +533,14 @@ def resolve_clock(exp: ExperimentConfig, *,
 
     dt_exact = {dc.grid_id: exp.dt_exact(dc.grid_id) for dc in exp.domains}
     tick_den = lcm(*(dt.denominator for dt in dt_exact.values()))
+    if any(dc.run.use_adaptive_time_step for dc in exp.domains):
+        # An adaptive clock emits hundredths -- calc_dt requantises every
+        # interval to n/100 (adapt_timestep_em.F:179-184) -- so the
+        # lattice must be able to hold one.  Widening here rather than
+        # refusing later is what lets a fixed-dt tree and its adaptive
+        # twin share a configuration: with the feature off this line does
+        # nothing, and every existing tick_den is unchanged.
+        tick_den = lcm(tick_den, _ADAPTIVE_TICK_DEN)
 
     run_ticks_f = Fraction(exp.run_seconds) * tick_den
     if run_ticks_f.denominator != 1:
@@ -648,7 +694,7 @@ def _physics_calendar(label: str, minutes: float, dt_ex: Fraction,
     """
     if minutes <= 0.0:
         return step_ticks, 1
-    ticks = _cadence_ticks(label, Fraction(minutes) * 60, step_ticks,
+    ticks = _cadence_ticks(label, Fraction(str(minutes)) * 60, step_ticks,
                            tick_den, grid_id)
     steps = ticks // step_ticks
     exact = interval_steps(minutes, dt_ex)
@@ -684,6 +730,12 @@ class Schedule:
     interior_period: tuple[Op, ...]
     final_period: tuple[Op, ...]
     period_tables: tuple[tuple[Op, ...], ...] | None = None
+    #: ``(start_ticks, step_now) -> ops`` -- the SAME transcription of
+    #: frame/module_integrate.F that produced the tables above, kept
+    #: callable so an adaptive clock can re-expand one period at the
+    #: steps the controller just chose.  Single-sourced deliberately: a
+    #: second copy of that recursion is how the two would drift.
+    expander: object | None = None
 
     @property
     def period_ticks(self) -> int:
@@ -761,12 +813,27 @@ def build_schedule(exp: ExperimentConfig,
                               for k in exp.children_of(dc.grid_id))
             for dc in exp.domains}
     parent_of = {dc.grid_id: dc.parent_id for dc in exp.domains}
-    step = {spec.grid_id: spec.step_ticks for spec in clock.domains}
+    step_cfg = {spec.grid_id: spec.step_ticks for spec in clock.domains}
     starts = {spec.grid_id: spec.start_ticks for spec in clock.domains}
     head = exp.root.grid_id
     run_ticks = clock.run_ticks
 
-    def expand(start_ticks: int) -> tuple[Op, ...]:
+    def expand(start_ticks: int, step_now=None) -> tuple[Op, ...]:
+        # ``step_now`` is the LIVE per-domain step, or None for the
+        # configured one.  Under a fixed clock every caller passes None
+        # and this is the same function it always was; an adaptive clock
+        # re-expands one period at a time with the steps the controller
+        # just chose.  One period is exactly one root step, which is why
+        # re-expansion at this granularity is WRF's own shape rather than
+        # a reinterpretation of it (frame/module_integrate.F recurses per
+        # root step).
+        #
+        # The tick-exact assertion at the tail is what makes this safe:
+        # a child step that does not divide its parent's exactly leaves
+        # the child off the boundary and is refused here, which is the
+        # same requirement WRF states as
+        # num_small_steps = CEILING(parent%dt / dt).
+        step = dict(step_cfg) if step_now is None else dict(step_now)
         ticks = {gid: start_ticks for gid in step}
         ops: list[Op] = []
         active = {gid for gid in step if starts[gid] <= start_ticks}
@@ -821,23 +888,82 @@ def build_schedule(exp: ExperimentConfig,
                     f"grid_id={gid} at {t} ticks, boundary {boundary}.")
         return tuple(ops)
 
-    periods = run_ticks // step[head]
+    periods = run_ticks // step_cfg[head]
     if any(value for value in starts.values()):
         tables = tuple(
-            expand(index * step[head]) for index in range(periods))
+            expand(index * step_cfg[head]) for index in range(periods))
         return Schedule(
             clock=clock, interior_period=tables[0],
-            final_period=tables[-1], period_tables=tables)
+            final_period=tables[-1], period_tables=tables,
+            expander=expand)
     interior = expand(0)
-    final = expand(run_ticks - step[head])
+    final = expand(run_ticks - step_cfg[head])
     if periods >= 3:
-        middle = expand((periods // 2) * step[head])
+        middle = expand((periods // 2) * step_cfg[head])
         if middle != interior:
             raise RuntimeError(
                 "schedule is not periodic: a middle period differs from "
                 "the first interior period.")
     return Schedule(clock=clock, interior_period=interior,
-                    final_period=final)
+                    final_period=final, expander=expand)
+
+
+def fixed_periods(schedule, start_period: int, period_ticks: int):
+    """Today's walk: the precomputed tables, in order.
+
+    Yields ``(period, ops, boundary)``.  Integer arithmetic only -- this
+    is inside the AST-audited hot path.
+    """
+    for period in range(start_period, schedule.periods):
+        yield (period, schedule.period_ops(period),
+               (period + 1) * period_ticks)
+
+
+def adaptive_periods(schedule, clocks, root_id: int, on_period_steps,
+                     start_period: int = 0):
+    """One period at a time, at whatever step the controller just chose.
+
+    ``on_period_steps(period, clocks)`` runs BEFORE the expansion and is
+    where the controller lives: it may set ``clock.step_ticks`` on any
+    domain, and it is deliberately outside this generator so that every
+    float the controller touches -- ``calc_dt``'s REAL(4) factor above
+    all -- stays outside the integer-audited walk.  What crosses the
+    boundary is an integer number of ticks and nothing else.
+
+    A period is exactly one ROOT step, which is the granularity WRF's own
+    recursion works at (frame/module_integrate.F integrates the head grid
+    one step and recurses).  The run ends when the root reaches
+    ``run_ticks``; with a varying step that is a condition, not a count,
+    which is why this is a while loop where the fixed walk is a range.
+    """
+    root = clocks[root_id]
+    run_ticks = schedule.clock.run_ticks
+    # NUMBERED FROM WHERE THE RESUME STARTED, like fixed_periods.  This
+    # counted from 0 on every resume, so a resumed run's period indices
+    # collided with the ones already taken -- latent while the three
+    # period callbacks read `clocks` rather than `period`, and a trap the
+    # moment one of them reads the index.
+    period = int(start_period)
+    while root.ticks < run_ticks:
+        on_period_steps(period, clocks)
+        steps = {gid: dom.step_ticks for gid, dom in clocks.items()}
+        for gid, value in steps.items():
+            # A zero or negative step is an INFINITE LOOP inside
+            # `integrate`'s `while ticks[gid] < stop_subtime`, which
+            # presents as a wedged run rather than as a bug -- found by
+            # a test that asserted the walk would not hang, and it did.
+            # A controller that computes a nonsense dt (a CFL of zero
+            # through a clamp of zero, say) must be refused here, by
+            # name, on the period it happens.
+            if value <= 0:
+                raise ValueError(
+                    f"adaptive step for grid_id={gid} is {value} ticks at "
+                    f"period {period}; a step must be a positive number "
+                    f"of ticks, and a non-positive one would hang the "
+                    f"integration rather than fail it.")
+        ops = schedule.expander(root.ticks, steps)
+        yield period, ops, root.ticks + root.step_ticks
+        period += 1
 
 
 # ---------------------------------------------------------------------------
@@ -869,7 +995,8 @@ def execute_schedule(schedule: Schedule, *,
                      clocks: dict[int, DomainClock] | None = None,
                      start_period: int = 0,
                      started_grid_ids=None,
-                     committed_initial_history_grid_ids=()
+                     committed_initial_history_grid_ids=(),
+                     on_period_steps=None
                      ) -> ExecutionReport:
     """Walk the flat op table with integer-tick clocks (the hot loop).
 
@@ -1007,10 +1134,14 @@ def execute_schedule(schedule: Schedule, *,
             started.add(gid)
         emit_history(gid)
 
-    for period in range(start_period, schedule.periods):
+    if on_period_steps is None:
+        periods = fixed_periods(schedule, start_period, period_ticks)
+    else:
+        periods = adaptive_periods(schedule, clocks, root_id,
+                                   on_period_steps, start_period)
+    for period, ops, boundary in periods:
         if on_period_begin is not None:
             on_period_begin(period, clocks)
-        ops = schedule.period_ops(period)
         for op in ops:
             if op.kind == STEP:
                 dom = clocks[op.grid_id]
@@ -1034,12 +1165,12 @@ def execute_schedule(schedule: Schedule, *,
             elif op.kind == FORCE:
                 child = clocks[op.grid_id]
                 parent = clocks[op.parent_id]
-                if parent.ticks - child.ticks != parent.spec.step_ticks:
+                if parent.ticks - child.ticks != parent.step_ticks:
                     raise RuntimeError(
                         f"nest-force sync violated: parent "
                         f"{op.parent_id} at {parent.ticks} ticks must "
                         f"lead child {op.grid_id} at {child.ticks} ticks "
-                        f"by exactly {parent.spec.step_ticks} ticks.")
+                        f"by exactly {parent.step_ticks} ticks.")
                 if on_force is not None:
                     on_force(op.grid_id, op.parent_id, child, parent)
                 child.mark_force()
@@ -1063,7 +1194,6 @@ def execute_schedule(schedule: Schedule, *,
                     if on_feedback_finalize is not None:
                         on_feedback_finalize(op.grid_id, op.parent_id,
                                              child, parent)
-        boundary = (period + 1) * period_ticks
         for gid, dom in clocks.items():
             if gid not in started:
                 dom.ticks = boundary

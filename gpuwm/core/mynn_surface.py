@@ -110,8 +110,16 @@ def _psim_stable_full(zolf):
 
 def _psih_stable_full(zolf):
     zolf = F(zolf)
+    # `1./1.1` at module_sf_mynn.F:2099 is a REAL(4) quotient of REAL(4)
+    # literals, and gfortran folds it at the operand kind: 0x3f68ba2e.
+    # Letting Python divide first evaluates in binary64 and rounds to
+    # 0x3f68ba2f, one ULP high, which moves 268 of the 1001 psih_stab words
+    # by up to 3 ULP.  nvcc folds `1.0f / 1.1f` in single at
+    # kernels/mynn_surface.cu:17, so this spelling is also what makes the
+    # host reference and the kernel agree.  `1./2.5` above needs no such
+    # care: it rounds to 0x3ecccccd from either precision.
     return F(-F(5.3) * _logf(
-        zolf + _powf(F(1.0) + _powf(zolf, F(1.1)), F(1.0 / 1.1))
+        zolf + _powf(F(1.0) + _powf(zolf, F(1.1)), F(F(1.0) / F(1.1)))
     ))
 
 
@@ -159,7 +167,7 @@ def _psih_unstable_full(zolf):
 #: ``tests/test_mynn_surface.py`` pins it and shows the NumPy-built words
 #: it replaced failing against it.
 PSI_TABLE_SHA256 = (
-    "35f08242c537456f09fae5950e9cd1518469c0fa55e41c9fa4b79f99368b8898"
+    "8f54f6f81a26c5c95c5dd9cdde9b8efe6fa15d0894dbb1f8c4176274cd01e4ac"
 )
 
 

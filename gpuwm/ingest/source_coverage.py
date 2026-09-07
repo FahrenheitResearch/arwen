@@ -102,6 +102,27 @@ class SourceCoverageRefusal(PreparationRefusal):
     remedy = SOURCE_COVERAGE_REMEDY
 
 
+class SourceProjectionRefusal(PreparationRefusal):
+    """The source declares a projection this install cannot pair against.
+
+    A declared projection is a promise about what the source's own
+    coordinate arrays MEAN, and every route pairs the target into that
+    plane before it touches them.  A family the transform does not
+    evaluate therefore has no safe reading at all: taking the arrays as
+    degrees is exactly the defect that put a domain sitting inside a
+    Lambert grid 3,353 columns off its west edge.  Its own class, and a
+    refusal rather than a traceback, because the bytes are the answer --
+    nothing in this install fixes them.
+    """
+
+    remedy = (
+        "remedy: this install pairs a declared lambert_conformal source "
+        "through its own projection; any other declared family has to be "
+        "regridded to a regular latitude/longitude grid before it is "
+        "staged (`gpuwm prep --show-source NAME` names what the route "
+        "requires of the inputs).")
+
+
 class DecoderInventoryRefusal(PreparationRefusal):
     """The decoders this route needs are not the ones it was handed.
 
@@ -192,7 +213,8 @@ class ForcingSeriesRefusal(PreparationRefusal):
 
 
 def outside_source_grid_message(latitude, longitude, target_lat, target_lon,
-                                y, x, outside) -> str:
+                                y, x, outside, *, axis_space=None,
+                                target_geographic=None) -> str:
     """Name the first uncovered target point, its index, and the source span.
 
     ``target points fall outside the source grid`` on its own named no
@@ -200,19 +222,45 @@ def outside_source_grid_message(latitude, longitude, target_lat, target_lon,
     undersized crop from a source axis that does not reach the target --
     the two have opposite remedies.  The numbers here are the same ones
     the native-route coverage refusal prints.
+
+    ``axis_space`` names the plane the pairing happened in whenever the
+    source is NOT geographic.  A projected source's coordinate arrays are
+    its own projection axes, so printing them as ``lon 0..53.94`` and
+    ``lat 0..31.74`` -- degrees, and a box off the coast of Africa --
+    describes a source that does not exist.  Given the name, both the
+    target point and the source span are printed in that plane instead.
+
+    ``target_geographic`` is the same target points in degrees.  In the
+    plane, the point that misses is stated in coordinates the user never
+    typed, so the refusal is printed with the domain's own lat/lon beside
+    it -- that is the number in the namelist, and the number the remedy
+    is applied to.
     """
 
     first = int(np.argmax(np.asarray(outside).ravel()))
     index = np.unravel_index(first, np.shape(outside))
+    point = (f"{np.asarray(target_lat).ravel()[first]:.4f}, "
+             f"{np.asarray(target_lon).ravel()[first]:.4f}")
+    if axis_space is None:
+        where = f"at lat/lon ({point})"
+        span = (f"(lon {longitude[0]:g}..{longitude[-1]:g})",
+                f"(lat {latitude[0]:g}..{latitude[-1]:g})")
+    else:
+        where = f"at {axis_space} (y, x) = ({point})"
+        if target_geographic is not None:
+            geographic_lat, geographic_lon = target_geographic
+            where += (
+                f", lat/lon ({np.asarray(geographic_lat).ravel()[first]:.4f}, "
+                f"{np.asarray(geographic_lon).ravel()[first]:.4f})")
+        span = (f"({axis_space} x {longitude[0]:g}..{longitude[-1]:g})",
+                f"({axis_space} y {latitude[0]:g}..{latitude[-1]:g})")
     return (
         "target points fall outside the source grid: target point "
-        f"{tuple(int(value) for value in index)} at lat/lon "
-        f"({np.asarray(target_lat).ravel()[first]:.4f}, "
-        f"{np.asarray(target_lon).ravel()[first]:.4f}) maps to source "
+        f"{tuple(int(value) for value in index)} {where} maps to source "
         f"index x={np.asarray(x).ravel()[first]:.3f} "
         f"y={np.asarray(y).ravel()[first]:.3f}, and the source covers "
-        f"x=0..{longitude.size - 1} (lon {longitude[0]:g}..{longitude[-1]:g}) "
-        f"y=0..{latitude.size - 1} (lat {latitude[0]:g}..{latitude[-1]:g})")
+        f"x=0..{longitude.size - 1} {span[0]} "
+        f"y=0..{latitude.size - 1} {span[1]}")
 
 
 def report_preparation_refusal(refusal: PreparationRefusal, *,
@@ -273,6 +321,7 @@ __all__ = [
     "PreparationRefusal",
     "RunInputRefusal",
     "SourceCoverageRefusal",
+    "SourceProjectionRefusal",
     "VerticalLadderRefusal",
     "outside_source_grid_message",
     "owns_source_coverage_refusal",

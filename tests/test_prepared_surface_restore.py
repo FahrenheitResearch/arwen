@@ -241,3 +241,60 @@ def test_the_benchmark_forwards_the_restored_surface_into_physics_setup():
     body = inspect.getsource(benchmark.run)
     assert "root_surface = restored.surface" in body
     assert "surface=root_surface" in body
+
+
+@pytest.mark.parametrize("declared", [None, True, False])
+def test_native_projected_soil_setting_reaches_solved_surface_and_restore(declared):
+    from gpuwm.ingest.hrrr import hrrr_source_grid
+    from tools.hrrr_single_domain_benchmark import _configured_soil_mesh
+
+    shape = (17, 19)
+    j, i = np.indices(shape)
+    source = hrrr_source_grid()
+    latlon = source.ij_to_latlon(800 + (i - 9) / 4, 500 + (j - 8) / 4)
+    grid = SimpleNamespace(latlon_mass=lambda: latlon)
+    raw = {} if declared is None else {"ingest": {"soil_texture_downscale": declared}}
+    mesh = _configured_soil_mesh(grid, raw)
+    assert mesh.enabled is (declared is not False)
+    fields = {name: np.broadcast_to(value[..., :1, :1], value.shape[:-2] + shape).copy()
+              for name, value in _native_met().fields.items()}
+    met = SimpleNamespace(fields=fields)
+    static = {"SCT_DOM": np.where((i + j) % 2, 3., 6.),
+              "SOILTEMP": 281. + ((i + j) % 3) * 2.}
+    baseline = resolve_prepared_noah_surface(met, _cfg(), static)
+    solved = resolve_prepared_noah_surface(met, _cfg(), static, soil_mesh=mesh)
+    changed = {name: not np.array_equal(solved.fields[name], baseline.fields[name])
+               for name in solved.fields}
+    if declared is False:
+        assert not any(changed.values())
+    else:
+        assert changed["SMOIS"]
+    # A portable cache has no native soil pair. Even an opposite live plan
+    # cannot rederive or apply the correction twice to its solved surface.
+    restored = resolve_prepared_noah_surface(SimpleNamespace(fields={}), _cfg(), static,
+                                            surface=solved, soil_mesh=mesh)
+    assert restored is solved
+
+
+@pytest.mark.parametrize("enabled", [None, True, False])
+def test_direct_native_physics_derivation_declares_the_same_mesh(monkeypatch, enabled):
+    from gpuwm.ingest import hrrr_physics
+    from gpuwm.ingest.hrrr import hrrr_source_grid
+    from gpuwm.ingest.soil_downscale import soil_mesh_plan_from_case
+    source = hrrr_source_grid()
+    j, i = np.mgrid[-4:5, -4:5]
+    grid = SimpleNamespace(latlon_mass=lambda: source.ij_to_latlon(800+i/4, 500+j/4))
+    mesh = (None if enabled is None else soil_mesh_plan_from_case(
+        None, grid, source_grid=source, enabled=enabled))
+    seen = []
+    def solve(*args, **kwargs):
+        seen.append(kwargs["soil_mesh"])
+        return object()
+    monkeypatch.setattr(hrrr_physics, "resolve_prepared_noah_surface", solve)
+    monkeypatch.setattr(hrrr_physics, "initialize_prepared_physics", lambda *a, **k: None)
+    attrs = dict(MMINLU="x", ISWATER=1, ISLAKE=2, ISICE=3, CEN_LAT=38.)
+    hrrr_physics.initialize_hrrr_physics(None, _cfg(), None, {}, attrs, grid, None,
+                                      soil_mesh=mesh)
+    assert seen[0].enabled is (enabled is not False)
+    if mesh is not None:
+        assert seen[0] is mesh

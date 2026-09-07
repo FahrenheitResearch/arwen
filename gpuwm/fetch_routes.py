@@ -1174,18 +1174,44 @@ def _prior_entries(out: Path) -> dict[str, dict]:
 LADDER_IDENTITY = "ladder"
 
 
-def _request_identity(plan: FetchPlan) -> dict:
+def _request_identity_fields(source: str, cycle: datetime, host: str | None,
+                             member: str | None, leads) -> dict:
     return {
-        "source": plan.source_id,
-        "cycle": f"{plan.cycle:%Y-%m-%dT%H}Z",
-        "host": plan.pinned_host or LADDER_IDENTITY,
-        "member": plan.member,
-        "leads": list(plan.leads),
+        "source": source,
+        "cycle": f"{cycle:%Y-%m-%dT%H}Z",
+        "host": host or LADDER_IDENTITY,
+        "member": member,
+        "leads": list(leads),
     }
 
 
-def check_prior_request(out: Path, plan: FetchPlan) -> None:
-    """Refuse to publish two different requests into one directory."""
+def _request_identity(plan: FetchPlan) -> dict:
+    return _request_identity_fields(plan.source_id, plan.cycle, plan.pinned_host,
+                                    plan.member, plan.leads)
+
+
+def check_prior_request(out: Path, plan: FetchPlan | None = None, *,
+                        source: str | None = None, cycle: datetime | None = None,
+                        host: str | None = None, member: str | None = None) -> None:
+    """Refuse two requests in one directory, also during managed cache selection.
+
+    The explicit identity form checks the same source/cycle/host/member
+    contract without resolving transfer endpoints or building object lists.
+    """
+    if plan is not None:
+        if any(value is not None for value in (source, cycle, host, member)):
+            raise ValueError("Supply a fetch plan or request identity, not both")
+        wanted = _request_identity(plan)
+        route = plan.route
+    else:
+        if source is None or cycle is None:
+            raise ValueError("Request identity requires source and cycle")
+        route = route_for(source)
+        resolve_cycle(route, cycle)
+        if host is not None:
+            route.host(host)
+        resolved_member, _ = resolve_member(route, member)
+        wanted = _request_identity_fields(route.source_id, cycle, host, resolved_member, ())
 
     manifest = out / MANIFEST_NAME
     if not manifest.is_file():
@@ -1194,7 +1220,6 @@ def check_prior_request(out: Path, plan: FetchPlan) -> None:
         prior = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return
-    wanted = _request_identity(plan)
     recorded = prior.get("request", {})
 
     def differs(key: str) -> bool:
@@ -1207,7 +1232,7 @@ def check_prior_request(out: Path, plan: FetchPlan) -> None:
         # it -- including one written before this ArWen had a ladder.
         return not (wanted[key] == LADDER_IDENTITY
                     and recorded.get(key) in
-                    {host.name for host in plan.route.hosts})
+                    {host.name for host in route.hosts})
 
     differing = [key for key in ("source", "cycle", "host", "member")
                  if differs(key)]

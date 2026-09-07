@@ -212,3 +212,12 @@ tests/test_tracked_file_writers_keep_lf.py
 # runner via spec_from_file_location) -- a ratchet no leg runs cannot
 # refuse a silently grown debt list.
 tests/test_mutation_gate_manifest.py
+
+# CUDA source and compiler recordings have no Python import edge from a .cu
+# change. Always verify coverage and completeness so a new kernel cannot
+# disappear from memory accounting between release cuts.
+tests/test_kernel_frame_recordings.py
+
+# Cargo lock/config/vendor edits have no Python import edge; require complete
+# offline sources, source-file hashes and safe release build instructions.
+tests/test_vendored_cargo_registry.py

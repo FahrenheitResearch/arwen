@@ -153,6 +153,28 @@ def follow_window_slot(grid_id: int) -> str:
     return f"{UH_FOLLOW_WINDOW_PREFIX}{gid:02d}"
 
 
+def declared_follower_slots(domains):
+    """Per-parent windows implied by declared child followers, in grid order.
+
+    Dormant followers still reserve their eventual carrier; cadence and tracker
+    settings remain on the child declaration and do not share a window.
+    """
+    result = {}
+    for dc in sorted(domains, key=lambda row: int(row.grid_id)):
+        if dc.follow is not None:
+            result.setdefault(int(dc.parent_id), []).append(follow_window_slot(dc.grid_id))
+    return {gid: tuple(slots) for gid, slots in result.items()}
+
+
+def allocate_declared_follower_windows(exp, model):
+    """Reserve each live parent's declared slots before its carrier set freezes."""
+    for parent_gid, slots in declared_follower_slots(exp.domains).items():
+        if parent_gid in model.nodes_by_grid_id:
+            parent = model.node(parent_gid)
+            for slot in slots:
+                parent.state.scratch((int(parent.cfg.run.ny), int(parent.cfg.run.nx)), slot)
+
+
 def is_tracker_window_slot(slot: str) -> bool:
     return slot in TRACKER_WINDOW_SLOTS or str(slot).startswith(UH_FOLLOW_WINDOW_PREFIX)
 

@@ -15,6 +15,7 @@ members = [
     "crates/rustwx-calc",
     "crates/rustwx-contour",
     "crates/rustwx-core",
+    "crates/rustwx-cross-section",
     "crates/rustwx-ensemble",
     "crates/rustwx-io",
     "crates/rustwx-models",

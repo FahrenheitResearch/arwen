@@ -38,7 +38,8 @@ import numpy as np
 import pytest
 
 from conftest import requires_gpu
-from gpuwm.core.model import publish_declared_experiment
+from gpuwm.core.model import (ADAPTIVE_TIMESTEP_RUN_FIELDS,
+                              publish_declared_experiment)
 
 from gpuwm.config import RunConfig
 from gpuwm.core.nssl2_contract import (
@@ -742,8 +743,15 @@ def test_physics_storage_aliases_are_lifetime_gated(monkeypatch):
             array[...] = np.float32(3.0)
     driver._compose_tendencies(cfg)
     assert driver.tendencies is driver.pbl_tendencies
-    np.testing.assert_array_equal(
-        driver.tendencies.ru, np.full_like(driver.tendencies.ru, 1.0))
+    # Since d0c23dad0 the cumulus adapter contract carries momentum
+    # tendencies and _compose_tendencies adds them into the composed
+    # winds (zero face stacks for a scheme that supplies none, so
+    # production is inert); with every cumulus array planted at 3.0 the
+    # composed ru and rv read the PBL's 1.0 plus 3.0.
+
+    for name in ("ru", "rv"):
+        value = getattr(driver.tendencies, name)
+        np.testing.assert_array_equal(value, np.full_like(value, 4.0))
     for name in ("rtheta", "rqv", "rqc"):
         value = getattr(driver.tendencies, name)
         np.testing.assert_array_equal(value, np.full_like(value, 6.0))
@@ -2739,10 +2747,49 @@ def _member_names(path) -> list[str]:
 #: no header key, no array member name, no dtype, no shape, no byte of any
 #: array.  A checkpoint-format change riding in behind a config addition
 #: would leave that reconstruction short and would fail there.
+#:
+#: RE-PINNED on lane/release-reds-266 for d0c23dad0 (2.6.4, the New
+#: Tiedtke port), which appended ONE RunConfig field
+#: (`ntiedtke_tiedtke_closure`) and re-pinned nothing.  Same attribution,
+#: same gate: the key joined _WIF_CONFIG_KEYS below, and the
+#: reconstruction recovers both pre-lane digests exactly -- on the
+#: Windows desktop and on the Linux node alike -- so the config echo is
+#: the whole diff once more.
+#:
+#: RE-PINNED AGAIN on lane/adaptive-timestep, which appended TWELVE
+#: RunConfig fields (the adaptive time step's namelist surface,
+#: gpuwm/core/adaptive_timestep.ADAPTIVE_TIMESTEP_RUN_FIELDS).  Same
+#: attribution and the same gate one link further along:
+#:
+#:   2.6.0 / 2.6.1     5431237076a4 / 0b9e45449cba
+#:     + ntiedtke_tiedtke_closure (1 key)
+#:   2.6.5 line        c85c921d720d / fb448bfd5719
+#:     + the adaptive-timestep surface (12 keys)
+#:   this lane         the pair below
+#:
+#: Each arrow is a gate rather than a claim: the first is
+#: tests/test_ntiedtke_closure_checkpoint.py, the second is
+#: tests/test_adaptive_timestep_checkpoint.py, and the reconstruction
+#: below unwinds all thirteen keys at once and must still land on the
+#: pre-WIF pair.  Only the config echo moved: 14 arrays either side with
+#: identical names, dtypes, shapes and bytes, an unchanged header key set
+#: and array_manifest.
+#:
+#: RE-PINNED on the per-domain vertical lane, which appended ONE RunConfig
+#: field (`eta_levels`, a domain's own eta ladder).  Same attribution and the
+#: same gate one link further along: the key joined _WIF_CONFIG_KEYS below,
+#: and the reconstruction unwinds all fourteen keys at once and must still
+#: land on the pre-WIF pair.  It does, so the config echo is the whole diff
+#: once more: 14 arrays either side with identical names, dtypes, shapes and
+#: bytes, an unchanged header key set and array_manifest.  The field's
+#: default is None -- "inherit the ladder the source carries", which is
+#: exactly what every checkpoint written before it describes -- so no
+#: prepared state moved with it.
 _LIFECYCLE_FREE_ROOT_DIGEST = \
-    "5431237076a41c391a12fee84526ff9981d3303939c2967b399e6bdec10e6f34"
+    "8d8885caba42960ffa9d1ff263296d6af1509f2e1edb22b698cee1d74915f51d"
 _LIFECYCLE_FREE_CHILD_DIGEST = \
-    "0b9e45449cba685b3c7a167bc648d64a2022aaf4b9edf99adad386c5f41ac08c"
+    "911f904170751dfa6664cc73abbb1093c2976a26e908e8c42b3b554b499f5539"
+
 
 #: The values these pins carried immediately before the two mp=28 aerosol
 #: config keys landed, kept so the reconstruction has something to
@@ -2752,27 +2799,53 @@ _PRE_WIF_ROOT_DIGEST = \
 _PRE_WIF_CHILD_DIGEST = \
     "6c8b3f3a6f73961d2b8dcddd6f4c93ec0873dd05039c37716d27fef3dcc2c8f4"
 
-#: The two RunConfig fields the mp=28 aerosol lanes appended.
-#: The RunConfig keys added SINCE the pre-lane digests below were taken.
+#: The RunConfig keys added SINCE the pre-lane digests below were taken
+#: (the first two by the mp=28 aerosol lanes, which named this tuple).
 #: Removing them and recomputing the two derived hashes is what separates
 #: "a config field was added" from "the checkpoint FORMAT moved" -- the
 #: second must still fail, and it will, because the reconstruction only
 #: removes these names.  ``p3_backend`` joined with the P3 CUDA port
 #: (2026-08-29); it is scheme-scoped to mp=50 in the restart identity, but
 #: the header CONFIG ECHO carries every RunConfig field regardless, which
-#: is exactly why this reconstruction exists.
+#: is exactly why this reconstruction exists.  ``ntiedtke_tiedtke_closure``
+#: joined with the New Tiedtke port (d0c23dad0, 2.6.4), unscoped, and
+#: the echo grew by that one key: the reconstruction below still recovers
+#: both pre-lane digests with it removed, so the io/restart.py changes in
+#: that commit (a cu=16 algorithm identity and an expected-class row,
+#: neither reached by this cu=0 fixture) moved no header key, no member,
+#: no dtype and no byte of any array.
+#: ``ADAPTIVE_TIMESTEP_RUN_FIELDS`` is IMPORTED rather than retyped: the
+#: module that owns those twelve names is the only thing that should be
+#: able to change them, and a copy here would quietly stop matching the
+#: day it gains a thirteenth.
+#: ``eta_levels`` joined with the per-domain vertical ladder (the offline
+#: child's own eta grid).  Unscoped, and its default is ``None`` -- "inherit
+#: the ladder the source carries", which is what every checkpoint written
+#: before it describes -- so the echo grew by exactly one key whose value is
+#: null in this fixture.
 _WIF_CONFIG_KEYS = ("mp28_aerosol_source", "wif_climatology_path",
-                    "p3_backend")
+                    "p3_backend", "ntiedtke_tiedtke_closure", "eta_levels",
+                    ) + ADAPTIVE_TIMESTEP_RUN_FIELDS
 
 
-def _digest_without_the_wif_config_keys(path) -> str:
-    """The canonical member digest as it would read WITHOUT the two keys.
+
+def _digest_without_config_keys(path, keys) -> str:
+    """The canonical member digest as it would read WITHOUT ``keys``.
 
     Same construction as :func:`_canonical_member_digest`, with exactly
-    three substitutions: the two new keys are dropped from the config
-    echo, and the two hashes the writer derives from that echo are
-    recomputed from the trimmed one using the writer's own helpers.
-    Every array member is hashed unchanged.
+    three substitutions: the named keys are dropped from the config echo,
+    and the two hashes the writer derives from that echo --
+    ``physics_setup.configuration_sha256`` and
+    ``physics_setup_fingerprint`` -- are recomputed from the trimmed one
+    using the writer's OWN helpers rather than a second implementation of
+    them.  Every array member is hashed unchanged, so anything that moved
+    outside the config echo survives into the result and the caller's
+    comparison fails.
+
+    Taking ``keys`` as an argument is what lets one construction serve
+    both the cumulative reconstruction below and the per-change
+    attribution in ``tests/test_ntiedtke_closure_checkpoint.py``; the
+    alternative was a third copy of these twenty lines.
     """
     import copy
 
@@ -2781,7 +2854,7 @@ def _digest_without_the_wif_config_keys(path) -> str:
             data[restart._HEADER_KEY])).decode("utf-8"))
         for name in _VOLATILE_CHECKPOINT_HEADER:
             header.pop(name, None)
-        for key in _WIF_CONFIG_KEYS:
+        for key in keys:
             header["config"].pop(key, None)
         values = {key: value for key, value in header["config"].items()
                   if key not in restart.CONFIG_RUN_LENGTH_FIELDS
@@ -2804,6 +2877,11 @@ def _digest_without_the_wif_config_keys(path) -> str:
         return digest.hexdigest()
 
 
+def _digest_without_the_wif_config_keys(path) -> str:
+    """The cumulative reconstruction: every key appended since pre-WIF."""
+    return _digest_without_config_keys(path, _WIF_CONFIG_KEYS)
+
+
 def test_the_checkpoint_pins_moved_for_the_two_wif_keys_and_nothing_else(
         monkeypatch, tmp_path):
     """The attribution for the re-pin above, as a gate rather than a claim.
@@ -2813,9 +2891,18 @@ def test_the_checkpoint_pins_moved_for_the_two_wif_keys_and_nothing_else(
     riding into the tree inside a config-addition re-pin.  Both digests
     above would move, both would be updated, and the format change would
     be invisible, because "we added a config field" explains a moved
-    digest.  Here it does not: the two keys are removed and the two
+    digest.  Here it does not: the appended keys are removed and the two
     derived hashes recomputed, so anything ELSE that moved leaves the
     reconstruction short of the pre-lane value and this fails.
+
+    The name says "two" because two is what ``_WIF_CONFIG_KEYS`` held when
+    it was written; it is four now (``p3_backend`` 2026-08-29,
+    ``ntiedtke_tiedtke_closure`` 2026-09-02).  This is the CUMULATIVE arm
+    -- it anchors on the pre-WIF pair and absorbs everything appended
+    since.  The per-change arm, which anchors each re-pin on the pair it
+    replaced and so names WHICH key moved it, is a file per change:
+    ``tests/test_ntiedtke_closure_checkpoint.py``,
+    ``tests/test_adaptive_timestep_checkpoint.py``.
     """
     source, start = _sealed_tree_fixture(
         monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
@@ -3211,6 +3298,17 @@ class _FakeStreamedDomain:
         self._state = state
         return self
 
+    def impose_clock(self, seconds):
+        self._state.elapsed_seconds = float(seconds)
+
+    def write_restart(self, path, cfg, *, run_trackers=None, tree_header=None,
+                      extra_scratch_slots=()):
+        # This fixture spies only on optional lifecycle-window publication.
+        # The complete store payload transport is tested independently.
+        return SimpleNamespace(path=restart.write_restart(
+            path, self._state, cfg, run_trackers=run_trackers,
+            tree_header=tree_header, extra_scratch_slots=extra_scratch_slots))
+
     def publish(self, names):
         names = tuple(names)
         self.published.append(names)
@@ -3271,24 +3369,23 @@ def test_a_lifecycle_free_streamed_run_is_not_touched_by_the_publish(
                    for name in _member_names(root_path))
 
 
-def test_a_streamed_parent_with_a_per_follower_window_refuses(
+def test_a_streamed_parent_publishes_its_generated_follower_window(
         monkeypatch, tmp_path):
-    """The generated per-follower windows are not in the fixed streaming
-    manifest, so there is no way to project one out of a store.  Writing
-    the state's copy would checkpoint attach-time zeros as a live window,
-    which is the defect the publish above exists to prevent."""
+    """The live generated carrier is checkpointed, never its stale state copy."""
     model, start = _lifecycle_tree_fixture(monkeypatch, follow=True)
     root = model.root
     shape = (int(root.cfg.run.ny), int(root.cfg.run.nx))
-    _FakeStreamedDomain({
+    live = np.full(shape, 73.25, dtype=np.float32)
+    stream = _FakeStreamedDomain({
         "scratch/uh_spawn_window": np.zeros(shape, dtype=np.float32),
         "scratch/uh_follow_window": np.zeros(shape, dtype=np.float32),
+        "scratch/uh_follow_window.d02": live,
     }).attach_to(root.state)
-
-    with pytest.raises(restart.RestartManifestError,
-                       match="uh_follow_window.d02"):
-        restart.write_tree_restart(
-            tmp_path, model, start + timedelta(seconds=3600))
+    root.state.existing_scratch("uh_follow_window.d02").fill(-99)
+    path = restart.write_tree_restart(tmp_path, model, start + timedelta(seconds=3600))
+    assert "scratch/uh_follow_window.d02" in stream.published[0]
+    with np.load(path, allow_pickle=False) as data:
+        np.testing.assert_array_equal(data["scratch/uh_follow_window.d02"], live)
 
 
 def test_the_written_block_satisfies_the_restore_side_invariants(

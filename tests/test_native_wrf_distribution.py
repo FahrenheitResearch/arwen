@@ -446,6 +446,18 @@ def test_standalone_python_project_excludes_forecast_executor(tmp_path):
             f"gpuwm/authorities/rw-wps-20crv3-member-grib2.{role}.json"
             in files)
     assert "gpuwm/core/state.py" in files
+    assert "gpuwm/core/nest_fields.py" in files
+    assert "gpuwm/core/ozone_contract.py" in files
+    assert "gpuwm/core/inflow_perturbation.py" in files
+    assert "gpuwm/core/attribute_tracking.py" in files
+    assert "gpuwm/toml_document.py" in files
+    assert "gpuwm/prepared_source_schemas.py" in files
+    for name in ("metem_forecast", "wrfinput_forecast", "launchpad_api", "tui_worker",
+                 "remote_cli", "remote_worker", "research_workspaces",
+                 "starter_template", "tui_products"):
+        assert f"gpuwm/{name}.py" not in files
+    assert "gpuwm/ingest/case_store.py" not in files
+    assert "gpuwm/ingest/relocation_continuation.py" not in files
     assert "gpuwm/core/thompson_contract.py" in files
     assert "gpuwm/core/nssl2_contract.py" in files
     assert "gpuwm/core/kernels/vert_interp.cu" in files
@@ -527,6 +539,64 @@ import tools.hrrr_single_domain_benchmark
 from gpuwm.core.nest_interp import register_nest, sint
 import numpy as np
 
+# Exercise the shared preparation contracts, not only their imports. They
+# previously reached forecast-only owners when a real config/input used them.
+from dataclasses import replace
+from datetime import datetime
+import tomllib
+from gpuwm.config import RunConfig
+from gpuwm.experiment import experiment_from_run_config
+from gpuwm.core.ozone_contract import cam_ozone_domain_ids
+from gpuwm.ingest.analyzed_numbers import metgrid_number_targets
+from gpuwm.experiment_document import render_experiment_document
+from gpuwm.prepared_source_schemas import mapped_sources, source_schemas
+from gpuwm.core.storm_tracking import build_follow_config
+from gpuwm.core.attribute_tracking import validate_attribute_domains
+from types import SimpleNamespace
+
+cfg = RunConfig(nx=28, ny=28, nz=12, dx=3000., dy=3000., ztop=16000.,
+                dt=3., run_seconds=30.)
+exp = experiment_from_run_config(cfg, datetime(2000, 6, 1, 12))
+child = replace(exp.root, grid_id=2, parent_id=1, parent_grid_ratio=3,
+                i_parent_start=8, j_parent_start=8,
+                run=replace(cfg, nx=16, ny=16, dx=1000., dy=1000., dt=1.,
+                            ra_lw_physics=4, ra_sw_physics=4,
+                            ra_rrtmg_variant="rrtmg_legacy", o3input=2))
+assert cam_ozone_domain_ids(replace(exp, domains=(exp.root, child))) == {1, 2}
+assert metgrid_number_targets(replace(cfg, moist=True, mp_physics=28)) == {
+    'QNI': 'ni', 'QNC': 'nc', 'QNR': 'nr'}
+raw = {'experiment': {'name': 'prepared'}, 'domain': [{'grid_id': 1}],
+       'static': {'highres': {'path': "Drew's terrain", 'enabled': True}}}
+assert tomllib.loads(render_experiment_document(raw)) == raw
+assert 'mapped' in mapped_sources()
+assert source_schemas()['mapped'] == 'gpuwm-mapped-composition-inputs-v1'
+assert 'gpuwm.core.preflight' not in sys.modules
+assert 'gpuwm.core.cam_ozone' not in sys.modules
+assert 'gpuwm.branch' not in sys.modules
+assert 'gpuwm.prepared_single_domain_forecast' not in sys.modules
+
+# A staged config reader must retain attribute-following validation, including
+# its refusal, while the runtime UI and executor imports remain blocked.
+follow = build_follow_config({
+    'field': 'attribute', 'attribute': 'theta', 'extremum': 'max',
+    'reduction': 'column_max', 'threshold': 301., 'search_margin_cells': 10,
+    'min_shift_cells': 1, 'max_shift_cells': 6, 'cooldown_seconds': 20.,
+}, 'standalone-config')
+validate_attribute_domains(
+    [replace(exp.root, follow=None),
+     replace(child, follow=SimpleNamespace(tracker=follow))],
+    SimpleNamespace(follow=None))
+try:
+    validate_attribute_domains(
+        [replace(exp.root, follow=None),
+         replace(child, follow=SimpleNamespace(tracker=replace(follow,
+             reduction='model_level', model_level=cfg.nz)))],
+        SimpleNamespace(follow=None))
+except ValueError as error:
+    assert 'outside source d01 mass levels' in str(error)
+else:
+    raise AssertionError('staged attribute validation accepted a missing level')
+
 capabilities = tools.hrrr_single_domain_benchmark.runner_capabilities()
 assert capabilities["readiness"] == \
     "PREPARATION_ONLY_FORECAST_EXECUTOR_OMITTED"
@@ -573,6 +643,8 @@ for name in (
     "cupy", "gpuwm.cli", "gpuwm.core.model", "gpuwm.core.physics",
     "gpuwm.domain_wizard", "gpuwm.multi_run", "gpuwm.resume",
     "gpuwm.runtime", "gpuwm.stream", "gpuwm.supervisor", "gpuwm.verify",
+    "gpuwm.remote_cli", "gpuwm.remote_worker", "gpuwm.research_workspaces",
+    "gpuwm.starter_template", "gpuwm.tui_products",
 ):
     assert name not in sys.modules
 """

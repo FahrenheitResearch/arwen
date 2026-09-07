@@ -16,6 +16,7 @@ import pytest
 
 from gpuwm.core.microphysics_transition import MP8_TO_MP18_POLICY
 from gpuwm.experiment import load_experiment
+from gpuwm.ingest.prepared_cache import prepared_domain_config_identity
 from tools import prepared_domain_tree_forecast as runner
 
 
@@ -194,7 +195,8 @@ def test_capability_query_is_side_effect_free_and_warning_only(capsys):
     # Nested execution is a property of the topology, not of the source: every
     # source whose hierarchy document the runner can read is advertised here.
     assert payload["supported_sources"] == list(runner.SUPPORTED_SOURCES)
-    assert set(payload["supported_sources"]) == {"hrrr", "era5", "gfs", "20crv3"}
+    assert set(payload["supported_sources"]) == (
+        {"hrrr", "era5", "gfs"} | runner.prepared_single._MAPPED_SOURCES)
     assert payload["warning_policy"]["implemented_unverified_is_launchable"]
     assert payload["warning_policy"]["consent_gate"] is False
     assert (
@@ -341,9 +343,14 @@ class _FakePreparedCacheReader:
         return {"status": "PASS", "content_sha256": self.content_sha256}
 
 
-def _synthetic_prepared_tree(tmp_path, monkeypatch):
+def _synthetic_prepared_tree(tmp_path, monkeypatch, *, delayed=False):
     config = _write_two_domain_config(tmp_path)
+    if delayed:
+        config.write_text(config.read_text(encoding="utf-8").replace(
+            "grid_id = 2", "grid_id = 2\n        start_time = 2026-07-23T01:00:00"
+        ).replace("run_seconds = 3600.0", "run_seconds = 7200.0"), encoding="utf-8")
     exp = load_experiment(config)
+    forcing_hours = [0, 1, 2] if delayed else [0, 1]
     prepared = tmp_path / "prepared"
     hierarchy = prepared / "hierarchy-artifacts"
     domains_root = hierarchy / "domains"
@@ -367,14 +374,15 @@ def _synthetic_prepared_tree(tmp_path, monkeypatch):
             "source_manifest_sha256": source,
             "static_cache_sha256": _sha(static_path),
             "namelist_sha256": namelist,
-            "domain_config": runner._strict_json(asdict(domain)),
-            "forcing_hours": [0, 1],
+            "domain_config": runner._strict_json(prepared_domain_config_identity(domain)),
+            "forcing_hours": forcing_hours,
             "source_identity": {"adapter": "fixture", "grid_id": domain.grid_id},
         }
         header = {
             "identity": identity,
             "content_sha256": "d" * 64,
             "metadata": {
+                "user": {"initial_valid_time": exp.domain_start_time(domain.grid_id).isoformat()},
                 "lbc": {} if domain.parent_id == 0 else None,
                 "base_scalars": {"p_top": 10000.0},
             },
@@ -404,6 +412,7 @@ def _synthetic_prepared_tree(tmp_path, monkeypatch):
             "status": "READY",
             "grid_id": domain.grid_id,
             "parent_id": domain.parent_id,
+            "valid_time": exp.domain_start_time(domain.grid_id).isoformat(),
             "boundary_mode": (
                 "external-specified"
                 if domain.parent_id == 0
@@ -456,7 +465,7 @@ def _synthetic_prepared_tree(tmp_path, monkeypatch):
         "status": "PASS",
         "valid_time": exp.start_time.isoformat(),
         "domain_count": 2,
-        "forcing_hours": [0, 1],
+        "forcing_hours": forcing_hours,
         "provenance": {
             "bridge_manifest_sha256": bridge,
             "source_manifest_sha256": source,
@@ -602,6 +611,10 @@ def test_preflight_binds_every_domain_and_detects_identity_drift(tmp_path, monke
     header = json.loads(header_path.read_text(encoding="utf-8"))
     header["identity"]["domain_config"]["parent_id"] = 99
     header_path.write_text(json.dumps(header), encoding="utf-8")
+    # "was prepared by <v> and this is gpuwm <v>" now reads "was prepared
+    # by this same gpuwm <v>" when the two versions agree, because naming
+    # the same number twice sent readers hunting a package upgrade that
+    # had not happened.  Match the half that is the actual claim.
     with pytest.raises(ValueError, match="d02 prepared cache was prepared by .*fields differ: parent_id"):
         runner.preflight_prepared_tree(
             prepared_root=prepared,
@@ -984,10 +997,19 @@ def test_no_corridor_branch_of_the_preflight_reads_the_source():
     """
     import inspect
 
+    import ast
+
     source = inspect.getsource(runner.preflight_prepared_tree)
-    gate = source.index("relocation_follow")
-    load = source.index("load_child_statics_corridor")
-    assert "prepared_source" not in source[gate:load]
+    tree = ast.parse(source)
+    branches = [node for node in ast.walk(tree) if isinstance(node, ast.If)
+                and any(isinstance(name, ast.Name) and name.id == "relocation_follow"
+                        for name in ast.walk(node.test))]
+    assert branches
+    # Source evidence validation between these branches is expected. The
+    # actual corridor branches must neither select nor reject by source.
+    for branch in branches:
+        assert not any(isinstance(name, ast.Name) and name.id == "prepared_source"
+                       for name in ast.walk(branch))
 
 
 def test_bounds_only_relocation_still_passes_without_a_corridor(

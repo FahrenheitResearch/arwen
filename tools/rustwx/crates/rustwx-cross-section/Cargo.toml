@@ -1,0 +1,12 @@
+[package]
+name = "rustwx-cross-section"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+rust-version = "1.85"
+description = "Foundational cross-section geometry, metadata, and lightweight rendering helpers for rustwx."
+
+[dependencies]
+rustwx-contour = { path = "../rustwx-contour" }
+rusttype = "0.9"

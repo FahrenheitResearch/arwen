@@ -26,7 +26,6 @@ from gpuwm.static.highres_fetch import (
     three_dep_tile_ids,
 )
 from gpuwm.static.highres_production import (
-    refuse_inert_highres,
     HighresRefusal,
     HighresStaticConfig,
     apply_highres_statics,
@@ -306,66 +305,3 @@ def test_fallback_30s_returns_identical_baseline_with_receipt(tmp_path):
 # ---------------------------------------------------------------------------
 # An enabled block on a lane that cannot honor it refuses, naming the lane
 # ---------------------------------------------------------------------------
-
-def _config_with_static_block(tmp_path: Path, *, enabled: bool) -> Path:
-    """A TOML carrying nothing but a [static.highres] block.
-
-    ``refuse_inert_highres`` is deliberately readable in isolation: it
-    parses the file itself rather than depending on a lane having already
-    built an ExperimentConfig, so the gate fires before any of the
-    expensive preparation a lane would otherwise do first.
-    """
-
-    path = tmp_path / "case.toml"
-    path.write_text(
-        "[static.highres]\n"
-        f"enabled = {'true' if enabled else 'false'}\n"
-        f'cache_root = "{tmp_path.as_posix()}"\n',
-        encoding="utf-8")
-    return path
-
-
-@pytest.mark.parametrize("lane", [
-    "ERA5-direct adapter",
-    "mapped adapter",
-    "native-HRRR static path",
-])
-def test_an_enabled_block_refuses_on_each_lane_that_cannot_honor_it(
-        tmp_path, lane):
-    """One gate per alternate static lane, each naming itself.
-
-    These three routes build their GEOG fields through their own seams
-    and load config with ``load_experiment``, which never reads the
-    ``[static]`` table.  Before this refusal the block was silently
-    INERT there: the run produced the 30 arc second baseline while the
-    user's file said otherwise, which reads afterwards as a setting that
-    took effect.
-    """
-
-    config = _config_with_static_block(tmp_path, enabled=True)
-    with pytest.raises(ValueError) as failure:
-        refuse_inert_highres(config, lane=lane)
-    message = str(failure.value)
-    assert lane in message, message
-    # The remedy is named, not merely the complaint.
-    assert "gpuwm run" in message
-    assert "enabled = false" in message
-
-
-@pytest.mark.parametrize("raw", ["disabled", "absent"])
-def test_a_block_that_asks_for_nothing_passes_every_lane(tmp_path, raw):
-    """Absence and ``enabled = false`` are not refusals.
-
-    The gate exists to stop a silent no-op, and a user who wrote the
-    baseline down deliberately -- or wrote no block at all -- asked for
-    exactly what the lane does.
-    """
-
-    if raw == "absent":
-        config = tmp_path / "case.toml"
-        config.write_text("[case_data]\n", encoding="utf-8")
-    else:
-        config = _config_with_static_block(tmp_path, enabled=False)
-    for lane in ("ERA5-direct adapter", "mapped adapter",
-                 "native-HRRR static path"):
-        refuse_inert_highres(config, lane=lane)

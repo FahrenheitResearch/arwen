@@ -370,3 +370,34 @@ def test_restart_identity_omits_an_absent_block_and_binds_a_present_one():
         source="probe.toml")
     payload = restart_identity_payload(present)
     assert payload["perturbation"]["bubbles"][0]["amplitude_k"] == 2.5
+
+
+def test_prepared_row_windows_preserve_whole_domain_bubble_bytes():
+    from copy import copy
+    from dataclasses import replace
+    from types import SimpleNamespace
+    bubble = BubbleConfig(center_lat=38.5, center_lon=-99.5,
+                          center_height_m=1500.0, radius_km=10.0,
+                          depth_m=1500.0, amplitude_k=2.5, rh_preserve=True)
+    spec = PerturbationConfig(bubbles=(bubble,))
+    full, grid = _initialize()
+    windowed, _ = _initialize()
+    full.state.p[...] = 80000.0
+    windowed.state.p[...] = 80000.0
+    applier = build_initial_state_perturbation(
+        spec, grid, grid_id=1, require_containment=True)
+    expected = applier.apply_to_state(full.state)
+    touched = 0
+    for j in range(windowed.state.thp.shape[-2]):
+        rows = slice(j, j+1)
+        slab = SimpleNamespace(**{name: (getattr(windowed.state, name)[:, rows, :]
+            if getattr(windowed.state, name).ndim == 3 else getattr(windowed.state, name))
+            for name in ('thb', 'thp', 'qv', 'p', 'phb', 'php')})
+        local = copy(applier)
+        local._placed = tuple(replace(p, horizontal_km=p.horizontal_km[rows])
+                              for p in applier._placed)
+        receipt = local.apply_to_state(slab, allow_empty=True)
+        touched += receipt['bubbles'][0]['cells_touched']
+    assert touched == expected['bubbles'][0]['cells_touched']
+    np.testing.assert_array_equal(windowed.state.thp, full.state.thp)
+    np.testing.assert_array_equal(windowed.state.qv, full.state.qv)

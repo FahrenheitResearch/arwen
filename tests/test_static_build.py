@@ -146,6 +146,66 @@ def test_geog_selection_uses_fortran_per_element_defaults_not_broadcast(
     with pytest.raises(ValueError, match="exceeds.*max_dom=3"):
         GeogSelection.from_case_data(data, domain_id=4)
 
+
+def _landuse_dataset(tmp_path, **over):
+    """A selection whose land-use directory is a synthetic index + one tile."""
+    selection = GeogSelection.fallback(tmp_path / "WPS_GEOG")
+    directory = selection.path("landuse")
+    directory.mkdir(parents=True)
+    kv = dict(type="categorical", mminlu="MODIFIED_IGBP_MODIS_NOAH",
+              iswater=17, islake=21, isice=15, isurban=13)
+    kv.update(over)
+    kv = _write_index(directory, **kv)
+    _write_tiles(directory, np.zeros((1, 2, 4), dtype=np.int16), kv)
+    return selection
+
+
+def test_landuse_global_attrs_states_the_selected_datasets_category_count(
+        tmp_path):
+    """``NUM_LAND_CAT`` is read off the index, not assumed by the reader.
+
+    Stock WRF writes ``NUM_LAND_CAT`` into every history and input file,
+    and gpuwm wrote none: a consumer handed ``MMINLU`` and ``LU_INDEX``
+    had to ASSUME 21 categories to size a table.  The count is geogrid's
+    own -- ``category_max - category_min + 1`` of the dominant land-use
+    field, the same range :meth:`_DomainSampler.categorical` already
+    refuses to interpolate without -- so it is evidence from the selected
+    dataset rather than a constant that happens to be right for the
+    default one.
+
+    RED before the fix: ``landuse_global_attrs`` returns the five-member
+    group, so ``NUM_LAND_CAT`` is absent from both dictionaries and the
+    24-category dataset is indistinguishable from the 21-category one.
+    """
+    modis = _landuse_dataset(tmp_path / "modis",
+                             category_min=1, category_max=21)
+    assert modis.landuse_global_attrs() == {
+        "MMINLU": "MODIFIED_IGBP_MODIS_NOAH", "ISWATER": 17, "ISLAKE": 21,
+        "ISICE": 15, "ISURBAN": 13, "NUM_LAND_CAT": 21,
+    }
+
+    # A dataset with a different category range must say so, or the
+    # attribute is the assumption it was added to replace.
+    usgs = _landuse_dataset(tmp_path / "usgs", category_min=1,
+                            category_max=24, mminlu="USGS")
+    assert usgs.landuse_global_attrs()["NUM_LAND_CAT"] == 24
+
+
+def test_landuse_global_attrs_refuses_an_index_with_no_category_range(
+        tmp_path):
+    """NEGATIVE CONTROL: an unstated count is refused, never defaulted.
+
+    The five members beside it are already required with a named refusal,
+    for the reason the module records: a category semantics that is
+    assumed rather than read is strictly worse than one that is absent.
+    A count derived from a missing range would be exactly that.
+    """
+    selection = _landuse_dataset(tmp_path, category_min=None,
+                                 category_max=None)
+    with pytest.raises(ValueError, match="NUM_LAND_CAT"):
+        selection.landuse_global_attrs()
+
+
 def _write_index(dirpath, **over):
     """Write a WPS-style index file; keyword args override the defaults."""
     kv = dict(type="continuous", signed="yes", projection="regular_ll",

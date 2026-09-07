@@ -1024,15 +1024,47 @@ def test_davies_weights_keyed_by_child_dt(bundle_exp, monkeypatch):
     assert gcx[1].view(np.uint32) == np.uint32(0x3C449BA5)
 
     resident = state._lateral_boundary_device
-    # one cache entry PER DISTINCT dt -- the key carries the child dt
-    assert len(resident.weights) == 3
+    # The key still carries the child dt, so a DIFFERENT dt still mints a
+    # fresh entry rather than reusing another domain's weights -- which is
+    # what the three distinct calls above proved by producing three
+    # distinct fcx/gcx pairs.
+    #
+    # What is held here is the BOUND on how many of them a resident keeps
+    # (ingest/lateral_bc._MAX_LBC_WEIGHT_SLOTS).  The old assertion of 3
+    # measured an UNBOUNDED cache, and it read 3 only because this fixture
+    # shares one fake resident across three domains; in production a
+    # resident belongs to one domain, which under a fixed clock has one dt
+    # for the life of the run.  Unbounded is not survivable under an
+    # adaptive clock: dt moves almost every step, each distinct value
+    # minted a fresh `lbc_weights_<n>` scratch slot, and the
+    # canonical-state digest audits that prefix and knows only slot 0.
+    # WRF recomputes these on every dt change for the same reason
+    # (adapt_timestep_em.F:430 calls lbc_fcx_gcx), so a cache that never
+    # hits is pure growth.
+    assert lateral_bc._MAX_LBC_WEIGHT_SLOTS == 1
+    assert len(resident.weights) == lateral_bc._MAX_LBC_WEIGHT_SLOTS
+    # The survivor is the LAST dt asked for, and the slot it occupies is
+    # slot 0 -- the only one the digest knows.
     assert ({key[3] for key in resident.weights}
-            == {np.float32(dc.run.dt) for dc in bundle_exp.domains[1:]})
+            == {np.float32(bundle_exp.domains[-1].run.dt)})
+    assert resident.scratch_slots == {"lbc_weights_0"}
     # same dt hits the cache instead of minting a new entry
+    before = resident.device_nbytes
     lateral_bc._resident_weights(
         state, 5, 1, 4, np.float32(bundle_exp.domains[-1].run.dt), 0.0,
         wrf_real=True)
-    assert len(resident.weights) == 3
+    assert len(resident.weights) == lateral_bc._MAX_LBC_WEIGHT_SLOTS
+    # A recompute REUSES slot 0, so the reported device footprint must not
+    # grow with it: an accounting that added the same buffer's bytes on
+    # every dt change would report an unbounded VRAM figure for a cache
+    # that is bounded by construction.
+    assert resident.device_nbytes == before
+    lateral_bc._resident_weights(
+        state, 5, 1, 4, np.float32(bundle_exp.domains[1].run.dt), 0.0,
+        wrf_real=True)
+    assert len(resident.weights) == lateral_bc._MAX_LBC_WEIGHT_SLOTS
+    assert resident.scratch_slots == {"lbc_weights_0"}
+    assert resident.device_nbytes == before
 
 
 def test_kf_calendar_d01_only(bundle_exp, bundle_clock):
@@ -1102,6 +1134,19 @@ def test_no_float_elapsed_accumulation_audit():
 
     allowed_augassign = {"ticks", "step_count", "steps", "forces",
                          "feedback_calls", "restarts", "lbc_resets",
+                         # `period` is the adaptive walk's period index
+                         # (clock.adaptive_periods).  It is the same class
+                         # as the rest: an integer counter with no
+                         # calendar meaning.  Under a FIXED clock the
+                         # walk is `range(...)` and no accumulation
+                         # happens at all; the adaptive walk cannot use a
+                         # range because with a varying step the period
+                         # COUNT is not known ahead of time -- ending the
+                         # run is a condition on ticks, not a count.  The
+                         # rule's actual teeth, contains_call_or_float on
+                         # the value expression, still apply and `+= 1`
+                         # passes them.
+                         "period",
                          "histories"}
     forbidden_fragments = ("elapsed", "second", "dtbc")
     banned_names = {"setattr", "getattr", "delattr", "vars", "eval",
@@ -1161,7 +1206,14 @@ def test_no_float_elapsed_accumulation_audit():
     hot = {"advance", "history_due",
            "history_rings_within_step", "restart_due", "lbc_reset_due",
            "at_stop_time", "execute_schedule", "full_ops", "period_ops",
-           "op_counts", "expand", "integrate", "at_stop"}
+           "op_counts", "expand", "integrate", "at_stop",
+           # The two period sources the executor now draws from.  Both
+           # are hot path and both must stay integer-only; the whole
+           # point of splitting the controller out into
+           # `on_period_steps` is that its REAL(4) arithmetic happens
+           # OUTSIDE these, and what crosses back is an integer number
+           # of ticks.  Audited so that stays true.
+           "fixed_periods", "adaptive_periods"}
     audited = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name in hot:
@@ -1183,8 +1235,18 @@ def test_no_float_elapsed_accumulation_audit():
     # recurrence pinned independently.
     assert "return self.ticks / self.tick_den" in source
     assert source.count("self.dtbc_fp32 = np.float32(0.0)") == 2
+    # The recurrence now takes the LIVE dt, not the configured one.
+    # Changed deliberately, and this pin is why it could not happen
+    # quietly: dtbc drives the Davies relaxation and the nest boundary
+    # weight, so under an adaptive clock accumulating spec.dt_fp32 forces
+    # the lateral boundaries at one timestep while the interior
+    # integrates at another.  That corrupts the boundary zone instead of
+    # raising anything, and it is what killed the first live adaptive
+    # runs.  Under a FIXED clock clock.dt_fp32 IS spec.dt_fp32 for the
+    # whole run, so no existing trajectory moves -- gated at 9/9 wrfout
+    # byte-identical with the feature off.
     assert ("self.dtbc_fp32 = np.float32(self.dtbc_fp32 + "
-            "self.spec.dt_fp32)" in source)
+            "self.dt_fp32)" in source)
     assert "return self.dtbc_fp32" in source
     assert "last_force_ticks" not in source
 

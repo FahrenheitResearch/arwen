@@ -1,3 +1,26 @@
+# ======================================================================
+# THIRD-PARTY NOTICE.  Parts of this file are hand transcriptions of
+# third-party work.  ArWen distributes the file under the Apache License
+# 2.0; the notices below belong to the transcribed parts and are kept here
+# because their own licences require it.  Full texts are in the repository
+# NOTICE and in the licenses/ directory.
+#
+#   RRTMG longwave/shortwave, transcribed from WRF v4.6.1
+#   phys/module_ra_rrtmg_lw.F and phys/module_ra_rrtmg_sw.F, which carry
+#   AER's own notice seven and nine times respectively:
+#
+#       Copyright 2002-2008, Atmospheric & Environmental Research, Inc. (AER).
+#       This software may be used, copied, or redistributed as long as it is
+#       not sold and this copyright notice is reproduced on each copy made.
+#       This model is provided as is without any express or implied warranties.
+#                             (http://www.rtweb.aer.com/)
+#
+#   ArWen takes this material under AER's own current grant instead: BSD
+#   3-Clause, "Copyright (c) 2020, Atmospheric and Environmental
+#   Research", published by AER at github.com/AER-RC/RRTMG_LW and
+#   .../RRTMG_SW.  Text in licenses/LICENSE-AER-RRTMG-BSD-3-Clause.txt and
+#   beside the packaged coefficients in gpuwm/data/wrf_radiation/.
+# ======================================================================
 """WRF v4.6.1 legacy RRTMG option-4 driver-side prep, NumPy FP32 reference.
 
 Port authority: the wrapper subroutines RRTMG_LWRAD (with INIRAD/O3DATA,
@@ -336,7 +359,7 @@ def compute_lw_nlayers(kme, p_top, deltap=DELTAP):
     return int(kme) + n - 1
 
 
-def lw_trace_gases(yr):
+def lw_trace_gases(yr, overrides=None):
     """RRTMG_LWRAD ghg_input=0 trace gases.
 
     co2/ch4/n2o/o2 shared with the SW helper (REAL(4) exp co2 curve);
@@ -344,9 +367,14 @@ def lw_trace_gases(yr):
     float32 scalars keyed by the vmr profile names they fill.
     """
     co2, ch4, n2o, o2 = option4_trace_gases(yr)
-    return {"co2": co2, "ch4": ch4, "n2o": n2o, "o2": o2,
-            "cfc11": _CFC11, "cfc12": _CFC12, "cfc22": _CFC22,
-            "ccl4": _CCL4}
+    gases = {"co2": co2, "ch4": ch4, "n2o": n2o, "o2": o2,
+             "cfc11": _CFC11, "cfc12": _CFC12, "cfc22": _CFC22,
+             "ccl4": _CCL4}
+    if overrides is not None:
+        from gpuwm.core.trace_gases import LEGACY_LW_GASES, validate_trace_gas_overrides
+        gases.update({name: F(value) for name, value in validate_trace_gas_overrides(
+            overrides, supported=LEGACY_LW_GASES, consumer="legacy RRTMG longwave").items()})
+    return gases
 
 
 def _moist_prep(kte, icloud, warm_rain, f_qc, f_qr, f_qi, f_qs, f_qg,
@@ -653,7 +681,7 @@ def lwrad_prep(*, p3d, p8w, t3d, t8w, dz8w,
                icloud, warm_rain, cldovrlp, idcor, o3input,
                has_reqc, has_reqi, has_reqs,
                f_qc=True, f_qr=True, f_qi=True, f_qs=True, f_qg=True,
-               yr, julian, nlayers, mp_physics=0, g=9.81):
+               yr, julian, nlayers, mp_physics=0, g=9.81, trace_gas_overrides=None):
     """RRTMG_LWRAD, from its WRF dummies to the exact rrtmg_lw arguments.
 
     Single column, bottom-up; layer arrays (kte,), interface arrays
@@ -678,7 +706,7 @@ def lwrad_prep(*, p3d, p8w, t3d, t8w, dz8w,
     if nlayers < kte + 1:
         raise ValueError("nlayers must be at least kte+1")
 
-    gases = lw_trace_gases(yr)
+    gases = lw_trace_gases(yr, trace_gas_overrides)
 
     pw1d = (p8w / F("100.0")).astype(np.float32)
     tw1d = _f32(t8w).copy()
@@ -929,7 +957,7 @@ def swrad_prep(*, p3d, p8w, t3d, t8w, dz8w,
                has_reqc, has_reqi, has_reqs,
                f_qc=True, f_qr=True, f_qi=True, f_qs=True, f_qg=True,
                yr, julian, mp_physics=0, g=9.81,
-               sf_surface_physics=2):
+               sf_surface_physics=2, trace_gas_overrides=None):
     """RRTMG_SWRAD, from its WRF dummies to the exact rrtmg_sw arguments.
 
     Day columns only: raises ValueError when xcoszen <= 0 (WRF's dorrsw
@@ -966,7 +994,7 @@ def swrad_prep(*, p3d, p8w, t3d, t8w, dz8w,
     if p8w.shape[0] != kte + 1:
         raise ValueError("p8w must have kte+1 interface values")
 
-    co2, ch4, n2o, o2 = option4_trace_gases(yr)
+    co2, ch4, n2o, o2 = option4_trace_gases(yr, trace_gas_overrides)
 
     pw1d = (p8w / F("100.0")).astype(np.float32)
     tw1d = _f32(t8w).copy()
@@ -1634,7 +1662,7 @@ def lwrad_prep_batch(*, p3d, p8w, t3d, t8w, dz8w,
                      has_reqc, has_reqi, has_reqs,
                      f_qc=True, f_qr=True, f_qi=True, f_qs=True, f_qg=True,
                      yr, julian, nlayers, mp_physics=0, g=9.81,
-                     subcolumn_generator=None):
+                     subcolumn_generator=None, trace_gas_overrides=None):
     """Column-vectorized twin of :func:`lwrad_prep` (bitwise per column).
 
     Profiles are (ncol, kte) / (ncol, kte+1), surface fields (ncol,)
@@ -1692,7 +1720,7 @@ def lwrad_prep_batch(*, p3d, p8w, t3d, t8w, dz8w,
     snow = _surf_b(xp, snow, ncol, "snow")
     xlat = _surf_b(xp, xlat, ncol, "xlat")
 
-    gases = lw_trace_gases(yr)
+    gases = lw_trace_gases(yr, trace_gas_overrides)
 
     pw1d = (p8w / F("100.0")).astype(f32)
     tw1d = t8w.copy()
@@ -1935,7 +1963,7 @@ def swrad_prep_batch(*, p3d, p8w, t3d, t8w, dz8w,
                      has_reqc, has_reqi, has_reqs,
                      f_qc=True, f_qr=True, f_qi=True, f_qs=True, f_qg=True,
                      yr, julian, mp_physics=0, g=9.81,
-                     sf_surface_physics=2, subcolumn_generator=None):
+                     sf_surface_physics=2, subcolumn_generator=None, trace_gas_overrides=None):
     """Column-vectorized twin of :func:`swrad_prep` (bitwise per column).
 
     Day contract: takes PRE-GATHERED day columns and raises ValueError
@@ -2004,7 +2032,7 @@ def swrad_prep_batch(*, p3d, p8w, t3d, t8w, dz8w,
     solcon = _surf_b(xp, solcon, ncol, "solcon")
     obscur = _surf_b(xp, obscur, ncol, "obscur")
 
-    co2, ch4, n2o, o2 = option4_trace_gases(yr)
+    co2, ch4, n2o, o2 = option4_trace_gases(yr, trace_gas_overrides)
 
     pw1d = (p8w / F("100.0")).astype(f32)
     tw1d = t8w.copy()

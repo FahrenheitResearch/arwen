@@ -330,7 +330,9 @@ def _preparer_fixture(monkeypatch):
                 "glw": _distinct((ny, nx), 31, offset=330.0),
                 "swdown": _distinct((ny, nx), 32, offset=610.0),
                 "xland": np.ones((ny, nx), dtype=F32)},
-        cumulus_callable=None, carriers=out_contract)
+        cumulus_callable=None, carriers=out_contract, call_counts={"radiation": 3},
+        ysu_nan_guard_fires=0, microphysics_updates=9)
+    out_state.elapsed_seconds = 60.
     node = SimpleNamespace(cfg=child_dc, state=out_state)
 
     new_dc = SimpleNamespace(**{**vars(child_dc), "i_parent_start": 6,
@@ -343,7 +345,8 @@ def _preparer_fixture(monkeypatch):
         fields={"glw": np.full((ny, nx), 300.0, dtype=F32),
                 "swdown": np.zeros((ny, nx), dtype=F32),
                 "xland": np.ones((ny, nx), dtype=F32)},
-        cumulus_callable=None, carriers=new_contract)
+        cumulus_callable=None, carriers=new_contract, call_counts={},
+        ysu_nan_guard_fires=0, microphysics_updates=0)
     initialized = SimpleNamespace(static_fields=statics_for(new_dc),
                                   grid="new-grid", state=new_state)
     return preparer, node, new_dc, initialized, out_state, new_state

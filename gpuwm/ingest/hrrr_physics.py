@@ -133,13 +133,22 @@ def _validate_prepared_near_surface(result, met, cfg) -> Mapping[str, np.ndarray
 
 def initialize_prepared_physics(
         result, cfg, met, surface, static, landuse_attrs, grid, valid_time, *,
-        center_lat=None, constant_glw_wm2=None):
+        center_lat=None, constant_glw_wm2=None, fractional_seaice=True,
+        isoilwater=14, p_top=None, column_chunk=None,
+        trace_gas_overrides=None, ozone_parent=None, cam_ozone=None,
+        simulation_start_time=None):
     """Attach physics to one restored source-neutral prepared initial state.
 
     ``surface`` is the canonical Noah inventory persisted with direct GFS and
     ERA5 caches.  Every field is validated before device allocation.  The
     actual land-use, diagnostics, physics-driver, and near-surface setup is the
     same implementation used by the native HRRR runner.
+
+    ``valid_time`` dates this domain's analysis and land climatologies.
+    ``simulation_start_time`` is the radiation calendar's origin when a
+    child starts later: model elapsed seconds are measured from the root
+    experiment, so adding them to the child's start would count its delay
+    twice. Omission retains the ordinary single-epoch behavior.
 
     ``constant_glw_wm2`` is the DECLARED constant downward longwave, for a
     suite that runs a land-surface scheme with ``ra_lw_physics = 0``.  The
@@ -177,15 +186,22 @@ def initialize_prepared_physics(
         mminlu=str(landuse_attrs["MMINLU"]),
         iswater=int(landuse_attrs["ISWATER"]),
         islake=int(landuse_attrs["ISLAKE"]),
-        isice=int(landuse_attrs["ISICE"]), fractional_seaice=True,
+        isice=int(landuse_attrs["ISICE"]), fractional_seaice=fractional_seaice,
+        isoilwater=int(isoilwater),
         # real.exe's landmask/soil-category reconciliation decides a
         # disagreeing column from its soil temperature, then its SST.
         soil_temperature=fields["TSLB"], sst=fields.get("SST"))
     vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"], valid_time)
     lai = monthly_interp_to_date(static["LAI12M"], valid_time)
     lat, lon = grid.latlon_mass()
+    from gpuwm.core.radiation_composition import make_radiation
+    radiation_origin = (valid_time if simulation_start_time is None
+                        else simulation_start_time)
+    radiation = make_radiation(
+        cfg, radiation_origin, lat, lon, p_top=p_top, column_chunk=column_chunk,
+        trace_gas_overrides=trace_gas_overrides, ozone_parent=ozone_parent)
     driver = initialize_physics(
-        state, cfg, landuse=landuse, tsk=fields["TSK"],
+        state, cfg, landuse=landuse, radiation=radiation, tsk=fields["TSK"],
         soil_temperature=fields["TSLB"],
         soil_moisture=fields["SMOIS"],
         liquid_moisture=fields["SH2O"],
@@ -194,8 +210,10 @@ def initialize_prepared_physics(
         snow=fields["SNOW"], snow_depth=fields["SNOWH"],
         sst=fields.get("SST", fields["TSK"]),
         glw=constant_glw_wm2,
-        radiation_start_time=valid_time, radiation_latitude=lat,
-        radiation_longitude=lon)
+        radiation_start_time=radiation_origin, radiation_latitude=lat,
+        radiation_longitude=lon,
+        landuse_dataset=str(landuse_attrs["MMINLU"]),
+        **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
     driver.fields["snoalb"][...] = cp.asarray(
         noah_initial_snow_albedo(
             static["SNOALB"], static["LU_INDEX"], driver.noah_params,
@@ -224,7 +242,7 @@ def initialize_prepared_physics(
     return driver
 
 
-def resolve_prepared_noah_surface(met, cfg, static, *, surface=None):
+def resolve_prepared_noah_surface(met, cfg, static, *, surface=None, soil_mesh=None):
     """The canonical Noah surface this state initializes its land model from.
 
     Two roads arrive here holding the same forecast, and they hold
@@ -297,14 +315,22 @@ def resolve_prepared_noah_surface(met, cfg, static, *, surface=None):
         # unreachable on this route".
         num_soil_layers=soil_layer_count(cfg),
         soil_type=static["SCT_DOM"],
-        deep_soil_temperature=static["SOILTEMP"])
+        deep_soil_temperature=static["SOILTEMP"], soil_mesh=soil_mesh,
+        water_temperature=getattr(met, "water_temperature", None),
+        water_temperature_policy=(getattr(met, "water_temperature_receipt", None)
+                                  or {}).get("policy"))
     return SimpleNamespace(fields=MappingProxyType(
-        canonical_noah_surface(soil)))
+        canonical_noah_surface(soil)),
+        soil_texture_downscale=getattr(soil, "soil_texture_downscale", None))
+
+
+_AUTO_SOIL_MESH = object()
 
 
 def initialize_hrrr_physics(
         result, cfg, met, static, attrs, grid, valid_time, *,
-        constant_glw_wm2=None, surface=None):
+        constant_glw_wm2=None, surface=None, soil_mesh=_AUTO_SOIL_MESH,
+        p_top=None, column_chunk=None, trace_gas_overrides=None, ozone_parent=None, cam_ozone=None):
     """Initialize physics, accepting either host or device ingestion fields.
 
     ``surface`` is the solved Noah surface when the caller already holds
@@ -312,15 +338,28 @@ def initialize_hrrr_physics(
     hands back.  Omitted, the surface is derived from the met snapshot's
     native soil, which is what a freshly decoded state carries.  See
     :func:`resolve_prepared_noah_surface` for why the two roads differ.
+    Omitting ``soil_mesh`` keeps automatic planning; explicitly passing
+    ``None`` preserves the caller's decision to disable soil downscaling.
     """
 
-    surface = resolve_prepared_noah_surface(met, cfg, static, surface=surface)
+    if soil_mesh is _AUTO_SOIL_MESH:
+        soil_mesh = None
+        if surface is None:
+            from gpuwm.ingest.hrrr import hrrr_source_grid
+            from gpuwm.ingest.soil_downscale import soil_mesh_plan_from_case
+            soil_mesh = soil_mesh_plan_from_case(
+                None, grid, source_grid=hrrr_source_grid())
+    surface = resolve_prepared_noah_surface(
+        met, cfg, static, surface=surface, soil_mesh=soil_mesh)
     landuse_attrs = {
         name: attrs[name] for name in ("MMINLU", "ISWATER", "ISLAKE", "ISICE")
     }
     return initialize_prepared_physics(
         result, cfg, met, surface, static, landuse_attrs, grid, valid_time,
-        center_lat=attrs["CEN_LAT"], constant_glw_wm2=constant_glw_wm2)
+        center_lat=attrs["CEN_LAT"], constant_glw_wm2=constant_glw_wm2,
+        p_top=p_top, column_chunk=column_chunk, trace_gas_overrides=trace_gas_overrides,
+        ozone_parent=ozone_parent,
+        **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
 
 
 __all__ = ["initialize_hrrr_physics", "initialize_prepared_physics",

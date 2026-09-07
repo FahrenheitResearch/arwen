@@ -178,8 +178,15 @@ changed shape -- v2 adds one tag and one `run_end` field, v3 adds the
 six above and nothing else. The schema string moves anyway, because a
 consumer meeting a tag it was never told about should refuse loudly
 rather than silently skip a record, and the schema is how it does that.
-`read_step_log` replays `gpuwm.step-log/v1`, `gpuwm.step-log/v2` and
-`gpuwm.step-log/v3`.
+`read_step_log` replays `gpuwm.step-log/v1`, `gpuwm.step-log/v2`,
+`gpuwm.step-log/v3` and `gpuwm.step-log/v4`.
+
+**v4: `dt`.** A run with `use_adaptive_time_step = true` declares
+`gpuwm.step-log/v4` and carries the model timestep in seconds on every
+`step` record, because under that clock the step number no longer tells
+a consumer how much model time has passed. Every other run declares v3
+and carries no `dt` field at all, so nothing about a fixed-clock stream
+moves.
 
 One boundary, stated rather than implied: `run_end` reports the outcome
 of the **integration**, emitted once the last frame is durable. Work

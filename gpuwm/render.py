@@ -97,6 +97,9 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import datetime
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -1022,7 +1025,14 @@ def list_products_main(args: argparse.Namespace, engine: str) -> int:
     """``gpuwm render --list-products WRFOUT...``: catalog + availability."""
 
     failures = 0
-    for path in args.wrfout:
+    try:
+        groups = (group_history_series(args.wrfout)
+                  if getattr(args, "series", False) else [[path] for path in args.wrfout])
+    except ValueError as error:
+        print(f"render FAIL: {error}", file=sys.stderr)
+        return 1
+    for group in groups:
+        path = group[-1]
         print(f"render: product catalog for {path} (engine {engine})")
         try:
             if engine == "rust":
@@ -1032,9 +1042,12 @@ def list_products_main(args: argparse.Namespace, engine: str) -> int:
                 import tempfile
                 with tempfile.TemporaryDirectory(
                         prefix="gpuwm-rwlist-") as store:
-                    rows, summary = rustwx.list_products(
-                        renderer, path, store_root=Path(store),
-                        heavy=args.heavy)
+                    if getattr(args, "series", False):
+                        rows, summary = rustwx.list_products_series(
+                            renderer, group, store_root=Path(store), heavy=args.heavy)
+                    else:
+                        rows, summary = rustwx.list_products(
+                            renderer, path, store_root=Path(store), heavy=args.heavy)
             else:
                 rows = _list_products_matplotlib(path)
                 counts: dict[str, int] = {}
@@ -1146,6 +1159,12 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
                        overlays: Path | None = None,
                        annotate: Path | None = None,
                        streamlines: bool | None = None,
+                       theme: str | None = None,
+                       section: str | None = None,
+                       isotherms: str | None = None,
+                       section_across_km: float | None = None,
+                       section_size: tuple[int, int] | None = None,
+                       context_paths=(),
                        ) -> tuple[list[Path], list[str],
                                   list[tuple[str, str]]]:
     """One store over a whole wrfout SERIES; ``(written, failures, skipped)``.
@@ -1183,17 +1202,171 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
     token = domain_token(_domain_tag(subject), _grid_spacing_m(subject))
     episode = history_episode(subject)
     width, height = size
+    context = {Path(path).resolve() for path in context_paths}
+    wanted_times = ({stamp for path in series if path.resolve() not in context
+                     for stamp in _history_series_record(path)[1]}
+                    if context else None)
     with scratch_store(outdir) as store:
+        # Context frames supply accumulation baselines. Render them only in
+        # owned scratch so previously published first pictures retain bytes
+        # and timestamps; only requested history frames are delivered.
+        engine_out = store / "png" if context else outdir
+        available, unavailable = _available_window_request(
+            renderer, subject, products, store, heavy=heavy, paths=series)
+        if not available:
+            return [], [], unavailable
         written, failures, skipped = rustwx.run_renderer_series(
-            renderer, series, store_root=store, out_dir=outdir,
-            products=products, frames="all" if timeidx is None
+            renderer, series, store_root=store, out_dir=engine_out,
+            products=available, frames="all" if timeidx is None
             else str(timeidx), width=width, height=height, heavy=heavy,
             source_label=source_label, overlays=overlays,
-            annotate=annotate, streamlines=streamlines)
+            annotate=annotate, streamlines=streamlines, theme=theme,
+            section=section, isotherms=isotherms,
+            section_across_km=section_across_km,
+            section_size=section_size)
+        skipped = unavailable + skipped
+        if wanted_times is not None:
+            selected = []
+            for png in written:
+                if _engine_output_time(png.name) in wanted_times:
+                    delivered = outdir / png.name
+                    os.replace(render_layout.fs_path(png),
+                               render_layout.fs_path(delivered))
+                    selected.append(delivered)
+            written = selected
     written = [_place_engine_output(png, outdir, token, layout,
                                     episode=episode)
                for png in written]
     return written, failures, skipped
+
+
+def _engine_output_time(name: str) -> datetime.datetime:
+    """Read the renderer's filename clock; no weather diagnostic is computed."""
+    exact = re.search(r"_valid_(\d{8}_\d{6})z_lead_", name)
+    if exact:
+        return datetime.datetime.strptime(exact.group(1), "%Y%m%d_%H%M%S")
+    clock = re.search(r"_(\d{8})_(\d{1,2})z_f(\d{3,})(?:_|\.)", name)
+    if clock:
+        return (datetime.datetime.strptime(clock.group(1), "%Y%m%d")
+                + datetime.timedelta(hours=int(clock.group(2)) + int(clock.group(3))))
+    raise ValueError(f"Cannot identify the rendered frame time in {name!r}")
+
+
+def _history_series_record(path: Path) -> tuple[tuple, tuple[datetime.datetime, ...]]:
+    """Identify one actual grid and run before sharing its native time store."""
+    import netCDF4
+
+    path = Path(path).resolve()
+    try:
+        with netCDF4.Dataset(path) as dataset:
+            attributes = dataset.ncattrs()
+            names = ("START_DATE", "SIMULATION_START_DATE", "GRID_ID", "PARENT_ID",
+                     "I_PARENT_START", "J_PARENT_START", "PARENT_GRID_RATIO", "DX", "DY",
+                     "MAP_PROJ", "TRUELAT1", "TRUELAT2", "STAND_LON", "CEN_LAT",
+                     "CEN_LON", "MOAD_CEN_LAT", "POLE_LAT", "POLE_LON", "HYBRID_OPT", "ETAC")
+            metadata = {name: np.asarray(dataset.getncattr(name)).tolist()
+                        for name in attributes
+                        if name in names or name.startswith("GPUWM_")}
+            for name in ("GRID_ID", "DX", "DY"):
+                if name not in metadata:
+                    raise ValueError(f"missing {name}")
+            if not metadata.get("START_DATE") and not metadata.get("SIMULATION_START_DATE"):
+                raise ValueError("missing model initialization date")
+            digest = hashlib.sha256(json.dumps(metadata, sort_keys=True,
+                                               allow_nan=False).encode("utf-8"))
+            dimensions = [(name, len(value)) for name, value in dataset.dimensions.items()
+                          if name not in {"Time", "DateStrLen"}]
+            digest.update(repr(sorted(dimensions)).encode("utf-8"))
+            for name in ("XLAT", "XLONG"):
+                variable = dataset.variables[name]
+                values = np.asarray(variable[:])
+                if variable.dimensions[0] == "Time":
+                    first = values[0]
+                    if not all(np.array_equal(frame, first) for frame in values):
+                        raise ValueError(f"{name} changes within this file")
+                else:
+                    first = values
+                if not np.isfinite(first).all():
+                    raise ValueError(f"{name} contains nonfinite coordinates")
+                digest.update(name.encode("ascii"))
+                digest.update(str(first.dtype).encode("ascii"))
+                digest.update(np.ascontiguousarray(first).tobytes())
+            stamps = tuple(datetime.datetime.strptime(str(stamp), "%Y-%m-%d_%H:%M:%S")
+                           for stamp in netCDF4.chartostring(dataset.variables["Times"][:]))
+            if not stamps or any(left >= right for left, right in zip(stamps, stamps[1:])):
+                raise ValueError("history times are empty, duplicate, or not increasing")
+    except (OSError, KeyError, TypeError, ValueError, IndexError) as error:
+        raise ValueError(f"Cannot group history series {path}: {error}") from error
+    # Separate folders are separate run/lifecycle authorities. In particular,
+    # never difference independent case folders or a nest's retire/rearm lives.
+    return (str(path.parent), history_episode(path), digest.hexdigest()), stamps
+
+
+def group_history_series(paths) -> list[list[Path]]:
+    """Group compatible files, rejecting ambiguous overlapping time records."""
+    groups = {}
+    for raw in paths:
+        path = Path(raw)
+        key, stamps = _history_series_record(path)
+        groups.setdefault(key, []).append((path, stamps))
+    result = []
+    for rows in groups.values():
+        rows.sort(key=lambda item: item[1][0])
+        seen = set()
+        for path, stamps in rows:
+            overlap = seen.intersection(stamps)
+            if overlap:
+                raise ValueError(f"History series has overlapping valid times at {path}; "
+                                 "select one run and one copy of each history frame")
+            seen.update(stamps)
+        result.append([path for path, _stamps in rows])
+    return result
+
+
+def _available_window_request(renderer: Path, path: Path, products: str,
+                              store: Path, *, heavy: bool, paths=None
+                              ) -> tuple[str, list[tuple[str, str]]]:
+    """Relay only the native catalog's declared window-axis exclusions.
+
+    General plots explicitly requests one-hour rain. Minute-level wrfouts
+    cannot supply that window, so forwarding it as a strict low-level
+    request used to fail the whole otherwise successful forecast. The
+    real importer/catalog decides availability; Python computes no time
+    axis or accumulation. Corrupt metadata, unknown slugs and every other
+    native refusal retain the original request and failure behavior.
+    """
+
+    from gpuwm import rustwx
+
+    requested = [token.strip() for token in products.split(",")
+                 if token.strip()]
+    if "all" in requested:
+        # The native automatic catalog already excludes these products.
+        return products, []
+    try:
+        if paths is None:
+            rows, _summary = rustwx.list_products(
+                renderer, path, store_root=store, heavy=heavy)
+        else:
+            rows, _summary = rustwx.list_products_series(
+                renderer, paths, store_root=store, heavy=heavy)
+    except (OSError, RuntimeError):
+        # No trustworthy availability verdict: run the unchanged native
+        # request so its import/metadata/launch failure remains visible.
+        return products, []
+    axis_reasons = {
+        "windowed accumulations need more than one stored whole-hour frame",
+        "exact-time ordinal axis; fixed-hour windows are undefined on it",
+    }
+    unavailable = {slug: detail for slug, kind, status, detail in rows
+                   if kind == "windowed" and status == "excluded"
+                   and detail in axis_reasons}
+    skipped = [(slug, f"{path}: {unavailable[slug]}")
+               for slug in dict.fromkeys(requested) if slug in unavailable]
+    if not skipped:
+        return products, []
+    return (",".join(slug for slug in requested if slug not in unavailable),
+            skipped)
 
 
 def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
@@ -1204,6 +1377,12 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
                         overlays: Path | None = None,
                         annotate: Path | None = None,
                         streamlines: bool | None = None,
+                        theme: str | None = None,
+                        section: str | None = None,
+                        isotherms: str | None = None,
+                        section_across_km: float | None = None,
+                        section_size: tuple[int, int] | None = None,
+                        series: bool = False, context_paths=(),
                         ) -> tuple[list[Path], list[str],
                                    list[tuple[str, str]]]:
     """Rusty Weather engine; ``(written, failures, skipped)``.
@@ -1222,10 +1401,45 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
     sites and range rings, on a panel the production renderer drew.
     Omitted, the renderer runs no overlay code and the PNGs are
     byte-identical to every earlier build.
+
+    ``theme`` is a built-in theme name (``default``, ``dark``) or a JSON
+    theme file in the engine's own schema
+    (``tools/rustwx/crates/rustwx-render/src/theme.rs``): the surface,
+    the inks, the basemap linework, the colorbar chrome, the fonts and
+    the colormap overrides, as one file.  Omitted, the engine draws its
+    own look and the PNGs are byte-identical to every earlier build.
+    ``section`` is the line ``xsec:`` products are cut along
+    (``lat,lon,lat,lon`` or a JSON file), ``isotherms`` the isotherm set
+    drawn on them, ``section_across_km`` an optional second frame across
+    the line.
     """
 
     from gpuwm import rustwx
 
+    if series:
+        context = {Path(path).resolve() for path in context_paths}
+        written, failures, skipped = [], [], []
+        for group in group_history_series([*paths, *context_paths]):
+            if all(path.resolve() in context for path in group):
+                continue
+            options = dict(products=products, timeidx=timeidx, outdir=outdir,
+                           size=size, heavy=heavy, source_label=source_label,
+                           layout=layout, overlays=overlays, annotate=annotate,
+                           streamlines=streamlines, theme=theme, section=section,
+                           isotherms=isotherms, section_across_km=section_across_km,
+                           section_size=section_size)
+            if len(group) == 1:
+                batch = render_wrfouts_rust(group, **options)
+            else:
+                batch = render_series_rust(
+                    group, context_paths=[path for path in group if path.resolve() in context],
+                    **options)
+                for png in batch[0]:
+                    print(f"render: {png}")
+            written.extend(batch[0])
+            failures.extend(batch[1])
+            skipped.extend(batch[2])
+        return written, failures, skipped
     renderer = require_renderer()
     if source_label is None:
         source_label = default_source_label()
@@ -1250,12 +1464,21 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
         # first.
         episode = history_episode(path)
         with scratch_store(outdir) as store:
+            available, unavailable = _available_window_request(
+                renderer, path, products, store, heavy=heavy)
+            skipped.extend(unavailable)
+            if not available:
+                # Main still returns nonzero when the entire request
+                # produced no image, and names these exclusions.
+                continue
             file_written, file_failures, file_skipped = rustwx.run_renderer(
                 renderer, path, store_root=store, out_dir=outdir,
-                products=products, frames=frames, width=width,
+                products=available, frames=frames, width=width,
                 height=height, heavy=heavy, source_label=source_label,
                 overlays=overlays, annotate=annotate,
-                streamlines=streamlines)
+                streamlines=streamlines, theme=theme, section=section,
+                isotherms=isotherms, section_across_km=section_across_km,
+                section_size=section_size)
         file_written = [_place_engine_output(png, outdir, token, layout,
                                              episode=episode)
                         for png in file_written]
@@ -1872,7 +2095,7 @@ def skip_notice(skipped: list[tuple[str, str]],
     return explain.layered(
         f"note: render skipped {len(skipped)} product render(s) "
         f"({', '.join(names)}) -- the file(s) do not carry their declared "
-        f"input fields.  {verdict}",
+        f"input fields or required time windows.  {verdict}",
         "\n".join(f"  skipped {product}: {detail}"
                   for product, detail in skipped))
 
@@ -2097,6 +2320,10 @@ def render_main(args: argparse.Namespace) -> int:
             rust_products = parse_products_rust(args.products)
         else:
             products = parse_products(args.products)
+        if getattr(args, "series", False) and engine != "rust":
+            raise ValueError("--series uses the native Rust timeline renderer")
+        if getattr(args, "context_wrfout", ()) and not getattr(args, "series", False):
+            raise ValueError("context history needs --series")
     except (ValueError, RuntimeError, FileNotFoundError) as exc:
         # Through the layering boundary, not raw: the bridge refusal
         # `_resolve_engine` can raise is composed with `explain.layered`,
@@ -2190,7 +2417,12 @@ def render_main(args: argparse.Namespace) -> int:
                     outdir=args.out, size=size, heavy=args.heavy,
                     source_label=args.source_label, layout=args.layout,
                     overlays=args.overlays, annotate=args.annotate,
-                    streamlines=args.streamlines)
+                    streamlines=args.streamlines, theme=args.theme,
+                    section=args.section, isotherms=args.isotherms,
+                    section_across_km=args.section_across_km,
+                    section_size=args.section_size,
+                    series=getattr(args, "series", False),
+                    context_paths=getattr(args, "context_wrfout", ()))
             except (RuntimeError, ValueError) as exc:
                 print("render: " + explain.render(
                     str(exc), explain=explain.explain_enabled(args),
@@ -2226,6 +2458,25 @@ def render_main(args: argparse.Namespace) -> int:
     return 0 if written and not failures else 1
 
 
+def _section_size(value: str) -> tuple[int, int]:
+    """``WxH`` for ``--section-size``, refused by name when it is not."""
+
+    parts = re.split("[xX]", value.strip())
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(
+            f"--section-size '{value}' is not WxH, e.g. 2400x1200")
+    try:
+        width, height = int(parts[0]), int(parts[1])
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"--section-size '{value}' is not WxH in whole pixels") from None
+    for name, side in (("width", width), ("height", height)):
+        if not 200 <= side <= 12_000:
+            raise argparse.ArgumentTypeError(
+                f"--section-size {name} {side} is not 200-12000 pixels")
+    return width, height
+
+
 def register_cli(subparsers) -> None:
     parser = subparsers.add_parser(
         "render",
@@ -2254,7 +2505,13 @@ def register_cli(subparsers) -> None:
              "work and 'all' renders its full catalog")
     parser.add_argument(
         "--timeidx", default="all", metavar="N|all",
-        help="frame index within each file, or 'all' (default)")
+        help="frame index within each file (within each timeline with --series), or 'all' (default)")
+    parser.add_argument(
+        "--series", action="store_true",
+        help="render compatible files from each run/domain/episode as one timeline, including multi-hour products")
+    parser.add_argument(
+        "--context-wrfout", action="append", type=Path, default=[], metavar="FILE",
+        help=argparse.SUPPRESS)
     parser.add_argument(
         "--out", type=Path, default=Path("out/render"), metavar="DIR",
         help="where the PNGs go (default out/render).  Each render "
@@ -2329,6 +2586,37 @@ def register_cli(subparsers) -> None:
              "subtitle_center, subtitle_right).  A short badge belongs "
              "in the centre slot; anything sentence-length belongs on "
              "the left, which owns the row's width")
+    parser.add_argument(
+        "--theme", metavar="NAME|FILE.json", default=None,
+        help="rust engine: the render theme -- a built-in name (default, "
+             "dark) or a JSON theme file naming the surface, the inks, "
+             "the basemap linework, the colorbar chrome, the fonts and "
+             "the colormap overrides (schema in tools/rustwx/crates/"
+             "rustwx-render/src/theme.rs; RUSTWX_THEME is the "
+             "environment spelling).  Omitted, the engine draws its own "
+             "look and the PNGs are byte-identical")
+    parser.add_argument(
+        "--section", metavar="lat,lon,lat,lon|FILE.json", default=None,
+        help="rust engine: the line the vertical-section products "
+             "(xsec:<fill>[/<overlay>...] in --products, any 3-D wrfout "
+             "field on a height axis) are cut along; a JSON file gives "
+             "{start, end} or a {points, extend_km} polyline")
+    parser.add_argument(
+        "--isotherms", metavar="L,L,...[@H]", default=None,
+        help="rust engine: the isotherms (C) drawn on every section, "
+             "with an optional highlighted one after '@' "
+             "(e.g. 0,-5,-10,-15,-20@-10); default 0,-10,-20,-30,-40")
+    parser.add_argument(
+        "--section-size", dest="section_size", type=_section_size,
+        metavar="WxH",
+        help="the size a cross-section is drawn at; absent, a section is "
+             "landscape 2:1 at the map's width, because a vertical cut "
+             "handed the map's own size comes out portrait")
+    parser.add_argument(
+        "--section-across", dest="section_across_km", type=float,
+        metavar="KM", default=None,
+        help="rust engine: also draw each section product across the "
+             "line, this many km long, through the fill's maximum column")
     parser.add_argument(
         "--list-products", action="store_true",
         help="list the engine's product catalog with per-file "

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -104,6 +105,12 @@ def portable(text: str) -> str:
     -- so the page would ship a path nobody else has, and would churn in
     the diff on every machine that regenerated it.  The package-relative
     form says the same thing and belongs to no one.
+
+    The tail after the stand-in is spelled POSIX on every platform: the
+    interpolated path carries the host's separator, and a page generated
+    on Windows read ``<gpuwm package>\\authorities\\...`` where the same
+    tree on Linux read ``<gpuwm package>/authorities/...``, so the
+    byte-for-byte staleness gate split by platform on a separator alone.
     """
 
     import gpuwm
@@ -113,7 +120,13 @@ def portable(text: str) -> str:
             (str(REPO_ROOT), "<repository root>")):
         for spelling in (root, root.replace("\\", "/")):
             text = text.replace(spelling, stand_in)
-    return text
+    return _POSIX_TAIL.sub(
+        lambda match: match.group(0).replace("\\", "/"), text)
+
+
+#: A stand-in followed by the path tail the help string interpolated
+#: after it: everything up to the first whitespace or table separator.
+_POSIX_TAIL = re.compile(r"<(?:gpuwm package|repository root)>[^\s|]*")
 
 
 def _positional_spelling(action: argparse.Action) -> str:

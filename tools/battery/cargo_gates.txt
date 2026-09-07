@@ -145,6 +145,11 @@ cpu  tools/rustwx  rustwx-calc  83
 # structure that was never in the field, so it is gated as arithmetic.
 cpu  tools/rustwx  rustwx-contour  7
 
+# Cross-section path sampling, vertical axes, terrain masks, wind rotation,
+# and rendered geometry are shipped but this workspace member had no gate.
+# Measured 2026-09-04 at c4199efe8, cargo 1.94.0 on Windows: 38 lib + 1 doctest.
+cpu  tools/rustwx  rustwx-cross-section  39
+
 # The shared vocabulary: grids, product keys, timestamps, typed
 # provenance.  Everything else in the workspace agrees through it.
 cpu  tools/rustwx  rustwx-core  26
@@ -287,20 +292,18 @@ cpu  tools/rustwx  rw-wrfbatch  114
 # refusal-by-name doors).
 cpu  tools/rustwx  rw-mpas  418
 
-# static-fields: THIS project's crate too, and the DEFAULT builder of
-# every WPS-geogrid-equivalent static a domain is built on -- projection
-# grids, WPS_GEOG tile ingest, field building, and the high-resolution
-# overlay warp.  Its claim is byte-identical float64 parity with the
-# Python implementation it replaced, and that claim is exactly the kind
-# nothing else in the tree can check: a wrong terrain height or land
-# mask does not crash, it produces a run whose whole lower boundary is
-# quietly somewhere else.  The suite is that parity, held against
-# goldens extracted from the real Python builder on real source data
-# (crates/static-fields/golden, tests/lane1_goldens.rs), plus the
-# high-resolution warp tolerance parity and the ctypes seam probe the
-# cdylib is loaded through.  Floor is its first green run in this list,
-# 47 across the lib, `highres_parity`, `lane1_goldens` and `seam_probe`.
-cpu  tools/rustwx  static-fields  47
+# Static-fields functional tests stay required on both operating systems:
+# builder/interpolation, GeoTIFF safety, highres parity and the C-ABI seam.
+# Measured 43 passes; the two lane1 refusal/cropping controls also stay here.
+# Exact platform qualification is a separately executed shard, never a
+# functional waiver; see docs/dev/static-platform-qualification.md.
+cpu  tools/rustwx  static-fields  43  --lib --test geotiff_envelope --test geotiff_malformed --test highres_parity --test seam_probe
+cpu  tools/rustwx  static-fields  1  --test lane1_goldens -- grid_refusals_name_the_breakage --exact
+cpu  tools/rustwx  static-fields  1  --test lane1_goldens -- corridor_crop_bit_equal_and_refuses_off_corridor --exact
+# Complete unchanged Windows-reference lane1 comparisons, including both
+# functional controls above. The dedicated CI qualification job runs these
+# on Windows and Linux, retains every result, and labels Linux UNQUALIFIED.
+qualification  tools/rustwx  static-fields  14  --test lane1_goldens -- --test-threads=1 --show-output
 
 # THE FIXTURE-DEPENDENT HALF OF rw-sat, LISTED AND NOT RUN BY DEFAULT.
 # tests/cloud_products.rs decodes four REAL GOES-19 granules -- COD, CPS,
@@ -382,3 +385,10 @@ cpu  tools/rw_wps  mapped-engine  121
 # Floor is the 65 the vendoring recorded green at donor tip (60 lib + 5
 # integration), which is also what it reports here.
 cpu  tools/rw_wps  rw-wps  65
+
+# Local interfaces: exact TOML editing, request origins, saved-file ownership,
+# and actual worker process groups/Windows Job Objects. @python is the battery
+# interpreter path, resolved as one environment value without shell expansion.
+# Cold Windows/Linux: 7 visual + 2 geography builder; 14 terminal + 4 worker controls.
+cpu  tools/arwen-launchpad  arwen-launchpad  9
+cpu  tools/arwen-tui  arwen-tui  18  GPUWM_TUI_TEST_PYTHON=@python

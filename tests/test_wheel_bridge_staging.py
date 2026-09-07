@@ -60,7 +60,7 @@ def test_every_ladder_offers_the_in_package_rung():
 
     import gpuwm.rustwx as rustwx
     import gpuwm.rustwx_fetch as rustwx_fetch
-    from gpuwm import netcdf_bridge
+    from gpuwm import netcdf_bridge, tui_cli
     from gpuwm.obs import dealias_region, nexrad
 
     packaged = bridges.packaged_bridge_dir()
@@ -71,6 +71,7 @@ def test_every_ladder_offers_the_in_package_rung():
         "obs.nexrad": nexrad.nexrad_candidates(),
         "obs.dealias_region": dealias_region.region_bridge_candidates(),
         "netcdf_bridge": netcdf_bridge.netcdf_candidates(),
+        "tui_cli": tui_cli.tui_candidates(),
     }
     missing = [name for name, candidates in ladders.items()
                if not any(packaged in candidate.parents

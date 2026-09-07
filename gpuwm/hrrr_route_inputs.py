@@ -45,52 +45,6 @@ FORCING_INTERVAL_SECONDS = 3600
 NUM_METGRID_LEVELS = 51
 NUM_METGRID_SOIL_LEVELS = 9
 
-#: The physics slice the public HRRR hierarchy gate admits.  A config
-#: outside it is refused here, at emission, naming the switch -- not
-#: after a root preparation has been paid for.  Two entries are not
-#: single pinned values: radiation is admitted as a PAIR and the PBL as
-#: an enumerated SET, both below.
-REQUIRED_PHYSICS = {
-    "sf_sfclay_physics": 91,
-    "sf_surface_physics": 2,
-    "cu_physics": 0,
-}
-
-#: The ``bl_pbl_physics`` values the route admits.  This was a single
-#: pinned 1 in :data:`REQUIRED_PHYSICS` until the gray-zone template was
-#: registered; it is an enumerated set now, on exactly the shape the
-#: radiation pair took, and it is NOT a statement that any PBL selector
-#: is fine.  Each member is a value a REGISTERED HRRR preparation profile
-#: pins:
-#:
-#: * ``1`` -- YSU, pinned by every route-compatible profile the route has
-#:   always carried (``wsm6-ysu-mm5-noah-no-radiation-v1``,
-#:   ``kessler-mp1-ysu-mm5-noah-dudhia-v1``,
-#:   ``thompson-mp8-ysu-mm5-noah-validation-v1`` and its legacy-RRTMG
-#:   sibling).
-#: * ``11`` -- Shin-Hong 2015, pinned by
-#:   ``thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1``, the registered
-#:   composition a physics-fidelity arm selecting divergence-ledger entry
-#:   L3 resolves to.
-#:
-#: A value no registered profile pins still refuses here by name, and it
-#: would refuse one gate later anyway: the root preparation is a shipped
-#: profile or it does not happen.  ``tests/test_battery_route.py``
-#: recomputes this set from the shipped profile table, so the enumeration
-#: cannot drift from the registrations that justify it.
-ADMITTED_PBL_PHYSICS = frozenset({1, 11})
-
-#: The (ra_lw_physics, ra_sw_physics) pairs the route admits (the B4
-#: route-qualification motion, items 1-3): the certified (0, 1)
-#: validation suite -- longwave off natively, Dudhia shortwave -- and
-#: the resolved RRTMG (4, 4) pair the shipped registry's own
-#: prepared-tree row already claims for HRRR.  Explicit pairs only:
-#: :func:`gpuwm.config.validate_run_config` separately requires
-#: ``ra_physics = 0`` alongside explicit values, and that gate still
-#: binds on every domain of the experiment, so this set widens nothing
-#: beyond the two named compositions.
-ADMITTED_RADIATION_PAIRS = frozenset({(0, 1), (4, 4)})
-
 #: Selectors this route refuses even WITH a ported nest edge, each naming
 #: the concrete breakage (gate law).  28 (aerosol Thompson): the scheme
 #: has no aerosol lateral boundary condition -- the registered mp=28
@@ -124,36 +78,7 @@ AEROSOL_LATERAL_BC_BLOCKED_MP_PHYSICS = frozenset({28})
 SUPPORTED_MICROPHYSICS = (
     frozenset(PORTED_MP_PHYSICS) - AEROSOL_LATERAL_BC_BLOCKED_MP_PHYSICS)
 
-#: THE profile every door binds for this source when none is named.
-#:
-#: One constant, imported by all of them, because 1.7.1 proved the
-#: alternative: the wizard door, the interactive door and the native
-#: preparer each carried their own default, they disagreed, and a fix
-#: applied to one left the others emitting the old suite.  A door that
-#: wants this source's default reads it here or it is not a door.
-#:
-#: The value is the strongest suite that satisfies this module's OWN
-#: gates above with both radiation streams on.  It is Thompson mp8
-#: microphysics with RRTMG longwave and shortwave at
-#: ``cu_physics = 0`` -- which is also, and not by coincidence, what the
-#: operational High-Resolution Rapid Refresh runs (NOAA/GSL; the CCPP
-#: ``HRRR_suite`` pairs Thompson aerosol-aware microphysics with RRTMG
-#: radiation on a convection-permitting 3 km grid).  gpuwm diverges from
-#: operations on two components it has no route-admissible
-#: implementation for: YSU rather than MYNN-EDMF, and Noah rather than
-#: the RUC LSM.  Both of those shipped profiles run longwave OFF and are
-#: refused above on ``sf_sfclay_physics``/``sf_surface_physics`` anyway.
-#:
-#: It is deliberately NOT the gfs/era5 default
-#: (``morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1``): that suite selects
-#: Kain-Fritsch, and ``REQUIRED_PHYSICS`` pins ``cu_physics = 0`` because
-#: this source's native grid already resolves convection.  The refusal is
-#: physics, not a limitation.
-#:
-#: ``tests/test_nocturnal_radiation_guard.py`` re-derives this from the
-#: shipped switch table and the gates above rather than restating it, so
-#: a profile that becomes admissible -- or one that stops being -- moves
-#: the assertion, not just this comment.
+#: The existing recommended default. It does not restrict other valid suites.
 ROUTE_DEFAULT_PHYSICS_PROFILE = "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1"
 
 #: The four -- and only four -- differences between the native namelist
@@ -201,8 +126,7 @@ def _repeated(value, count: int) -> str:
 
 #: Every switch the route's physics gate reads -- resolved per domain
 #: at emission, per shipped profile at the wizard's pairing gate.
-ROUTE_GATED_SWITCHES = (*REQUIRED_PHYSICS, "bl_pbl_physics",
-                        "ra_lw_physics", "ra_sw_physics", "mp_physics")
+ROUTE_GATED_SWITCHES = ("mp_physics",)
 
 
 def route_physics_problems(switches, *, label: str = "") -> list[str]:
@@ -219,29 +143,12 @@ def route_physics_problems(switches, *, label: str = "") -> list[str]:
     """
 
     problems = []
-    for switch, required in REQUIRED_PHYSICS.items():
-        observed = switches[switch]
-        if int(observed) != required:
-            problems.append(
-                f"{label}{switch}={observed} "
-                f"(the route requires {required})")
-    pbl = int(switches["bl_pbl_physics"])
-    if pbl not in ADMITTED_PBL_PHYSICS:
-        problems.append(
-            f"{label}bl_pbl_physics={pbl} (the route "
-            f"admits {sorted(ADMITTED_PBL_PHYSICS)}, each pinned by a "
-            "registered HRRR preparation profile)")
-    pair = (int(switches["ra_lw_physics"]), int(switches["ra_sw_physics"]))
-    if pair not in ADMITTED_RADIATION_PAIRS:
-        problems.append(
-            f"{label}(ra_lw_physics, ra_sw_physics)="
-            f"{pair} (the route admits "
-            f"{sorted(ADMITTED_RADIATION_PAIRS)})")
-    if int(switches["mp_physics"]) not in SUPPORTED_MICROPHYSICS:
-        problems.append(
-            f"{label}mp_physics={switches['mp_physics']} "
-            f"(the route supports "
-            f"{sorted(SUPPORTED_MICROPHYSICS)})")
+    # Actual analyzed-input initialization requirements remain authoritative.
+    # Surface, turbulence, cumulus and radiation use the common RunConfig
+    # validators; membership in a measured preset is not a capability.
+    if int(switches["mp_physics"]) == 28:
+        problems.append(label + "mp_physics=28 requires aerosol boundary species "
+                        "absent from this native analyzed-input stream")
     return problems
 
 
@@ -570,7 +477,7 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
     eta = exp.vertical.eta_levels
     eta_rows = []
     for offset in range(0, len(eta), 5):
-        chunk = ", ".join(f"{value:.5f}" for value in eta[offset:offset + 5])
+        chunk = ", ".join(repr(float(value)) for value in eta[offset:offset + 5])
         eta_rows.append(("              " if offset else "") + chunk + ",")
     clock = {"time_step": root.time_step}
     if root.time_step_fract_num:
@@ -708,11 +615,11 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         f" ra_sw_physics                       = {_column(shortwave)}",
         f" radt                                = "
         f"{_column(_f(r.radt) for r in runs)}",
-        " icloud                              = 1,",
+        f" icloud                              = {root.run.icloud},",
         f" swrad_scat                          = "
         f"{_f(root.run.swrad_scat)},",
-        f" sf_sfclay_physics                   = {_repeated(91, count)}",
-        f" sf_surface_physics                  = {_repeated(2, count)}",
+        f" sf_sfclay_physics                   = {_column(r.sf_sfclay_physics for r in runs)}",
+        f" sf_surface_physics                  = {_column(r.sf_surface_physics for r in runs)}",
         # Per domain, from the RESOLVED config -- never a literal.  The
         # physics-fidelity axis writes its resolved vector onto every
         # domain's RunConfig (gpuwm/experiment.py), so an arm selecting
@@ -724,17 +631,24 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         f"{_column(r.bl_pbl_physics for r in runs)}",
         f" bldt                                = "
         f"{_column(_f(r.bldt) for r in runs)}",
-        f" cu_physics                          = {_repeated(0, count)}",
+        f" cu_physics                          = {_column(r.cu_physics for r in runs)}",
         f" cudt                                = "
         f"{_column(_f(r.cudt_minutes) for r in runs)}",
-        " isfflx                              = 1,",
+        f" isfflx                              = {root.run.isfflx},",
         " ifsnow                              = 1,",
         " surface_input_source                = 1,",
-        " num_soil_layers                     = 4,",
+        f" num_soil_layers                     = {root.run.num_soil_layers},",
         " num_land_cat                        = 21,",
         f" sf_urban_physics                    = {_repeated(0, count)}",
         " sst_update                          = 0,",
     ])
+    if root.run.mp_physics == 16:
+        # WRF's scalar names are shared with other microphysics schemes;
+        # the importer maps them back to WDM6's active RunConfig fields.
+        lines.extend([
+            f" hail_opt                            = {root.run.wdm6_hail_opt},",
+            f" ccn_conc                            = {_f(root.run.wdm6_ccn_conc)},",
+        ])
     # The two stock-only &physics keys, together: each is a setting the
     # native arm answers in code and the mirrored arm can only be told.
     if ghg:
@@ -953,7 +867,6 @@ def write_hrrr_route_inputs(config_path: Path, exp, *, wps_text: str,
 __all__ = [
     "FORCING_INTERVAL_SECONDS",
     "HrrrRouteInputError",
-    "REQUIRED_PHYSICS",
     "ROUTE_DEFAULT_PHYSICS_PROFILE",
     "SUPPORTED_MICROPHYSICS",
     "render_namelist_input",

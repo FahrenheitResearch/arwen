@@ -47,6 +47,7 @@ The breakage each one prevents, named:
 
 from __future__ import annotations
 
+import ctypes
 import os
 import re
 import shutil
@@ -280,6 +281,131 @@ def test_the_no_gpu_oracle_harness_still_compiles(cxx, tmp_path):
         f"{out}")
 
 
+#: A probe translation unit: the same CUDA language shims and the same
+#: include order ``gf_host_harness.cpp`` uses, cut down to one device
+#: routine.  ``GfColC`` converts from ``GfCol`` only, and ``GfCol`` strides
+#: by ``GFWS_LANES``, so the backing vectors are that much wider.
+_AA0_PROBE = r"""
+#include <cstdint>
+#include <cstring>
+#include <cmath>
+#include <vector>
+#define __device__
+#define __global__
+#define __constant__ static const
+#define __forceinline__ inline
+#define __restrict__
+struct GfS3 { unsigned x, y, z; };
+static GfS3 blockIdx = {0, 0, 0};
+static GfS3 blockDim = {1, 1, 1};
+static GfS3 threadIdx = {0, 0, 0};
+static inline float __fadd_rn(float a, float b) { return a + b; }
+static inline float __fsub_rn(float a, float b) { return a - b; }
+static inline float __fmul_rn(float a, float b) { return a * b; }
+static inline float __fdiv_rn(float a, float b) { return a / b; }
+static inline float __fsqrt_rn(float a) { return sqrtf(a); }
+static inline double __dadd_rn(double a, double b) { return a + b; }
+static inline double __dsub_rn(double a, double b) { return a - b; }
+static inline double __dmul_rn(double a, double b) { return a * b; }
+static inline double __ddiv_rn(double a, double b) { return a / b; }
+static inline float __uint_as_float(unsigned int u)
+{ float f; std::memcpy(&f, &u, 4); return f; }
+static inline unsigned int __float_as_uint(float f)
+{ unsigned int u; std::memcpy(&u, &f, 4); return u; }
+static inline float __int_as_float(int i)
+{ float f; std::memcpy(&f, &i, 4); return f; }
+static inline long long __double_as_longlong(double d)
+{ long long l; std::memcpy(&l, &d, 8); return l; }
+static inline double __longlong_as_double(long long l)
+{ double d; std::memcpy(&d, &l, 8); return d; }
+static inline float __double2float_rn(double d) { return (float)d; }
+#include "common.cuh"
+#include "glibc_flt32.cuh"
+#include "gf.cu"
+
+extern "C" float gf_probe_aa0(int kbcon, int ktop, int ktf, float dby_below)
+{
+    const int kp = GF_KMAX + 9;
+    const int n = kp * GFWS_LANES;
+    std::vector<float> zb(n, 0.0f), zub(n, 0.0f), dbyb(n, 0.0f),
+                       gamb(n, 0.0f), tcb(n, 0.0f);
+    GfCol z{zb.data()}, zu{zub.data()}, dby{dbyb.data()}, gam{gamb.data()},
+          tc{tcb.data()};
+    for (int k = 1; k < kp; k++) {
+        z[k]   = 500.0f * (float)k;
+        zu[k]  = 1.0f;
+        gam[k] = 0.5f;
+        tc[k]  = 280.0f;
+        dby[k] = 0.0f;
+    }
+    dby[kbcon - 1] = dby_below;
+    return gfd_cup_up_aa0(z, zu, dby, gam, tc, kbcon, ktop, 0, ktf);
+}
+"""
+
+
+def test_cup_up_aa0_keeps_the_k_equals_kbcon_layer(cxx, tmp_path):
+    """``module_cu_gf_deep.F:3024`` is ``IF(K.LT.KBCON(I))GO TO 100``.
+
+    ``k == kbcon`` is INSIDE WRF's accumulation, and its term reads
+    ``dby(kbcon-1)``.  gf.cu carried ``k <= kbcon``, which dropped that
+    layer; ``gpuwm/verify/gf_deep_ref.py:971`` -- this repository's own CPU
+    transcription of the same subroutine -- has always read ``k < kbcon``,
+    so the two implementations of one scheme disagreed.
+
+    Named breakage, and it is discrete rather than perturbative: a column
+    whose only positive buoyancy sits at ``k == kbcon`` returns ``aa1 = 0``,
+    and ``module_cu_gf_deep.F:1129-1135`` turns ``aa1 == 0`` into
+    ``ierr = 17``, switching convection off in that column entirely.  The
+    committed 216-column fixture cannot see this -- ``dby(kbcon-1)`` is
+    negative on all 60 of its live columns, so ``max(0., da)`` is zero
+    there and ``gf_host_parity.py`` grades green either way.  Hence a
+    constructed column, and hence this test rather than the oracle.
+
+    The expected word is not a constant typed in here: it comes from the
+    CPU reference on the same inputs, so the gate is the seam between the
+    two transcriptions and cannot drift away from WRF on its own.
+    """
+    from gpuwm.verify.gf_deep_ref import cup_up_aa0
+
+    source = tmp_path / "gf_aa0_probe.cpp"
+    source.write_text(_AA0_PROBE, encoding="ascii", newline="\n")
+    out = tmp_path / "gf_aa0_probe.so"
+    code, text = cxx(source, out, _KERNEL_DIR)
+    assert code == 0, "the gfd_cup_up_aa0 probe will not build:\n" + text
+
+    lib = ctypes.CDLL(str(out))
+    lib.gf_probe_aa0.restype = ctypes.c_float
+    lib.gf_probe_aa0.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                 ctypes.c_float)
+
+    kbcon, ktop, ktf = 5, 8, 12
+    kp = _define("GF_KMAX") + 9
+    z = [np.float32(0.0)] * kp
+    zu = [np.float32(0.0)] * kp
+    dby = [np.float32(0.0)] * kp
+    gam = [np.float32(0.0)] * kp
+    tc = [np.float32(0.0)] * kp
+    for k in range(1, kp):
+        z[k] = np.float32(500.0 * k)
+        zu[k] = np.float32(1.0)
+        gam[k] = np.float32(0.5)
+        tc[k] = np.float32(280.0)
+    dby[kbcon - 1] = np.float32(3.0)
+
+    want = np.float32(cup_up_aa0(z=z, zu=zu, dby=dby, gamma_cup=gam,
+                                 t_cup=tc, kbcon=kbcon, ktop=ktop, ierr=0,
+                                 ktf=ktf))
+    got = np.float32(lib.gf_probe_aa0(kbcon, ktop, ktf, np.float32(3.0)))
+
+    assert want != np.float32(0.0), (
+        "the constructed column no longer exercises the k == kbcon layer, "
+        "so this gate would pass on a kernel that still drops it")
+    assert got.tobytes() == want.tobytes(), (
+        f"gf.cu's cup_up_aa0 returned {got!r} where WRF's loop bound gives "
+        f"{want!r}: the k == kbcon layer is being dropped")
+
+
 # ---------------------------------------------------------------------------
 # device gates
 # ---------------------------------------------------------------------------
@@ -306,8 +432,8 @@ def test_the_workspace_is_free_of_residue():
     cp = pytest.importorskip("cupy")
     sys.path.insert(0, os.path.join(_ROOT, "tools", "gf_wrf461_oracle"))
     from gf_field_lists import (
-        DRV_IN_LEV, DRV_IN_SCA, DRV_ISCA_FIELDS, DRV_LEV_FIELDS,
-        DRV_SCA_FIELDS,
+        DRV_IN_LEV, DRV_ISCA_FIELDS, DRV_LEV_FIELDS, DRV_SCA_FIELDS,
+        drv_scalar_inputs,
     )
     from gpuwm.core.kernels import load_module
     from gpuwm.verify.gf_oracle import GF_NZ, load_gf_oracle
@@ -315,12 +441,12 @@ def test_the_workspace_is_free_of_residue():
     fx = load_gf_oracle()
     n, nz = fx.ncol, GF_NZ
     lv = np.zeros((n, len(DRV_IN_LEV), nz), dtype=np.float32)
-    sc = np.zeros((n, len(DRV_IN_SCA)), dtype=np.float32)
+    # fzu COMPUTED (the shipped forecast path); residue is a property of the
+    # workspace, not of gamma, so the unpinned arm is the one to probe.
+    sc = drv_scalar_inputs(fx, False)
     ii = np.zeros((n, 3), dtype=np.int32)
     for j, name in enumerate(DRV_IN_LEV):
         lv[:, j, :] = fx.levels[name]
-    for j, name in enumerate(DRV_IN_SCA):
-        sc[:, j] = fx.surface[name].astype(np.float32)
     ii[:, 0] = fx.surface["kpbl"].astype(np.int32)
     ii[:, 1] = fx.surface["ishallow"].astype(np.int32)
     ii[:, 2] = fx.surface["ichoice"].astype(np.int32)

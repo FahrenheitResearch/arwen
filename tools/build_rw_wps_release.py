@@ -159,6 +159,16 @@ _TOP_LEVEL_EXCLUDES = {
     "runtime.py",
     "state_digest.py",
     "supervisor.py",
+    # Forecast input runners and terminal job/catalog entry points have no
+    # standalone preprocessing command. Their readers remain staged below.
+    "metem_forecast.py", "wrfinput_forecast.py",
+    "launchpad_api.py", "tui_worker.py",
+    # These forecast UI doors size research runs, dispatch remote workers,
+    # select runtime products or validate starter run plans. They reach the
+    # excluded wizard, supervisor, restart and runplan modules; no RW-WPS
+    # entry point or staged preparation module consumes them.
+    "remote_cli.py", "remote_worker.py", "research_workspaces.py",
+    "starter_template.py", "tui_products.py",
 }
 _CORE_MODULES = {
     "__init__.py",
@@ -179,6 +189,14 @@ _CORE_MODULES = {
     # forecast executor.
     "mslp.py",
     "nest_interp.py",
+    # Shared config/initialization contracts, without memory or GPU executors.
+    "nest_fields.py", "ozone_contract.py", "inflow_perturbation.py",
+    # The config reader validates attribute-following fields and source
+    # domains through this module; storm_tracking also imports its grammar.
+    # Its imports are NumPy and the already-staged streaming options module.
+    # Its device reduction is function-local and is never called by config
+    # validation, so importing it requires no CuPy or forecast executor.
+    "attribute_tracking.py",
     # Config VALIDATION for the two storm-following blocks, which is
     # preprocessing work: `gpuwm/experiment.py` is staged, and it calls
     # `build_follow_config` for `[relocation.follow]` and
@@ -279,7 +297,8 @@ _CORE_MODULES = {
 #: and `gpuwm/runtime.py` (already excluded above), so leaving them behind
 #: strands nothing.
 _INGEST_EXCLUDES = {"preflight.py", "nest_spawn_init.py",
-                    "relocation_init.py"}
+                    "relocation_init.py", "relocation_continuation.py",
+                    "case_store.py"}
 #: `gpuwm/obs/sources.py` is the seam between the ingest lane and the scoring
 #: lane: it builds the scorer's dataclasses and reaches
 #: `gpuwm.verify.obs.contracts` to do it.  RW-WPS ships no verification
@@ -385,6 +404,30 @@ _FORBIDDEN_STAGED_FILES = {
 }
 
 _OPTIONAL_STAGED_IMPORTS = {
+    ("gpuwm/core/streaming.py", "gpuwm.core.adaptive_clock"):
+        "adaptive forecast tile planning/step execution; StreamingOptions "
+        "and config validation reach none of these function-local imports",
+    ("gpuwm/core/streaming.py", "gpuwm.io.restart"):
+        "live forecast tile builder inventories restart tracker slots; "
+        "standalone preparation constructs no tile stepper",
+    ("gpuwm/core/streaming.py", "gpuwm.core.streamed_relocation"):
+        "forecast-only replacement/adoption of a child store after a move",
+    ("gpuwm/core/streaming.py", "gpuwm.core.physics_step_control"):
+        "per-step physics cadence in an executing tile; no config path calls it",
+    ("gpuwm/core/streaming.py", "gpuwm.core.streamed_state"):
+        "running-state publication into a forecast tile store",
+    ("gpuwm/core/streaming.py", "gpuwm.core.cam_ozone"):
+        "live tile physics initialization; pure ozone config dependencies "
+        "are staged separately in ozone_contract",
+    ("gpuwm/metem_door.py", "gpuwm.core.preflight"):
+        "metgrid_memory_admission is called only by metem_forecast's GPU "
+        "run door; metadata and analyzed-field validation use staged contracts",
+    ("gpuwm/ingest/hrrr_physics.py", "gpuwm.core.radiation_composition"):
+        "GPU physics initialization after the standalone --prepare-only return, "
+        "on the same boundary as this module's existing core.physics import",
+    ("gpuwm/ingest/wrfinput.py", "gpuwm.core.physics"):
+        "initialize_wrfinput_physics imports CuPy first and initializes an "
+        "executing forecast; file reading and host state restoration do not call it",
     ("gpuwm/experiment.py", "gpuwm.spectral_ops.config"):
         "the [spectral_numerics] TABLE PARSER, imported function-locally "
         "and only when a config actually carries the table.  The "

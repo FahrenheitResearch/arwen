@@ -9,6 +9,14 @@ map factors (1) and Coriolis parameters (0), which the plan pins to be
 bitwise-identical to Phase 2 through any number of full ``dycore.step``
 calls.
 
+THAT CLAIM NO LONGER HOLDS OF THE SHIPPED CAPTURE.  The npz was
+recaptured at the tip on 2026-09-03, twice, so it describes the current
+dry dynamics rather than Phase 2; ``tests/test_coriolis_map.py`` carries
+the ledger, the measured drift, and the fact that the first of the two
+recaptures was forced by a drift nobody has root-caused.  The BUILDERS
+below are unchanged and must stay Task-3-free, which is what keeps a
+future re-derivation possible.
+
 Each builder returns ``(state, cfg)`` ready for ``run_steps``.
 """
 

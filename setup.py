@@ -54,8 +54,9 @@ _MANIFEST = _STAGED / "BUNDLE.json"
 #: Platform key (gpuwm's spelling) -> the wheel platform tag it installs on.
 #:
 #: manylinux_2_28 rather than a plain ``linux_x86_64``: PyPI rejects the
-#: bare tag outright, and 2.28 is the glibc floor the release workflow's
-#: ubuntu-24.04 runner builds against.
+#: bare tag outright. The Linux release build and all native probes run
+#: inside the pinned manylinux_2_28 image, with a checked symbol/dependency
+#: policy; the Ubuntu host's newer libc is not the payload's baseline.
 PLATFORM_TAGS = {
     "win-x86_64": "win_amd64",
     "linux-x86_64": "manylinux_2_28_x86_64",
@@ -266,11 +267,6 @@ class _PlatformWheel(_BdistWheel):
     """Tags the wheel ``py3-none-<platform>`` when artifacts are staged."""
 
     def finalize_options(self) -> None:
-        # Before anything is copied or tagged: a wheel from an unpinned
-        # tree must not exist at all.  Every build route -- python -m
-        # build, pip wheel, pip install <tree>, setup.py bdist_wheel --
-        # passes through this command's finalize_options.
-        _refuse_unpinned_wheel()
         platform = _staged_platform()
         if platform is not None:
             self.plat_name = PLATFORM_TAGS[platform]
@@ -287,6 +283,10 @@ class _PlatformWheel(_BdistWheel):
         return "py3", "none", plat_tag
 
     def run(self) -> None:
+        # Metadata and PEP 660 editable installs finalize bdist_wheel to
+        # obtain tags; they do not build a distributable package.  Gate
+        # the actual wheel build, before it copies any package bytes.
+        _refuse_unpinned_wheel()
         super().run()
         if _staged_platform() is None:
             return
@@ -307,7 +307,7 @@ class _SourceDistribution(_Sdist):
         # Before a file list is built: every route that makes an sdist
         # -- python -m build, pip install <tree> (via build_sdist),
         # python setup.py sdist -- passes through this command's
-        # finalize_options, the same place the wheel's pin gate fires.
+        # finalize_options; the wheel's pin gate guards its run method.
         _refuse_staged_sdist()
         super().finalize_options()
 

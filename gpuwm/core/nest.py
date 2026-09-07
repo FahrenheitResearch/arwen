@@ -39,19 +39,22 @@ The two feedback controls fire too: ``feedback=1`` differs from
 ``feedback=0`` on the resident control, and disarming ONLY the write-back
 leaves the parent's store without the child's mass.
 
-WHAT THIS DOES NOT FIX, AND WHY IT IS SAID HERE
------------------------------------------------
-The refresh writes the domain's OWN resident device arrays, which exist only
-because today's streaming route attaches from a prepared resident state and
-nothing frees it.  It is a correctness repair, not a capacity one: the
-``nest_parent_field`` arena slot is still O(one full parent field), and the
-traffic is still O(the fields the transaction touches) per parent step.
-``bdy_interp1`` only ever READS the parent inside the child's footprint plus
-the +-2 SINT stencil -- a 256-wide 3:1 child covers 86 parent columns, so 90
-with the stencil, 3.1% of a 512^2 parent by area and a 32x smaller slot --
-so a windowed ``bdy_interp1`` would turn both the slot and the traffic into
-O(child footprint).  That is the fix this one stands in for and it is not
-implemented.
+BOUNDED OPERANDS FOR A CANONICAL STREAMED CHILD
+---------------------------------------------
+An actual ``_streamed_domain`` owner now selects bounded operands from
+``nest_operands``. FORCE assembles the same rolling tables from child
+boundary chunks and exact SINT donor rectangles. Feedback restricts child
+chunks directly into the parent owner. A streamed parent runs the same
+smoother kernels with one explicitly reported host J-pass scratch rectangle,
+then diagnoses changed columns in bounded chunks. These paths need no
+resident child field or full-child F16 scratch. The ordinary resident route
+and the older published-store correctness seam remain intact.
+
+This closes operand ownership, not admission: allocator pool retention,
+the host smoothing scratch, rolling tables and simultaneous tiled buffers
+still need inclusion in the route's capacity proof. Mixed microphysics and
+optional inflow hooks retain their separate contracts. No admission guard is
+relaxed by this implementation.
 """
 
 from __future__ import annotations
@@ -69,13 +72,13 @@ from gpuwm.core.microphysics_transition import (
     transition_parent_field_shape,
 )
 from gpuwm.core.inflow_perturbation import build_inflow_perturbation
-from gpuwm.core.nest_interp import (bdy_interp1, copy_fcn, register_nest,
+from gpuwm.core.nest_interp import (bdy_interp1, copy_fcn,
+                                    feedback_parent_bounds, register_nest,
                                     smoother)
 from gpuwm.core.preflight import (nest_field_kinds, nest_slot_dtypes,
                                   nest_slot_shapes)
 from gpuwm.ingest.lateral_bc import (attach_nest_boundaries,
-                                     couple_nest_field,
-                                     uncouple_feedback_field)
+                                     couple_nest_field)
 
 
 _STAGGER = {"u": "x", "v": "y"}
@@ -85,6 +88,37 @@ _APPLICATION_NAME = {"t": "theta", "ph": "phi"}
 #: (qv, qc, qr, ... and every number concentration) is positive-definite
 #: and gets the post-smdsm non-negativity clamp in ``feedback_commit``.
 _SIGNED_KINDS = frozenset({"u", "v", "w", "t", "ph", "mu"})
+
+#: WRF's ``t0`` (share/module_model_constants.F:37, ``PARAMETER :: t0 =
+#: 300.``): the prognostic ``t_2`` is ``theta - t0``, a GLOBAL constant
+#: offset, where gpuwm's ``thp`` is ``theta - thb`` against a per-grid base
+#: profile.  Feedback is the one place the two spellings meet.
+_WRF_T0 = np.float32(300.0)
+
+
+def _rebase_feedback_theta(state, reg, spec_zone) -> None:
+    """Re-express restricted WRF ``t_2`` against the parent's base theta.
+
+    WRF restricts ``t_2 = theta - 300`` and writes it straight into the
+    parent's own ``t_2``, because 300 is a global constant and parent and
+    child mean the same thing by it.  gpuwm stores ``thp = theta - thb``
+    against a base profile that differs between the two grids, so after
+    ``copy_fcn`` has written ``mean(theta_child) - 300`` the reference
+    frame has to be changed -- ``+ 300 - thb_parent`` -- over exactly the
+    cells ``copy_fcn`` just wrote, which are ``feedback_parent_bounds``
+    (that IS ``copy_fcn``'s launch rectangle, nest_interp.py:664-668).
+    The expression order matches the kernel this replaces
+    (kernels/lbc_state.cu:670-672, ``(result + 300) - thb``).
+    """
+    i_lo, i_hi, j_lo, j_hi = feedback_parent_bounds(
+        reg, spec_zone=spec_zone)
+    if i_hi < i_lo or j_hi < j_lo:
+        return
+    window = state.thp[:, j_lo:j_hi + 1, i_lo:i_hi + 1]
+    window += _WRF_T0
+    thb = state.thb
+    window -= (thb[:, j_lo:j_hi + 1, i_lo:i_hi + 1] if thb.ndim == 3
+               else thb[:, None, None])
 
 
 def _clip_nonnegative(window) -> None:
@@ -144,9 +178,8 @@ def parent_footprint_window(dc) -> tuple:
 
 
 #: What ``gpuwm.core.diagnostics.update_diagnostics`` reads that is not setup
-#: geometry.  ``feedback_finalize`` re-runs it over the WHOLE parent, so a
-#: streamed parent needs these four correct everywhere -- not just inside the
-#: feedback rectangle -- before the call.
+#: geometry. Feedback refreshes the parent prognostics before restriction
+#: and re-diagnoses only the rectangle written by restriction/smoothing.
 _DIAGNOSTIC_INPUTS = ("mup", "thp", "php", "qv")
 
 #: What that call WRITES.  A streamed parent has to carry them back or its
@@ -160,21 +193,20 @@ def _sync_in(state, attrs, window=None) -> int:
     ``window`` narrows the pull to a footprint window
     (:func:`parent_footprint_window`); the FORCE path uses it, because its
     reads are bounded and a streamed parent is large by definition.  The
-    feedback path deliberately does not: ``feedback_finalize`` re-runs
-    ``update_diagnostics`` over the WHOLE parent, so its inputs must be
-    correct everywhere, and a windowed pull there would hand the
-    whole-parent kernel stale columns outside the rectangle.
+    feedback commit refreshes its full prognostic write-back arrays so
+    their untouched columns remain current; diagnostic write-back is
+    restricted to the recomputed mass-grid rectangle.
     """
     from gpuwm.core.streaming import refresh_from_store
 
     return refresh_from_store(state, attrs, window=window)
 
 
-def _sync_out(state, attrs) -> int:
+def _sync_out(state, attrs, window=None) -> int:
     """Push ``attrs`` into a streamed domain's store; no-op when resident."""
     from gpuwm.core.streaming import commit_to_store
 
-    return commit_to_store(state, attrs)
+    return commit_to_store(state, attrs, window=window)
 
 
 def _is_streamed(state) -> bool:
@@ -184,6 +216,10 @@ def _is_streamed(state) -> bool:
 
 
 def _field_shape(state, kind: str) -> tuple[int, int, int]:
+    if getattr(state, "_streamed_domain", None) is not None:
+        from gpuwm.core.nest_operands import NestWindowSource
+        field = NestWindowSource(state).array(_state_attr(kind))
+        return ((1, *field.shape) if kind == "mu" else tuple(field.shape))
     if kind == "mu":
         return (1, *state.mup.shape)
     name = {"t": "thp", "ph": "php"}.get(kind, kind)
@@ -232,7 +268,14 @@ class NestCoupler:
         if self.feedback == 1 and parent.run.nz != child.run.nz:
             raise ValueError(
                 "experimental feedback is horizontal-only and requires "
-                "identical parent/child vertical level counts")
+                f"identical parent/child vertical level counts (parent "
+                f"nz={parent.run.nz}, child nz={child.run.nz}): the reverse "
+                "feedback operator averages child cells onto parent cells "
+                "with no vertical mapping, so a mismatched pair would feed "
+                "the parent values from the wrong levels.  A per-domain "
+                "vertical ladder is available on the OFFLINE downscale "
+                "route (`gpuwm downscale --child-levels`), which is one-way "
+                "by construction and takes no feedback.")
         if self.feedback == 1 and self.microphysics_transition.mixed:
             raise ValueError(
                 f"{MISMATCHED_MICROPHYSICS_FEEDBACK_BLOCKER}: experimental "
@@ -259,8 +302,15 @@ class NestCoupler:
         #: be able to print, and the windowed corridor's whole claim is
         #: that this grows with the CHILD's footprint, not the parent.
         self.force_sync_bytes = 0
+        self.feedback_sync_bytes = 0
+        self.feedback_host_scratch_bytes = 0
         self.first_parent_ticks = None
         self.last_parent_ticks = None
+        #: The parent's STEP COUNT at the first and last force.  Ticks
+        #: alone cannot express "one force per parent step" once the step
+        #: stops being a constant -- see the coverage receipt below.
+        self.first_parent_step = None
+        self.last_parent_step = None
         self._geometry_bound = False
         self._valid = False
         self._last_tables = None
@@ -442,7 +492,7 @@ class NestCoupler:
 
         parent_ticks = int(self.child_node.parent.clock.ticks)
         interval_ticks = int(
-            self.child_node.parent.clock.spec.step_ticks)
+            self.child_node.parent.clock.step_ticks)   # LIVE, not configured
         process_start_ticks = (
             parent_ticks if self.first_parent_ticks is None
             else int(self.first_parent_ticks) - interval_ticks)
@@ -469,6 +519,29 @@ class NestCoupler:
                 == (parent_ticks - process_start_ticks) // interval_ticks),
             "first_parent_ticks": self.first_parent_ticks,
             "last_parent_ticks": self.last_parent_ticks,
+            # THE SAME INVARIANT, STATED IN STEPS.  The tick arithmetic
+            # above -- (final - start) % interval, last - first ==
+            # (count-1)*interval -- says "one force per parent step" only
+            # while every parent step is the same size.  Under an adaptive
+            # clock it says nothing: a 30-minute run whose step grew
+            # 30 -> 55 s reported 50 expected forces against 36 actually
+            # taken, and 36 was CORRECT -- it is exactly the number of
+            # steps the parent took.
+            #
+            # Step counts express the invariant directly and hold under
+            # both clocks, so they are published alongside rather than
+            # replacing the tick form; the consumer accepts either.
+            "first_parent_step": self.first_parent_step,
+            "last_parent_step": self.last_parent_step,
+            "parent_step_count": int(self.child_node.parent.clock.step_count),
+            "force_count_matches_parent_steps": bool(
+                (self.force_count == 0
+                 and self.first_parent_step is None)
+                or (self.force_count > 0
+                    and self.last_parent_step is not None
+                    and self.first_parent_step is not None
+                    and self.force_count
+                    == self.last_parent_step - self.first_parent_step + 1)),
         })
         if self.microphysics_transition.mixed:
             init_count = int(getattr(
@@ -529,6 +602,38 @@ class NestCoupler:
         couple_nest_field(state, kind, out=out)
         return out
 
+    def _raw_child_field(self, kind: str):
+        """The child prognostic WRF's feedback restricts, UNCOUPLED.
+
+        ``med_feedback_domain`` hands ``copy_fcn`` the raw ``ngrid%u_2`` /
+        ``t_2`` / ``ph_2`` / ``moist`` arrays
+        (inc/nest_feedbackup_interp.inc:23-27 and the blocks after it), and
+        the whole transaction -- ``share/mediation_feedback_domain.F``
+        read end to end, plus ``feedback_domain_em_part1/part2`` -- contains
+        no ``couple_or_uncouple_em``.  Only the FORCE path couples
+        (share/mediation_force_domain.F:117/:129) and uncouples again
+        (:184/:196).  So there is nothing to build here for any kind
+        except theta, whose WRF spelling is ``theta - 300`` where gpuwm
+        stores ``theta - thb``; that one is materialized in the audited
+        ``nest_child_field`` slot, exactly as ``couple_nest_field``'s
+        LBC_THETA branch spells it (kernels/lbc_state.cu:598-601).
+        """
+        state = self.child_node.state
+        _sync_in(state, ("mup", _state_attr(kind)))
+        if kind != "t":
+            return getattr(state, _state_attr(kind))
+        shape = _field_shape(state, kind)
+        backing = self._scratch("nest_child_field")
+        count = math.prod(shape)
+        if count > backing.size:
+            raise RuntimeError("child field exceeds F16 arena capacity")
+        out = backing.reshape(-1)[:count].reshape(shape)
+        thb = state.thb
+        out[...] = state.thp
+        out += thb if thb.ndim == 3 else thb[:, None, None]
+        out -= _WRF_T0
+        return out
+
     def _rolling_out(self, kind: str):
         result = {}
         for side, suffix in _SIDES:
@@ -537,6 +642,70 @@ class NestCoupler:
                 self._scratch(f"nest_{kind}_bt{suffix}"),
             )
         return result
+
+    def _force_windowed(self, kind, out, parent_source, child_source):
+        """Build rolling strips from bounded canonical operands."""
+        from gpuwm.core.nest_interp import bdy_width, window_registration
+        from gpuwm.core.nest_operands import boundary_windows, streamed_chunk_shape
+
+        node = self.child_node
+        reg = self.registrations[_STAGGER.get(kind, "m")]
+        run = node.cfg.run
+        width = bdy_width(run.spec_zone, run.relax_zone, run.spec_bdy_width)
+        mapped_parent = None
+        if transition_handles_field(self.microphysics_transition, kind):
+            # The existing mapping inventory guard still refuses a streamed
+            # mixed-scheme parent. Resident parents keep their ratified mapper.
+            mapped_parent = self._coupled_parent_field(kind)
+        for side, window, destination in boundary_windows(
+                reg, width, streamed_chunk_shape(node.state)):
+            cropped, donor = window_registration(reg, window)
+            if mapped_parent is None:
+                parent_field = parent_source.coupled(kind, donor)
+            else:
+                import cupy as cp
+                parent_field = cp.ascontiguousarray(mapped_parent[(...,) + donor])
+            child_field = child_source.coupled(kind, window)
+            tables = bdy_interp1(
+                parent_field, child_field, cropped,
+                parent_dt_fp32=node.parent.clock.dt_fp32,
+                parent_interval_ticks=node.parent.clock.step_ticks,
+                spec_zone=run.spec_zone, relax_zone=run.relax_zone,
+                spec_bdy_width=run.spec_bdy_width, sides=(side,))
+            for target, value in zip(out[side], tables[side]):
+                target[destination] = value
+            del tables, parent_field, child_field, cropped
+
+    def _restrict_windowed(self, kind, source, parent_source):
+        """Restrict canonical child chunks directly into their parent owner."""
+        import cupy as cp
+        from gpuwm.core.nest_interp import feedback_child_window
+        from gpuwm.core.nest_operands import streamed_chunk_shape
+
+        node = self.child_node
+        reg = self.registrations[_STAGGER.get(kind, "m")]
+        run = node.cfg.run
+        attr = _state_attr(kind)
+        field = parent_source.array(attr)
+        ilo, ihi, jlo, jhi = feedback_parent_bounds(reg, spec_zone=run.spec_zone)
+        sy, sx = streamed_chunk_shape(node.state)
+        # A parent cell reads at most one ratio-sized child footprint.
+        py, px = max(1, sy // reg.nrj), max(1, sx // reg.nri)
+        for j in range(jlo, jhi+1, py):
+            for i in range(ilo, ihi+1, px):
+                window = (slice(j, min(j+py, jhi+1)),
+                          slice(i, min(i+px, ihi+1)))
+                donor = feedback_child_window(reg, window, spec_zone=run.spec_zone)
+                child = source.raw(kind, donor)
+                target = field[(...,) + window]
+                result = cp.empty(target.shape, dtype=cp.float32)
+                copy_fcn(result, child, reg, spec_zone=run.spec_zone,
+                         parent_window=window, child_window=donor)
+                if kind == "t":
+                    result += _WRF_T0
+                    thb = parent_source.device("thb", window)
+                    result -= thb if thb.ndim == 3 else thb[:, None, None]
+                parent_source.write(attr, window, result)
 
     def force(self, node) -> None:
         """Refresh this child's rolling tables from ``parent(t+dt_p)``.
@@ -554,46 +723,49 @@ class NestCoupler:
         if parent is None:
             raise ValueError("cannot force a root domain")
         lead = int(parent.clock.ticks) - int(node.clock.ticks)
-        parent_interval_ticks = int(parent.clock.spec.step_ticks)
+        parent_interval_ticks = int(parent.clock.step_ticks)   # LIVE
         if lead != parent_interval_ticks:
             raise RuntimeError(
                 f"parent must lead child by one parent interval before FORCE; "
                 f"lead={lead}, interval={parent_interval_ticks}")
 
-        if _is_streamed(node.state) and _is_streamed(parent.state):
-            raise RuntimeError(
-                "a coupling edge with BOTH ends streamed is refused: it "
-                "would compose the streamed-parent footprint corridor with "
-                "the streamed-child frame corridor and the per-tile table "
-                "windows in one FORCE, and no gate has driven that "
-                "composition.  Each shape is gated alone "
-                "(tilestream/test_nest_executor.py streams the parent, "
-                "tilestream/test_streamed_child.py streams the child); "
-                "ungated is refused, not run.  Leave one end resident.")
-        # A streamed CHILD alone is the mirrored corridor: FORCE pulls the
-        # child's boundary FRAME from its store (windowed _sync_in below),
-        # writes the same full-perimeter rolling tables the resident path
-        # writes, and the child's tile passes consume them through
-        # gpuwm.core.nest_stream's per-buffer packed windows, re-copied at
-        # kernel-launch time when the rolling generation moves.  A refusal
-        # used to stand here ("no per-tile windowing of nest boundary
-        # tables at all"); the corridor posed and gated it.
+        # Each endpoint refreshes its own store corridor before the same
+        # coupled interpolation. The child's buffers consume packed rolling
+        # table windows, regardless of the parent's storage representation.
 
         self._bind_geometry()
+        from gpuwm.core.cam_ozone import transfer_parent_ozone
+        # Mass-point interp/bdy registrations have identical donor geometry
+        # for every ratio; reuse the existing manifest-backed device tables.
+        self.force_sync_bytes += transfer_parent_ozone(node, self.registrations["m"])
         fields = {}
         run = node.cfg.run
+        bounded_child = getattr(node.state, "_streamed_domain", None) is not None
+        if bounded_child:
+            from gpuwm.core.nest_operands import NestWindowSource
+            parent_source = NestWindowSource(parent.state)
+            child_source = NestWindowSource(node.state)
         for kind in nest_field_kinds(run):
+            if bounded_child:
+                out = self._rolling_out(kind)
+                self._force_windowed(kind, out, parent_source, child_source)
+                fields[_APPLICATION_NAME.get(kind, kind)] = out
+                continue
             parent_field = self._coupled_parent_field(kind)
             child_field = self._coupled_child_field(kind, frame=True)
             stagger = _STAGGER.get(kind, "m")
             out = self._rolling_out(kind)
             bdy_interp1(
                 parent_field, child_field, self.registrations[stagger],
-                parent_dt_fp32=parent.clock.spec.dt_fp32,
+                parent_dt_fp32=parent.clock.dt_fp32,   # LIVE
                 parent_interval_ticks=parent_interval_ticks,
                 spec_zone=run.spec_zone, relax_zone=run.relax_zone,
                 spec_bdy_width=run.spec_bdy_width, out=out)
             fields[_APPLICATION_NAME.get(kind, kind)] = out
+
+        if bounded_child:
+            self.force_sync_bytes += (parent_source.host_to_device_bytes
+                                      + child_source.host_to_device_bytes)
 
         if self.inflow_perturbation is not None:
             # After bdy_interp1 has written every rolling table and
@@ -608,9 +780,12 @@ class NestCoupler:
             spec_zone=run.spec_zone, relax_zone=run.relax_zone)
         node.clock.mark_force()
         parent_ticks = int(parent.clock.ticks)
+        parent_step = int(parent.clock.step_count)
         if self.first_parent_ticks is None:
             self.first_parent_ticks = parent_ticks
+            self.first_parent_step = parent_step
         self.last_parent_ticks = parent_ticks
+        self.last_parent_step = parent_step
         self.force_count += 1
         self._last_tables = MappingProxyType(fields)
         self._valid = True
@@ -668,67 +843,82 @@ class NestCoupler:
 
         # A STREAMED parent is mutated here from outside dycore.step, so the
         # transaction has to start from the store and end in it.  Pulled in:
-        # every field the restriction READS on the parent side -- ``mup``,
-        # because the momentum/scalar inverses divide by the parent's own
-        # (just-restricted) column mass and the u/v face averages straddle
-        # the feedback rectangle's edge, plus the four inputs
-        # ``feedback_finalize``'s whole-parent update_diagnostics consumes.
-        # Pushed back out below: everything written.  This is O(the fields
-        # the transaction touches) per parent step, which is the honest cost
-        # of a whole-domain finalize; see the module docstring.
+        # every field ``copy_fcn`` WRITES on the parent side -- it fills
+        # only the feedback rectangle, so the cells outside it have to be
+        # the store's own -- plus the four inputs ``feedback_finalize``'s
+        # whole-parent update_diagnostics consumes.  Pushed back out below:
+        # everything written.  This is O(the fields the transaction
+        # touches) per parent step, which is the honest cost of a
+        # whole-domain finalize; see the module docstring.
         streamed_parent = _is_streamed(parent.state)
+        bounded_child = getattr(node.state, "_streamed_domain", None) is not None
+        canonical_parent = bounded_child and getattr(
+            parent.state, "_streamed_domain", None) is not None
         written = ["mup"]
-        if streamed_parent:
+        if streamed_parent and not canonical_parent:
             _sync_in(parent.state,
                      tuple(dict.fromkeys(
                          _DIAGNOSTIC_INPUTS
                          + tuple(_state_attr(k) for k in payload["kinds"]))))
 
-        # WRF couples/restricts MU before uncoupling momenta and scalars.
-        # MU itself is already in feedback units, so it can be written
-        # directly into the exact parent overlap.
-        child_mu = self._coupled_child_field("mu")
-        copy_fcn(
-            parent.state.mup[None], child_mu, self.registrations["m"],
-            spec_zone=run.spec_zone)
+        # WRF hands ``copy_fcn`` the parent's own prognostic as the CD field
+        # (inc/nest_feedbackup_interp.inc), so each restriction is written
+        # straight into the exact parent overlap and nothing else is
+        # touched.  MU is no different from the rest; it leads only because
+        # the smoother and finalize below read the updated mass.
+        if bounded_child:
+            from gpuwm.core.nest_operands import NestWindowSource
+            child_source = NestWindowSource(node.state)
+            parent_source = NestWindowSource(parent.state)
+            self._restrict_windowed("mu", child_source, parent_source)
+        else:
+            child_mu = self._raw_child_field("mu")
+            copy_fcn(
+                parent.state.mup[None], child_mu, self.registrations["m"],
+                spec_zone=run.spec_zone)
 
         for kind in payload["kinds"]:
             if kind == "mu":
                 continue
-            child_field = self._coupled_child_field(kind)
-            shape = _field_shape(parent.state, kind)
-            backing = self._scratch("nest_parent_field")
-            count = math.prod(shape)
-            if count > backing.size:
-                raise RuntimeError("parent feedback field exceeds arena capacity")
-            restricted = backing.reshape(-1)[:count].reshape(shape)
             stagger = _STAGGER.get(kind, "m")
             reg = self.registrations[stagger]
-            copy_fcn(
-                restricted, child_field, reg, spec_zone=run.spec_zone)
-            uncouple_feedback_field(
-                parent.state, kind, restricted, reg,
-                spec_zone=run.spec_zone)
+            if bounded_child:
+                self._restrict_windowed(kind, child_source, parent_source)
+            else:
+                child_field = self._raw_child_field(kind)
+                copy_fcn(
+                    getattr(parent.state, _state_attr(kind)), child_field,
+                    reg, spec_zone=run.spec_zone)
+            if kind == "t" and not bounded_child:
+                _rebase_feedback_theta(parent.state, reg, run.spec_zone)
             written.append(_state_attr(kind))
 
         # The parent smoother, LAST -- feedback_domain_em_part2.F:176-193
         # runs nest_feedbackup_smooth.inc after the unpack, over every
         # fed-back field (Registry flag `s` rides with `u` on all of them:
         # Registry.EM_COMMON:159/172/183/199/211/288/454ff).  The
-        # ``nest_parent_field`` slot is free again -- the restriction is
-        # done with it -- so the smoother's scratch is the same audited
-        # allocation and this adds no memory.  Runs before the streamed
-        # push-back below so a streamed parent's store receives the
-        # smoothed field, not the raw restriction.
+        # ``nest_parent_field`` slot is unused by the restriction, which
+        # writes straight into the parent, so the smoother's scratch is
+        # that same audited allocation and this adds no memory.  Runs
+        # before the streamed push-back below so a streamed parent's store
+        # receives the smoothed field, not the raw restriction.
         if self.smooth_option != 0:
             from gpuwm.core.nest_interp import smoother_parent_window
 
             for kind in payload["kinds"]:
                 reg = self.registrations[_STAGGER.get(kind, "m")]
-                field = getattr(parent.state, _state_attr(kind))
-                smoother(
-                    field, reg, smooth_option=self.smooth_option,
-                    scratch=self._scratch("nest_parent_field"))
+                if canonical_parent:
+                    from gpuwm.core.nest_operands import (
+                        smooth_canonical_parent, streamed_chunk_shape)
+                    field = parent_source.array(_state_attr(kind))
+                    smooth_canonical_parent(
+                        parent_source, kind, reg, smooth_option=self.smooth_option,
+                        chunk_shape=streamed_chunk_shape(parent.state))
+                else:
+                    field = getattr(parent.state, _state_attr(kind))
+                    smoother(
+                        field, reg, smooth_option=self.smooth_option,
+                        scratch=self._scratch("nest_parent_field"))
                 # smdsm's de-smoothing pass is ANTI-diffusive (xnu =
                 # -0.52, interp_fcn.F:3976) and can undershoot a sharp
                 # gradient; on a positive-definite species that is a
@@ -748,8 +938,14 @@ class NestCoupler:
                     if niw > 0 and njw > 0:
                         window = field[..., j0:j0 + njw, i0:i0 + niw]
                         _clip_nonnegative(window)
-        if streamed_parent:
+        if streamed_parent and not canonical_parent:
             _sync_out(parent.state, tuple(dict.fromkeys(written)))
+        if bounded_child:
+            self.feedback_sync_bytes += (
+                child_source.host_to_device_bytes + parent_source.host_to_device_bytes
+                + parent_source.device_to_host_bytes)
+            self.feedback_host_scratch_bytes = max(
+                self.feedback_host_scratch_bytes, parent_source.max_host_scratch_bytes)
         self.feedback_count += 1
         self.last_feedback_ticks = int(node.clock.ticks)
 
@@ -791,10 +987,29 @@ class NestCoupler:
                 ci_hi = max(ci_hi, i0 + niw - 1)
                 cj_lo = min(cj_lo, j0)
                 cj_hi = max(cj_hi, j0 + njw - 1)
+        window = (cj_lo, ci_lo, cj_hi - cj_lo + 1, ci_hi - ci_lo + 1)
+        if (getattr(node.state, "_streamed_domain", None) is not None
+                and getattr(parent.state, "_streamed_domain", None) is not None):
+            from gpuwm.core.nest_operands import (
+                NestWindowSource, diagnose_canonical_parent, streamed_chunk_shape)
+            source = NestWindowSource(parent.state)
+            diagnose_canonical_parent(
+                source, (slice(cj_lo, cj_hi+1), slice(ci_lo, ci_hi+1)),
+                hypsometric_opt=parent.cfg.run.hypsometric_opt,
+                chunk_shape=streamed_chunk_shape(parent.state))
+            self.feedback_sync_bytes += (source.host_to_device_bytes
+                                         + source.device_to_host_bytes)
+            self._prepared_feedback = None
+            return
         update_diagnostics(
-            parent.state, parent.cfg.run.hypsometric_opt,
-            window=(cj_lo, ci_lo, cj_hi - cj_lo + 1, ci_hi - ci_lo + 1))
-        _sync_out(parent.state, _DIAGNOSTIC_OUTPUTS)
+            parent.state, parent.cfg.run.hypsometric_opt, window=window)
+        # The resident view outside this rectangle may still contain
+        # attach-time diagnostics. Only the recomputed columns belong to
+        # this transaction; preserve the live store everywhere else.
+        # Diagnostics takes (j0, i0, nj, ni); the store seam takes
+        # inclusive (j0, j1, i0, i1). These are mass-grid outputs.
+        _sync_out(parent.state, _DIAGNOSTIC_OUTPUTS,
+                  window=(cj_lo, cj_hi, ci_lo, ci_hi))
         self._prepared_feedback = None
 
 

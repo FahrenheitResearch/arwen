@@ -9,6 +9,16 @@ source cell.
 that only worked in the United States. It now works internationally for
 **terrain**.
 
+The same block is consumed by ordinary runs and prepared GFS, ERA5,
+caller-mapped, and native HRRR inputs. It applies before initialization to
+the root, children, and any sealed moving-domain static corridors. Prepared
+receipts bind the requested settings, date, grid placement, and resulting
+static bytes. A reused preparation must retain that binding; changing an
+active overlay requires rebuilding its static preparation. Relative cache
+paths stay relative to the original case file when a prepared bundle writes
+its own configuration. `enabled = false` retains the baseline, and
+`on_refuse = "fallback-30s"` records an explicitly requested coverage fallback.
+
 ## What you get, and where
 
 | | Source | Resolution | Where it is published |

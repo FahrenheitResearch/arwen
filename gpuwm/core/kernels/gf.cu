@@ -11,7 +11,8 @@
 // float32 CPU authority
 // gpuwm/verify/gf_deep_ref.py + gf_deep_body.py::cup_gf_column, which is
 // itself bitwise (max_ulp 0 with fzu pinned; see below for why the pin
-// exists and why this kernel does not need it) against the byte-frozen
+// exists and why this kernel needs it too since 2.6.6) against the
+// byte-frozen
 // module_cu_gf_deep.F / module_cu_gf_sh.F capture in
 // gpuwm/data/gf/oracle/gf-deep-levels.csv / gf-deep-surface.csv.  One CUDA
 // thread owns one complete column; column independence is measured, not
@@ -39,25 +40,59 @@
 //    gfk_exp/gfk_pow are the audited transcriptions this tree already holds
 //    at max_ulp 0 (gpuwm/core/kernels/noahmp_leaves.cu r_log/r_exp/r_pow;
 //    renamed here because translation units cannot share device code).
-//    gfk_exp2/gfk_expm1/gfk_lgamma/gfk_gamma_product/gfk_tgamma are NEW
-//    transcriptions -- sysdeps/ieee754/flt-32/e_exp2f.c, s_expm1f.c,
-//    e_lgammaf_r.c (positive arm), dbl-64/gamma_productf.c, e_gammaf_r.c --
-//    graded bitwise against the live glibc 2.39 sweep fixtures
-//    gpuwm/data/gf/oracle/gf-libm-*.csv.
+//    gfk_exp2/gfk_expm1/gfk_lgamma_pos -- transcriptions of
+//    sysdeps/ieee754/flt-32/e_exp2f.c, s_expm1f.c and e_lgammaf_r.c
+//    (positive arm) -- are DELETED at 2.6.6.  Their only caller anywhere
+//    was the gamma block, which is also gone, so no physics path reached
+//    them and their gf-libm-*.csv sweeps graded dead code.  The live
+//    float32 surface of this unit is now gfk_log, gfk_exp, gfk_pow and
+//    gfk_tgamma, and gfk_tgamma is NOT a transcription -- see below.
 //
-// WHY tgammaf IS TRANSCRIBED AT ALL (the one place this kernel is BETTER
-// than the CPU reference): get_zu_zd_pdf_fim normalises the beta-function
-// mass-flux shape with fzu = gamma(alpha+beta)/(gamma(alpha)*gamma(beta)).
-// Perturb fzu by ONE ULP and xmb moves by up to 7.3 per cent through the
-// xk = (xaa0-aa1)/mbdt cancellation (measured;
-// tests/test_gf_deep_parity.py::
+// GAMMA IS A DELIBERATE DIVERGENCE FROM WRF.  Read
+// docs/gf_gamma_known_delta.md before quoting any GF parity number.
+//
+// get_zu_zd_pdf_fim normalises the beta-function mass-flux shape with
+// fzu = gamma(alpha+beta)/(gamma(alpha)*gamma(beta)).  Perturb fzu by ONE
+// ULP and xmb moves by up to 7.3 per cent through the xk = (xaa0-aa1)/mbdt
+// cancellation (measured; tests/test_gf_deep_parity.py::
 // test_a_one_ulp_massflux_shape_perturbation_moves_xmb_by_seven_percent).
-// So gamma cannot be a tolerance question.  The CPU reference models
-// tgammaf in float64 (0-4 ULP off glibc on the live arguments) and pins the
-// oracle's captured fzu for its bitwise gate; this kernel computes glibc's
-// own words with gfk_tgamma and needs no pin.  CUDA's builtin tgammaf is a
-// DIFFERENT function and must not be used; the gate keeps a negative
-// control proving the difference is real on the live argument set.
+// So gamma cannot be a tolerance question -- but it is now an ACCURACY
+// question rather than a bit-matching one.
+//
+// Through 2.6.5 gfk_tgamma was a transcription of glibc's e_gammaf_r.c and
+// gamma_productf.c, and the kernel needed no fzu pin.  Both files are
+// glibc-authored, FSF-copyright, LGPL-2.1-or-later with no permissive
+// upstream, so an Apache-2.0 distribution cannot carry them; they are gone.
+// gfk_tgamma is now ArWen's own correctly-rounded gamma
+// (glibc_flt32.cuh).  MEASURED against a 113-bit tgammaq oracle over all
+// 59,768,833 float32 arguments of [0.25, 36]: ours is correctly rounded on
+// every one, glibc 2.39's is not on 23,575,230 of them (39.44 per cent),
+// worst 6 ULP.  tgammaf(4.0f) returns 6.00000048; ours returns 6.
+//
+// The consequence is bounded and already gated.  MEASURED, gfk_tgamma now
+// returns the same word as the CPU authority's own gamma model
+// (gpuwm/verify/gf_deep_ref.py::_tgammaf) on all 59,768,833 of those
+// arguments, so the CPU and CUDA paths agree bitwise where before they did
+// not, and this kernel's divergence from WRF is exactly the one the CPU
+// suite has carried since the port landed: fzu moves on 21 of the 26
+// (alpha, beta) pairs the committed fixture reaches, worst 4 ULP -- the
+// budget test_fzu_is_the_one_measured_divergence already asserts.
+//
+// TO GET WRF'S ANSWER BACK, pin fzu.  gfd_get_zu_zd_pdf takes an
+// fzu_override and ALL THREE entry points expose it as a per-column scin
+// slot: gf_deep_stage (INS_fzu_up, INS_fzu_dn), gf_shallow_stage
+// (SINS_fzu_sh) and, since 2.6.6, gf_gfdrv_stage (DINS_fzu_up,
+// DINS_fzu_dn, DINS_fzu_sh).  Feed a WRF capture's own fzu words and the
+// whole chain is bitwise WRF's again, which is how the CPU suite has
+// reached max_ulp 0 on xmb and pre since the port landed.  That is a
+// RUNTIME input, not a build flag, and no build flag exists or is wanted:
+// reproducing glibc's bits without a capture to draw from would mean
+// shipping 22.5 MB of measured glibc deviation, which is the thing this
+// change removes.  The shipped forecast path passes 0 and computes the
+// correctly rounded value.
+//
+// CUDA's builtin tgammaf is a DIFFERENT function again and must not be
+// used; the gate keeps a negative control proving the difference is real.
 //
 // Same story for powf: the CPU reference computes the CORRECTLY ROUNDED
 // power and carries a measured 10-lane / 1-ULP zu divergence where glibc's
@@ -538,13 +573,14 @@ __constant__ unsigned int GFC[GF_NCONST] = {
 // ==========================================================================
 // glibc 2.39 float32 transcendentals -- MOVED
 // ==========================================================================
-// gfk_log/gfk_d2f_rn/gfk_exp2_core/gfk_exp/gfk_exp2/gfk_powf_log2/
-// gfk_checkint/gfk_zeroinfnan/gfk_pow/gfk_expm1/gfk_lgamma_pos/
-// gfk_gamma_product/gfk_gammaf_positive/gfk_tgamma and their tables now
-// live in gpuwm/core/kernels/glibc_flt32.cuh, prepended to this translation
-// unit by the loader's _EXTRA_HEADERS allow-list, because New Tiedtke needs
-// the same words.  The text moved unchanged; see that file's header for the
-// before/after compile reading.
+// gfk_log/gfk_d2f_rn/gfk_exp2_core/gfk_exp/gfk_powf_log2/gfk_checkint/
+// gfk_zeroinfnan/gfk_pow/gfk_tgamma and their tables live in
+// gpuwm/core/kernels/glibc_flt32.cuh, prepended to this translation unit by
+// the loader's _EXTRA_HEADERS allow-list, because New Tiedtke needs the
+// same words.  The text moved unchanged; see that file's header for the
+// before/after compile reading.  gfk_exp2/gfk_expm1/gfk_lgamma_pos moved
+// with it and were deleted there at 2.6.6 when the gamma block that was
+// their only caller went.
 
 // ==========================================================================
 // the deep cloud model, module_cu_gf_deep.F, one procedure per function
@@ -1144,7 +1180,7 @@ __device__ float gfd_cup_up_aa0(GfColC z, GfColC zu,
     float aa0 = K_ZERO;
     if (ierr != 0) return aa0;
     for (int k = 2; k <= ktf; k++) {
-        if (k <= kbcon || k > ktop) continue;
+        if (k < kbcon || k > ktop) continue;
         float dz = FSUB(z[k], z[k - 1]);
         float da = FDIV(
             FMUL(FMUL(FMUL(zu[k], dz),
@@ -2774,9 +2810,16 @@ extern "C" __global__ void gf_deep_const_dump(unsigned int *out)
     if (i < GF_NCONST) out[i] = GFC[i];
 }
 
-// The libm surface tgammaf stands on, plus the negative control: CUDA's
-// builtin tgammaf is a DIFFERENT function from glibc's and slot 1 proves
-// it on the live argument set.
+// The LIVE float32 surface of this unit, plus the negative control.  Slot 0
+// is ArWen's own correctly-rounded gamma and slot 1 is CUDA's builtin
+// tgammaf, which is a DIFFERENT function again -- neither glibc's nor
+// correctly rounded -- so slot 1 is what proves slot 0 is load-bearing.
+//
+// The probe was 7 slots through 2.6.5.  Slots 2/3/4 held gfk_lgamma_pos,
+// gfk_expm1 and gfk_exp2; those three were transcriptions whose only caller
+// was the LGPL gamma block, and all four are deleted at 2.6.6, so the stride
+// is 4.  tests/test_gf_gamma_correctly_rounded.py grades slot 0 against a
+// 113-bit oracle; tests/test_gf_deep_cuda.py keeps the slot-1 control.
 extern "C" __global__ void gf_libm_unary_probe(const float *__restrict__ x,
                                                float *__restrict__ out,
                                                int n)
@@ -2784,13 +2827,10 @@ extern "C" __global__ void gf_libm_unary_probe(const float *__restrict__ x,
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
     float v = x[i];
-    out[7 * (size_t)i + 0] = gfk_tgamma(v);
-    out[7 * (size_t)i + 1] = tgammaf(v);      // CUDA builtin: negative control
-    out[7 * (size_t)i + 2] = gfk_lgamma_pos(v);
-    out[7 * (size_t)i + 3] = gfk_expm1(v);
-    out[7 * (size_t)i + 4] = gfk_exp2(v);
-    out[7 * (size_t)i + 5] = gfk_exp(v);
-    out[7 * (size_t)i + 6] = gfk_log(v);
+    out[4 * (size_t)i + 0] = gfk_tgamma(v);
+    out[4 * (size_t)i + 1] = tgammaf(v);      // CUDA builtin: negative control
+    out[4 * (size_t)i + 2] = gfk_exp(v);
+    out[4 * (size_t)i + 3] = gfk_log(v);
 }
 
 extern "C" __global__ void gf_libm_pow_probe(const float *__restrict__ x,
@@ -3714,8 +3754,18 @@ enum {
     DIN_rqvblten,
     GF_DRV_NIN_LEV
 };
+// DINS_fzu_up / DINS_fzu_dn / DINS_fzu_sh are the SAME "<= 0 means compute"
+// override gfd_get_zu_zd_pdf takes and gf_deep_stage / gf_shallow_stage
+// already expose (INS_fzu_up, INS_fzu_dn, SINS_fzu_sh).  The driver-level
+// entry point needs them for the same reason the scheme-level ones do:
+// gamma is a deliberate divergence from WRF (docs/gf_gamma_known_delta.md),
+// so a run being compared column-by-column against a WRF capture pins fzu
+// from that capture and grades everything else bitwise.  The SHIPPED
+// forecast path passes 0 in all three and computes the correctly rounded
+// value -- gpuwm/core/gf.py::_IN_SCA.
 enum {
     DINS_ht, DINS_hfx, DINS_qfx, DINS_xland, DINS_dt, DINS_dx,
+    DINS_fzu_up, DINS_fzu_dn, DINS_fzu_sh,
     GF_DRV_NIN_SCA
 };
 // iin is (n, 3): kpbl, ishallow, ichoice
@@ -3763,6 +3813,9 @@ extern "C" __global__ void gf_gfdrv_stage(
     float xland = sci[DINS_xland];
     float dt = sci[DINS_dt];
     float dx = sci[DINS_dx];
+    float fzu_up = sci[DINS_fzu_up];
+    float fzu_dn = sci[DINS_fzu_dn];
+    float fzu_sh = sci[DINS_fzu_sh];
 
     GfCol u = GFWS_AT(gfws_own, 0);
     GfCol v = GFWS_AT(gfws_own, 1);
@@ -3867,7 +3920,7 @@ extern "C" __global__ void gf_gfdrv_stage(
         gfd_shallow_column(
             zo, t, q2d, tshall, qshall, po, dhdt, rho,
             ter11, psur, hfx, qfx, xland, dt,
-            kpbl, nz, /*ichoice=*/0, k22_wrf_faithful, K_ZERO,
+            kpbl, nz, /*ichoice=*/0, k22_wrf_faithful, fzu_sh,
             GfSink{(float *)0}, GfSink{(float *)0}, GfSinkI{(int *)0},
             outts, outqs, outqcs, cupclws,
             &prets, &xmbs, &k22s, &kbcons, &ktops, &ierrs,
@@ -3890,7 +3943,7 @@ extern "C" __global__ void gf_gfdrv_stage(
         gfd_deep_column(
             zo, t, q2d, tn_f, qo_f, po, u, v, rho, omeg,
             ter11, psur, hfx, qfx, xland, dx, ccn, dt, xmbs,
-            K_ZERO, K_ZERO,
+            fzu_up, fzu_dn,
             kpbl, nz, ichoice,
             GfSink{(float *)0}, GfSink{(float *)0}, GfSinkI{(int *)0},
             outt, outq, outqc, outu, outv, cupclw,

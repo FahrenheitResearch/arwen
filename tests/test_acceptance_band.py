@@ -23,7 +23,9 @@ from gpuwm.certify.band import (BAND_SCHEMA_ID, BAND_SCHEMA_PATH,
                                 extract_anchor_table, load_band,
                                 load_margin_rule, place_value, validate_band)
 from gpuwm.certify.verdict import certify
-from gpuwm.certify.wrf_reference import MAPPING_HASH_KEYS
+from gpuwm.certify.wrf_reference import (MAPPING_HASH_KEYS,
+                                         absent_reference_hashes,
+                                         mismatched_reference_artifacts)
 
 REPO_ROOT = fixtures.REPO_ROOT
 ANCHOR_DOCUMENT = REPO_ROOT / "docs" / "public" / "VERIFICATION.md"
@@ -642,3 +644,110 @@ def test_only_a_digest_pinned_artifact_is_read_through_its_manifest(tmp_path):
     assert pinned == {"abc.build-recipe.md", "abc.namelist.input"}
     assert "abc.namelist.wps" not in pinned
     assert "unpinned.namelist.input" not in pinned
+
+
+# --------------------------------------------------------------------------
+# A published digest hashes the artifact it names
+# --------------------------------------------------------------------------
+#
+# The exemption above is earned by a claim -- "editing it breaks the digest
+# that pins it" -- that nothing in this repository ever checked.  Certification
+# asks only whether ``build_recipe_sha256`` is 64 hex characters
+# (``absent_reference_hashes``), and the committed manifest's value had never,
+# in any commit, hashed the recipe the same manifest names.  A consumer doing
+# what CERTIFICATION.md tells them to do -- "it recomputes the digest" -- got a
+# mismatch on the one reference artifact this repository actually ships.
+
+
+def _one_committed_manifest():
+    paths = fixtures.committed_wrf_reference_paths()
+    assert paths, "this repository ships no WRF reference manifest"
+    path = paths[0]
+    return path, json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_every_committed_manifest_digest_hashes_the_artifact_it_names():
+    """The gate: recompute, do not re-read.
+
+    Over every manifest committed under ``docs/public/wrf-reference/``, for
+    every artifact the manifest both names and ships beside itself.
+    """
+    for path in fixtures.committed_wrf_reference_paths():
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        mismatched = mismatched_reference_artifacts(manifest, path.parent)
+        assert mismatched == (), (path.name, mismatched)
+
+
+def test_the_committed_manifest_actually_ships_the_artifacts_it_pins():
+    """Non-vacuity, first half: the check had files to recompute.
+
+    A manifest that named nothing committed would satisfy the gate above by
+    checking nothing, which is the shape of the defect one level up.
+    """
+    path, manifest = _one_committed_manifest()
+    named = [manifest["build_recipe"], *manifest["namelists"].values()]
+    assert len(named) >= 3, named
+    for name in named:
+        assert (path.parent / name).is_file(), name
+
+
+def test_an_edited_pinned_artifact_is_reported(tmp_path):
+    """Non-vacuity, second half, and the claim the scan exemption rests on.
+
+    ``_digest_pinned_file_names`` exempts these files from the case-name scan
+    because "any edit to it breaks the digest that pins it".  That is only
+    true if something recomputes the digest.  One byte, on the real recipe.
+    """
+    path, manifest = _one_committed_manifest()
+    for name in [manifest["build_recipe"], *manifest["namelists"].values()]:
+        (tmp_path / name).write_bytes((path.parent / name).read_bytes())
+    assert mismatched_reference_artifacts(manifest, tmp_path) == ()
+
+    recipe = tmp_path / manifest["build_recipe"]
+    recipe.write_bytes(recipe.read_bytes() + b"\n")
+    mismatched = mismatched_reference_artifacts(manifest, tmp_path)
+    assert [item["key"] for item in mismatched] == ["build_recipe_sha256"]
+    assert mismatched[0]["artifact"] == manifest["build_recipe"]
+    assert mismatched[0]["declared"] != mismatched[0]["measured"]
+
+
+def test_a_well_formed_digest_that_pins_nothing_is_reported(tmp_path):
+    """THE negative control: the exact shape certification accepted.
+
+    ``absent_reference_hashes`` is satisfied by any 64-character lowercase
+    hex string, so a digest that pins nothing passes ``certify``'s
+    ``wrf_reference_hashes_present`` condition and is then folded into the
+    verdict's binding inventory as if it were a fact.  Both halves are
+    asserted here: the shape check stays quiet, and the recompute does not.
+    """
+    path, manifest = _one_committed_manifest()
+    for name in [manifest["build_recipe"], *manifest["namelists"].values()]:
+        (tmp_path / name).write_bytes((path.parent / name).read_bytes())
+
+    forged = dict(manifest, build_recipe_sha256="8" * 64)
+    assert absent_reference_hashes(forged) == ()
+    mismatched = mismatched_reference_artifacts(forged, tmp_path)
+    assert [item["key"] for item in mismatched] == ["build_recipe_sha256"]
+    assert mismatched[0]["declared"] == "8" * 64
+
+    # And the same for a namelist, so the mapping arm is not decorative.
+    name = sorted(manifest["namelists"])[0]
+    forged = dict(manifest,
+                  namelist_sha256=dict(manifest["namelist_sha256"],
+                                       **{name: "9" * 64}))
+    assert absent_reference_hashes(forged) == ()
+    assert [item["key"] for item in
+            mismatched_reference_artifacts(forged, tmp_path)] == [
+        "namelist_sha256"]
+
+
+def test_an_artifact_named_but_not_committed_is_not_a_mismatch(tmp_path):
+    """Discrimination control: silence about what a reader cannot check.
+
+    The WRF executable and the reference wrfouts are deliberately outside the
+    release and only their digests ship.  A checker that reported those would
+    turn a disclosed limit into a false alarm, and the gate above would have
+    to carry an exemption list to stay green.
+    """
+    _path, manifest = _one_committed_manifest()
+    assert mismatched_reference_artifacts(manifest, tmp_path) == ()

@@ -135,15 +135,15 @@ exact `gpuwm fetch` command for the data it needs. With `--source hrrr`
 it emits the whole input set the native HRRR routes read -- the
 `<stem>.d01-target.json` target-domain document, the native
 `<stem>.namelist.input` and its stock-WRF twin
-`<stem>.stock.namelist.input` beside them -- and its closing block
-prints the HRRR chain (root preparation, hierarchy, forecast) with every
-one of those paths already bound. The only blanks are your `WPS_GEOG`
-root and the receipt digests each stage prints when it finishes.
+`<stem>.stock.namelist.input` beside them. The closing block prints
+`gpuwm go <experiment.toml>` to fetch,
+prepare, forecast and render. Set up `WPS_GEOG` as described by
+`gpuwm setup`; preparation receipts are read automatically.
 `--ladder` picks the
 depth (`12`, `12-3`, `12-3-1`, `12-3-1-0.5`, or `auto`; the
-single-domain `12` ladder emits `restart_interval_s = 0` because the
-prepared single-domain forecaster it routes to writes no checkpoints --
-see section 7); `--vram-gib N` covers cards between the
+single-domain `12` ladder supports the same checkpoint transport as the
+nested ladders; new configurations checkpoint hourly or at the end of a
+shorter run -- see section 7); `--vram-gib N` covers cards between the
 named tiers (`--card 12gb|16gb|24gb|32gb`). How the sizing model works and where each platform's
 envelope factor comes from: [HARDWARE.md](HARDWARE.md).
 
@@ -244,12 +244,51 @@ gpuwm go configs/myarea.toml
 
 Bare `gpuwm domain` at a terminal asks four questions and supplies both
 of those flags for you, so its emitted config is a `gpuwm go` config.
-`gpuwm go --dry-run` prints the six commands, filled in, without
-running them. The long form below is what `go` runs, stage by stage;
-read it when a stage refuses, or when you want to change one. `gpuwm go`
-is the command for this source: `gpuwm run` is the other door, the
-`[case_data]`/ERA5 route in section 5, and it refuses a GFS config by
-design (no `[case_data]` table).
+`gpuwm go CONFIG.toml --dry-run` validates the route and prints a launch
+command without running it. The long form below explains the GFS stages;
+read it when a stage refuses, or when you want to change one.
+
+Downloads are managed automatically under the forecast workspace. Running a
+different cycle, source or area selects a separate cache; repeating a matching
+request reuses verified inputs. Existing data are preserved, including the flat
+data folders created by older versions. You do not need to choose another folder
+between forecasts. Use `--data-dir DIR` only when deliberately managing a specific
+download directory yourself.
+
+Configs that declare `[case_data]` use the same `gpuwm go CONFIG.toml`
+command. Their named inputs go directly through preparation and the
+experiment runner, without fetching replacements. The default draws pictures
+as frames become available and finishes the remaining products after the
+forecast. Use `--products none` for a forecast without pictures, or a product
+list such as `--products t2,refl` to select them. A `--geog-root` override is
+honored and recorded; otherwise the config's geography root applies.
+`--data-dir` is for download routes and is refused for declared inputs;
+change `[case_data].forcing` to use a different set of files. The lower-level
+`gpuwm run` command remains available, and an ordinary experiment run plan
+still produces no pictures unless its `render_products` option requests them.
+
+The same `gpuwm go CONFIG.toml` command selects the registered native
+preparation route for HRRR and supported mapped sources such as ICON-EU.
+It also accepts nested configs; the config selects the appropriate tree
+runner. Use `gpuwm go CONFIG.toml --dry-run` to check the route before
+fetching. Native routes carry manifest digests internally. Their default
+output reports stages and warnings; `--explain` shows detailed output, and
+`launch.log` in the run folder preserves stage diagnostics. Sources without
+an executable automatic route are refused before downloading, with their
+missing capability available under `--explain`. Memory admission prices the forecast before launch and reports whether the
+source's preparation phase is priced; the actual preparation and runtime
+allocation checks remain in force.
+
+When you already have input files, `gpuwm prep` and `rw-wps` report
+preparation stages and the selected backend while they run. They save full
+diagnostics to a uniquely named `*-prep-*.log` beside the prepared directory.
+Successful preparation prints a `gpuwm sim` command with the configuration
+paths filled in; you do not need to copy checksums. A failure prints its
+reason and the log path. Add `--explain` to also show the full diagnostic
+output on the terminal. Inventory and `--dry-run` commands do not create logs.
+Companion WRF export progress explicitly says whether files were written,
+not requested, or not produced; optional export refusal does not discard a
+successful native preparation.
 
 **The order matters**: the runner binds the experiment config into the
 prepared cache, so materializing the physics *after* preprocessing
@@ -346,6 +385,16 @@ measured budget in the transcript). `check` failing is the tool working:
 it names the missing input or the memory shortfall and the remedy
 before you spend GPU time.
 
+A check of this machine also compiles and executes a tiny CUDA kernel
+and a CuPy reduction from a fresh cache before memory admission. A
+missing compiler or toolkit header stops the check with the matching
+`gpuwm doctor` remedy. `--budget-gib` remains an estimate for a declared
+allocation budget and labels GPU readiness as not checked. The wizard
+uses `--free-gib` for free VRAM before reserves, so its follow-up check
+prices the same resident or streamed plan. Run ordinary `check` on the
+forecast machine before launch. Host-memory admission reads
+available physical RAM on both Windows and Linux.
+
 ## 5. Run (measured: 6 h forecast in 3.6 min)
 
 ```bash
@@ -433,14 +482,13 @@ gpuwm render --pair out/runA/png out/runB/png --out out/compare
 ## 7. Checkpoint and resume (measured: 65.6 s + 46.1 s)
 
 **Which route this is.** `gpuwm run` is the `[case_data]` route of
-section 3, and it writes checkpoints. So does the multi-domain prepared
-route (section 3a's nested chain). The **single-domain** prepared route
--- a config with no `[case_data]` table and one domain, which is what
-`--ladder 12` emits and what `gpuwm go` runs -- writes **no**
-checkpoints at any `restart_interval_s`, and there is nothing for
-`gpuwm resume` to continue from. `gpuwm check` says so in one sentence
-before you spend the run. Reach checkpointing by using a multi-domain
-config or a `[case_data]` experiment.
+section 3. It and both prepared routes, single-domain and multi-domain,
+support checkpoints. New wizard configurations use hourly checkpoints,
+or the end of a shorter run, with a compatible native event clock.
+An explicit `restart_interval_s = 0` disables checkpoint writing.
+Resume requires a complete valid checkpoint and matching original inputs;
+an output or log folder by itself is insufficient. Prepared runs retain
+their prepared bundle and configuration for the resumed launch.
 
 ```bash
 # a 2 h leg writing checkpoints every simulated hour

@@ -1,3 +1,17 @@
+# ======================================================================
+# THIRD-PARTY NOTICE.  Parts of this file are hand transcriptions of
+# third-party work.  ArWen distributes the file under the Apache License
+# 2.0; the notices below belong to the transcribed parts and are kept here
+# because their own licences require it.  Full texts are in the repository
+# NOTICE and in the licenses/ directory.
+#
+#   RRTM longwave, transcribed from WRF v4.6.1 phys/module_ra_rrtm.F.
+#   That file carries AER's authorship -- Eli J. Mlawer, Steven J.
+#   Taubman, Shepard A. Clough, Atmospheric & Environmental Research, Inc.
+#   -- but no copyright line and no licence clause, so it falls under
+#   WRF's public-domain declaration.  AER is credited here as a matter of
+#   accuracy rather than of condition.
+# ======================================================================
 """Coefficient ingestion and pinned policies for WRF legacy RRTM LW.
 
 This module is intentionally not an approximate longwave solver.  It loads
@@ -154,15 +168,20 @@ def rrtm_upper_layer_count(p_top_pa: float) -> int:
     return int(np.floor(p_top_pa * 0.01 / RRTM_DELTAP_HPA + 0.5))
 
 
-def rrtm_default_trace_gases(year: int) -> dict[str, float]:
+def rrtm_default_trace_gases(year: int, overrides=None) -> dict[str, float]:
     """WRF v4.6.1 pre-CAM-gas RRTM trace-gas policy."""
     if isinstance(year, bool) or not isinstance(year, (int, np.integer)):
         raise TypeError("year must be an integer")
-    return {
+    gases = {
         "co2": float((280.0 + 90.0 * np.exp(0.02 * (year - 2000))) * 1.0e-6),
         "n2o": 319.0e-9,
         "ch4": 1774.0e-9,
     }
+    if overrides is not None:
+        from gpuwm.core.trace_gases import CLASSIC_GASES, validate_trace_gas_overrides
+        gases.update(validate_trace_gas_overrides(
+            overrides, supported=CLASSIC_GASES, consumer="classic RRTM longwave"))
+    return gases
 
 
 __all__ = ["DATA_DIR", "RRTM_DATA_SHA256", "RRTM_DELTAP_HPA",

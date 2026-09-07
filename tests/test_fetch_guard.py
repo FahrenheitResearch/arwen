@@ -80,6 +80,38 @@ _ABANDON = """
 # Lock identity
 # ---------------------------------------------------------------------------
 
+def test_writer_inspection_does_not_create_a_lock(tmp_path, isolated_lock_root):
+    assert not fetch_guard.active_writer("fetch-out", tmp_path / "new-inputs")
+    assert not isolated_lock_root.exists()
+
+
+def test_writer_inspection_preserves_the_lock_record_and_observes_release(tmp_path):
+    target = tmp_path / "inputs"
+    with fetch_guard.hold("fetch-out", target):
+        path = fetch_guard.lock_path("fetch-out", target)
+        with path.open("rb") as stream:
+            stream.seek(1)  # Windows correctly excludes readers from the locked byte.
+            before = stream.read()
+            assert fetch_guard.active_writer("fetch-out", target)
+            stream.seek(1)
+            assert stream.read() == before
+    assert not fetch_guard.active_writer("fetch-out", target)
+    assert path.read_bytes() == b"\0" + before
+
+
+def test_writer_inspection_observes_another_process_without_waiting(tmp_path):
+    target = tmp_path / "inputs"
+    with fetch_guard.hold("fetch-out", target):
+        result = _child("""
+            import sys
+            from gpuwm import fetch_guard
+            assert fetch_guard.active_writer('fetch-out', sys.argv[1])
+            print('active')
+        """, str(target))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "active"
+
+
 def test_lock_path_is_per_target_and_per_kind(tmp_path):
     one = tmp_path / "run-a"
     two = tmp_path / "run-b"

@@ -58,9 +58,9 @@ def update_diagnostics(state: DomainState, hypsometric_opt: int = 1,
     blocks = (nxw * nyw + _THREADS - 1) // _THREADS
     kernel((blocks,), (_THREADS,),
            (state.thp, state.php, state.mup,
-            state.thb, state.phb, state.alb, state.rdnw,
+            state.thb, state.phb, state.dphb_resid, state.alb, state.rdnw,
             state.c1h, state.c2h, state.c3h, state.c4h,
-            state.c3f, state.c4f, state.mub2d,
+            state.c3f, state.c4f, state.dc3f, state.dc4f, state.mub2d,
             state.qv if moist else state.thp,
             np.float32(0.0 if state.p_top is None else state.p_top),
             np.int32(hypsometric_opt),
@@ -126,8 +126,18 @@ def _update_diagnostics_numpy(state: DomainState,
         theta = np.asarray(
             theta * (f32(1.0) + f32(c.RVOVRD) * col(state.qv)),
             dtype=np.float32)
-    phi = np.asarray(prof(state.phb) + col(state.php), dtype=np.float32)
-    dphi = np.asarray(phi[1:] - phi[:-1], dtype=np.float32)
+    # Two exact subtractions plus the float64-minus-float32 residual of
+    # the base thickness, exactly as the CUDA kernel spells it (see
+    # gpuwm/core/kernels/diagnostics.cu's header for the cancellation
+    # this replaces and gpuwm/core/state.py::set_base_geopotential for
+    # where dphb_resid comes from).
+    phb = prof(state.phb)
+    php = col(state.php)
+    dphb = np.asarray(np.asarray(phb[1:] - phb[:-1], dtype=np.float32)
+                      + prof(state.dphb_resid), dtype=np.float32)
+    dphi = np.asarray(dphb + np.asarray(php[1:] - php[:-1],
+                                        dtype=np.float32),
+                      dtype=np.float32)
     alb = prof(state.alb)
     if hypsometric_opt == 2:
         p_top = f32(state.p_top)
@@ -135,13 +145,15 @@ def _update_diagnostics_numpy(state: DomainState,
         c4f = np.asarray(state.c4f, dtype=np.float32)[:, None, None]
         c3h = np.asarray(state.c3h, dtype=np.float32)[:, None, None]
         c4h = np.asarray(state.c4h, dtype=np.float32)[:, None, None]
+        dc3f = np.asarray(state.dc3f, dtype=np.float32)[:, None, None]
+        dc4f = np.asarray(state.dc4f, dtype=np.float32)[:, None, None]
         pfu = np.asarray(c3f[1:] * mu + c4f[1:] + p_top,
                          dtype=np.float32)
-        pfd = np.asarray(c3f[:-1] * mu + c4f[:-1] + p_top,
-                         dtype=np.float32)
+        # pfd - pfu, with p_top cancelling identically.
+        dpf = np.asarray(dc3f * mu + dc4f, dtype=np.float32)
         phm = np.asarray(c3h * mu + c4h + p_top, dtype=np.float32)
         al = np.asarray(
-            dphi / phm / np.log(np.asarray(pfd / pfu, dtype=np.float32))
+            dphi / phm / np.log1p(np.asarray(dpf / pfu, dtype=np.float32))
             - alb, dtype=np.float32)
         alt = np.asarray(al + alb, dtype=np.float32)
     else:

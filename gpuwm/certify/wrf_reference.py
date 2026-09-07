@@ -18,7 +18,10 @@ manifest having been committed yet.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any, Mapping
+
+from gpuwm.certify.band import sha256_file
 
 MANIFEST_SCHEMA_ID = "gpuwm.wrf-reference-manifest/v1"
 
@@ -74,6 +77,70 @@ def absent_reference_hashes(manifest: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(absent)
 
 
+#: Artifacts a manifest may both NAME and commit beside itself, paired with
+#: the field that publishes the digest of each.  ``build_recipe`` is one
+#: filename pinned by the scalar ``build_recipe_sha256``; ``namelists`` is a
+#: ``name -> filename`` mapping whose digests live under ``namelist_sha256``,
+#: keyed the same way.  The executable and the reference wrfouts are named
+#: in neither: they are not redistributable and only their hashes ship.
+COMMITTED_ARTIFACT_KEYS: tuple[tuple[str, str], ...] = (
+    ("build_recipe", "build_recipe_sha256"),
+    ("namelists", "namelist_sha256"),
+)
+
+
+def mismatched_reference_artifacts(manifest: Mapping[str, Any],
+                                   directory: str | Path
+                                   ) -> tuple[dict[str, Any], ...]:
+    """Committed artifacts whose published digest is not their digest.
+
+    :func:`absent_reference_hashes` asks only whether a value is 64 hex
+    characters, and that is the whole of what the certification chain ever
+    checked.  A digest that pins nothing satisfies it exactly as well as one
+    that pins the committed bytes -- which is how this repository shipped a
+    ``build_recipe_sha256`` that had never, in any commit, hashed the recipe
+    the same manifest names.  The recipe says of itself that "the digest is
+    the SHA-256 of this file's bytes"; nothing recomputed it, so nothing
+    said otherwise.
+
+    Only artifacts the manifest *both names and commits beside itself* are
+    recomputed.  An artifact that is named but absent is not a mismatch: the
+    reference wrfouts and the WRF executable are deliberately outside the
+    release and only their digests appear, so reporting them would turn a
+    disclosed limit into a false alarm.  This reports what a reader holding
+    the repository can check, and stays silent about what they cannot.
+
+    Each entry carries the manifest field, the file name, the digest the
+    manifest publishes and the digest the bytes have.
+    """
+    root = Path(directory)
+    mismatches: list[dict[str, Any]] = []
+    for name_key, digest_key in COMMITTED_ARTIFACT_KEYS:
+        named = manifest.get(name_key)
+        published = manifest.get(digest_key)
+        if isinstance(named, str):
+            pairs: list[tuple[str, Any]] = [(named, published)]
+        elif isinstance(named, Mapping) and isinstance(published, Mapping):
+            pairs = [(value, published.get(key))
+                     for key, value in sorted(named.items())
+                     if isinstance(value, str)]
+        else:
+            continue
+        for filename, declared in pairs:
+            artifact = root / Path(filename).name
+            if not artifact.is_file():
+                continue
+            measured = sha256_file(artifact)
+            if declared != measured:
+                mismatches.append({
+                    "key": digest_key,
+                    "artifact": artifact.name,
+                    "declared": declared,
+                    "measured": measured,
+                })
+    return tuple(mismatches)
+
+
 def validate_wrf_reference_manifest(manifest: Mapping[str, Any]
                                     ) -> dict[str, Any]:
     """Check the manifest's shape.  Completeness is certify's refusal, not
@@ -105,6 +172,7 @@ def reference_binding(manifest: Mapping[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "COMMITTED_ARTIFACT_KEYS",
     "MANIFEST_DIR_NAME",
     "MANIFEST_SCHEMA_ID",
     "MAPPING_HASH_KEYS",
@@ -112,6 +180,7 @@ __all__ = [
     "SCALAR_HASH_KEYS",
     "WrfReferenceError",
     "absent_reference_hashes",
+    "mismatched_reference_artifacts",
     "reference_binding",
     "validate_wrf_reference_manifest",
 ]

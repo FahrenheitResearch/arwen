@@ -80,19 +80,22 @@ def test_the_refusal_names_the_domain_it_refused_for():
             radiation_parent=None)
 
 
-def test_a_non_rrtmg_child_is_inert_rather_than_refused():
-    """NEGATIVE CONTROL, and the one that proves the guard is scoped.
-
-    A child that never asked for RRTMG at all must not be dragged into
-    this refusal.  `(1, 1)` resolves away from the legacy pair before the
-    guard is consulted, and the adapter returns None -- no radiation
-    adapter, no exception.
-    """
+def test_a_non_rrtmg_child_uses_the_common_factory_without_parent_ozone(monkeypatch):
+    from gpuwm.core import radiation_composition
     cfg = SimpleNamespace(ra_lw_physics=1, ra_sw_physics=1,
-                          ra_rrtmg_variant="rrtmg_legacy", o3input=2)
-    assert runtime._child_radiation_adapter(
-        None, None, SimpleNamespace(run=cfg, grid_id=2), None, None, None,
-        radiation_parent=None) is None
+                          ra_rrtmg_variant="rte-rrtmgp", o3input=2)
+    seen = {}
+    sentinel = object()
+    def build(*args, **kwargs):
+        seen.update(kwargs)
+        return sentinel
+    monkeypatch.setattr(radiation_composition, "make_radiation", build)
+    result = runtime._child_radiation_adapter(
+        SimpleNamespace(start_time="declared", column_chunk=16),
+        SimpleNamespace(co2_vmr=None), SimpleNamespace(run=cfg, grid_id=2),
+        SimpleNamespace(p_top=5000.), None, None, radiation_parent=None)
+    assert result is sentinel
+    assert seen["ozone_parent"] is None
 
 
 def test_the_guard_is_qualified_on_o3input_and_not_unconditional():
@@ -125,7 +128,7 @@ def _construction_sites():
     """(module, enclosing function) for every RRTMGLegacyRadiation(...)."""
     sites = []
     for rel in ("gpuwm/runtime.py", "gpuwm/offline_child_run.py",
-                "gpuwm/core/physics.py"):
+                "gpuwm/core/physics.py", "gpuwm/core/radiation_composition.py"):
         tree = ast.parse((REPO / rel).read_text(encoding="utf-8"))
         owners = [node for node in ast.walk(tree)
                   if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
@@ -143,32 +146,9 @@ def _construction_sites():
 
 
 def test_every_legacy_construction_site_is_accounted_for():
-    """Four sites, named.  A fifth appearing anywhere fails here.
-
-    This is the roster the 1.8.0 audit produced.  It is deliberately a
-    whole-set equality rather than a subset check: a new construction
-    site is exactly the event that reopens the fail-open, and it must not
-    be able to arrive unnoticed.
-    """
+    # Root, child, offline and direct initialization all enter one factory.
     assert _construction_sites() == [
-        # The fallback inside initialize_physics, reached only when a
-        # caller passes no explicit radiation= adapter.  UNGUARDED, and
-        # its own comment asserts (does not enforce) that a child must be
-        # wired through runtime.prepare_child_case.  Unreachable for a
-        # child on the main runtime route -- both child routes pass an
-        # explicit radiation= -- but reachable from routes that do not.
-        # Tracked; closing it is a cross-route behavioural change.
-        ("gpuwm/core/physics.py", "initialize_physics"),
-        # The ndown-equivalent offline child.  REFUSES o3input=2: this
-        # route stamps parent_id=0 and has no resident parent to take
-        # o3rad from, so it cannot be wired, only refused.
-        ("gpuwm/offline_child_run.py", "_initialize_child_physics"),
-        # The child adapter shared by prepare_child_case and
-        # rebuild_child_driver_from_land_state.  GUARDED.
-        ("gpuwm/runtime.py", "_child_radiation_adapter"),
-        # The ROOT domain.  No ozone parent by design: WRF evaluates the
-        # climatology on id == 1, which is this one.
-        ("gpuwm/runtime.py", "prepare_real_case"),
+        ("gpuwm/core/radiation_composition.py", "engine"),
     ]
 
 
@@ -186,6 +166,19 @@ def test_the_offline_child_route_refuses_parent_ozone_it_cannot_supply():
 
     source = inspect.getsource(offline_child_run._initialize_child_physics)
     guard = source.index("cfg.o3input == 2")
-    construct = source.index("RRTMGLegacyRadiation(")
+    construct = source.index("make_radiation(")
     assert guard < construct, "the ozone refusal must precede construction"
     assert "raise ValueError" in source[guard:construct]
+
+
+def test_a_real_tree_dependency_uses_driver_carrier_without_parent_adapter(monkeypatch):
+    from test_cam_ozone import _tree
+    from gpuwm.core.cam_ozone import DriverOzoneProvider
+    from gpuwm.core import radiation_composition
+    exp = _tree()
+    seen = {}
+    monkeypatch.setattr(radiation_composition, "make_radiation",
+                        lambda *args, **kwargs: seen.update(kwargs))
+    runtime._child_radiation_adapter(exp, SimpleNamespace(co2_vmr=None),
+        exp.domains[1], SimpleNamespace(p_top=5000.), None, None)
+    assert isinstance(seen["ozone_parent"], DriverOzoneProvider)

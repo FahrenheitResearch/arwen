@@ -176,16 +176,15 @@ def test_the_bundle_prose_counts_the_artifacts_it_actually_carries():
     """The docstring is the contract a release engineer reads; keep it true.
 
     The literal below is this gate's own copy of the count, and it is the
-    side that moves last: commit 9223560b4 added ``rw_mpas_lbc`` as the
-    twenty-sixth bundled artifact and rewrote every count in
-    ``gpuwm.bridge_assets``'s prose in the same commit, leaving this
-    number alone as the stale one.  It is raised to 26 and the previous
+    side that moves last: ``arwen-tui`` is the twenty-seventh bundled
+    artifact. The count and ``gpuwm.bridge_assets`` prose must move
+    together. It is raised to 27 and the previous
     spelling joins the stale list below, so the pin stays exact in both
     directions rather than being widened to accommodate the roster.
     """
 
-    assert len(bridge_assets.BUNDLED_ARTIFACTS) == 26
-    assert "twenty-six artifacts" in bridge_assets.__doc__
+    assert len(bridge_assets.BUNDLED_ARTIFACTS) == 27
+    assert "twenty-seven artifacts" in bridge_assets.__doc__
     for stale in ("eight artifacts", "nine artifacts", "nine files",
                   "ten artifacts", "ten files", "eleven artifacts",
                   "eleven files", "fourteen artifacts", "fourteen files",
@@ -197,7 +196,8 @@ def test_the_bundle_prose_counts_the_artifacts_it_actually_carries():
                   "twenty-one artifacts", "twenty-one files",
                   "twenty-two artifacts", "twenty-three artifacts",
                   "twenty-four artifacts", "twenty-four files",
-                  "twenty-five artifacts", "twenty-five files"):
+                  "twenty-five artifacts", "twenty-five files",
+                  "twenty-six artifacts", "twenty-six files"):
         assert stale not in bridge_assets.__doc__
 
 

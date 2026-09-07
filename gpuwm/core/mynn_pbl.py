@@ -1,3 +1,26 @@
+# ======================================================================
+# THIRD-PARTY NOTICE.  Parts of this file are hand transcriptions of
+# third-party work.  ArWen distributes the file under the Apache License
+# 2.0; the notices below belong to the transcribed parts and are kept here
+# because their own licences require it.  Full texts are in the repository
+# NOTICE and in the licenses/ directory.
+#
+# For the two libm grants the text also sits beside the code, in
+# gpuwm/core/kernels/LICENSE-third-party.txt.
+#
+#   FDLIBM -- expm1f and tanhf. Developed at SunPro and converted to
+#   single precision at Cygnus Support; glibc carries it substantially
+#   unmodified and presents it, in its own LICENSES file, as Sun's code.
+#   The notice below is the whole of the licence: its one condition is
+#   that it be preserved.
+#
+#       Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+#
+#       Developed at SunPro, a Sun Microsystems, Inc. business.
+#       Permission to use, copy, modify, and distribute this
+#       software is freely granted, provided that this notice
+#       is preserved.
+# ======================================================================
 """CPU references for pinned WRF v4.6.1 MYNN PBL column routines.
 
 The first routine transcribed is ``module_bl_mynn.F:mym_level2``.  It operates

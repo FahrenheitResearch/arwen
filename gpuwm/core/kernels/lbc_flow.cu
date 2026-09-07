@@ -64,7 +64,8 @@ void flow_dependent_batch(
     real* __restrict__ f8,
     const real* __restrict__ u_flux,
     const real* __restrict__ v_flux,
-    int nfield, int spec_zone, int nz, int ny, int nx, int frame_count)
+    int nfield, int spec_zone, int nz, int ny, int nx, int frame_count,
+    real inflow_value)
 {
     int tid = blockIdx.x*blockDim.x + threadIdx.x;
     if (tid >= nz*frame_count) return;
@@ -97,7 +98,7 @@ void flow_dependent_batch(
     for (int n = 0; n < nfield; ++n) {
         real* field = flow_field(n, f0, f1, f2, f3, f4,
                                  f5, f6, f7, f8);
-        field[destination] = outflow ? field[source] : 0.0f;
+        field[destination] = outflow ? field[source] : inflow_value;
     }
 }
 

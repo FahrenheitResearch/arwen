@@ -820,7 +820,12 @@ def vege_flux(p: VegeFluxParameters, nsnow: int, nsoil: int, isnow: int,
 
     reset = False
     if opt_stc == 1:
-        if snowh > 0.05 and tg > TFRZ:
+        # R4 declares no comparison dunder, so a bare 0.05 would be compared
+        # at binary64.  gfortran compares SNOWH against the default-kind REAL
+        # literal (module_sf_noahmplsm.F:4126, this checkout is RWORDSIZE=4),
+        # i.e. f32(0.05) = 0x3D4CCCCD, which is the LARGER of the two: for a
+        # SNOWH of exactly that word WRF does not reset and binary64 would.
+        if snowh > R4(0.05) and tg > TFRZ:
             reset = True
             tg = TFRZ
             irg = (cir * _p4(tg) - emg * (R4(1.0) - emv) * lwdn

@@ -1463,7 +1463,7 @@ void rsw_cldprmc_b(int ncol, int nlayers,
 // reftra_sw as a device function over thread-local arrays (kmodts = 2).
 // ---------------------------------------------------------------------------
 
-#define RSW_MAXLAY 64   // >= nlayers+1; asserted host-side
+// Layer storage is the caller-owned workspace sized from nlayers + 1.
 
 __device__ void rsw_reftra(int nlayers, const unsigned char* lrtchk,
                            const real* pgg, real prmuz, const real* ptau,

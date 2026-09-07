@@ -12,10 +12,10 @@ carries no binaries at all.  Before either existed, the only way to get
 the GRIB decoders, the CPU preprocessing library, the fetch backbone,
 the batch renderer, the two radar front doors, the MRMS, Stage-IV,
 surface, GOES and European-composite front doors, the NetCDF decoder,
-the mapped decode engine and the observation remap onto a wheel install
-was to clone the repository and run ``cargo build`` three times -- a
+the mapped decode engine, the observation remap and the terminal workspace
+onto a wheel install was to clone the repository and run ``cargo build`` -- a
 Rust toolchain, a 2.5 GB checkout and a few minutes of compiling, for
-twenty-six files.
+twenty-seven files.
 ``gpuwm fetch-bridges`` is the same trade :mod:`gpuwm.table_assets`
 already makes for the externalized physics tables: the artifacts are
 published as versioned GitHub release assets, their exact size and
@@ -24,7 +24,7 @@ byte is verified against those pins *before* anything is installed.
 
 What is staged, and where
 -------------------------
-One bundle per platform, holding the twenty-six artifacts of
+One bundle per platform, holding the twenty-seven artifacts of
 :data:`BUNDLED_ARTIFACTS`, staged into :func:`gpuwm.bridges
 .default_bridge_dir` (``~/.gpuwm/bridges``) -- the last rung of the
 resolution ladder every consumer already searches, so nothing else in
@@ -506,6 +506,9 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "rw_mpas_lbc", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_MPAS_LBC",
         "MPAS lateral boundaries for a limited-area mesh"),
+    BundledArtifact(
+        "arwen-tui", "executable", "tools/arwen-tui",
+        "GPUWM_TUI_BIN", "the Rust terminal workspace (gpuwm tui)"),
 )
 
 

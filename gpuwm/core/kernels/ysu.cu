@@ -295,10 +295,25 @@ void ysu_column(const real *u, const real *v, const real *theta,
                 / ysu_max(wscale * wscale * wscale * wscale, 1.0e-20f);
         hgamu = cg * u0;
         hgamv = cg * v0;
-        ysu_diagnose(u, v, thv, za, thermal, br[col], brcr_ub, nz, st, col,
-                     &hpbl, &kpbl, &brdn, &brup);
-        if (hpbl < zq[1]) kpbl = 1;
-        pblflg = kpbl > 1;
+        // bl_ysu.F90:703-728 guards all three thermal-enhanced statements
+        // with if(pblflg(i)), and :684-698 can only LOWER pblflg -- WRF has
+        // no path that raises it here.  A column whose FIRST guess sat
+        // below zq(i,2) (:646-647) therefore keeps kpbl=1 and stays in the
+        // local-K regime for the whole step, however far the thermal excess
+        // could have pushed the enhanced sweep.
+        //
+        // The sweep is the WHOLE of :703-728: it leaves hpbl at the
+        // zq(i,1) of :706 and never touches pblflg.  WRF interpolates
+        // hpbl and applies the zq(i,2) clamp exactly once, at :754-768,
+        // AFTER the theta-li scan -- so the scan below must see this
+        // sweep's kpbl >= 2 and an unchanged pblflg.  ysu_diagnose folds
+        // the interpolation in on its way out; that value is dead for
+        // this call, because the post-scan if(pblflg) block recomputes it
+        // from the same brdn/brup before any reader, exactly as :764 does.
+        if (pblflg) {
+            ysu_diagnose(u, v, thv, za, thermal, br[col], brcr_ub, nz, st,
+                         col, &hpbl, &kpbl, &brdn, &brup);
+        }
     } else pblflg = false;
 
     // WRF v4.6.1 bl_ysu.F90:732-768 runs the theta-li extension for every
@@ -333,10 +348,16 @@ void ysu_column(const real *u, const real *v, const real *theta,
         else if (brup <= brcr_ub) frac = 1.0f;
         else frac = (brcr_ub - brdn) / (brup - brdn);
         hpbl = za[kh - 1] + frac * (za[kh] - za[kh - 1]);
-        if (hpbl < zq[1]) {
-            kpbl = 1;
-            pblflg = false;
-        }
+        // bl_ysu.F90:765 and :766 are two INDEPENDENT statements.  The
+        // second kills pblflg whenever kpbl <= 1, whatever hpbl came back
+        // as -- including the case where hpbl was interpolated from WRF's
+        // own za(i,0) overrun above and came back large.  Nesting :766
+        // inside :765 let the theta-li revival (:745-749 raises pblflg on a
+        // final unstable iteration without ever reassigning kpbl) survive
+        // with kpbl == 1, and :833's k = kpbl(i)-1 is then one level below
+        // the column.
+        if (hpbl < zq[1]) kpbl = 1;
+        if (kpbl <= 1) pblflg = false;
     }
 
     if (!sfcflg && hpbl < zq[1]) {

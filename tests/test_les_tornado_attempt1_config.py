@@ -41,6 +41,47 @@ def test_the_parked_case_still_matches_its_own_ruling() -> None:
     assert parked.audit() == []
 
 
+@pytest.mark.parametrize("module", (case, parked),
+                         ids=("mayfield", "dodgecity"))
+def test_the_case_agrees_with_its_own_ratification(module) -> None:
+    """A case may not ratify a pairing the model refuses to build.
+
+    Both modules name
+    ``docs/superpowers/specs/P6-LES-DECISIONS-RATIFIED-2026-08-05.md`` as
+    their ratification, and its G4 rules ``inflow_perturbation`` ON at
+    the first LES domain under a PARAMETERIZED-turbulence parent and OFF
+    below it: the generator's vertical extent is the parent's diagnosed
+    PBLH, so a ``bl_pbl_physics = 0`` parent has nothing to define it
+    with and ``build_inflow_perturbation`` refuses.
+
+    Held against the case's own ratified CHAIN rather than against the
+    prose, because CHAIN is the thing ``audit()`` enforces on the TOML.
+    Dodge City was PARKED (d531fb521) before G4's sweep and shipped
+    ``INFLOW_DOMAINS = (3, 4)`` -- so its gate returned ``[]`` for a
+    configuration the model kills twelve seconds after admission, and
+    would have gone RED the moment the config was corrected.  That is
+    the 2026-08-25 guard-retirement law's own failure mode: G4 swept
+    mayfield and left the parked twin ratifying the defect.
+    """
+
+    assert module.RATIFICATION == ("docs/superpowers/specs/"
+                                   "P6-LES-DECISIONS-RATIFIED-2026-08-05.md")
+    # The ratified chain is linear (d(n) nests in d(n-1)) and listed
+    # parent-before-child, so the preceding row IS the parent.  Asserted,
+    # not assumed: a future chain that branches must not read as passing.
+    ids = [row[0] for row in module.CHAIN]
+    assert ids == list(range(1, len(ids) + 1))
+    pbl_of = {row[0]: row[-1] for row in module.CHAIN}
+    seeded_under_les = [
+        grid_id for grid_id in module.INFLOW_DOMAINS
+        if grid_id > 1 and pbl_of[grid_id - 1] == 0]
+    assert not seeded_under_les, (
+        f"{module.MODULE} ratifies inflow seeding on "
+        f"d{seeded_under_les[0]:02d}, whose ratified parent "
+        f"d{seeded_under_les[0] - 1:02d} runs bl_pbl_physics = 0; G4 rules "
+        "that OFF and the model refuses to build it")
+
+
 def test_the_case_module_runs_as_a_script() -> None:
     """It registers as a ``script`` capability, so it must be one."""
 

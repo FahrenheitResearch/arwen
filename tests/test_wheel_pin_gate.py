@@ -13,7 +13,7 @@ the whole time; nothing made skipping it fail.
 
 Now something does: ``setup.py`` refuses ``bdist_wheel`` while the pins
 document declares no release and no platforms, and it fires in
-``finalize_options``, before a byte is packed, on every route a wheel is
+``run``, before a byte is packed, on every route a release wheel is
 built by -- ``python -m build``, ``pip wheel .``, ``pip install <tree>``
 and ``python setup.py bdist_wheel`` all pass through that command.
 ``GPUWM_ALLOW_UNPINNED_WHEEL=1`` is the explicit dev override for a
@@ -216,3 +216,30 @@ def test_the_dev_override_builds_and_says_unpublishable(tmp_path):
     assert completed.returncode == 0, output
     assert list(tree.glob("dist/*.whl")), output
     assert "never be published" in output
+
+
+@pytest.mark.parametrize("hook", ["prepare_metadata_for_build_editable", "build_editable"])
+def test_unpinned_checkout_supports_editable_install_without_release_override(
+        tmp_path, hook):
+    """Exercise the same PEP 660 hooks pip uses for `pip install -e .`."""
+    tree = _synthetic_tree(tmp_path, UNPINNED_PINS)
+    destination = tree / "editable-artifact"
+    destination.mkdir()
+    completed = subprocess.run(
+        [sys.executable, "-c",
+         "from setuptools import build_meta; "
+         f"print(build_meta.{hook}({str(destination)!r}))"],
+        cwd=tree, env=_env(), capture_output=True, text=True,
+        errors="replace", timeout=120)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    if hook == "build_editable":
+        import zipfile
+
+        wheel, = destination.glob("*.whl")
+        with zipfile.ZipFile(wheel) as archive:
+            # An editable artifact points to this checkout; it cannot be
+            # mistaken for a standalone release containing package bytes.
+            assert any(name.endswith(".pth") for name in archive.namelist())
+            assert "gpuwm/__init__.py" not in archive.namelist()
+    else:
+        assert list(destination.glob("*.dist-info/METADATA"))

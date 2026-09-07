@@ -510,7 +510,7 @@ class _no_feedback_writeback:
 
     def __enter__(self):
         self._real = streaming.commit_to_store
-        streaming.commit_to_store = lambda state, attrs: 0
+        streaming.commit_to_store = lambda state, attrs, **kwargs: 0
         # nest.py resolves the symbol per call through a function-local
         # import, so patching the module attribute is enough.
         return self

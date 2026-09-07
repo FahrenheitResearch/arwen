@@ -124,6 +124,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from collections.abc import Mapping
 from pathlib import PurePath
 
 import numpy as np
@@ -184,6 +185,7 @@ class SoilMeshPlan:
     target_spacing_deg_lat: float
     target_spacing_deg_lon: float
     enabled: bool = True
+    spacing_metric: str = "coordinate-components"
 
     def __post_init__(self) -> None:
         for name in ("source_spacing_deg_lat", "source_spacing_deg_lon",
@@ -193,6 +195,8 @@ class SoilMeshPlan:
                 raise ValueError(f"{name} must be a positive finite spacing")
             object.__setattr__(self, name, value)
         object.__setattr__(self, "enabled", bool(self.enabled))
+        if self.spacing_metric not in {"coordinate-components", "great-circle-angle"}:
+            raise ValueError("unknown source mesh spacing metric")
 
     @property
     def footprint_cells(self) -> tuple[float, float]:
@@ -247,6 +251,47 @@ class SoilMeshPlan:
             enabled=enabled)
 
 
+    @classmethod
+    def from_projected_grid(cls, source_grid, target_lat, target_lon, *, enabled=True):
+        """Measure a reversible source grid at the target centre.
+
+        Only a five-point stencil is transformed; no full source coordinate
+        arrays are allocated. Both footprints use great-circle angular length
+        (equivalent degrees on the same sphere), so projection rotation and a
+        longitude seam cannot turn metres into apparent degrees or zero width.
+        The existing regular-axis path retains its coordinate-degree contract.
+        """
+        lat = np.asarray(target_lat, dtype=np.float64)
+        lon = np.asarray(target_lon, dtype=np.float64)
+        if lat.ndim != 2 or lat.shape != lon.shape:
+            raise ValueError("target coordinates must be matching 2-D arrays")
+        if min(lat.shape) < 3:
+            raise ValueError("target grid is too small to measure spacing")
+        jc, ic = lat.shape[0] // 2, lat.shape[1] // 2
+        x, y = source_grid.latlon_to_ij(lat[jc, ic], lon[jc, ic])
+        source_lat, source_lon = source_grid.ij_to_latlon(
+            np.array([x - 1, x + 1, x, x], dtype=np.float64),
+            np.array([y, y, y - 1, y + 1], dtype=np.float64))
+
+        def spacing(lat0, lon0, lat1, lon1):
+            dlat = np.deg2rad(lat1 - lat0)
+            dlon = np.deg2rad((lon1 - lon0 + 180.0) % 360.0 - 180.0)
+            hav = (np.sin(dlat / 2.0) ** 2 + np.cos(np.deg2rad(lat0))
+                   * np.cos(np.deg2rad(lat1)) * np.sin(dlon / 2.0) ** 2)
+            return float(np.rad2deg(np.arcsin(np.sqrt(np.clip(hav, 0, 1)))))
+
+        return cls(
+            source_spacing_deg_lat=spacing(source_lat[2], source_lon[2],
+                                           source_lat[3], source_lon[3]),
+            source_spacing_deg_lon=spacing(source_lat[0], source_lon[0],
+                                           source_lat[1], source_lon[1]),
+            target_spacing_deg_lat=spacing(lat[jc - 1, ic], lon[jc - 1, ic],
+                                           lat[jc + 1, ic], lon[jc + 1, ic]),
+            target_spacing_deg_lon=spacing(lat[jc, ic - 1], lon[jc, ic - 1],
+                                           lat[jc, ic + 1], lon[jc, ic + 1]),
+            enabled=enabled, spacing_metric="great-circle-angle")
+
+
 def source_mesh_receipt(plan: SoilMeshPlan, *, announce: bool = True) -> dict:
     """Record the forcing mesh on the run receipt, and warn when it is coarse.
 
@@ -273,6 +318,8 @@ def source_mesh_receipt(plan: SoilMeshPlan, *, announce: bool = True) -> dict:
         "advisory": plan.advisory,
         "downscale_enabled": plan.enabled,
     }
+    if plan.spacing_metric != "coordinate-components":
+        receipt["spacing_metric"] = plan.spacing_metric
     if announce and plan.advisory:
         print(
             "soil-state source resolution: the forcing mesh is "
@@ -677,8 +724,8 @@ def declared_soil_texture_downscale(source=None) -> bool:
     """Is the reconstitution enabled?  Silence means YES.
 
     ``source`` is whatever the calling route has: a path to an experiment
-    TOML, an object carrying a ``soil_texture_downscale`` attribute, or
-    ``None``.  Only an explicit ``[ingest] soil_texture_downscale = false``
+    TOML, its parsed table mapping, an object carrying a
+    ``soil_texture_downscale`` attribute, or ``None``.  Only an explicit ``[ingest] soil_texture_downscale = false``
     turns it off, because this is a correctness remedy rather than an
     experiment: a bare default run must stop showing the defect, and the
     declaration exists so WRF-comparison work can put it back on purpose.
@@ -690,6 +737,9 @@ def declared_soil_texture_downscale(source=None) -> bool:
     if source is None:
         return True
     declared = getattr(source, "soil_texture_downscale", None)
+    if isinstance(source, Mapping) and source.get("ingest") is not None:
+        declared = parse_ingest_table(
+            source["ingest"], source="parsed configuration")["soil_texture_downscale"]
     if declared is None and isinstance(source, (str, bytes, PurePath)):
         import tomllib
 
@@ -711,19 +761,21 @@ def declared_soil_texture_downscale(source=None) -> bool:
 
 
 def soil_mesh_plan_from_case(source_snapshot, target, case_data=None, *,
-                             enabled=None):
+                             enabled=None, source_grid=None):
     """The plan a route hands to the soil preprocessor, or ``None``.
 
     Both ends are taken as OBJECTS rather than as coordinate arrays, and
     this function owns both guards, because "there is nothing to measure"
-    is an answer it has to be able to give: not every source has a regular
-    mesh (native HRRR is on a Lambert grid), and a stand-in snapshot or
+    is an answer it has to be able to give: not every source exposes a
+    mesh, and a stand-in snapshot or
     grid in a test has neither axes nor mass coordinates.  Reaching into
     ``.latitude`` or ``.latlon_mass()`` at the call site instead turned
     that answer into an ``AttributeError`` at every front door -- twice,
     once per end.
 
     ``source_snapshot`` is the forcing snapshot the soil came off.
+    ``source_grid`` optionally supplies its reversible index/latitude geometry
+    when the snapshot has no regular axes. It takes precedence over axes.
     ``target`` is either the model grid (anything with ``latlon_mass()``)
     or an explicit ``(latitude, longitude)`` pair of two-dimensional mass
     coordinates.
@@ -735,6 +787,22 @@ def soil_mesh_plan_from_case(source_snapshot, target, case_data=None, *,
     resolved it -- ``prepare_real_case`` takes it as a parameter, because
     its caller holds the config and it does not.
     """
+    mass_latlon = getattr(target, "latlon_mass", None)
+    if mass_latlon is not None:
+        target_lat, target_lon = mass_latlon()
+    else:
+        try:
+            target_lat, target_lon = target
+        except (TypeError, ValueError):
+            return None
+    if (getattr(target_lat, "shape", None) is None
+            or getattr(target_lon, "shape", None) is None):
+        return None
+    resolved_enabled = (declared_soil_texture_downscale(case_data)
+                        if enabled is None else bool(enabled))
+    if source_grid is not None:
+        return SoilMeshPlan.from_projected_grid(
+            source_grid, target_lat, target_lon, enabled=resolved_enabled)
     latitude = getattr(source_snapshot, "latitude", None)
     longitude = getattr(source_snapshot, "longitude", None)
     if latitude is None or longitude is None:
@@ -753,18 +821,6 @@ def soil_mesh_plan_from_case(source_snapshot, target, case_data=None, *,
         metres_per_degree = 111_195.0
         latitude = latitude * (unit_m / metres_per_degree)
         longitude = longitude * (unit_m / metres_per_degree)
-    mass_latlon = getattr(target, "latlon_mass", None)
-    if mass_latlon is not None:
-        target_lat, target_lon = mass_latlon()
-    else:
-        try:
-            target_lat, target_lon = target
-        except (TypeError, ValueError):
-            return None
-    if (getattr(target_lat, "shape", None) is None
-            or getattr(target_lon, "shape", None) is None):
-        return None
     return SoilMeshPlan.from_grids(
         latitude, longitude, target_lat, target_lon,
-        enabled=(declared_soil_texture_downscale(case_data)
-                 if enabled is None else bool(enabled)))
+        enabled=resolved_enabled)

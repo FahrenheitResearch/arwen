@@ -73,7 +73,13 @@ def test_check_with_nothing_to_verify_against_names_the_missing_budget(
     assert rc == 0
     capsys.readouterr()
 
-    monkeypatch.setitem(sys.modules, "cupy", None)  # import cupy fails
+    # Isolate the missing-memory remedy after the independent kernel-readiness
+    # check. Its earlier failure and ordering are covered in
+    # test_check_gpu_readiness.py; failing it here never reaches this message.
+    from gpuwm import doctor
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: doctor.Check(
+        "CUDA kernel headers", "verified", "fixture kernels ready"))
+    monkeypatch.setitem(sys.modules, "cupy", None)  # no measurable card
     rc = cli_main(["check", str(config)])
     captured = capsys.readouterr()
     assert rc == 2
@@ -142,7 +148,7 @@ def test_cadence_snap_survives_a_clock_whose_minutes_need_searching():
     physics = {"radt": 12.0, "cu_physics": 1, "cudt_minutes": 5.0}
     snapped, notes = snap_cadences_to_clock(Fraction(35, 2), physics)
     minutes = snapped["cudt_minutes"]
-    seconds = Fraction(minutes) * 60
+    seconds = Fraction(str(minutes)) * 60
     steps = seconds / Fraction(35, 2)
     assert steps.denominator == 1, "the loader's own arithmetic"
     assert notes, "an adjustment this real is spoken"
@@ -279,3 +285,11 @@ def test_prep_without_a_fetch_directory_still_names_both_doors(
     assert "run the fetch first" in captured.err
     assert "--source-manifest" in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_wizard_keeps_an_already_exact_decimal_cadence():
+    from fractions import Fraction
+    from gpuwm.domain_wizard import snap_cadences_to_clock
+    physics = {"radt":2.4, "cudt_minutes":1.2, "cu_physics":1}
+    same, notes = snap_cadences_to_clock(Fraction(72), physics)
+    assert same == physics and notes == ()

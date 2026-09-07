@@ -589,7 +589,7 @@ def test_native_hrrr_experiment_threads_admitted_explicit_vertical_grid(nz):
     assert exp.vertical == vertical
 
 
-def test_the_route_defaults_legacy_shortwave_layer_ceiling_is_named():
+def test_the_route_default_legacy_shortwave_specializes_for_tall_columns():
     """The one real limit the 1.8 default carries, both directions.
 
     The legacy-RRTMG shortwave port is a transcription of WRF's, and its
@@ -615,10 +615,8 @@ def test_the_route_defaults_legacy_shortwave_layer_ceiling_is_named():
 
     # HRRR's own native depth builds.
     assert experiment_at(49).root.run.nz == 49
-    # A deeper one is refused by number, before anything is paid for.
-    with pytest.raises(PhysicsVerticalPreflightError,
-                       match="legacy RRTMG shortwave"):
-        experiment_at(80)
+    # The legacy SW implementation now specializes its workspace to the run.
+    assert experiment_at(80).root.run.nz == 80
 
 
 @pytest.mark.parametrize(
@@ -854,14 +852,14 @@ def test_native_hrrr_new_front_door_families_prepare_exact_profile(
     assert receipt["front_door_selection"]["profile"] == profile
 
 
-def test_native_hrrr_noahmp_refuses_without_registry_acknowledgement(tmp_path):
+def test_native_hrrr_noahmp_warns_without_registry_acknowledgement(tmp_path, capsys):
     path = tmp_path / "namelist.input"
     _write_native_physics_namelist(
         path, sf_surface_physics=4, num_soil_layers=4)
 
-    with pytest.raises(
-            ValueError, match="noahmp-host-column-throughput-v1"):
-        _validate_native_hrrr_physics_profile(path, NOAHMP_PROFILE_ID)
+    receipt = _validate_native_hrrr_physics_profile(path, NOAHMP_PROFILE_ID)
+    assert receipt["profile"] == NOAHMP_PROFILE_ID
+    assert "noahmp-host-column-throughput-v1" in capsys.readouterr().err
 
 
 def test_native_hrrr_thompson_profile_is_guarded_and_table_bound(

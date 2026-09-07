@@ -1,0 +1,31 @@
+ARWEN OFFLINE DISPLAY GEOGRAPHY
+
+This map and place catalog help locate a forecast region. They are not forecast
+fields, observations, navigation charts, or the scientific WPS geography.
+No remote map service, search request, user location, or telemetry is required.
+
+NATURAL EARTH
+https://www.naturalearthdata.com/
+Public-domain 1:10 million land, lakes, international boundaries, and state /
+province lines, derived from the existing ArWen basemap assets. Paths have been
+simplified at 0.0025 degrees and rounded for screen display. Boundary depictions
+follow the upstream dataset. No claim of legal boundary authority is made.
+
+GEONAMES
+https://www.geonames.org/
+Source: https://download.geonames.org/export/dump/cities15000.zip
+With admin1CodesASCII.txt and countryInfo.txt from the same directory.
+Downloaded 2026-09-05. GeoNames Gazetteer data is licensed under Creative Commons
+Attribution 4.0: https://creativecommons.org/licenses/by/4.0/
+
+The bundled extract contains 34,136 populated places: mainly populations above
+15,000 and capitals. It does not contain every village, address or local name.
+Names, alternate names, region/country labels, coordinates, IDs and population
+ranks were selected from the source and serialized for offline display/search.
+Population is used only to declutter labels and order equally matching results;
+it is not presented as a current demographic measurement. Source coordinates
+are retained. Searching never restricts arbitrary coordinates or map panning.
+
+See geography-manifest.json in the source tree for source and output SHA256s
+and the reproducible Rust build procedure. GeoNames data is provided as-is;
+credit and the license above apply to the modified extract as well.

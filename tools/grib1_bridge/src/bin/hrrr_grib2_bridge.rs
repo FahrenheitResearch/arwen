@@ -11,6 +11,8 @@ use gpuwm_preprocess_cpu::quantization::{
 };
 use grib_core::grib2::{unpack_message, Grib2File, Grib2Message, GridDefinition};
 use std::env;
+use std::collections::BTreeMap;
+use gpuwm_preprocess_cpu::grib2_supplement::{is_pmsl_pa, select_pmsl};
 use std::error::Error;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -299,6 +301,7 @@ struct SelectedField {
 
 #[derive(Clone, Debug)]
 struct AtmosInventory {
+    source_grid: GridDefinition,
     selected: Vec<SelectedField>,
     reference_time: String,
     forecast_hour: u32,
@@ -318,6 +321,7 @@ struct SeriesInput {
     forecast_hour: u32,
     atmosphere: String,
     soil: String,
+    supplements: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -431,6 +435,12 @@ fn validate_message_common(
         )
         .into());
     }
+    validate_native_packing(message)?;
+    validate_payload(message)?;
+    validate_canonical_grid(&message.grid)
+}
+
+fn validate_native_packing(message: &Grib2Message) -> Result<(), Box<dyn Error>> {
     if !matches!(message.data_rep.template, 0 | 3) {
         return Err(format!(
             "selected field uses unsupported DRT 5.{}",
@@ -438,6 +448,10 @@ fn validate_message_common(
         )
         .into());
     }
+    Ok(())
+}
+
+fn validate_payload(message: &Grib2Message) -> Result<(), Box<dyn Error>> {
     if message.bitmap.is_some() {
         return Err("selected initialization field unexpectedly carries a bitmap".into());
     }
@@ -449,7 +463,7 @@ fn validate_message_common(
         )
         .into());
     }
-    validate_canonical_grid(&message.grid)
+    Ok(())
 }
 
 fn unique_match<F>(
@@ -533,6 +547,7 @@ fn inventory_atmosphere(
         });
     }
     Ok(AtmosInventory {
+        source_grid: file.messages[selected[0].index].grid.clone(),
         selected,
         reference_time: expected_cycle.to_owned(),
         forecast_hour,
@@ -1173,9 +1188,9 @@ fn parse_series_manifest(path: &Path) -> Result<Vec<SeriesInput>, Box<dyn Error>
             continue;
         }
         let fields: Vec<&str> = raw.split('\t').collect();
-        if fields.len() != 3 {
+        if fields.len() < 3 {
             return Err(format!(
-                "series manifest line {} must be HOUR<TAB>WRFNAT<TAB>SOIL",
+                "series manifest line {} must be HOUR<TAB>WRFNAT<TAB>SOIL[<TAB>PMSL=GRIB...]",
                 line_number + 1
             )
             .into());
@@ -1203,10 +1218,25 @@ fn parse_series_manifest(path: &Path) -> Result<Vec<SeriesInput>, Box<dyn Error>
             )
             .into());
         }
+        let mut supplements = Vec::new();
+        for binding in &fields[3..] {
+            let value = binding.strip_prefix("PMSL=")
+                .ok_or("native supplement must declare the supported canonical quantity PMSL=GRIB")?;
+            let path = resolve(value);
+            if value.is_empty() || !path.is_file() {
+                return Err(format!("missing PMSL donor file {path:?}").into());
+            }
+            let path = path.to_string_lossy().into_owned();
+            if supplements.contains(&path) {
+                return Err(format!("duplicate PMSL donor path {path}").into());
+            }
+            supplements.push(path);
+        }
         inputs.push(SeriesInput {
             forecast_hour,
             atmosphere: atmosphere.to_string_lossy().into_owned(),
             soil: soil.to_string_lossy().into_owned(),
+            supplements,
         });
     }
     let observed: Vec<u32> = inputs.iter().map(|item| item.forecast_hour).collect();
@@ -1276,11 +1306,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                         forecast_hour: 0,
                         atmosphere: args[0].clone(),
                         soil: args[2].clone(),
+                        supplements: Vec::new(),
                     },
                     SeriesInput {
                         forecast_hour: 1,
                         atmosphere: args[1].clone(),
                         soil: args[3].clone(),
+                        supplements: Vec::new(),
                     },
                 ],
                 PathBuf::from(&args[4]),
@@ -1339,6 +1371,56 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     validate_window(window, &atmosphere_reference.grid)?;
 
+    // Inventory each explicitly declared donor once, then retain only its
+    // selected compressed messages. No reopen can change a validated donor
+    // between inventory and decode; unrelated messages are released here.
+    let mut donor_files = BTreeMap::new();
+    for input in &inputs {
+        for path in &input.supplements {
+            if !donor_files.contains_key(path) {
+                let file = Grib2File::open(path)?;
+                // Drop unrelated fields before opening the next donor file.
+                // Keep original message indices for the selection receipt.
+                let selected: Vec<_> = file.messages.into_iter().enumerate()
+                    .filter(|(_, message)| is_pmsl_pa(message)).collect();
+                donor_files.insert(path.clone(), selected);
+            }
+        }
+    }
+    let mut donors = Vec::with_capacity(inputs.len());
+    let mut donor_rows = Vec::new();
+    for (input, atmosphere) in inputs.iter().zip(&atmosphere_inventories) {
+        let message = if input.supplements.is_empty() {
+            None
+        } else {
+            let messages = input.supplements.iter()
+                .flat_map(|path| donor_files[path].iter().map(|(_, message)| message));
+            let selected = select_pmsl(messages, &expected_cycle,
+                input.forecast_hour, &atmosphere.source_grid)?;
+            validate_payload(selected)?;
+            let (path, message_index) = input.supplements.iter().find_map(|path| {
+                donor_files[path].iter().find_map(|(index, message)|
+                    std::ptr::eq(message, selected).then_some((path, *index)))
+            }).ok_or("selected donor origin disappeared")?;
+            donor_rows.push(format!("{}\tPMSL\t{}\t{}\t{}\t{}\t{}/{}/{}\t{}\tPa\t{:?}",
+                input.forecast_hour, path, message_index, selected.reference_time,
+                selected.identification.center_id, selected.discipline,
+                selected.product.parameter_category, selected.product.parameter_number,
+                selected.product.level_type, selected.grid));
+            donor_rows.last_mut().unwrap().push_str(&format!("\t{}\t{:?}\t{:?}\t{:?}",
+                selected.product.template, selected.product.ensemble_type,
+                selected.product.perturbation_number, selected.product.num_forecasts_in_ensemble));
+            Some(selected.clone())
+        };
+        donors.push(message);
+    }
+    drop(donor_files);
+    let supplemented = donors.iter().filter(|item| item.is_some()).count();
+    if supplemented != 0 && supplemented != inputs.len() {
+        return Err("PMSL donor coverage must include every requested forcing time".into());
+    }
+    let payload_files = 24 + usize::from(supplemented != 0);
+
     let parent = output.parent().unwrap_or_else(|| Path::new("."));
     let stem = output
         .file_name()
@@ -1378,6 +1460,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             "atmosphere_selected_per_time\t{}",
             atmosphere_reference.selected.len()
         )?;
+        if supplemented != 0 {
+            writeln!(gate, "supplement_fields\tPMSL")?;
+            writeln!(gate, "supplement_alignment\texact_primary_grid_and_source_time")?;
+            writeln!(gate, "supplement_units\tPMSL=Pa")?;
+        }
         writeln!(gate, "hybrid_levels\t{N_HYBRID_LEVELS}")?;
         writeln!(
             gate,
@@ -1404,6 +1491,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             "cross_time_inventory\tPASS exact selected keys/levels/grid; packing may differ"
         )?;
         gate.flush()?;
+        if supplemented != 0 {
+            let mut receipt = BufWriter::new(File::create(partial.join("supplement-inventory.tsv"))?);
+            writeln!(receipt, "forecast_hour\tfield\tpath\tmessage_index\tcycle\tcenter\tparameter\tlevel_type\tunits\tgrid\tpdt\tensemble_type\tmember\tensemble_size")?;
+            for row in &donor_rows { writeln!(receipt, "{row}")?; }
+            receipt.flush()?;
+        }
 
         if let Some(path) = &signals {
             fs::create_dir(path)?;
@@ -1467,6 +1560,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                             window,
                             &mut fragment,
                         )?;
+                        if let Some(message) = &donors[index] {
+                            let path = partial.join(&atmosphere_role).join("PMSL.f32le");
+                            let mut writer = BufWriter::new(File::create(&path)?);
+                            let stats = decode_crop_write(message, &mut writer, window,
+                                "PMSL", true, false)?;
+                            writer.flush()?;
+                            writeln!(fragment, "{}", manifest_row(&atmosphere_role, 0,
+                                "PMSL", message.product.level_value, message.product.level_type,
+                                message.data_rep.template, message.bitmap.is_some(), stats,
+                                "PMSL.f32le"))?;
+                        }
                         fragment.flush()?;
                         drop(fragment);
                         if let Some(path) = &signals {
@@ -1478,7 +1582,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     format!("atmosphere_dir\t{atmosphere_role}"),
                                     format!("soil_dir\t{soil_role}"),
                                     format!("inventory_fragment\t{}", fragment_path.display()),
-                                    "payload_files\t24".to_owned(),
+                                    format!("payload_files\t{payload_files}"),
                                     format!(
                                         "producer_elapsed_seconds\t{:.9}",
                                         process_started.elapsed().as_secs_f64()

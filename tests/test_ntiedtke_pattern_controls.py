@@ -99,7 +99,7 @@ def test_the_procedure_patterns_do_not_match_non_definitions():
     duplicate gate would fire constantly -- or, worse, someone would
     "fix" it by loosening the duplicate check.
     """
-    from tests.test_ntiedtke_oracle_single_source import _FUNC, _SUBR
+    from test_ntiedtke_oracle_single_source import _FUNC, _SUBR
 
     for negative in ("  end function hexw",
                      "  end subroutine cumastrn",
@@ -112,7 +112,7 @@ def test_the_procedure_patterns_do_not_match_non_definitions():
 
 def test_the_flip_pattern_does_not_match_an_unrelated_assignment():
     """``zz = kte - pp`` is the flip. ``zz = kte`` is not."""
-    from tests.test_ntiedtke_oracle_single_source import _FLIP
+    from test_ntiedtke_oracle_single_source import _FLIP
 
     assert _FLIP.search("       zz = kte - pp")
     for negative in ("       zz = kte", "       zz = nz + 1",
@@ -130,7 +130,7 @@ def test_the_claim_patterns_do_not_match_ordinary_prose():
     These are sentences a reader would write about the same arrays without
     asserting a non-mutation, and none should be flagged.
     """
-    from tests.test_ntiedtke_capture_provenance import _CLAIM_PATTERNS
+    from test_ntiedtke_capture_provenance import _CLAIM_PATTERNS
 
     for negative in (
             "cudtdqn writes ptent and ptenq",
@@ -154,7 +154,7 @@ def test_the_kernel_parser_does_not_pick_up_device_functions():
     nt_foeewm -- run INSIDE stages and must not become stages themselves,
     or the assembler would try to launch them.
     """
-    from tests.test_ntiedtke_stage_signature import _parse
+    from test_ntiedtke_stage_signature import _parse
 
     got = set(_parse())
     for helper in ("nt_cuentrn", "nt_cubasmcn", "nt_foeewm", "nt_foealfa",

@@ -38,7 +38,7 @@ import pytest
 import gpuwm.go_cli as go_cli
 import gpuwm.prepared_single_domain_forecast as psdf
 import gpuwm.runplan as runplan_module
-from gpuwm.core.streaming import StreamingOptions
+from gpuwm.core.streaming import STREAMING_KEYS, StreamingOptions
 from gpuwm.experiment import load_experiment
 from gpuwm.runplan import (PLAN_SCHEMA, PlanError, build_plan, resolve_plan,
                            streaming_decision)
@@ -266,14 +266,14 @@ def test_every_key_survives_the_hop_including_the_ones_to_json_drops(
     It omits every ``None`` and both budget keys, so a forwarding built
     on it would silently drop ``host_budget_bytes`` -- the override that
     exists because ``/proc/meminfo`` reports the HOST's RAM inside a
-    container and is not a budget.  The chain sends the whole dataclass.
+    container and is not a budget.  The chain sends every public streaming key, excluding derived planner context.
     """
 
     captured, _config, _staged = _drive(tmp_path, monkeypatch, tiles=_ON)
     payload = json.loads(_flag(captured["single"], "--tiles"))
 
     assert payload["host_budget_bytes"] == 34359738368
-    assert set(payload) == set(StreamingOptions.__dataclass_fields__)
+    assert set(payload) == STREAMING_KEYS
     assert "host_budget_bytes" not in StreamingOptions(
         mode="on", host_budget_bytes=34359738368).to_json()
 
@@ -471,6 +471,7 @@ def test_every_chain_declares_what_tiles_does_on_it():
     chains = {runplan_module._chain_key(route, source)
               for route in runplan_module.ROUTES
               for source in sources}
+    chains.add("prepared:existing")
     assert chains <= set(runplan_module._STREAMING_DELIVERY)
     assert set(runplan_module._STREAMING_DELIVERY) == chains
 
@@ -503,34 +504,19 @@ def test_a_plan_that_configures_no_tiles_says_nothing_about_them(
          "basis": "schema_default"}]
 
 
-def test_a_nested_plan_that_asks_every_grid_to_stream_is_refused_by_name(
-        tmp_path):
-    """``mode = "on"`` streams unconditionally, and a TREE cannot.
-
-    Not because a nest cannot stream -- since the per-domain roads it
-    can -- but because ``on`` streams every grid, which puts BOTH ends of
-    every coupling edge on a streamed road, and that composition is the
-    one shape no gate has driven.  Without this the plan fetches,
-    prepares twice, builds the whole tree and THEN stops at the first
-    FORCE -- a refusal that was knowable from the config before anything
-    was downloaded.
-    """
-
+def test_a_nested_plan_honors_both_streamed_endpoints(tmp_path):
     plan = _plan(tmp_path, _config(tmp_path, tiles=_ON, nested=True))
-    with pytest.raises(PlanError) as refusal:
-        resolve_plan(plan, require_inputs=False)
-    text = str(refusal.value)
-
-    assert "d02" in text                      # WHICH domain
-    assert "BOTH ends streamed" in text       # WHY: the edge shape
-    assert "NestCoupler.force" in text        # the mechanism, not a policy
-    assert "d01" in text          # what CAN stream alone, named
-    assert "mode = 'auto'" in text and "one [[domain]] table" in text
+    resolution, exp, _data = resolve_plan(plan, require_inputs=False)
+    assert "refusal" not in resolution["tiles"]
+    assert resolution["tiles"]["delivery"] == "tree"
+    assert exp.tiles.mode == "on"
+    entry = next(e for e in resolution["automatic_resolutions"] if e["key"] == "tiles_delivery")
+    assert "Parent and child can both stream" in entry["note"]
 
 
-def test_the_moving_domain_is_named_because_a_moving_domain_is_a_nest(
+def test_the_moving_domain_names_the_required_host_store(
         tmp_path):
-    """A [relocation] follow config cannot stream the domain that moves."""
+    """A moving streamed child requires its canonical host store."""
 
     plan = _plan(tmp_path, _config(tmp_path, tiles=_ON, nested=True,
                                    follow=True))
@@ -539,10 +525,28 @@ def test_the_moving_domain_is_named_because_a_moving_domain_is_a_nest(
     text = str(refusal.value)
 
     assert "[relocation] follow domain" in text
-    assert "d02 is also" in text
+    assert "d02" in text and "device store" in text
+    assert "requires the canonical host store" in text
+    assert "reconstruction reservation" in text
+    assert "tiles.store = 'host' on [[domain]] grid_id = 2" in text
 
 
-def test_auto_on_a_tree_is_accepted_and_the_gap_is_named(tmp_path):
+def test_a_moving_domain_with_a_host_store_remains_streamable(tmp_path):
+    """The required store admits the moving child through plan resolution."""
+
+    tiles = _ON.replace('store = "device"', 'store = "host"')
+    plan = _plan(tmp_path, _config(tmp_path, tiles=tiles, nested=True,
+                                   follow=True))
+    resolution, exp, _data = resolve_plan(plan, require_inputs=False)
+
+    assert "refusal" not in resolution["tiles"]
+    assert resolution["tiles"]["delivery"] == "tree"
+    assert resolution["tiles"]["relocation_grid_id"] == 2
+    assert resolution["tiles"]["resident_grid_ids"] == []
+    assert exp.tiles.mode == "on" and exp.tiles.store == "host"
+
+
+def test_auto_on_a_tree_prices_either_endpoint(tmp_path):
     """The asymmetry is streaming.refuse_unrouted_streaming's, not a new one.
 
     ``on`` is decidable from the config; ``auto`` asks
@@ -558,13 +562,13 @@ def test_auto_on_a_tree_is_accepted_and_the_gap_is_named(tmp_path):
     resolution, exp, _data = resolve_plan(plan, require_inputs=False)
 
     assert resolution["tiles"] == {
-        "chain": "prepared:hrrr", "delivery": "root_only", "mode": "auto",
-        "store": "host", "streamable_grid_id": 1, "resident_grid_ids": [2],
+        "chain": "prepared:hrrr", "delivery": "tree", "mode": "auto",
+        "store": "host", "streamable_grid_id": 1, "resident_grid_ids": [],
         "relocation_grid_id": None}
     note = next(entry for entry in resolution["automatic_resolutions"]
                 if entry["key"] == "tiles_delivery")["note"]
-    assert "d02 therefore run resident" in note
-    assert "does not fit" in note
+    assert "Parent and child can both stream" in note
+    assert "pricing every domain against one budget" in note
 
 
 def test_a_single_domain_plan_streams_and_the_document_says_which_grid(
@@ -627,8 +631,7 @@ def test_the_config_driven_route_resolves_as_a_streaming_chain(tmp_path):
     assert entry["value"] == "auto"
     assert "streams for real" in entry["note"]
     assert "ANY grid can stream" in entry["note"]
-    # The one shape still refused is named where an operator reads it.
-    assert "BOTH ends streamed" in entry["note"]
+    assert "Parent and child can both stream" in entry["note"]
 
 
 def test_the_prepared_chains_are_not_refused_for_having_a_nest_under_auto(

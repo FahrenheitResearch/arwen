@@ -209,7 +209,7 @@ def test_every_graded_slice_declares_its_entry_provenance():
 
     The eight instances all began as an unrecorded choice.
     """
-    from tests.test_ntiedtke_launch_geometry import NT_CALL_ORDER
+    from test_ntiedtke_launch_geometry import NT_CALL_ORDER
     stages = {n.replace("ntiedtke_", "") for n in NT_CALL_ORDER}
     # Stages whose entry is the driver boundary, not a cumastrn line.
     driver_level = {"prep", "convert", "cuinin", "cutypen", "mfub", "cuascn"}

@@ -163,14 +163,18 @@ v4.6.1 `module_cu_gf_*.F` word for word at the GFDRV boundary over the committed
 216-column oracle (18 soundings x 6 grid spacings x 2 `ishallow` arms) on the 208
 columns where GFDRV's own decomposition is exact, with the 8 remainder bounded to
 the driver's own mixed precision (max 34 ULP, 3.8e-6 relative, no branch flips).
-The CUDA path holds that boundary with the gamma function computed on device:
-transcribed glibc-2.39 float32 `tgammaf`/`lgammaf`/`expm1f`/`exp2f`/`powf` bitwise
-against 130k live-glibc words, which matters because one ULP of the beta-shape
-normalisation moves the deep mass flux by up to 7.3 percent
+The CUDA path holds that boundary with the beta-shape normalisation `fzu` PINNED
+from the capture, as the CPU suite pins it: transcribed glibc-2.39 float32
+`logf`/`expf`/`powf` bitwise against the live-glibc sweeps, while **gamma is a
+deliberate divergence since 2.6.6** -- ArWen's is correctly rounded and glibc's,
+which gfortran binds WRF's `gamma()` to, is not on 39.44 percent of its domain --
+and is graded against a 113-bit oracle instead. One ULP of `fzu` moves the deep
+mass flux by up to 7.3 percent, so it is pinned rather than tolerated; the whole
+record is `docs/gf_gamma_known_delta.md`
 [docs/public/PHYSICS.md:1129-1142].
 
-Three registered deviations: the shallow `k22` trigger ships with WRF's MAXLOC
-off-by-one corrected (behind a parity-suite flag; the correction moves 3 rejected
+Four registered deviations: gamma (above); the shallow `k22` trigger ships with
+WRF's MAXLOC off-by-one corrected (behind a parity-suite flag; the correction moves 3 rejected
 cases and zero output words); the inversion-layer search clamps WRF's out-of-bounds
 `t_cup(kend+8)` read (clamp count zero on the fixture, asserted); and the engine
 seam feeds the advective/boundary-layer halves of the forcing as zeros, with
@@ -191,7 +195,8 @@ SASE (Scale-Adaptive Stress-Energetics) is a unified turbulence/PBL closure at
 collide with a scheme WRF adds later [docs/public/PHYSICS.md:1211-1397]. Companion
 requirements are refused rather than warned: `km_opt = 0` (SASE computes its own
 horizontal mixing, so a `km_opt` operator would double-count), `khdif = kvdif = 0`,
-`bldt = 0`, a surface layer on, `moist = true`, `nz <= 128`. It is run-wide, never
+a surface layer on, `moist = true`, `nz <= 128`. The ordinary `bldt`
+setting controls cadence; coupled tendencies persist between calls and across restart. It is run-wide, never
 per-nest.
 
 Its status, stated the way the physics page states it:

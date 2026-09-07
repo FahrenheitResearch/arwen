@@ -300,6 +300,141 @@ def test_stable_boundary_layer_wind_decays():
     assert np.isfinite(args["theta"]).all()
 
 
+def test_the_thermal_enhanced_sweep_cannot_raise_pblflg():
+    """bl_ysu.F90:703-728 is guarded ``if(pblflg(i))`` three times.
+
+    Convective onset: weakly negative ``br``, a small positive ``hfx`` and a
+    residual nocturnal cap on the first two levels.  The FIRST guess
+    (:618-647) puts the PBL top at 95.4 m, below ``zq(i,2) = 166.7 m``, so
+    :646 sets ``kpbl = 1`` and :647 sets ``pblflg = .false.``.  WRF then
+    skips the thermal-enhanced Richardson sweep entirely -- :684-698 can only
+    LOWER ``pblflg``, never raise it -- and the column spends the step in the
+    local-K regime with no countergradient, no entrainment and no ``delta``.
+
+    Ungated, the enhanced sweep runs anyway, the ``vpert`` excess punches
+    through the cap and the column comes back ``kpbl = 4``, ``hpbl = 431 m``,
+    ``delta = 10.2`` with an entrainment-boosted ``exch_h`` of 22 m2/s.  That
+    is a different PBL onset time, not a last-ULP difference.
+
+    ``ysu_topdown_pblmix = 0`` isolates the guard: WRF's theta-li extension
+    (:732-751) carries no ``pblflg`` test and legitimately revives the column
+    on the default path, which would mask the divergence rather than refute
+    it.
+    """
+    from gpuwm.verify.npref import np_ysu_column
+
+    nz = 36
+    z, *_ = _grid(nz)
+    theta = np.empty(nz)
+    theta[0] = 300.0
+    for k in range(1, nz):
+        theta[k] = theta[k - 1] + (0.1 if k <= 2 else 3.0)
+    args = _column(theta=theta, qv=np.full(nz, 0.008), nz=nz,
+                   hfx=60.0, qfx=2.0e-5, ust=0.30, br=-0.001, dt=60.0)
+    args["ysu_topdown_pblmix"] = 0
+    out = np_ysu_column(**args)
+
+    # The first guess sat below zq(i,2); WRF leaves it there.
+    assert out["kpbl"] == 1
+    assert out["hpbl"] == pytest.approx(95.4339, abs=1.0e-3)
+    assert out["hpbl"] < args["dz"][0]
+    # pblflg false => no entrainment layer and background K only.
+    assert out["delta"] == 0.0
+    assert np.asarray(out["exch_h"]).max() == pytest.approx(0.01, abs=1e-9)
+
+
+def test_a_theta_li_revival_that_leaves_kpbl_at_one_is_extinguished():
+    """bl_ysu.F90:765 and :766 are two independent statements.
+
+    The theta-li extension raises ``pblflg`` at :748 on an iteration that
+    leaves ``definebrup`` set, so when that is the LAST iteration ``kpbl`` is
+    never reassigned and the column reaches :755 with ``pblflg`` true and
+    ``kpbl == 1``.  :764 then reads WRF's own ``za(i,0)`` overrun (inherited
+    here on purpose, and unchanged by this test), and :766 -- which does NOT
+    hang off :765's ``hpbl < zq(i,2)`` test -- kills ``pblflg`` regardless of
+    what that junk interpolation produced.
+
+    Fixture: stable surface (``br > 0``, so the first guess clamps to
+    ``kpbl = 1`` and ``pblflg`` is already false), a 2 K surface inversion to
+    keep the interpolated ``hpbl`` above ``zq(i,2)``, and 2 g/kg of liquid on
+    level ``nz-2`` only, so the theta-li scan's single unstable level is its
+    final one.
+
+    With :766 nested inside :765 the column survives into :830 with
+    ``k = kpbl(i) - 1 == 0`` -- one element before the column -- and reports
+    ``delta = 12.0`` with an entrainment-boosted ``exch_h``.  In CUDA that
+    same index is a negative offset into caller-owned device memory
+    (``ysu.cu``'s ``theta[kt * st + col]`` at ``col - st``); in this float64
+    mirror NumPy wraps it to the model top instead, so the mirror answers
+    where the kernel would fault, and only the flag state separates them.
+    """
+    from gpuwm.verify.npref import np_ysu_column
+
+    nz, ztop = 36, 1800.0
+    z, dz, *_ = _grid(nz, ztop)
+    theta = np.empty(nz)
+    theta[0] = 296.0
+    theta[1] = 298.0
+    theta[2:] = theta[1] + 0.001 * (z[2:] - z[1])
+    qc = np.zeros(nz)
+    qc[nz - 2] = 2.0e-3
+    args = _column(theta=theta, u=np.full(nz, 11.0),
+                   qv=np.full(nz, 0.008), nz=nz, ztop=ztop,
+                   hfx=-35.0, qfx=0.0, ust=0.50, br=0.14, dt=30.0)
+    args["qc"] = qc
+    args["ysu_topdown_pblmix"] = 1
+    out = np_ysu_column(**args)
+
+    # The revival really happened and really left kpbl at 1 ...
+    assert out["kpbl"] == 1
+    # ... and WRF's za(i,0) interpolation is inherited unchanged, above
+    # zq(i,2) = 50 m, so :765 does NOT fire and only :766 can extinguish it.
+    assert out["hpbl"] == pytest.approx(113.3243, abs=1.0e-3)
+    assert out["hpbl"] > dz[0]
+    # :766 fired: no entrainment block, background K only.
+    assert out["delta"] == 0.0
+    assert np.asarray(out["exch_h"]).max() == pytest.approx(0.01, abs=1e-9)
+
+
+def test_the_kernel_spells_wrfs_two_pblflg_rules_like_the_mirror():
+    """The two branch structures the tests above measure, in ``ysu.cu``.
+
+    ``test_ysu_kernel_matches_float64_mirror`` is the numerical statement
+    that the CUDA column and ``np_ysu_column`` are one transcription, and it
+    needs a device: the fixture in ``gpuwm/data/ysu/oracle/ysu-surface.csv``
+    has no column with ``kpbl == 1`` (minimum 2, case 13), so neither of
+    these two rules is reachable from the shipped oracle even on a GPU box.
+    They decide whether a column is convective at all, so they are asserted
+    here as well, textually, where the assertion runs everywhere.
+    """
+    import pathlib
+
+    source = (pathlib.Path(__file__).resolve().parents[1] / "gpuwm" / "core"
+              / "kernels" / "ysu.cu").read_text("utf-8")
+    code = [line.strip() for line in source.splitlines()]
+    code = [line for line in code if line and not line.startswith("//")]
+
+    # bl_ysu.F90:703-728 -- every statement of the thermal-enhanced sweep
+    # sits under if(pblflg(i)); :684-698 can only lower the flag.  What the
+    # guarded block does with the sweep's result is a separate question
+    # (bl_ysu.F90:765's clamp placement, par-pbl-ysu-03), so only the guard
+    # itself is asserted here.
+    start = code.index("if (sfcflg && sflux > 0.0f) {")
+    end = code.index("} else pblflg = false;", start)
+    block = code[start + 1:end]
+    call = next(k for k, line in enumerate(block)
+                if line.startswith("ysu_diagnose("))
+    assert block[call - 1] == "if (pblflg) {"
+    assert "pblflg = true" not in " ".join(block)
+
+    # bl_ysu.F90:765 and :766 -- two independent statements.  Nesting the
+    # second inside the first is what let a theta-li revival reach :833
+    # with kpbl == 1 and index one level below the column.
+    interp = code.index("hpbl = za[kh - 1] + frac * (za[kh] - za[kh - 1]);")
+    assert code[interp + 1] == "if (hpbl < zq[1]) kpbl = 1;"
+    assert code[interp + 2] == "if (kpbl <= 1) pblflg = false;"
+
+
 @pytest.mark.gpu
 @requires_gpu
 def test_ysu_kernel_matches_float64_mirror():

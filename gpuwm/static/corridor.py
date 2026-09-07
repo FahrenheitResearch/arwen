@@ -121,8 +121,10 @@ def config_declares_follow_source(exp) -> bool:
     constrains where a nest may sit, and the nest stays put.
     """
     relocation = exp.relocation
-    return bool(relocation.enabled
-                and (relocation.follow is not None or relocation.moves))
+    return bool((relocation.enabled
+                 and (relocation.follow is not None or relocation.moves))
+                or any(getattr(dc, "follow", None) is not None
+                       for dc in getattr(exp, "domains", ())))
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +231,7 @@ def corridor_geometry(child_dc, parent_run, *, frame_run=None,
 
 
 def moving_grid_ids(exp) -> frozenset[int]:
-    """Grid ids a ``[relocation]`` block authorises to move.
+    """Grid ids the legacy relocation and per-domain followers may move.
 
     The tracked mover, plus the ``[relocation.containment]`` ancestor
     when one is configured -- the ancestor slides in whole cells of ITS
@@ -237,20 +239,22 @@ def moving_grid_ids(exp) -> frozenset[int]:
     root-anchored frames for children of a mover) must count it as a
     mover in its own right.
     """
+    movers = {int(dc.grid_id) for dc in getattr(exp, "domains", ())
+              if getattr(dc, "follow", None) is not None}
     relocation = getattr(exp, "relocation", None)
-    if relocation is None or not getattr(relocation, "enabled", False):
-        return frozenset()
-    grid_id = getattr(relocation, "grid_id", None)
-    if grid_id is None:
-        return frozenset()
-    movers = {int(grid_id)}
-    containment = getattr(relocation, "containment", None)
-    if containment is not None:
-        movers.add(int(containment.grid_id))
+    if (relocation is not None and getattr(relocation, "enabled", False)
+            and (getattr(relocation, "follow", None) is not None
+                 or getattr(relocation, "moves", ()))):
+        grid_id = getattr(relocation, "grid_id", None)
+        if grid_id is not None:
+            movers.add(int(grid_id))
+            containment = getattr(relocation, "containment", None)
+            if containment is not None:
+                movers.add(int(containment.grid_id))
     return frozenset(movers)
 
 
-def relocating_subtree_grid_ids(exp) -> tuple[int, ...]:
+def relocating_subtree_grid_ids(exp, *, moving_roots=None) -> tuple[int, ...]:
     """Every grid whose GROUND changes when this experiment moves.
 
     The mover plus all of its descendants, ascending.  A mid-tree move
@@ -259,7 +263,7 @@ def relocating_subtree_grid_ids(exp) -> tuple[int, ...]:
     one place that says which.  For a leaf mover it is the single grid id
     it has always been, so nothing about a leaf bundle changes.
     """
-    movers = moving_grid_ids(exp)
+    movers = moving_grid_ids(exp) if moving_roots is None else moving_roots
     if not movers:
         return ()
     by_parent: dict[int, list[int]] = {}
@@ -471,7 +475,7 @@ class CorridorBuild:
 
 def build_child_statics_corridor(*, child_dc, parent_run, reference_grid,
                                  static_catalog,
-                                 frame_kwargs=None) -> CorridorBuild:
+                                 frame_kwargs=None, static_highres=None) -> CorridorBuild:
     """Build one child's frame-extent statics corridor from the GEOG
     source, through the same builder the domain statics come from."""
     from gpuwm.static.build import build_static, geog_selection_from_catalog
@@ -483,8 +487,14 @@ def build_child_statics_corridor(*, child_dc, parent_run, reference_grid,
     coverage: dict[str, object] = {}
     fields = build_static(grid, selection.root, selection=selection,
                           source_coverage_report=coverage)
-    _validate_corridor_fields(fields, geometry)
     landuse = selection.landuse_global_attrs()
+    highres_receipt = None
+    if static_highres is not None and static_highres.enabled:
+        from gpuwm.static.highres_production import apply_highres_statics
+        fields, highres_receipt = apply_highres_statics(
+            fields, grid, config=static_highres, domain_id=child_dc.grid_id,
+            case_date=child_dc.start_time.date(), landuse_attrs=landuse)
+    _validate_corridor_fields(fields, geometry)
     entry = {
         "schema": STATICS_CORRIDOR_SCHEMA,
         "status": "READY",
@@ -512,6 +522,8 @@ def build_child_statics_corridor(*, child_dc, parent_run, reference_grid,
             for name, report in sorted(coverage.items())
         },
     }
+    if highres_receipt is not None:
+        entry["highres"] = highres_receipt
     return CorridorBuild(grid_id=int(child_dc.grid_id), fields=fields,
                          entry=entry)
 
@@ -562,7 +574,7 @@ def validated_corridor_selection(exp, statics_corridor) -> tuple[int, ...]:
 
 
 def emit_statics_corridor_set(*, exp, grids, static_catalog, directory,
-                              statics_corridor):
+                              statics_corridor, static_highres=None):
     """Build and seal the selected children's corridors, or emit nothing.
 
     THE emission.  Every preparation chain that can seal a corridor
@@ -596,7 +608,8 @@ def emit_statics_corridor_set(*, exp, grids, static_catalog, directory,
             child_dc=child, parent_run=parent_run,
             reference_grid=grids[index_by_id[grid_id]],
             static_catalog=static_catalog,
-            frame_kwargs=corridor_frame_kwargs(exp, child)))
+            frame_kwargs=corridor_frame_kwargs(exp, child),
+            **({} if static_highres is None else {"static_highres": static_highres})))
     return write_statics_corridor_set(Path(directory), builds)
 
 
@@ -698,6 +711,7 @@ class ChildStaticsCorridor:
     geometry: Mapping[str, object]
     fields: Mapping[str, np.ndarray]
     cache_sha256: str
+    highres_applied: bool = False
 
     @property
     def host_bytes(self) -> int:
@@ -844,7 +858,8 @@ def load_child_statics_corridor(
     for value in fields.values():
         value.setflags(write=False)
     return ChildStaticsCorridor(
-        geometry=geometry, fields=fields, cache_sha256=observed)
+        geometry=geometry, fields=fields, cache_sha256=observed,
+        highres_applied=entry.get("highres", {}).get("status") == "APPLIED")
 
 
 def corridor_footprint_statics_builder(corridor: ChildStaticsCorridor):
@@ -868,7 +883,7 @@ def corridor_footprint_statics_builder(corridor: ChildStaticsCorridor):
     build.source_label = (
         f"statics-corridor d{int(corridor.geometry['grid_id']):02d} "
         f"sha256:{corridor.cache_sha256[:12]}")
-    build.highres_applied = False
+    build.highres_applied = corridor.highres_applied
     return build
 
 

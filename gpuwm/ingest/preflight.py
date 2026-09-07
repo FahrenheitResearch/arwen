@@ -25,7 +25,9 @@ from gpuwm.ingest.grib import (Era5DecodeResult, Era5Snapshot,
                                cached_era5_forcing, canonical_units,
                                inspect_grib1_envelopes, parse_vtable)
 from gpuwm import data_assets
-from gpuwm.ingest.horiz import _MASKED_SEARCH_RADIUS
+from gpuwm.ingest.horiz import (_MASKED_SEARCH_RADIUS,
+                                source_axis_space,
+                                source_coordinate_transform)
 from gpuwm.static.geog import GeogDataset
 
 
@@ -112,6 +114,15 @@ class SpatialCoverage:
     longitude_max: float
     latitude_order: str
     longitude_order: str
+    #: The decoded snapshot's projection descriptor, carried verbatim so
+    #: the bounds above keep the meaning they were measured in.  ``None``
+    #: is the geographic case and the bounds are degrees; otherwise they
+    #: are the projection's own axes and every comparison against a
+    #: target has to transform the target into that plane first
+    #: (:func:`gpuwm.ingest.horiz.source_coordinate_transform`).  The
+    #: attribute is named ``projection`` because that is the name those
+    #: helpers read off any object that carries a descriptor.
+    projection: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -696,6 +707,7 @@ def _build_input_catalog(case_data) -> tuple[InputCatalog,
                             else "descending"),
             longitude_order=("ascending" if first.longitude[-1] > first.longitude[0]
                              else "descending"),
+            projection=getattr(first, "projection", None),
         )
         for snapshot in snapshots:
             land = snapshot.fields.get("LANDSEA")
@@ -916,10 +928,23 @@ def _scan_forcing(catalog: InputCatalog) -> tuple[list[PreflightIssue], list[str
                         bad = bad & ~tolerated
                 if np.any(bad):
                     index = _first_index(bad)
+                    detail = ""
+                    if name in _WATER_OPTIONAL_FIELDS:
+                        native = catalog.masks.get(
+                            (snapshot.valid_time, name + "_MISSING"))
+                        if native is None or not native.mask[index]:
+                            detail = "; no native GRIB missing-value bitmap marks this cell"
+                        elif name not in stable_native_bitmaps:
+                            detail = "; the native missing-value bitmap changes between valid times"
+                        elif tolerated_water_missing is None:
+                            detail = "; LANDSEA is absent, so land/coastal missing values cannot be verified"
+                        elif name == "SST":
+                            detail = "; the missing SST cell is outside land/coastal support"
+                        detail += "; inspect the source field and its masks before replacing missing values"
                     issues.append(PreflightIssue(
                         "nonfinite",
                         f"{name} at {snapshot.valid_time} contains "
-                        f"{value[index]!r}",
+                        f"{value[index]!r}{detail}",
                         path=_source_for(catalog, snapshot.valid_time, name),
                         variable=name, index=index,
                     ))
@@ -1110,21 +1135,47 @@ def _check_spatial(exp, case_data, catalog: InputCatalog
 
     lat, lon = grid.latlon_mass()
     coverage = catalog.spatial_coverage
-    lat_bad = ((lat < coverage.latitude_min - 1.0e-9)
-               | (lat > coverage.latitude_max + 1.0e-9))
-    center = 0.5 * (coverage.longitude_min + coverage.longitude_max)
-    mapped_lon = center + np.mod(lon - center + 180.0, 360.0) - 180.0
-    lon_bad = ((mapped_lon < coverage.longitude_min - 1.0e-9)
-               | (mapped_lon > coverage.longitude_max + 1.0e-9))
+    # The recorded bounds are the source axes' own, so the target is
+    # brought into the plane those axes live in before anything is
+    # compared -- the identity for a geographic source, and the declared
+    # projection's forward map for a source that carries a descriptor.
+    # The same rule the interpolation boundary and the hierarchy receipt
+    # use, read off the descriptor rather than off a source name.
+    transform, projected = source_coordinate_transform(coverage)
+    axis_space = source_axis_space(coverage)
+    target_y, target_x = transform(lat, lon)
+    target_y = np.asarray(target_y, dtype=np.float64)
+    target_x = np.asarray(target_x, dtype=np.float64)
+    lat_bad = ((target_y < coverage.latitude_min - 1.0e-9)
+               | (target_y > coverage.latitude_max + 1.0e-9))
+    if projected:
+        # A projection plane is not periodic; wrapping an x axis by 360
+        # of ITS units would move a point 36,000 km sideways.
+        mapped_x = target_x
+    else:
+        center = 0.5 * (coverage.longitude_min + coverage.longitude_max)
+        mapped_x = center + np.mod(target_x - center + 180.0, 360.0) - 180.0
+    lon_bad = ((mapped_x < coverage.longitude_min - 1.0e-9)
+               | (mapped_x > coverage.longitude_max + 1.0e-9))
     bad = lat_bad | lon_bad
     if np.any(bad):
         index = _first_index(bad)
+        if projected:
+            detail = (
+                f"domain point lat/lon=({lat[index]:g}, {lon[index]:g}), "
+                f"which is {axis_space} (y, x)=({target_y[index]:g}, "
+                f"{target_x[index]:g}), lies outside forcing y "
+                f"[{coverage.latitude_min:g}, {coverage.latitude_max:g}] x "
+                f"[{coverage.longitude_min:g}, {coverage.longitude_max:g}] "
+                f"in that plane")
+        else:
+            detail = (
+                f"domain point lat/lon=({lat[index]:g}, {lon[index]:g}) lies "
+                f"outside forcing lat [{coverage.latitude_min:g}, "
+                f"{coverage.latitude_max:g}] lon [{coverage.longitude_min:g}, "
+                f"{coverage.longitude_max:g}]")
         issues.append(PreflightIssue(
-            "spatial-coverage",
-            f"domain point lat/lon=({lat[index]:g}, {lon[index]:g}) lies "
-            f"outside forcing lat [{coverage.latitude_min:g}, "
-            f"{coverage.latitude_max:g}] lon [{coverage.longitude_min:g}, "
-            f"{coverage.longitude_max:g}]",
+            "spatial-coverage", detail,
             variable="forcing_grid", index=index,
         ))
     return issues, checks, grid
@@ -1757,6 +1808,16 @@ def _check_command(args) -> int:
     # report; the input-preflight text goes to stderr so the composed
     # `gpuwm check CONFIG --json` emits parseable JSON on stdout.
     stream = sys.stderr if getattr(args, "json", False) else sys.stdout
+    # HOST RAM AS IT WAS BEFORE THIS COMMAND SPENT ANY, read here and
+    # nowhere later.  The memory section that runs next weighs the forcing
+    # decode's host residency against what a run STARTING NOW would find,
+    # and this command decodes that very forcing a few lines below into
+    # process-lifetime caches that nothing clears.  A figure read after
+    # that is short by the exact quantity being weighed, which would
+    # refuse configurations that fit.
+    from gpuwm.core.preflight import host_available_bytes
+
+    args.host_available_at_entry = host_available_bytes()
     # A legacy RunConfig-shaped TOML has no [case_data] declared-input
     # table, so there is nothing for the input preflight to check.
     # Returning success lets the composed ``gpuwm check`` advance to the
@@ -1776,22 +1837,15 @@ def _check_command(args) -> int:
               "[case_data] inputs; skipping to the memory estimator",
               file=stream)
         return 0
-    # An experiment TOML without [case_data] is not consumable by the
-    # config-driven run front door -- `gpuwm domain --source gfs|hrrr`
-    # emits this shape deliberately, because those tables feed the
-    # rw-wps/gpuwm-wrf-init native initialization front door, which
-    # performs its own hash-bound input validation.  Say so plainly,
-    # then advance to the memory estimator: geometry/physics/VRAM
-    # validation is exactly what `gpuwm check` can honestly certify for
-    # these configs.
+    # Prepared-route configurations declare no [case_data] inputs here.
+    # Their preparation route validates its inputs; the shared check can
+    # still size the experiment geometry and configured physics.
     if authority is not None:
         if "case_data" not in tomllib.load(io.BytesIO(authority.payload)):
             print(
                 "input preflight: not applicable -- no [case_data] "
-                "table (the config-driven run front door consumes "
-                "the ERA5 native-GRIB1 route only; GFS/HRRR feed the "
-                "rw-wps/gpuwm-wrf-init native front door, which "
-                "validates its own inputs).  Continuing to the "
+                "table. The preparation route validates its own "
+                "inputs. Continuing to the "
                 "memory preflight.",
                 file=stream)
             return 0
@@ -1811,6 +1865,15 @@ def _check_command(args) -> int:
                          indent=2), flush=True)
         print(f"gpuwm input preflight: FAIL\n{refusal}", file=sys.stderr)
         return 1
+    # THE HANDOFF, one attribute wide.  The memory section that runs next
+    # under the combined check policy prices the ingest phase's HOST
+    # residency, and the two numbers that takes -- the SOURCE grid and how
+    # many valid times the decoder will hold -- live in the forcing files
+    # and nowhere in the experiment TOML.  This catalog already carries
+    # both, decoded once; handing it over is what keeps the memory report
+    # from having to decode the forcing a second time in order to warn
+    # about decoding the forcing.
+    args.input_catalog = report.catalog
     print(report.format(), file=stream)
     if report.ok:
         return 0

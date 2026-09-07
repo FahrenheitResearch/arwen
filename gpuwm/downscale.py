@@ -200,6 +200,107 @@ def _parent_mass_dims(path: Path) -> tuple[int, int]:
                 len(dataset.dimensions["west_east"]))
 
 
+def _validate_parent_evidence_grid(path: Path, binding, restart=None) -> None:
+    """Bind companion physics to the history domain it actually describes."""
+    from gpuwm.io.restart import read_restart_header
+
+    config = (None if restart is None else
+              read_restart_header(Path(restart))["config"])
+    with netCDF4.Dataset(path) as dataset:
+        if "GRID_ID" in dataset.ncattrs():
+            actual = int(dataset.getncattr("GRID_ID"))
+            if actual != int(binding.domain_id):
+                raise OfflineChildContractError(
+                    f"parent physics evidence domain {binding.domain_id} "
+                    f"does not match history GRID_ID={actual}")
+        if config is None:
+            return
+        actual_grid = {
+            "nx": len(dataset.dimensions["west_east"]),
+            "ny": len(dataset.dimensions["south_north"]),
+            "nz": len(dataset.dimensions["bottom_top"]),
+            "dx": float(dataset.getncattr("DX")),
+            "dy": float(dataset.getncattr("DY")),
+        }
+        for key, actual in actual_grid.items():
+            if key not in config or not math.isclose(
+                    float(config[key]), actual, rel_tol=1e-7, abs_tol=1e-6):
+                raise OfflineChildContractError(
+                    f"parent restart {key}={config.get(key)!r} does not "
+                    f"match history {key}={actual}; use the restart "
+                    "from this archived parent domain")
+
+
+def _validate_child_window(run_seconds: float, window_seconds: float) -> None:
+    if float(run_seconds) > float(window_seconds):
+        raise OfflineChildContractError(
+            f"child run_seconds={run_seconds:g} exceeds the archived "
+            f"parent forcing window of {window_seconds:g} seconds")
+
+
+def _validate_child_surface_placement(surface, parent_path: Path, *,
+                                      placement, cfg) -> dict:
+    """Check an explicit surface against the native child mass coordinates."""
+    from gpuwm.core.nest_interp import sint
+    from gpuwm.static.projection import EARTH_RADIUS_M
+
+    missing = [name for name in ("XLAT", "XLONG")
+               if name not in surface.fields]
+    if missing:
+        raise OfflineChildContractError(
+            f"{surface.path} lacks {missing}; an explicit child surface "
+            "must carry latitude/longitude to prove the child placement")
+    parent = _parent_geometry(parent_path)
+    registration = placement.registration("", wrapper="interp")
+    # Longitude has a cut at the antimeridian and no unique value at a
+    # pole.  Interpolate geographic positions on the unit sphere instead
+    # of averaging wrapped angles through zero.  The placement/stencil
+    # remains the native mass-grid SINT registration.
+    parent_lat = np.deg2rad(parent["xlat"])
+    parent_lon = np.deg2rad(parent["xlong"])
+    components = (np.cos(parent_lat) * np.cos(parent_lon),
+                  np.cos(parent_lat) * np.sin(parent_lon),
+                  np.sin(parent_lat))
+    x, y, z = (np.asarray(sint(np.asarray(component, dtype=np.float32),
+                              registration), dtype=np.float64)
+               for component in components)
+    norm = np.sqrt(x * x + y * y + z * z)
+    if not np.isfinite(norm).all() or np.any(norm <= 1e-12):
+        raise OfflineChildContractError(
+            "parent coordinates cannot establish the child surface placement")
+    expected_lat = np.rad2deg(np.arctan2(z, np.hypot(x, y)))
+    expected_lon = np.rad2deg(np.arctan2(y, x))
+    actual_lat = np.asarray(surface.fields["XLAT"], dtype=np.float64)
+    actual_lon = np.asarray(surface.fields["XLONG"], dtype=np.float64)
+    dlat = np.deg2rad(actual_lat - expected_lat)
+    dlon = np.deg2rad((actual_lon - expected_lon + 180.0) % 360.0 - 180.0)
+    haversine = (np.sin(dlat / 2.0) ** 2
+                 + np.cos(np.deg2rad(expected_lat))
+                 * np.cos(np.deg2rad(actual_lat)) * np.sin(dlon / 2.0) ** 2)
+    distance = 2.0 * EARTH_RADIUS_M * np.arcsin(np.sqrt(np.clip(haversine, 0, 1)))
+    # Float32 coordinates and independently projected child geographies can
+    # differ slightly from native SINT.  One percent of a cell (at least 2 m)
+    # permits rounding but cannot admit a displaced child grid.
+    tolerance_m = max(2.0, 0.01 * min(float(cfg.dx), float(cfg.dy)))
+    maximum_m = float(np.max(distance))
+    if not np.isfinite(maximum_m) or maximum_m > tolerance_m:
+        raise OfflineChildContractError(
+            f"{surface.path} latitude/longitude do not match the child "
+            f"placement: maximum separation {maximum_m:g} m exceeds "
+            f"{tolerance_m:g} m; matching dimensions alone are insufficient")
+    with netCDF4.Dataset(surface.path) as dataset:
+        for name, expected in (("DX", cfg.dx), ("DY", cfg.dy)):
+            if name in dataset.ncattrs() and not math.isclose(
+                    float(dataset.getncattr(name)), float(expected),
+                    rel_tol=1e-6, abs_tol=1e-6):
+                raise OfflineChildContractError(
+                    f"{surface.path} {name} does not match child "
+                    f"spacing {float(expected):g} m")
+    return {"maximum_separation_m": maximum_m,
+            "tolerance_m": tolerance_m,
+            "basis": "native-SINT-unit-sphere-parent-mass-coordinates"}
+
+
 def _nearest_parent_index(lat_field, lon_field, lat: float,
                           lon: float) -> tuple[int, int]:
     """Nearest parent mass point, projection-agnostic (0-based j, i)."""
@@ -230,10 +331,64 @@ def _centered_placement(parent, *, j0: int, i0: int, ratio: int,
         i_parent_start=i_start, j_parent_start=j_start)
 
 
+def build_child_eta_levels(nz: int, *, stretch: float | None) -> tuple:
+    """One explicit child eta ladder, for a child deeper than its parent.
+
+    ``stretch`` is required.  A bare level count is refused because
+    ``make_vertical_coord`` would fill it in with a UNIFORM ladder: a child
+    that asked only for "more levels" off a stretched parent would silently
+    start from a different atmosphere rather than a finer sampling of the
+    same one.  Built through ``make_vertical_coord`` so the tree keeps ONE
+    ladder generator.
+    """
+
+    if stretch is None:
+        raise ValueError(
+            f"a {nz}-level child ladder needs a stretch: without one the "
+            "ladder would be uniform, and a uniform ladder under a stretched "
+            "parent is a different atmosphere, not a finer sampling of it.  "
+            "Pass --child-levels N,STRETCH (the parent's own stretch is a "
+            "good starting point; larger clusters more layers near the "
+            "ground)")
+    from gpuwm.core.grid import make_vertical_coord
+
+    coord = make_vertical_coord(int(nz), stretch=float(stretch))
+    return tuple(float(value) for value in coord.znw)
+
+
+
+def _parse_child_levels(spec):
+    """``--child-levels N[,STRETCH]`` -> an explicit ladder, or ``None``."""
+
+    if spec is None:
+        return None
+    parts = [part.strip() for part in str(spec).split(",")]
+    try:
+        nz = int(parts[0])
+    except ValueError:
+        raise OfflineChildContractError(
+            f"--child-levels {spec!r}: expected N[,STRETCH] with an integer "
+            "level count") from None
+    if len(parts) > 2:
+        raise OfflineChildContractError(
+            f"--child-levels {spec!r}: expected N[,STRETCH]")
+    stretch = None
+    if len(parts) == 2 and parts[1]:
+        try:
+            stretch = float(parts[1])
+        except ValueError:
+            raise OfflineChildContractError(
+                f"--child-levels {spec!r}: STRETCH must be a number") from None
+    try:
+        return build_child_eta_levels(nz, stretch=stretch)
+    except ValueError as exc:
+        raise OfflineChildContractError(str(exc)) from exc
+
 def _derive_child_run_config(parent_config: dict, *, parent, ratio: int,
                              child_nx: int, child_ny: int,
                              run_seconds: float,
-                             output_interval_s: float) -> dict:
+                             output_interval_s: float,
+                             child_eta_levels=None) -> dict:
     """Child RunConfig dict: parent physics verbatim, geometry rescaled."""
     from dataclasses import fields as dataclass_fields
 
@@ -253,6 +408,15 @@ def _derive_child_run_config(parent_config: dict, *, parent, ratio: int,
         "output_interval_s": float(output_interval_s),
         "clock_dt": 0.0, "case": "",
     })
+    if child_eta_levels is not None:
+        # The child's OWN ladder, and the level count that goes with it.
+        # p_top/hybrid_opt/etac stay inherited from the parent above: those
+        # three are what give the two ladders coincident endpoints, and the
+        # remap refuses if they drift (gpuwm/vertical_remap.py ::
+        # require_shared_column_basis).
+        ladder = tuple(float(value) for value in child_eta_levels)
+        merged["eta_levels"] = ladder
+        merged["nz"] = len(ladder) - 1
     validate_run_config(RunConfig(**merged))
     return merged
 
@@ -287,6 +451,16 @@ def _render_child_toml(config: dict, *, tiles_mode: str | None = None) -> str:
     answer for the card in front of the run, and a derived config that pinned
     ``tile_nx``/``nbuffers`` would carry this machine's plan to the next one.
     """
+    from dataclasses import fields
+
+    from gpuwm.config import RunConfig
+
+    # Restart headers contain every RunConfig field, including eta_levels=None.
+    # TOML has no null literal: omission preserves only fields whose native
+    # default is itself None.  Other null values must still fail rendering.
+    nullable_defaults = {field.name for field in fields(RunConfig)
+                         if field.default is None}
+
     def value(item):
         if isinstance(item, bool):
             return "true" if item else "false"
@@ -296,6 +470,12 @@ def _render_child_toml(config: dict, *, tiles_mode: str | None = None) -> str:
             return repr(item)
         if isinstance(item, int):
             return str(item)
+        if isinstance(item, (tuple, list)):
+            # An explicit eta ladder.  ``repr`` on each float so the array
+            # round-trips through TOML bit for bit: the child is PREPARED on
+            # this ladder and INTEGRATED on the one read back, and a rounded
+            # interface would put the two on different grids.
+            return "[" + ", ".join(value(entry) for entry in item) + "]"
         raise ValueError(f"cannot render config value {item!r}")
 
     grid_keys = ("nx", "ny", "nz", "dx", "dy", "ztop")
@@ -309,6 +489,8 @@ def _render_child_toml(config: dict, *, tiles_mode: str | None = None) -> str:
     for key in sorted(config):
         if key in grid_keys:
             continue
+        if config[key] is None and key in nullable_defaults:
+            continue
         lines.append(f"{key} = {value(config[key])}")
     if tiles_mode is not None:
         lines += ["", "[tiles]", f"mode = {json.dumps(str(tiles_mode))}"]
@@ -318,7 +500,8 @@ def _render_child_toml(config: dict, *, tiles_mode: str | None = None) -> str:
 
 def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
                     run_seconds: float, output_interval_s: float,
-                    vram_gib: float) -> int:
+                    vram_gib: float, child_eta_levels=None,
+                    measured_free_bytes: int | None = None) -> int:
     """Largest centered square child whose peak envelope fits the card.
 
     Budget and criterion are the live sizing path's, the same arithmetic
@@ -349,7 +532,8 @@ def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
     from gpuwm.domain_wizard import card_assumed_free_gib, fit_headroom_bytes
     from gpuwm.experiment import experiment_from_run_config
 
-    free_bytes = int(card_assumed_free_gib(float(vram_gib)) * GIB)
+    free_bytes = (int(card_assumed_free_gib(float(vram_gib)) * GIB)
+                  if measured_free_bytes is None else int(measured_free_bytes))
     budget = free_bytes - EXTERNAL_MARGIN_BYTES
     limit = budget - fit_headroom_bytes(budget)
     # The memory model is start-time independent; the wrapper needs A
@@ -372,7 +556,15 @@ def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
             merged = _derive_child_run_config(
                 parent_config, parent=parent, ratio=ratio,
                 child_nx=size, child_ny=size, run_seconds=run_seconds,
-                output_interval_s=output_interval_s)
+                output_interval_s=output_interval_s,
+                # PRICED ON THE LADDER IT WILL RUN.  Sizing without this
+                # priced a 128-level child as its 49-level parent: measured
+                # on a 342x342 4 km child against a 10 GiB card, 6.554 GiB
+                # of peak envelope against the real 10.980 GiB, so the
+                # search returned a size the run could not allocate -- and
+                # discovered that only after the whole parent archive had
+                # been read.
+                child_eta_levels=child_eta_levels)
         except OfflineChildContractError:
             return False
         except ValueError as error:
@@ -516,6 +708,12 @@ def downscale_main(args) -> int:
 
 
 def _downscale_main(args, reservation: _OutputReservation) -> int:
+    auto_vram = bool(getattr(args, "auto_vram", False))
+    if auto_vram and (args.card is not None or args.vram_gib is not None):
+        raise ValueError("--auto-vram measures the local GPU; omit --card and --vram-gib")
+    if auto_vram and (args.point is None or args.child_size is not None):
+        raise ValueError("--auto-vram requires --point sizing without an explicit --child-size")
+    sizing_receipt = None
     frames = _discover_parent_series(
         [Path(p) for p in args.parent], args.parent_domain)
     cadence = _parent_cadence_seconds(frames)
@@ -559,6 +757,7 @@ def _downscale_main(args, reservation: _OutputReservation) -> int:
     contract = validate_parent_history(
         frames, max_boundary_interval_seconds=max_interval,
         physics_binding=binding)
+    _validate_parent_evidence_grid(frames[0], binding, args.parent_restart)
     window_seconds = (
         contract.end_time - contract.start_time).total_seconds()
 
@@ -581,6 +780,16 @@ def _downscale_main(args, reservation: _OutputReservation) -> int:
                 "DERIVES, and --child-config supplies its own.  Put "
                 "[tiles] in that file instead; the child route reads it "
                 "there and honors it.")
+        if args.child_levels is not None:
+            raise OfflineChildContractError(
+                "--child-levels builds an eta ladder for a config this "
+                "command DERIVES, and --child-config supplies its own.  "
+                "Read only on the --point route, it would be parsed here "
+                "and then silently dropped: the child would be prepared "
+                "and integrated on the supplied file's level count with "
+                "nothing said.  Put `eta_levels = [...]` in that file "
+                "instead (nz must equal len(eta_levels) - 1); the child "
+                "route reads it there and remaps onto it.")
         child_config = Path(args.child_config)
         ratio = int(args.ratio)
         i_start, j_start = int(args.i_parent_start), int(args.j_parent_start)
@@ -607,30 +816,45 @@ def _downscale_main(args, reservation: _OutputReservation) -> int:
         ratio = int(args.ratio if args.ratio is not None else 3)
         run_seconds = (float(args.hours) * 3600.0
                        if args.hours is not None else window_seconds)
+        _validate_child_window(run_seconds, window_seconds)
         output_interval_s = (float(args.output_interval_seconds)
                              if args.output_interval_seconds is not None
                              else contract.interval_seconds)
+        child_levels = _parse_child_levels(args.child_levels)
         if args.child_size is not None:
             parts = [int(p) for p in str(args.child_size).split(",")]
             child_nx = parts[0]
             child_ny = parts[1] if len(parts) > 1 else parts[0]
         else:
             from gpuwm.domain_wizard import CARD_VRAM_GIB
-            if args.vram_gib is not None:
+            measured_free_bytes = None
+            if auto_vram:
+                from gpuwm.domain_wizard import resolve_sizing_budget
+                sizing = resolve_sizing_budget(None, None)
+                vram_gib = sizing.vram_gib
+                measured_free_bytes = sizing.free_bytes
+                sizing_receipt = {"basis": "measured-local", "capacity_gib": vram_gib,
+                                  "free_bytes": measured_free_bytes, "note": sizing.note}
+                if sizing.note:
+                    print(sizing.note)
+            elif args.vram_gib is not None:
                 vram_gib = float(args.vram_gib)
             else:
                 vram_gib = CARD_VRAM_GIB[args.card or "24gb"]
             child_nx = child_ny = _fit_child_size(
                 parent, parent_config, j0=j0, i0=i0, ratio=ratio,
                 run_seconds=run_seconds,
-                output_interval_s=output_interval_s, vram_gib=vram_gib)
+                output_interval_s=output_interval_s, vram_gib=vram_gib,
+                child_eta_levels=child_levels,
+                **({"measured_free_bytes": measured_free_bytes} if auto_vram else {}))
         placement = _centered_placement(
             parent, j0=j0, i0=i0, ratio=ratio,
             child_nx=child_nx, child_ny=child_ny)
         merged = _derive_child_run_config(
             parent_config, parent=parent, ratio=ratio,
             child_nx=child_nx, child_ny=child_ny,
-            run_seconds=run_seconds, output_interval_s=output_interval_s)
+            run_seconds=run_seconds, output_interval_s=output_interval_s,
+            child_eta_levels=child_levels)
         outdir = Path(args.out)
         child_config = derived_child_config_path(
             outdir, dry_run=bool(args.dry_run))
@@ -661,12 +885,22 @@ def _downscale_main(args, reservation: _OutputReservation) -> int:
 
     from gpuwm.config import load_config, soil_layer_count
     cfg = load_config(child_config)
+    _validate_child_window(cfg.run_seconds, window_seconds)
+    parent_ny, parent_nx = _parent_mass_dims(frames[0])
+    placement = OfflineChildPlacement(
+        parent_nx=parent_nx, parent_ny=parent_ny,
+        child_nx=int(cfg.nx), child_ny=int(cfg.ny),
+        parent_grid_ratio=int(ratio), i_parent_start=int(i_start),
+        j_parent_start=int(j_start))
     surface_requirement = child_surface_requirement(cfg)
     surface_source = None
+    surface_placement = None
     if args.child_surface_from is not None:
         surface = read_child_surface_state(
             args.child_surface_from, child_ny=cfg.ny, child_nx=cfg.nx,
             num_soil_layers=soil_layer_count(cfg))
+        surface_placement = _validate_child_surface_placement(
+            surface, frames[0], placement=placement, cfg=cfg)
         surface_source = "child-grid-file"
         print(f"gpuwm downscale: child surface source "
               f"{surface.path} ({len(surface.fields)} fields, "
@@ -682,15 +916,9 @@ def _downscale_main(args, reservation: _OutputReservation) -> int:
         # operators put them where the child needs them.  Derived HERE,
         # at the front door, before the run: a parent that cannot seed a
         # child still refuses at plan time, naming the missing fields.
-        parent_ny, parent_nx = _parent_mass_dims(frames[0])
         try:
             surface = derive_child_surface_from_parent(
-                frames[0], placement=OfflineChildPlacement(
-                    parent_nx=parent_nx, parent_ny=parent_ny,
-                    child_nx=int(cfg.nx), child_ny=int(cfg.ny),
-                    parent_grid_ratio=int(ratio),
-                    i_parent_start=int(i_start),
-                    j_parent_start=int(j_start)),
+                frames[0], placement=placement,
                 num_soil_layers=soil_layer_count(cfg))
         except OfflineChildContractError as error:
             # A parent that cannot seed a child is refused HERE, before
@@ -758,8 +986,11 @@ def _downscale_main(args, reservation: _OutputReservation) -> int:
         # 2.4.1 plan said only "child_surface_from": null and left the
         # reader to find out at integration time what that meant.
         "child_surface_source": surface_source,
+        "child_surface_placement": surface_placement,
         "outdir": str(args.out),
     }
+    if sizing_receipt is not None:
+        plan["gpu_sizing"] = sizing_receipt
     if args.dry_run:
         print(json.dumps({"event": "downscale_plan", **plan}, indent=2,
                          sort_keys=True))
@@ -857,6 +1088,9 @@ def register_cli(subparsers) -> None:
                              "the same tiers `gpuwm domain` accepts)")
     parser.add_argument("--vram-gib", type=float, default=None,
                         help="explicit VRAM capacity for --point sizing")
+    parser.add_argument("--auto-vram", action="store_true",
+                        help="measure local total AND free GPU memory for --point sizing; "
+                             "exclusive with --card, --vram-gib and --child-size")
     parser.add_argument("--hours", type=float, default=None,
                         help="--point run window in hours (default: the "
                              "full parent archive window)")
@@ -892,6 +1126,17 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--out", type=Path, required=True,
                         help="create-only output directory for the child "
                              "run (report.json, wrfout frames, restart)")
+    # THE DOOR onto a child that carries its own vertical ladder.  Without
+    # it the conservative remap is engine-proven and unreachable: the child
+    # config has no other way to name a ladder, and a bare level count is
+    # refused because it would be filled in with a uniform one.
+    parser.add_argument("--child-levels", default=None, metavar="N[,STRETCH]",
+                        help="give the child its own vertical ladder of N "
+                             "levels instead of inheriting the parent's, "
+                             "clustered toward the ground by STRETCH (the "
+                             "LES case: a 100 m child wants the levels, not "
+                             "just the columns).  p_top, hybrid_opt and etac "
+                             "stay shared with the parent")
     parser.add_argument("--dry-run", action="store_true",
                         help="validate contracts, derive/print the plan, "
                              "write the derived TOML, run nothing")

@@ -218,3 +218,27 @@ def test_streamed_refresh_publishes_driver_diagnostics():
         err_msg="refreshed driver OLR differs from the resident twin's; "
                 "the streamed state_frame route is publishing wrong "
                 "diagnostics")
+
+
+def test_rational_boundary_clock_bound_streamed_matches_resident():
+    """Time laws survive actual tile-buffer reuse and shared dycore stepping."""
+    from dataclasses import replace
+    from gpuwm.ingest.lateral_bc import FieldBoundary, RationalTimeLaw
+    cfg = _cfg()
+    boundaries = _boundaries(cfg)
+    intervals = []
+    for interval in boundaries.intervals:
+        fields = dict(interval.fields)
+        sides = {}
+        for name in ('west', 'east', 'south', 'north'):
+            side = getattr(fields['theta'], name)
+            sides[name] = replace(side, time_law=RationalTimeLaw(
+                side.value*1e-8, np.full(side.value.shape, 1e-4)))
+        fields['theta'] = FieldBoundary(**sides)
+        intervals.append(replace(interval, fields=fields))
+    boundaries = replace(boundaries, intervals=tuple(intervals))
+    expected, _ = _resident(cfg, boundaries, bind=True)
+    stepper, _ = _streamed(cfg, boundaries, bind=True)
+    result = join.compare(expected, dict(stepper.store))
+    assert result['nonfinite'] == 0
+    assert result['bitexact'], result

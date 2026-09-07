@@ -344,7 +344,13 @@ def _adopt_own_terrain(initialized: ChildInitResult, child_dc,
         int(cfg.hypsometric_opt))
     state.ht[...] = _as_like(fine_terrain, state.ht)
     state.mub2d[...] = _as_like(fine_base.mub, state.mub2d)
-    state.phb[...] = _as_like(fine_base.phb, state.phb)
+    # Through the setter, so the child's EOS reads the float64 base layer
+    # thickness of its OWN geopotential rather than the parent's.  The
+    # blend below then rewrites phb in place over the boundary rim; the
+    # correction and the host height cache keep describing the pre-blend
+    # profile there, which the residual spelling bounds to <= one ulp of
+    # phb in the diagnostic (gpuwm/core/state.py::set_base_geopotential).
+    state.set_base_geopotential(fine_base.phb)
 
     # WRF blends all three fields (mediation_integrate.F:733-741); never
     # blend ht alone and derive, because base construction is nonlinear.

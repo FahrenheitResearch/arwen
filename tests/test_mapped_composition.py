@@ -440,69 +440,26 @@ def test_composed_decode_rejects_mapping_swap_after_semantic_snapshot(
 def test_bundle_preserves_canonical_soil_arrays_and_explicit_zero_hydrometeors(
     tmp_path, monkeypatch,
 ):
-    valid_time = datetime(1974, 4, 3, 12)
-    terrain = np.arange(6, dtype=np.float64).reshape(2, 3)
-    policies = {
-        name: "explicit_zero_with_adapter_validation"
-        for name in (
-            "cloud_water_mixing_ratio", "rain_water_mixing_ratio",
-            "cloud_ice_mixing_ratio", "snow_mixing_ratio",
-            "graupel_or_hail_mixing_ratio",
-        )
-    }
-    frame = SimpleNamespace(
-        valid_time=valid_time,
-        fields={"terrain_height": SimpleNamespace(values=terrain)},
-        header=SimpleNamespace(initialization_policies=policies),
-    )
-    pressure = np.ones((2, 2, 3), dtype=np.float64)
-    soil_temperature = np.arange(24, dtype=np.float64).reshape(4, 2, 3)
-    soil_moisture = np.full((4, 2, 3), 0.25, dtype=np.float64)
-    fields = {
-        "PRES": pressure,
-        "SOURCE_OROGRAPHY": terrain,
-        MAPPED_SOIL_TEMPERATURE: soil_temperature,
-        MAPPED_SOIL_MOISTURE: soil_moisture,
-    }
-    packed = Era5Snapshot(
-        valid_time=valid_time,
-        levels_hpa=np.asarray([1000.0, 850.0]),
-        latitude=np.asarray([30.0, 31.0]),
-        longitude=np.asarray([-100.0, -99.0, -98.0]),
-        fields=fields,
-    )
-    monkeypatch.setattr(
-        "gpuwm.mapped_composition.mapped_frames_to_regular_snapshots",
-        lambda _frames, **_kwargs: (packed,),
-    )
+    # Exercise the real converter so the test covers the packing boundary.
+    import test_mapped_frameset_streaming as fixture
+
+    monkeypatch.setattr(fixture, "_NY", 3)
+    monkeypatch.setattr(fixture, "_NX", 4)
+    frame = fixture._one_frame()
     dummy = tmp_path / "authority"
     dummy.write_bytes(b"authority")
-    bundle = MappedSourceBundle(
-        frames=(frame,),
-        mapping_path=dummy, mapping_sha256="0" * 64,
-        composition_path=dummy, composition_sha256="1" * 64,
-        input_manifest_path=dummy, input_manifest_sha256="2" * 64,
-        decoder_paths={"grib1_bridge": dummy},
-        decoder_sha256={"grib1_bridge": "5" * 64},
-        terrain_data_paths=(dummy,), terrain_data_sha256=("3" * 64,),
-        terrain_provenance_path=dummy, terrain_provenance_sha256="4" * 64,
-        soil_layer_contract=json.loads(
-            (ROOT / "configs" / "rw-wps-gfs-terrain.composition.json")
-            .read_text(encoding="utf-8")
-        )["soil_layers"],
-        alignment_receipt={"status": "PASS"},
-    )
-
+    bundle = fixture._bundle_from_frames((frame,), dummy)
     actual = bundle.regular_snapshots()[0]
-    np.testing.assert_array_equal(
-        actual.fields[MAPPED_SOIL_TEMPERATURE], soil_temperature,
-    )
-    np.testing.assert_array_equal(
-        actual.fields[MAPPED_SOIL_MOISTURE], soil_moisture,
-    )
+    for canonical, packed in (
+        ("soil_temperature", MAPPED_SOIL_TEMPERATURE),
+        ("volumetric_soil_moisture", MAPPED_SOIL_MOISTURE),
+    ):
+        np.testing.assert_array_equal(
+            actual.fields[packed], frame.fields[canonical].values)
     assert not any(name.startswith("GFS_ST") for name in actual.fields)
     for name in ("QC", "QR", "QI", "QS", "QG"):
-        np.testing.assert_array_equal(actual.fields[name], np.zeros_like(pressure))
+        np.testing.assert_array_equal(
+            actual.fields[name], np.zeros_like(actual.fields["PRES"]))
 
 
 def _analysis_only_collections():

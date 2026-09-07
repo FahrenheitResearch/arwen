@@ -34,11 +34,11 @@ inventory                                   members  relation
 A FOURTH SET APPEARED LATER, and it is narrower than all of these: what may
 go in the FILE.  ``restart.CARRIED_SCRATCH_SLOTS`` is cross-step state that
 is deliberately not checkpointed -- the two ``nwp_diagnostics`` tracker
-windows -- so a store carries them and an archive must not.  The difference
-is two ``(ny, nx)`` planes and only under ``nwp_diagnostics = 1``; the writer
-filters through ``physics_inventory.checkpointed_carriers`` and the reader
-zeroes the complement, because "a restart starts them empty" is free for a
-resident state and has to be said out loud for a store restored in place.
+windows. Ordinary checkpoints omit them and restore resets them; a tree
+with a lifecycle explicitly opts its allocated tracker windows in through the same
+resident-writer contract. Those windows retain the consumer's consultation
+history. The underlying streaming inventory and ordinary checkpoint set
+are unchanged.
 
 Two of the three are not two.  :func:`tilestream.physics_inventory.
 carrier_manifest` does not maintain a list at all -- it CALLS
@@ -518,10 +518,9 @@ def domain_header_view(setup: DomainSetup, template_state, carriers=None,
     driver = getattr(template_state, "physics", None)
     saved: list[tuple[object, str, object]] = []
     try:
-        for prefix, attr in _driver._SCHEME_GEOGRAPHY:
-            scheme = getattr(driver, attr, None)
-            if scheme is None:
-                continue
+        # Match the same complete owner inventory used for tile gathering.
+        # Composed spectra retain their own geography in restart identities.
+        for prefix, scheme in _driver._scheme_geography_owners(driver):
             for field in _driver._SCHEME_GEOGRAPHY_ATTRS:
                 key = f"{prefix}/{field}"
                 if key in setup.scheme_geography and hasattr(scheme, field):
@@ -637,9 +636,26 @@ def _store_arrays(store) -> dict[str, np.ndarray]:
     return _physinv.carrier_inventory(store)
 
 
+def _checkpoint_carriers(arrays, extra_scratch_slots=()):
+    """Ordinary restart members plus explicitly opted-in tracker windows."""
+    from types import SimpleNamespace
+    from gpuwm.io import restart
+    from tilestream import physics_inventory
+    slots = tuple(extra_scratch_slots)
+    pool = {key[len("scratch/"):]: value for key, value in arrays.items()
+            if key.startswith("scratch/")}
+    with _as_refusal("streamed restart window inventory"):
+        extra = restart._opted_in_scratch_manifest(SimpleNamespace(_scratch=pool), slots)
+    selected = physics_inventory.checkpointed_carriers(arrays)
+    selected.update(extra)
+    return selected
+
+
 def write_streamed_restart(path, store, cfg, *, scalars, setup,
                            template_state, run_trackers=None, drop=(),
-                           check_pinned: bool = True) -> StreamedRestartInfo:
+                           check_pinned: bool = True,
+                           tree_header: dict | None = None,
+                           extra_scratch_slots=()) -> StreamedRestartInfo:
     """Write a gpuwm restart file from a pinned host store. No device state.
 
     ``store`` is the streamed domain: ``{restart member name: host array}``,
@@ -658,6 +674,9 @@ def write_streamed_restart(path, store, cfg, *, scalars, setup,
     at the sizes this lane is for, does not fit on the card in the first
     place.
 
+    ``extra_scratch_slots`` uses the resident writer's explicit lifecycle
+    opt-in for allocated tracker windows; the ordinary checkpoint set is unchanged.
+
     ``drop`` omits the named members.  It is the negative control -- see
     :func:`round_trip_case` -- and it prints what it dropped, because a
     silent-drop control that is itself silent has failed at its job.
@@ -669,28 +688,23 @@ def write_streamed_restart(path, store, cfg, *, scalars, setup,
     holds 25 of 229 members and would otherwise produce a file that passes
     every self-consistency check in the reader.
     """
+    from tilestream.checkpoint import driver_restart_header
+
     from gpuwm.io import restart
 
     from tilestream import gather as _gather
     from tilestream import physics_inventory as _physinv
 
     path = Path(path)
-    arrays = _store_arrays(store)
-    # A checkpoint is the RESTART manifest, not the STREAMING one, and since
-    # they stopped being the same set the difference has to be subtracted
-    # here.  The storm-tracking windows are streamed because they are folded
-    # every step (physics_inventory.STREAMED_ONLY_SCRATCH_SLOTS) and are NOT
-    # restarted because a window means "max since that consumer last looked"
-    # and a checkpoint cannot know when the consumer will next look
-    # (gpuwm/io/restart.py:REBUILT_SCRATCH_SLOTS).  Writing them would put a
-    # member in the file that ``restore_restart`` classifies as rebuilt, so
-    # the file would no longer be the byte-for-byte v5 archive this function
-    # promises.  Only present at all under ``nwp_diagnostics = 1``.
-    arrays = {k: v for k, v in arrays.items()
-              if k not in {f"scratch/{s}"
-                           for s in _physinv.STREAMED_ONLY_SCRATCH_SLOTS}}
-    expected = set(_physinv.carrier_manifest(template_state)) - {
-        f"scratch/{s}" for s in _physinv.STREAMED_ONLY_SCRATCH_SLOTS}
+    extra_scratch_slots = tuple(extra_scratch_slots)
+    # Classify both sides through the same existing restart contract. The
+    # store also carries rebuilt output scratch (for example reflectivity),
+    # which must survive a sweep but must not appear in a checkpoint.
+    # Unknown scratch names still raise; missing serialized carriers still
+    # fail the exact comparison below. The reader uses this same filter.
+    arrays = _checkpoint_carriers(_store_arrays(store), extra_scratch_slots)
+    expected = set(_checkpoint_carriers(
+        _physinv.carrier_manifest(template_state), extra_scratch_slots))
     missing = sorted(expected - set(arrays))
     extra = sorted(set(arrays) - expected)
     if missing or extra:
@@ -713,13 +727,6 @@ def write_streamed_restart(path, store, cfg, *, scalars, setup,
                 "run streams from, and that store is pinned.  Pass "
                 "check_pinned=False for a host-array store that was never "
                 "streamed.")
-
-    # The store is the CROSS-STEP set and an archive holds the SERIALIZED
-    # one; they stopped being the same set when restart.CARRIED_SCRATCH_SLOTS
-    # gave cross-step state a way to say "and not in a file".  Filtered AFTER
-    # the manifest reconciliation above, which is still against the full
-    # carrier set -- a store missing a carrier is still a refusal.
-    arrays = _physinv.checkpointed_carriers(arrays)
 
     drop = tuple(drop)
     for name in drop:
@@ -753,12 +760,7 @@ def write_streamed_restart(path, store, cfg, *, scalars, setup,
             "setup_fingerprint": restart.setup_fingerprint(view),
             "physics_setup": physics_setup,
             "physics_setup_fingerprint": restart._json_sha256(physics_setup),
-            "driver": (None if "call_counts" not in scalars else {
-                "call_counts": {k: int(v)
-                                for k, v in scalars["call_counts"].items()},
-                "ysu_nan_guard_fires": int(scalars["ysu_nan_guard_fires"]),
-                "microphysics_updates": int(scalars["microphysics_updates"]),
-            }),
+            "driver": driver_restart_header(scalars),
             "run_trackers": (None if run_trackers is None
                              else dict(run_trackers)),
             "array_manifest": {},
@@ -766,6 +768,12 @@ def write_streamed_restart(path, store, cfg, *, scalars, setup,
         clock = restart.root_external_lbc_clock_identity(view, cfg)
     if clock is not None:
         header["root_external_lbc_clock"] = clock
+    if tree_header is not None:
+        overlap = set(header) & set(tree_header)
+        if overlap:
+            raise ValueError(
+                f"tree restart header may not replace base keys {sorted(overlap)}")
+        header.update(dict(tree_header))
     payload = {}
     for key in sorted(arrays):
         if key in drop:
@@ -811,11 +819,11 @@ def _utcnow() -> str:
 # 4. reading
 # --------------------------------------------------------------------------
 
-def read_streamed_restart(path, store, cfg, *, setup, template_state,
+def validate_streamed_restart(path, store, cfg, *, setup, template_state,
                           allow_missing: bool = False,
-                          scalars: dict | None = None
-                          ) -> StreamedRestartInfo:
-    """Restore a restart file INTO a pinned host store, in place.
+                          scalars: dict | None = None, extra_scratch_slots=()
+                          ) -> ValidatedStreamedRestart:
+    """Validate a restart without mutating the pinned host store.
 
     The mirror of :func:`write_streamed_restart`, and the same refusals in the
     same order gpuwm's own reader applies them, reusing gpuwm's functions
@@ -834,11 +842,11 @@ def read_streamed_restart(path, store, cfg, *, setup, template_state,
     which is precisely the silent-drop failure, so it exists only to make the
     negative control expressible.
 
-    Copies host-to-host into the store's existing pinned buffers with
-    ``np.copyto``; the store's pages are page-locked and stay that way.
-    Returns the info; ``scalars``, if given, is UPDATED IN PLACE with the
-    restored clock and driver counters so the caller can hand the same dict
-    straight back to ``run_tiled``.
+    Retains the validated arrays and target references without copying into
+    the store or changing its scalars. ``ValidatedStreamedRestart.apply``
+    performs those host-to-host copies after the caller has validated every
+    sibling, without reopening any input file. The existing single-domain
+    reader calls that method immediately after validation.
     """
     from gpuwm.io import restart
 
@@ -863,15 +871,11 @@ def read_streamed_restart(path, store, cfg, *, setup, template_state,
         elapsed = restart._admissible_elapsed_seconds(
             header["elapsed_seconds"], f"restart file {path}")
 
-    # Symmetric with the writer: the tracker windows are streamed but never
-    # checkpointed, so they are not expected in the file and the store's
-    # copies are left as preparation made them -- EMPTY, which is the ruled
-    # posture for a window across a restart (gpuwm/io/restart.py:459-470).
-    # ``checkpointed_carriers`` is that filter, expressed once against
-    # restart.py's own classification rather than twice against a set of
-    # slot names.
+    # Symmetric with the writer: ordinary tracker windows are excluded;
+    # a lifecycle caller explicitly names the tracker windows it must restore.
+    # They join the same exact member/shape/dtype validation before mutation.
     whole_store = _store_arrays(store)
-    arrays = _physinv.checkpointed_carriers(whole_store)
+    arrays = _checkpoint_carriers(whole_store, extra_scratch_slots)
     with domain_header_view(setup, template_state, arrays, elapsed) as view:
         live_setup = restart.setup_fingerprint(view)
         live_phys = restart._json_sha256(
@@ -962,11 +966,13 @@ def read_streamed_restart(path, store, cfg, *, setup, template_state,
                         f"restart carries state/{rest}, which gpuwm "
                         f"classifies as {kind!r}, not serialized")
             elif head == "scratch" and \
-                    restart.classify_scratch_slot(rest) != "serialize":
+                    not restart._restorable_scratch_slot(rest):
                 raise RestartRefused(
                     f"restart carries non-serializable scratch slot {rest!r}")
 
-    restored = 0
+    from tilestream.checkpoint import restart_scalars
+
+    restored_scalars = restart_scalars(header)
     for key, host in stored.items():
         target = arrays[key]
         if tuple(target.shape) != tuple(host.shape) \
@@ -974,35 +980,53 @@ def read_streamed_restart(path, store, cfg, *, setup, template_state,
             raise RestartRefused(
                 f"restart member {key} is {host.shape}/{host.dtype} but the "
                 f"store slot is {target.shape}/{target.dtype}")
-        np.copyto(target, host)
-        restored += 1
+    return ValidatedStreamedRestart(
+        path=path, header=header, stored=stored, arrays=arrays,
+        whole_store=whole_store, restored_scalars=restored_scalars,
+        scalars=scalars, elapsed=float(elapsed), missing=tuple(missing),
+        started=t0)
 
-    # A restart starts the tracker windows EMPTY (restart.py:
-    # CARRIED_SCRATCH_SLOTS).  A resident restore gets that for free -- a
-    # fresh state allocates them zeroed and restore_restart never writes them
-    # -- but a store is restored IN PLACE, so a resumed run would otherwise
-    # keep a window measured before the checkpoint, which is precisely the
-    # "measured against a boundary that no longer exists" the class exists to
-    # avoid.
-    for target in _physinv.carried_only_carriers(whole_store).values():
-        target[...] = 0.0
 
-    if scalars is not None:
-        scalars["elapsed_seconds"] = float(elapsed)
-        driver_header = header.get("driver")
-        if driver_header is not None and "call_counts" in scalars:
-            scalars["call_counts"] = {k: int(v) for k, v in
-                                      driver_header["call_counts"].items()}
-            scalars["ysu_nan_guard_fires"] = int(
-                driver_header["ysu_nan_guard_fires"])
-            scalars["microphysics_updates"] = int(
-                driver_header["microphysics_updates"])
-    seconds = time.perf_counter() - t0
-    return StreamedRestartInfo(
-        path=path, members=restored,
-        bytes=sum(int(np.asarray(a).nbytes) for a in stored.values()),
-        seconds=seconds, device_copies=0, missing=tuple(missing),
-        elapsed_seconds=float(elapsed), header=header)
+@dataclasses.dataclass
+class ValidatedStreamedRestart:
+    """A validated payload retained until all sibling domains can commit."""
+    path: Path
+    header: dict
+    stored: dict
+    arrays: dict
+    whole_store: object
+    restored_scalars: dict
+    scalars: dict | None
+    elapsed: float
+    missing: tuple
+    started: float
+
+    def apply(self) -> StreamedRestartInfo:
+        from tilestream import physics_inventory as _physinv
+
+        for key, host in self.stored.items():
+            np.copyto(self.arrays[key], host)
+        # Ordinary windows reset. Explicit lifecycle windows are already
+        # restored above and must retain the consumer's consultation history.
+        for key, target in _physinv.carried_only_carriers(self.whole_store).items():
+            if key not in self.stored:
+                target[...] = 0.0
+        if self.scalars is not None:
+            self.scalars.update(self.restored_scalars)
+        return StreamedRestartInfo(
+            path=self.path, members=len(self.stored),
+            bytes=sum(int(np.asarray(a).nbytes) for a in self.stored.values()),
+            seconds=time.perf_counter() - self.started, device_copies=0,
+            missing=self.missing, elapsed_seconds=self.elapsed, header=self.header)
+
+
+def read_streamed_restart(path, store, cfg, *, setup, template_state,
+                          allow_missing: bool = False,
+                          scalars: dict | None = None) -> StreamedRestartInfo:
+    """Validate then restore one domain using the shared staged reader."""
+    return validate_streamed_restart(
+        path, store, cfg, setup=setup, template_state=template_state,
+        allow_missing=allow_missing, scalars=scalars).apply()
 
 
 # --------------------------------------------------------------------------

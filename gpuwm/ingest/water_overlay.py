@@ -29,8 +29,10 @@ Documented v1 seams:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
+from collections.abc import Sequence
+import hashlib
 import os
 from pathlib import Path
 
@@ -453,6 +455,41 @@ def masked_bilinear_sample(
     return values, covered
 
 
+def _source_cell_coordinates(snapshot, rows, cols):
+    """Geographic lat/lon of the source cells at ``(rows, cols)``.
+
+    The overlay is a geographic dataset, so the cells it is sampled at
+    have to be in degrees.  A geographic source's axes already ARE
+    degrees; a projected source's axes are its projection's own, and
+    indexing them for a lat/lon reads a plane coordinate as a degree --
+    the same pairing defect the coverage receipt carried, one route over.
+    The descriptor says which case this is, so nothing here branches on a
+    source name and a source without one is unchanged.
+    """
+
+    explicit = getattr(snapshot, "source_cell_latlon", None)
+    if explicit is not None:
+        return explicit(rows, cols)
+    from gpuwm.ingest.horiz import declared_source_projection
+
+    projection = declared_source_projection(snapshot)
+    if projection is None:
+        return snapshot.latitude[rows], snapshot.longitude[cols]
+    from gpuwm.mapped_source import declared_lambert_source_grid
+
+    parameters = projection["parameters"]
+    unit = float(parameters["axis_unit_m"])
+    source = declared_lambert_source_grid(parameters)
+    # The inverse of source_coordinate_transform's forward step:
+    # LambertGrid coordinates are one-based and axis zero sits on the
+    # first grid point, so axis value v is grid coordinate v/d + 1.
+    i = (np.asarray(snapshot.longitude[cols], dtype=np.float64)
+         * unit / float(parameters["dx_m"])) + 1.0
+    j = (np.asarray(snapshot.latitude[rows], dtype=np.float64)
+         * unit / float(parameters["dy_m"])) + 1.0
+    return source.ij_to_latlon(i, j)
+
+
 def apply_water_temperature_overlay(snapshot, overlay):
     """Replace SST/SKINTEMP over covered WATER source cells.
 
@@ -476,12 +513,12 @@ def apply_water_temperature_overlay(snapshot, overlay):
     water = np.asarray(fields["LANDSEA"], dtype=np.float64) < 0.5
     rows, cols = np.nonzero(water)
     values, covered = masked_bilinear_sample(
-        overlay, snapshot.latitude[rows], snapshot.longitude[cols])
-    new_fields = dict(fields)
+        overlay, *_source_cell_coordinates(snapshot, rows, cols))
+    replacements = {}
     for name in replaced_names:
         updated = np.array(fields[name], dtype=np.float64)
         updated[rows[covered], cols[covered]] = values[covered]
-        new_fields[name] = updated
+        replacements[name] = updated
     receipt = {
         "path": str(overlay.path),
         "source_format": overlay.source_format,
@@ -492,12 +529,11 @@ def apply_water_temperature_overlay(snapshot, overlay):
         "replaced_cells": int(np.count_nonzero(covered)),
         "fallback_cells": int(np.count_nonzero(~covered)),
     }
-    rebuilt = type(snapshot)(
-        valid_time=snapshot.valid_time,
-        levels_hpa=snapshot.levels_hpa,
-        latitude=snapshot.latitude,
-        longitude=snapshot.longitude,
-        fields=new_fields)
+    # Replace only the surface fields. Coordinates, projection, vertical
+    # metadata, source-window offsets and native adapter type all survive.
+    with_fields = getattr(snapshot, "with_fields", None)
+    rebuilt = (with_fields(replacements) if with_fields is not None else
+               replace(snapshot, fields={**fields, **replacements}))
     return rebuilt, receipt
 
 
@@ -537,6 +573,96 @@ def overlay_snapshots(snapshots, overlay):
     return tuple(rebuilt), aggregate
 
 
+def overlay_file_identity(path):
+    """Bind the actual overlay bytes without retaining another file copy."""
+    path = Path(path).resolve()
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return {"path": str(path), "bytes": path.stat().st_size, "sha256": digest.hexdigest()}
+
+
+class OverlaySnapshotSequence(Sequence):
+    """Apply an analysis on access, retaining metadata and no weather copies."""
+
+    def __init__(self, snapshots, overlay, *, binding=None):
+        if not len(snapshots):
+            raise WaterOverlayError("a water overlay has no source snapshots to apply to")
+        self._snapshots = snapshots
+        self.overlay = overlay
+        self.binding = overlay_file_identity(overlay.path)
+        if binding is not None and self.binding != binding:
+            raise WaterOverlayError("water-temperature overlay changed after it was loaded")
+        self._receipts = {}
+        self._verified = False
+
+    def __len__(self):
+        return len(self._snapshots)
+
+    @property
+    def valid_times(self):
+        declared = getattr(self._snapshots, "valid_times", None)
+        return (declared if declared is not None else
+                tuple(snapshot.valid_time for snapshot in self._snapshots))
+
+    def snapshot_metadata(self, index):
+        from gpuwm.ingest.source_metadata import snapshot_metadata
+        return snapshot_metadata(self._snapshots, index)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return tuple(self[i] for i in range(*index.indices(len(self))))
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        result, receipt = apply_water_temperature_overlay(self._snapshots[index], self.overlay)
+        self._receipts[index] = receipt
+        if len(self._receipts) == len(self) and not self._verified:
+            self.verify_complete()
+        return result
+
+    def verify_complete(self):
+        if len(self._receipts) != len(self):
+            raise WaterOverlayError("water overlay was not applied to every prepared forcing time")
+        if not sum(row["replaced_cells"] for row in self._receipts.values()):
+            raise WaterOverlayError(f"water-temperature overlay {self.overlay.path} does not "
+                                    "intersect any water cell of the source crop")
+        if overlay_file_identity(self.overlay.path) != self.binding:
+            raise WaterOverlayError("water-temperature overlay bytes changed during preparation")
+        self._verified = True
+        return self.receipt
+
+    @property
+    def receipt(self):
+        rows = [self._receipts[index] for index in sorted(self._receipts)]
+        return {**self.binding, "snapshots": len(rows),
+                "per_snapshot": rows}
+
+
+def load_bound_water_overlay(path):
+    """Load one analysis and prove its bytes stayed unchanged during decode."""
+    if path is None:
+        return None, None
+    binding = overlay_file_identity(path)
+    overlay = load_water_temperature_overlay(path)
+    if overlay_file_identity(path) != binding:
+        raise WaterOverlayError("water-temperature overlay bytes changed while being loaded")
+    return overlay, binding
+
+
+def overlay_snapshot_sequence(snapshots, overlay, *, binding=None):
+    """The absent declaration is identity; an active one stays lazy."""
+    return (snapshots if overlay is None else
+            OverlaySnapshotSequence(snapshots, overlay, binding=binding))
+
+
+def verify_overlay_sequence(snapshots):
+    """Finish the declared overlay proof after every forcing time was consumed."""
+    return snapshots.verify_complete() if isinstance(snapshots, OverlaySnapshotSequence) else None
+
+
 def overlay_snapshots_by_time(by_time, overlay):
     """Dict-of-snapshots variant used by the runtime route."""
 
@@ -551,4 +677,6 @@ __all__ = [
     "apply_water_temperature_overlay", "cached_water_temperature_overlay",
     "load_water_temperature_overlay", "masked_bilinear_sample",
     "overlay_snapshots", "overlay_snapshots_by_time",
+    "load_bound_water_overlay", "overlay_snapshot_sequence",
+    "verify_overlay_sequence", "overlay_file_identity",
 ]

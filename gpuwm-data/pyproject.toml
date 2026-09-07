@@ -22,7 +22,18 @@ name = "gpuwm-data"
 description = "Physics reference tables for gpuwm (RRTMGP k-distributions, Thompson microphysics lookups)"
 readme = "README.md"
 license = "Apache-2.0"
-license-files = ["LICENSE", "NOTICE"]
+# `licenses/*` joined at 2.6.6.  A `pip install gpuwm-data` used to
+# receive LICENSE and NOTICE and none of the texts the NOTICE names, which
+# performs no reproduction condition at all.  The three that apply to what
+# this distribution actually ships -- WRF's public-domain dedication for
+# the Thompson tables, the Numerical Recipes notice those tables inherit
+# from the generator, and RTE+RRTMGP's BSD-3-Clause for the k-distribution
+# files -- are in licenses/ and land in the wheel at
+# gpuwm_data-<version>.dist-info/licenses/licenses/.  The RTE+RRTMGP and
+# Creative Commons texts ALSO ship inside the package beside their data,
+# through package-data; that is a second route, not a substitute, because
+# a compliance scanner reads dist-info.
+license-files = ["LICENSE", "NOTICE", "licenses/*"]
 requires-python = ">=3.11"
 # NO dependencies, deliberately.  This distribution is bytes on disk plus
 # eleven lines of pathlib; giving it a dependency would make a table

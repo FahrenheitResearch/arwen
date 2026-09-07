@@ -25,8 +25,10 @@ workspace from outside it.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -44,7 +46,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 #: but the reason it COULD not have been caught here is real and is
 #: fixed below: the workspace was unlisted, and the check was
 #: version-blind.
-_WORKSPACES = ("tools/grib1_bridge", "tools/rustwx", "tools/rw_wps")
+_WORKSPACES = ("tools/grib1_bridge", "tools/rustwx", "tools/rw_wps",
+               "tools/arwen-launchpad", "tools/arwen-tui")
 
 _PACKAGE_NAME = re.compile(r'^name = "(?P<name>[^"]+)"', re.M)
 _PACKAGE_VERSION = re.compile(r'^version = "(?P<version>[^"]+)"', re.M)
@@ -109,9 +112,11 @@ def test_every_locked_dependency_is_vendored(relative: str) -> None:
     replacement = (workspace / ".cargo" / "config.toml").read_text(
         encoding="utf-8")
     assert 'replace-with = "vendored-sources"' in replacement
-    assert 'directory = "vendor/crates-io"' in replacement
-
-    registry = workspace / "vendor" / "crates-io"
+    import tomllib
+    sources = tomllib.loads(replacement)["source"]
+    registry = (workspace / sources["vendored-sources"]["directory"]).resolve()
+    assert registry.is_relative_to(_ROOT.resolve()), "vendored sources must ship in the tree"
+    assert registry.is_dir()
     locked = _locked_external_packages(workspace)
     assert locked, f"{relative} locks no external dependency"
     unresolvable = []
@@ -160,6 +165,102 @@ def test_the_vendored_registry_check_can_fail(tmp_path: Path) -> None:
     assert _vendored_version(registry, "absent", "0.1.0") is None
 
 
+
+def _assert_vendored_files(package: Path, package_checksum: str) -> None:
+    """A package manifest alone cannot prove its build sources ship."""
+    record = json.loads((package / ".cargo-checksum.json").read_text(
+        encoding="utf-8"))
+    assert record["package"] == package_checksum, f"{package}: package checksum"
+    assert record["files"], f"{package}: empty file manifest"
+    root = package.resolve()
+    checked_parents = set()
+    for name, expected in record["files"].items():
+        relative = PurePosixPath(name)
+        assert (not relative.is_absolute() and ".." not in relative.parts
+                and "\\" not in name), f"{package}: unsafe member {name!r}"
+        member = package / name
+        # Resolve each shared directory once: thousands of repeated absolute
+        # path traversals are costly on mounted Windows checkouts under Linux.
+        if member.parent not in checked_parents:
+            assert member.parent.resolve().is_relative_to(root), (
+                f"{package}: unsafe member {name!r}")
+            checked_parents.add(member.parent)
+        if member.is_symlink():
+            assert member.resolve().is_relative_to(root), (
+                f"{package}: unsafe member {name!r}")
+        assert member.is_file(), f"missing vendored member: {member}"
+        with member.open("rb") as stream:
+            actual = hashlib.file_digest(stream, "sha256").hexdigest()
+        assert actual == expected, f"changed vendored member: {member}"
+
+
+def test_shared_ui_vendor_contains_every_checksummed_file() -> None:
+    """Check the shared mirror once, including build/ and other ignored names.
+
+    A release must also verify index/checkout membership: a working-tree test
+    can see an ignored file that will not be shipped by Git.
+    """
+    import tomllib
+
+    mirror = _ROOT / "tools" / "arwen-ui-vendor"
+    manifest = json.loads((mirror / "manifest.json").read_text(encoding="utf-8"))
+    expected = {}
+    for workspace in ("arwen-launchpad", "arwen-tui"):
+        lock_bytes = (_ROOT / "tools" / workspace / "Cargo.lock").read_bytes()
+        assert hashlib.sha256(lock_bytes).hexdigest() == manifest["locks"][workspace]
+        for package in tomllib.loads(lock_bytes.decode("utf-8"))["package"]:
+            if "source" not in package:
+                continue
+            key = (package["name"], package["version"])
+            checksum = package["checksum"]
+            assert expected.setdefault(key, checksum) == checksum
+    recorded = {(p["name"], p["version"]): p for p in manifest["packages"]}
+    assert len(recorded) == len(manifest["packages"]), "duplicate vendor packages"
+    assert recorded.keys() == expected.keys(), "vendor/lock package set mismatch"
+    for (name, version), checksum in expected.items():
+        metadata = recorded[name, version]
+        assert metadata["package_sha256"] == checksum
+        package = mirror / "crates-io" / f"{name}-{version}"
+        _assert_vendored_files(package, checksum)
+        actual = tomllib.loads((package / "Cargo.toml").read_text(
+            encoding="utf-8"))["package"]
+        assert (actual["name"], actual["version"]) == (name, version)
+        assert actual.get("license") == metadata["license"]
+        assert actual.get("license-file") == metadata["license_file"]
+
+
+@pytest.mark.parametrize("defect, diagnostic", [
+    ("missing", "missing vendored member"),
+    ("changed", "changed vendored member"),
+    ("package", "package checksum"),
+    ("escape", "unsafe member"),
+])
+def test_vendored_file_integrity_rejects_incomplete_or_changed_packages(
+        tmp_path: Path, defect: str, diagnostic: str) -> None:
+    package = tmp_path / "example-1.0.0"
+    build = package / "build" / "build.rs"
+    build.parent.mkdir(parents=True)
+    payload = b"fn main() {}\n"
+    build.write_bytes(payload)
+    checksum = "a" * 64
+    record = {"package": checksum,
+              "files": {"build/build.rs": hashlib.sha256(payload).hexdigest()}}
+    receipt = package / ".cargo-checksum.json"
+    receipt.write_text(json.dumps(record), encoding="utf-8")
+    _assert_vendored_files(package, checksum)
+    if defect == "missing":
+        build.unlink()
+    elif defect == "changed":
+        build.write_bytes(payload + b"// changed\n")
+    elif defect == "package":
+        record["package"] = "b" * 64
+    else:
+        record["files"] = {"../outside.rs": hashlib.sha256(payload).hexdigest()}
+    receipt.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(AssertionError, match=diagnostic):
+        _assert_vendored_files(package, checksum)
+
+
 #: Files that tell a user or a script how to build a vendored workspace.
 #: Handoff reports are excluded: they record what was run, not what to run.
 _BUILD_SITES = (
@@ -173,6 +274,8 @@ _BUILD_SITES = (
     "CONTRIBUTING.md",
     "install.sh",
     "install.ps1",
+    "tools/arwen-launchpad/README.md",
+    "tools/arwen-tui/README.md",
 )
 
 

@@ -1,3 +1,17 @@
+# ======================================================================
+# THIRD-PARTY NOTICE.  Parts of this file are hand transcriptions of
+# third-party work.  ArWen distributes the file under the Apache License
+# 2.0; the notices below belong to the transcribed parts and are kept here
+# because their own licences require it.  Full texts are in the repository
+# NOTICE and in the licenses/ directory.
+#
+#   RRTM longwave, transcribed from WRF v4.6.1 phys/module_ra_rrtm.F.
+#   That file carries AER's authorship -- Eli J. Mlawer, Steven J.
+#   Taubman, Shepard A. Clough, Atmospheric & Environmental Research, Inc.
+#   -- but no copyright line and no licence clause, so it falls under
+#   WRF's public-domain declaration.  AER is credited here as a matter of
+#   accuracy rather than of condition.
+# ======================================================================
 """WRF v4.6.1 RRTM longwave radiation (``ra_lw_physics=1``).
 
 Transcription of ``phys/module_ra_rrtm.F``'s forecast path: ``O3DATA``
@@ -75,30 +89,16 @@ _ABSN = 2.34e-3
 _TBOUND_MAX = 339.99
 #: TOTPLNK's first dimension (module_ra_rrtm.F:110).
 _TOTPLNK_ROWS = 181
-#: Floor for the auto-sized solver chunk (and the fallback when free
-#: device memory cannot be queried).  The transfer holds several
-#: (ncol, nlayers, 140) arrays at once, so the chunk bounds peak memory --
-#: and the choice is a real trade, measured on an RTX 5090 at 53 layers:
-#: 4096 columns run in 85 ms with a 1.67 GiB device pool peak, while 256
-#: run in 93 ms with about a sixteenth of that.  The work is
-#: host-dispatch bound: every chunk re-dispatches the whole ~8k-op CuPy
-#: graph, so on a 500x400 nest a fixed 512-column chunk was 391 graph
-#: replays and ~3.2M kernel launches per radiation step (~93% of the
-#: step wall was host dispatch gap; task #185 profile, node-7 RTX 3090).
-#: The adapters therefore auto-size the chunk from free device memory by
-#: default (``column_chunk=None``); an explicit ``column_chunk`` pins it.
-#: Chunking is per-column arithmetic only, so the answer is byte
-#: identical across chunk sizes
-#: (tests/test_rrtm_longwave.py::test_column_chunking_does_not_change_the_answer).
-#: NOTE these transients are NOT priced by gpuwm.core.preflight, which
-#: counts persistent arrays only.
+#: Cold CUDA-graph capture fallback for low-level automatic callers. The
+#: eager auto-sizer may choose fewer columns when its allocation allowance
+#: requires it. Ordinary experiments use their explicit common column cap.
+#: Chunking changes dispatch/memory, not per-column radiation arithmetic.
 DEFAULT_COLUMN_CHUNK = 512
 #: Fraction of the currently reusable device memory (runtime free plus
 #: the CuPy pool's free blocks) the auto-sized transfer may claim.
 _TRANSIENT_MEMORY_FRACTION = 0.5
-#: Measured transient cost of the chunk solve: the 1.67 GiB pool peak at
-#: 4096 columns and 53 layers above is 8261 bytes per column-layer.
-_TRANSIENT_BYTES_PER_COLUMN_LAYER = 8261
+#: Allocation shapes, shared with admission; no fitted per-layer constant.
+from gpuwm.core.rrtm_inventory import auto_column_chunk, effective_column_chunk
 
 
 def _resolve_column_chunk(configured, ncol: int, nlayers: int, xp) -> int:
@@ -106,15 +106,16 @@ def _resolve_column_chunk(configured, ncol: int, nlayers: int, xp) -> int:
 
     ``None`` sizes the chunk so the solve's transient arrays fit inside
     ``_TRANSIENT_MEMORY_FRACTION`` of what the device can hand back
-    without growing its footprint, floored at ``DEFAULT_COLUMN_CHUNK``
-    and capped at the block's own column count.  Host (NumPy) blocks
+    without growing its footprint, capped at the block's own column count.
+    A smaller block is allowed whenever the former 512-column floor would
+    exceed this allowance.  Host (NumPy) blocks
     have no device pool to protect and run in one pass.
 
     NEVER CALL THIS INSIDE CUDA GRAPH CAPTURE: ``cudaMemGetInfo`` is not
     a capturable operation and the runtime refuses it mid-capture.  The
     adapters resolve the auto-size at their first EAGER solve and cache
     it (:meth:`RRTMLongwaveRadiation._column_chunk_for`); a capture that
-    arrives cold falls back to the floor, which is byte identical by the
+    arrives cold uses the capture fallback, byte identical by the
     chunk-invariance guarantee.
     """
     if configured is not None:
@@ -124,9 +125,8 @@ def _resolve_column_chunk(configured, ncol: int, nlayers: int, xp) -> int:
         return max(int(ncol), 1)
     free_device, _total = cuda.runtime.memGetInfo()
     reusable = int(free_device) + int(xp.get_default_memory_pool().free_bytes())
-    per_column = _TRANSIENT_BYTES_PER_COLUMN_LAYER * max(int(nlayers), 1)
-    fit = int(reusable * _TRANSIENT_MEMORY_FRACTION) // per_column
-    return min(int(ncol), max(DEFAULT_COLUMN_CHUNK, int(fit)))
+    return auto_column_chunk(ncol, nlayers,
+                             int(reusable * _TRANSIENT_MEMORY_FRACTION))
 
 
 def _stream_is_capturing(cp) -> bool:
@@ -769,6 +769,7 @@ class RRTMLongwaveRadiation:
     #: caches it (:meth:`_column_chunk_for`); an integer pins it.  The
     #: answer is byte identical either way.
     column_chunk: int | None = None
+    trace_gas_overrides: dict[str, float] | None = None
     update_count: int = field(default=0, init=False)
     #: ``(ncol, nlayers) -> resolved chunk``, filled by eager solves only.
     #: Plain ints, so it never enters the restart classifier's array walk.
@@ -791,6 +792,11 @@ class RRTMLongwaveRadiation:
         # digest (and any restart write) died on a perfect integration
         # (1.9.1 D3).
         self.p_top = None if self.p_top is None else float(self.p_top)
+        from gpuwm.core.trace_gases import CLASSIC_GASES, validate_trace_gas_overrides
+        if self.trace_gas_overrides is not None:
+            self.trace_gas_overrides = validate_trace_gas_overrides(
+                self.trace_gas_overrides, supported=CLASSIC_GASES,
+                consumer="classic RRTM longwave")
         self.latitude_deg = cp.ascontiguousarray(
             cp.asarray(self.latitude_deg, dtype=cp.float32))
         self.longitude_deg = cp.ascontiguousarray(
@@ -799,8 +805,8 @@ class RRTMLongwaveRadiation:
             raise ValueError("radiation latitude/longitude shapes must match")
         if self.icloud not in (0, 1):
             raise ValueError("icloud must be 0 or 1")
-        if self.column_chunk is not None and self.column_chunk < 1:
-            raise ValueError("column_chunk must be positive")
+        if self.column_chunk is not None:
+            effective_column_chunk(self.column_chunk, 1)  # validate the explicit pin
         # Fail closed at construction if the packaged tables are missing
         # or corrupt, rather than mid-forecast.
         self._tables = load_rrtm_lw_tables()
@@ -826,7 +832,7 @@ class RRTMLongwaveRadiation:
         return float(atmosphere["p_interface"][-1].max())
 
     def _column_chunk_for(self, ncol: int, nlayers: int, cp) -> int:
-        """The solver chunk: the pin, the cached auto-size, or the floor.
+        """The solver chunk: the pin, cached auto-size, or capture fallback.
 
         The auto-size reads ``cudaMemGetInfo``, which is ILLEGAL inside
         CUDA graph capture -- the 8d94a2ff7 perf fix called it on every
@@ -960,7 +966,7 @@ class RRTMLongwaveRadiation:
 
         valid_time = (self.start_time
                       + timedelta(seconds=float(state.elapsed_seconds)))
-        gases = rrtm_default_trace_gases(valid_time.year)
+        gases = rrtm_default_trace_gases(valid_time.year, self.trace_gas_overrides)
 
         tten = cp.empty((ncol, nz), dtype=cp.float32)
         glw = cp.empty((ncol,), dtype=cp.float32)
@@ -1008,13 +1014,16 @@ class RRTMLongwaveRadiation:
     @property
     def restart_identity(self) -> dict[str, object]:
         """Trajectory-changing setup bound into tree restart identity."""
-        return {
+        identity = {
             "algorithm": "wrf-v4.6.1-rrtm-longwave",
             "wrf_source": "phys/module_ra_rrtm.F:RRTMLWRAD/RRTM",
             "icloud": int(self.icloud),
             "ghg_input": 0,
             "supported_path": "no-chem,no-cam-gases,o3-climatology",
         }
+        if self.trace_gas_overrides:
+            identity["trace_gas_overrides"] = dict(self.trace_gas_overrides)
+        return identity
 
 
 @dataclass
@@ -1045,6 +1054,7 @@ class RRTMDudhiaRadiation:
     swrad_scat: float = 1.0
     #: Forwarded to :class:`RRTMLongwaveRadiation`: ``None`` auto-sizes.
     column_chunk: int | None = None
+    trace_gas_overrides: dict[str, float] | None = None
 
     publishes_olr = True
     glw_provenance = "scheme"
@@ -1057,13 +1067,22 @@ class RRTMDudhiaRadiation:
         # attribute, and a NumPy float32 scalar here is an unclassified
         # "array" to the restart classifier (1.9.1 D3).
         self.p_top = None if self.p_top is None else float(self.p_top)
+        from gpuwm.core.trace_gases import CLASSIC_GASES, validate_trace_gas_overrides
+        if self.trace_gas_overrides is not None:
+            self.trace_gas_overrides = validate_trace_gas_overrides(
+                self.trace_gas_overrides, supported=CLASSIC_GASES,
+                consumer="classic RRTM longwave")
         self.longwave_adapter = RRTMLongwaveRadiation(
             self.start_time, self.latitude_deg, self.longitude_deg,
             p_top=self.p_top, icloud=self.icloud,
-            column_chunk=self.column_chunk)
+            column_chunk=self.column_chunk, trace_gas_overrides=self.trace_gas_overrides)
         self.shortwave_adapter = DudhiaShortwaveRadiation(
             self.start_time, self.latitude_deg, self.longitude_deg,
             swrad_scat=self.swrad_scat, icloud=self.icloud)
+
+    @property
+    def spectrum_adapters(self):
+        return (self.longwave_adapter, self.shortwave_adapter)
 
     @property
     def update_count(self) -> int:

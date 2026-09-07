@@ -183,6 +183,50 @@ def test_a_frame_missing_a_variable_is_refused_at_close(
     assert not path.exists()
 
 
+@pytest.mark.parametrize("engine", ["rust", "python"])
+def test_a_tape_with_no_frames_is_refused_at_close(
+        tmp_path, monkeypatch, engine):
+    """Zero Times records must not publish, on either engine.
+
+    Every publication step succeeds on an empty tape: the classic header
+    freezes with ``GPUWM_WRITE_COMPLETE = 1``, ``finish()`` sees no
+    unwritten region because there are no records, and
+    ``validate_wrfout_file`` passes with ``times == ()`` and every shape
+    carrying ``Time = 0``.  Measured on the pre-fix writer, the published
+    file reported ``GPUWM_WRITE_COMPLETE = 1`` with ``Times`` of shape
+    ``(0, 19)``.  The completion attribute is what
+    ``quarantine_orphan_wrfouts`` trusts, so nothing downstream would ever
+    look at it again.
+
+    The engine parametrization is load-bearing: the guard belongs to
+    ``WrfoutWriter.close()``, ahead of the engine branch, and a repair
+    pushed down into the classic tape would leave the netCDF4 escape
+    publishing empty files.
+    """
+    monkeypatch.delenv(WRFOUT_WRITER_ENV, raising=False)
+    if engine == "rust":
+        _require_rust_writer()
+    path = tmp_path / f"wrfout_empty_{engine}"
+    writer = WrfoutWriter(path, nx=5, ny=4, nz=3, dx=100.0, dy=100.0,
+                          engine=engine)
+    with pytest.raises(ValueError, match="zero Times records"):
+        writer.close()
+    assert not path.exists()
+    # And the temp file went to quarantine rather than being left for the
+    # orphan sweep to reason about.
+    assert not list(tmp_path.glob(".wrfout*"))
+    # close() is still idempotent after the refusal, as it is after any
+    # other publication failure.
+    writer.close()
+
+    # A one-frame tape on the same engine still publishes.
+    good = tmp_path / f"wrfout_one_{engine}"
+    with WrfoutWriter(good, nx=5, ny=4, nz=3, dx=100.0, dy=100.0,
+                      engine=engine) as writer:
+        writer.write_frame("1974-04-03_18:00:00", _frame())
+    assert good.exists()
+
+
 def test_a_relative_output_path_publishes_and_validates(tmp_path, monkeypatch):
     """The writer pins its paths to absolute at construction.
 

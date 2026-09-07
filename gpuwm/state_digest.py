@@ -48,15 +48,20 @@ WHAT THE STORE CANNOT CARRY, STATED RATHER THAN PAPERED OVER
 ------------------------------------------------------------
 Two member classes are in the resident digest and are absent from a
 store-direct domain's, and both absences are properties of the run rather
-than of this module.  ``scratch/lbc_weights_0`` is created on FIRST FORCE by
-``lateral_bc._resident_weights`` on whichever state stepped; a streamed
-domain steps tile buffers, so it does not exist on the domain object either
-way, and a store-direct run has no domain object at all.  The ``nest_*``
-rolling tables belong to a coupled child, and streaming refuses a nest.  A
-store that nonetheless turns up carrying an unrecognised member under one of
-:data:`_CANONICAL_EXTRA_PREFIXES` is refused here exactly as the resident
-walk refuses one, because that is the shape a silently-dropped member class
-arrives in.
+than of this module.  (A third, ``restart.RESTART_ONLY_DRIVER_SLOTS``, is
+absent from BOTH: the resident walk reaches it through
+``restart._driver_manifest`` and :func:`canonical_state_digest` subtracts it
+again by the same name the store side does, because a member one road can
+never produce is not evidence -- it is a difference between two roads
+reporting the same weather.)  ``scratch/lbc_weights_0`` is created on FIRST
+FORCE by ``lateral_bc._resident_weights`` on whichever state stepped; a
+streamed domain steps tile buffers, so it does not exist on the domain
+object either way, and a store-direct run has no domain object at all.  The
+``nest_*`` rolling tables belong to a coupled child, and streaming refuses a
+nest.  A store that nonetheless turns up carrying an unrecognised member
+under one of :data:`_CANONICAL_EXTRA_PREFIXES` is refused here exactly as
+the resident walk refuses one, because that is the shape a silently-dropped
+member class arrives in.
 """
 
 from __future__ import annotations
@@ -279,6 +284,17 @@ def canonical_state_digest(state, clock, *,
     driver = getattr(state, "physics", None)
     if driver is not None:
         manifest.update(restart_io._driver_manifest(driver))
+        # Match the actual streaming producer's distinction: standalone
+        # legacy-RRTMG host ozone is recomputed, while an explicit CAM
+        # owner supplies a retained field to later radiation/nest calls.
+        # Both use the historical checkpoint name radiation/o33d_grid;
+        # retain the carried owner exactly once, on both digest roads.
+        for slot in restart_io.RESTART_ONLY_DRIVER_SLOTS:
+            # The explicit CAM owner is a swept device carrier under this
+            # same key. Only the standalone adapter's host copy is excluded.
+            if slot == "radiation/o33d_grid" and getattr(driver, "o3rad", None) is not None:
+                continue
+            manifest.pop(slot, None)
     manifest.update(_canonical_extra_manifest(state))
     if scope == "trajectory":
         for member in CHILD_DUTY_SCRATCH_MEMBERS:

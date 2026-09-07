@@ -777,8 +777,10 @@ through `tools/regenerate_wrfout_global_attribute_set.py`.
 
 Every route prepares the normal profile family (WSM6, Thompson,
 Morrison, NSSL2, MYNN), and Noah-MP behind an expert acknowledgement.
-RUC is available on ERA5 and HRRR and deliberately withdrawn on GFS,
-which supplies none of the soil/surface fields its initialization needs.
+RUC has six- and nine-level soil initialization on ERA5, GFS and HRRR.
+The selected soil geometry, required fields, and land/soil category
+reconciliation remain binding; source/profile evidence membership alone
+does not determine whether a configuration can initialize.
 The v1.0.1 restriction to YSU + MM5 surface layer + Noah is gone.
 
 The shipped registry is the authority, and answers for your exact

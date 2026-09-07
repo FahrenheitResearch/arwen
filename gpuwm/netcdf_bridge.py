@@ -252,12 +252,7 @@ class Variable:
 
     @property
     def is_character(self) -> bool:
-        """True for a char/string variable, which cannot be decoded here.
-
-        The vendored reader promotes numerics to f64 and exposes no
-        character read at all, so a caller that needs the text has to be
-        told by name rather than handed an empty array.
-        """
+        """True for a stored character/string variable."""
 
         return self.stored_dtype in ("Char", "String")
 
@@ -328,18 +323,28 @@ class Variable:
     def _load(self) -> None:
         if self._values is not None:
             return
-        if self.is_character:
-            # Named here rather than left to surface as a type error from
-            # inside the reader.  This is a KNOWN gap in the vendored
-            # netcrust facade, not a property of the file, and a caller
-            # that needs the text should be told which is which.
-            raise NetcdfDecodeError(
-                f"{self.name} is a {self.stored_dtype} variable and cannot be "
-                f"decoded: the vendored netcrust reader promotes numeric "
-                f"variables to f64 and exposes no character read. Numeric "
-                f"variables in the same file read normally.")
         self._values, self._times = self._dataset._decode(
             self.name, raw=self._raw, scale=self._scale)
+
+    def read_transformed(self, *, scale: float = 1.0, offset: float = 0.0, cache: bool = True):
+        """Read with an explicit quantity-unit transform performed in Rust.
+
+        CF masking and unpacking happen first. This does not alter the file,
+        variable metadata, or the cached values in their original units.
+        ``cache=False`` also leaves identity reads uncached, so a streaming
+        caller can release each decoded float64 variable after conversion.
+        """
+        if not isinstance(cache, bool):
+            raise TypeError("cache must be boolean")
+        transform = (float(scale), float(offset))
+        if not np.isfinite(transform).all() or transform[0] == 0.0:
+            raise ValueError("unit transform needs a finite nonzero scale and finite offset")
+        if transform == (1.0, 0.0) and cache:
+            return self[...]
+        values, _ = self._dataset._decode(
+            self.name, raw=self._raw, scale=self._scale,
+            unit_transform=None if transform == (1.0, 0.0) else transform)
+        return values
 
     def __getitem__(self, item):
         self._load()
@@ -476,8 +481,8 @@ class Dataset:
                 f"{self.path} has no global NetCDF attribute {name!r}"
             ) from None
 
-    def _decode(self, name: str, *, raw: bool = False, scale: bool = True
-                ) -> tuple[np.ndarray, tuple[datetime, ...]]:
+    def _decode(self, name: str, *, raw: bool = False, scale: bool = True,
+                unit_transform: tuple[float, float] | None = None) -> tuple[np.ndarray, tuple[datetime, ...]]:
         """Decode one variable through the bridge.
 
         ``raw`` turns masking off; ``scale`` says whether
@@ -491,6 +496,9 @@ class Dataset:
             command = [os.fspath(self._executable), "dump"]
             if raw:
                 command.append("--raw" if not scale else "--no-mask")
+            if unit_transform is not None:
+                command.extend((f"--unit-scale={unit_transform[0]:.17g}",
+                                f"--unit-offset={unit_transform[1]:.17g}"))
             command += [os.fspath(self.path), os.fspath(out), name]
             _run(command,
                  what=f"NetCDF decode failed for {name} in {self.path}")
@@ -505,7 +513,15 @@ class Dataset:
                     f"{NETCDF_NAME} dumped {len(records)} variables for "
                     f"{name}; expected exactly one")
             record = records[0]
-            values = np.fromfile(out / str(record["filename"]), dtype="<f8")
+            if unit_transform is not None and record.get("unit_transform") != list(unit_transform):
+                raise NetcdfDecodeError(
+                    f"{NETCDF_NAME} did not acknowledge the requested unit transform; rebuild the reader")
+            dtype = record.get("dtype", "<f8")
+            expected_dtype = "|S1" if self.variables[name].is_character else "<f8"
+            if dtype != expected_dtype:
+                raise NetcdfDecodeError(
+                    f"{name}: decoded dtype {dtype!r}, expected {expected_dtype!r}")
+            values = np.fromfile(out / str(record["filename"]), dtype=dtype)
             shape = tuple(int(s) for s in record["shape"])
             expected = int(np.prod(shape)) if shape else 1
             if values.size != expected:

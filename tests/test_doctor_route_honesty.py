@@ -22,10 +22,106 @@ and never silence.
 from __future__ import annotations
 
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
 from gpuwm import bridges, doctor
+
+
+def _terminal_layout(monkeypatch, tmp_path, *, current=True):
+    from gpuwm import tui_cli
+
+    package = tmp_path / "site-packages" / "gpuwm"
+    staged = tmp_path / "staged"
+    monkeypatch.setattr(tui_cli, "__file__", str(package / "tui_cli.py"))
+    monkeypatch.setattr(bridges, "packaged_bridge_dir",
+                        lambda: package / "libexec" / "bridges")
+    monkeypatch.setattr(bridges, "default_bridge_dir", lambda: staged)
+    monkeypatch.delenv(tui_cli.TUI_ENV, raising=False)
+    binary = package / "libexec" / "bridges" / bridges.executable_name("arwen-tui")
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(bridges.BRIDGE_ABI_MARKERS["arwen-tui"]
+                       if current else b"obsolete terminal")
+    return binary
+
+
+def test_terminal_doctor_uses_launcher_ladder_and_only_probes_version(
+        monkeypatch, tmp_path):
+    binary = _terminal_layout(monkeypatch, tmp_path)
+    monkeypatch.setattr(bridges, "launchable", lambda path: (True, "native image"))
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, "arwen-tui 2.7.0", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    check = doctor._tui_check()
+    assert check.status == "verified"
+    assert str(binary.resolve()) in check.detail
+    assert len(calls) == 1
+    assert calls[0][0] == [str(binary.resolve()), "--version"]
+    assert calls[0][1]["timeout"] == doctor._PROBE_TIMEOUT_S
+    assert calls[0][1]["capture_output"] is True
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_terminal_doctor_reports_missing_without_using_a_hidden_fallback(
+        monkeypatch, tmp_path, override):
+    binary = _terminal_layout(monkeypatch, tmp_path)
+    if override:
+        monkeypatch.setenv("GPUWM_TUI_BIN", str(tmp_path / "missing override"))
+    else:
+        binary.unlink()
+    check = doctor._tui_check()
+    assert check.status == "missing"
+    assert check.severity == doctor.SEVERITY_UNREACHABLE
+    assert doctor.blocking_gaps([check]) == [check]
+    assert "gpuwm tui cannot run" in check.detail
+    if override:
+        assert "GPUWM_TUI_BIN names a missing file" in check.detail
+
+
+def test_terminal_doctor_refuses_old_contract_without_execution(monkeypatch, tmp_path):
+    _terminal_layout(monkeypatch, tmp_path, current=False)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("stale launch"))
+    check = doctor._tui_check()
+    assert check.status == "missing"
+    assert check.severity == doctor.SEVERITY_BROKEN
+    assert "predates this release's arwen-tui contract" in check.detail
+    assert doctor.blocking_gaps([check]) == [check]
+
+
+def test_terminal_doctor_reads_release_pins_without_refreshing(monkeypatch, tmp_path):
+    from gpuwm import bridge_assets
+
+    binary = _terminal_layout(monkeypatch, tmp_path)
+    checks = []
+
+    def pin_status(path):
+        checks.append(path)
+        return SimpleNamespace(matches=False, describe=lambda: "release pin mismatch")
+
+    monkeypatch.setattr(bridge_assets, "staged_pin_status", pin_status)
+    monkeypatch.setattr(bridges, "_refresh_staged_estate",
+                        lambda *a: pytest.fail("doctor must never refresh"))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("stale launch"))
+    check = doctor._tui_check()
+    assert checks == [binary.resolve()]
+    assert check.status == "missing"
+    assert check.severity == doctor.SEVERITY_BROKEN
+    assert "release pin mismatch" in check.detail
+
+
+def test_terminal_doctor_refuses_an_unlaunchable_current_contract(monkeypatch, tmp_path):
+    _terminal_layout(monkeypatch, tmp_path)
+    monkeypatch.setattr(bridges, "launchable", lambda path: (False, "corrupt header"))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("corrupt launch"))
+    check = doctor._tui_check()
+    assert check.status == "missing"
+    assert check.severity == doctor.SEVERITY_BROKEN
+    assert "corrupt header" in check.detail
 
 
 def _wheel_layout(monkeypatch, tmp_path, *, staged: bool):
@@ -513,7 +609,10 @@ def test_untested_never_reads_as_ok_and_always_says_not_tested():
     text = doctor.format_report([check])
     assert "UNTESTED" in text
     assert "ok " not in text.splitlines()[1]
-    for finding in doctor.collect_checks():
+    findings = doctor.collect_checks()
+    assert sum(finding.name == "terminal workspace arwen-tui (gpuwm tui)"
+               for finding in findings) == 1
+    for finding in findings:
         if finding.status == "untested":
             assert finding.detail.startswith("not tested"), finding.name
 

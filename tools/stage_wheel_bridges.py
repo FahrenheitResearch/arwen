@@ -123,6 +123,7 @@ _WORKSPACE_TARGET = {
     bridges.RUSTWX_CRATE_RELATIVE: "target/release",
     "tools/region_global_dealias": "target/release",
     "tools/rw_wps": "target/release",
+    "tools/arwen-tui": "target/release",
 }
 
 
@@ -228,15 +229,11 @@ def stage(platform: str, *, destination: Path | None = None) -> Path:
             f"stage_wheel_bridges: {len(missing)} of "
             f"{len(bridge_assets.BUNDLED_ARTIFACTS)} declared artifacts are "
             f"not built for {platform}:\n" + "\n".join(missing) +
-            "\n\nBuild them first:\n"
-            "  cargo build --release --locked --offline "
-            "--manifest-path tools/grib1_bridge/Cargo.toml\n"
-            "  cargo build --release --locked --offline "
-            "--manifest-path tools/rustwx/Cargo.toml\n"
-            "  cargo build --release --locked --offline "
-            "--manifest-path tools/region_global_dealias/Cargo.toml\n"
-            "  cargo build --release --locked --offline "
-            "--manifest-path tools/rw_wps/Cargo.toml")
+            "\n\nBuild them first, from the checkout root:\n"
+            + "\n".join(
+                "  " + bridges.cargo_build_one_liner(crate)
+                for crate in dict.fromkeys(
+                    artifact.crate for artifact in bridge_assets.BUNDLED_ARTIFACTS)))
 
     purge_build_staging()
     if _is_packaged_destination(destination) and destination.exists():

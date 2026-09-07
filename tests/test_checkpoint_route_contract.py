@@ -5,11 +5,9 @@ Three findings from the v1.4.0 fleet test, each of which is either a
 feature that must work or a truth that must be told before the run
 rather than after it:
 
-* **C-04** -- checkpointing is unreachable on the single-domain route
-  with no ``[case_data]`` table, the route the wizard steers everyone
-  to.  The runner's warning is honest but arrives at forecast time;
-  ``gpuwm check`` said nothing; ``gpuwm resume`` then pointed back at
-  the knob just declared inert.  Disposition: TELL THE TRUTH EARLY.
+* **C-04** -- the prepared single-domain route now uses the canonical
+  checkpoint transport. Wizard defaults, check and resume must describe
+  that current capability and preserve an explicit checkpoints-off choice.
 * **C-11** -- on the one route that can checkpoint, restart refused
   every config change ``gpuwm run --restart`` documents as permitted,
   as an unhandled traceback.  Disposition: MAKE IT WORK, and refuse the
@@ -73,13 +71,13 @@ def _raw(config):
 
 
 # ---------------------------------------------------------------------------
-# C-04: the route that cannot checkpoint says so at check time
+# C-04: guidance matches the current checkpoint-capable routes
 # ---------------------------------------------------------------------------
 
 def test_the_route_matrix_matches_the_runners_that_exist():
     """One place decides, and it decides what the runners actually do."""
 
-    assert not route_writes_checkpoints(domain_count=1, has_case_data=False)
+    assert route_writes_checkpoints(domain_count=1, has_case_data=False)
     assert route_writes_checkpoints(domain_count=2, has_case_data=False)
     assert route_writes_checkpoints(domain_count=1, has_case_data=True)
 
@@ -87,7 +85,10 @@ def test_the_route_matrix_matches_the_runners_that_exist():
 def test_the_advisory_fires_only_when_something_was_actually_asked_for():
     """CONTROL: it must be silent on both sides, or it is noise."""
 
-    inert = dict(domain_count=1, has_case_data=False)
+    inert = dict(domain_count=0, has_case_data=False)
+    assert checkpoint_route_advisory(
+        domain_count=1, has_case_data=False,
+        restart_interval_s=3600.0) is None
     assert checkpoint_route_advisory(
         **inert, restart_interval_s=3600.0) == CHECKPOINTLESS_ROUTE_ADVISORY
     # Asked for nothing: nothing was lost, so nothing is said.
@@ -101,35 +102,32 @@ def test_the_advisory_fires_only_when_something_was_actually_asked_for():
         restart_interval_s=3600.0) is None
 
 
-def test_check_names_the_route_limitation_before_the_forecast(
+def test_check_does_not_report_a_retired_route_limitation(
         tmp_path, capsys, monkeypatch):
-    """C-04: `gpuwm check` is where this must be learned, not at forecast."""
+    """The actual wizard emission and check agree with the current runner."""
 
     from gpuwm.core import preflight
 
     config = _wizard_config(tmp_path)
     raw = _raw(config)
-    assert float(raw["experiment"]["restart_interval_s"]) == 0.0, (
-        "the wizard emits an inert 0 here; this test asks for checkpoints")
-    config.write_text(
-        config.read_text(encoding="utf-8").replace(
-            "restart_interval_s = 0.0", "restart_interval_s = 3600.0"),
-        encoding="utf-8", newline="\n")
+    assert float(raw["experiment"]["restart_interval_s"]) == 3600.0
     capsys.readouterr()
 
     exp = preflight._load_experiment_any(config)
     advisories = preflight.check_advisories(exp, config)
-    assert CHECKPOINTLESS_ROUTE_ADVISORY in advisories
+    assert not any("inert" in note or "no checkpoints" in note for note in advisories)
 
     # NEGATIVE CONTROL: the same config with the knob left alone earns
     # no advisory, so a green check stays green for everybody else.
     plain = _wizard_config(tmp_path / "plain")
+    plain.write_text(plain.read_text(encoding="utf-8").replace(
+        "restart_interval_s = 3600.0","restart_interval_s = 0.0"),encoding="utf-8")
     assert preflight.check_advisories(
         preflight._load_experiment_any(plain), plain) == []
 
 
-def test_resume_stops_pointing_at_the_knob_it_just_called_inert(tmp_path):
-    """C-04: the circular advice becomes a route statement."""
+def test_resume_names_a_missing_checkpoint_without_denying_route_support(tmp_path):
+    """Supported routes still need a checkpoint that was actually written."""
 
     from gpuwm.resume import resolve_resume_checkpoint, route_note
 
@@ -140,8 +138,9 @@ def test_resume_stops_pointing_at_the_knob_it_just_called_inert(tmp_path):
     with pytest.raises(ValueError) as caught:
         resolve_resume_checkpoint(outdir, config=config)
     message = str(caught.value)
-    assert "writes no checkpoints" in message
-    assert "[case_data]" in message and "multi-domain" in message
+    assert "writes no checkpoints" not in message
+    assert "restart_interval_s" in message
+    assert route_note(config) == ""
 
     # CONTROL: without the config the message is exactly what it was --
     # the route sentence is added, never substituted for the old advice.
@@ -484,9 +483,11 @@ def test_the_permitted_keys_are_the_ones_the_help_text_publishes():
     # spellings (`run.output_interval_s` and the domain-level
     # `history_interval_s`), so the partition must name both or the
     # cadence stays bound after all.
+    # Preparation also ignores the declared execution layout. Its existing
+    # resident/streamed equivalence does not change a meteorological array.
     assert NON_TRAJECTORY_IDENTITY_FIELDS == frozenset(
         f"run.{name}" for name in CONFIG_RUN_LENGTH_FIELDS
-    ) | {"history_interval_s"}
+    ) | {"history_interval_s", "tiles"}
 
 
 def test_extending_a_run_does_not_move_the_prepared_cache_identity(tmp_path):

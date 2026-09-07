@@ -1,0 +1,33 @@
+{
+  "case_layers": {
+    "c00201": {
+      "model": 79,
+      "radiation": 80
+    },
+    "c00202": {
+      "model": 128,
+      "radiation": 129
+    }
+  },
+  "coefficients_sha256": {
+    "RRTMG_LW_DATA": "bcfdee24b63a4c909522a329b8e16c539f0173c7e5aea2caf933ab4fe28c5c97",
+    "RRTMG_SW_DATA": "a7d25f5b4d33be8629cbef7ecacc1ff413bf398a021297793e843ba1cc627baf"
+  },
+  "compiler": "GNU Fortran 13.3.0, -O0, FP32 RWORDSIZE=4, big-endian I/O",
+  "files_sha256": {
+    "sw_build.sh": "d3c24c29ffb8aef081a2cf424d203914d664c88aa3cbaf3dcb6977741439b173",
+    "sw_fixture_driver.F90": "19294e76926baf5f4b980724b898e2fe42b54e22da704e6883054a1f8a8b1970",
+    "sw_fixtures/fixtures_tall.npz": "b5f4da78331aaecece2c7310a1dccd0a52fb86bce05cda16b975354838647ba5",
+    "sw_make_synthetic.py": "bf3797eca5ddc7b15bdd949239f812432a68f9db1312a76f7d15b6af96a1b677",
+    "sw_make_tall.py": "93f9ee3438fa29051cd29b0b693c2c59dc4b332fc9467538e2d8aff62828ca93",
+    "sw_stub_wrf.F90": "05b975a340039983b600347f42c9650b07c75ee7c2ec3c60de567f8e73f0bcea"
+  },
+  "recording_contract": "The fixture driver checks recorded prep and staged fluxes bitwise against the unmodified WRF RRTMG_SWRAD call before writing a fixture.",
+  "reference": "Unmodified WRF v4.6.1 module_ra_rrtmg_sw.F and module_ra_rrtmg_lw.F",
+  "schema": "gpuwm-rrtmg-sw-tall-oracle-v1",
+  "source_line_endings": "LF; normalized bytes equal the existing frozen CRLF WRF oracle sources",
+  "wrf_source_sha256": {
+    "module_ra_rrtmg_lw.F": "97950adb65a67ab8bb460cbd2efade8a225e655ba48fd4cc5227569aa9764088",
+    "module_ra_rrtmg_sw.F": "7f8af1da0ca1d25ce784a917bc68600300a7c569881c57e7de8501cd53496b59"
+  }
+}

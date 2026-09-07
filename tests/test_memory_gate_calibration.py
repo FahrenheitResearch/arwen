@@ -101,9 +101,11 @@ def _walk_machine(monkeypatch, *, free_bytes=WALK_FREE_BYTES,
     monkeypatch.setattr(pf.sys, "platform", "win32")
     total = int(total_gib * GIB)
     stub = types.SimpleNamespace(cuda=types.SimpleNamespace(
+        Device=lambda: types.SimpleNamespace(pci_bus_id="fixture-card"),
         runtime=types.SimpleNamespace(
             memGetInfo=lambda: (free_bytes, total))))
     monkeypatch.setitem(pf.sys.modules, "cupy", stub)
+    monkeypatch.setattr(pf, "cap_free_to_device_wide", lambda value, **_: (value, False))
     monkeypatch.setattr(
         pf, "live_device_local_memory_profile",
         lambda: (_walk_profile() if profile is None else profile))
@@ -114,7 +116,14 @@ def _run_check(argv):
     sub = parser.add_subparsers(dest="command", required=True)
     pf.register_cli(sub)
     args = parser.parse_args(argv)
-    return args.func(args)
+    args.explain = True  # Calibration assertions inspect the full report.
+    # This fixture supplies synthetic GPU statistics. Readiness compilation
+    # is covered independently, and must not run against the fake CuPy module.
+    from unittest.mock import patch
+    from gpuwm.doctor import Check
+    with patch("gpuwm.doctor._cuda_headers_check", return_value=Check(
+            "CUDA kernel headers", "verified", "fixture kernels ready")):
+        return args.func(args)
 
 
 # ---------------------------------------------------------------------------

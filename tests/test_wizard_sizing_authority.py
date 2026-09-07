@@ -29,6 +29,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -136,26 +137,94 @@ def test_bare_wizard_measures_the_local_card_when_it_can(
         tmp_path, monkeypatch, capsys):
     """The measured-thresholds rule: a readable card is read, and said.
 
-    The probe seam answers with a 16 GiB card; the emission must match
-    ``--vram-gib 16`` byte for byte, because the measurement is a budget
-    source and never a different sizing path.
+    Available memory, rather than nominal capacity, limits the new grid.
+    Reprice the emitted file through the Run gate under the same probe.
     """
 
+    probe = {"free_bytes": 12 * GIB, "total_bytes": 16 * GIB, "profile": None}
     monkeypatch.setattr(
         domain_wizard, "device_memory_probe_subprocess",
-        lambda **_kwargs: {"free_bytes": 12 * GIB,
-                           "total_bytes": 16 * GIB,
-                           "profile": None})
+        lambda **_kwargs: probe)
     measured = tmp_path / "measured.toml"
     assert cli_main(["domain", *_WIZARD, "--out", str(measured)]) == 0
     stdout = capsys.readouterr().out
     assert "measured" in stdout
     assert "16" in stdout
+    assert "12.00 GiB available" in stdout
+    assert "estimate for a declared" not in stdout
 
     declared = tmp_path / "declared.toml"
     assert cli_main(
         ["domain", *_WIZARD, "--vram-gib", "16", "--out", str(declared)]) == 0
-    assert measured.read_bytes() == declared.read_bytes()
+    actual = tomllib.loads(measured.read_text(encoding="utf-8"))
+    nominal = tomllib.loads(declared.read_text(encoding="utf-8"))
+    assert actual["domain"][0]["nx"] < nominal["domain"][0]["nx"]
+    assert actual["shared"] == nominal["shared"]
+    assert actual["experiment"] == nominal["experiment"]
+    from gpuwm.core import preflight
+    from gpuwm.go_cli import memory_gate
+    monkeypatch.setattr(preflight, "device_memory_probe_subprocess", lambda: probe)
+    gate = memory_gate({"config": measured})
+    assert not gate["refuse"] and not gate["warn"], gate["verdict"]
+    assert gate["phases"].peak_envelope_bytes <= gate["budget_bytes"]
+
+
+@pytest.mark.parametrize("free", [None, -1, True, 17 * GIB])
+def test_invalid_measured_available_memory_does_not_fall_back_to_capacity(
+        tmp_path, monkeypatch, capsys, free):
+    monkeypatch.setattr(domain_wizard, "device_memory_probe_subprocess",
+                        lambda: {"total_bytes": 16 * GIB, "free_bytes": free})
+    out = tmp_path / "invalid.toml"
+    assert cli_main(["domain", *_WIZARD, "--out", str(out)]) == 2
+    assert "available memory" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_busy_measured_card_refuses_before_writing(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(domain_wizard, "device_memory_probe_subprocess",
+                        lambda: {"total_bytes": 16 * GIB, "free_bytes": 0})
+    out = tmp_path / "busy.toml"
+    assert cli_main(["domain", *_WIZARD, "--out", str(out)]) == 2
+    assert "leaves no budget" in capsys.readouterr().err
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("explain", [False, True])
+def test_new_forecast_on_busy_3080_agrees_with_run_admission(
+        tmp_path, monkeypatch, capsys, explain):
+    """The first-use failure: 10 GiB total, only 7.72 GiB available."""
+    from gpuwm.core import preflight
+    from gpuwm.go_cli import memory_gate
+
+    probe = dict(total_bytes=10 * GIB, free_bytes=int(7.72 * GIB),
+                 profile=dict(name="NVIDIA GeForce RTX 3080", multiprocessor_count=68,
+                              max_threads_per_multiprocessor=1536,
+                              default_stack_limit_bytes=1024, bare_context_bytes=182452224))
+    monkeypatch.setattr(domain_wizard, "device_memory_probe_subprocess", lambda: probe)
+    monkeypatch.setattr(preflight, "device_memory_probe_subprocess", lambda: probe)
+    # The emitted-file check also matches a declared capacity to the local
+    # profile. Keep that independent lookup on the same synthetic card.
+    monkeypatch.setattr(preflight, "device_physical_total_bytes", lambda: probe["total_bytes"])
+    monkeypatch.setattr(preflight, "live_device_local_memory_profile",
+                        lambda: preflight.profile_from_device_probe(probe))
+    out = tmp_path / "first-forecast.toml"
+    arguments = ["domain", "--point=28,-90", "--root-dx=12", "--source=gfs",
+                 "--cycle=2026-09-05T18", "--hours=3", "--out", str(out)]
+    assert cli_main(arguments + (["--explain"] if explain else [])) == 0
+    printed = capsys.readouterr().out
+    assert "7.72 GiB available" in printed
+    assert "ESTIMATE FOR HARDWARE NOT PRESENT" not in printed
+    gate = memory_gate({"config": out})
+    assert not gate["refuse"] and not gate["warn"], gate["verdict"]
+    assert gate["phases"].peak_envelope_bytes <= int(7.22 * GIB)
+    raw = tomllib.loads(out.read_text(encoding="utf-8"))
+    assert raw["domain"][0]["nx"] < 436
+    assert raw["domain"][0]["dx"] == 12000
+    assert raw["shared"]["mp_physics"] == 10
+    assert raw["experiment"]["run_seconds"] == 10800
+    # Admission must still notice a later drop; sizing does not disable it.
+    probe["free_bytes"] = 4 * GIB
+    assert memory_gate({"config": out})["refuse"]
 
 
 def test_bare_wizard_under_no_local_gpu_refuses_naming_the_variable(

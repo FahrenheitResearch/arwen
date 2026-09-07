@@ -1,15 +1,29 @@
 """Device acceptance gate for the Grell-Freitas deep cloud model kernel.
 
-Same bar as the CPU side and then one notch past it: bitwise identity with
-the WRF v4.6.1 per-stage capture over all 216 committed columns, WITH fzu
-COMPUTED ON THE DEVICE rather than pinned from the oracle.  The CPU
-reference cannot make that claim -- it models tgammaf in float64 (0-4 ULP
-off glibc) and pins the captured fzu for its bitwise gate, because a 1-ULP
-fzu error moves xmb by up to 7.3 per cent through the xk = (xaa0-aa1)/mbdt
-cancellation.  gf.cu closes the gap by transcribing glibc 2.39's own
-tgammaf (e_gammaf_r.c with its lgammaf, exp2f, expm1f and __gamma_productf
-dependencies), so the kernel's fzu IS glibc's word and the whole chain is
-graded with no override anywhere.
+Same bar as the CPU side: bitwise identity with the WRF v4.6.1 per-stage
+capture over all 216 committed columns, with fzu PINNED from the oracle
+exactly as tests/test_gf_deep_parity.py pins it.
+
+WHY IT IS PINNED, AND WHAT CHANGED AT 2.6.6.  Through 2.6.5 gf.cu carried a
+transcription of glibc 2.39's own tgammaf (e_gammaf_r.c with its lgammaf,
+exp2f, expm1f and __gamma_productf dependencies), so the kernel's fzu WAS
+glibc's word and this gate could run the chain with no override anywhere --
+the one claim the CPU reference could not make.  Those two glibc files are
+FSF-copyright and LGPL-2.1-or-later with no permissive upstream, an
+Apache-2.0 distribution cannot carry them, and they are gone.  gfk_tgamma is
+now ArWen's own CORRECTLY ROUNDED gamma: measured against a 113-bit oracle
+over all 59,768,833 float32 of [0.25, 36] it is right on every one and
+glibc 2.39 is wrong on 39.44 per cent of them, worst 6 ULP.  So the kernel
+and WRF no longer agree on fzu, deliberately, and
+``docs/gf_gamma_known_delta.md`` is the record.
+
+A 1-ULP fzu error moves xmb by up to 7.3 per cent through the
+xk = (xaa0-aa1)/mbdt cancellation, so this is not a tolerance question and
+nothing here is loosened.  Pinning the oracle's own fzu words puts the
+divergence back to zero at that ONE seam and leaves the other ~4,000
+transcribed lines graded bitwise, which is what the CPU suite has done since
+the port landed.  gamma itself is graded -- harder than before -- against the
+113-bit reference in tests/test_gf_gamma_correctly_rounded.py.
 
 Same story for powf: the CPU reference computes the correctly rounded power
 and carries a measured 10-lane / 1-ULP zu divergence where glibc's powf
@@ -26,17 +40,17 @@ What this file proves, in order:
    time (the ESAT/noahmp precedent: ptxas 12.x's folder mis-rounds literal
    FP32 arrays, so the table lives in __constant__ memory and this test is
    what shows the precaution worked).
-2. The transcribed libm surface -- gfk_tgamma, gfk_lgamma_pos, gfk_expm1,
-   gfk_exp2 -- is bitwise against the LIVE glibc 2.39 sweeps in
-   gpuwm/data/gf/oracle/gf-libm-*.csv (65k/32k/16k/16k arguments, written
-   by tools/gf_wrf461_oracle/gf_libm_dump.c on the oracle's own toolchain),
-   and gfk_pow reproduces every powf row of the committed answer sheet
-   including ppowhard's rounding-boundary case.
-3. CUDA's builtin tgammaf and powf are DIFFERENT functions from glibc's on
-   this device -- negative controls that fire, so the transcriptions are
-   provably load-bearing, not decoration.
-4. fzu = gamma(a+b)/(gamma(a)*gamma(b)) is bitwise over the whole pgamma
-   probe grid and on every live (alpha, beta) the fixture reaches.
+2. gfk_tgamma is the CORRECTLY ROUNDED gamma on this device, graded
+   against gf-crgamma-tgammaf.csv (65,638 arguments from a 113-bit
+   tgammaq), and gfk_pow reproduces every powf row of the committed answer
+   sheet including ppowhard's rounding-boundary case.  gfk_lgamma_pos,
+   gfk_expm1 and gfk_exp2 and their gf-libm sweeps are gone: their only
+   caller was the LGPL gamma block, so they graded dead code.
+3. CUDA's builtin tgammaf and powf are DIFFERENT functions again -- neither
+   glibc's nor correctly rounded -- negative controls that fire, so
+   gfk_tgamma and gfk_pow are provably load-bearing, not decoration.
+4. fzu = gamma(a+b)/(gamma(a)*gamma(b)) is bitwise against the correctly
+   rounded reference gf-crgamma-fzu.csv over the whole probe grid.
 5. gf_deep_stage reproduces every graded field of gf-deep-levels.csv /
    gf-deep-surface.csv bit for bit -- 83 level fields, 69 float scalars, 39
    integer fields -- with the same three masks the CPU gate uses (WRF leaves
@@ -81,7 +95,7 @@ from gpuwm.verify.gf_oracle import (                          # noqa: E402
 # drift; must match the enums in gpuwm/core/kernels/gf.cu.
 from gf_field_lists import (                                  # noqa: E402
     IN_LEV, IN_SCA, ISCA_FIELDS, LEV_FIELDS, SCA_FIELDS,
-    reference_constant_words,
+    captured_fzu, reference_constant_words,
 )
 
 NZ = GF_NZ
@@ -144,7 +158,16 @@ def want(fixture):
 
 @pytest.fixture(scope="module")
 def stage(module, fixture):
-    """One launch of gf_deep_stage over all 216 columns, fzu COMPUTED."""
+    """One launch of gf_deep_stage over all 216 columns, fzu PINNED.
+
+    The two fzu slots carry WRF's captured up_fzu/dn_fzu.  See this module's
+    docstring and docs/gf_gamma_known_delta.md: gamma is a deliberate
+    divergence, and the pin is what keeps everything downstream of it graded
+    at max_ulp 0 against WRF.  ``test_the_fzu_pin_was_honoured`` below proves
+    the override is actually read, so these 191 field assertions cannot be
+    standing on a silent no-op.
+    """
+    up_fzu, dn_fzu, _ = captured_fzu(fixture)
     lv = fixture.stage_levels
     sf = fixture.stage_surface
     gs = fixture.surface
@@ -156,8 +179,10 @@ def stage(module, fixture):
     for j, name in enumerate(IN_SCA):
         if name == "dx":
             scin[:, j] = gs["dx"].astype(np.float32)
-        elif name in ("fzu_up", "fzu_dn"):
-            scin[:, j] = 0.0          # <= 0 means: compute with gfk_tgamma
+        elif name == "fzu_up":
+            scin[:, j] = up_fzu       # > 0 means: use WRF's captured word
+        elif name == "fzu_dn":
+            scin[:, j] = dn_fzu
         else:
             scin[:, j] = sf[name].astype(np.float32)
     iin = sf["kpbli"].astype(np.int32)
@@ -250,49 +275,56 @@ def test_constant_table_survived_ptxas(module):
 
 
 # ==========================================================================
-# 2. the transcribed libm surface vs the live glibc 2.39 sweeps
+# 2. the libm surface: gamma against the 113-bit reference, powf against the
+#    committed answer sheet
 # ==========================================================================
+#: gf_libm_unary_probe is 4 slots since 2.6.6 -- gfk_tgamma, CUDA's builtin
+#: tgammaf (negative control), gfk_exp, gfk_log.  Slots 2/3/4 held
+#: gfk_lgamma_pos / gfk_expm1 / gfk_exp2, whose only caller was the LGPL
+#: gamma block; all four are deleted.
+_UNARY_SLOTS = 4
+
+
 def _run_unary(module, x):
     n = x.size
     d_x = cp.asarray(np.ascontiguousarray(x))
-    d_out = cp.zeros(7 * n, dtype=cp.float32)
+    d_out = cp.zeros(_UNARY_SLOTS * n, dtype=cp.float32)
     fn = module.get_function("gf_libm_unary_probe")
     fn(((n + 255) // 256,), (256,), (d_x, d_out, np.int32(n)))
-    return cp.asnumpy(d_out).reshape(n, 7)
-
-
-_UNARY_SLOT = {"tgammaf": 0, "lgammaf": 2, "expm1f": 3, "exp2f": 4}
+    return cp.asnumpy(d_out).reshape(n, _UNARY_SLOTS)
 
 
 @pytest.mark.gpu
-@pytest.mark.parametrize("fn_name", sorted(_UNARY_SLOT))
-def test_device_libm_matches_live_glibc(module, fn_name):
-    x, wantw = _load_word_csv(f"gf-libm-{fn_name}.csv")
-    got = _run_unary(module, x)[:, _UNARY_SLOT[fn_name]].copy()
-    gb = got.view(np.uint32)
+def test_the_device_gamma_is_correct_and_the_builtin_is_not(module):
+    """The one-line precondition for the 191 field assertions below.
+
+    Everything downstream of fzu is graded against WRF with fzu PINNED, so
+    this file no longer proves anything about gamma by proving those.  It is
+    proved directly instead, and harder than the old
+    ``test_device_libm_matches_live_glibc[tgammaf]`` did: slot 0 must equal
+    the CORRECTLY ROUNDED answer over all 65,638 sweep arguments, not merely
+    equal what one binary returns.  glibc 2.39 fails that check on 25,713 of
+    these same rows (tests/test_gf_gamma_correctly_rounded.py measures it).
+
+    The second half is the negative control, and it must FIRE: CUDA's
+    builtin tgammaf is a third function again, so if it ever agrees with the
+    reference everywhere the control is stale -- re-measure before believing
+    anything else in this file, because the 7.3 per cent xmb stake means a
+    silent gamma change is a silent physics change.
+    """
+    x, wantw = _load_word_csv("gf-crgamma-tgammaf.csv")
+    out = _run_unary(module, x)
+    gb = out[:, 0].copy().view(np.uint32)
     bad = np.flatnonzero(gb != wantw)
     assert bad.size == 0, (
-        f"gfk_{fn_name}: {bad.size}/{x.size} words differ; first "
-        f"x=0x{int(x.view(np.uint32)[bad[0]]):08X} "
+        f"gfk_tgamma: {bad.size}/{x.size} words differ from the correctly "
+        f"rounded reference; first x=0x{int(x.view(np.uint32)[bad[0]]):08X} "
         f"got=0x{int(gb[bad[0]]):08X} want=0x{int(wantw[bad[0]]):08X}")
-
-
-@pytest.mark.gpu
-def test_cuda_builtin_tgammaf_is_not_glibcs(module):
-    """Negative control: it must FIRE, or the transcription is decoration.
-
-    CUDA's tgammaf is a different implementation with a different error
-    profile; on the live-argument sweep it disagrees with glibc somewhere.
-    If this ever passes bitwise, the control is stale, not the port wrong --
-    and the 7.3 per cent xmb stake says we need to know either way.
-    """
-    x, wantw = _load_word_csv("gf-libm-tgammaf.csv")
-    got = _run_unary(module, x)[:, 1].copy()
-    ndiff = int(np.count_nonzero(got.view(np.uint32) != wantw))
+    ndiff = int(np.count_nonzero(out[:, 1].copy().view(np.uint32) != wantw))
     assert ndiff > 0, (
-        "CUDA's builtin tgammaf matched glibc on every sweep argument -- "
-        "the negative control no longer fires; re-measure before trusting "
-        "either function")
+        "CUDA's builtin tgammaf matched the correctly rounded reference on "
+        "every sweep argument -- the negative control no longer fires; "
+        "re-measure before trusting either function")
 
 
 def _pow_rows():
@@ -346,14 +378,27 @@ def test_device_powf_matches_the_answer_sheet(module):
 
 @pytest.mark.gpu
 def test_fzu_bitwise_on_the_pgamma_grid(module):
+    """fzu = gamma(a+b)/(gamma(a)*gamma(b)) against the CORRECTLY ROUNDED
+    reference over the whole probe grid.
+
+    The oracle used to be the ``pgamma`` rows of gf-pow-probe.txt, i.e.
+    WRF's own captured fzu.  It is gf-crgamma-fzu.csv since 2.6.6: the same
+    (alpha, beta) pairs and 26 more, recomputed from a 113-bit gamma with one
+    float32 rounding per operation exactly as get_zu_zd_pdf_fim spells it.
+    MEASURED: on the 100 pairs the two fixtures share, this reference differs
+    from WRF's captured fzu on 68 (68.0 per cent), worst 5 ULP; against fzu
+    composed from glibc's own tgammaf it differs on 89 of all 126 rows (70.6
+    per cent), worst 5.  That IS the known delta --
+    docs/gf_gamma_known_delta.md.  Grading against WRF's words here would be
+    grading against a gamma that is wrong on 39 per cent of its domain.
+    """
     a_l, b_l, w_l = [], [], []
-    with (GF_ORACLE_DIR / "gf-pow-probe.txt").open(encoding="ascii") as fh:
+    with (GF_ORACLE_DIR / "gf-crgamma-fzu.csv").open(encoding="ascii") as fh:
         for line in fh:
-            if line.startswith("pgamma "):
-                p = line.split()
-                a_l.append(_uh(p[1]))
-                b_l.append(_uh(p[2]))
-                w_l.append(int(p[6], 16))
+            aw, bw, fw = line.strip().split(",")
+            a_l.append(_uh(aw))
+            b_l.append(_uh(bw))
+            w_l.append(int(fw, 16))
     a = np.array(a_l, dtype=np.float32)
     b = np.array(b_l, dtype=np.float32)
     wantw = np.array(w_l, dtype=np.uint32)
@@ -366,12 +411,12 @@ def test_fzu_bitwise_on_the_pgamma_grid(module):
     got = cp.asnumpy(d_out).view(np.uint32)
     bad = np.flatnonzero(got != wantw)
     assert bad.size == 0, (
-        f"fzu: {bad.size}/{n} pgamma rows differ; first alpha="
+        f"fzu: {bad.size}/{n} correctly-rounded rows differ; first alpha="
         f"0x{int(a.view(np.uint32)[bad[0]]):08X}")
 
 
 # ==========================================================================
-# 5. the deep scheme, bitwise, fzu computed
+# 5. the deep scheme, bitwise, fzu pinned
 # ==========================================================================
 @pytest.mark.gpu
 @pytest.mark.parametrize("field", LEV_FIELDS)
@@ -419,15 +464,31 @@ def test_deep_int_field_exact(stage, want, field):
 
 
 @pytest.mark.gpu
-def test_fzu_needed_no_pin(stage, want):
-    """The claim the CPU reference cannot make, asserted on its own: with
-    fzu COMPUTED on the device, up_fzu and dn_fzu are bitwise WRF's on
-    every column.  The stage fixture above ran with the override disabled,
-    so every other bitwise assertion in this file already stood on this --
-    here it is stated as the headline."""
-    for name in ("up_fzu", "dn_fzu"):
+def test_the_fzu_pin_was_honoured(stage, want, fixture):
+    """The override is READ, not ignored -- so the 191 assertions above are
+    not standing on a silent no-op.
+
+    This replaces ``test_fzu_needed_no_pin``, which asserted the opposite
+    claim -- that with fzu COMPUTED on the device, up_fzu and dn_fzu were
+    bitwise WRF's on every column.  That claim was true only because
+    gfk_tgamma was a transcription of glibc's LGPL e_gammaf_r.c.  It is
+    false now, on purpose, and docs/gf_gamma_known_delta.md is the record.
+
+    What is asserted instead is that the kernel reports back exactly the
+    words it was handed on every column that HAS a pin (WRF captures 0 for a
+    column whose PDF never ran, and 0 means "compute" -- those columns are
+    excluded here and carry no mass flux to any graded output anyway).  If
+    the override were ever dropped from the kernel or the fixture, this
+    fails loudly instead of the 191 field tests failing obscurely.
+    """
+    up, dn, _ = captured_fzu(fixture)
+    for name, pin in (("up_fzu", up), ("dn_fzu", dn)):
         j = SCA_FIELDS.index(name)
-        _assert_bit_exact(stage["sca"][:, j], _ws(want, name), name)
+        m = pin > 0
+        assert int(m.sum()) > 0, f"no column pins {name}"
+        _assert_bit_exact(stage["sca"][:, j][m], pin[m], f"{name} (pinned)")
+        # and the pin IS WRF's own word, not something re-derived here
+        _assert_bit_exact(pin[m], _ws(want, name)[m], f"{name} (capture)")
 
 
 @pytest.mark.gpu

@@ -138,6 +138,44 @@ def test_every_entry_is_actually_gpu_bound(entry: str) -> None:
     from conftest import _cupy_scope
 
     whole, functions = _cupy_scope(str(REPOSITORY_ROOT / entry))
+    if entry == "tests/test_streamed_lifecycle_restart.py":
+        # The lifecycle witness executes five actual CUDA trajectories through
+        # the shared nesting helper. Pin that import and call, and require the
+        # helper itself to remain device-bound; this is not a filename exemption.
+        import ast
+        tree = ast.parse((REPOSITORY_ROOT / entry).read_text(encoding="utf-8"))
+        witness = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                       and node.name == "test_actual_lifecycle_tree_checkpoint_preserves_tiled_trajectory")
+        assert any(isinstance(node, ast.ImportFrom)
+                   and node.module == "test_both_streamed_nesting"
+                   and any(name.name == "trajectory" and name.asname is None
+                           for name in node.names) for node in ast.walk(witness))
+        assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                   and node.func.id == "trajectory" for node in ast.walk(witness))
+        helper_whole, helpers = _cupy_scope(str(REPOSITORY_ROOT / "tests/test_both_streamed_nesting.py"))
+        assert helper_whole or "trajectory" in helpers
+        return
+    if entry == "tests/test_lbc_time_frame.py":
+        # The witness opens CUDA through the production loader. Require the
+        # actual loader call and driver attribute read, not just a gpu marker.
+        import ast
+        tree = ast.parse((REPOSITORY_ROOT / entry).read_text(encoding="utf-8"))
+        witness = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                       and node.name == "test_every_boundary_time_entry_has_a_driver_measured_frame")
+        assert any(isinstance(node, ast.ImportFrom) and node.module == "gpuwm.core.kernels"
+                   and any(name.name == "load_module" and name.asname is None
+                           for name in node.names) for node in ast.walk(witness))
+        assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                   and node.func.id == "load_module" and len(node.args) == 1
+                   and isinstance(node.args[0], ast.Constant)
+                   and node.args[0].value == "lbc_time" for node in ast.walk(witness))
+        assert any(isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute)
+                   and node.value.attr == "attributes" and isinstance(node.slice, ast.Constant)
+                   and node.slice.value == "local_size_bytes" for node in ast.walk(witness))
+        loader = ast.parse((REPOSITORY_ROOT / "gpuwm/core/kernels/__init__.py").read_text(encoding="utf-8"))
+        assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                   and node.func.attr == "RawModule" for node in ast.walk(loader))
+        return
     assert whole or functions, (
         f"{entry} opens no CUDA device by conftest's own detector, so it is "
         "already covered by a CPU leg and does not belong on the GPU shard.  "
@@ -161,6 +199,11 @@ def test_the_dycore_parity_files_the_audit_named_are_all_present() -> None:
         "tests/test_small_step_lateral_wrap.py",
         "tests/test_mapped_mass_closure.py", "tests/test_tke_budget.py",
         "tests/test_tke_km2.py", "tests/test_acoustic.py",
+        "tests/test_sase_cadence_gpu.py", "tests/test_adaptive_stream_gpu.py",
+        "tests/test_rrtm_memory.py", "tests/test_relocation_held_physics_gpu.py",
+        "tests/test_attribute_tracking_gpu.py",
+        "tests/test_model_stability_gpu.py",
+        "tests/test_nssl2_gpu.py",
     }
     missing = sorted(required - set(_entries("shard1")))
     assert not missing, (
@@ -181,7 +224,17 @@ def test_the_wrf_reader_conformance_file_is_on_the_per_cut_shard() -> None:
     assert "tests/test_wrfout_conformance.py" in _entries("shard1")
 
 
-def test_the_weekly_shard_is_the_gf_family() -> None:
+#: The filename prefixes of the cumulus leaf-port families the weekly shard
+#: admits, one per byte-frozen WRF v4.6.1 oracle corpus.  Grell-Freitas was
+#: the founding family; New Tiedtke joined with cu_physics = 16 (d0c23dad0,
+#: 2.6.4), whose 22 stage and pipeline parity suites are the same shape:
+#: device rows graded against a frozen oracle, carrying the mass and almost
+#: none of the defects.  A third family widens the manifest's header first,
+#: then this tuple.
+WEEKLY_SHARD_FAMILIES = ("test_gf_", "test_ntiedtke_")
+
+
+def test_the_weekly_shard_is_the_frozen_cumulus_oracle_families() -> None:
     """Shard 2's membership follows a stated rule, not a mood.
 
     The audit's shard-design finding is that defect density is inverted
@@ -189,12 +242,28 @@ def test_the_weekly_shard_is_the_gf_family() -> None:
     almost none of the defects.  GF cumulus is 376 GPU tests and nine of its
     ten files have never co-moved with a fix, which makes it the right first
     thing to move off the per-cut cadence -- and the wrong thing to delete.
+    The New Tiedtke parity suites are the second family on the same terms.
+
+    tests/test_cumulus_momentum_extension.py is deliberately NOT admitted:
+    it is the coupling contract every cumulus scheme runs through (the
+    inertness gate for the schemes that supply no momentum) rather than an
+    oracle parity suite, so it sits on the per-cut shard.  7391fa8db listed
+    it here beside the Tiedtke family and this rule caught the placement.
     """
 
     shard2 = _entries("shard2")
     assert shard2, "shard 2 is empty"
     for entry in shard2:
-        assert pathlib.PurePosixPath(entry).name.startswith("test_gf_"), (
-            f"{entry} is in the weekly shard but is not part of the GF "
-            "cumulus family, which is the only rule shard 2 currently "
-            "states.  Widen the rule in the file's header, or move the entry")
+        name = pathlib.PurePosixPath(entry).name
+        assert name.startswith(WEEKLY_SHARD_FAMILIES), (
+            f"{entry} is in the weekly shard but is not part of a frozen "
+            f"cumulus oracle family ({', '.join(WEEKLY_SHARD_FAMILIES)}), "
+            "which is the only rule shard 2 currently states.  Widen the "
+            "rule in the file's header and in WEEKLY_SHARD_FAMILIES, or "
+            "move the entry")
+    # Both families are present, so the rule is measured on each rather
+    # than satisfied by whichever one happens to be listed.
+    for prefix in WEEKLY_SHARD_FAMILIES:
+        assert any(pathlib.PurePosixPath(e).name.startswith(prefix)
+                   for e in shard2), prefix
+    assert "tests/test_cumulus_momentum_extension.py" in _entries("shard1")

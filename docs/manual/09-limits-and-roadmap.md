@@ -29,10 +29,13 @@ hunt for them.
   takes 99.8 s against 27.6 s whole-decode, of which 37.5 s is the inventory
   pass alone. An uncompressed multi-message source shows no such cost (RAP, 6
   valid times: 13.34 s against 13.33 s).
-- **No vertical nesting; explicit eta levels only; nz above 128 admitted but
-  unrun** (section 2.2). Sub-km children run their parents' level count, which
-  makes the nested 250 m capability coarse LES at the gray-zone edge (effective
-  dz 96.7 m measured in-PBL on the 49-level tree, section 2.8).
+- **No vertical nesting in a live tree; explicit eta levels only; nz above 128
+  admitted but unrun** (section 2.2). Sub-km children of a RUNNING tree take their
+  parents' level count, which makes the inline nested 250 m capability coarse LES at
+  the gray-zone edge (effective dz 96.7 m measured in-PBL on the 49-level tree,
+  section 2.8). An OFFLINE child escapes this: `gpuwm downscale --child-levels`
+  gives a standalone child its own deeper ladder through a conservative remap, which
+  is the route for LES downscaling off an archived parent (section 2.2).
 - **Two-way feedback is experimental and unmeasured**; it feeds back dynamic
   state only and is stamped in provenance (section 2.4).
 - **A nest relocation invalidates restart claims and prepared caches** (section

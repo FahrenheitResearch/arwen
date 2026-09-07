@@ -489,7 +489,9 @@ def test_the_tree_walk_prices_each_domain_against_what_is_left(monkeypatch):
     seen = []
     resident_claim = 6 * 2**30
 
-    def fake_decide(cfg, options, machine=None):
+    def fake_decide(cfg, options, machine=None, *, allow_resident):
+        # No whole-experiment admission has forced either grid onto tiles.
+        assert allow_resident is True
         seen.append(machine)
         return streaming.StreamingDecision(
             False, "scripted", resident_bytes=resident_claim)
@@ -527,6 +529,16 @@ def test_the_tree_walk_prices_each_domain_against_what_is_left(monkeypatch):
 def test_a_pinned_tiling_walk_records_roads_and_probes_no_card(monkeypatch):
     """The bit-exactness gates pin their tiling; the walk must not detect
     a machine for them, and the roads receipt still lands.
+
+    PROBING NO CARD IS NOT THE SAME AS SPENDING NOTHING, and this test
+    used to assert the second while naming the first.  The walk kept its
+    claim ledger only when some domain consulted the planner, so a pinned
+    tree recorded roads and spent zero -- which handed each domain's bytes
+    to the next one a second time, and left ``TreeDecision.priced`` False
+    so ``gpuwm check`` fell back to the RESIDENT envelope and refused
+    trees whose pinned road fits.  The ledger now runs on every road; the
+    machine is still never detected, which is what the monkeypatch below
+    holds.
     """
     from tilestream import autoplan
 
@@ -538,7 +550,8 @@ def test_a_pinned_tiling_walk_records_roads_and_probes_no_card(monkeypatch):
         classmethod(lambda cls, **k: pytest.fail(
             "a pinned tiling consulted the card")))
 
-    def fake_decide(cfg, options, machine=None):
+    def fake_decide(cfg, options, machine=None, *, allow_resident):
+        assert allow_resident is True
         return streaming.StreamingDecision(False, "scripted")
 
     monkeypatch.setattr(streaming, "decide", fake_decide)
@@ -548,4 +561,8 @@ def test_a_pinned_tiling_walk_records_roads_and_probes_no_card(monkeypatch):
     options = streaming.StreamingOptions(mode="on", tile_nx=12, tile_ny=12)
     streaming.steppers_for_tree(model, options, decisions=decisions)
     assert decisions[1].detail["road"] == "resident"
-    assert decisions[2].detail["budget_spent_before_bytes"] == 0
+    # The ledger carries forward: what d02 is priced against is exactly
+    # what d01 claimed, not zero and not d01's bytes a second time.
+    assert decisions[1].detail["budget_spent_before_bytes"] == 0
+    assert (decisions[2].detail["budget_spent_before_bytes"]
+            == decisions[1].detail["claim_bytes"] > 0)

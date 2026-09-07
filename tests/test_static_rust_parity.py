@@ -89,6 +89,7 @@ class TestLane1GridParity:
     GPUWM_STATIC_PYTHON=1 fallback, keeping this a Rust-vs-numpy
     comparison rather than a self-comparison."""
 
+    @pytest.mark.static_platform_qualification
     def test_mass_latlon_bytes_equal(self, monkeypatch):
         bridge = _bridge_or_fail()
         from gpuwm.static import rust_bridge
@@ -120,6 +121,7 @@ class TestLane1GridParity:
         finally:
             bridge.grid_free(handle)
 
+    @pytest.mark.static_platform_qualification
     def test_nest_transform_roundtrip_bytes_equal(self, monkeypatch):
         bridge = _bridge_or_fail()
         from gpuwm.static import rust_bridge
@@ -170,6 +172,7 @@ class TestLane2BuildParity:
                 "(set GPUWM_STATIC_PARITY_GEOG)")
         return GEOG_ROOT
 
+    @pytest.mark.static_platform_qualification
     def test_build_static_bytes_equal(self, geog_root, monkeypatch):
         bridge = _bridge_or_fail()
         from gpuwm.static import rust_bridge

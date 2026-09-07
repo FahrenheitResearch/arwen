@@ -1,0 +1,18 @@
+name: Build the native forecast tools
+description: Build the four shipped Rust workspaces from their offline dependency closure.
+runs:
+  using: composite
+  steps:
+    - name: use the release Rust toolchain
+      shell: bash
+      run: |
+        rustup toolchain install 1.94.0 --profile minimal
+        echo "RUSTUP_TOOLCHAIN=1.94.0" >> "$GITHUB_ENV"
+        rustup run 1.94.0 rustc --version
+        rustup run 1.94.0 cargo --version
+    - name: build the native tools used by the Python integration tests
+      shell: bash
+      run: |
+        for workspace in tools/grib1_bridge tools/rustwx tools/region_global_dealias tools/rw_wps; do
+          (cd "$workspace" && cargo build --release --locked --offline)
+        done

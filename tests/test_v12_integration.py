@@ -530,6 +530,20 @@ def numpy_pseudo_state(nz=8, ny=16, nx=20, dz=1150.0):
 
     f32 = np.float32
     z_w = np.arange(nz + 1, dtype=np.float64) * dz
+    # The EOS reads the base layer thickness as the exact float32
+    # difference of the stored phb plus this float64-minus-float32
+    # residual, so the double has to carry the residual of ITS OWN
+    # geopotential -- built by the two lines DomainState.
+    # set_base_geopotential uses, off the float64 column above.
+    phb64 = 9.81 * z_w
+    phb32 = phb64.astype(f32)
+    dphb_resid = np.asarray(
+        np.diff(phb64) - np.diff(phb32).astype(np.float64), f32)
+    # c3f is all ones and c4f all zeros here, so both full-level drops are
+    # identically zero; these tests run hypsometric_opt = 1, which never
+    # reads them.
+    c3f64 = np.ones((nz + 1,), np.float64)
+    c4f64 = np.zeros((nz + 1,), np.float64)
     return types.SimpleNamespace(
         thp=np.zeros((nz, ny, nx), f32),
         qv=np.full((nz, ny, nx), 8.0e-3, f32),
@@ -539,14 +553,17 @@ def numpy_pseudo_state(nz=8, ny=16, nx=20, dz=1150.0):
         mub2d=np.full((ny, nx), 90000.0, f32),
         mup=np.zeros((ny, nx), f32),
         thb=np.full((nz,), 300.0, f32),
-        phb=((9.81 * z_w).astype(f32)[:, None, None]
-             * np.ones((1, ny, nx), f32)),
+        phb=(phb32[:, None, None] * np.ones((1, ny, nx), f32)),
+        dphb_resid=(dphb_resid[:, None, None]
+                    * np.ones((1, ny, nx), f32)),
         php=np.zeros((nz + 1, ny, nx), f32),
         alb=np.zeros((nz,), f32),
         rdnw=np.full((nz,), -float(nz), f32),
         c1h=np.ones((nz,), f32), c2h=np.zeros((nz,), f32),
         c3h=np.ones((nz,), f32), c4h=np.zeros((nz,), f32),
         c3f=np.ones((nz + 1,), f32), c4f=np.zeros((nz + 1,), f32),
+        dc3f=np.asarray(c3f64[:-1] - c3f64[1:], f32),
+        dc4f=np.asarray(c4f64[:-1] - c4f64[1:], f32),
         p_top=f32(10000.0),
         p=np.zeros((nz, ny, nx), f32),
         al=np.zeros((nz, ny, nx), f32),

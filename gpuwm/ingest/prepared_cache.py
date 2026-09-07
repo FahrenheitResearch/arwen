@@ -114,9 +114,9 @@ def _json_copy(value):
 
 def prepared_domain_config_identity(domain_config) -> dict[str, object]:
     """JSON-stable domain identity, including an ISO per-domain start."""
-    from dataclasses import asdict
+    from gpuwm.experiment import domain_config_document
 
-    document = asdict(domain_config)
+    document = domain_config_document(domain_config)
     start_time = document.get("start_time")
     if isinstance(start_time, datetime):
         document["start_time"] = start_time.isoformat()
@@ -147,7 +147,14 @@ def prepared_domain_config_identity(domain_config) -> dict[str, object]:
 #: as is any field the header carries and the live configuration
 #: contradicts.  Entries are added here deliberately, one per field, by
 #: whoever adds the field -- never by a rule that tolerates absence in
-#: general.
+#: general.  That instruction was missed four times in a row
+#: (``run.mp28_aerosol_source``, ``run.wif_climatology_path``,
+#: ``run.p3_backend``, ``run.ntiedtke_tiedtke_closure``), each time
+#: refusing every prepared tree written before the field, so the duty
+#: no longer rests on the instruction: tests/test_prepared_cache.py pins
+#: today's ``RunConfig`` against the field set at the identity header's
+#: introduction and fails on any field that is in neither this table nor
+#: :data:`STRICT_IDENTITY_FIELDS`.
 #: v1.8 adds the per-domain ``spawn`` declaration (dormant
 #: spawn-triggered nests, gpuwm/core/nest_spawn.py).  Its not-in-use
 #: value is ``None`` -- an ordinary live domain -- which is exactly the
@@ -198,7 +205,148 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     # A tree that really did carries the value in its header and is
     # still compared strictly.
     "run.p3_backend",
+    # ---------------------------------------------------------------
+    # The 80 other RunConfig fields that joined after the identity
+    # header (1c6290410, 2026-07-19, which bound asdict(DomainConfig)
+    # into every cache) and never joined this table.  Each was measured
+    # against the preparation path (gpuwm/ingest, the six direct
+    # writers, DomainState's allocation) and falls into one of three
+    # arguments, each of which makes "absent" and "default" the same
+    # prepared state.  A non-default live value is still refused by
+    # this table's narrowness; the stronger drop is
+    # PREPARATION_INERT_RUN_FIELDS and needs its own ruling.
+    #
+    # (a) SCHEME-SCOPED: the scheme arrived in the same commit as the
+    # field, so no header lacking the field describes a tree of that
+    # scheme, and gpuwm/config.py refuses a non-default value under
+    # any other scheme.  mp=16 arrived with its two selectors
+    # (ea7dcc296; wdm6_ccn_conc fills the cached CCN field, which only
+    # an mp=16 header, always carrying the field, can hold).  mp=28
+    # arrived with the aerosol pair (0ebda6608); preparation reads it
+    # only on initialize_real's mp=28 arm.
+    "run.wdm6_hail_opt", "run.wdm6_ccn_conc",
+    "run.aer_init_opt", "run.wif_input_opt",
+    # (b) READ BY PREPARATION, DEFAULT IS THE PRE-FIELD BEHAVIOUR:
+    # num_soil_layers (61903f124) defaults to Noah's four layers, the
+    # only count preparation produced before the field; the count is
+    # resolved from sf_surface_physics (config.soil_layer_count) and a
+    # disagreeing value is refused, and the schemes that need another
+    # count were routed after the field (RUC 6153ea505, Noah-MP
+    # ab60dc8ab).
+    "run.num_soil_layers",
+    # (c) NEVER READ BY PREPARATION: each selects tendencies,
+    # diagnostics or output the FORECAST computes, so the prepared
+    # initial state and the boundary tables are the same under every
+    # value (hrrr_hierarchy_direct._DOMAIN_PREPARATION_OVERRIDES
+    # records the same finding for the turbulence rows).
+    # MYNN PBL (e65b3ce31):
+    "run.bl_mynn_closure", "run.bl_mynn_cloudpdf", "run.bl_mynn_mixlength",
+    "run.bl_mynn_edmf", "run.bl_mynn_edmf_mom", "run.bl_mynn_edmf_tke",
+    "run.bl_mynn_mixscalars", "run.bl_mynn_cloudmix", "run.bl_mynn_mixqt",
+    "run.bl_mynn_output", "run.bl_mynn_tkeadvect", "run.icloud_bl",
+    # MM5/MYNN surface layer (76cd7f18b):
+    "run.isftcflx", "run.iz0tlnd",
+    # Noah LSM selectors (9fae17c50):
+    "run.opt_thcnd", "run.rdlai2d", "run.usemonalb",
+    # Noah-MP (ab60dc8ab):
+    "run.dveg", "run.opt_crs", "run.opt_btr", "run.opt_run", "run.opt_sfc",
+    "run.opt_frz", "run.opt_inf", "run.opt_rad", "run.opt_alb",
+    "run.opt_snf", "run.opt_tbot", "run.opt_stc", "run.opt_gla",
+    "run.opt_rsf", "run.opt_soil", "run.opt_pedo", "run.opt_crop",
+    "run.opt_irr", "run.opt_irrm", "run.opt_infdv", "run.opt_tdrn",
+    "run.soiltstep", "run.noahmp_output", "run.noahmp_acc_dt",
+    # RUC (6153ea505); flag_sm_adj is documented as not applied by
+    # ingest/ruc_soil.py, and RUC_OPTION_IDENTITY_EVIDENCE admits only 0:
+    "run.flag_sm_adj", "run.mosaic_lu", "run.mosaic_soil", "run.spp_lsm",
+    # Radiation (61903f124, 986db3bf2, 33694a95b, 8c0211eb0); rdmaxalb
+    # is read at RESTORE by initialize_prepared_physics from the cached
+    # static SNOALB, never at write:
+    "run.wrf_rrtmg_compatibility", "run.ra_rrtmg_variant", "run.o3input",
+    "run.use_mp_re", "run.seaice_albedo_default", "run.rdmaxalb",
+    "run.surface_radiation_policy",
+    # Turbulence and LES (46703df7d, 07f9daea5, 02cfd5301, 33694a95b,
+    # 78c60d6b6):
+    "run.c_k", "run.mix_isotropic", "run.mix_upper_bound",
+    "run.tke_heat_flux", "run.tke_drag_coefficient", "run.tke_upper_bound",
+    "run.tke_budget", "run.isfflx", "run.moist_mix6_off",
+    # SASE (604de61e3, e11e2eee2, 1a0e8a7f8):
+    "run.sase_flux_diag", "run.sase_moist_n2", "run.sase_stable_dissipation",
+    "run.sase_additive_dissipation", "run.hmix_k_diag",
+    "run.km_opt_zero_acknowledgement",
+    # Grell-Freitas (ea0cada3b):
+    "run.clos_choice", "run.ishallow",
+    # NSSL selectors (76d96d550): mp=18 predates them, and DomainState
+    # allocates the mp=18 species tuple and its CCN fill without
+    # consulting them; only the scheme reads them:
+    "run.nssl_2moment_on", "run.nssl_hail_on", "run.nssl_ccn_on",
+    "run.nssl_density_on", "run.nssl_3moment",
+    # Nest-birth policy (10c0e426f); prepared_single_domain_forecast
+    # already carries a COMPATIBLE_LEGACY_DEFAULT override for it with
+    # model_state_or_physics_changed False:
+    "run.nest_microphysics_transition",
+    # The adaptive-timestep surface (gpuwm/core/adaptive_timestep.py,
+    # WRF Registry.EM_COMMON:2269-2281).  TWELVE fields joined RunConfig
+    # at once, and every one is here in the same commit that added them --
+    # this table's history is four separate instances of a field arriving
+    # without its entry and refusing every tree already in the field, so a
+    # block this size arriving unregistered would have been the fifth and
+    # by far the worst.
+    #
+    # Tolerable on the strongest form of the argument, and it is worth
+    # stating precisely because "twelve at once" invites a shrug: with
+    # `use_adaptive_time_step = False` -- the default, and the state every
+    # header written before this block describes -- the controller never
+    # runs, so NONE of the other eleven is read by anything.  They cannot
+    # have influenced a prepared initial state or a boundary table,
+    # because at preparation time no code consulted them at all.  A tree
+    # that really does turn the feature on carries the values in its
+    # header and is compared strictly, as it must be: the cache was
+    # prepared for a different clock.
+    # The FLAG alone stays here.  Its eleven companions moved to
+    # PREPARATION_INERT_RUN_FIELDS, which is the stronger of the two
+    # rulings and the correct one for them: tolerance forgives a field
+    # ABSENT from an older header at its default, and the controller's
+    # targets and clamps have to be forgiven at ANY value, in both
+    # directions, or a cache prepared under one target refuses the run
+    # that needs another.  The flag is not inert -- a bundle prepared
+    # with the feature on describes a tree built for a different clock --
+    # so it keeps the tolerant ruling it was given here.
+    "run.use_adaptive_time_step",
+    # Per-domain vertical ladder.  Tolerable on argument (b), in its
+    # strongest form: the field's default is None, None means "inherit the
+    # ladder the source carries", and inheriting the source's ladder is
+    # exactly and only what preparation did before the field existed -- the
+    # offline child read the parent's ZNW verbatim and the real-input child
+    # read the experiment's one shared eta grid.  So "absent" and "default"
+    # are the same prepared state, by construction rather than by
+    # measurement.
+    #
+    # A tree that really does carry its own ladder is NOT forgiven: it holds
+    # the ladder in its header and this table's narrowness compares it
+    # strictly, which is required -- a prepared initial state and its whole
+    # boundary table set are built ON the ladder, so a cache prepared for a
+    # 49-level child cannot serve a 96-level one.
+    "run.eta_levels",
 })
+
+#: RunConfig fields that joined after the identity header and for which
+#: an older header's silence is a REAL difference: the field shaped the
+#: prepared initial state or the boundary tables from the day it existed,
+#: and its default does not reproduce what preparation did before it, so
+#: a tree written without it holds a different prepared state and must be
+#: refused by name.  ``"run.<field>": one line saying what it changes``.
+#:
+#: Empty today.  Every field measured against the baseline in
+#: tests/test_prepared_cache.py was either never read by preparation,
+#: reads the same at its default as before it existed, or belongs to a
+#: scheme that arrived with it (the three arguments above).  The table
+#: exists so the next field that is none of those has a place to be
+#: declared rather than a place to be forgotten: the guard test refuses a
+#: RunConfig field that is in neither table, and this is the only other
+#: answer it accepts.  A strict entry is not consulted by the comparison
+#: -- absence already refuses -- it is the written reason the refusal is
+#: right.
+STRICT_IDENTITY_FIELDS: Mapping[str, str] = MappingProxyType({})
 
 
 def _run_config_defaults(*names: str) -> dict[str, object]:
@@ -228,7 +376,10 @@ def _run_config_defaults(*names: str) -> dict[str, object]:
             raise ValueError(
                 f"RunConfig.{name} has no default, so 'absent means "
                 f"default' is not a statement that can be made about it.")
-        out[f"run.{name}"] = field.default
+        # The identity document is a JSON copy (tuples arrive as lists),
+        # so the default is compared in that spelling or a tuple-valued
+        # field could never match its own default.
+        out[f"run.{name}"] = _json_copy(field.default)
     return out
 
 
@@ -258,11 +409,14 @@ def undelayed_identity_defaults(experiment) -> dict[str, object]:
             "retire": None, "rearm": None, "follow": None,
             # READ FROM THE DATACLASS, not restated: two
             # hand-maintained copies of one default is the failure
-            # this package has paid for repeatedly.
-            **_run_config_defaults("mp28_aerosol_source",
-                                   "wif_climatology_path",
-                                   "ntiedtke_tiedtke_closure",
-                                   "p3_backend")}
+            # this package has paid for repeatedly.  The NAMES come
+            # from the table too: a run.* entry listed there but not
+            # here would be dead, because the walk tolerates only a
+            # path it finds in this map.
+            **_run_config_defaults(*sorted(
+                path[len("run."):]
+                for path in DEFAULT_TOLERANT_IDENTITY_FIELDS
+                if path.startswith("run.")))}
 
 
 #: Identity fields that describe when the run WRITES, not what it
@@ -301,6 +455,11 @@ def undelayed_identity_defaults(experiment) -> dict[str, object]:
 #: the three changes ``--restart`` publishes as permitted -- was refused
 #: naming a field that says nothing about the prepared state.
 NON_TRAJECTORY_IDENTITY_FIELDS = frozenset({
+    # Tile layout/budgets choose the forecast execution road. Preparation
+    # never reads them or changes meteorological arrays for them; the raw
+    # document still records them, just as restart identity retains its
+    # existing resident/streamed equivalence contract.
+    "tiles",
     "run.run_seconds",
     "run.output_interval_s",
     "run.restart_interval_s",
@@ -339,6 +498,32 @@ PREPARATION_INERT_RUN_FIELDS = frozenset({
     "run.inflow_perturbation_seed",
     "run.inflow_perturbation_amplitude_scale",
     "run.inflow_perturbation_faces",
+    # THE ADAPTIVE CONTROLLER'S TARGETS AND CLAMPS, on the same argument
+    # one step stronger than the tolerant table could carry.  Tolerance
+    # forgives a field absent from an older header AT ITS DEFAULT; these
+    # have to be forgiven at any value and in both directions, because
+    # the cache prepared under one target is byte-for-byte the cache
+    # prepared under another.  Measured the other way: comparing them
+    # here refused a cache that described exactly the state the live
+    # configuration needed, so a run that died of its own controller
+    # setting could not be re-prepared with the setting that would have
+    # saved it.
+    #
+    # THE STANDING CHECK, if a field is proposed for this set: grep the
+    # preparation path for a reader.  The only prepare-side module that
+    # names target_cfl or min_time_step is this identity check itself.
+    # If preparation reads it, it belongs in the identity instead.
+    #
+    # `use_adaptive_time_step` is deliberately NOT here.  It selects
+    # which clock the tree was prepared for, it stays in the tolerant
+    # table above, and the restart walk still refuses a resume that
+    # flips it, because the carried controller state means nothing under
+    # a fixed clock.
+    "run.step_to_output_time", "run.adaptation_domain",
+    "run.target_cfl", "run.target_hcfl", "run.max_step_increase_pct",
+    "run.starting_time_step", "run.starting_time_step_den",
+    "run.max_time_step", "run.max_time_step_den",
+    "run.min_time_step", "run.min_time_step_den",
 })
 
 
@@ -439,6 +624,14 @@ CONDITIONAL_PREPARATION_RECEIPTS = (
     "deep_soil_repair",
 )
 
+#: Full soil-operation receipt inventory for layouts that bind the texture
+#: treatment into BOTH cache user metadata and proof. Portable adapters that
+#: keep texture treatment in the proof alone retain the conditional tuple.
+SOIL_PREPARATION_RECEIPTS = (
+    *CONDITIONAL_PREPARATION_RECEIPTS,
+    "soil_texture_downscale",
+)
+
 
 def cache_writer_version(header) -> str:
     """The gpuwm that wrote this cache header, or an honest unknown."""
@@ -479,6 +672,15 @@ def compare_prepared_domain_config(cached, live, *, not_in_use=None
     def walk(cached_node, live_node, prefix: str) -> None:
         for key in sorted(set(cached_node) | set(live_node)):
             path = f"{prefix}{key}"
+            if path in PREPARATION_INERT_RUN_FIELDS:
+                # Not tolerance, and not a widening of it: preparation
+                # reads none of these, so a cache written under one value
+                # is byte-identical to one written under another and the
+                # comparison has nothing to say about them.
+                # `effective_prepared_domain_config` already drops them
+                # for callers that normalise first; this covers the ones
+                # that hand the walk a raw header.
+                continue
             if key not in cached_node:
                 if (path in DEFAULT_TOLERANT_IDENTITY_FIELDS
                         and path in not_in_use
@@ -538,16 +740,44 @@ def prepared_identity_refusal(*, subject: str, header, differing,
 
     from gpuwm import __version__
 
-    fields = ", ".join(sorted(differing)) or "(none named)"
-    sentence = (
-        f"{subject} was prepared by {cache_writer_version(header)} and "
-        f"this is gpuwm {__version__}; these identity fields differ: "
-        f"{fields}")
+    named = sorted(differing)
+    fields = ", ".join(named) or "(none named)"
+    writer = cache_writer_version(header)
+    if str(writer) == str(__version__):
+        # SAME VERSION ON BOTH SIDES.  Naming it twice read as a version
+        # mismatch that was not one, and sent the reader looking for a
+        # package upgrade that had not happened: measured on a resume
+        # that had only turned the adaptive clock on.  When the versions
+        # agree, the difference can only be the configuration, and the
+        # sentence says that instead of implying the opposite.
+        sentence = (
+            f"{subject} was prepared by this same gpuwm {__version__}, so "
+            f"the difference is a configuration change rather than a "
+            f"package upgrade; these identity fields differ: {fields}")
+    else:
+        sentence = (
+            f"{subject} was prepared by {writer} and "
+            f"this is gpuwm {__version__}; these identity fields differ: "
+            f"{fields}")
+    # THE CLOCK IS NOT A RUNTIME SWITCH, and this is the gate that
+    # actually answers when someone tries to use it as one -- the
+    # restart-level refusal never gets the chance, because the cache
+    # identity is compared first on every route.  A tree is prepared
+    # around the configured step: its alarms and its nest step ratios are
+    # built from it, so turning the adaptive clock on or off asks for a
+    # different tree, not a different setting.  Saying so here is the
+    # difference between a two-minute re-prepare and a hunt for a version
+    # that was never wrong.
+    clock = ""
+    if "run.use_adaptive_time_step" in named:
+        clock = ("  Turning use_adaptive_time_step on or off is what was "
+                 "refused: a prepared tree is built around the configured "
+                 "step, so an adaptive run needs its own prepared tree.")
     if re_prepare:
-        return f"{sentence}.  Re-prepare it with: {re_prepare}"
-    return (f"{sentence}.  If that difference is a package upgrade rather "
-            f"than a configuration change, re-prepare the bundle with the "
-            f"front door that wrote it.")
+        return f"{sentence}.{clock}  Re-prepare it with: {re_prepare}"
+    return (f"{sentence}.{clock}  If that difference is a package upgrade "
+            f"rather than a configuration change, re-prepare the bundle "
+            f"with the front door that wrote it.")
 
 
 def _host(value) -> np.ndarray:
@@ -601,7 +831,18 @@ def select_prepared_met_fields(met, *, surface=None):
             _host(met.fields[name]), copy=True, order="C", subok=False)
         for name in names
     }
-    return SimpleNamespace(fields=MappingProxyType(selected))
+    # Surface assembly is carried beside fields on HorizontalSnapshot. The
+    # native preparation path solves Noah only after this detachment, so
+    # dropping that completed field silently restores the raw skin fallback.
+    water = {}
+    for name in ("water_temperature", "water_temperature_source"):
+        value = getattr(met, name, None)
+        water[name] = (None if value is None else
+                       np.array(_host(value), copy=True, order="C", subok=False))
+    receipt = getattr(met, "water_temperature_receipt", None)
+    water["water_temperature_receipt"] = (
+        None if receipt is None else _json_copy(dict(receipt)))
+    return SimpleNamespace(fields=MappingProxyType(selected), **water)
 
 
 class _BundleWriter:
@@ -1027,6 +1268,10 @@ def write_prepared_cache(path, *, identity, initial_result, met,
                         prefix = f"lbc/{index}/{name}/{side_name}"
                         writer.add(f"{prefix}/value", side.value)
                         writer.add(f"{prefix}/tendency", side.tendency)
+                        if side.time_law is not None:
+                            for coefficient in ("quadratic", "denominator_rate"):
+                                writer.add(f"{prefix}/rational_time_v1/{coefficient}",
+                                           getattr(side.time_law, coefficient))
             lbc_metadata = {
                 "spec_bdy_width": int(boundaries.spec_bdy_width),
                 "spec_zone": int(boundaries.spec_zone),
@@ -1117,6 +1362,20 @@ def write_prepared_cache(path, *, identity, initial_result, met,
     }
 
 
+def _reader_boundary_side(reader, prefix):
+    from gpuwm.ingest.lateral_bc import RationalTimeLaw, SideBoundary
+    keys = tuple(f"{prefix}/rational_time_v1/{name}"
+                 for name in ("quadratic", "denominator_rate"))
+    present = tuple(key in reader.arrays for key in keys)
+    if any(present) and not all(present):
+        raise PreparedCacheCorruptError(
+            f"prepared cache {prefix} has an incomplete rational time law")
+    law = (RationalTimeLaw(*(reader.read_array(key) for key in keys))
+           if all(present) else None)
+    return SideBoundary(reader.read_array(f"{prefix}/value"),
+                        reader.read_array(f"{prefix}/tendency"), law)
+
+
 def _reader_boundaries(reader: PreparedCacheReader):
     from gpuwm.ingest.lateral_bc import (
         BoundaryInterval, FieldBoundary, LateralBoundaries, SideBoundary,
@@ -1139,9 +1398,7 @@ def _reader_boundaries(reader: PreparedCacheReader):
             sides = {}
             for side_name in ("west", "east", "south", "north"):
                 prefix = f"lbc/{index}/{name}/{side_name}"
-                sides[side_name] = SideBoundary(
-                    reader.read_array(f"{prefix}/value"),
-                    reader.read_array(f"{prefix}/tendency"))
+                sides[side_name] = _reader_boundary_side(reader, prefix)
             fields[name] = FieldBoundary(**sides)
         intervals.append(BoundaryInterval(
             float(row["start_seconds"]), float(row["end_seconds"]), fields))
@@ -1680,9 +1937,7 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
                 sides = {}
                 for side_name in ("west", "east", "south", "north"):
                     prefix = f"lbc/{index}/{name}/{side_name}"
-                    sides[side_name] = SideBoundary(
-                        reader.read_array(f"{prefix}/value"),
-                        reader.read_array(f"{prefix}/tendency"))
+                    sides[side_name] = _reader_boundary_side(reader, prefix)
                 field_map[name] = FieldBoundary(**sides)
             intervals.append(BoundaryInterval(
                 float(interval_meta["start_seconds"]),
@@ -1749,7 +2004,8 @@ __all__ = [
     "PREPARED_CACHE_SCHEMA",
     "PreparedCacheCorruptError", "PreparedCacheMismatchError",
     "PreparedCacheReader", "RestoredPreparedCache",
-    "SEALED_PREPARED_EXTENSION_MODE", "UNSTAMPED_WRITER",
+    "SEALED_PREPARED_EXTENSION_MODE", "STRICT_IDENTITY_FIELDS",
+    "UNSTAMPED_WRITER",
     "cache_writer_version", "compare_prepared_domain_config",
     "compare_prepared_identity", "effective_prepared_domain_config",
     "prepared_cache_identity",

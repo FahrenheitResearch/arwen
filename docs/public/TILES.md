@@ -59,6 +59,15 @@ A surface that is off must be empty: `mode = "off"` with a `tile_nx` set is a
 refusal, not a hint, so a run cannot start streaming because a block was
 inherited and a mode was flipped somewhere else.
 
+A surface that is `auto` must be empty of them too, for the mirror reason:
+`auto`'s answer *is* the planner's, so `tile_nx`, `tile_ny`, `nbuffers` and
+`halo` beside it would be silently ignored — a configured `nbuffers = 2` has
+been measured planning 3 — and a pinned `tile_nx` additionally makes `auto`
+stream a domain that fits, which is the one thing `auto` promises not to do.
+That combination is a refusal naming the key. To pin a tiling, say
+`mode = "on"`; to hold `auto` to a smaller plan, cap what it may spend with
+`vram_budget_bytes`, which is the key that actually binds under `auto`.
+
 `halo` is also accepted and **no forecast may set it**.  It is
 `10 + 3*time_step_sound//2` and nothing else; a smaller one is silently wrong
 *and faster*, which is how that defect hides.  Setting it warns.
@@ -129,16 +138,13 @@ refuted — predicted 91% and 7.3×, measured 52.6% and 4.21×.
 `tilestream/NO-DRY-NUMBERS.md` lists the specific values that may not be
 quoted and why, and it governs this page.
 
-## One end of a coupling edge streams, never both
+## Streaming nested domains
 
-Nested domains CAN stream, each through its own road: a streamed parent
-can drive a resident child (the footprint corridor,
-`tilestream/test_nest_executor.py`), and a resident parent can drive a
-tile-streamed child (the frame corridor and per-tile rolling-table
-windows, `tilestream/test_streamed_child.py`).  Both roads are gated
-bit-identical to the all-resident tree.  What no gate has driven is a
-coupling edge with BOTH ends streamed -- that composition is refused, not
-run.
+A parent, child, or both may stream. The parent footprint corridor supplies
+live forcing; the child frame corridor and per-tile rolling table windows
+consume it. The composed CUDA control in `tests/test_both_streamed_nesting.py`
+compares all retained carriers and physics cadence against the resident tree,
+including two-way feedback.
 
 ### Saying which end streams: `[tiles]` is per domain
 
@@ -177,15 +183,13 @@ A per-domain road contributes nothing to the restart identity, on the same
 law as the tree-wide one: a domain that streamed must be able to resume
 resident, and one that outgrew its card must be able to resume streamed.
 
-### What is refused is the EDGE, not the tree
+### Shared budgets and moving domains
 
-`mode = "on"` with nothing said per domain streams every grid, so on a tree
-it puts both ends of every coupling edge on the streamed road — the one
-composition no gate has driven.  That is **refused when the config is read**,
-before anything is fetched or prepared, and the refusal names the edges by
-both ends and the three ways out: say which end streams with a per-domain
-table, set `mode = "auto"`, or delete `[tiles]` and run resident.  A tree
-that merely *contains* a streamed domain is not refused and never was.
+`mode = "on"` streams every domain that does not override the tree-wide
+setting. Both endpoints may stream, subject to the same shared device and
+host memory accounting. A moving streamed child still requires an
+unimplemented store, tile-plan, geography and boundary-table rebuild; keep
+that moving child resident until that operation is implemented.
 
 `mode = "auto"` on a tree is accepted and prices each domain against one
 budget.  It is a **joint** decision, not a first-come one: before a streamed
@@ -196,9 +200,8 @@ coupling corridor.  Without that reservation the parent's tile search took
 the largest window that fit (measured: 3.98 of 4.00 GiB, 99.5%) and the child
 then met "no tile fits in 0.02 GiB".  The reservation constrains the **tile**
 and never the stream-or-resident **verdict**, so an all-resident tree decides
-all-resident exactly as before.  If the arithmetic ever decides both ends of
-an edge should stream, the walk refuses at decision time, before anything is
-built.
+all-resident exactly as before. Both-streamed decisions retain the same
+per-domain and coupling-corridor reservations.
 
 The run receipt's `tiles` block records every grid's decision, its road, its
 claim, and — where a reservation was taken — `reserved_bytes` and
@@ -210,7 +213,7 @@ distinguishable from a run that never asked.
 | door | how the table gets there | `[tiles]` |
 |------|--------------------------|-----------|
 | `gpuwm run CONFIG.toml` | the `[tiles]` table written in `CONFIG.toml` beside its `[case_data]` table.  There is no `--case-data` flag and no `--tiles` flag on this door: the config IS the argument. | streams.  The single-domain arm builds through `standalone_domain_builder`; the tree arm builds the whole mapping through `builders_for_tree`, honouring the per-domain tables. |
-| `gpuwm go CONFIG.toml` | the `[tiles]` table written in `CONFIG.toml`.  The authority stage carries it into the hash-bound `experiment.toml` byte for byte, and the forecast stage reads it there -- no flag, no relay. | streams (the forecast stage is one of the two runners below).  The routing is said before any stage runs: the plan records it, the banner and `--dry-run` print it, and the memory gate prices the streamed envelope -- tile buffers, the measured RRTMGP per-call transient on top of them, and the pinned host store -- before the download.  A tree whose coupling edge has both ends streamed is refused at planning, before the fetch. |
+| `gpuwm go CONFIG.toml` | the `[tiles]` table written in `CONFIG.toml`.  The authority stage carries it into the hash-bound `experiment.toml` byte for byte, and the forecast stage reads it there -- no flag, no relay. | streams (the forecast stage is one of the two runners below).  The routing is said before any stage runs: the plan records it, the banner and `--dry-run` print it, and the memory gate prices the streamed envelope -- tile buffers, the measured RRTMGP per-call transient on top of them, and the pinned host store -- before the download.  All selected domains and coupling corridors share the same memory budget. |
 | `gpuwm-prepared-forecast` (`python -m gpuwm.prepared_single_domain_forecast`) | the hash-bound experiment's own `[tiles]` table (the `gpuwm go` route), or `--tiles JSON` -- the same keys as the table, as a JSON object, validated by the same `StreamingOptions.from_mapping`.  The flag exists for the native HRRR chain, whose preparer-published authority is rendered from tables built in code and cannot carry a user's `[tiles]`; supplied beside a declared table, the flag is the later statement and replaces it, out loud. | streams (`builders_for_tree`). |
 | `gpuwm-prepared-tree-forecast` (`python -m gpuwm.prepared_domain_tree_forecast`) | the hash-bound experiment's own `[tiles]` table. | streams (`builders_for_tree`). |
 | `gpuwm run-plan PLAN.json` | the plan's `config`, inline or by path. | relays whichever of the above the chain dispatches to; the `experiment` chain resolves as `tiles_delivery: tree`. |

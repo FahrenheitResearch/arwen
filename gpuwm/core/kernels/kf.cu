@@ -1240,9 +1240,15 @@ void kf_column(
     }
     // PPTFLX is assigned only when the mass flux is rescaled (WRF 2262).
     // A NOITR AINC revert intentionally keeps the pre-revert flux.
+    // WRF 2571-2573: the shallow arm RE-SETS TIMEC to exactly 2400 here,
+    // discarding the FLOAT(NINT(TIMEC/DT))*DT rounding of :1600.  Every
+    // feedback tendency from :2603 to :2640 then divides by the un-rounded
+    // value, while the closure and advection arithmetic above, TIMEC_KF
+    // (:2387) and the TADVEC comparison (:2569) all keep the rounded one.
+    float tendency_timec = shallow ? 2400.0f : timec;
     for (int nk=0; nk<=cloud_top; ++nk) {
         int index = nk*ncol+column;
-        rqvcuten[index] = (qg[nk]-qenv[nk])/timec;
+        rqvcuten[index] = (qg[nk]-qenv[nk])/tendency_timec;
     }
     // WRF 2311-2382: preserve QL/QI/QR/QS independently.  These arrays are
     // dead after the closure calculation and are intentionally reused here
@@ -1315,31 +1321,32 @@ void kf_column(
         float cpm = 1004.5f*(1.0f+0.887f*qg[nk]);
         if (phase_mode == KF_PHASE_WARM_RAIN) {
             tg[nk] -= (parcel_q[nk]+thetaeu[nk])*KF_RLF/cpm;
-            rqccuten[index] = (parcel_t[nk]+parcel_q[nk])/timec;
+            rqccuten[index] = (parcel_t[nk]+parcel_q[nk])/tendency_timec;
             rqicuten[index] = 0.0f;
-            rqrcuten[index] = (resolved_precip[nk]+thetaeu[nk])/timec;
+            rqrcuten[index] = (resolved_precip[nk]+thetaeu[nk])/tendency_timec;
             rqscuten[index] = 0.0f;
         } else if (phase_mode == KF_PHASE_NO_SEPARATE_SNOW) {
             if (nk <= melting_level)
                 tg[nk] -= (parcel_q[nk]+thetaeu[nk])*KF_RLF/cpm;
             else
                 tg[nk] += (parcel_t[nk]+resolved_precip[nk])*KF_RLF/cpm;
-            rqccuten[index] = (parcel_t[nk]+parcel_q[nk])/timec;
+            rqccuten[index] = (parcel_t[nk]+parcel_q[nk])/tendency_timec;
             rqicuten[index] = 0.0f;
-            rqrcuten[index] = (resolved_precip[nk]+thetaeu[nk])/timec;
+            rqrcuten[index] = (resolved_precip[nk]+thetaeu[nk])/tendency_timec;
             rqscuten[index] = 0.0f;
         } else if (phase_mode == KF_PHASE_SEPARATE_SNOW) {
-            rqccuten[index] = parcel_t[nk]/timec;
+            rqccuten[index] = parcel_t[nk]/tendency_timec;
             rqicuten[index] = 0.0f;
-            rqrcuten[index] = resolved_precip[nk]/timec;
-            rqscuten[index] = (thetaeu[nk]+parcel_q[nk])/timec;
+            rqrcuten[index] = resolved_precip[nk]/tendency_timec;
+            rqscuten[index] = (thetaeu[nk]+parcel_q[nk])/tendency_timec;
         } else {
-            rqccuten[index] = parcel_t[nk]/timec;
-            rqicuten[index] = parcel_q[nk]/timec;
-            rqrcuten[index] = resolved_precip[nk]/timec;
-            rqscuten[index] = thetaeu[nk]/timec;
+            rqccuten[index] = parcel_t[nk]/tendency_timec;
+            rqicuten[index] = parcel_q[nk]/tendency_timec;
+            rqrcuten[index] = resolved_precip[nk]/tendency_timec;
+            rqscuten[index] = thetaeu[nk]/tendency_timec;
         }
-        rthcuten[index] = (tg[nk]-temperature[index])/(exner[index]*timec);
+        rthcuten[index] = (tg[nk]-temperature[index])
+                          /(exner[index]*tendency_timec);
     }
 
     for (int k = 0; k < nz; ++k) {

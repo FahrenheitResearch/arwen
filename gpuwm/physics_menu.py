@@ -20,10 +20,8 @@ The rules evaluated here are the ones that refuse elsewhere, called
 through their own functions:
 
 * :func:`gpuwm.physics_compat.profile_route_blocker` -- the emission
-  route's physics gate (``gpuwm.hrrr_route_inputs.REQUIRED_PHYSICS``,
-  ``ADMITTED_PBL_PHYSICS``, ``ADMITTED_RADIATION_PAIRS``,
-  ``SUPPORTED_MICROPHYSICS``) plus the registry's land-surface offer
-  declaration (:func:`gpuwm.physics_compat.land_surface_route_blocker`);
+  route's actual input-species requirements; source/template evidence membership
+  does not restrict otherwise valid land-surface choices;
 * the nocturnal-validity class, which is the same predicate
   :func:`gpuwm.domain_wizard.declared_nocturnal_night` and
   :func:`gpuwm.physics_compat.nocturnal_radiation_refusal` test:
@@ -167,7 +165,6 @@ def profile_route_blocker(profile, source) -> str | None:
     """
 
     from gpuwm.physics_compat import (
-        land_surface_component_for_selector, land_surface_route_blocker,
         single_domain_runtime_switches,
     )
 
@@ -177,12 +174,6 @@ def profile_route_blocker(profile, source) -> str | None:
         switches = single_domain_runtime_switches(profile)
     except (KeyError, ValueError):
         return None
-    named = land_surface_component_for_selector(
-        switches.get("sf_surface_physics"))
-    if named is not None:
-        blocker = land_surface_route_blocker(named, source=str(source))
-        if blocker is not None:
-            return blocker
     emission_gate = _route_emission_physics_gates().get(str(source))
     if emission_gate is None:
         return None
@@ -380,32 +371,18 @@ def admissible_profiles(source: str) -> tuple[str, ...]:
                  if profile_route_blocker(profile, source) is None)
 
 
+def _recommended_profile(source):
+    from gpuwm.source_adapters import source_adapters
+    return next((adapter.default_physics_profile for adapter in source_adapters()
+                 if adapter.source_id == source), None)
+
+
 def default_profile_for(source: str) -> str | None:
-    """The suite a bare run on ``source`` binds, DERIVED.
+    """Prefer source metadata, then the global default, among executable suites.
 
-    The door's declared default (:data:`gpuwm.domain_wizard
-    .DEFAULT_PHYSICS_PROFILE`) wins whenever THIS source's route admits
-    it and it runs both radiation streams -- an owner directive from
-    2026-08-06, after a shipped 48 h case, is that no door defaults to a
-    longwave-off suite.  When the route refuses it, the next suite in
-    the door's listed order that satisfies both conditions takes over.
-    That is the whole derivation, and it reproduces every default this
-    product shipped before the derivation existed
-    (``tests/test_physics_menu.py`` binds the native HRRR route's answer
-    to ``hrrr_route_inputs.ROUTE_DEFAULT_PHYSICS_PROFILE``) while giving
-    a source registered tomorrow a working one with no edit here.
-
-    ``None`` is a real answer, not a failure: the door's default may be
-    declared ``None``, which means the unshipped product default suite
-    (``DEFAULT_SUITE_PHYSICS``) rather than any registered profile.
-    That seam is what reaches the chain's unnamed-suite branch, and
-    ``tests/test_go_chain.py`` holds it.
-
-    Falls back to the first admissible suite when every admissible suite
-    is daytime-only, and to the door's declared default when nothing is
-    admissible at all -- the second case is a source whose route refuses
-    the entire shipped list, which the emission refusal then names
-    switch by switch rather than this function inventing a way around.
+    The recommendation is independent of capability: allowing another suite
+    cannot silently change the default. A global None retains the explicit
+    unnamed-suite path; sources without a recommendation use the shared order.
     """
 
     from gpuwm.domain_wizard import DEFAULT_PHYSICS_PROFILE
@@ -413,7 +390,10 @@ def default_profile_for(source: str) -> str | None:
     declared = DEFAULT_PHYSICS_PROFILE
     if declared is None:
         return None
+    preferred = _recommended_profile(source) or declared
     admissible = admissible_profiles(source)
+    if preferred in admissible and not day_only(preferred):
+        return preferred
     if declared in admissible and not day_only(declared):
         return declared
     for profile in admissible:
@@ -427,6 +407,9 @@ def default_profile_for(source: str) -> str | None:
 def default_basis(source: str) -> str:
     """Why that suite is this source's default, in one sentence."""
 
+    recommendation = _recommended_profile(source)
+    if recommendation is not None and default_profile_for(source) == recommendation:
+        return "the source's declared recommendation; other implemented suites remain selectable"
     admissible = admissible_profiles(source)
     nocturnal = [profile for profile in admissible if not day_only(profile)]
     if nocturnal:
@@ -458,11 +441,12 @@ def nocturnal_remedy(source: str) -> dict[str, Any]:
     and it also survives a later change of default.
     """
 
-    profile = None
-    for candidate in admissible_profiles(source):
-        if not day_only(candidate):
-            profile = candidate
-            break
+    default = default_profile_for(source)
+    profile = (default if default is not None
+               and default in admissible_profiles(source) and not day_only(default) else None)
+    if profile is None:
+        profile = next((candidate for candidate in admissible_profiles(source)
+                        if not day_only(candidate)), None)
     if profile is None:
         return {
             "profile_id": None,
@@ -527,11 +511,7 @@ def admissibility_rules() -> list[dict[str, Any]]:
     here is read from the module that enforces it.
     """
 
-    from gpuwm.hrrr_route_inputs import (
-        ADMITTED_PBL_PHYSICS, ADMITTED_RADIATION_PAIRS, REQUIRED_PHYSICS,
-        SUPPORTED_MICROPHYSICS)
-    from gpuwm.physics_compat import (ASYMMETRIC_RADIATION_NOCTURNAL_ACK,
-                                      _ROUTE_FOR_SOURCE)
+    from gpuwm.physics_compat import ASYMMETRIC_RADIATION_NOCTURNAL_ACK
 
     return [
         {
@@ -539,20 +519,9 @@ def admissibility_rules() -> list[dict[str, Any]]:
             "owner": "gpuwm.hrrr_route_inputs.route_physics_blocker",
             "applies_to": sorted(_route_emission_physics_gates()),
             "declares": {
-                "required_physics": dict(REQUIRED_PHYSICS),
-                "admitted_pbl_physics": sorted(ADMITTED_PBL_PHYSICS),
-                "admitted_radiation_pairs": sorted(
-                    list(pair) for pair in ADMITTED_RADIATION_PAIRS),
-                "supported_microphysics": sorted(SUPPORTED_MICROPHYSICS),
-            },
-        },
-        {
-            "rule": "land-surface-offer",
-            "owner": "gpuwm.physics_compat.land_surface_route_blocker",
-            "applies_to": sorted(_ROUTE_FOR_SOURCE),
-            "declares": {
-                "source_of_truth": "gpuwm/physics_registry_v2.json"
-                                   "#/runner_routes",
+                "required_input": "active scheme prognostic boundary species",
+                "configuration_authority": "gpuwm.config.validate_run_config",
+                "profile_membership_required": False,
             },
         },
         {

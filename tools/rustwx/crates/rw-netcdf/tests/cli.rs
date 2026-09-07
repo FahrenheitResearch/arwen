@@ -276,3 +276,61 @@ fn dump_no_mask_scales_the_surviving_sentinels() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+
+#[test]
+fn character_records_match_independent_c_library_fixtures() {
+    for filename in ["times.nc1", "times.nc2", "times.nc5", "times.nc4"] {
+        let dir = scratch(filename);
+        let output = run(&["dump", &fixture(filename), dir.to_str().unwrap(), "Times"]);
+        assert!(output.status.success(), "{}: {}", filename, stderr(&output));
+        let mut expected = b"2021-12-30_17:00:002021-12-30_18:00:00a b\0c".to_vec();
+        expected.resize(57, 0);
+        assert_eq!(std::fs::read(dir.join("0000.chars")).unwrap(), expected);
+        let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("metadata.json")).unwrap()).unwrap();
+        assert_eq!(metadata["variables"][0]["shape"], serde_json::json!([3, 19]));
+        assert_eq!(metadata["variables"][0]["dtype"], "|S1");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+
+#[test]
+fn explicit_units_follow_cf_unpacking_and_preserve_default_bytes() {
+    let dir = scratch("units");
+    let input = dir.join("packed.nc");
+    write_packed_classic(&input);
+    let normal = dir.join("normal");
+    let identity = dir.join("identity");
+    let converted = dir.join("converted");
+    for (out, flags) in [(&normal, vec![]), (&identity, vec!["--unit-scale=1", "--unit-offset=0"]),
+                         (&converted, vec!["--unit-scale=100", "--unit-offset=-5"])] {
+        let mut args = vec!["dump"];
+        args.extend(flags);
+        args.extend([input.to_str().unwrap(), out.to_str().unwrap(), "packed"]);
+        let output = run(&args);
+        assert!(output.status.success(), "{}", stderr(&output));
+    }
+    assert_eq!(std::fs::read(normal.join("0000.f64")).unwrap(),
+               std::fs::read(identity.join("0000.f64")).unwrap());
+    assert_eq!(std::fs::read(normal.join("metadata.json")).unwrap(),
+               std::fs::read(identity.join("metadata.json")).unwrap());
+    let data = read_f64_plane(&converted.join("0000.f64"));
+    assert!(data[0].is_nan() && data[1].is_nan());
+    assert_eq!(&data[2..], &[10195.0, 10295.0]);
+    let metadata: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(converted.join("metadata.json")).unwrap()).unwrap();
+    assert_eq!(metadata["variables"][0]["unit_transform"], serde_json::json!([100.0, -5.0]));
+}
+
+#[test]
+fn invalid_or_overflowing_unit_transforms_are_refused() {
+    let dir = scratch("invalid-units");
+    let input = dir.join("packed.nc");
+    write_packed_classic(&input);
+    for flag in ["--unit-scale=nan", "--unit-scale=0", "--unit-offset=inf", "--unit-scale=oops", "--unit-scale=1e308"] {
+        let output = run(&["dump", flag, input.to_str().unwrap(), dir.to_str().unwrap(), "packed"]);
+        assert_eq!(output.status.code(), Some(2), "{flag}");
+        assert!(stderr(&output).contains("unit"), "{}", stderr(&output));
+    }
+}

@@ -83,7 +83,8 @@ def _hrrr_experiment(*, run_seconds: float = 7200.0,
     return tables, _experiment(vertical, **kwargs)
 
 
-def _write_prepared_cache(cache: Path, identity, forcing_hours, exp) -> dict:
+def _write_prepared_cache(cache: Path, identity, forcing_hours, exp,
+                          *, user_receipts=None) -> dict:
     """A minimal cache with the header shape the reader verifies.
 
     Written by hand rather than by ``write_prepared_cache`` because the
@@ -127,6 +128,7 @@ def _write_prepared_cache(cache: Path, identity, forcing_hours, exp) -> dict:
         },
         "setup_fingerprint": "test",
     }
+    metadata["user"].update(user_receipts or {})
     basis = {"schema": PREPARED_CACHE_SCHEMA, "identity": identity,
              "metadata": metadata, "arrays": arrays, "payload_bytes": 4}
     header = {**basis, "status": "READY",
@@ -153,7 +155,9 @@ def _hrrr_bundle(tmp_path: Path, *, run_seconds: float = 7200.0,
                  physics_profile: str | None = PROFILE,
                  forcing_hours=(0, 1, 2),
                  rendered_wps: bool = False,
-                 publish_cycle: datetime | None = None) -> _Bundle:
+                 publish_cycle: datetime | None = None,
+                 scientific_identity: dict | None = None,
+                 user_receipts: dict | None = None) -> _Bundle:
     tables, exp = _hrrr_experiment(
         run_seconds=run_seconds,
         history_interval_seconds=history_interval_seconds)
@@ -193,6 +197,7 @@ def _hrrr_bundle(tmp_path: Path, *, run_seconds: float = 7200.0,
         "source_forecast_hours": list(SOURCE_HOURS),
         "model_forcing_hours": list(forcing_hours),
     }
+    source_identity.update(scientific_identity or {})
     identity = prepared_cache_identity(
         bridge_manifest_sha256=_sha256(bridge),
         source_manifest_sha256=_sha256(source_manifest),
@@ -201,7 +206,8 @@ def _hrrr_bundle(tmp_path: Path, *, run_seconds: float = 7200.0,
         domain_config=exp.root, forcing_hours=forcing_hours,
         source_identity=source_identity)
     _write_prepared_cache(
-        native / "prepared-cache", identity, forcing_hours, exp)
+        native / "prepared-cache", identity, forcing_hours, exp,
+        user_receipts=user_receipts)
 
     # Published by the benchmark's own renderer, exactly as the
     # preparation does it, then bound by the bundle writer.
@@ -680,7 +686,7 @@ def test_the_prepare_front_door_forwards_the_portable_opt_in(tmp_path):
             source_sha256s_sha256="a" * 64,
             namelist_input=tmp_path / "namelist.input",
             valid_time="2026-08-05_04:00:00", output_root=tmp_path / "out",
-            physics_profile=None, run_seconds=7200,
+            physics_profile=None, experiment_config=None, run_seconds=7200,
             forecast_start_hour=0, forecast_end_hour=2,
             history_interval_seconds=900.0, geog_root=None,
             static_cache=tmp_path / "s.npz",
@@ -739,6 +745,13 @@ def _run_wrapper(tmp_path, monkeypatch, *, publish: bool):
     wps = tmp_path / "namelist.wps"
     for path in (static_cache, static_receipt, namelist, wps):
         path.write_bytes(b"fixture")
+    from gpuwm.hrrr_route_inputs import render_namelist_input, target_domain
+    from gpuwm.hrrr_configuration import resolved_run_settings
+    authority = tmp_path / "configuration.toml"
+    authority.write_text(render_experiment_document(tables), encoding="utf-8")
+    namelist.write_text(render_namelist_input(exp), encoding="utf-8")
+    domain_spec = tmp_path / "target.json"
+    domain_spec.write_text(json.dumps(target_domain(exp).to_payload()), encoding="utf-8")
     decoder = tmp_path / "hrrr_grib2_bridge"
     decoder.write_bytes(b"decoder")
     monkeypatch.setattr(prepare, "_decoder", lambda _env: decoder)
@@ -815,6 +828,7 @@ def _run_wrapper(tmp_path, monkeypatch, *, publish: bool):
             "physics": {
                 "schema": "gpuwm-prepared-physics-profile-v1",
                 "profile": PROFILE,
+                "resolved": resolved_run_settings(exp.root.run),
                 "hrrr_initialization": _cold_start_receipt(
                     PROFILE),
             },
@@ -838,6 +852,7 @@ def _run_wrapper(tmp_path, monkeypatch, *, publish: bool):
         "--static-cache", str(static_cache),
         "--static-receipt", str(static_receipt),
         "--namelist-input", str(namelist),
+        "--experiment-config", str(authority), "--domain-spec", str(domain_spec),
         "--physics-profile", PROFILE,
         "--valid-time", "2026-08-05_04:00:00",
         "--forecast-start-hour", str(SOURCE_HOURS[0]),
@@ -965,3 +980,145 @@ def test_a_publication_that_cannot_finish_leaves_the_native_tree_and_says_why(
     sentence = str(refusal.value)
     assert "a prepared case needs at least two frames" in sentence
     assert "complete, not partial" in sentence
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_native_ingest_declaration_is_bound_to_preparation_proof(enabled):
+    identity, proof = _identity_pair()
+    identity["ingest"] = {"soil_texture_downscale": enabled}
+    proof["ingest"] = dict(identity["ingest"])
+    assert runner._validate_hrrr_source_identity(identity, proof) is identity
+    proof["ingest"]["soil_texture_downscale"] = not enabled
+    with pytest.raises(ValueError, match="ingest settings differ"):
+        runner._validate_hrrr_source_identity(identity, proof)
+
+
+@pytest.mark.parametrize("bad", [None, {}, {"soil_texture_downscale": 1},
+                                {"soil_texture_downscale": "false"}])
+def test_native_ingest_declaration_cannot_be_missing_or_untyped(bad):
+    identity, proof = _identity_pair()
+    identity["ingest"] = bad
+    proof["ingest"] = {"soil_texture_downscale": False}
+    with pytest.raises(ValueError, match="ingest settings differ"):
+        runner._validate_hrrr_source_identity(identity, proof)
+
+
+@pytest.mark.parametrize("settings", [
+    {"ingest": {"soil_texture_downscale": True}},
+    {"ingest": {"soil_texture_downscale": False}},
+    {"static_highres": {"enabled": False, "cache_root": "highres"}},
+    {"trace_gas_overrides": {"co2": 0.000731}},
+    {"trace_gas_overrides": None},
+])
+def test_native_publisher_relay_reaches_unchanged_strict_consumer(tmp_path, settings):
+    bundle=_hrrr_bundle(tmp_path,scientific_identity=settings)
+    proof=json.loads((bundle.root/"proof.json").read_text(encoding="utf-8"))
+    header=json.loads((bundle.root/"native/prepared-cache/header.json").read_text(encoding="utf-8"))
+    identity=header["identity"]["source_identity"]
+    for key,value in settings.items():
+        assert key in proof and proof[key]==value
+    assert runner._validate_hrrr_source_identity(identity,proof) is identity
+    # Removing an active field reproduces the original public sim refusal;
+    # changing a declared value remains refused by the existing consumer.
+    key=next(iter(settings))
+    altered=dict(proof)
+    if settings[key] is not None:
+        altered.pop(key)
+        with pytest.raises(ValueError,match="settings differ"):
+            runner._validate_hrrr_source_identity(identity,altered)
+    altered=dict(proof)
+    altered[key]=({"soil_texture_downscale":not settings[key]["soil_texture_downscale"]}
+                  if key=="ingest" else {"changed":True})
+    with pytest.raises(ValueError,match="settings differ"):
+        runner._validate_hrrr_source_identity(identity,altered)
+
+
+def test_native_publisher_preserves_absent_optional_identity(tmp_path):
+    bundle=_hrrr_bundle(tmp_path)
+    proof=json.loads((bundle.root/"proof.json").read_text(encoding="utf-8"))
+    assert not {"ingest","static_highres","trace_gas_overrides"}&proof.keys()
+
+
+@pytest.mark.parametrize("receipt_key", [
+    "soil_moisture_floor", "deep_soil_repair", "soil_texture_downscale",
+])
+def test_native_soil_receipt_roundtrip_is_exact(tmp_path, monkeypatch, receipt_key):
+    from copy import deepcopy
+    from gpuwm.ingest.prepared_cache import PreparedCacheReader
+    receipt = {"schema": "actual-operation-receipt", "applied": False,
+               "reason": "target not finer than source", "count": 3}
+    bundle = _hrrr_bundle(tmp_path, user_receipts={receipt_key: receipt})
+    _bind_synthetic_geometry(monkeypatch)
+    _preflight(bundle)
+    proof = json.loads((bundle.root / "proof.json").read_text(encoding="utf-8"))
+    assert proof[receipt_key] == receipt
+    cache = bundle.root / "native/prepared-cache"
+    header = json.loads((cache / "header.json").read_text(encoding="utf-8"))
+    reader = PreparedCacheReader(cache, expected_identity=header["identity"])
+    def validate(candidate):
+        runner._validate_cache_metadata(
+            reader, source="hrrr", exp=bundle.experiment,
+            forcing_hours=(0, 1, 2), boundary_interval_seconds=3600,
+            proof=candidate, layout=runner.HRRR_DIRECT_LAYOUT)
+    validate(proof)
+    missing = deepcopy(proof)
+    missing.pop(receipt_key)
+    with pytest.raises(ValueError, match="user metadata differs"):
+        validate(missing)
+    changed = deepcopy(proof)
+    changed[receipt_key]["count"] += 1
+    with pytest.raises(ValueError, match="user metadata differs"):
+        validate(changed)
+
+
+def test_native_publisher_does_not_invent_or_approve_user_metadata(tmp_path, monkeypatch):
+    bundle = _hrrr_bundle(tmp_path, user_receipts={"unregistered_operation": {"applied": True}})
+    _bind_synthetic_geometry(monkeypatch)
+    proof = json.loads((bundle.root / "proof.json").read_text(encoding="utf-8"))
+    assert not {"soil_moisture_floor", "deep_soil_repair", "soil_texture_downscale",
+                "unregistered_operation"} & proof.keys()
+    with pytest.raises(ValueError, match="user metadata differs"):
+        _preflight(bundle)
+
+
+
+@pytest.mark.parametrize("roles", [("experiment_config",), ("wps_namelist",),
+                                   ("experiment_config", "wps_namelist")])
+def test_native_exact_authorities_can_be_located_under_new_names(tmp_path, monkeypatch, roles):
+    bundle = _hrrr_bundle(tmp_path)
+    _bind_synthetic_geometry(monkeypatch)
+    canonical = _preflight(bundle)
+    original_proof = (bundle.root / "proof.json").read_bytes()
+    original_manifest = (bundle.root / "source-input-manifest.json").read_bytes()
+    caller = tmp_path / "caller copies"
+    caller.mkdir()
+    overrides = {}
+    for role in roles:
+        original = Path(bundle.handoff[role])
+        copied = caller / ("chosen.toml" if role == "experiment_config" else "chosen.wps")
+        copied.write_bytes(original.read_bytes())
+        overrides[role] = copied
+    admitted = _preflight(bundle, **overrides)
+    assert admitted.cache_identity == canonical.cache_identity
+    assert dict(admitted.file_sha256) == dict(canonical.file_sha256)
+    assert (bundle.root / "proof.json").read_bytes() == original_proof
+    assert (bundle.root / "source-input-manifest.json").read_bytes() == original_manifest
+    for role, copied in overrides.items():
+        assert admitted.authority_paths[role] == copied.resolve()
+        assert admitted.source_manifest["files"][role]["name"] == canonical.source_manifest["files"][role]["name"]
+    runner._verify_inputs_unchanged(admitted)
+    copied = overrides[roles[-1]]
+    copied.write_bytes(copied.read_bytes() + b"\n")
+    with pytest.raises(RuntimeError, match="inputs changed during execution"):
+        runner._verify_inputs_unchanged(admitted)
+
+
+@pytest.mark.parametrize("role", ["experiment_config", "wps_namelist"])
+def test_native_renamed_authority_does_not_accept_semantically_equal_changed_bytes(
+        tmp_path, monkeypatch, role):
+    bundle = _hrrr_bundle(tmp_path)
+    _bind_synthetic_geometry(monkeypatch)
+    copied = tmp_path / ("changed.toml" if role == "experiment_config" else "changed.wps")
+    copied.write_bytes(Path(bundle.handoff[role]).read_bytes() + b"\n")
+    with pytest.raises(ValueError, match=f"supplied {role} differs from the portable source manifest"):
+        _preflight(bundle, **{role: copied})

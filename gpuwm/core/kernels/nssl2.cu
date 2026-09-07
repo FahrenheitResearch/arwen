@@ -1475,7 +1475,13 @@ extern "C" __global__ void nssl2_bigg_rain_freezing(
 
     const float cxmin = 1.0e-8f;
     const float rain_qxmin = 1.0e-12f;
-    const float graupel_qxmin = 1.0e-7f;
+    // module_mp_nssl_2mom.F:2095 sets qxmin(lh)=1.e-7, and :2103 OVERWRITES
+    // it: `IF ( lh > 1 .and. lnh > 1 ) qxmin(lh) = 1.0e-12`.  Under the
+    // option-18 default (module_physics_init.F:4633-4641 -> ipconc=5) the
+    // index block at :1650-1667 gives lnh = lhab+6 = 14 and lh = 7 (:658),
+    // so the override is unconditionally live and 1.0e-12 is the value the
+    // Bigg gate (:17654) and the volume/SETVT gate (:14204-14217) both see.
+    const float graupel_qxmin = 1.0e-12f;
     const float rain_min_volume =
         0.523599f * (80.0e-6f * 80.0e-6f * 80.0e-6f);
     const float rain_configured_max_volume =
@@ -1592,7 +1598,11 @@ extern "C" __global__ void nssl2_bigg_rain_freezing(
             __fmul_rn(latent_over_cp, rain_freezing_rate));
         theta = __fadd_rn(theta, __fmul_rn(dt, theta_rate));
 
-        rain -= dt * rain_freezing_rate;
+        // WRF's aggregate Euler update (:23059-23060) rounds the rate
+        // increment before adding it to rain. A fused subtraction keeps a
+        // different near-zero remainder; the final minimum-volume bound
+        // then amplifies it into a wrong rain-number moment (235 K, 80 um).
+        rain = __fsub_rn(rain, __fmul_rn(dt, rain_freezing_rate));
         rain_number -= dt * rain_number_freezing_rate;
         graupel += dt * rain_freezing_rate;
         graupel_number += dt * rain_number_freezing_rate;

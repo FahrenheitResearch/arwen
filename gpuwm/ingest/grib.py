@@ -16,7 +16,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 from types import MappingProxyType
-from typing import Mapping, Sequence
+from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -236,7 +236,8 @@ class Era5Snapshot:
             value = np.asarray(raw)
             if value.dtype != np.float64:
                 raise TypeError(f"field {name} must have dtype float64")
-            allowed_shapes = (horizontal, (nlev, *horizontal))
+            field_horizontal = self._field_horizontal_shape(name, horizontal)
+            allowed_shapes = (field_horizontal, (nlev, *field_horizontal))
             mapped_soil_shape = (
                 name in {MAPPED_SOIL_TEMPERATURE, MAPPED_SOIL_MOISTURE}
                 and value.ndim == 3
@@ -251,11 +252,61 @@ class Era5Snapshot:
             copied = value.copy()
             copied.setflags(write=False)
             copied_fields[name] = copied
+            # The item producer may read the next full field on resumption.
+            del raw, value, copied
 
         object.__setattr__(self, "levels_hpa", axes["levels_hpa"])
         object.__setattr__(self, "latitude", axes["latitude"])
         object.__setattr__(self, "longitude", axes["longitude"])
         object.__setattr__(self, "fields", MappingProxyType(copied_fields))
+
+    def _field_horizontal_shape(self, name, horizontal):
+        return horizontal
+
+    @classmethod
+    def from_field_items(
+        cls, *, valid_time: datetime, levels_hpa: np.ndarray,
+        latitude: np.ndarray, longitude: np.ndarray,
+        field_items: Iterable[tuple[str, np.ndarray]],
+        projection: Mapping[str, object] | None = None,
+        **snapshot_options,
+    ) -> Era5Snapshot:
+        """Consume field items once, copying each before requesting the next.
+
+        This uses the same owning constructor and validation as a mapping.
+        A producer can release each decoded field after the constructor has
+        copied it, instead of keeping a second full atmosphere alive.
+        """
+        class FieldItems:
+            def items(self):
+                seen = set()
+                for name, values in field_items:
+                    if name in seen:
+                        raise ValueError(f"repeated snapshot field {name!r}")
+                    seen.add(name)
+                    yield name, values
+                    del values
+
+        return cls(valid_time=valid_time, levels_hpa=levels_hpa,
+                   latitude=latitude, longitude=longitude,
+                   fields=FieldItems(), projection=projection, **snapshot_options)
+
+    def with_fields(self, replacements: Mapping[str, np.ndarray]) -> Era5Snapshot:
+        """Copy validated replacements, sharing this snapshot's read-only fields.
+
+        A surface overlay changes a few 2-D arrays. Copying the independent
+        3-D atmosphere again needlessly doubles its residency. Construction
+        still owns every supplied replacement and enforces its dtype/shape;
+        unchanged fields already belong to this immutable snapshot.
+        """
+        from dataclasses import replace
+
+        if not replacements:
+            return self
+        updated = replace(self, fields=replacements)
+        object.__setattr__(updated, "fields", MappingProxyType({
+            **self.fields, **updated.fields}))
+        return updated
 
     def save_npz(self, path: str | Path) -> None:
         """Write a pickle-free ``np.savez`` snapshot archive."""
@@ -461,6 +512,8 @@ def _valid_time(message: Mapping[str, object]) -> datetime:
         int(message["hour"]), int(message["minute"]),
     )
     p1 = int(message["p1"])
+    p2 = int(message["p2"])
+    time_range = int(message["time_range_indicator"])
     unit = int(message["time_unit"])
     multipliers = {
         0: timedelta(minutes=1),
@@ -473,7 +526,22 @@ def _valid_time(message: Mapping[str, object]) -> datetime:
     }
     if unit not in multipliers:
         raise ValueError(f"unsupported GRIB1 forecast time unit {unit}")
-    return reference + p1 * multipliers[unit]
+    # WMO Table 5 (PDS octet 21) decides what octets 19-20 mean.  Octet 19
+    # alone is the lead only for indicator 0; indicator 10 spans octets 19-20
+    # as one 16-bit P1, so reading P1 alone silently drops its low byte.  The
+    # interval indicators (2/3/4/5) are valid at reference + P2 and carry
+    # interval quantities, not the instantaneous values this decoder stores.
+    # Same closed vocabulary as the fetch-side census in :mod:`gpuwm.fetch`.
+    if time_range in (0, 1):
+        lead = p1 if time_range == 0 else 0
+    elif time_range == 10:
+        lead = (p1 << 8) | p2
+    else:
+        raise ValueError(
+            f"unsupported GRIB1 time range indicator {time_range}; forcing "
+            "records must be instantaneous"
+        )
+    return reference + lead * multipliers[unit]
 
 
 @dataclass(frozen=True)
@@ -529,7 +597,8 @@ class Era5DecodeResult:
 
 
 def _load_bridge_partials(
-    directory: Path, entries: tuple[VtableEntry, ...], source: Path
+    directory: Path, entries: tuple[VtableEntry, ...], source: Path,
+    *, envelope_count: int | None = None,
 ) -> tuple[_PartialSnapshot, ...]:
     metadata_path = directory / "metadata.json"
     with metadata_path.open("r", encoding="utf-8") as stream:
@@ -538,6 +607,17 @@ def _load_bridge_partials(
         raise ValueError("bridge output is not gpuwm GRIB1 dump format version 1")
     if metadata.get("dtype") != "<f8":
         raise ValueError(f"unsupported bridge dtype {metadata.get('dtype')!r}")
+    if envelope_count is not None and len(metadata["messages"]) != envelope_count:
+        # The decoder skips a message whose sections do not parse and still
+        # exits 0, so a dump with fewer messages than the file has envelopes
+        # is a silently dropped field, not a shorter file.  Envelope counting
+        # is duplicated on both sides of the boundary for the same reason the
+        # envelope walk itself is.
+        raise ValueError(
+            f"bridge decoded {len(metadata['messages'])} messages from "
+            f"{source}, which carries {envelope_count} GRIB1 message "
+            "envelopes; a message was dropped by the decoder"
+        )
 
     shape = tuple(int(value) for value in metadata["shape"])
     if len(shape) != 2 or min(shape) <= 0:
@@ -552,6 +632,8 @@ def _load_bridge_partials(
     layers: dict[datetime, dict[str, dict[int, np.ndarray]]] = {}
     surfaces: dict[datetime, dict[str, np.ndarray]] = {}
     surface_bitmaps: dict[datetime, dict[str, np.ndarray]] = {}
+    level_bitmapped: dict[datetime, set[str]] = {}
+    scan_modes: set[int] = set()
     for message in metadata["messages"]:
         key = (int(message["parameter"]), int(message["level_type"]))
         name = canonical.get(key)
@@ -561,20 +643,50 @@ def _load_bridge_partials(
         offset = int(message["offset_values"])
         if count != shape[0] * shape[1] or offset < 0 or offset + count > values.size:
             raise ValueError("mapped bridge message points outside the primary grid")
+        # The bridge derives one latitude/longitude axis pair from the message
+        # with the most points and writes every other message into the same
+        # flat stream in that message's OWN storage order.  A point count is
+        # neither a shape nor a scan order, so both have to be compared before
+        # the reshape -- as the mapped-source reader of this same
+        # ``metadata.json`` already does.
+        message_shape = (int(message["ny"]), int(message["nx"]))
+        if message_shape != shape:
+            raise ValueError(
+                f"mapped bridge message {name} has grid {message_shape}, not "
+                f"the primary grid {shape}"
+            )
+        scan_modes.add(int(message["scan_mode"]))
+        if len(scan_modes) != 1:
+            raise ValueError(
+                "mapped bridge messages disagree on GRIB1 scanning mode "
+                f"{sorted(scan_modes)}; they cannot share one axis pair"
+            )
         valid_time = _valid_time(message)
         field = np.asarray(values[offset:offset + count], dtype=np.float64).reshape(shape)
+        bitmapped = message.get("has_bitmap") is True
+        if not bitmapped and not np.isfinite(field).all():
+            # Without a bitmap every grid point was coded, so a non-finite
+            # cell is a decode fault carrying no provenance anyone can record
+            # it under.  This is the ingest boundary: refuse it here rather
+            # than let it reach the initial condition unannounced.
+            raise ValueError(
+                f"mapped bridge message {name} carries non-finite values with "
+                "no bitmap to account for them"
+            )
         if key[1] == 100:
             level = int(message["level"])
             level_fields = layers.setdefault(valid_time, {}).setdefault(name, {})
             if level in level_fields:
                 raise ValueError(f"duplicate {name} at {level} hPa for {valid_time}")
             level_fields[level] = field
+            if bitmapped:
+                level_bitmapped.setdefault(valid_time, set()).add(name)
         else:
             surface_fields = surfaces.setdefault(valid_time, {})
             if name in surface_fields:
                 raise ValueError(f"duplicate {name} for {valid_time}")
             surface_fields[name] = field
-            if message.get("has_bitmap") is True:
+            if bitmapped:
                 surface_bitmaps.setdefault(valid_time, {})[name] = ~np.isfinite(field)
 
     times = sorted(set(layers) | set(surfaces))
@@ -605,7 +717,15 @@ def _load_bridge_partials(
         else:
             levels = ()
             fields = {}
+        # Pressure-level provenance is recorded per message but validated
+        # against the stacked field, and every unbitmapped level above is
+        # already known finite.
+        bitmaps = {
+            name: ~np.isfinite(fields[name])
+            for name in level_bitmapped.get(valid_time, ())
+        }
         fields.update(surfaces.get(valid_time, {}))
+        bitmaps.update(surface_bitmaps.get(valid_time, {}))
         inventories.add(frozenset(fields))
         snapshots.append(
             _PartialSnapshot(
@@ -615,9 +735,7 @@ def _load_bridge_partials(
                 latitude=latitude,
                 longitude=longitude,
                 fields=MappingProxyType(fields),
-                bitmap_missing=MappingProxyType(
-                    surface_bitmaps.get(valid_time, {})
-                ),
+                bitmap_missing=MappingProxyType(bitmaps),
             )
         )
     if len(inventories) != 1:
@@ -817,12 +935,54 @@ def _merge_catalog_partials(
         excluded_valid_times=exclusions)
 
 
+def inspect_era5_forcing_times(
+    grib_paths: Sequence[str | Path], vtable_path: str | Path,
+    *, bridge: str | Path | None = None,
+) -> tuple[datetime, ...]:
+    """Read pressure-backed catalog times through native GRIB1 headers only.
+
+    This uses the decoder's Vtable mapping and valid-time interpretation.
+    Surface-only auxiliary records do not introduce forcing snapshots, just
+    as in :func:`_merge_catalog_partials`. Values are not decoded or staged.
+    Full field and spatial validation remains the input catalog's job.
+    """
+    mapping = _canonical_mapping(parse_vtable(vtable_path))
+    executable = Path(bridge) if bridge is not None else build_rust_bridge(release=True)
+    times: set[datetime] = set()
+    for raw_path in grib_paths:
+        path = Path(raw_path)
+        envelopes = inspect_grib1_envelopes(path)
+        result = subprocess.run(
+            [os.fspath(executable), "--inventory", os.fspath(path)],
+            text=True, capture_output=True, check=False)
+        if result.returncode:
+            raise RuntimeError(
+                f"Rust GRIB1 metadata inventory failed for {path}: "
+                f"{(result.stderr or result.stdout).strip()}")
+        metadata = json.loads(result.stdout)
+        if (metadata.get("format_version") != 1 or metadata.get("edition") != 1
+                or metadata.get("metadata_only") is not True):
+            raise ValueError("bridge output is not native GRIB1 metadata inventory version 1")
+        messages = metadata["messages"]
+        if len(messages) != len(envelopes):
+            raise ValueError(
+                f"bridge inventoried {len(messages)} messages from {path}, "
+                f"which carries {len(envelopes)} GRIB1 envelopes; a message was dropped")
+        for message in messages:
+            key = (int(message["parameter"]), int(message["level_type"]))
+            if key in mapping and key[1] == 100:
+                times.add(_valid_time(message))
+    if not times:
+        raise ValueError("supplied forcing has no Vtable-mapped pressure-level valid times")
+    return tuple(sorted(times))
+
+
 def _decode_bridge_partials(
     grib_path: Path,
     entries: tuple[VtableEntry, ...],
     executable: Path,
 ) -> tuple[_PartialSnapshot, ...]:
-    inspect_grib1_envelopes(grib_path)
+    envelopes = inspect_grib1_envelopes(grib_path)
     with tempfile.TemporaryDirectory(prefix="gpuwm-grib1-") as temporary:
         dump = Path(temporary) / "dump"
         result = subprocess.run(
@@ -836,7 +996,9 @@ def _decode_bridge_partials(
             raise RuntimeError(
                 f"Rust GRIB1 bridge failed for {grib_path}: {detail}"
             )
-        return _load_bridge_partials(dump, entries, grib_path)
+        return _load_bridge_partials(
+            dump, entries, grib_path, envelope_count=len(envelopes)
+        )
 
 
 def decode_era5_grib(
@@ -1016,9 +1178,38 @@ def cached_era5_forcing(
     )
 
 
+def clear_forcing_caches() -> None:
+    """Drop every decode this module memoized, releasing its host arrays.
+
+    The three caches above are process-lifetime memoizations of pure
+    functions of immutable input bytes, so clearing one cannot change a
+    decoded value: the next call for the same key decodes the same file
+    and rebuilds the same arrays.  It costs time and returns host memory.
+
+    What it returns is not small.  A run reaches this module TWICE for
+    one forcing product -- the input catalog decodes under its own
+    discovery (``valid_times=None``) and the runtime decodes under the
+    catalog's selection -- and the two keys are different, so the merged
+    cache holds two SEPARATE frozen copies of every valid time on top of
+    the partials both were merged from.  Nothing evicts them, because
+    ``maxsize=8`` counts entries and one entry is a whole forcing window.
+
+    Safe to call while a caller still holds snapshots.  Every
+    :class:`Era5Snapshot` is frozen and COPIED out of its partials
+    (:meth:`Era5Snapshot.__post_init__`), so a holder -- the input
+    catalog holds its own tuple -- keeps exactly the snapshots it named
+    and nothing else; this releases the partials they were copied from
+    and every valid time nobody kept.
+    """
+
+    _decode_era5_grib_resolved.cache_clear()
+    _decode_era5_forcing_partials_resolved.cache_clear()
+    _decode_era5_gribs_resolved.cache_clear()
+
+
 __all__ = [
     "Era5DecodeResult", "Era5Snapshot", "Grib1Envelope", "VtableEntry",
     "build_rust_bridge", "cached_era5_forcing", "cached_era5_snapshots",
-    "canonical_units", "decode_era5_grib", "decode_era5_gribs",
-    "inspect_grib1_envelopes", "parse_vtable",
+    "canonical_units", "clear_forcing_caches", "decode_era5_grib",
+    "decode_era5_gribs", "inspect_grib1_envelopes", "inspect_era5_forcing_times", "parse_vtable",
 ]

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import subprocess
@@ -40,6 +41,9 @@ class FoundEvidence:
     pointer: str
     amendment_references: tuple[str, ...]
     priority: int
+    #: The measured number the report recorded beside its verdict, when it
+    #: recorded one.  Without it the pack can only transcribe a boolean.
+    value: object = None
 
 
 def _utc_now() -> str:
@@ -115,7 +119,7 @@ def _gate_row(row: object, *, default_metric: str | None,
             f"evidence at {pointer} declares milestone {declared!r}, expected {milestone}")
     return FoundEvidence(
         milestone, metric, passed, pointer,
-        tuple(sorted(_amendment_values(row))), priority)
+        tuple(sorted(_amendment_values(row))), priority, row.get("value"))
 
 
 def _extract_report(payload: Mapping[str, object], *, milestone: str,
@@ -337,6 +341,52 @@ def _ledger_amendments(record) -> list[str]:
     return sorted({match.upper() for match in _AMENDMENT_RE.findall(text)})
 
 
+def _recomputed_passed(record, value: object) -> bool:
+    """Execute the registered numeric comparator on the reported value.
+
+    The ledger's own semantics (``nest_gates.COMPARATORS``): pass iff the
+    metric is ``<=`` / ``>=`` / ``<`` the registered threshold, and a
+    NaN/Inf metric FAILS.  Only ever called for a numeric kind with a value
+    in hand.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    number = float(value)
+    if not math.isfinite(number):
+        return False
+    if record.kind == "max":
+        return number <= record.threshold
+    if record.kind == "min":
+        return number >= record.threshold
+    if record.kind == "strict_max":
+        return number < record.threshold
+    raise EvidencePackError(f"{record.metric} is not a numeric gate")
+
+
+def _gate_verdict(record, primary: FoundEvidence | None
+                  ) -> tuple[str, bool | None]:
+    """Re-derive the row's verdict rather than transcribing its boolean.
+
+    Returns ``(verdict, recomputed)``.  ``verdict`` is one of MISSING,
+    INCOMPLETE, CONTRADICTED, PASS, FAIL.  For the numeric kinds the pack
+    holds both the registered threshold and the reported measurement, so it
+    runs the comparator itself: a report that declares ``passed`` while its
+    own number misses the bound is CONTRADICTED, and a numeric gate whose
+    report carries no number at all measured nothing, which is INCOMPLETE
+    rather than a pass.
+    """
+    if primary is None:
+        return "MISSING", None
+    if record.kind not in nest_gates.NUMERIC_KINDS:
+        return ("PASS" if primary.passed else "FAIL"), None
+    if primary.value is None:
+        return "INCOMPLETE", None
+    recomputed = _recomputed_passed(record, primary.value)
+    if recomputed != primary.passed:
+        return "CONTRADICTED", recomputed
+    return ("PASS" if recomputed else "FAIL"), recomputed
+
+
 def _escape_markdown(value: object) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
@@ -371,8 +421,7 @@ def _markdown(pack: Mapping[str, object]) -> str:
             "|---|---|---:|---|---|",
         ))
         for row in rows:
-            status = ("MISSING" if not row["evidence_found"] else
-                      "PASS" if row["passed"] else "FAIL")
+            status = row["verdict"]
             evidence = row["evidence_pointer"] or "--"
             amendments = ", ".join(row["amendment_references"]) or "--"
             lines.append(
@@ -443,9 +492,21 @@ def build_evidence_pack(rungs_root: str | Path, outdir: str | Path, *,
             amendments.update(item.amendment_references)
         blocking = record.kind != "diagnostic"
         closeout_required = blocking and record.milestone not in _OPTIONAL_MILESTONES
-        if closeout_required and primary is None:
+        verdict, recomputed = _gate_verdict(record, primary)
+        if closeout_required and verdict == "MISSING":
             blockers.append(f"missing blocking evidence: {record.milestone}/{record.metric}")
-        elif closeout_required and primary is not None and not primary.passed:
+        elif closeout_required and verdict == "INCOMPLETE":
+            blockers.append(
+                f"unmeasured blocking evidence: {record.milestone}/{record.metric} "
+                f"declares passed={primary.passed} with no value to compare "
+                f"against its registered {record.kind} {record.threshold}")
+        elif closeout_required and verdict == "CONTRADICTED":
+            blockers.append(
+                f"reported verdict contradicts the registered bound: "
+                f"{record.milestone}/{record.metric} value {primary.value!r} "
+                f"against {record.kind} {record.threshold} recomputes to "
+                f"{recomputed}, report declares {primary.passed}")
+        elif closeout_required and verdict == "FAIL":
             blockers.append(f"failed blocking evidence: {record.milestone}/{record.metric}")
         rows.append({
             "milestone": record.milestone,
@@ -455,6 +516,9 @@ def build_evidence_pack(rungs_root: str | Path, outdir: str | Path, *,
             "blocking": blocking,
             "closeout_required": closeout_required,
             "passed": primary.passed if primary is not None else None,
+            "value": primary.value if primary is not None else None,
+            "recomputed_passed": recomputed,
+            "verdict": verdict,
             "evidence_found": primary is not None,
             "evidence_pointer": primary.pointer if primary is not None else None,
             "evidence_pointers": [item.pointer for item in matches],
@@ -473,8 +537,11 @@ def build_evidence_pack(rungs_root: str | Path, outdir: str | Path, *,
         "registered": len(rows),
         "with_evidence": sum(bool(row["evidence_found"]) for row in rows),
         "missing_evidence": sum(not bool(row["evidence_found"]) for row in rows),
-        "passed": sum(row["passed"] is True for row in rows),
-        "failed": sum(row["passed"] is False for row in rows),
+        "passed": sum(row["verdict"] == "PASS" for row in rows),
+        "failed": sum(row["verdict"] == "FAIL" for row in rows),
+        "incomplete": sum(row["verdict"] == "INCOMPLETE" for row in rows),
+        "contradicted": sum(row["verdict"] == "CONTRADICTED" for row in rows),
+        "recomputed": sum(row["recomputed_passed"] is not None for row in rows),
     }
     identity = {
         "mode": mode,

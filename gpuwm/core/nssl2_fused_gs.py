@@ -118,9 +118,13 @@ def launch_fused_gs(
     volume moments are m3/m3 of air.  Every environmental field is a
     contiguous cell-centred ``(nz, ny, nx)`` FP32 array except
     ``vertical_velocity``, which is GPUWM's interface field with shape
-    ``(nz + 1, ny, nx)``. The fused kernel first centres interface W onto mass
-    levels as WRF's microphysics driver does, then reproduces NSSL GS's
-    current/next-mass-level average with its top-level clamp.
+    ``(nz + 1, ny, nx)``. The fused kernel centres it onto mass levels ONCE,
+    which is all ``nssl_2mom_gs`` does: the microphysics driver hands NSSL
+    the staggered ``grid%w_2`` and ``module_mp_nssl_2mom.F:2827`` copies it
+    into the GS slab without de-staggering, so ``:14174-14176``'s
+    ``kp1 = Min(nz, kgs+1); wvel = 0.5*(w(kp1)+w(kgs))`` IS the
+    interface-to-mass average.  Its clamp is on the upper interface, and at
+    the top mass level it degenerates to ``wvel = w(nz)``.
 
     ``temperature_k`` and ``primary_ice_target_m3`` are required runtime-owned
     scratch arrays. A deterministic prepass overwrites them from the immutable

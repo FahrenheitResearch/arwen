@@ -112,14 +112,59 @@ RE_PINNED_DRIFT: dict[str, tuple[str, str]] = {
 #: nothing observes.  The comment above each entry is the commit that last
 #: moved that file.
 BASELINE_PINNED: dict[str, str] = {
+    # 3eb49b2fd: evaluation-time moist boundary conversion; measured
+    # 73fc2406f evaluator/shared-dycore/public 1800-second forecast.
+    # Raw + assembled compiler identities and resources are retained in
+    # docs/measurements/lbc-time-2026-09-05/{windows,linux}.json.
+    "lbc_time":
+        "e98471547d79502806324b840eae701af51d3e6f7e21682d0d7602049513a8c2",
     # 6106e4e31 feat(ftz): measure FP32 subnormal handling on all five compile routes
     "ftz_probe":
         "a8c76a2f19dce3eb9ce545f2caacd1891ac35c3de56c7d57e39e787f37e1717f",
     # d0c23dad0 feat(cumulus): New Tiedtke joins as cu_physics = 16 -- the glibc
     # float32 transcendentals leave gf.cu for the shared glibc_flt32.cuh the
     # loader prepends; a move, not an edit (517 non-trivial lines out, 517 in)
+    # RE-PINNED at 2.6.6 by the gamma licence cut.  What moved, and the
+    # measurement that says the new behaviour is right:
+    #   * the LGPL transcription of glibc's tgammaf is gone from the header
+    #     this unit prepends, replaced by ArWen's own gamma, which is
+    #     CORRECTLY ROUNDED on all 59,768,833 float32 of [0.25, 36] where
+    #     glibc 2.39 is not on 23,575,230 of them (39.4440 per cent, worst 6
+    #     ULP).  Measured against a 113-bit tgammaq oracle;
+    #     tests/test_gf_gamma_correctly_rounded.py is the gate.
+    #   * gf_libm_unary_probe drops from 7 slots to 4: gfk_lgamma_pos,
+    #     gfk_expm1 and gfk_exp2 were reached only by that gamma block and
+    #     are deleted with it.
+    #   * gf_gfdrv_stage gains three scin slots (DINS_fzu_up/dn/sh), the
+    #     same fzu_override gf_deep_stage and gf_shallow_stage already
+    #     expose.  The shipped forecast passes 0 in all three; the parity
+    #     suites pin them from the WRF capture, which is what keeps the
+    #     216-column GFDRV boundary bitwise (host crosscheck: 83/83 level
+    #     fields, 69/69 scalars, 39/39 integer fields, 126/126 shallow,
+    #     0 driver gate failures).
+    #   * the physics change is a DELIBERATE DIVERGENCE and is written up in
+    #     docs/gf_gamma_known_delta.md: RAINCV/PRATEC move by at most 7.273
+    #     per cent, median 1.613, on the committed capture, and no integer
+    #     index field moves on any of the 216 columns.
+    # RE-PINNED by the WRF-parity cup_up_aa0 repair (PAR-CU-GF-02).
+    # module_cu_gf_deep.F:3024 is `IF(K.LT.KBCON(I))GO TO 100`, so the level
+    # k == KBCON contributes to the undilute CAPE; the kernel wrote
+    # `k <= kbcon` and dropped it.  The index convention is settled by the
+    # sibling cup_up_aa1bl (:4048 `IF(k.gt.KBCON(i))`, gf.cu:1168
+    # `if (k > kbcon) continue;`), and gpuwm.verify.gf_deep_ref:971 already
+    # read `k < kbcon`.  Answers move only where the dropped level is the
+    # whole of aa0: the committed 216-column oracle
+    # (tests/test_gf_wrf461_parity.py) is byte-identical either way and
+    # stays 2/2 green.  Measured by tests/test_gf_workspace.py::
+    # test_cup_up_aa0_keeps_the_k_equals_kbcon_layer, which compiles gf.cu
+    # and drives the device function through ctypes: 0.0 before, 0.0348961316
+    # after, identical to the Python reference.  gf is not an mp=8
+    # translation unit and thompson.cu is byte-unchanged.
+    # Composed licence + parity source independently checked before this pin:
+    # gamma CPU/device gates and the kbcon-layer probe: 17 passed
+    # on 2026-09-04. Neither standalone branch digest names these bytes.
     "gf":
-        "2e6a0b59b669e3c35fc0138be14d7ce2a8d7781b2c02f46ea41a23efe0764142",
+        "334c55ab764732be73d94504d54cb60ad7ca8bf12dbca879d7b3fc3f869d4386",
     # 1ee7f0be0 tiles: name the streamed-run config table, and part it from cycle streaming
     "health_tile":
         "2943d5e226a61487aefbe7f191dc120420a4cfe3f96deef19c90c2bb8c15bead",
@@ -143,8 +188,19 @@ BASELINE_PINNED: dict[str, str] = {
     "myjpbl":
         "d0e0b3dde6ba1729460694a3bf730ac82420e85d3979327953a7e45bf85719f1",
     # f1e9adbf1 fix(myj): seed TKE_MYJ at WRF's EPSQ2, make the mutation controls real, decl
+    # RE-PINNED by the WRF-parity PBLH seed repair (MYJ-01): the height
+    # accumulator seeded from ``dz_a[0]`` -- layer 0 of COLUMN 0 -- for every
+    # thread, where module_sf_myjsfc.F:177-184 accumulates ZINT strictly
+    # inside column I.  PBLH was wrong by ``dz[0][0] - dz[0][col]`` on every
+    # column but the first, and it re-enters SFCDIF as BTGH (:431-435).
+    # This MOVES ANSWERS on any domain with terrain.  Measured by
+    # tests/test_myj_port.py::
+    # test_the_surface_kernel_pblh_uses_each_columns_own_dz (two columns,
+    # different dz[0] -- the old gate ran at shape (1,1), where col is
+    # always 0 and the two indices coincide) and, device-free, by ::
+    # test_the_surface_kernels_pblh_accumulator_is_column_local.
     "myjsfc":
-        "cccc66d730e535c7d35749c5d6b96e58af9205ec4e682d68e2dcc5b6d2949009",
+        "334ae702f03f2572a2bb8e3590056b86127932431185aa4ec567b759817e938f",
     # 4a0bb3f69 mynn(mixscalars): MYNN-EDMF mixes the qn family, and the DMP unit exports it
     "mynn_dmp_sibling":
         "3684fde5c7647211ea0118d26232996a2e005995c5bfcb53b8318e439a828e68",
@@ -220,6 +276,42 @@ PINNED: dict[str, str] = dict(
     (name, digests[0]) for name, digests in _FROZEN.FROZEN_MODULE_DIGESTS.items())
 PINNED.update((name, sha) for name, (sha, _c) in RE_PINNED_DRIFT.items())
 PINNED.update(BASELINE_PINNED)
+
+# These are the complete headers the real loader prepends. common.cuh
+# retains its existing authority; the other rows close the former *.cu-only
+# gap without changing any source bytes. The GF gamma numerical evidence is
+# docs/gf_gamma_known_delta.md and tests/test_gf_gamma_correctly_rounded.py;
+# header assembly is independently checked by test_kernel_loader_inert.py.
+PINNED_HEADERS = {
+    "common.cuh": _FROZEN.COMMON_CUH_SHA256,
+    "glibc_flt32.cuh": "794c7d4123bb0642a7ad99ad0ba8ddd98f5e845553c41ece4872ce9a16e3fa77",
+    "rrtmgp_planck_common.cuh": "4e1a8214ea8e2a3dbd88cc2cda260a21ff678d98acf4f22c971ba0b51b4eba36",
+    "thompson_aerosol_common.cuh": "07f5c144180b95dbc218480784c9cdaaeaf5ce6614180074a92299400906f97d",
+}
+
+
+@pytest.mark.parametrize("header", sorted(PINNED_HEADERS))
+def test_prepended_header_is_byte_identical_to_its_pin(header):
+    source = KERNELS / header
+    assert source.is_file(), f"pinned CUDA header is missing: {source}"
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == PINNED_HEADERS[header], (
+        f"prepended CUDA header {header} changed; retain its numerical authority "
+        "and record the measured change before updating its pin")
+
+
+def test_header_pins_cover_the_actual_loader_closure():
+    from gpuwm.core.kernels import EXTRA_HEADERS
+    used = {"common.cuh", *(header for headers in EXTRA_HEADERS.values() for header in headers)}
+    assert used == set(PINNED_HEADERS)
+    assert {path.name for path in KERNELS.glob("*.cuh")} == used
+
+
+def test_header_fault_is_detected_even_when_module_pins_are_unchanged(tmp_path, monkeypatch):
+    header = "glibc_flt32.cuh"
+    (tmp_path / header).write_bytes((KERNELS / header).read_bytes() + b"\n// fault control\n")
+    monkeypatch.setattr(sys.modules[__name__], "KERNELS", tmp_path)
+    with pytest.raises(AssertionError, match="prepended CUDA header"):
+        test_prepended_header_is_byte_identical_to_its_pin(header)
 
 
 def test_the_pin_table_was_read_at_all() -> None:

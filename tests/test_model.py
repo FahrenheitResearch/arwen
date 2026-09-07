@@ -328,6 +328,10 @@ def test_health_debug_checks_each_domain_step_and_force(monkeypatch):
 
     monkeypatch.setattr(
         "gpuwm.core.health.StateHealthValidator", _RecordingValidator)
+    # This test records phase scheduling on scalar-only state doubles. The
+    # actual GPU stability report is exercised by test_model_stability_gpu.
+    monkeypatch.setattr("gpuwm.core.streaming.step_health",
+                        lambda *args, **kwargs: {"nan": False, "cfl": 0.0})
     monkeypatch.setattr("gpuwm.core.dycore.step",
                         lambda *_args, **_kwargs: None)
 

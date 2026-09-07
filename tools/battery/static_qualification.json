@@ -1,0 +1,31 @@
+{
+  "schema": "arwen.static-platform-qualification.v1",
+  "rust_source": "tools/rustwx/crates/static-fields/tests/lane1_goldens.rs",
+  "rust_functional_tests": [
+    "grid_refusals_name_the_breakage",
+    "corridor_crop_bit_equal_and_refuses_off_corridor"
+  ],
+  "rust_qualification_tests": [
+    "spec_built_grids_bit_equal", "nest_chain_bit_equal",
+    "translated_delegation_bit_equal", "corridor_geometry_cost_equal_python",
+    "corridor_probes_bit_equal_python", "npz_seal_bytes_equal_python",
+    "wps32_twin_states_bit_equal", "translated_twin_delegates_bit_equal",
+    "sampling_surfaces_bit_equal", "npmath_kernels_bit_equal_numpy",
+    "npmath_extended_sweep", "capi_grid_seam_end_to_end"
+  ],
+  "rust_assertion_helpers": [
+    "assert_f64_bits", "assert_f32_bits", "assert_scalar_bits",
+    "check_grid_case", "check_twin_state", "check_twin_transforms"
+  ],
+  "rust_comparison_panics": {
+    "npz_seal_bytes_equal_python": "NPZ bytes differ first at offset {first}: {:02x} != {:02x}"
+  },
+  "python_tests": [
+    "tests/test_static_rust_parity.py::TestLane1GridParity::test_mass_latlon_bytes_equal",
+    "tests/test_static_rust_parity.py::TestLane1GridParity::test_nest_transform_roundtrip_bytes_equal",
+    "tests/test_static_rust_parity.py::TestLane2BuildParity::test_build_static_bytes_equal"
+  ],
+  "python_allowed_skips": {
+    "tests/test_static_rust_parity.py::TestLane2BuildParity::test_build_static_bytes_equal": "WPS_GEOG reference tree not present"
+  }
+}

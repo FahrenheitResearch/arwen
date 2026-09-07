@@ -379,28 +379,14 @@ def _mapped_evidence(root: Path, *, schema: str, profile: str | None = None) -> 
         (evidence / name).write_bytes(authorities[role].read_bytes())
 
 
-def test_a_users_own_mapping_is_refused_at_the_door_naming_the_limit(tmp_path):
-    """A correct narrower refusal, moved to where the reader is.
-
-    Every packaged source is the mapped route wearing a specific name, so
-    a bundle a user prepared from THEIR mapping carries the same proof
-    schema.  The forecast stage certifies only the packaged profiles, and
-    it always refused this -- four stages deep, as "mapped preparation
-    does not use the packaged 20CRv3 authorities", which reads as an
-    internal hash mismatch rather than as the limit it is.  Nothing is let
-    through that was not let through before; the sentence just arrives at
-    the door.
-    """
-
-    from gpuwm.mapped_source import INPUT_MANIFEST_SCHEMA
+def test_a_users_own_mapping_resolves_without_claiming_a_packaged_source(tmp_path):
+    from gpuwm.mapped_composition import INPUT_MANIFEST_SCHEMA
 
     root = _single_domain_bundle(tmp_path / "prepared", source="20crv3")
     _mapped_evidence(root, schema=INPUT_MANIFEST_SCHEMA)
-    with pytest.raises(stage_cli.StageRefusal) as refusal:
-        stage_cli.resolve_bundle(root)
-    message = str(refusal.value)
-    assert "mapping you authored" in message
-    assert "gpuwm prep --source" in message
+    bundle = stage_cli.resolve_bundle(root)
+    assert bundle["source"] == "mapped"
+    assert bundle["layout"] == "single"
 
 
 def test_the_packaged_mapped_route_is_not_caught_by_that_refusal(tmp_path):
@@ -445,8 +431,8 @@ def test_two_packaged_profiles_are_told_apart_by_their_own_authorities(
         assert stage_cli.resolve_bundle(root)["source"] == source
 
 
-def test_runner_single_against_a_hierarchy_bundle_is_refused_precisely(tmp_path):
-    """The override exists to be refused when the caller is wrong."""
+def test_runner_single_requires_a_bound_root_artifact_receipt(tmp_path):
+    """A hierarchy without a recorded root cache cannot relay its identity."""
 
     tree = _tree_bundle(tmp_path / "tree")
     config, wps = _authority(tmp_path / "authority")
@@ -454,7 +440,7 @@ def test_runner_single_against_a_hierarchy_bundle_is_refused_precisely(tmp_path)
         stage_cli.sim_command(
             stage_cli.resolve_bundle(tree), experiment_config=config,
             wps_namelist=wps, outdir=tmp_path / "run", runner="single")
-    assert "multi-domain hierarchy" in str(refusal.value)
+    assert "no unambiguous READY d01 artifact receipt" in str(refusal.value)
 
 
 # ---------------------------------------------------------------------------
@@ -471,8 +457,7 @@ def _go_plan(tmp_path, *, domains: int = 1):
             "--out", str(out),
             "--physics-profile", "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1"]
     assert cli_main(argv) == 0
-    return go_cli.plan_from_config(
-        out, outdir=tmp_path / "go", allow_tree=domains > 1)
+    return go_cli.plan_from_config(out, outdir=tmp_path / "go")
 
 
 def _without_progress(command: list[str]) -> list[str]:
@@ -544,8 +529,9 @@ def test_gos_forecast_stage_is_exactly_gpuwm_sim_tree(tmp_path):
         "other than --progress-format")
 
 
-def test_go_still_prints_its_whole_chain_and_runs_nothing(tmp_path, capsys):
+def test_go_still_prints_its_whole_chain_and_runs_nothing(tmp_path, capsys, monkeypatch):
     """``go`` is the average user's front door and must not regress."""
+    monkeypatch.setattr(go_cli, "resolve_bridge", lambda: tmp_path / "bridge")
 
     out = tmp_path / "cfg.toml"
     assert cli_main([

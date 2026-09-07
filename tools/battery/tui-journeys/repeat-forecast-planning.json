@@ -1,0 +1,332 @@
+{
+  "name": "Repeated TUI forecast planning: A, changed B, reopen A",
+  "steps": [
+    {
+      "action": "expect",
+      "text": "Choose a forecast mode",
+      "name": "home"
+    },
+    {
+      "action": "click",
+      "text": "Choose a forecast mode",
+      "row_prefix": "\u2502"
+    },
+    {
+      "action": "press",
+      "key": "ctrl+n"
+    },
+    {
+      "action": "expect",
+      "text": "Location: latitude,longitude",
+      "name": "location"
+    },
+    {
+      "action": "paste",
+      "text": "35.3,-97.5"
+    },
+    {
+      "action": "press",
+      "key": "enter"
+    },
+    {
+      "action": "expect",
+      "text": "Input source",
+      "name": "source"
+    },
+    {
+      "action": "press",
+      "key": "enter"
+    },
+    {
+      "action": "expect",
+      "text": "Start cycle (UTC)",
+      "name": "date"
+    },
+    {
+      "action": "press",
+      "key": "ctrl+u"
+    },
+    {
+      "action": "paste",
+      "text": "2026-09-06T12"
+    },
+    {
+      "action": "press",
+      "key": "enter"
+    },
+    {
+      "action": "expect",
+      "text": "Forecast duration (hours)",
+      "name": "duration"
+    },
+    {
+      "action": "press",
+      "key": "enter"
+    },
+    {
+      "action": "expect",
+      "text": "New configuration file",
+      "name": "save-path"
+    },
+    {
+      "action": "press",
+      "key": "ctrl+u"
+    },
+    {
+      "action": "paste",
+      "text": "{workspace}/First forecast.toml"
+    },
+    {
+      "action": "press",
+      "key": "enter"
+    },
+    {
+      "action": "expect",
+      "text": "Review or click any setting",
+      "name": "settings-summary"
+    },
+    {
+      "action": "press",
+      "key": "ctrl+n"
+    },
+    {
+      "action": "expect",
+      "text": "Create configuration (Enter)",
+      "name": "review"
+    },
+    {
+      "action": "press",
+      "key": "enter"
+    },
+    {
+      "action": "expect_jobs",
+      "count": 1,
+      "timeout_seconds": 60,
+      "name": "native-draft-command"
+    },
+    {
+      "action": "expect_file",
+      "path": "{workspace}/First forecast.toml",
+      "timeout_seconds": 60,
+      "name": "created-native-draft"
+    },
+    {
+      "action": "expect",
+      "text": [
+        "Everyday forecast setup created",
+        "F6 reviews the plan"
+      ],
+      "timeout_seconds": 30,
+      "name": "opened-draft"
+    },
+    {
+      "action": "press",
+      "key": "f6"
+    },
+    {
+      "action": "expect_jobs",
+      "count": 2,
+      "timeout_seconds": 60,
+      "name": "native-plan-command"
+    },
+    {
+      "action": "capture",
+      "name": "planned-forecast"
+    },
+    {
+      "action": "press",
+      "key": "h"
+    },
+    {
+      "action": "expect",
+      "text": "Choose a forecast mode"
+    },
+    {
+      "action": "click",
+      "text": "Choose a forecast mode",
+      "row_prefix": "\u2502"
+    },
+    {
+      "action": "press",
+      "key": "ctrl+n"
+    },
+    {
+      "action": "expect",
+      "text": "Location: latitude,longitude",
+      "name": "location"
+    },
+    {
+      "action": "paste",
+      "text": "36.3,-98.5"
+    },
+    {
+      "action": "press",
+      "key": "enter"
+    },
+    {
+      "action": "expect",
+      "text": "Input source",
+      "name": "source"
+    },
+    {
+      "action": "press",
+      "key": "enter"
+    },
+    {
+      "action": "expect",
+      "text": "Start cycle (UTC)",
+      "name": "date"
+    },
+    {
+      "action": "press",
+      "key": "ctrl+u"
+    },
+    {
+      "action": "paste",
+      "text": "2026-09-06T06"
+    },
+    {
+      "action": "press",
+      "key": "enter"
+    },
+    {
+      "action": "expect",
+      "text": "Forecast duration (hours)",
+      "name": "duration"
+    },
+    {
+      "action": "press",
+      "key": "enter"
+    },
+    {
+      "action": "expect",
+      "text": "New configuration file",
+      "name": "save-path"
+    },
+    {
+      "action": "press",
+      "key": "ctrl+u"
+    },
+    {
+      "action": "paste",
+      "text": "{workspace}/Second forecast.toml"
+    },
+    {
+      "action": "press",
+      "key": "enter"
+    },
+    {
+      "action": "expect",
+      "text": "Review or click any setting",
+      "name": "settings-summary"
+    },
+    {
+      "action": "press",
+      "key": "ctrl+n"
+    },
+    {
+      "action": "expect",
+      "text": "Create configuration (Enter)",
+      "name": "review"
+    },
+    {
+      "action": "press",
+      "key": "enter"
+    },
+    {
+      "action": "expect_jobs",
+      "count": 3,
+      "timeout_seconds": 60,
+      "name": "native-draft-command"
+    },
+    {
+      "action": "expect_file",
+      "path": "{workspace}/Second forecast.toml",
+      "timeout_seconds": 60,
+      "name": "created-native-draft"
+    },
+    {
+      "action": "expect",
+      "text": [
+        "Everyday forecast setup created",
+        "F6 reviews the plan"
+      ],
+      "timeout_seconds": 30,
+      "name": "opened-draft"
+    },
+    {
+      "action": "press",
+      "key": "f6"
+    },
+    {
+      "action": "expect_jobs",
+      "count": 4,
+      "timeout_seconds": 60,
+      "name": "native-plan-command"
+    },
+    {
+      "action": "capture",
+      "name": "planned-forecast"
+    },
+    {
+      "action": "press",
+      "key": "h"
+    },
+    {
+      "action": "press",
+      "key": "o"
+    },
+    {
+      "action": "expect",
+      "text": "Open existing"
+    },
+    {
+      "action": "press",
+      "key": "enter"
+    },
+    {
+      "action": "expect",
+      "text": "Configuration path"
+    },
+    {
+      "action": "paste",
+      "text": "{workspace}/First forecast.toml"
+    },
+    {
+      "action": "press",
+      "key": "enter"
+    },
+    {
+      "action": "expect",
+      "text": "Review launch plan"
+    },
+    {
+      "action": "press",
+      "key": "f6"
+    },
+    {
+      "action": "expect_jobs",
+      "count": 5,
+      "timeout_seconds": 60
+    },
+    {
+      "action": "compare_job_values",
+      "command": "go",
+      "pattern": "download is cached at ([^\r\n]+)",
+      "count": 3,
+      "same": [
+        [
+          0,
+          2
+        ]
+      ],
+      "different": [
+        [
+          0,
+          1
+        ]
+      ],
+      "name": "same-request-reused-different-request-separated"
+    }
+  ]
+}

@@ -200,6 +200,21 @@ pub fn parse_volume_key(key: &str) -> Option<VolumeKey> {
     if name.len() < 20 {
         return None;
     }
+    // `str::len` is a BYTE count and every slice below is at a fixed BYTE
+    // offset, so a name whose bytes are not one-to-one with its characters
+    // makes `&name[..4]` land inside a character and PANIC -- not return
+    // None.  S3 keys are arbitrary UTF-8 and nothing upstream restricts the
+    // character set: `parse_s3_list_xml_with` checks the prefix, the
+    // trailing `/` and `key_localization_fault` (backslash, colon, leading
+    // `/`, empty/`.`/`..` segments), none of which mentions encoding.  One
+    // junk sibling object would therefore kill the whole listing -- and with
+    // it every volume in the window -- where this function's own contract
+    // three paragraphs up says an unrecognised sibling is SKIPPED.  A
+    // Level-II volume name is ASCII by construction, so the refusal is
+    // exact rather than defensive.
+    if !name.is_ascii() {
+        return None;
+    }
     let site = &name[..4];
     if !site.chars().all(|c| c.is_ascii_alphanumeric()) {
         return None;
@@ -4791,6 +4806,41 @@ mod tests {
         // And a real date that does not exist is refused with or without it.
         assert!(parse_volume_key("2013/02/30/KTLX/KTLX20130230_200356_V06").is_none());
         assert!(parse_volume_key("2013/02/30/KTLX/KTLX20130230_200356_V06.gz").is_none());
+    }
+
+    #[test]
+    fn volume_key_skips_a_non_ascii_sibling_instead_of_panicking() {
+        // audit dat-02-09.  The length guard is in BYTES and every slice
+        // below it is at a fixed BYTE offset, so a multi-byte character
+        // inside the first twenty bytes used to panic on a non-char-boundary
+        // index rather than return None.  `key_localization_fault`'s own
+        // note applies verbatim: no forged response is needed, because S3
+        // keys may legally contain these bytes and the listed bucket is a
+        // public mirror -- so one junk sibling took down the whole window
+        // and every volume in it, not just itself.
+        for key in [
+            // Seven U+20AC (3 bytes each) + `_V06` = 25 bytes: the `< 20`
+            // BYTE guard passes and `&name[..4]` lands inside the second one.
+            "2023/05/20/KTLX/\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}_V06",
+            // A character boundary inside each of the other fixed slices.
+            "2023/05/20/KTLX/KTLX2023\u{20ac}520_200356_V06",
+            "2023/05/20/KTLX/KTLX20230520_20\u{20ac}356_V06",
+            "2023/05/20/KTLX/KTLX20230520_200356\u{20ac}V06",
+        ] {
+            assert!(parse_volume_key(key).is_none(), "{key}");
+        }
+        // The guard reads the NAME, not the whole key: a non-ASCII directory
+        // component above a well-formed volume name is still a volume, and
+        // the _MDM sidecar beside it is still refused for being a sidecar.
+        let parsed = parse_volume_key(
+            "2023/05/20/K\u{20ac}LX/KTLX20230520_200356_V06",
+        )
+        .expect("a non-ASCII directory does not disqualify the object");
+        assert_eq!(parsed.site, "KTLX");
+        assert!(parse_volume_key(
+            "2023/05/20/K\u{20ac}LX/KTLX20230520_200356_V06_MDM"
+        )
+        .is_none());
     }
 
     #[test]

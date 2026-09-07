@@ -294,8 +294,20 @@ All on gfortran 13.3.0 / glibc 2.39, at -O0:
   `gamma(4) = 6` but it returns `40C00001`.  The `plgamma` rows print the
   decomposition -- `x`, `gamma(x)`, `log_gamma(x)`, `exp(log_gamma(x))`, the
   product recurrence's split point -- so a later phase can close it without
-  re-measuring.  Closing it means transcribing glibc's `lgammaf` polynomial
-  and `__gamma_productf`.
+  re-measuring.
+
+  **THAT PARAGRAPH IS HISTORY AND ITS CONCLUSION IS WITHDRAWN.**  It used to
+  end "closing it means transcribing glibc's `lgammaf` polynomial and
+  `__gamma_productf`", and phase 3 did exactly that.  Both files are
+  FSF-copyright LGPL-2.1-or-later with no permissive upstream, so an
+  Apache-2.0 distribution cannot carry them; the transcription was deleted at
+  2.6.6 and **must not be re-created**.  ArWen's gamma is now correctly
+  rounded -- right where glibc is wrong on 39.44 per cent of [0.25, 36] --
+  and the resulting divergence from WRF is a documented deliberate one:
+  read `docs/gf_gamma_known_delta.md` before touching anything in this
+  paragraph.  The first sentence still stands as a measurement: `tgammaf` is
+  not correctly rounded, and that is now the reason to diverge from it rather
+  than a gap to close.
 * **`powf` is not correctly rounded either**, and the fixture found the one
   argument where it shows.  `powf(0x3F0D923B, 0x3E999998)` -- `(1-kratio) **
   (beta-1)` at level 17 of one column -- has true value

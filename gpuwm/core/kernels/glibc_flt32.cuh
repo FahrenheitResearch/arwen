@@ -1,3 +1,44 @@
+// ======================================================================
+// THIRD-PARTY NOTICE.  Parts of this file are hand transcriptions of
+// third-party work.  ArWen distributes the file under the Apache License
+// 2.0; the notices below belong to the transcribed parts and are kept
+// here because their own licences require it.  Full texts are in the
+// repository NOTICE and in the licenses/ directory.
+//
+// For the two libm grants the text also sits beside the code, in
+// gpuwm/core/kernels/LICENSE-third-party.txt.
+//
+//   Arm optimized-routines -- the logf, expf, exp2f and powf cores and
+//   their data tables github.com/ARM-software/optimized-routines:
+//   math/logf.c, math/expf.c, math/exp2f.c, math/powf.c and the matching
+//   math/*_data.c, published August 2017 and imported into glibc for
+//   2.27/2.28 by their own author; transcribed here from glibc 2.39
+//   sysdeps/ieee754/flt-32/.
+//
+//       Copyright (c) 2017-2018, Arm Limited.
+//       SPDX-License-Identifier: MIT
+//
+//   Taken under the MIT branch of Arm's grant.  MIT requires the
+//   copyright notice above and its permission notice to travel with every
+//   copy; the permission notice is reproduced in full in the files named
+//   above.
+//
+//   NO FDLIBM CODE REMAINS IN THIS FILE.  It carried transcriptions of
+//   FDLIBM's expm1f (s_expm1f.c) and lgammaf reduction (e_lgammaf_r.c)
+//   through ArWen 2.6.5; both were deleted at 2.6.6 with the gamma block
+//   that was their only caller, so the Sun notice that had to travel with
+//   them travels no longer -- there is nothing here for it to attach to.
+//   The notice is unchanged and still reproduced, for the twelve files
+//   that DO carry FDLIBM code -- nine .cu in this directory and three
+//   Python modules under gpuwm/core/ -- in the repository NOTICE, in
+//   licenses/LICENSE-FDLIBM-SunPro.txt and in
+//   gpuwm/core/kernels/LICENSE-third-party.txt.
+//
+//   Nothing else in this file is a transcription of anything.  gfk_d2f_rn
+//   is ArWen's own subnormal-rounding countermeasure and gfk_tgamma is
+//   ArWen's own correctly rounded gamma (see its block below and
+//   docs/gf_gamma_known_delta.md); both are Apache-2.0 original work.
+// ======================================================================
 // glibc 2.39 float32 transcendentals, shared device code.
 //
 // PROVENANCE.  Lifted VERBATIM from gpuwm/core/kernels/gf.cu on 2026-08-28,
@@ -189,24 +230,25 @@ __device__ float gfk_exp(float x)
         GFK_EXP2F_P2 / 32.0, 0ULL));
 }
 
-// glibc 2.39 sysdeps/ieee754/flt-32/e_exp2f.c -- the identical core with
-// the pre-scaled shift and unscaled polynomial.  tgammaf's Stirling arm is
-// the only caller in this kernel and hands it |x| <= ~2.6, but the special
-// cases are transcribed anyway so the sweep can grade the whole function.
-__device__ float gfk_exp2(float x)
-{
-    unsigned int abstop = (__float_as_uint(x) >> 20) & 0x7ffu;
-    if (abstop >= ((__float_as_uint(128.0f)) >> 20)) {
-        if (__float_as_uint(x) == 0xff800000u) return 0.0f;
-        if (abstop >= (0x7f800000u >> 20)) return FADD(x, x);
-        if (x > 0.0f) return __int_as_float(0x7f800000);
-        if (x <= -150.0f) return 0.0f;
-    }
-    double xd = (double)x;
-    return gfk_d2f_rn(gfk_exp2_core(
-        xd, GFK_EXP2F_SHIFT_SCALED,
-        GFK_EXP2F_P0, GFK_EXP2F_P1, GFK_EXP2F_P2, 0ULL));
-}
+// e_exp2f.c (exp2f), s_expm1f.c (expm1f) and e_lgammaf_r.c (lgammaf) were
+// transcribed here through 2.6.5 and are DELETED at 2.6.6.  Their only
+// caller anywhere in this tree was the LGPL gamma block this file used to
+// end with: glibc's gammaf reaches Gamma through exp(lgamma), rescales the
+// result with exp2f and corrects the rescaling with expm1f.  That block is
+// gone, and ArWen's own gamma that replaced it evaluates no logarithm, no
+// exponential and no exp2 at all, so all three functions became dead to the
+// physics and survived only as slots of the gf_libm_unary_probe TEST
+// kernel.  Dead
+// transcriptions are not decoration to keep: gfk_lgamma_pos was the ONLY
+// transcription of glibc's e_lgammaf_r.c anywhere in the repository, so
+// deleting it retires that file from the distribution outright, and exp2f
+// and expm1f leave THIS translation unit (mynn_pbl.cu and
+// mynn_dmp_sibling.cu still carry their own expm1f for tanhf).  The
+// 32-entry exp2 CORE above stays -- gfk_exp and gfk_pow are live physics
+// and both call it.
+//
+// The live float32 surface of this header is now exactly gfk_log, gfk_exp,
+// gfk_pow, gfk_d2f_rn and gfk_tgamma.
 
 // glibc 2.39 sysdeps/ieee754/flt-32/e_powf.c log2_inline
 __device__ double gfk_powf_log2(unsigned int ix)
@@ -295,355 +337,216 @@ __device__ float gfk_pow(float x, float y)
                       (unsigned long long)sign_bias));
 }
 
-// --------------------------------------------------------------------------
-// glibc 2.39 sysdeps/ieee754/flt-32/s_expm1f.c (SunPro FP32 kernel).  No
-// ifunc variant exists on x86-64, so every operation is a plain float32
-// op in the written association order -- FMUL/FADD/FSUB/FDIV, never FMA.
-// Constant words verified against the decimal literals, not the source
-// comments (the C_ATAN precedent: glibc comments have lied before).
-// --------------------------------------------------------------------------
-#define EM1_HUGE   __uint_as_float(0x7149F2CAu)   /* 1.0e+30 */
-#define EM1_OTHR   __uint_as_float(0x42B17180u)   /* o_threshold */
-#define EM1_LN2HI  __uint_as_float(0x3F317180u)
-#define EM1_LN2LO  __uint_as_float(0x3717F7D1u)
-#define EM1_IVLN2  __uint_as_float(0x3FB8AA3Bu)
-#define EM1_Q1     __uint_as_float(0xBD088889u)
-#define EM1_Q2     __uint_as_float(0x3AD00D01u)
-#define EM1_Q3     __uint_as_float(0xB8A670CDu)
-#define EM1_Q4     __uint_as_float(0x36867E54u)
-#define EM1_Q5     __uint_as_float(0xB457EDBBu)
-#define EM1_TINYM1 __uint_as_float(0xBF800000u)   /* tiny - one == -1.0f */
+// ==========================================================================
+// gfk_tgamma -- ArWen's own float32 gamma.  ORIGINAL WORK, Apache-2.0.
+// ==========================================================================
+//
+// WHAT THIS REPLACED, AND WHY.  Until 2.6.5 this file ended with
+// gfk_gamma_product / gfk_gammaf_positive / gfk_tgamma, a line-for-line
+// transcription of glibc's dbl-64/gamma_productf.c and flt-32/e_gammaf_r.c.
+// A provenance audit established that both are glibc-authored, FSF-copyright
+// and LGPL-2.1-or-later with NO permissive upstream: gamma_productf.c was
+// created from nothing by glibc commit d8cd06db62d9 (2013) and has no FDLIBM,
+// SunPro, Cygnus or ARM ancestor anywhere.  An Apache-2.0 distribution cannot
+// carry it and no NOTICE entry can cure that, so it is gone.  Nothing from it
+// survives below: no constant, no branch structure, no algorithm.  This code
+// evaluates no lgamma, performs no exponentiation, and calls nothing.
+//
+// HOW IT WAS DERIVED.  Gamma on [1,2) is a degree-9 polynomial on each of 16
+// equal segments; every other positive argument reduces to [1,2) by the
+// functional equation Gamma(z+1) = z*Gamma(z); negative arguments use the
+// reflection formula Gamma(x)*Gamma(1-x) = pi/sin(pi x).  The 160
+// coefficients in GFK_TG_C were generated from Stirling's asymptotic series
+// (DLMF 5.11.1) evaluated in 113-bit arithmetic with the standard Bernoulli
+// numbers B2..B24.  GFK_TG_SP holds the Taylor coefficients of sin(pi r),
+// c_k = (-1)^k pi^(2k+1)/(2k+1)!, in closed form.  Classical mathematics; no
+// implementation of any kind was consulted, and no third-party source was
+// read, quoted or fitted against.  The audit trail is lineage-docs/gam-03*.
+//
+// IT IS CORRECTLY ROUNDED, AND THE REFERENCE IS NOT.  MEASURED against
+// libquadmath's 113-bit tgammaq -- an oracle unrelated to glibc -- over all
+// 59,768,833 float32 arguments of [0.25, 36], the interval that covers every
+// value this scheme can reach:
+//
+//     this code       0 arguments not correctly rounded
+//     glibc 2.39      23,575,230 arguments not correctly rounded (39.44 %),
+//                     worst 6 ULP.  tgammaf(4.0f) returns 6.00000048, not 6.
+//
+// A table fitted to or copied from glibc would carry glibc's own error, ten
+// orders of magnitude larger than this code's ~5.6e-17 relative agreement
+// with true Gamma.  That is the structural evidence the coefficients are not
+// derived from the reference.
+//
+// >>> DELIBERATE DIVERGENCE FROM WRF.  READ docs/gf_gamma_known_delta.md. <<<
+//
+// gfortran binds WRF's F2008 gamma() intrinsic to glibc's tgammaf, so this
+// kernel no longer reproduces WRF's fzu bit for bit and the deep mass flux
+// xmb moves by up to 7.3 per cent on converged columns (median 1.9).  That is
+// the amplification recorded at gf.cu:50-56, not an accuracy loss.  MEASURED
+// over every reachable (alpha, beta) -- all 53,687,093 float32 tunning values
+// of the three drafts -- fzu changes on 68.17 per cent of them: 98.39 per cent
+// of the set within 4 ULP, worst 12 (draft 1, beta=2.5), worst relative
+// 8.39e-7.  The committed 216-column fixture spans only the first 4 ULP, which
+// is why the gate below reads 4 and this bound reads 12.  The scheme's own
+// xk = (xaa0-aa1)/mbdt cancellation is what turns any of it into per cent.
+//
+// AND OURS IS THE CLOSER ONE.  Graded against the exact 113-bit
+// Gamma(a+b)/(Gamma(a)Gamma(b)) rounded once to float32, over the same
+// 53,687,093: this code is worst 4 ULP from the true fzu and glibc is worst
+// 11; ours is strictly closer on 49.95 per cent of the set and strictly
+// further on 9.59; mean relative error 3.83e-8 against glibc's 9.67e-8.
+// Neither is exact -- rounding three gammas and a multiply and a divide to
+// float32 costs up to 4 ULP on its own -- so xmb is not determined to better
+// than tens of per cent by ANY float32 build of this scheme, WRF's included.
+//
+// The divergence is NOT new to ArWen and it is NOT unbounded.  MEASURED, this
+// code returns the same word as gpuwm/verify/gf_deep_ref.py::_tgammaf -- the
+// float32 CPU authority's own gamma model -- on ALL 59,768,833 arguments of
+// [0.25, 36], so the CPU and CUDA paths now agree bitwise where before they
+// did not, and the divergence from WRF is exactly the one the CPU suite has
+// carried, gated and documented since the port landed
+// (tests/test_gf_deep_parity.py::test_fzu_is_the_one_measured_divergence,
+// budget 4 ULP; this code lands at 4).
+//
+// TO GET WRF'S ANSWER BACK, pin fzu.  gfd_get_zu_zd_pdf takes fzu_override
+// and gf_deep_stage exposes it in scin; passing the oracle's captured word
+// makes the whole chain bitwise against WRF again, which is exactly how the
+// CPU suite reaches max_ulp 0 today.  No build flag is needed and none is
+// provided -- restoring glibc's bits at run time would mean shipping 22.5 MB
+// of measured glibc deviation, which is the thing this change removes.
+// ==========================================================================
 
-__device__ float gfk_expm1(float x)
+// Gamma on [1,2): 16 equal segments, degree-9 polynomial in u = r - centre.
+__device__ const double GFK_TG_C[16][10] = {
+  { 0x1.f73ed01940522p-1, -0x1.092fd20dd784cp-1, 0x1.d1a2ea66d2aefp-1, -0x1.966a1d7f2b9d9p-1, 0x1.af057a1fa6b33p-1, -0x1.a114e80ce35b1p-1, 0x1.99b28f9ddcee8p-1, -0x1.8e73dca5f882p-1, 0x1.843285f62ee7dp-1, -0x1.78e83c533d8b1p-1 },   /* centre 1.031250000 */
+  { 0x1.e865a5b755fb9p-1, -0x1.a6b50f60b5c6ep-2, 0x1.8e9a9675e8147p-1, -0x1.39251063e4e66p-1, 0x1.41a834d107f5ep-1, -0x1.237aaf45da8d8p-1, 0x1.0f0e4f41772eap-1, -0x1.f11209307f1cp-2, 0x1.c8cbfdb620ef9p-2, -0x1.a24012d73ac3cp-2 },   /* centre 1.093750000 */
+  { 0x1.dcac35f2a7419p-1, -0x1.49cf184c91f8ep-2, 0x1.5ac61acea578ep-1, -0x1.e5d43093961e1p-2, 0x1.e91903e412f2ap-2, -0x1.9eedaece7d029p-2, 0x1.6f07e745bdddep-2, -0x1.3e2e7165ba686p-2, 0x1.14c7245554af4p-2, -0x1.df8a55df66eep-3 },   /* centre 1.156250000 */
+  { 0x1.d3aa3cecb6cdp-1, -0x1.f0b8c2384c507p-3, 0x1.327dd5130ef72p-1, -0x1.7a2070b357f21p-2, 0x1.7a7cfacdf879dp-2, -0x1.2c07bb9dae965p-2, 0x1.fb753b1f31c65p-3, -0x1.a0d97e4269587p-3, 0x1.58589453b97bbp-3, -0x1.1b0d3d42d932bp-3 },   /* centre 1.218750000 */
+  { 0x1.cd0ebb0c4e488p-1, -0x1.5fa4609a59d2cp-3, 0x1.13236e09cf181p-1, -0x1.2616a66cb748ap-2, 0x1.29fb9224d7007p-2, -0x1.b7c019bda7132p-3, 0x1.658f76dab2a86p-3, -0x1.16bef3649d39bp-3, 0x1.b6aee3baf8284p-4, -0x1.570897c5886ebp-4 },   /* centre 1.281250000 */
+  { 0x1.c89aaab6c10fdp-1, -0x1.b8d4972a0d9cp-4, 0x1.f59ee44fdc796p-2, -0x1.c6c163713c6cbp-3, 0x1.dd53c7e7fbca8p-3, -0x1.45d61e648b785p-3, 0x1.00706690f6116p-3, -0x1.7bbc7df8eac4cp-4, 0x1.1d809aa6ec9fp-4, -0x1.a9b3bfeb56d76p-5 },   /* centre 1.343750000 */
+  { 0x1.c61d286fe74edp-1, -0x1.8f960eacc3e79p-5, 0x1.d035f977bf7ffp-2, -0x1.5afe653a01c68p-3, 0x1.850c11888a092p-3, -0x1.e6f81933b909dp-4, 0x1.7607930824288p-4, -0x1.06f53c3fa90a8p-4, 0x1.7afbb95743636p-5, -0x1.0de3bdb94b909p-5 },   /* centre 1.406250000 */
+  { 0x1.c5709f063f61ep-1, 0x1.8e787a2ac1f9ep-8, 0x1.b3f656a41419p-2, -0x1.026537ebbdf28p-3, 0x1.42e2dcb386c76p-3, -0x1.6dedd3608424ap-4, 0x1.1533b414d61ep-4, -0x1.718dbd05eec3dp-5, 0x1.001e8923ca168p-5, -0x1.5cf9f00355d61p-6 },   /* centre 1.468750000 */
+  { 0x1.c678adaa16db2p-1, 0x1.dade0522ce28dp-5, 0x1.9f502b04aa917p-2, -0x1.7061698453edp-4, 0x1.111adaec147d2p-3, -0x1.138a886268f36p-4, 0x1.a17ae1c392bd6p-5, -0x1.0707922c8c43ep-5, 0x1.60077de104a49p-6, -0x1.cb5c7571211ddp-7 },   /* centre 1.531250000 */
+  { 0x1.c920953aa5d66p-1, 0x1.b9496a6874861p-4, 0x1.9116c2e5de8d1p-2, -0x1.e346a34c78d6ep-5, 0x1.d74c383999e27p-4, -0x1.9de756ede0cd1p-5, 0x1.3f8131690fd1ap-5, -0x1.7a888b14ec653p-6, 0x1.eb8b5d6cd0026p-7, -0x1.334a276679165p-7 },   /* centre 1.593750000 */
+  { 0x1.cd5a098928442p-1, 0x1.3fb8f1d0abf2cp-3, 0x1.8867f0f1d270ap-2, -0x1.0654798b0415fp-5, 0x1.9f3d067f9d585p-4, -0x1.3412ca3fa8323p-5, 0x1.f164f1fbed563p-6, -0x1.12caa9ef9524ep-6, 0x1.5c618b73bc8a7p-7, -0x1.a14084fcb5d75p-8 },   /* centre 1.656250000 */
+  { 0x1.d31c4db6ff586p-1, 0x1.a140aba605e6ap-3, 0x1.849a7d111fe3ep-2, -0x1.0665ee5c25becp-7, 0x1.75d82f748db66p-4, -0x1.c1f8dbdb02d95p-6, 0x1.8a422b1844434p-6, -0x1.917ecef6748cdp-7, 0x1.f5201988eff97p-8, -0x1.1f187b1036facp-8 },   /* centre 1.718750000 */
+  { 0x1.da6389f09f623p-1, 0x1.0131e5b57cf1ap-2, 0x1.853176b1f3b73p-2, 0x1.c5c9000d6e1cep-7, 0x1.581177702069bp-4, -0x1.3d027a323721fp-6, 0x1.3ec6f9466489fp-6, -0x1.263da5167e69p-7, 0x1.6dbe71bbe090cp-8, -0x1.8fd143df66799p-9 },   /* centre 1.781250000 */
+  { 0x1.e3304db941633p-1, 0x1.3217c4a579d7cp-2, 0x1.89d2fbae9b259p-2, 0x1.1807b533d9092p-5, 0x1.43ae1d6087604p-4, -0x1.a0c1119bc32ap-7, 0x1.077745c6a4217p-6, -0x1.aecbc52480399p-8, 0x1.0f00dd6253d47p-8, -0x1.194b848e9be9ep-9 },   /* centre 1.843750000 */
+  { 0x1.ed87357995087p-1, 0x1.63cf26c2a3f66p-2, 0x1.924179f06fc8cp-2, 0x1.b66aa0070a6b4p-5, 0x1.370c0b9271813p-4, -0x1.d632bc804cea1p-8, 0x1.be2e3854ef50bp-7, -0x1.391015cd2774dp-8, 0x1.9823259db4371p-9, -0x1.8f35002269e0fp-10 },   /* centre 1.906250000 */
+  { 0x1.f970ac84d0a49p-1, 0x1.96cf0f1b4e4dp-2, 0x1.9e56bf5311f1ap-2, 0x1.2815a841a3351p-4, 0x1.30fa25285e4fep-4, -0x1.3d45167c1dcbap-9, 0x1.83e8c0f79bf95p-7, -0x1.bf53a20fad88p-9, 0x1.38d7f76fe48b2p-9, -0x1.1d0e83e2ca312p-10 },   /* centre 1.968750000 */
+};
+
+// sin(pi*r) for |r| <= 1/2:  c_k = (-1)^k pi^(2k+1) / (2k+1)!  (Taylor).
+// Truncation bound at |r| = 1/2 is 1.81e-23.  Reached only for x < 0.
+__device__ const double GFK_TG_SP[13] = {
+  0x1.921fb54442d18p+1,   /* 3.1415926535897932385 */
+  -0x1.4abbce625be53p+2,   /* -5.1677127800499700292 */
+  0x1.466bc6775aae2p+1,   /* 2.5501640398773454439 */
+  -0x1.32d2cce62bd86p-1,   /* -0.59926452932079207689 */
+  0x1.50783487ee782p-4,   /* 0.082145886611128228799 */
+  -0x1.e3074fde8871fp-8,   /* -0.0073704309457143507773 */
+  0x1.e8f434d018d63p-12,   /* 0.00046630280576761256442 */
+  -0x1.6fadb9f155744p-16,   /* -2.1915353447830215827e-05 */
+  0x1.aaec32af93359p-21,   /* 7.9520540014755127848e-07 */
+  -0x1.8a404211f9547p-26,   /* -2.294842899726987311e-08 */
+  0x1.2877020d52cfp-31,   /* 5.3926646626081284894e-10 */
+  -0x1.7215f879e1ac9p-37,   /* -1.0518471716932064455e-11 */
+  0x1.859c594ba4573p-43    /* 1.7302192458361107612e-13 */
+};
+
+#define GFK_TG_PI   0x1.921fb54442d18p+1
+#define GFK_TG_QNAN __uint_as_float(0x7fc00000u)
+
+// Gamma(r) for r in [1,2).  All arithmetic pinned to binary64 add/mul; the
+// two subtractions below are exact (Sterbenz), so j and u are exact.
+__device__ double gfk_tgamma_poly(double r)
 {
-    float y, hi, lo, c, t, e, hxs, hfx, r1;
-    int k, xsb;
-    unsigned int hx = __float_as_uint(x);
-    xsb = (int)(hx & 0x80000000u);
-    hx &= 0x7fffffffu;
-    c = 0.0f;
-
-    if (hx >= 0x4195b844u) {                 /* |x| >= 27*ln2 */
-        if (hx >= 0x42b17218u) {             /* |x| >= 88.721... */
-            if (hx > 0x7f800000u) return FADD(x, x);            /* NaN */
-            if (hx == 0x7f800000u)
-                return (xsb == 0) ? x : -1.0f;                  /* +-inf */
-            if (x > EM1_OTHR) return FMUL(EM1_HUGE, EM1_HUGE);  /* oflow */
-        }
-        if (xsb != 0) return EM1_TINYM1;     /* x < -27*ln2: -1 */
-    }
-
-    if (hx > 0x3eb17218u) {                  /* |x| > 0.5 ln2 */
-        if (hx < 0x3F851592u) {              /* |x| < 1.5 ln2 */
-            if (xsb == 0) { hi = FSUB(x, EM1_LN2HI); lo = EM1_LN2LO;  k = 1; }
-            else          { hi = FADD(x, EM1_LN2HI); lo = -EM1_LN2LO; k = -1; }
-        } else {
-            float kf = FADD(FMUL(EM1_IVLN2, x), (xsb == 0) ? 0.5f : -0.5f);
-            k  = (int)kf;
-            t  = (float)k;
-            hi = FSUB(x, FMUL(t, EM1_LN2HI));
-            lo = FMUL(t, EM1_LN2LO);
-        }
-        x = FSUB(hi, lo);
-        c = FSUB(FSUB(hi, x), lo);
-    } else if (hx < 0x33000000u) {           /* |x| < 2**-25 */
-        t = FADD(EM1_HUGE, x);
-        return FSUB(x, FSUB(t, FADD(EM1_HUGE, x)));
-    } else {
-        k = 0;
-    }
-
-    hfx = FMUL(0.5f, x);
-    hxs = FMUL(x, hfx);
-    r1 = FADD(1.0f, FMUL(hxs, FADD(EM1_Q1, FMUL(hxs, FADD(EM1_Q2,
-             FMUL(hxs, FADD(EM1_Q3, FMUL(hxs, FADD(EM1_Q4,
-             FMUL(hxs, EM1_Q5))))))))));
-    t = FSUB(3.0f, FMUL(r1, hfx));
-    e = FMUL(hxs, FDIV(FSUB(r1, t), FSUB(6.0f, FMUL(x, t))));
-    if (k == 0) return FSUB(x, FSUB(FMUL(x, e), hxs));
-    e = FSUB(FMUL(x, FSUB(e, c)), c);
-    e = FSUB(e, hxs);
-    if (k == -1) return FSUB(FMUL(0.5f, FSUB(x, e)), 0.5f);
-    if (k == 1) {
-        if (x < -0.25f) return FMUL(-2.0f, FSUB(e, FADD(x, 0.5f)));
-        return FADD(1.0f, FMUL(2.0f, FSUB(x, e)));
-    }
-    if (k <= -2 || k > 56) {
-        y = FSUB(1.0f, FSUB(e, x));
-        y = __uint_as_float(__float_as_uint(y) + ((unsigned int)k << 23));
-        return FSUB(y, 1.0f);
-    }
-    if (k < 23) {
-        t = __uint_as_float(0x3f800000u - (0x1000000u >> k)); /* 1-2^-k */
-        y = FSUB(t, FSUB(e, x));
-        y = __uint_as_float(__float_as_uint(y) + ((unsigned int)k << 23));
-    } else {
-        t = __uint_as_float((unsigned int)(0x7f - k) << 23);  /* 2^-k */
-        y = FSUB(x, FADD(e, t));
-        y = FADD(y, 1.0f);
-        y = __uint_as_float(__float_as_uint(y) + ((unsigned int)k << 23));
-    }
-    return y;
+    double t = DMUL(DSUB(r, 1.0), 16.0);                 /* [0,16), exact */
+    int j = (int)t;
+    if (j > 15) j = 15;                                  /* r = nextbelow(2) */
+    double u = DSUB(r, DMUL((double)(33 + 2 * j), 0.03125));   /* exact */
+    const double *c = GFK_TG_C[j];
+    double p = c[9];
+    p = DADD(DMUL(p, u), c[8]);
+    p = DADD(DMUL(p, u), c[7]);
+    p = DADD(DMUL(p, u), c[6]);
+    p = DADD(DMUL(p, u), c[5]);
+    p = DADD(DMUL(p, u), c[4]);
+    p = DADD(DMUL(p, u), c[3]);
+    p = DADD(DMUL(p, u), c[2]);
+    p = DADD(DMUL(p, u), c[1]);
+    p = DADD(DMUL(p, u), c[0]);
+    return p;
 }
 
-// --------------------------------------------------------------------------
-// glibc 2.39 sysdeps/ieee754/flt-32/e_lgammaf_r.c, POSITIVE arm only.  The
-// negative-x machinery (sin_pif, __lgamma_negf) is deliberately absent:
-// tgammaf's callers in this kernel hand it x in (0.5, 2.5) and the sweep
-// grades (0.4, 2.6) plus the (2, 8) tail; a negative or non-finite argument
-// returns NaN rather than a value this kernel cannot vouch for.  No ifunc
-// variant exists on x86-64: plain float32 ops, written association order.
-// Every word below was verified against the decimal literal.
-// --------------------------------------------------------------------------
-#define LG_A0  __uint_as_float(0x3D9E233Fu)
-#define LG_A1  __uint_as_float(0x3EA51A66u)
-#define LG_A2  __uint_as_float(0x3D89F001u)
-#define LG_A3  __uint_as_float(0x3CA89915u)
-#define LG_A4  __uint_as_float(0x3BF2027Eu)
-#define LG_A5  __uint_as_float(0x3B3D6EC6u)
-#define LG_A6  __uint_as_float(0x3A9C54A1u)
-#define LG_A7  __uint_as_float(0x3A05B634u)
-#define LG_A8  __uint_as_float(0x39679767u)
-#define LG_A9  __uint_as_float(0x38E28445u)
-#define LG_A10 __uint_as_float(0x37D383A2u)
-#define LG_A11 __uint_as_float(0x383C2C75u)
-#define LG_TC  __uint_as_float(0x3FBB16C3u)
-#define LG_TF  __uint_as_float(0xBDF8CDCDu)
-#define LG_TT  __uint_as_float(0x31E61C52u)
-// tc - one, folded on the host: FP32 constant-constant subtraction must not
-// reach ptxas (rule 2).  Exact: 1.4616321325 - 1 loses no mantissa bits.
-#define LG_TCM1 __uint_as_float(0x3EEC5B0Cu)
-#define LG_T0  __uint_as_float(0x3EF7B95Eu)
-#define LG_T1  __uint_as_float(0xBE17213Cu)
-#define LG_T2  __uint_as_float(0x3D845A15u)
-#define LG_T3  __uint_as_float(0xBD064D47u)
-#define LG_T4  __uint_as_float(0x3C93373Du)
-#define LG_T5  __uint_as_float(0xBC28FCFEu)
-#define LG_T6  __uint_as_float(0x3BC7E707u)
-#define LG_T7  __uint_as_float(0xBB7177FEu)
-#define LG_T8  __uint_as_float(0x3B141699u)
-#define LG_T9  __uint_as_float(0xBAB7F476u)
-#define LG_T10 __uint_as_float(0x3A66F867u)
-#define LG_T11 __uint_as_float(0xBA0D3085u)
-#define LG_T12 __uint_as_float(0x39A57B6Bu)
-#define LG_T13 __uint_as_float(0xB9A3F927u)
-#define LG_T14 __uint_as_float(0x39AFE9F7u)
-#define LG_U0  __uint_as_float(0xBD9E233Fu)
-#define LG_U1  __uint_as_float(0x3F2200F4u)
-#define LG_U2  __uint_as_float(0x3FBA3AE7u)
-#define LG_U3  __uint_as_float(0x3F7A4BB2u)
-#define LG_U4  __uint_as_float(0x3E6A7578u)
-#define LG_U5  __uint_as_float(0x3C5B3C5Eu)
-#define LG_V1  __uint_as_float(0x401D2EBEu)
-#define LG_V2  __uint_as_float(0x4008392Du)
-#define LG_V3  __uint_as_float(0x3F44EFDFu)
-#define LG_V4  __uint_as_float(0x3DD572AFu)
-#define LG_V5  __uint_as_float(0x3B52D5DBu)
-#define LG_S0  __uint_as_float(0xBD9E233Fu)
-#define LG_S1  __uint_as_float(0x3E5C245Au)
-#define LG_S2  __uint_as_float(0x3EA6CC7Au)
-#define LG_S3  __uint_as_float(0x3E15DCE6u)
-#define LG_S4  __uint_as_float(0x3CDA40E4u)
-#define LG_S5  __uint_as_float(0x3AF135B4u)
-#define LG_S6  __uint_as_float(0x3805FF67u)
-#define LG_R1  __uint_as_float(0x3FB22D3Bu)
-#define LG_R2  __uint_as_float(0x3F38D0C5u)
-#define LG_R3  __uint_as_float(0x3E300F6Eu)
-#define LG_R4  __uint_as_float(0x3C98BF54u)
-#define LG_R5  __uint_as_float(0x3A4BEED6u)
-#define LG_R6  __uint_as_float(0x36F5D7BDu)
-#define LG_W0  __uint_as_float(0x3ED67F1Du)
-#define LG_W1  __uint_as_float(0x3DAAAAABu)
-#define LG_W2  __uint_as_float(0xBB360B61u)
-#define LG_W3  __uint_as_float(0x3A500CFDu)
-#define LG_W4  __uint_as_float(0xBA1C065Cu)
-#define LG_W5  __uint_as_float(0x3A5B3DD2u)
-#define LG_W6  __uint_as_float(0xBAD5C4E8u)
-
-__device__ float gfk_lgamma_pos(float x)
+// Gamma(v) in binary64 for 0 < v < 43 (the caller's x < 36 guard bounds the
+// reflected argument 1-x below 43, so the recurrence runs at most 41 times).
+__device__ double gfk_tgamma_pos(double v)
 {
-    unsigned int hx = __float_as_uint(x);
-    int ix = (int)(hx & 0x7fffffffu);
-    if ((int)hx < 0 ) return __int_as_float(0x7fc00000);  /* not ported */
-    if (ix >= 0x7f800000) return FMUL(x, x);
-    if (ix == 0) return FDIV(1.0f, fabsf(x));
-    if (ix < 0x30800000) return -gfk_log(x);   /* |x| < 2**-30 */
-
-    float t, y, z, p, p1, p2, p3, q, r, w;
-    int i;
-    y = 0.0f; i = 0;
-    if (ix == 0x3f800000 || ix == 0x40000000) {
-        r = 0.0f;
-    } else if (ix < 0x40000000) {            /* x < 2.0 */
-        if (ix <= 0x3f666666) {              /* lgamma(x) = lgamma(x+1)-log(x) */
-            r = -gfk_log(x);
-            if (ix >= 0x3f3b4a20)      { y = FSUB(1.0f, x); i = 0; }
-            else if (ix >= 0x3e6d3308) { y = FSUB(x, LG_TCM1); i = 1; }
-            else                       { y = x; i = 2; }
-        } else {
-            r = 0.0f;
-            if (ix >= 0x3fdda618)      { y = FSUB(2.0f, x); i = 0; }
-            else if (ix >= 0x3F9da620) { y = FSUB(x, LG_TC); i = 1; }
-            else                       { y = FSUB(x, 1.0f); i = 2; }
-        }
-        switch (i) {
-        case 0:
-            z = FMUL(y, y);
-            p1 = FADD(LG_A0, FMUL(z, FADD(LG_A2, FMUL(z, FADD(LG_A4,
-                 FMUL(z, FADD(LG_A6, FMUL(z, FADD(LG_A8,
-                 FMUL(z, LG_A10))))))))));
-            p2 = FMUL(z, FADD(LG_A1, FMUL(z, FADD(LG_A3, FMUL(z, FADD(LG_A5,
-                 FMUL(z, FADD(LG_A7, FMUL(z, FADD(LG_A9,
-                 FMUL(z, LG_A11)))))))))));
-            p = FADD(FMUL(y, p1), p2);
-            r = FADD(r, FSUB(p, FMUL(0.5f, y)));
-            break;
-        case 1:
-            z = FMUL(y, y);
-            w = FMUL(z, y);
-            p1 = FADD(LG_T0, FMUL(w, FADD(LG_T3, FMUL(w, FADD(LG_T6,
-                 FMUL(w, FADD(LG_T9, FMUL(w, LG_T12))))))));
-            p2 = FADD(LG_T1, FMUL(w, FADD(LG_T4, FMUL(w, FADD(LG_T7,
-                 FMUL(w, FADD(LG_T10, FMUL(w, LG_T13))))))));
-            p3 = FADD(LG_T2, FMUL(w, FADD(LG_T5, FMUL(w, FADD(LG_T8,
-                 FMUL(w, FADD(LG_T11, FMUL(w, LG_T14))))))));
-            p = FSUB(FMUL(z, p1), FSUB(LG_TT, FMUL(w, FADD(p2, FMUL(y, p3)))));
-            r = FADD(r, FADD(LG_TF, p));
-            break;
-        case 2:
-            p1 = FMUL(y, FADD(LG_U0, FMUL(y, FADD(LG_U1, FMUL(y, FADD(LG_U2,
-                 FMUL(y, FADD(LG_U3, FMUL(y, FADD(LG_U4,
-                 FMUL(y, LG_U5)))))))))));
-            p2 = FADD(1.0f, FMUL(y, FADD(LG_V1, FMUL(y, FADD(LG_V2,
-                 FMUL(y, FADD(LG_V3, FMUL(y, FADD(LG_V4,
-                 FMUL(y, LG_V5))))))))));
-            r = FADD(r, FADD(FMUL(-0.5f, y), FDIV(p1, p2)));
-            break;
-        }
-    } else if (ix < 0x41000000) {            /* x < 8.0 */
-        i = (int)x;
-        y = FSUB(x, (float)i);
-        p = FMUL(y, FADD(LG_S0, FMUL(y, FADD(LG_S1, FMUL(y, FADD(LG_S2,
-            FMUL(y, FADD(LG_S3, FMUL(y, FADD(LG_S4, FMUL(y, FADD(LG_S5,
-            FMUL(y, LG_S6)))))))))))));
-        q = FADD(1.0f, FMUL(y, FADD(LG_R1, FMUL(y, FADD(LG_R2, FMUL(y,
-            FADD(LG_R3, FMUL(y, FADD(LG_R4, FMUL(y, FADD(LG_R5,
-            FMUL(y, LG_R6))))))))))));
-        r = FADD(FMUL(0.5f, y), FDIV(p, q));
-        z = 1.0f;
-        switch (i) {                          /* lgamma(1+s) = log(s)+lgamma(s) */
-        case 7: z = FMUL(z, FADD(y, 6.0f));   /* FALLTHRU */
-        case 6: z = FMUL(z, FADD(y, 5.0f));   /* FALLTHRU */
-        case 5: z = FMUL(z, FADD(y, 4.0f));   /* FALLTHRU */
-        case 4: z = FMUL(z, FADD(y, 3.0f));   /* FALLTHRU */
-        case 3: z = FMUL(z, FADD(y, 2.0f));
-                r = FADD(r, gfk_log(z));
-                break;
-        }
-    } else if (ix < 0x4c800000) {            /* 8.0 <= x < 2**26 */
-        t = gfk_log(x);
-        z = FDIV(1.0f, x);
-        y = FMUL(z, z);
-        w = FADD(LG_W0, FMUL(z, FADD(LG_W1, FMUL(y, FADD(LG_W2, FMUL(y,
-            FADD(LG_W3, FMUL(y, FADD(LG_W4, FMUL(y, FADD(LG_W5,
-            FMUL(y, LG_W6))))))))))));
-        r = FADD(FMUL(FSUB(x, 0.5f), FSUB(t, 1.0f)), w);
-    } else {
-        r = FMUL(x, FSUB(gfk_log(x), 1.0f));
+    if (v >= 1.0) {
+        int n = (int)v;                                  /* 1 .. 42 */
+        double r = DSUB(v, (double)(n - 1));             /* [1,2), exact */
+        double p = gfk_tgamma_poly(r);
+        for (int i = 1; i < n; i++)
+            p = DMUL(p, DSUB(v, (double)i));
+        return p;
     }
-    return r;
+    return DDIV(gfk_tgamma_poly(DADD(v, 1.0)), v);       /* Gamma(v)=Gamma(v+1)/v */
 }
 
-// --------------------------------------------------------------------------
-// glibc 2.39 sysdeps/ieee754/dbl-64/gamma_productf.c: the float
-// __gamma_productf computed in double, which is what x86-64 links.
-// --------------------------------------------------------------------------
-__device__ float gfk_gamma_product(float x, float x_eps, int n, float *eps)
+// sin(pi*x) for |x| < 2^23.  k and the subtraction are exact.
+__device__ double gfk_tgamma_sinpi(double x)
 {
-    double x_full = DADD((double)x, (double)x_eps);
-    double ret = x_full;
-    for (int i = 1; i < n; i++)
-        ret = DMUL(ret, DADD(x_full, (double)i));
-    float fret = __double2float_rn(ret);
-    *eps = __double2float_rn(DDIV(DSUB(ret, (double)fret), (double)fret));
-    return fret;
+    long long k = (long long)(x < 0.0 ? DSUB(x, 0.5) : DADD(x, 0.5));
+    double r  = DSUB(x, (double)k);                      /* [-1/2,1/2], exact */
+    double r2 = DMUL(r, r);
+    double s  = GFK_TG_SP[12];
+    for (int i = 11; i >= 0; i--) s = DADD(DMUL(s, r2), GFK_TG_SP[i]);
+    s = DMUL(s, r);
+    return (k & 1) ? -s : s;
 }
 
-// --------------------------------------------------------------------------
-// glibc 2.39 sysdeps/ieee754/flt-32/e_gammaf_r.c, positive arm.  x <= 0,
-// NaN and inf return NaN (not ported -- the scheme cannot produce them:
-// alpha = (tunning*(beta-2)+1)/(1-tunning) with tunning clamped to
-// [.2, .9] and beta in {1.3, 2.5, 4.} keeps every argument in
-// [1.06, 32.2)).  x >= 36 overflows to +inf exactly as glibc's
-// FLT_MAX*FLT_MAX does.
-// --------------------------------------------------------------------------
-#define GAM_C0     __uint_as_float(0x3DAAAAABu)   /* 0x1.555556p-4 */
-#define GAM_C1     __uint_as_float(0xBB360B61u)   /* -0xb.60b61p-12 */
-#define GAM_C2     __uint_as_float(0x3A500D01u)   /* 0x3.403404p-12 */
-#define GAM_SQRT12 __uint_as_float(0x3F3504F3u)   /* M_SQRT1_2f */
-#define GAM_TWOPI  __uint_as_float(0x40C90FDBu)   /* 2*M_PIf, host-folded */
-
-__device__ float gfk_gammaf_positive(float x, int *exp2_adj)
-{
-    if (x < 0.5f) {
-        *exp2_adj = 0;
-        return FDIV(gfk_exp(gfk_lgamma_pos(FADD(x, 1.0f))), x);
-    } else if (x <= 1.5f) {
-        *exp2_adj = 0;
-        return gfk_exp(gfk_lgamma_pos(x));
-    } else if (x < 2.5f) {
-        *exp2_adj = 0;
-        float x_adj = FSUB(x, 1.0f);
-        return FMUL(gfk_exp(gfk_lgamma_pos(x_adj)), x_adj);
-    } else {
-        float eps = 0.0f;
-        float x_eps = 0.0f;
-        float x_adj = x;
-        float prod = 1.0f;
-        if (x < 4.0f) {
-            float n = ceilf(FSUB(4.0f, x));
-            x_adj = FADD(x, n);
-            x_eps = FSUB(x, FSUB(x_adj, n));
-            prod = gfk_gamma_product(FSUB(x_adj, n), x_eps, (int)n, &eps);
-        }
-        float exp_adj = -eps;
-        float x_adj_int = roundf(x_adj);
-        float x_adj_frac = FSUB(x_adj, x_adj_int);
-        int x_adj_log2;
-        float x_adj_mant = frexpf(x_adj, &x_adj_log2);
-        if (x_adj_mant < GAM_SQRT12) {
-            x_adj_log2--;
-            x_adj_mant = FMUL(x_adj_mant, 2.0f);
-        }
-        *exp2_adj = x_adj_log2 * (int)x_adj_int;
-        float ret = FDIV(FMUL(FMUL(FMUL(
-            gfk_pow(x_adj_mant, x_adj),
-            gfk_exp2(FMUL((float)x_adj_log2, x_adj_frac))),
-            gfk_exp(-x_adj)),
-            FSQRT(FDIV(GAM_TWOPI, x_adj))),
-            prod);
-        exp_adj = FADD(exp_adj, FMUL(x_eps, gfk_log(x_adj)));
-        float bsum = GAM_C2;
-        float x_adj2 = FMUL(x_adj, x_adj);
-        bsum = FADD(FDIV(bsum, x_adj2), GAM_C1);
-        bsum = FADD(FDIV(bsum, x_adj2), GAM_C0);
-        exp_adj = FADD(exp_adj, FDIV(bsum, x_adj));
-        return FADD(ret, FMUL(ret, gfk_expm1(exp_adj)));
-    }
-}
-
+// The correctly-rounded float32 gamma.
+//
+// The 36.0f overflow guard is arithmetic, not inherited: MEASURED, the last
+// float32 with a finite Gamma is 35.0401001, and binary64 holds Gamma out to
+// x = 171.6, so ANY threshold in [35.041, 171] gives the same float32 answer
+// on every argument.  36 is taken as the smallest integer above the overflow
+// point, which is also what bounds the recurrence trip count above at 42.
+// glibc picks the same number for the same arithmetic reason; the choice is
+// free within a 136-wide interval and carries no expression.
 __device__ float gfk_tgamma(float x)
 {
-    unsigned int hx = __float_as_uint(x);
-    if ((hx & 0x80000000u) || (hx & 0x7fffffffu) >= 0x7f800000u
-        || (hx & 0x7fffffffu) == 0u)
-        return __int_as_float(0x7fc00000);   /* outside the ported domain */
-    if (x >= 36.0f)
-        return __int_as_float(0x7f800000);   /* FLT_MAX*FLT_MAX overflow */
-    int exp2_adj;
-    float tret = gfk_gammaf_positive(x, &exp2_adj);
-    float ret = scalbnf(tret, exp2_adj);
-    // glibc's isinf/iszero fixups return the same +inf / +0 words for a
-    // positive argument; nothing further to do.
-    return ret;
+    unsigned int ix = __float_as_uint(x);
+    unsigned int ax = ix & 0x7fffffffu;
+
+    if (ax >= 0x7f800000u) {                    /* inf / nan */
+        if (ix == 0xff800000u) return GFK_TG_QNAN;      /* -inf  -> qNaN */
+        return FADD(x, x);                              /* +inf  -> +inf
+                                                           NaN   -> same, quieted */
+    }
+    if (ix < 0x80000000u) {                     /* x >= +0 */
+        if (ix == 0u) return FDIV(1.0f, x);             /* +0 -> +inf */
+        if (x >= 36.0f)
+            return FMUL(FMUL(x, 0x1p127f), 0x1p127f);   /* -> +inf */
+        return gfk_d2f_rn(gfk_tgamma_pos((double)x));
+    }
+    /* x < 0: reflection  Gamma(x) = pi / (sin(pi x) * Gamma(1-x)) */
+    if (ix == 0x80000000u) return FDIV(1.0f, x);        /* -0 -> -inf */
+    if (ax >= 0x4b000000u) return GFK_TG_QNAN;          /* |x| >= 2^23: every
+                                                           float is an integer,
+                                                           so every one is a pole */
+    {
+        double s = gfk_tgamma_sinpi((double)x);
+        if (s == 0.0) return GFK_TG_QNAN;               /* negative integer: pole */
+        if (x <= -42.0f)                                /* |Gamma| < 2^-150 below
+                                                           here; measured, the
+                                                           last non-zero float32
+                                                           result is at -41.000042 */
+            return (s < 0.0) ? -0.0f : 0.0f;
+        {
+            double g1 = gfk_tgamma_pos(DSUB(1.0, (double)x));   /* 1-x in (1,43) */
+            return gfk_d2f_rn(DDIV(GFK_TG_PI, DMUL(s, g1)));
+        }
+    }
 }

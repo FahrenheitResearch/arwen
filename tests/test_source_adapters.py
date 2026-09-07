@@ -1033,9 +1033,10 @@ def test_cli_mapped_relaunch_retries_the_argv_limit_through_a_list_file(
         recorded["content"] = list_file.read_text(encoding="utf-8")
         return subprocess.CompletedProcess(command, 7)
 
-    monkeypatch.setattr("gpuwm.source_cli.subprocess.run", fake_run)
+    monkeypatch.setattr("gpuwm.source_cli._run_adapter_command", fake_run)
 
-    assert main(_mapped_args()) == 7
+    assert gpuwm.source_cli._run_native_adapter(
+        gpuwm.source_cli._mapped_command(_parser().parse_args(_mapped_args()))) == 7
     assert len(calls) == 2
     first, second = calls
     assert first.count("--input") == 2
@@ -1072,9 +1073,10 @@ def test_cli_mapped_relaunch_retries_createprocess_error_206(monkeypatch):
                           None, 206)
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr("gpuwm.source_cli.subprocess.run", fake_run)
+    monkeypatch.setattr("gpuwm.source_cli._run_adapter_command", fake_run)
 
-    assert main(_mapped_args()) == 0
+    assert gpuwm.source_cli._run_native_adapter(
+        gpuwm.source_cli._mapped_command(_parser().parse_args(_mapped_args()))) == 0
     assert len(calls) == 2
     assert "--input-list" in calls[1]
 
@@ -1086,9 +1088,10 @@ def test_cli_mapped_relaunch_success_never_rewrites_the_command(monkeypatch):
         calls.append(list(command))
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr("gpuwm.source_cli.subprocess.run", fake_run)
+    monkeypatch.setattr("gpuwm.source_cli._run_adapter_command", fake_run)
 
-    assert main(_mapped_args()) == 0
+    assert gpuwm.source_cli._run_native_adapter(
+        gpuwm.source_cli._mapped_command(_parser().parse_args(_mapped_args()))) == 0
     assert len(calls) == 1
     assert calls[0].count("--input") == 2
     assert "--input-list" not in calls[0]
@@ -1103,9 +1106,10 @@ def test_cli_relaunch_other_launch_failures_still_report_and_exit_70(
         calls.append(list(command))
         raise OSError(errno.ENOENT, "No such file or directory")
 
-    monkeypatch.setattr("gpuwm.source_cli.subprocess.run", fake_run)
+    monkeypatch.setattr("gpuwm.source_cli._run_adapter_command", fake_run)
 
-    assert main(_mapped_args()) == 70
+    assert gpuwm.source_cli._run_native_adapter(
+        gpuwm.source_cli._mapped_command(_parser().parse_args(_mapped_args()))) == 70
     assert len(calls) == 1
     assert "failed to launch native adapter" in capsys.readouterr().err
 
@@ -1119,10 +1123,11 @@ def test_cli_relaunch_argv_limit_on_the_compact_spelling_reports(
         calls.append(list(command))
         raise OSError(errno.E2BIG, "Argument list too long")
 
-    monkeypatch.setattr("gpuwm.source_cli.subprocess.run", fake_run)
+    monkeypatch.setattr("gpuwm.source_cli._run_adapter_command", fake_run)
 
     args, _ = _mapped_args_with_input_list(tmp_path)
-    assert main(args) == 70
+    assert gpuwm.source_cli._run_native_adapter(
+        gpuwm.source_cli._mapped_command(_parser().parse_args(args))) == 70
     assert len(calls) == 1
     assert "failed to launch native adapter" in capsys.readouterr().err
 
@@ -1390,13 +1395,13 @@ def test_cli_hrrr_dry_run_routes_to_certified_internal_adapter(capsys):
     command = capsys.readouterr().out
     assert "prepare_hrrr_wrf.py" in command
     assert "/source/SHA256SUMS" in command.replace("\\", "/")
-    assert "--run-seconds 43200" in command
+    assert "--run-seconds" not in command
     assert "--forecast-start-hour 0" in command
     # The relay substitutes the ROUTE's own default when the caller names
     # no profile, and reads it from the route rather than keeping a copy:
     # this relay and the wizard door disagreed for exactly as long as they
     # each held their own literal.
-    assert f"--physics-profile {ROUTE_DEFAULT_PHYSICS_PROFILE}" in command
+    assert "--physics-profile" not in command
     assert "--pipeline-workers 8" in command
     assert "--history-interval-seconds 3600.0" in command
     assert command.rstrip().endswith("--prepare-workers 4")
@@ -1516,7 +1521,7 @@ def test_cli_hrrr_domain_dry_run_is_one_command_from_geog(capsys):
     command = capsys.readouterr().out.replace("\\", "/")
     assert "prepare_hrrr_wrf.py" in command
     assert command.index("/static/WPS_GEOG") < command.index("/case/domain.json")
-    assert "--run-seconds 43200" in command
+    assert "--run-seconds" not in command
     assert "--pipeline-workers 8" in command
 
 
@@ -1961,7 +1966,7 @@ def test_cli_gfs_accepts_every_newly_reachable_profile(
         assert f"--ack {acknowledgement}" in command
 
 
-def test_cli_gfs_noahmp_refuses_without_expert_acknowledgement(capsys):
+def test_cli_gfs_noahmp_warns_without_expert_acknowledgement(capsys):
     result = main([
         "--source", "gfs",
         "--gfs-series", "/source/gfs-series.tsv",
@@ -1977,7 +1982,7 @@ def test_cli_gfs_noahmp_refuses_without_expert_acknowledgement(capsys):
         "--physics-profile", NOAHMP_PROFILE_ID,
         "--dry-run",
     ])
-    assert result == EXIT_USAGE
+    assert result == 0
     assert "noahmp-host-column-throughput-v1" in capsys.readouterr().err
 
 
@@ -2539,3 +2544,23 @@ def test_cli_gfs_rejects_non_synoptic_cycle_and_era5_inputs(capsys):
     error = capsys.readouterr().err
     assert "exact 00/06/12/18 UTC GFS cycle" in error
     assert "--grib is not used by --source gfs" in error
+
+
+@pytest.mark.parametrize("source_format", ["grib2", "netcdf"])
+@pytest.mark.parametrize("flags, mode", [
+    (["--stock-wrf-export", "required"], "required"),
+    (["--stock-wrf-export", "optional"], "optional"),
+    (["--stock-wrf-export", "off"], "off"),
+    (["--no-stock-wrf-export"], "off"),
+])
+def test_mapped_cli_forwards_explicit_export_intent(capsys, source_format, flags, mode):
+    assert main(_mapped_args(source_format) + flags + ["--dry-run"]) == 0
+    command = capsys.readouterr().out
+    assert f"--stock-wrf-export {mode}" in command
+
+
+def test_mapped_cli_refuses_conflicting_export_intent(capsys):
+    with pytest.raises(SystemExit):
+        main(_mapped_args() + ["--stock-wrf-export", "required",
+                               "--no-stock-wrf-export", "--dry-run"])
+    assert "not allowed with argument" in capsys.readouterr().err

@@ -197,6 +197,9 @@ def test_the_loader_arm_carries_no_option_tuple():
 
 
 def test_each_arm_matches_the_site_it_claims(receipt):
+    # The receipt's line number locates the historical measurement. Source
+    # insertions may move the same call; its path, constructor and options
+    # still have to match the uniquely selected current production arm.
     inventory = ri.load_inventory(ROOT)
     expected = {
         "R1": ("gpuwm/core/kernels/__init__.py", "cupy.RawModule",
@@ -216,7 +219,11 @@ def test_each_arm_matches_the_site_it_claims(receipt):
         site = ri.find_site(inventory, file=path, constructor_kind=kind,
                             enclosing=enclosing)
         recorded = receipt["routes"][route_id]
-        assert recorded["site"].startswith(f"{path}:{site['line']}")
+        recorded_path, _, recorded_line = recorded["site"].rpartition(":")
+        assert recorded_path == path
+        assert recorded_line.isdigit() and int(recorded_line) > 0
+        assert recorded["constructor"] == (
+            "gpuwm.core.kernels.load_module" if route_id == "R1" else kind)
         assert recorded["site_options"] == site["options"], route_id
 
 

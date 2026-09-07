@@ -5,7 +5,9 @@ through 13.2 driver stacks on sm_89 by two independent nodes. This
 page explains how
 the sizing model works, where its safety factor comes from, and what
 we measured on real hardware -- including the run where the estimator
-was wrong and what changed because of it.
+was wrong and what changed because of it.  Host RAM is sized
+separately and by hand:
+[Host memory (RAM), which nothing above prices](#host-memory-ram-which-nothing-above-prices).
 
 ## The short version
 
@@ -17,6 +19,49 @@ Tell the wizard your card; it sizes the grids:
 gpuwm domain --point 35.3,-97.5 --card 24gb \
   --cycle 1999-05-03T12 --hours 6 --out configs/myarea.toml
 ```
+
+Choose the vertical resolution and streaming mode before sizing:
+
+```bash
+gpuwm domain --point 35.3,-97.5 --card 12gb --source gfs \
+  --cycle 2026-07-29T18 --hours 6 --root-dx 3 --nz 76 --tiles \
+  --out configs/myarea.toml
+```
+
+`--nz N` sets the number of mass levels; the file contains `N + 1` eta
+interfaces resampled from the default stretched ladder. Omitting it keeps
+the original 49 levels exactly. The requested levels are included in both
+forecast and preparation memory estimates.
+
+The wizard keeps the requested spacing and output intervals. If its default
+time step cannot land those events exactly, it chooses the nearest compatible
+exact rational step at or below the spacing-based recommendation and names the
+adjustment in the console and generated config. Named physics suites keep
+their original radiation, cumulus and PBL periods. Explicit timesteps in authored
+configs retain their exact values and existing validation.
+
+Bare `--tiles` means `--tiles auto`: the forecast planner chooses resident
+or streamed execution using the declared card and this host's RAM.
+`--tiles on` forces streaming; `--tiles off` selects resident execution.
+The emitted `[tiles]` mode applies to the whole tree. A tree that would
+require unsupported adjacent streamed domains is refused with the
+planner's reason. Streaming still has to fit its host store, and preparation
+still has to fit its own memory budget. Source coverage and polygon bounds
+continue to apply. Run the wizard on the forecast host when sizing its RAM.
+
+For existing ERA5 files, add `--forcing path/to/era5-combined.grib` (or
+multiple files) with `--source era5`. The native header inventory measures
+the cadence before fitting any grid. It requires the requested start,
+coverage through the forecast end, and a continuous uniform sequence;
+a missing time is diagnosed before the config is written. The same cadence
+is written to the case, WPS namelist, and fetch hints. With no supplied files,
+the source defaults are unchanged.
+
+A wider supplied window also costs memory: preparation and a resident
+forecast retain every boundary interval after the start, including intervals beyond
+the requested forecast end. The wizard, `gpuwm check`, and launch admission
+use that actual retained count. Shortening `--hours` alone does not remove
+those intervals; supply a narrower input window to reduce them.
 
 | card tier | flat reserve | working budget | what fits (measured examples) |
 |---|---|---|---|
@@ -438,6 +483,151 @@ If you hand-build a config, run `gpuwm check CONFIG --alloc` before
 the first long run: `--alloc` actually allocates the estimate on the
 device and verifies the three-way inequality (measured pool peak <=
 estimate <= budget) instead of trusting arithmetic.
+
+## Host memory (RAM), which nothing above prices
+
+Every number on this page so far is **device** memory. Host RAM is a
+separate budget on a much larger multiplier, and on a big forcing file
+it is the one that runs out first. The two fail nothing alike:
+
+- **VRAM** runs out as a Python exception, with a traceback naming the
+  allocation.
+- **Host RAM** runs out as a signal. The kernel OOM killer sends
+  SIGKILL, which no process can catch: your shell prints `Killed` and
+  that is the whole message. systemd stopping the session scope after
+  an OOM (`OOMPolicy=stop`), or a userspace watchdog such as `earlyoom`
+  or `nohang`, sends SIGTERM first -- your shell prints `Terminated`,
+  and gpuwm catches that one: it prints the phase the run had reached,
+  its own resident set size, its CuPy pool, the senders worth checking,
+  and the paths of the worker logs your terminal never saw.
+
+### What the forcing decode costs
+
+The forcing is decoded on the CPU, to **float64**, on the **source**
+grid, before anything touches the GPU:
+
+```
+host bytes  ~  8 B  x  2-D fields per valid time
+                    x  source grid points
+                    x  valid times present in the forcing files
+                    x  copies retained
+```
+
+Every factor is larger than it first looks:
+
+- **2-D fields per valid time** counts horizontal slices, not
+  variables. `gpuwm fetch --source era5` asks CDS for 5 pressure-level
+  variables on the 37 standard levels plus 20 single-level variables --
+  205 full 2-D arrays at every valid time. The certified GFS ladder is
+  5 x 21 + 19 = 124. These are the retrievals this tool writes; a
+  narrower request decodes proportionally less, and `gpuwm check`
+  prices the count your forcing files actually carry rather than this
+  one.
+- **Source grid points**, not target grid points. The decode happens
+  before horizontal interpolation, so a global field costs what a
+  global field costs however small your domains are.
+- **Valid times present in the files**, not the times the forecast
+  integrates. The input catalog is built from the forcing FILES alone
+  (`build_input_catalog`, `gpuwm/ingest/preflight.py`) and takes the
+  longest contiguous run of valid times at the declared cadence.
+- **Copies retained** is 2 while the root is being prepared: the
+  decoder's own arrays and the frozen snapshots copied from them are
+  reached through separate process-lifetime caches in
+  `gpuwm/ingest/grib.py`. Both are released the moment preparation
+  returns, so this is a **peak**, not a lifetime cost -- but it is the
+  peak, and it coincides with the root's initial state and every
+  lateral-boundary frame being built on the card. The input catalog
+  keeps one frozen set after that, because a nest re-ingests the same
+  forcing onto its own grid.
+
+Worked, at ERA5's 205 fields per valid time over 8 valid times:
+
+| forcing extent | source grid | per valid time | 8 times, held twice |
+|---|---|---|---|
+| global, 0.25 deg | 721 x 1440 | 1.59 GiB | **25.37 GiB** |
+| 40 x 50 deg box, 0.25 deg | 161 x 201 | 50.6 MiB | **0.79 GiB** |
+
+A factor of 32 for the same forecast on the same card. It is why the
+first question to ask about a run that died without saying anything is
+how big the GRIB is.
+
+**Rule of thumb: budget 8-16x the forcing GRIB's size on disk.** The
+band is the file's packing width: float64 held twice is 16 B per point
+per field against 2 B on disk at the usual 16-bit packing (8x), rising
+as the file packs tighter. Treat it as a floor. Two further copies are
+real and deliberately not claimed above -- the flat bridge buffer a
+combined pressure-plus-surface file keeps pinned, and the second merged
+set a run holds when the catalog and the runtime decode under different
+keys -- and CuPy, the two Python processes of a supervised run, and the
+OS all sit on top.
+
+### What the run tells you
+
+`gpuwm run` prints one line per forcing decode, before it builds the
+tree, naming what was decoded and how much of it this forecast reads:
+
+```
+forcing decode: 8 valid times, 12.69 GiB of host memory (float64, on the source grid); this config's 86400 s run integrates to 2014-11-05T00:00:00 and needs 5 of them.
+  3 lie beyond that end and hold 4.76 GiB.  They are still PREPARED -- every decoded time at or after start_time is interpolated, initialized, kept as a boundary frame, and the last one is this case's final analysis -- so refetching a narrower window drops them from the prepared case as well as from memory.
+  The decoded window comes from the forcing FILES, not from run_seconds: build_input_catalog never sees it, so a shorter run does not shorten the decode.
+```
+
+(a global 0.25 deg ERA5 window, 42 h of it, behind a 24 h forecast --
+the row above, one copy, which is what the mapping this line sums is
+holding.)
+
+Those are summed `nbytes` over the arrays the run is actually holding,
+not an estimate from a grid shape. A "lie beyond that end" line is the
+signal to re-fetch a shorter window -- and it is not a free edit: those
+times are prepared as boundary frames and the last of them is the
+prepared case's final analysis, so dropping them changes the prepared
+case as well as its size.
+
+### Three levers, in the order they pay
+
+1. **Subset the area.** By far the largest. Ask for the outer domain's
+   footprint plus a margin rather than a global field:
+
+   ```bash
+   gpuwm fetch --source era5 --cycle 2014-11-04T00 --hours 24 \
+     --area 25,-110,50,-70 --out data/era5
+   ```
+
+   For ERA5 that writes the two-part CDS request and the script that
+   retrieves it, with `--area` as the box CDS crops to; for the
+   downloading sources it crops the fetch itself. `gpuwm domain`
+   suggests areas with the required margin already built in.
+
+2. **Ask for only the window the forecast consumes.** The host cost is
+   linear in the number of valid times in the files, and the catalog
+   charges for all of them: 42 h of 6-hourly ERA5 behind a 24 h
+   forecast is 8 times decoded where 5 are needed, a 37.5% overcharge.
+   Re-fetch with `--hours` at the forecast length. Unlike lever 1 this
+   one is not free: every decoded time at or after `start_time` is
+   prepared as a lateral-boundary frame and the last is the prepared
+   case's final analysis, so a narrower window changes what is verified
+   against as well as what is held.
+
+3. **Nothing else.** Smaller domains, fewer nests, fewer vertical
+   levels and `column_chunk` are real VRAM levers and do nothing here:
+   this cost is priced on the source grid and the source file.
+
+### Shortening the forecast does NOT shorten the decode
+
+`run_seconds` is not an input to the catalog, so a shorter forecast
+decodes exactly the same forcing. That makes it useless as a remedy and
+useful as a **diagnostic**. Set
+
+```toml
+[experiment]
+run_seconds = 3600.0
+```
+
+and re-run. Dying at 3600 s as well, with `--outdir/run-progress.json`
+reading `preparing:build-domain-tree`, is the decode, and only a
+smaller forcing file fixes it. Surviving at 3600 s and dying at full
+length is not the decode; that is a forecast problem, and
+`--outdir/worker-01.stderr.log` has the traceback.
 
 ## Windows / WDDM notes
 

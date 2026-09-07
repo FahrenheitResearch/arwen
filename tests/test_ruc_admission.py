@@ -782,86 +782,47 @@ def test_the_width_rail_covers_noahmp_and_not_ruc(capsys) -> None:
 # belongs at preparation, before anyone spends the prepare run to find out.
 
 
-def test_the_gfs_route_is_deliberately_not_offered_ruc():
-    """Both halves, as the mapped-source test above does it.
+def test_gfs_ruc_evidence_membership_does_not_decide_runtime_admission():
+    from gpuwm.physics_registry import validate_physics_plan
 
-    The route list must omit it, AND the front door must actually refuse
-    -- a declaration nothing enforces is how RUC came to be preparable
-    on this route in the first place.
-    """
-    from gpuwm.physics_registry import physics_registry
-
-    registry = physics_registry()
-    single = registry["runner_routes"]["tools.prepared_single_domain_forecast"]
-    assert RUC_TEMPLATE_ID not in single["source_template_ids"]["gfs"], (
-        "the GFS route lists the RUC template, but a GFS-initialised RUC "
-        "forecast cannot complete its first step")
+    plan = _single_domain_ruc_plan("gfs")
+    report = validate_physics_plan(plan)
+    assert report["launchable"] is True, report["errors"]
+    assert "template-route-evidence" in {
+        warning["code"] for warning in report["warnings"]}
 
 
-def test_the_gfs_front_door_refuses_ruc_at_preparation(tmp_path, capsys):
-    """Before the prepare run, not 2.8 seconds into the forecast."""
+@pytest.mark.parametrize("single", [False, True])
+@pytest.mark.parametrize("named", [False, True])
+def test_gfs_front_door_honors_selected_ruc_without_template_membership(
+        single, named):
     import dataclasses
-
-    import pytest as _pytest
-
+    from gpuwm.config import validate_run_config
     from gpuwm.experiment import load_experiment
     from gpuwm.gfs_direct import front_door_physics_selection
-
-    config = (Path(__file__).parents[1] / "configs"
-              / "gfs_wrf_hierarchy_proof.toml")
-    baseline = load_experiment(config)
-
     from gpuwm.physics_compat import single_domain_runtime_switches
 
-    # The RUC template's OWN switches, so the only thing under test is
-    # the route gate.  Hand-picking `sf_surface_physics = 3` on top of a
-    # descriptor written for Noah trips an unrelated capability blocker
-    # first and proves nothing about this gate.
+    baseline = load_experiment(
+        Path(__file__).parents[1]/"configs/gfs_wrf_hierarchy_proof.toml")
     switches = single_domain_runtime_switches(RUC_TEMPLATE_ID)
-
-    def _with_ruc(exp):
-        domains = tuple(
-            dataclasses.replace(domain, run=dataclasses.replace(
-                domain.run, **{
-                    name: value for name, value in switches.items()
-                    if hasattr(domain.run, name)}))
-            for domain in exp.domains)
-        return dataclasses.replace(exp, domains=domains)
-
-    # The tree route, which resolves selectors rather than a profile.
-    #
-    # Two gates fire here and this test now pins both, because the
-    # warn-not-block ruling separated them.  The generic tuple-governance
-    # question -- "has the registry blessed this combination?" -- is a
-    # WARNING: every component is implemented, so it runs and says so.
-    # The route-declaration question -- "does the GFS route offer
-    # ruc-lsm at all?" -- is the one that still REFUSES, by name, and it
-    # is the gate this test exists for: RUC on GFS prepares cleanly and
-    # then dies on its first surface-temperature call.  An unimplemented
-    # route is not an unblessed tuple, and the merge must not let the
-    # first gate's softening be mistaken for the second's.
-    with _pytest.raises(ValueError, match="ruc-lsm") as tree:
-        front_door_physics_selection(_with_ruc(baseline))
-    assert "does not offer" in str(tree.value)
-    assert "mavail" in str(tree.value)
-    tree_lines = [line for line in capsys.readouterr().err.splitlines()
-                  if line.startswith("warning:")]
-    assert tree_lines, "the tree route said nothing about the RUC tuple"
-    tree_message = "\n".join(tree_lines)
-    assert "outside-registry-declared-reachability" in tree_message
-    assert "expert-tuple-v1" in tree_message
-
-    # And the single-domain route, which names the template.
-    single = dataclasses.replace(baseline, domains=baseline.domains[:1])
-    with _pytest.raises(ValueError, match="RUC") as caught:
-        front_door_physics_selection(
-            _with_ruc(single), physics_profile=RUC_TEMPLATE_ID)
-    message = str(caught.value)
-    # It cites the declaration it enforces, names what was observed, and
-    # says which sources are NOT being spoken for.
-    assert "physics_registry_v2.json#/runner_routes/" in message
-    assert "mavail" in message
-    assert "ERA5" in message and "HRRR" in message
+    # The source fixture's 4/4-only implementation flag belongs to its
+    # previous radiation choice, not to this 0/1 RUC template.
+    from gpuwm.config import RunConfig
+    switches.setdefault("ra_rrtmg_variant", RunConfig.__dataclass_fields__["ra_rrtmg_variant"].default)
+    domains = baseline.domains[:1] if single else baseline.domains
+    domains = tuple(dataclasses.replace(domain, run=dataclasses.replace(
+        domain.run, **{name: value for name, value in switches.items()
+                      if hasattr(domain.run, name)})) for domain in domains)
+    for domain in domains:
+        validate_run_config(domain.run)
+    selected = front_door_physics_selection(
+        dataclasses.replace(baseline, domains=domains),
+        physics_profile=RUC_TEMPLATE_ID if named else None)
+    records = (selected["domains"].values() if "domains" in selected
+               else (selected,))
+    for record in records:
+        assert record["selectors"]["sf_surface_physics"] == 3
+    assert all(domain.run.num_soil_layers == 9 for domain in domains)
 
 
 def test_era5_and_hrrr_ruc_are_left_alone_because_they_are_untested():
@@ -970,25 +931,20 @@ def test_a_user_can_select_the_six_level_ruc_geometry(tmp_path):
     """
     from gpuwm.config import soil_layer_count
     from gpuwm.experiment import load_experiment
-    from gpuwm.physics_compat import (land_surface_component_for_selector,
-                                      land_surface_route_blocker)
+    from gpuwm.gfs_direct import front_door_physics_selection
 
     path = tmp_path / "experiment.toml"
     path.write_text(SIX_LEVEL_EXPERIMENT_TOML, encoding="utf-8", newline="")
-    cfg = load_experiment(str(path)).root.run
+    exp = load_experiment(str(path))
+    cfg = exp.root.run
 
     assert int(cfg.sf_surface_physics) == 3
     assert int(cfg.num_soil_layers) == 6
     assert soil_layer_count(cfg) == 6
 
-    component = land_surface_component_for_selector(cfg.sf_surface_physics)
-    assert component == "ruc-lsm"
-    for source in ("hrrr-prs", "hrrr", "era5"):
-        assert land_surface_route_blocker(component, source=source) is None
-    # And the door that is deliberately shut stays shut, so this test is a
-    # statement about RUC's geometry rather than about route gates in
-    # general: GFS still refuses RUC for its own, measured reason.
-    assert land_surface_route_blocker(component, source="gfs") is not None
+    selection = front_door_physics_selection(exp)
+    assert selection["domains"]["1"]["selectors"]["sf_surface_physics"] == 3
+    assert exp.root.run.num_soil_layers == 6
 
 
 def test_the_six_level_config_is_refused_at_a_geometry_wrf_does_not_tabulate(

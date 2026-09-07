@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 import json
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -359,6 +360,70 @@ def test_regular_snapshot_conversion_rejects_source_land_soil_gap(tmp_path):
         (replace(frame, fields=fields),)
     )
     assert np.isnan(regular[0].fields[MAPPED_SOIL_TEMPERATURE][0, 0, 0])
+
+
+def test_mapped_snow_water_equivalent_is_packed_under_the_kg_m2_name(tmp_path):
+    """The legacy name a mapped SWE lands under has to state its unit.
+
+    ``SNOW_EC`` is bound in exactly one decode table -- ECMWF GRIB1
+    (141, 1), metres of water equivalent (``gpuwm/ingest/grib.py``) --
+    and ``preprocess_noah_soil`` multiplies that name by 1000 to reach
+    kg m-2.  Every packaged mapping that binds
+    ``snow_water_equivalent`` declares it in kg m-2 already, so the
+    mapped join has to pack it as ``SNOW``, which the same preprocessor
+    consumes unscaled.
+
+    The seam is asserted end to end, because the name alone is only half
+    the statement: a 60 kg m-2 pack (a modest 30 cm of Rockies snow)
+    packed under the ERA5 name reaches Noah at 60 000 kg m-2 beside its
+    own 0.30 m depth -- an implied snow density of 2e5 kg m-3, and both
+    SNOW/SNOWH reconciliation arms are skipped because both fields are
+    present, so nothing downstream can restate it.
+    """
+    from gpuwm.ingest.soil import preprocess_noah_soil
+
+    mapping_path = tmp_path / "mapping.json"
+    source = tmp_path / "source.nc"
+    _write_mapping(mapping_path, _mapping())
+    _write_source(source)
+    frame = decode_mapped_source(mapping_path, [source])[0]
+    surface = frame.fields["land_fraction"]
+    fields = dict(frame.fields)
+    fields["snow_water_equivalent"] = replace(
+        surface, name="snow_water_equivalent", units="kg m-2",
+        values=np.full(surface.values.shape, 60.0),
+    )
+    fields["snow_depth"] = replace(
+        surface, name="snow_depth", units="m",
+        values=np.full(surface.values.shape, 0.30),
+    )
+    regular = mapped_frames_to_regular_snapshots(
+        (replace(frame, fields=fields),)
+    )[0]
+
+    assert "SNOW_EC" not in regular.fields
+    np.testing.assert_array_equal(regular.fields["SNOW"], 60.0)
+
+    shape = regular.fields["SNOW"].shape
+    surface_fields = {
+        "LANDSEA": np.ones(shape),
+        "SKINTEMP": np.full(shape, 271.0),
+        "TMN": np.full(shape, 272.0),
+    }
+    for name in ("ST000007", "ST007028", "ST028100", "ST100289"):
+        surface_fields[name] = np.full(shape, 271.0)
+    for name in ("SM000007", "SM007028", "SM028100", "SM100289"):
+        surface_fields[name] = np.full(shape, 0.3)
+    # Whichever snow names the join emitted, so this reads the seam
+    # rather than the assertion above a second time.
+    for name in ("SNOW", "SNOW_EC", "SNOWH"):
+        if name in regular.fields:
+            surface_fields[name] = np.asarray(
+                regular.fields[name], dtype=np.float64)
+    soil = preprocess_noah_soil(
+        surface_fields, soil_type=np.full(shape, 6.0))
+    np.testing.assert_array_equal(soil.snow_water, 60.0)
+    np.testing.assert_array_equal(soil.snow_depth, 0.30)
 
 
 def test_mapping_rejects_unknown_contract_key(tmp_path):
@@ -1030,3 +1095,132 @@ def test_time_binding_grammar_is_closed(tmp_path):
     _write_mapping(soil_path, soil)
     with pytest.raises(ValueError, match="time_binding"):
         load_mapping(soil_path)
+
+
+def _refusing_system_temp(tmp_path, monkeypatch) -> Path:
+    """Make every default-placed temporary raise, the way a full tmpfs does.
+
+    A quota-limited tmpfs cannot be faked portably, so the system temp
+    is pointed at a FILE: ``tempfile.gettempdir()`` answers it (the
+    module's cached choice is replaced too, because a fresh probe would
+    walk past an unusable ``TMPDIR`` to the next candidate) and any
+    temporary created there raises ``OSError`` before a byte lands.
+    """
+
+    refusing = tmp_path / "quota-exhausted-tmp"
+    refusing.write_text("stands in for a tmpfs at its quota", encoding="utf-8")
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        monkeypatch.setenv(name, str(refusing))
+    monkeypatch.setattr(tempfile, "tempdir", str(refusing))
+    with pytest.raises(OSError):
+        tempfile.TemporaryDirectory(prefix="proof-the-temp-refuses-")
+    return refusing
+
+
+def _observed_engine_calls(monkeypatch) -> list[tuple[str, Path, list[str]]]:
+    """Record each real engine call's output directory and what it holds."""
+
+    from gpuwm import mapped_engine_bridge
+
+    real_run_engine = mapped_engine_bridge.run_engine
+    calls: list[tuple[str, Path, list[str]]] = []
+
+    def observing_run_engine(subcommand, **kwargs):
+        result = real_run_engine(subcommand, **kwargs)
+        output = Path(kwargs["output"]).resolve()
+        calls.append((subcommand, output, sorted(p.name for p in output.iterdir())))
+        return result
+
+    monkeypatch.setattr(mapped_engine_bridge, "run_engine", observing_run_engine)
+    return calls
+
+
+def test_engine_decode_frame_stream_lands_in_the_compose_scratch(
+        tmp_path, monkeypatch):
+    """``GPUWM_COMPOSE_SCRATCH`` covers the decode route's frame stream.
+
+    Named breakage: on a box whose ``/tmp`` is a quota-limited tmpfs,
+    a 0.25-degree analysis decode died with "cannot write the frame
+    stream: Disk quota exceeded (os error 122)" while
+    ``GPUWM_COMPOSE_SCRATCH`` named a disk-backed directory, because the
+    variable placed the compose scratch only and ``decode`` staged its
+    frameset in the system temp.  Here the system temp refuses every
+    write and the real engine still decodes, because every temporary on
+    the route -- the input list and the frame stream -- lands under the
+    override, and the engine reads no ``TMPDIR`` of its own.
+    """
+
+    mapping_path = tmp_path / "mapping.json"
+    source = tmp_path / "source.nc"
+    _write_mapping(mapping_path, _mapping())
+    _write_source(source)
+    scratch = tmp_path / "disk-backed-scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("GPUWM_COMPOSE_SCRATCH", str(scratch))
+    _refusing_system_temp(tmp_path, monkeypatch)
+    calls = _observed_engine_calls(monkeypatch)
+
+    frames = decode_mapped_source(mapping_path, [source])
+
+    assert len(frames) == 2
+    [(subcommand, output, names)] = calls
+    assert subcommand == "decode"
+    assert scratch.resolve() in output.parents
+    assert {"inputs.txt", "frames.json", "frames.f64"} <= set(names)
+    # The scratch is spent once the frames are in memory.
+    assert list(scratch.iterdir()) == []
+
+
+def test_engine_inspect_scratch_lands_in_the_compose_scratch(
+        tmp_path, monkeypatch):
+    """The sibling ``inspect`` route stages under the same variable."""
+
+    mapping_path = tmp_path / "mapping.json"
+    source = tmp_path / "source.nc"
+    _write_mapping(mapping_path, _mapping())
+    _write_source(source)
+    scratch = tmp_path / "disk-backed-scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("GPUWM_COMPOSE_SCRATCH", str(scratch))
+    _refusing_system_temp(tmp_path, monkeypatch)
+    calls = _observed_engine_calls(monkeypatch)
+
+    document = inspect_mapped_source(mapping_path, [source])
+
+    assert document["schema"] == "gpuwm-mapped-source-inspection-v1"
+    [(subcommand, output, names)] = calls
+    assert subcommand == "inspect"
+    assert scratch.resolve() in output.parents
+    assert "inputs.txt" in names
+    assert list(scratch.iterdir()) == []
+
+
+def test_engine_decode_refuses_a_missing_compose_scratch_by_name(
+        tmp_path, monkeypatch):
+    """A named override that cannot hold the stream refuses before decoding.
+
+    Falling back to the system temp would put the frame stream on
+    exactly the filesystem the caller set the variable to avoid, so the
+    decode route refuses the way the compose route does, and the engine
+    is never launched.
+    """
+
+    from gpuwm import mapped_engine_bridge
+
+    mapping_path = tmp_path / "mapping.json"
+    source = tmp_path / "source.nc"
+    _write_mapping(mapping_path, _mapping())
+    _write_source(source)
+    missing = tmp_path / "no-such-scratch"
+    monkeypatch.setenv("GPUWM_COMPOSE_SCRATCH", str(missing))
+    launched: list[str] = []
+    monkeypatch.setattr(
+        mapped_engine_bridge, "run_engine",
+        lambda subcommand, **kwargs: launched.append(subcommand))
+
+    with pytest.raises(NotADirectoryError) as refusal:
+        decode_mapped_source(mapping_path, [source])
+
+    assert "GPUWM_COMPOSE_SCRATCH" in str(refusal.value)
+    assert str(missing) in str(refusal.value)
+    assert not launched

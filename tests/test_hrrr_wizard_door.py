@@ -82,8 +82,8 @@ _INTERNALS = (
 def test_the_hrrr_wizard_prints_the_shipped_route(tmp_path, capsys, ladder):
     """Both arms: the two stage commands, and none of the machinery."""
     _config, printed = _emit(tmp_path, capsys, "hrrr", ladder)
-    assert "gpuwm prep --source hrrr" in printed
-    assert "gpuwm sim " in printed
+    assert "gpuwm go " in printed
+    assert "sha256" not in printed
     for internal in _INTERNALS:
         assert internal not in printed, (
             f"the closing block still hands the reader `{internal}`, which "
@@ -95,7 +95,7 @@ def test_no_printed_digest_placeholder_survives_the_forecast_stage(
         tmp_path, capsys, ladder):
     """`gpuwm sim` reads the digests off the bundle; nobody types them."""
     _config, printed = _emit(tmp_path, capsys, "hrrr", ladder)
-    sim = [line for line in printed.splitlines() if "gpuwm sim " in line]
+    sim = [line for line in printed.splitlines() if "gpuwm go " in line]
     assert sim, printed
     for line in sim:
         assert "<" not in line, (
@@ -113,6 +113,10 @@ def test_every_printed_prep_line_is_one_the_real_front_door_accepts(
     takes AND that the program behind them is the one the route needs.
     """
     _config, printed = _emit(tmp_path, capsys, "hrrr", ladder)
+    from gpuwm.experiment import load_experiment
+    # The optional manual recipe still uses the same staged doors as go.
+    printed = domain_wizard.hrrr_route_commands(
+        _config, load_experiment(_config), profile=None, data_dir="data")
     commands = _commands(printed, "gpuwm prep")
     assert commands, printed
     for command in commands:
@@ -191,17 +195,15 @@ def test_the_sim_line_names_the_files_the_preparation_actually_publishes():
             == hrrr_prepared_bundle.WPS_NAMELIST_NAME)
 
 
-def test_gos_refusal_renders_the_route_from_that_helper(tmp_path):
+def test_the_internal_stage_composer_points_back_to_the_dispatcher(tmp_path):
     """`gpuwm go` on an hrrr config: the same two strings, not a copy."""
     config = tmp_path / "hrrr.toml"
     config.write_text(
         '[experiment]\nname = "x"\n\n[fetch]\nsource = "hrrr"\n'
         '[[domain]]\ngrid_id = 1\n', encoding="utf-8")
-    prep, sim = stage_cli.staged_route_commands("hrrr")
     with pytest.raises(go_cli.GoRefusal) as refusal:
         go_cli.plan_from_config(config, outdir=tmp_path / "go")
-    assert prep in str(refusal.value)
-    assert sim in str(refusal.value)
+    assert "Next: gpuwm go " in str(refusal.value)
 
 
 def test_sims_finished_but_unbindable_refusal_renders_it_too(tmp_path):

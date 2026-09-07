@@ -579,3 +579,99 @@ if __name__ == "__main__":  # the measured arms, each in its own process
         target.mkdir(parents=True, exist_ok=True)
         print(json.dumps(
             _measure(int(sys.argv[3]), target, mode=sys.argv[2])))
+
+
+@pytest.mark.parametrize("times", (2, 6))
+def test_hierarchy_metadata_reads_no_weather_arrays(tmp_path, monkeypatch, times):
+    from types import SimpleNamespace
+    from gpuwm.ingest.nest_init import NestedInputCatalog
+    from gpuwm.source_hierarchy import _validated_forcing_series
+
+    directory = _write_fixture_frameset(tmp_path / "frameset", times)
+    authority = tmp_path / "authority"
+    authority.write_text("fixture")
+    snapshots = _bundle(directory, authority).regular_snapshots()
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("a metadata check materialized weather arrays")
+    monkeypatch.setattr(engine_bridge.FrameSet, "_materialize", forbidden)
+    exp = SimpleNamespace(start_time=_CYCLE, run_seconds=(times - 1) * 3600)
+    checked, _, valid_times, interval = _validated_forcing_series(
+        exp, snapshots, forcing_hours=tuple(range(times)))
+    catalog = NestedInputCatalog(checked, SimpleNamespace(files=()))
+    assert catalog.snapshots is snapshots
+    assert catalog.valid_times == valid_times
+    assert interval == 3600
+    assert snapshots._cached_snapshot is None
+
+
+def test_grid_coverage_uses_one_snapshot_for_surface_class_counts(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from gpuwm.mapped_composition import _RegularSnapshots
+    from gpuwm.source_hierarchy import _spatial_coverage_receipt
+
+    directory = _write_fixture_frameset(tmp_path / "frameset", 3)
+    authority = tmp_path / "authority"
+    authority.write_text("fixture")
+    snapshots = _bundle(directory, authority).regular_snapshots()
+    class Grid:
+        def latlon_mass(self):
+            return np.array([[34., 35.]]), np.array([[-100., -99.]])
+        latlon_u = latlon_mass
+        latlon_v = latlon_mass
+    exp = SimpleNamespace(domains=(SimpleNamespace(grid_id=1),))
+    # The materialized route is the existing numerical/receipt control.
+    eager = tuple(snapshots)
+    expected = _spatial_coverage_receipt(eager, (Grid(),), exp, "generic")
+    counts = []
+    original = _RegularSnapshots._pack
+    def counted(self, index):
+        counts.append(index)
+        return original(self, index)
+    monkeypatch.setattr(_RegularSnapshots, "_pack", counted)
+    actual = _spatial_coverage_receipt(snapshots, (Grid(),), exp, "generic")
+    assert actual == expected
+    assert counts == [0]
+    # Fields still come from the same immutable, fully validated snapshots.
+    for index, reference in enumerate(eager):
+        for name, values in reference.fields.items():
+            np.testing.assert_array_equal(snapshots[index].fields[name], values)
+
+
+def test_metadata_cannot_hide_corrupt_weather_fields_at_consumption(tmp_path):
+    from types import SimpleNamespace
+    from gpuwm.source_hierarchy import _validated_forcing_series
+
+    directory = _write_fixture_frameset(tmp_path / "frameset", 2)
+    authority = tmp_path / "authority"
+    authority.write_text("fixture")
+    document = json.loads((directory / engine_bridge.FRAMES_DOCUMENT).read_text())
+    field = document["frames"][1]["fields"][0]
+    stream = directory / document["stream"]["path"]
+    with stream.open("r+b") as handle:
+        handle.seek(int(field["offset"]))
+        byte = handle.read(1)
+        handle.seek(-1, 1)
+        handle.write(bytes([byte[0] ^ 1]))
+    snapshots = _bundle(directory, authority).regular_snapshots()
+    _validated_forcing_series(
+        SimpleNamespace(start_time=_CYCLE, run_seconds=3600), snapshots,
+        forcing_hours=(0, 1))
+    with pytest.raises(ValueError, match="hashes to"):
+        snapshots[1]
+
+
+def test_metadata_checks_axis_digests_without_reading_weather_arrays(tmp_path, monkeypatch):
+    from gpuwm.ingest.source_metadata import snapshot_metadata
+
+    directory = _write_fixture_frameset(tmp_path / "frameset", 2)
+    document_path = directory / engine_bridge.FRAMES_DOCUMENT
+    document = json.loads(document_path.read_text())
+    document["frames"][1]["latitude"]["values"][0] += 0.125
+    document_path.write_text(json.dumps(document))
+    authority = tmp_path / "authority"
+    authority.write_text("fixture")
+    snapshots = _bundle(directory, authority).regular_snapshots()
+    monkeypatch.setattr(engine_bridge.FrameSet, "_materialize",
+                        lambda *_: pytest.fail("weather arrays read"))
+    with pytest.raises(ValueError, match="axis did not survive"):
+        snapshot_metadata(snapshots, 1)

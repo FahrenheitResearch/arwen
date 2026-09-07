@@ -8,7 +8,7 @@ nobody, including the people who wrote it, because the evidence for it was
 always "read this file".
 
 So it is measured.  ``tools/report_physics_composition_walk.py`` writes
-9781 physics combinations into real experiment TOMLs and pushes every one
+the declared physics combinations into real experiment TOMLs and pushes every one
 through :func:`gpuwm.experiment.build_experiment` -- the single front door
 ``gpuwm run``, ``gpuwm go``, ``gpuwm check``, both prepared runners and the
 DA drivers reach a per-domain ``RunConfig`` through -- and records what
@@ -57,7 +57,7 @@ def receipt() -> dict:
 
 @pytest.fixture(scope="module")
 def regenerated() -> dict:
-    """One walk, shared by every test in the file (9781 loader calls)."""
+    """One complete loader walk, shared by every test in the file."""
 
     return walk.evaluate()
 
@@ -268,27 +268,22 @@ def test_every_refusal_rule_has_a_remedy_and_the_remedy_works(
         f"produces and are dead weight: {sorted(covered - observed)}")
 
 
-def test_the_coupled_adapter_refusal_names_the_keys_and_the_values() -> None:
-    """The other defect the walk found, pinned.
+def test_independent_radiation_spectra_preserve_every_selected_pair() -> None:
+    """The retired pairing refusals must not return or rewrite a spectrum.
 
-    This is the most frequent refusal in the entire space -- 1704 of the
-    5784 refusals, roughly one in three -- and it used to read, in full,
-    "RTE+RRTMGP (4) and analytic radiation (90) are coupled LW/SW adapters
-    and must be selected on both components".  No config key, no offending
-    value, no remedy: a user staring at ra_lw_physics=4, ra_sw_physics=0
-    was told about two schemes and left to work out which switch to move.
-    Every other refusal in this tree names its selector; this one now does
-    too.
+    The runtime composes independently selected longwave and shortwave
+    engines. Exercise the real loader over the entire declared pair space,
+    including 4/0, 4/90 and 1/4, which the old adapter locks refused.
+    Unsupported selectors remain covered by the schema and mutation gates.
     """
 
     base = dict(walk.ANCHORS["ysu-mm5-noah-rrtmgp"], **walk.TIER_A_HELD)
-    outcome = walk.attempt(dict(base, ra_lw_physics=4, ra_sw_physics=0))
-    assert outcome.verdict == "REFUSED"
-    assert "ra_lw_physics=4" in outcome.message
-    assert "ra_sw_physics=0" in outcome.message
-    # And the remedy it gives reaches an accepted run.
-    assert walk.attempt(
-        dict(base, ra_lw_physics=4, ra_sw_physics=4)).verdict == "ACCEPTED"
+    for lw in walk.AXIS_VALUES["ra_lw_physics"]:
+        for sw in walk.AXIS_VALUES["ra_sw_physics"]:
+            outcome = walk.attempt(dict(base, ra_lw_physics=lw,
+                                        ra_sw_physics=sw))
+            assert outcome.verdict == "ACCEPTED", (lw, sw, outcome.message)
+            assert outcome.rewritten == (), (lw, sw, outcome.rewritten)
 
 
 def test_the_prognostic_tke_refusal_no_longer_recommends_a_refused_value(
@@ -371,18 +366,10 @@ def test_mynn_composes_with_every_radiation_pairing_the_loader_admits(
         receipt) -> None:
     """"Every admitted radiation option" stated exactly.
 
-    Radiation is selected as a PAIR, and the loader admits five pairings
-    in total: both off, Dudhia shortwave with longwave off, WRF's classic
-    RRTM/Dudhia pair, RTE+RRTMGP on both, and the analytic proxy on both.
-    (The 4/90 and 90/4 crossings are refused because the two are coupled
-    adapters, and LW=1 pairs only with SW=1, the combination WRF itself
-    ships it as.)  MYNN reaches all five -- including the three that carry
-    longwave, which is the whole point of the radiation-bearing MYNN
-    presets that landed beside this walk.
-
-    1/1 is new at 1.9.  Before the RRTM longwave port, ra_lw_physics=1
-    was schema-legal and unrunnable, so this set had four members and the
-    longwave-bearing subset had two.
+    Every declared longwave selector now composes with every declared
+    shortwave selector. MYNN must reach that complete Cartesian space,
+    including every combination with longwave enabled; preserving only
+    the five formerly paired adapters would silently narrow the claim.
     """
 
     accepted_anywhere = {
@@ -395,10 +382,19 @@ def test_mynn_composes_with_every_radiation_pairing_the_loader_admits(
     }
     assert set(receipt["mynn_slice"]["radiation_options_accepted"]) == \
         accepted_anywhere
-    assert accepted_anywhere == {"0/0", "0/1", "1/1", "4/4", "90/90"}
+    expected = {
+        f"{lw}/{sw}"
+        for lw in walk.AXIS_VALUES["ra_lw_physics"]
+        for sw in walk.AXIS_VALUES["ra_sw_physics"]
+    }
+    assert accepted_anywhere == expected
     longwave_on = {pair for pair in accepted_anywhere
                    if pair.split("/")[0] not in ("0",)}
-    assert longwave_on == {"1/1", "4/4", "90/90"}
+    assert longwave_on == {
+        f"{lw}/{sw}"
+        for lw in walk.AXIS_VALUES["ra_lw_physics"] if lw != 0
+        for sw in walk.AXIS_VALUES["ra_sw_physics"]
+    }
 
 
 def test_the_mynn_matrix_is_the_same_in_every_land_surface_column(

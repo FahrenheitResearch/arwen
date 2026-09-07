@@ -29,6 +29,10 @@ mod postproc_severe;
 mod wrf_process;
 #[path = "wrf_volumes.rs"]
 mod wrf_volumes;
+#[path = "mesh.rs"]
+mod mesh;
+#[path = "section.rs"]
+mod section;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -77,14 +81,17 @@ const DEFAULT_SOURCE_LABEL: &str = "ArWen";
 /// * the generic `var:` family and the `selectable_slugs` count of the
 ///   store-independent catalog -- the lane whose ABSENCE from a stale
 ///   build is what #106 was reported as (catalog 153 against this
-///   tree's 168, zero generic rows).
+///   tree's 168, zero generic rows) -- the `xsec:` family, the
+///   vertical-section lane cut from the wrfout files directly, and the
+///   `mesh:`/`meshdiff:` families, the polygon-mesh lane cut from an MPAS
+///   history frame and its grid file with no regrid in between.
 ///
 /// Changing any of those is changing this contract, so the literal
 /// changes with it and every binary predating the change fails the
 /// handshake instead of quietly answering the old grammar.
 const ABI_MARKER: &str = "gpuwm-rw-wrfbatch-catalog-v1\tPRODUCT\tslug\tkind\tstatus\tdetail\tCATALOG\t\
 gpuwm-rw-wrfbatch-events-v1\tRENDERED\tSKIPPED\tFAILED\t\
-gpuwm-rw-wrfbatch-vocabulary-v1\tgeneric\tvar:\tselectable_slugs";
+gpuwm-rw-wrfbatch-vocabulary-v1\tgeneric\tvar:\txsec:\tmesh:\tmeshdiff:\tselectable_slugs";
 
 #[derive(Debug)]
 struct Args {
@@ -105,13 +112,57 @@ struct Args {
     overlays: Option<rustwx_products::geographic_overlays::MapOverlays>,
     /// `--annotate FILE.json`: title/subtitle overrides.
     annotations: Option<rustwx_products::geographic_overlays::PanelAnnotations>,
+    /// `--theme NAME|FILE.json`: the render theme, resolved before any
+    /// import so a typo is refused before a file is opened.  `None` is
+    /// the renderer's own look, byte-identical to every earlier build.
+    theme: Option<rustwx_render::RenderTheme>,
+    /// `--section lat,lon,lat,lon | FILE.json`: the line every `xsec:`
+    /// product is cut along; required when one is requested.
+    section: Option<section::SectionLine>,
+    /// `--section-across KM`: a second frame per section product,
+    /// perpendicular to the line through the fill's maximum column.
+    section_across_km: Option<f64>,
+    /// `--isotherms L,L,...[@H]`: the isotherms drawn on every section.
+    isotherms: section::Isotherms,
+    /// `--section-top-km N`: the ceiling the fitted height range may not
+    /// pass.
+    section_top_km: f64,
+    /// `--section-size WxH`: the size a SECTION is drawn at.  Absent, a
+    /// section is landscape 2:1 at the map's width, because a section
+    /// handed the map's own size came out portrait -- the shape a vertical
+    /// cut is least readable in.
+    section_size: Option<(u32, u32)>,
+    /// `--section-reference-km N`: the altitude the fitted height range
+    /// keeps at least two kilometres of air above.  Absent, the line's own
+    /// highest terrain.
+    section_reference_km: Option<f64>,
+    /// `--mesh-grid FILE.nc`: the MPAS grid file whose `verticesOnCell`
+    /// gives every `mesh:` product its polygons.  Required when one is
+    /// requested; a history frame carries no cell boundaries.
+    mesh_grid: Option<PathBuf>,
+    /// `--mesh-reference DIR|FILE`: the other leg, for `meshdiff:`.
+    mesh_reference: Option<PathBuf>,
+    /// `--mesh-labels A,B`: the two legs' names in a difference headline.
+    mesh_labels: (String, String),
+    /// `--mesh-bounds W,E,S,N`: the frame a mesh product is drawn in.
+    mesh_bounds: Option<(f64, f64, f64, f64)>,
+    /// `--footer-*`: the caption fields the theme's footer strip fills.
+    /// Absent every one of them, no strip is drawn even under a theme that
+    /// names one, so an existing render is unchanged.
+    footer: rustwx_render::FooterFields,
     inputs: Vec<PathBuf>,
 }
 
 fn usage() -> &'static str {
     "usage: rw_wrfbatch --store-root DIR --out-dir DIR [--products all|SLUGS] \
 [--frames all|N] [--width N] [--height N] [--heavy] [--streamlines|--barbs] \
-[--source-label TEXT] [--list-products] wrfout...\n       rw_wrfbatch --help | --abi"
+[--source-label TEXT] [--theme NAME|FILE.json] [--section lat,lon,lat,lon|FILE.json] \
+[--section-across KM] [--isotherms L,L,...[@H]] [--section-top-km N] \
+[--section-size WxH] [--section-reference-km N] \
+[--mesh-grid FILE.nc] [--mesh-reference DIR|FILE] [--mesh-labels A,B] [--mesh-bounds W,E,S,N] \
+[--footer-title TEXT] [--footer-valid TEXT] [--footer-mesh TEXT] [--footer-leg TEXT] \
+[--footer-note TEXT] [--list-products] wrfout...\n       \
+rw_wrfbatch --help | --abi"
 }
 
 /// What went wrong, and therefore what the user should be shown.
@@ -179,6 +230,10 @@ fn print_product_catalog() -> Result<(), CliError> {
     // build, so no slug list can be printed here; the store-aware listing
     // names each `var:` row it can serve.
     println!("generic products: var:<stored 2-D variable name>");
+    println!(
+        "mesh products: mesh:<history variable>[:colmax|:colmin|:level=K][~log] and \
+meshdiff:<...> (need --mesh-grid FILE.nc; meshdiff also --mesh-reference)"
+    );
     for slug in &slugs {
         // Deliberately NOT the `PRODUCT\t...` record the store-aware listing
         // emits: that one is parsed by gpuwm/rustwx.py as five tab-separated
@@ -209,6 +264,18 @@ fn parse_args() -> Result<Invocation, CliError> {
     let mut source_label = DEFAULT_SOURCE_LABEL.to_string();
     let mut overlays_path: Option<PathBuf> = None;
     let mut annotate_path: Option<PathBuf> = None;
+    let mut theme_spec: Option<String> = None;
+    let mut section_spec: Option<String> = None;
+    let mut section_across_km: Option<f64> = None;
+    let mut isotherms_spec: Option<String> = None;
+    let mut section_top_km = 14.0f64;
+    let mut section_size: Option<(u32, u32)> = None;
+    let mut section_reference_km: Option<f64> = None;
+    let mut mesh_grid: Option<PathBuf> = None;
+    let mut mesh_reference: Option<PathBuf> = None;
+    let mut mesh_labels = ("TREATMENT".to_string(), "CONTROL".to_string());
+    let mut mesh_bounds: Option<(f64, f64, f64, f64)> = None;
+    let mut footer = rustwx_render::FooterFields::default();
     let mut inputs = Vec::new();
     let mut raw = std::env::args().skip(1);
 
@@ -273,6 +340,138 @@ fn parse_args() -> Result<Invocation, CliError> {
                     raw.next().ok_or("--annotate requires a JSON file")?,
                 ));
             }
+            // The render theme: a built-in name (`default`, `light`,
+            // `dark`) or a JSON file.  The flag outranks RUSTWX_THEME, and
+            // absent both the renderer draws exactly as it always has.
+            "--theme" => {
+                let value = raw.next().ok_or("--theme requires a name or a JSON file")?;
+                if value.trim().is_empty() {
+                    return Err(CliError::Usage("--theme must not be blank".to_string()));
+                }
+                theme_spec = Some(value);
+            }
+            // The section line and its dressing, for the `xsec:` family.
+            "--section" => {
+                section_spec =
+                    Some(raw.next().ok_or("--section requires lat,lon,lat,lon or a JSON file")?);
+            }
+            "--section-across" => {
+                let value = raw.next().ok_or("--section-across requires a length in km")?;
+                let km: f64 = value
+                    .parse()
+                    .ok()
+                    .filter(|km: &f64| km.is_finite() && *km >= 2.0)
+                    .ok_or_else(|| {
+                        format!("--section-across '{value}' is not a length of at least 2 km")
+                    })?;
+                section_across_km = Some(km);
+            }
+            "--isotherms" => {
+                isotherms_spec =
+                    Some(raw.next().ok_or("--isotherms requires levels in C (or none)")?);
+            }
+            "--section-size" => {
+                let value = raw.next().ok_or("--section-size requires WxH in pixels")?;
+                let (w, h) = value
+                    .split_once(['x', 'X'])
+                    .ok_or_else(|| format!("--section-size '{value}' is not WxH"))?;
+                let parse = |text: &str, name: &str| -> Result<u32, String> {
+                    text.trim()
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|value| (200..=12_000).contains(value))
+                        .ok_or_else(|| {
+                            format!("--section-size {name} '{text}' is not 200-12000 pixels")
+                        })
+                };
+                section_size = Some((parse(w, "width")?, parse(h, "height")?));
+            }
+            "--section-reference-km" => {
+                let value = raw
+                    .next()
+                    .ok_or("--section-reference-km requires a height in km")?;
+                section_reference_km = Some(
+                    value
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|km| (0.0..=40.0).contains(km))
+                        .ok_or_else(|| {
+                            format!("--section-reference-km '{value}' is not within 0-40 km")
+                        })?,
+                );
+            }
+            "--section-top-km" => {
+                let value = raw.next().ok_or("--section-top-km requires a height in km")?;
+                section_top_km = value
+                    .parse()
+                    .ok()
+                    .filter(|km: &f64| km.is_finite() && (1.0..=40.0).contains(km))
+                    .ok_or_else(|| format!("--section-top-km '{value}' is not within 1-40 km"))?;
+            }
+            // The polygon-mesh family's three flags.  The grid file is
+            // separate from the history frames because one mesh serves a
+            // whole run: reading its connectivity once per frame is work
+            // with no answer attached to it.
+            "--mesh-grid" => {
+                mesh_grid = Some(PathBuf::from(
+                    raw.next().ok_or("--mesh-grid requires an MPAS grid file")?,
+                ));
+            }
+            "--mesh-reference" => {
+                mesh_reference = Some(PathBuf::from(
+                    raw.next()
+                        .ok_or("--mesh-reference requires the other leg's frame directory or file")?,
+                ));
+            }
+            "--mesh-labels" => {
+                let value = raw.next().ok_or("--mesh-labels requires A,B")?;
+                let mut parts = value.splitn(2, ',').map(str::trim);
+                let a = parts.next().unwrap_or("").to_string();
+                let b = parts.next().unwrap_or("").to_string();
+                if a.is_empty() || b.is_empty() {
+                    return Err(CliError::Usage(format!(
+                        "--mesh-labels '{value}' is not two comma-separated leg names"
+                    )));
+                }
+                mesh_labels = (a, b);
+            }
+            "--mesh-bounds" => {
+                let value = raw.next().ok_or("--mesh-bounds requires W,E,S,N")?;
+                let parts: Vec<f64> = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter_map(|part| part.parse::<f64>().ok())
+                    .collect();
+                if parts.len() != 4 || parts.iter().any(|value| !value.is_finite()) {
+                    return Err(CliError::Usage(format!(
+                        "--mesh-bounds '{value}' is not four finite degrees W,E,S,N"
+                    )));
+                }
+                if parts[2] >= parts[3] {
+                    return Err(CliError::Usage(format!(
+                        "--mesh-bounds '{value}': south {} is not below north {}",
+                        parts[2], parts[3]
+                    )));
+                }
+                mesh_bounds = Some((parts[0], parts[1], parts[2], parts[3]));
+            }
+            // The footer strip's caption fields.  The strip itself is the
+            // theme's; these fill it.  Setting none of them draws none.
+            "--footer-title" => {
+                footer.product_title = Some(raw.next().ok_or("--footer-title requires text")?);
+            }
+            "--footer-valid" => {
+                footer.valid_time = Some(raw.next().ok_or("--footer-valid requires text")?);
+            }
+            "--footer-mesh" => {
+                footer.mesh_or_grid = Some(raw.next().ok_or("--footer-mesh requires text")?);
+            }
+            "--footer-leg" => {
+                footer.leg = Some(raw.next().ok_or("--footer-leg requires text")?);
+            }
+            "--footer-note" => {
+                footer.note = Some(raw.next().ok_or("--footer-note requires text")?);
+            }
             "--heavy" => heavy = true,
             // The wind layer, at the front door.  Drawing streamlines was
             // reachable only through RUSTWX_WIND_STREAMLINES, a name in no
@@ -307,6 +506,24 @@ fn parse_args() -> Result<Invocation, CliError> {
             "at least one wrfout input is required".to_string(),
         ));
     }
+    let theme = theme_spec
+        .or_else(|| {
+            std::env::var(rustwx_render::THEME_ENV)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .map(|spec| rustwx_render::RenderTheme::resolve(&spec))
+        .transpose()
+        .map_err(CliError::Usage)?;
+    let section = section_spec
+        .as_deref()
+        .map(section::SectionLine::parse)
+        .transpose()
+        .map_err(CliError::Usage)?;
+    let isotherms = match isotherms_spec {
+        Some(text) => section::Isotherms::parse(&text).map_err(CliError::Usage)?,
+        None => section::Isotherms::default(),
+    };
     Ok(Invocation::Batch(Box::new(Args {
         store_root: store_root.ok_or("--store-root is required")?,
         out_dir: out_dir.ok_or("--out-dir is required")?,
@@ -328,6 +545,18 @@ fn parse_args() -> Result<Invocation, CliError> {
             .map(rustwx_products::geographic_overlays::PanelAnnotations::load)
             .transpose()
             .map_err(CliError::Usage)?,
+        theme,
+        section,
+        section_across_km,
+        isotherms,
+        section_top_km,
+        section_size,
+        section_reference_km,
+        mesh_grid,
+        mesh_reference,
+        mesh_labels,
+        mesh_bounds,
+        footer,
         inputs,
     })))
 }
@@ -340,8 +569,41 @@ fn parse_args() -> Result<Invocation, CliError> {
 /// entirely.  A path that does not exist, or that is not a WRF file, was
 /// reported without ever naming the path.
 fn validate_request(args: &Args) -> Result<(), CliError> {
-    rusty_weather::render_all::partition_products(&args.products)
-        .map_err(|err| CliError::Usage(err.to_string()))?;
+    // The two store-free families are split off before the store's own
+    // vocabulary is consulted.  `partition_products` knows the STORE's
+    // slugs, so it reads `mesh:qi:colmax` and `xsec:QICE` as typos and
+    // refuses a command line that is correct -- which is what a
+    // mesh-only or section-only invocation is.
+    let (non_mesh, mesh_products) =
+        mesh::split_product_spec(&args.products).map_err(CliError::Usage)?;
+    let (store_products, section_products) =
+        section::split_product_spec(&non_mesh).map_err(CliError::Usage)?;
+    if !store_products.trim().is_empty() || (mesh_products.is_empty() && section_products.is_empty())
+    {
+        rusty_weather::render_all::partition_products(&store_products)
+            .map_err(|err| CliError::Usage(err.to_string()))?;
+    }
+    if !mesh_products.is_empty() {
+        // A mesh: input is an MPAS history frame, which is deliberately NOT
+        // a wrfout and would fail the readability check below by design.
+        // The mesh reader refuses a file that is not one, by name, with the
+        // dimension it looked for.
+        if args.mesh_grid.is_none() {
+            return Err(CliError::Usage(
+                "mesh: products need --mesh-grid FILE.nc: a history frame carries cell CENTRES                  and no cell boundaries, so there are no polygons to draw without it."
+                    .to_string(),
+            ));
+        }
+        for path in &args.inputs {
+            if !path.is_file() {
+                return Err(CliError::Failed(format!(
+                    "{}: unreadable history frame (no such file)",
+                    path.display()
+                )));
+            }
+        }
+        return Ok(());
+    }
 
     // Per-path, in the order given, so the first sentence names the first
     // problem.  The wording matches `gpuwm/render.py`'s matplotlib engine
@@ -507,6 +769,175 @@ fn run(args: Args) -> Result<(), String> {
     // `None` when neither flag was given so RUSTWX_WIND_STREAMLINES and the
     // automatic per-grid choice keep their existing meaning.
     rustwx_products::shared_context::set_wind_streamline_request(args.streamlines);
+    // The theme is installed before the first presentation is built and
+    // before the first glyph is drawn (its fonts load with it).  Absent, the
+    // renderer's own look is installed by name so a later RUSTWX_THEME read
+    // cannot restyle half a run.
+    let theme_name = match args.theme {
+        Some(theme) => {
+            let name = theme.name.clone();
+            rustwx_render::install_theme(theme)?;
+            name
+        }
+        None => {
+            rustwx_render::install_theme(rustwx_render::RenderTheme::default_theme())?;
+            "default".to_string()
+        }
+    };
+    println!("THEME {theme_name}");
+    // The section crate draws its own text; a theme with fonts hands it the
+    // same bytes so one theme names the type on every surface.
+    {
+        let theme = rustwx_render::active_theme();
+        if theme.font_regular.is_some() || theme.font_bold.is_some() {
+            let read = |path: &Option<PathBuf>| path.as_ref().and_then(|p| std::fs::read(p).ok());
+            rustwx_cross_section::install_cross_section_fonts(
+                read(&theme.font_regular),
+                read(&theme.font_bold),
+            );
+        }
+    }
+    // The caption fields for the theme's footer strip, if the theme names
+    // one and the caller filled any.  The grid row defaults to the run's own
+    // domain and spacing, read from the inputs' global attributes -- the
+    // same identity the subtitle already carries, so one plot never states
+    // two different grids.
+    //
+    // Installed HERE, before the store-free families are dispatched: a
+    // section-only or mesh-only invocation returns without ever reaching
+    // the import, so a strip installed after it was a strip those panels
+    // could never carry.
+    if args.footer != rustwx_render::FooterFields::default() {
+        let mut footer = args.footer.clone();
+        if footer.mesh_or_grid.is_none() {
+            footer.mesh_or_grid = domain_title_label(&grid_identity(&args.inputs));
+        }
+        rustwx_render::set_footer_fields(footer);
+    }
+    // Two families never touch the store.  `mesh:` reads an MPAS history
+    // frame and its grid file; `xsec:` cuts the wrfout files directly.
+    // Both are split off here, and when they are all that was asked for the
+    // import is skipped entirely.
+    let (non_mesh_products, mesh_products) = mesh::split_product_spec(&args.products)?;
+    let (store_products, section_products) = section::split_product_spec(&non_mesh_products)?;
+    if !mesh_products.is_empty() && !(store_products.is_empty() && section_products.is_empty()) {
+        // The INPUTS differ, not just the drawing.  A mesh: product's input
+        // is an MPAS history frame; every other family's is a wrfout.  One
+        // invocation cannot be handed both lists, and importing a history
+        // frame as a wrfout fails deep inside the importer with a message
+        // about a missing Times variable -- which says nothing about the
+        // real mistake.
+        return Err(format!(
+            "mesh: products read an MPAS history frame plus --mesh-grid; {} \
+             read wrfout files. Ask for them in separate invocations.",
+            if section_products.is_empty() {
+                "the store products"
+            } else {
+                "the store and xsec: products"
+            }
+        ));
+    }
+    if !mesh_products.is_empty() {
+        let grid_path = args.mesh_grid.as_deref().ok_or_else(|| {
+            "mesh: products need the mesh: --mesh-grid FILE.nc. A history frame carries cell \
+             CENTRES and no cell boundaries, so there are no polygons to draw without it."
+                .to_string()
+        })?;
+        let read_started = std::time::Instant::now();
+        let geometry = mesh::read_mesh_geometry(grid_path)?;
+        println!(
+            "MESH grid={} cells={} spacing_km={:.3}-{:.3} description={} read_ms={}",
+            grid_path.display(),
+            geometry.n_cells,
+            geometry.spacing_km.0,
+            geometry.spacing_km.1,
+            geometry.description(),
+            read_started.elapsed().as_millis()
+        );
+        let config = mesh::MeshRenderConfig {
+            inputs: &args.inputs,
+            out_dir: &args.out_dir,
+            grid: &geometry,
+            reference: args.mesh_reference.as_deref(),
+            labels: args.mesh_labels.clone(),
+            width: args.width,
+            height: args.height,
+            source_label: args.source_label.clone(),
+            theme: rustwx_render::active_theme(),
+            frame: args.frames,
+            bounds: args.mesh_bounds,
+            footer: args.footer.clone(),
+        };
+        let mesh_started = std::time::Instant::now();
+        let (rendered, failed) =
+            mesh::render_mesh_products(&mesh_products, &config, |outcome| match outcome.result {
+                Ok(path) => {
+                    // The timing rides its OWN line.  `RENDERED <slug>
+                    // <path>` is a two-field record every reader of this
+                    // stream splits on the first space, and a third field
+                    // would land inside the path they read.
+                    println!(
+                        "MESH_RENDER {} cells={} render_ms={}",
+                        outcome.slug, outcome.cells, outcome.render_ms
+                    );
+                    println!("RENDERED {} {}", outcome.slug, path.display());
+                }
+                Err(err) => eprintln!("FAILED {} {err}", outcome.slug),
+            })?;
+        println!(
+            "FINISHED rendered={rendered} skipped=0 failed={failed} elapsed_ms={}",
+            mesh_started.elapsed().as_millis()
+        );
+        if rendered == 0 || failed > 0 {
+            return Err(format!(
+                "mesh render incomplete: rendered={rendered} failed={failed}"
+            ));
+        }
+        return Ok(());
+    }
+    if !section_products.is_empty() && args.section.is_none() {
+        return Err(
+            "xsec: products need a line: --section lat,lon,lat,lon or --section FILE.json"
+                .to_string(),
+        );
+    }
+    let section_inputs = args.inputs.clone();
+    let section_out_dir = args.out_dir.clone();
+    let section_source_label = args.source_label.clone();
+    let section_domain_slug = native_domain_slug(&grid_identity(&args.inputs));
+    let (section_width, section_height) =
+        section_dimensions(args.section_size, args.width, args.height);
+    let section_args = SectionArgs {
+        line: args.section.clone(),
+        across_km: args.section_across_km,
+        isotherms: args.isotherms.clone(),
+        frame: args.frames,
+        width: section_width,
+        height: section_height,
+        top_km: args.section_top_km,
+        reference_km: args.section_reference_km,
+    };
+    let section_started = std::time::Instant::now();
+    if store_products.is_empty() && !section_products.is_empty() && !args.list_products {
+        let (rendered, failed) = render_section_products(
+            &section_products,
+            &section_args,
+            &section_inputs,
+            &section_out_dir,
+            section_domain_slug,
+            &section_source_label,
+        )?;
+        println!(
+            "FINISHED rendered={rendered} skipped=0 failed={failed} elapsed_ms={}",
+            section_started.elapsed().as_millis()
+        );
+        if rendered == 0 || failed > 0 {
+            return Err(format!(
+                "section render incomplete: rendered={rendered} failed={failed}"
+            ));
+        }
+        return Ok(());
+    }
     let options = WrfProcessOptions {
         heavy_ecape: args.heavy,
         ..WrfProcessOptions::default()
@@ -601,7 +1032,7 @@ fn run(args: Args) -> Result<(), String> {
     };
     let catalog =
         inspect_renderable_products(&args.store_root, &import.model, &import.run, first_slot)?;
-    let product_spec = if args.products.eq_ignore_ascii_case("all") {
+    let product_spec = if store_products.eq_ignore_ascii_case("all") {
         catalog
             .products
             .iter()
@@ -609,7 +1040,7 @@ fn run(args: Args) -> Result<(), String> {
             .collect::<Vec<_>>()
             .join(",")
     } else {
-        args.products
+        store_products
     };
     println!(
         "CATALOG products={} stored_hours={:?}",
@@ -706,13 +1137,113 @@ fn run(args: Args) -> Result<(), String> {
     // Written before the failure check below so a partially-failed run
     // still georeferences every panel it DID produce.
     write_georef_manifest(&georef_out_dir, &panel_georefs)?;
-    if summary.rendered == 0 || summary.failed > 0 {
+    // Sections requested beside store products ride the same run, after
+    // the store lane, with their own tally folded into the verdict.
+    let (section_rendered, section_failed) = if section_products.is_empty() {
+        (0, 0)
+    } else {
+        let counts = render_section_products(
+            &section_products,
+            &section_args,
+            &section_inputs,
+            &section_out_dir,
+            section_domain_slug,
+            &section_source_label,
+        )?;
+        println!(
+            "SECTIONS rendered={} failed={} elapsed_ms={}",
+            counts.0,
+            counts.1,
+            section_started.elapsed().as_millis()
+        );
+        counts
+    };
+    if summary.rendered + section_rendered == 0 || summary.failed + section_failed > 0 {
         return Err(format!(
             "batch render incomplete: rendered={} skipped={} failed={}",
-            summary.rendered, summary.skipped, summary.failed
+            summary.rendered + section_rendered,
+            summary.skipped,
+            summary.failed + section_failed
         ));
     }
     Ok(())
+}
+
+/// What the section lane needs from the invocation, captured before the
+/// store lane consumes the rest of `Args`.
+struct SectionArgs {
+    line: Option<section::SectionLine>,
+    across_km: Option<f64>,
+    isotherms: section::Isotherms,
+    frame: Option<usize>,
+    width: u32,
+    height: u32,
+    top_km: f64,
+    reference_km: Option<f64>,
+}
+
+/// The size a SECTION is drawn at: what the caller asked for, or landscape
+/// 2:1 at the map's width.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): the pair tool handed
+/// sections the MAP's size and a 1800x1464 near-square map produced a
+/// 1800x1464 near-square section -- a vertical cut, which is 100 km wide
+/// and 6 km tall, drawn in a portrait-ish frame.
+pub fn section_dimensions(
+    explicit: Option<(u32, u32)>,
+    map_width: u32,
+    map_height: u32,
+) -> (u32, u32) {
+    if let Some((width, height)) = explicit {
+        return (width, height);
+    }
+    let width = map_width.max(map_height).max(640);
+    (width, (width / 2).max(320))
+}
+
+/// The `xsec:` lane: sections cut from the wrfout files directly and
+/// reported through the RENDERED / FAILED grammar the Python side reads.
+/// Returns `(rendered, failed)`.
+fn render_section_products(
+    products: &[section::SectionProduct],
+    args: &SectionArgs,
+    inputs: &[PathBuf],
+    out_dir: &std::path::Path,
+    domain_slug: Option<String>,
+    source_label: &str,
+) -> Result<(usize, usize), String> {
+    let line = args
+        .line
+        .clone()
+        .ok_or_else(|| "xsec: products need --section".to_string())?;
+    println!(
+        "SECTIONS products={} line={:.4},{:.4}->{:.4},{:.4} length_km={:.1}",
+        products.len(),
+        line.start.lat_deg,
+        line.start.lon_deg,
+        line.end.lat_deg,
+        line.end.lon_deg,
+        line.length_km()
+    );
+    let config = section::SectionRenderConfig {
+        inputs,
+        out_dir,
+        line,
+        across_km: args.across_km,
+        isotherms: args.isotherms.clone(),
+        frame: args.frame,
+        width: args.width,
+        height: args.height,
+        top_km: args.top_km,
+        reference_km: args.reference_km,
+        domain_slug,
+        source_label: source_label.to_string(),
+        theme: rustwx_render::active_theme(),
+    };
+    section::render_sections(products, &config, |outcome| match outcome.result {
+        Ok(path) => println!("RENDERED {} {}", outcome.slug, path.display()),
+        Err(err) => eprintln!("FAILED {} {err}", outcome.slug),
+    })
 }
 
 /// The schema string every `render-georef.json` declares.
@@ -1060,6 +1591,24 @@ fn list_products(
 mod tests {
     use super::*;
 
+    /// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): the pair tool
+    /// handed a section the MAP's size, so a 1800x1464 near-square map
+    /// produced a 1800x1464 near-square section -- a cut 100 km wide and
+    /// 6 km tall drawn in a portrait-ish frame.
+    #[test]
+    fn a_section_is_landscape_by_default_whatever_size_the_map_is() {
+        for (map_w, map_h) in [(1800u32, 1464u32), (1200, 1600), (2400, 1200), (960, 720)] {
+            let (w, h) = section_dimensions(None, map_w, map_h);
+            assert_eq!(w, h * 2, "{map_w}x{map_h} gave {w}x{h}");
+            assert!(w >= map_w, "{map_w}x{map_h} lost width");
+        }
+        // The two shapes the rejected sheets came out at.
+        assert_eq!(section_dimensions(None, 1800, 1464), (1800, 900));
+        assert_eq!(section_dimensions(None, 2400, 1200), (2400, 1200));
+        // A caller that names a size gets exactly it.
+        assert_eq!(section_dimensions(Some((1600, 1200)), 2400, 1200), (1600, 1200));
+    }
+
     /// An `Args` that is valid apart from what a test deliberately breaks.
     fn args_for(products: &str, inputs: Vec<PathBuf>) -> Args {
         Args {
@@ -1075,6 +1624,18 @@ mod tests {
             source_label: DEFAULT_SOURCE_LABEL.to_string(),
             overlays: None,
             annotations: None,
+            theme: None,
+            section: None,
+            section_across_km: None,
+            isotherms: section::Isotherms::default(),
+            section_top_km: 14.0,
+            section_size: None,
+            section_reference_km: None,
+            mesh_grid: None,
+            mesh_reference: None,
+            mesh_labels: ("TREATMENT".to_string(), "CONTROL".to_string()),
+            mesh_bounds: None,
+            footer: rustwx_render::FooterFields::default(),
             inputs,
         }
     }

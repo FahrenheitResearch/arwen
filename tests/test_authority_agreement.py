@@ -74,7 +74,6 @@ from gpuwm.physics_registry import (
 #: them alone: they are about routing, topology, plan shape or tree edges.
 _REGISTRY_ONLY_CODES = frozenset({
     "component-override-route",
-    "expert-acknowledgement-required",
     "expert-route-policy",
     "fixed-template-components",
     "graph-setting-constraint",
@@ -84,7 +83,6 @@ _REGISTRY_ONLY_CODES = frozenset({
     # carrier while MP is off.  RunConfig sees only the resolved boolean and
     # cannot distinguish an explicit parameter from the registry default.
     "real-source-mp-off-requires-explicit-moist",
-    "template-route",
     "transition-required-setting",
     # An unimplemented option is refused BEFORE its selectors are projected:
     # gpuwm/physics_registry.py stops at ``unimplemented-option`` and
@@ -369,6 +367,33 @@ def test_exhaustive_component_cross_product_agrees_on_every_combination(
         f"{len(disagreements)} of {combinations} component combinations are "
         "decided differently by the registry and by validate_run_config:\n  "
         + "\n  ".join(disagreements[:40]))
+
+
+@pytest.mark.parametrize("radiation", ["rte-rrtmgp", "rte-rrtmgp-legacy-aggregate"])
+@pytest.mark.parametrize("microphysics,variant,refuses", [
+    ("milbrandt2mom-mp9", "rte-rrtmgp", True),
+    ("milbrandt2mom-mp9", "rrtmg_legacy", False),
+    ("wsm6-mp6", "rte-rrtmgp", False),
+])
+def test_mp9_cloud_optics_gate_covers_both_selector_spellings(
+        radiation, microphysics, variant, refuses):
+    registry = _permissive_registry()
+    registry["runner_routes"][_PERMISSIVE_RUNNER]["allowed_parameter_keys"] = ["ra_rrtmg_variant"]
+    # Find WSM6 through its selector so this control uses the registry's name.
+    if microphysics == "wsm6-mp6":
+        microphysics = next(key for key, row in registry["components"]["microphysics"]["options"].items()
+                            if row.get("selectors") == {"mp_physics": 6})
+    report = validate_physics_plan(_single_domain_plan(
+        registry, _PERMISSIVE_RUNNER, "any-source", _base_template_id(registry),
+        components={"microphysics": microphysics, "radiation": radiation},
+        parameters={"ra_rrtmg_variant": variant}), registry=registry)
+    assert report["launchable"] is not refuses, report["errors"]
+    conditional = [row for row in report["errors"] if row["code"] == "component-conditional-refusal"]
+    assert bool(conditional) is refuses
+    runtime = _config_refusal(report["resolved_domains"][0]["settings"], nested=False)
+    assert (runtime is not None) is refuses
+    if refuses:
+        assert "cloud-optics" in runtime
 
 
 def _selectable_parameter_values(registry: dict, name: str) -> list:

@@ -77,8 +77,6 @@ from gpuwm.open_files import (
 )
 from gpuwm.physics_compat import (
     acknowledgement_delivery,
-    land_surface_component_for_selector,
-    land_surface_route_blocker,
     multi_domain_physics_selection,
     single_domain_physics_selection,
 )
@@ -156,6 +154,9 @@ _IMPLEMENTATION_PATHS = (
     "gpuwm/ingest/nest_init.py",
     "gpuwm/static/lambert.py",
     "gpuwm/static/build.py",
+    "gpuwm/static/highres_production.py",
+    "gpuwm/static/highres.py",
+    "gpuwm/static/highres_fetch.py",
     "gpuwm/wrf_direct.py",
     "gpuwm/data/noah_tables/GENPARM.TBL",
     "gpuwm/data/noah_tables/SOILPARM.TBL",
@@ -943,10 +944,9 @@ def front_door_physics_selection(
     An explicitly named profile is still enforced on either route,
     because a gate the caller asked for remains binding: naming
     ``--physics-profile`` asserts the config IS that shipped suite.
-    The one genuine per-source blocker -- the registry's land-surface
-    route declaration, which carries the GFS+RUC `mavail must be
-    finite` field finding -- refuses on the resolved selector for every
-    shape alike, before any GRIB is decoded.
+    Land-surface initialization follows the selected scheme and soil
+    geometry. Registry source/template membership describes evidence;
+    the shared field and category checks decide whether input can run.
     """
 
     acknowledgements, provenance = acknowledgement_delivery(
@@ -968,54 +968,32 @@ def front_door_physics_selection(
             profile=physics_profile,
             expert_acknowledgements=acknowledgements,
             acknowledgement_provenance=provenance)
-    _refuse_unoffered_land_surface(_selection_selectors_by_domain(selection))
     return selection
 
 
-def _selection_selectors_by_domain(
-        selection: Mapping[str, object]) -> dict[int, object]:
-    """Selector records by grid id, for either selection receipt shape."""
+def _prepared_initial_perturbation(exp) -> dict[str, object] | None:
+    """Declare the tree runner's deferred mutation without changing prep arrays.
 
-    domains = selection.get("domains")
-    if isinstance(domains, Mapping):
-        return {
-            int(grid_id): domain.get("selectors")
-            for grid_id, domain in domains.items()
-        }
-    return {1: selection.get("selectors")}
-
-
-def _refuse_unoffered_land_surface(selectors_by_domain) -> None:
-    """Refuse a land-surface component this route does not offer.
-
-    Preparation time, before any GRIB is decoded: the registry has long
-    declared which templates this route offers this source, and nothing
-    consulted that declaration before a run.  RUC was therefore
-    selectable here, prepared in full -- proof PASS, nine soil layers,
-    339 MB of state -- and then died on its first surface-temperature
-    call having advanced no model time.  A refusal that arrives after
-    the preparation is a refusal that costs the preparation.
-
-    Both routes of this front door are checked, because both build
-    their surface state from the same GFS initialisation and both reach
-    the same cold start.  The refusal names only this source; see
-    :func:`land_surface_route_blocker` for why it speaks for no other.
+    GFS prepares the source analysis/forecast, including boundary times, as
+    before. Only the domain-tree forecast runner applies the configured
+    bubble to restored initial states; the single-domain runner cannot.
     """
+    from gpuwm.experiment import refuse_unrouted_perturbation
 
-    for grid_id in sorted(selectors_by_domain):
-        selectors = selectors_by_domain[grid_id]
-        if not isinstance(selectors, Mapping):
-            continue
-        component = land_surface_component_for_selector(
-            selectors.get("sf_surface_physics"))
-        if component is None:
-            # A selector the registry has no option for is refused by
-            # the configuration schema long before this door, so there
-            # is nothing here for this gate to add.
-            continue
-        blocker = land_surface_route_blocker(component, source="gfs")
-        if blocker is not None:
-            raise ValueError(f"d{grid_id:02d}: {blocker}")
+    if len(exp.domains) < 2:
+        refuse_unrouted_perturbation(exp, "GFS-direct prepared-cache")
+    if exp.perturbation is None:
+        return None
+    return {
+        "schema": "gpuwm-gfs-initial-perturbation-deferred-v1",
+        "status": "DEFERRED_TO_FORECAST_INITIALIZATION",
+        "prepared_arrays": "unperturbed source initial and boundary states",
+        "application_route": "gpuwm.prepared_domain_tree_forecast",
+        "application_point": "restored states at experiment start time",
+        "applied_on_restart": False,
+        "applied_to_delayed_domains": False,
+        "config": exp.perturbation.receipt(),
+    }
 
 
 def prepare_gfs_wrf(
@@ -1139,11 +1117,27 @@ def prepare_gfs_wrf(
     verify_inputs_seconds = time.perf_counter() - verify_started
 
     exp = load_experiment(Path(experiment_config))
-    from gpuwm.experiment import (
-        refuse_unrouted_perturbation, refuse_unrouted_spawn,
-    )
-    refuse_unrouted_perturbation(exp, "GFS-direct prepared-cache")
+    from gpuwm.static.highres_production import (
+        load_static_highres, apply_prepared_highres, static_highres_identity)
+    static_highres = load_static_highres(experiment_config)
+    from gpuwm.case_data import optional_case_data_from_config, preparation_case_policy
+    case_data = optional_case_data_from_config(experiment_config)
+    case_policy = preparation_case_policy(case_data)
+    from gpuwm.ingest.water_overlay import (
+        load_bound_water_overlay, overlay_snapshot_sequence, verify_overlay_sequence)
+    water_overlay, water_overlay_binding = load_bound_water_overlay(
+        None if case_data is None else case_data.water_temperature_overlay)
+    from gpuwm.experiment import refuse_unrouted_spawn
     refuse_unrouted_spawn(exp, "GFS-direct prepared-cache")
+    initial_perturbation = _prepared_initial_perturbation(exp)
+    if initial_perturbation is not None:
+        warn(
+            "initial perturbation is deferred to prepared-tree forecast initialization",
+            "Prepared initial and boundary arrays remain unperturbed. The "
+            "original configuration stays bound to the bundle; its bubbles "
+            "are applied once to restored states at experiment start, never "
+            "on restart or to a nest born later. Companion stock-WRF export "
+            "cannot represent this deferred mutation.")
     physics_selection = front_door_physics_selection(
         exp, physics_profile=physics_profile,
         expert_acknowledgements=expert_acknowledgements)
@@ -1258,6 +1252,10 @@ def prepare_gfs_wrf(
                 Path(wps_namelist), Path(geog_root), (1,))
             landuse_attrs = geog_selection_from_catalog(
                 catalog, 1).landuse_global_attrs()
+    static, root_static_receipt = apply_prepared_highres(
+        static, grid, config=static_highres, domain_id=1,
+        case_date=exp.start_time.date(), landuse_attrs=landuse_attrs,
+        baseline_receipt=root_static_receipt)
     # Both roads, one key: "build it from the geography tree" and "load
     # and verify the prebuilt cache" are two answers to one question,
     # and a receipt that timed only the first would go quiet on exactly
@@ -1340,7 +1338,8 @@ def prepare_gfs_wrf(
         # experiment's lead.  Each snapshot still carries the SOURCE
         # valid time the bridge decoded (cycle + its own lead), which is
         # exactly start_time + the model offset.
-        snapshots = decoded_snapshots[initial_index:]
+        snapshots = overlay_snapshot_sequence(decoded_snapshots[initial_index:], water_overlay,
+                                              binding=water_overlay_binding)
         decode_seconds = time.perf_counter() - decode_started
         # The land-use table's own ISLAKE, never a hard-coded 21: the
         # category number is a property of the selected table, and a table
@@ -1348,10 +1347,15 @@ def prepare_gfs_wrf(
         # rather than a silently empty mask.  lake_override=True because
         # the soil call below hands the router a lake_mask/lake_skin pair,
         # which makes every one of these cells water inside the router.
+        if (landuse_attrs is None and case_data is not None
+                and (case_data.water_temperature_policy is not None or water_overlay is not None)
+                and case_policy["water_temperature_policy"] != "wrf_compat"):
+            raise ValueError("declared water-temperature policy needs the selected land-use "
+                             "table's ISLAKE metadata; provide --geog-root with this static cache")
         water_statics = (
             None if landuse_attrs is None
             else WaterTemperatureStatics.for_route(
-                route=_WATER_ROUTE, policy=None,
+                route=_WATER_ROUTE, policy=case_policy["water_temperature_policy"],
                 landmask=static["LANDMASK"], lu_index=static["LU_INDEX"],
                 landuse_attrs=landuse_attrs, lake_override=True))
         if water_statics is None:
@@ -1417,7 +1421,7 @@ def prepare_gfs_wrf(
                 eta_levels=exp.vertical.eta_levels)
             initialized = initialize_real(
                 met, cfg, coord, static["HGT_M"], grid=grid,
-                p_top=exp.vertical.p_top, sfcp_to_sfcp=True,
+                p_top=exp.vertical.p_top, sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
                 preprocess_backend=preprocess,
                 state_backend="preprocess")
             initialized.state.set_map_coriolis(
@@ -1486,16 +1490,22 @@ def prepare_gfs_wrf(
             terrain=static["HGT_M"] if soil_orography is not None else None,
             source_orography=soil_orography,
             water_temperature=water_temperature,
+            water_temperature_policy=case_policy["water_temperature_policy"],
             # GFS's 0.25 degree soil state is 5.5 by 9.1 cells wide on a
             # 3 km European domain, which is exactly the regime the
             # sub-source-cell reconstitution exists for.
             soil_mesh=soil_mesh_plan_from_case(
                 snapshots[0], grid, experiment_config),
             route=_WATER_ROUTE)
+        verify_overlay_sequence(snapshots)
         initialize_seconds = time.perf_counter() - initialize_started
 
         native_source_identity = {
             "adapter": "gfs-pgrb2-0p25-direct-v1",
+            **({"static_highres": static_highres_identity(static_highres)}
+               if static_highres is not None else {}),
+            "preparation_case_policy": case_policy,
+            "water_temperature_overlay": water_overlay_binding,
             "input_manifest_schema": manifest["schema"],
             "input_manifest_sha256": manifest_digest,
             # Cycle AND lead, never one standing in for the other.  A
@@ -1516,6 +1526,8 @@ def prepare_gfs_wrf(
             "implementation_sha256": implementation_sha256,
             "git_source_identity": git_source_identity,
             "preprocessing": preprocess_receipt,
+            **({"initial_perturbation": initial_perturbation}
+               if initial_perturbation is not None else {}),
         }
 
         staging = _atomic_staging_sibling(Path(output_root))
@@ -1577,6 +1589,9 @@ def prepare_gfs_wrf(
                     stock_wrf_export=(
                         "optional" if stock_wrf_export else "off"),
                     statics_corridor=statics_corridor,
+                    static_highres=static_highres,
+                    sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
+                    water_temperature_policy=case_policy["water_temperature_policy"],
                     # A child sees the catalog, not the config.  Without
                     # this a WRF-comparison reproduction would disable the
                     # soil reconstitution on the parent and silently keep
@@ -1585,6 +1600,7 @@ def prepare_gfs_wrf(
                         experiment_config),
                 )
                 hierarchy_seconds = time.perf_counter() - hierarchy_started
+                verify_overlay_sequence(snapshots)
                 final_manifest = _verify_input_manifest(
                     Path(input_manifest), manifest_digest, roles)
                 if final_manifest != manifest:
@@ -1627,6 +1643,8 @@ def prepare_gfs_wrf(
                         hierarchy.topology_receipt),
                     "artifact_receipt": dict(
                         hierarchy.hierarchy.artifacts.receipt),
+                    **({"initial_perturbation": initial_perturbation}
+                       if initial_perturbation is not None else {}),
                     "wrf_manifest": dict(
                         hierarchy.hierarchy.wrf_manifest),
                     # Present only when the preparation opted in: the
@@ -1707,6 +1725,7 @@ def prepare_gfs_wrf(
                     "direct-WRF export physics provenance differs from the "
                     "selected preparation profile")
             export_seconds = time.perf_counter() - export_started
+            verify_overlay_sequence(snapshots)
             final_manifest = _verify_input_manifest(
                 Path(input_manifest), manifest_digest, roles)
             if final_manifest != manifest:

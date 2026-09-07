@@ -1519,6 +1519,12 @@ class CanonicalField:
 
     def __post_init__(self) -> None:
         array = np.asarray(self.values, dtype=np.float64)
+        self._validate_values(array)
+        copied = array.copy()
+        copied.setflags(write=False)
+        object.__setattr__(self, "values", copied)
+
+    def _validate_values(self, array) -> None:
         if array.ndim != len(self.axes):
             raise ValueError(
                 f"{self.name} rank {array.ndim} differs from axes {self.axes}"
@@ -1527,9 +1533,44 @@ class CanonicalField:
             raise ValueError(f"{self.name} contains infinity")
         if int(np.isnan(array).sum()) != self.missing_count:
             raise ValueError(f"{self.name} missing count does not match its data")
-        copied = array.copy()
-        copied.setflags(write=False)
-        object.__setattr__(self, "values", copied)
+
+    @classmethod
+    def _take_owned_stream_array(cls, *, name, units, axes, location, staggering,
+                                 values, missing_count, source_references):
+        """Internal move from the frameset reader's fresh, verified allocation.
+
+        The caller relinquishes its array and all views after this call. Public
+        construction still copies borrowed inputs. A window reader must first
+        verify the complete original field, then pass its separately declared
+        retained shape and missing count. This never permits a memory map,
+        shared buffer, or skipped canonical validation.
+        """
+        if (not isinstance(values, np.ndarray) or values.dtype != np.float64
+                or not values.flags.owndata or not values.flags.c_contiguous
+                or values.base is not None):
+            raise ValueError("stream transfer requires an owning contiguous float64 array")
+        result = object.__new__(cls)
+        for key, value in (("name", name), ("units", units), ("axes", axes),
+                           ("location", location), ("staggering", staggering),
+                           ("values", values), ("missing_count", missing_count),
+                           ("source_references", source_references)):
+            object.__setattr__(result, key, value)
+        result._validate_values(values)
+        values.setflags(write=False)
+        return result
+
+
+def _validate_mapped_field_grid(field, ny: int, nx: int, nz: int) -> None:
+    """One canonical field must share its owning frame's axes."""
+    _validate_mapped_field_shape(field.name, field.axes, field.values.shape, ny, nx, nz)
+
+
+def _validate_mapped_field_shape(name, axes, dimensions, ny, nx, nz):
+    shape = dict(zip(axes, dimensions))
+    if shape.get("y") != ny or shape.get("x") != nx:
+        raise ValueError(f"{name} does not share the source horizontal grid")
+    if "vertical" in shape and shape["vertical"] != nz:
+        raise ValueError(f"{name} does not share the vertical coordinate")
 
 
 @dataclass(frozen=True)
@@ -1572,13 +1613,9 @@ class MappedSourceFrame:
                     "curvilinear export is not enabled"
                 )
         copied_fields = MappingProxyType(dict(self.fields))
-        expected_horizontal = (latitude.size, longitude.size)
         for field in copied_fields.values():
-            shape = dict(zip(field.axes, field.values.shape))
-            if shape.get("y") != expected_horizontal[0] or shape.get("x") != expected_horizontal[1]:
-                raise ValueError(f"{field.name} does not share the source horizontal grid")
-            if "vertical" in shape and shape["vertical"] != vertical.size:
-                raise ValueError(f"{field.name} does not share the vertical coordinate")
+            _validate_mapped_field_grid(field, latitude.size, longitude.size,
+                                        vertical.size)
         for name, value in (("latitude", latitude), ("longitude", longitude),
                             ("vertical_values", vertical)):
             copied = value.copy()
@@ -1955,9 +1992,13 @@ def _require_geographic_coordinate(
         raise ValueError(
             f"{label} selector resolved NetCDF variable {name!r} whose CF "
             f"standard_name is {standard_name!r}; that is a projection axis, "
-            f"not geographic {axis}. Projected source grids are unsupported: "
-            f"regrid the source to a regular latitude/longitude grid, or supply "
-            f"1-D geographic coordinate variables with units "
+            f"not geographic {axis}. A file's bare projection axes carry no "
+            f"projection with them, so nothing here can say which plane they "
+            f"are in and reading them as degrees would georeference the "
+            f"source silently wrong. A source whose grid declaration states "
+            f"its projection is paired through it and needs none of this. "
+            f"Regrid the source to a regular latitude/longitude grid, or "
+            f"supply 1-D geographic coordinate variables with units "
             f"{canonical_unit!r}."
         )
 
@@ -5131,6 +5172,35 @@ def _mapping_format(mapping_path: str | Path) -> str | None:
     return str(value) if isinstance(value, str) else None
 
 
+def _engine_scratch_directory() -> str | None:
+    """Where an engine call with no preparation output stages its files.
+
+    ``decode`` and ``inspect`` hand back in-memory products, so they
+    have no output directory to stage beside; their scratch is placed
+    by the compose scratch's own resolution with no destination
+    (:func:`gpuwm.mapped_composition._compose_scratch_base`):
+    ``GPUWM_COMPOSE_SCRATCH`` when it is set -- refused by name when it
+    does not exist -- and the system temp otherwise.
+
+    Named breakage: a 0.25-degree analysis decode on a box whose
+    ``/tmp`` is a quota-limited tmpfs died with "cannot write the frame
+    stream: Disk quota exceeded (os error 122)" while
+    ``GPUWM_COMPOSE_SCRATCH`` named a disk-backed directory, because the
+    variable placed the compose scratch only and this route staged its
+    frameset in the system temp; only ``TMPDIR`` moved it.  One
+    documented variable now covers every temporary the engine route
+    writes -- the input list and the frame stream both land under the
+    directory handed to the engine, which reads no ``TMPDIR`` of its own.
+    """
+
+    import os
+
+    from gpuwm.mapped_composition import _compose_scratch_base
+
+    base = _compose_scratch_base(None)
+    return None if base is None else os.fspath(base)
+
+
 def _decode_through_engine(
     mapping_path: Path,
     sources: tuple[Path, ...],
@@ -5176,7 +5246,13 @@ def _decode_through_engine(
         )
     _require_authority_snapshot(mapping_snapshot)
 
-    with tempfile.TemporaryDirectory(prefix="gpuwm-mapped-engine-") as work:
+    # The engine writes the WHOLE decoded frame stream under this
+    # directory -- f64 frames, a few GB for a 0.25-degree analysis --
+    # before it is read back, so its placement is the compose scratch's
+    # (see :func:`_engine_scratch_directory`), not the bare system temp.
+    with tempfile.TemporaryDirectory(
+            prefix="gpuwm-mapped-engine-",
+            dir=_engine_scratch_directory()) as work:
         mapped_engine_bridge.run_engine(
             "decode",
             mapping=mapping_path,
@@ -5443,7 +5519,12 @@ def _inspect_through_engine(
             _snapshots=snapshots,
             _recheck_snapshots=False,
         )
-    with tempfile.TemporaryDirectory(prefix="gpuwm-mapped-inspect-") as work:
+    # Only the input list lands here (the document rides stdout), but
+    # it is the same knob as every other engine temporary, so a scratch
+    # override that steers the decode route steers this one too.
+    with tempfile.TemporaryDirectory(
+            prefix="gpuwm-mapped-inspect-",
+            dir=_engine_scratch_directory()) as work:
         result = mapped_engine_bridge.run_engine(
             "inspect",
             mapping=mapping_path,
@@ -5782,10 +5863,121 @@ def _nearest_soil_column_repair(
     return soil_t, soil_m
 
 
+def _regular_snapshot_field_items(frame, pressure, *, soil_land_repair,
+                                  initialize_absent_hydrometeors):
+    """Yield unchanged join arithmetic while retaining only its active inputs."""
+    canonical = frame.fields
+    pressure_shape = pressure.shape
+    legacy_names = {
+        "air_temperature": "T",
+        "air_pressure": "PRES",
+        "specific_humidity": "SPFH",
+        "eastward_wind": "U",
+        "northward_wind": "V",
+        "geopotential_height": "GHT",
+        "surface_pressure": "PSFC",
+        "terrain_height": "SOURCE_OROGRAPHY",
+        "skin_temperature": "SKINTEMP",
+        "air_temperature_2m": "T2",
+        "specific_humidity_2m": "Q2",
+        "eastward_wind_10m": "U10",
+        "northward_wind_10m": "V10",
+        "land_fraction": "LANDSEA",
+        # SNOW, not SNOW_EC.  ``SNOW_EC`` is bound in exactly one
+        # decode table -- ECMWF GRIB1 (141, 1), metres of water
+        # equivalent (``gpuwm/ingest/grib.py``) -- and the soil
+        # initializer multiplies that name by 1000 to reach kg m-2
+        # (``gpuwm/ingest/soil.py``).  The canonical
+        # ``snow_water_equivalent`` is kg m-2 already, which is what
+        # every other route carrying it calls ``SNOW`` and what
+        # ``preprocess_noah_soil`` consumes unscaled.
+        "snow_water_equivalent": "SNOW",
+        "snow_depth": "SNOWH",
+        "sea_ice_fraction": "SEAICE",
+    }
+    for name, legacy in legacy_names.items():
+        if name not in canonical:
+            continue
+        values = (pressure if name == "air_pressure" else
+                  np.asarray(canonical[name].values, dtype=np.float64))
+        if name == "air_pressure":
+            pressure = None
+        yield legacy, values
+        del values
+    soil_t = np.asarray(
+        canonical["soil_temperature"].values, dtype=np.float64,
+    )
+    soil_m = np.asarray(
+        canonical["volumetric_soil_moisture"].values, dtype=np.float64,
+    )
+    if soil_t.ndim != 3 or soil_m.ndim != 3 or soil_t.shape != soil_m.shape:
+        raise ValueError(
+            "mapped soil temperature/moisture must share soil/y/x shape"
+        )
+    source_land = np.asarray(
+        canonical["land_fraction"].values, dtype=np.float64,
+    )
+    if source_land.shape != soil_t.shape[1:] \
+            or not np.isfinite(source_land).all():
+        raise ValueError(
+            "mapped land fraction must be finite and share the soil grid"
+        )
+    # A fraction, and now checked as one.  Finiteness alone let a
+    # mis-scaled unit transform deliver 2.0 here, which the >= 0.5
+    # threshold below reads as land without complaint; a value that
+    # merely kisses 0 or 1 is decode rounding and clamps.
+    source_land, _ = admit_bounded(
+        source_land, name="land fraction", minimum=0.0, maximum=1.0,
+        subject="mapped")
+    terrestrial = source_land >= 0.5
+    if soil_land_repair is not None:
+        if str(soil_land_repair.get("kind")) \
+                != "nearest_soil_column_within_cells":
+            raise ValueError(
+                "unsupported declared soil land repair "
+                f"{soil_land_repair!r}"
+            )
+        soil_t, soil_m = _nearest_soil_column_repair(
+            soil_t, soil_m, terrestrial, frame.longitude,
+            int(soil_land_repair["maximum_cells"]),
+        )
+    if not np.isfinite(soil_t[:, terrestrial]).all():
+        raise ValueError(
+            "mapped soil temperature contains missing source-land values"
+        )
+    if not np.isfinite(soil_m[:, terrestrial]).all():
+        raise ValueError(
+            "mapped soil moisture contains missing source-land values"
+        )
+    yield MAPPED_SOIL_TEMPERATURE, soil_t
+    yield MAPPED_SOIL_MOISTURE, soil_m
+    del soil_t, soil_m, source_land, terrestrial
+    if initialize_absent_hydrometeors:
+        zero_fields = {
+            "cloud_water_mixing_ratio": "QC",
+            "rain_water_mixing_ratio": "QR",
+            "cloud_ice_mixing_ratio": "QI",
+            "snow_mixing_ratio": "QS",
+            "graupel_or_hail_mixing_ratio": "QG",
+        }
+        for canonical_name, output in zero_fields.items():
+            if frame.header.initialization_policies.get(canonical_name) \
+                    != "explicit_zero_with_adapter_validation":
+                raise ValueError(
+                    f"absent {canonical_name} lacks the supported "
+                    "explicit-zero policy"
+                )
+            # Era5Snapshot takes its own contiguous, immutable copy.
+            yield output, np.broadcast_to(np.float64(0.0), pressure_shape)
+
+
 def mapped_frames_to_regular_snapshots(
     frames: Sequence[MappedSourceFrame],
     *,
     soil_land_repair: Mapping[str, object] | None = None,
+    initialize_absent_hydrometeors: bool = False,
+    atmospheric_window=None,
+    full_snapshot_factory=None,
 ) -> tuple[Era5Snapshot, ...]:
     """Translate canonical frames to the existing regular-source join ABI.
 
@@ -5794,7 +5986,11 @@ def mapped_frames_to_regular_snapshots(
     validated composition contract supplies their depth/remapping semantics.
     ``soil_land_repair`` is the composition's declared missing.land policy
     when it is a bounded repair object rather than ``"reject"``; absent, the
-    historical strict gate is unchanged.
+    historical strict gate is unchanged.  A composed source can request
+    ``initialize_absent_hydrometeors`` only when its header explicitly
+    authorizes zero initialization for all five absent hydrometeors.  Their
+    zero views and the decoded fields are copied once by the same immutable
+    snapshot constructor; no temporary full-grid zero bank is allocated.
     """
 
     frames = tuple(frames)
@@ -5829,77 +6025,19 @@ def mapped_frames_to_regular_snapshots(
         pressure = canonical["air_pressure"].values
         if not np.isfinite(pressure).all() or np.any(pressure <= 0.0):
             raise ValueError("mapped air pressure must be finite and positive")
-        levels_hpa = np.median(pressure, axis=(1, 2)) / 100.0
-        legacy_names = {
-            "air_temperature": "T",
-            "air_pressure": "PRES",
-            "specific_humidity": "SPFH",
-            "eastward_wind": "U",
-            "northward_wind": "V",
-            "geopotential_height": "GHT",
-            "surface_pressure": "PSFC",
-            "terrain_height": "SOURCE_OROGRAPHY",
-            "skin_temperature": "SKINTEMP",
-            "air_temperature_2m": "T2",
-            "specific_humidity_2m": "Q2",
-            "eastward_wind_10m": "U10",
-            "northward_wind_10m": "V10",
-            "land_fraction": "LANDSEA",
-            "snow_water_equivalent": "SNOW_EC",
-            "snow_depth": "SNOWH",
-            "sea_ice_fraction": "SEAICE",
-        }
-        fields = {
-            legacy: np.asarray(canonical[name].values, dtype=np.float64)
-            for name, legacy in legacy_names.items() if name in canonical
-        }
-        soil_t = np.asarray(
-            canonical["soil_temperature"].values, dtype=np.float64,
-        )
-        soil_m = np.asarray(
-            canonical["volumetric_soil_moisture"].values, dtype=np.float64,
-        )
-        if soil_t.ndim != 3 or soil_m.ndim != 3 or soil_t.shape != soil_m.shape:
-            raise ValueError(
-                "mapped soil temperature/moisture must share soil/y/x shape"
-            )
-        source_land = np.asarray(
-            canonical["land_fraction"].values, dtype=np.float64,
-        )
-        if source_land.shape != soil_t.shape[1:] \
-                or not np.isfinite(source_land).all():
-            raise ValueError(
-                "mapped land fraction must be finite and share the soil grid"
-            )
-        # A fraction, and now checked as one.  Finiteness alone let a
-        # mis-scaled unit transform deliver 2.0 here, which the >= 0.5
-        # threshold below reads as land without complaint; a value that
-        # merely kisses 0 or 1 is decode rounding and clamps.
-        source_land, _ = admit_bounded(
-            source_land, name="land fraction", minimum=0.0, maximum=1.0,
-            subject="mapped")
-        terrestrial = source_land >= 0.5
-        if soil_land_repair is not None:
-            if str(soil_land_repair.get("kind")) \
-                    != "nearest_soil_column_within_cells":
-                raise ValueError(
-                    "unsupported declared soil land repair "
-                    f"{soil_land_repair!r}"
-                )
-            soil_t, soil_m = _nearest_soil_column_repair(
-                soil_t, soil_m, terrestrial, frame.longitude,
-                int(soil_land_repair["maximum_cells"]),
-            )
-        if not np.isfinite(soil_t[:, terrestrial]).all():
-            raise ValueError(
-                "mapped soil temperature contains missing source-land values"
-            )
-        if not np.isfinite(soil_m[:, terrestrial]).all():
-            raise ValueError(
-                "mapped soil moisture contains missing source-land values"
-            )
-        fields[MAPPED_SOIL_TEMPERATURE] = soil_t
-        fields[MAPPED_SOIL_MOISTURE] = soil_m
+        stored_window = getattr(frame, "atmospheric_window", None)
+        if stored_window is not None:
+            if atmospheric_window != stored_window:
+                raise ValueError("mapped atmospheric provider/window descriptors differ")
+            levels_hpa = frame.source_pressure_hpa
+            if levels_hpa is None:
+                raise ValueError("windowed pressure lacks its original full-source ladder")
+        else:
+            levels_hpa = np.median(pressure, axis=(1, 2)) / 100.0
+        field_items = _regular_snapshot_field_items(
+            frame, pressure, soil_land_repair=soil_land_repair,
+            initialize_absent_hydrometeors=initialize_absent_hydrometeors)
+        del pressure
         grid_descriptor = frame.header.grid
         projection = None
         if grid_descriptor.projection != "regular_latitude_longitude":
@@ -5907,14 +6045,35 @@ def mapped_frames_to_regular_snapshots(
                 "family": grid_descriptor.projection,
                 "parameters": dict(grid_descriptor.parameters),
             }
-        result.append(Era5Snapshot(
+        snapshot_class = Era5Snapshot
+        snapshot_options = {}
+        if atmospheric_window is not None:
+            from gpuwm.ingest.atmospheric_window import (
+                ATMOSPHERIC_FIELDS, WindowedAtmosphericSnapshot,
+            )
+            snapshot_class = WindowedAtmosphericSnapshot
+            snapshot_options = {"window": atmospheric_window,
+                                "full_factory": full_snapshot_factory}
+
+            def windowed_items(items):
+                for name, values in items:
+                    yield name, (atmospheric_window.crop(values)
+                                 if name in ATMOSPHERIC_FIELDS else values)
+                    del values
+            if stored_window is None:
+                field_items = windowed_items(field_items)
+        result.append(snapshot_class.from_field_items(
             valid_time=frame.valid_time,
             levels_hpa=np.asarray(levels_hpa, dtype=np.float64),
             latitude=np.asarray(frame.latitude, dtype=np.float64),
             longitude=np.asarray(frame.longitude, dtype=np.float64),
-            fields=fields,
+            field_items=field_items,
             projection=projection,
+            **snapshot_options,
         ))
+        validate_remaining = getattr(frame, "validate_remaining_fields", None)
+        if validate_remaining is not None:
+            validate_remaining()
     return tuple(result)
 
 

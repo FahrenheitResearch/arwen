@@ -66,7 +66,9 @@ own ruling rather than to a marker repair.
 
 from __future__ import annotations
 
+import ast
 import inspect
+from copy import deepcopy
 from dataclasses import replace
 
 import numpy as np
@@ -169,34 +171,160 @@ class _FakeStreamed(streaming.StreamedDomain):
 # 1. the route
 # ---------------------------------------------------------------------------
 
-def test_the_spawn_route_now_consults_the_streaming_block():
-    """``run_experiment``'s tree branch builds a stepper mapping.
+def _same_expression(node, expression):
+    return ast.dump(node) == ast.dump(ast.parse(expression, mode="eval").body)
 
-    Held as a source assertion for the same reason
-    ``tests/test_streaming.py`` holds the single-domain one that way: the
-    route needs GRIB inputs, a static catalog and a GPU to run, and the
-    property under test is that the call is THERE -- a route that silently
-    drops a configured mode is a route defect no runtime check can find,
-    because the run it produces is perfectly healthy.
+
+def _only(nodes, description):
+    assert len(nodes) == 1, description
+    return nodes[0]
+
+
+def _body_call(body, name):
+    return _only([
+        statement.value for statement in body
+        if isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Call)
+        and _same_expression(statement.value.func, name)
+    ], f"expected one direct {name} call")
+
+
+def _assert_spawn_streaming_ownership(tree):
+    """Follow the tree dispatch, plan construction and both real consumers.
+
+    Inspect direct statements in the owning scopes: a comment, unused
+    nested function or call hidden in another branch cannot satisfy an edge.
     """
+    functions = {node.name: node for node in tree.body
+                 if isinstance(node, ast.FunctionDef)}
+    route = functions["run_experiment"]
+    scheduled = functions["_run_built_experiment"]
+    walk = functions["walk_spawn_legs"]
+
+    # The final return is the multi-domain branch; the adaptive single-domain
+    # call is nested earlier and supplies its already prepared stepper map.
+    assert isinstance(route.body[-1], ast.Return)
+    dispatch = route.body[-1].value
+    assert isinstance(dispatch, ast.Call)
+    assert _same_expression(dispatch.func, "_run_built_experiment")
+    assert [_same_expression(arg, expected) for arg, expected in
+            zip(dispatch.args, ("exp", "data", "outdir", "model"))] == [True] * 4
+    assert len(dispatch.args) == 4
+    assert not any(kw.arg in (None, "prepared_steppers")
+                   for kw in dispatch.keywords), "tree must enter plan construction"
+    defaults = dict(zip((arg.arg for arg in scheduled.args.kwonlyargs),
+                        scheduled.args.kw_defaults))
+    assert _same_expression(defaults["prepared_steppers"], "None")
+    model = _only([statement for statement in route.body[:-1]
+                   if isinstance(statement, ast.Assign)
+                   and any(isinstance(target, ast.Name) and target.id == "model"
+                           for target in statement.targets)], "tree model owner")
+    assert _same_expression(model.value, "build_experiment(exp, data)")
+    assert any(isinstance(statement, ast.ImportFrom)
+               and statement.module == "gpuwm.core.model"
+               and any(alias.name == "build_experiment" and alias.asname is None
+                       for alias in statement.names) for statement in route.body)
+
+    writers = _only([statement for statement in scheduled.body
+                    if isinstance(statement, ast.With)
+                    and any(isinstance(item.context_expr, ast.Call)
+                            and _same_expression(item.context_expr.func,
+                                                 "PerDomainWrfoutWriters")
+                            for item in statement.items)], "scheduled writer scope")
+    plan = _only([statement for statement in writers.body
+                  if isinstance(statement, ast.If)
+                  and _same_expression(statement.test, "prepared_steppers is None")],
+                 "tree planning branch")
+    assignment = _only([statement for statement in plan.body
+                        if isinstance(statement, ast.Assign)
+                        and len(statement.targets) == 1
+                        and isinstance(statement.targets[0], ast.Name)
+                        and statement.targets[0].id == "steppers"], "stepper plan owner")
+    planner = assignment.value
+    assert isinstance(planner, ast.Call)
+    assert _same_expression(planner.func, "_streaming.steppers_for_tree")
+    assert len(planner.args) == 2
+    assert all(_same_expression(arg, expected) for arg, expected in
+               zip(planner.args, ("model", "exp.tiles")))
+    builders = _only([kw.value for kw in planner.keywords if kw.arg == "builders"],
+                     "streaming requires real builders")
+    assert _same_expression(builders, "_streaming.builders_for_tree(model, exp.tiles)")
+    assert any(isinstance(statement, ast.ImportFrom)
+               and statement.module == "gpuwm.core"
+               and any(alias.name == "streaming" and alias.asname == "_streaming"
+                       for alias in statement.names) for statement in writers.body)
+
+    execution = _only([statement for statement in writers.body
+                       if isinstance(statement, ast.If)
+                       and _same_expression(statement.test, "already_complete")],
+                      "scheduled execution branches")
+    ordinary = _only([statement for statement in execution.orelse
+                      if isinstance(statement, ast.If)
+                      and _same_expression(statement.test, "spawn_runner is None")],
+                     "ordinary versus spawn dispatch")
+    execute = _body_call(ordinary.body, "execute_experiment")
+    spawn = _body_call(ordinary.orelse, "walk_spawn_legs")
+    assert len(execute.args) == 1 and _same_expression(execute.args[0], "model")
+    assert len(spawn.args) == 3
+    assert all(_same_expression(arg, expected) for arg, expected in
+               zip(spawn.args, ("model", "exp", "data")))
+    for consumer in (execute, spawn):
+        mapping = _only([kw.value for kw in consumer.keywords if kw.arg == "steppers"],
+                        "both consumers require the planned mapping")
+        assert _same_expression(mapping, "steppers")
+    plan_index = writers.body.index(plan)
+    execute_index = writers.body.index(execution)
+    assert plan_index < execute_index
+    assert not any(isinstance(node, ast.Name) and node.id == "steppers"
+                   and isinstance(node.ctx, ast.Store)
+                   for statement in writers.body[plan_index + 1:execute_index + 1]
+                   for node in ast.walk(statement)), "planned mapping was replaced"
+
+    assert walk.args.kwarg.arg == "execute_kwargs"
+    assert "steppers" not in {arg.arg for arg in (*walk.args.args,
+                                                 *walk.args.kwonlyargs)}
+    loop = _only([statement for statement in walk.body
+                  if isinstance(statement, ast.While)], "spawn leg loop")
+    leg_execute = _body_call(loop.body, "execute_experiment")
+    assert any(kw.arg is None and _same_expression(kw.value, "execute_kwargs")
+               for kw in leg_execute.keywords), "spawn walk dropped incoming steppers"
+    for owner in (scheduled, walk):
+        assert any(isinstance(statement, ast.ImportFrom)
+                   and statement.module == "gpuwm.core.model"
+                   and any(alias.name == "execute_experiment" and alias.asname is None
+                           for alias in statement.names) for statement in owner.body)
+    return {"dispatch": dispatch, "planner": planner, "execute": execute,
+            "spawn": spawn, "leg_execute": leg_execute}
+
+
+def test_the_spawn_route_now_consults_the_streaming_block():
+    """The public tree route carries its built mapping through both executors."""
     from gpuwm import runtime
 
-    src = inspect.getsource(runtime.run_experiment)
-    assert "_streaming.steppers_for_tree(" in src, (
-        "the domain-tree route must adjudicate [tiles]; without this "
-        "call the block is parsed, echoed and then ignored")
-    # And it must adjudicate with BUILDERS behind it.  The call alone was
-    # enough while the route refused an enabled mode at its front door --
-    # every decision it could reach was "resident".  With the refusal
-    # lifted the call can now return a STREAM decision, and a mapping
-    # decided with no builder is make_stepper's own refusal at the end of
-    # the route rather than a streamed run.
-    assert "builders=_streaming.builders_for_tree(model, exp.tiles)" in src, (
-        "the tree route decides [tiles] but wires no builder, so every "
-        "streamed decision it reaches dies at make_stepper")
-    assert src.count("steppers=steppers") == 2, (
-        "both arms of the tree branch -- the plain executor and the spawn "
-        "leg walk -- must carry the mapping")
+    tree = ast.parse(inspect.getsource(runtime))
+    _assert_spawn_streaming_ownership(tree)
+    # Keep these controls in the same CPU case: each removes one meaningful
+    # edge without running a forecast or changing the source on disk.
+    for broken_edge in ("dispatch", "plan-bypass", "builders", "execute",
+                        "spawn", "leg_execute"):
+        mutant = deepcopy(tree)
+        edges = _assert_spawn_streaming_ownership(mutant)
+        if broken_edge == "dispatch":
+            edges["dispatch"].func.id = "unrelated_runner"
+        elif broken_edge == "plan-bypass":
+            edges["dispatch"].keywords.append(
+                ast.keyword(arg="prepared_steppers", value=ast.Dict(keys=[], values=[])))
+        elif broken_edge == "builders":
+            edges["planner"].keywords = [kw for kw in edges["planner"].keywords
+                                         if kw.arg != "builders"]
+        elif broken_edge == "leg_execute":
+            edges["leg_execute"].keywords = [kw for kw in edges["leg_execute"].keywords
+                                             if kw.arg is not None]
+        else:
+            keyword = next(kw for kw in edges[broken_edge].keywords if kw.arg == "steppers")
+            keyword.value = ast.Dict(keys=[], values=[])
+        with pytest.raises(AssertionError):
+            _assert_spawn_streaming_ownership(mutant)
 
 
 def test_both_spawn_capable_routes_either_stream_or_refuse_by_name():

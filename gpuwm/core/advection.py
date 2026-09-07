@@ -22,6 +22,7 @@ import cupy as cp
 import numpy as np
 
 from gpuwm.config import RunConfig
+from gpuwm.grid_requirements import FIFTH_ORDER_STENCIL_AXIS
 from gpuwm.core.kernels import get_kernel
 from gpuwm.core.state import (DTYPE, DomainState, mu_at_u_faces,
                               mu_at_v_faces)
@@ -56,9 +57,9 @@ def _launch(func: str, q, ru, rv, rw, tend, rdnw, fnm, fnp,
     upstream-normal-wind substitution in the boundary-adjacent u/v
     fluxes.
     """
-    if open_x and nx < 7:
+    if open_x and nx < FIFTH_ORDER_STENCIL_AXIS:
         raise ValueError(f"open_x advection needs nx >= 7, got {nx}")
-    if open_y and ny < 7:
+    if open_y and ny < FIFTH_ORDER_STENCIL_AXIS:
         raise ValueError(f"open_y advection needs ny >= 7, got {ny}")
     if has_msf is None:
         has_msf = msf is not None

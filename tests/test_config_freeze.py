@@ -58,8 +58,29 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     # ONE field was appended, ``p3_backend``, and it is last.  Same
     # reconstruction rule: names[-98:-1] is exactly the window this
     # assertion held before the P3 CUDA port.
-    assert names[-1] == "p3_backend"
-    assert names[-98:] == [
+    # RE-BASELINED AGAIN (lane/release-reds-266): 98 -> 99.  ONE field,
+    # ``ntiedtke_tiedtke_closure``, and it is last.  d0c23dad0 (2.6.4)
+    # declared it between ``isftcflx`` and ``iz0tlnd`` -- inside this
+    # window, which is exactly what this assertion caught -- and the field
+    # moved to the end of RunConfig on this lane with no hash or trajectory
+    # moving (the field's own note in gpuwm/config.py says why that holds).
+    # Same reconstruction rule: names[-99:-1] is exactly the window this
+    # assertion held before the New Tiedtke port.
+    # RE-BASELINED AGAIN (lane/adaptive-timestep): 99 -> 111.  TWELVE
+    # fields were appended in one block, WRF's adaptive-time-step namelist
+    # surface, and the last of them is last.  Same reconstruction rule:
+    # names[-111:-12] is exactly the window this assertion held before the
+    # adaptive clock.
+    # RE-BASELINED AGAIN (lane/per-domain-vertical): 111 -> 112.  ONE
+    # field, ``eta_levels``, the offline child's own eta ladder, and it is
+    # last.  It was declared between ``etac`` and ``moist`` on that lane --
+    # positional index 22 of 172, shifting 150 fields -- which is exactly
+    # what this assertion exists to catch, and it moved to the end of
+    # RunConfig here, the same correction ``ntiedtke_tiedtke_closure`` took
+    # in 2.6.4.  Same reconstruction rule: names[-112:-1] is exactly the
+    # window this assertion held before per-domain ladders.
+    assert names[-1] == "eta_levels"
+    assert names[-112:-1] == [
         "nested", "grid_id", "top_lid", "moist_cq", "morr_rimed_ice",
         "wsm6_hail_opt", "ra_lw_physics", "ra_sw_physics", "icloud",
         "swrad_scat", "wrf_rrtmg_compatibility", "num_soil_layers",
@@ -170,7 +191,54 @@ def test_new_fields_are_reviewed_defaults_appended_last():
         # tests/test_water_overlay.py hash exactly as they did before this
         # field existed, with no re-pin.
         "p3_backend",
+        # The New Tiedtke closure selector (change record: declared by
+        # d0c23dad0 with the cu_physics = 16 port, appended last on
+        # lane/release-reds-266).  Read only where cu_physics = 16, which
+        # NO frozen configuration selects -- every golden entry below is
+        # cu_physics 0 or 1 -- and its False default leaves every cu16
+        # result bit-identical, so it moves no frozen trajectory.  It is
+        # NOT scheme-scoped in the restart identity
+        # (gpuwm.core.model.SCHEME_SCOPED_RUN_FIELDS is keyed by
+        # mp_physics and has no cumulus row), so unlike p3_backend it DOES
+        # move the fingerprint anchors in tests/test_water_overlay.py,
+        # which re-pin for it with the attribution measured there.
+        "ntiedtke_tiedtke_closure",
+        # WRF's adaptive time step, appended as one block (change record:
+        # lane/adaptive-timestep, docs/ADAPTIVE-TIMESTEP.md).  Every
+        # default is WRF's own Registry default
+        # (Registry.EM_COMMON:2269-2281), and the block is inert at them
+        # for a reason stronger than "the default value": with
+        # use_adaptive_time_step False the controller never runs, so the
+        # other eleven are read by nothing at all and cannot move a
+        # frozen trajectory.  They are additionally dropped from the
+        # restart identity of every run that leaves the flag off
+        # (gpuwm.core.model.ADAPTIVE_TIMESTEP_RUN_FIELDS,
+        # restart_identity_payload), so unlike ntiedtke_tiedtke_closure
+        # the block moves no experiment fingerprint and
+        # tests/test_water_overlay.py needs no re-pin for it.
+        "use_adaptive_time_step", "step_to_output_time",
+        "adaptation_domain", "target_cfl", "target_hcfl",
+        "max_step_increase_pct",
+        "starting_time_step", "starting_time_step_den",
+        "max_time_step", "max_time_step_den",
+        "min_time_step", "min_time_step_den",
     ]
+    assert RunConfig.__dataclass_fields__[
+        "ntiedtke_tiedtke_closure"].default is False
+    # The adaptive block's defaults, asserted here for the same reason
+    # every default above is: each is the value that makes the field inert
+    # for every frozen configuration, and each is WRF's own.  -1 is WRF's
+    # encoding of "unset" for the three step limits, which start_em.F
+    # substitutes a grid-spacing value for; 0 on a _den companion means
+    # "the numerator is whole seconds", not a zero denominator.
+    for name, default in (
+            ("use_adaptive_time_step", False), ("step_to_output_time", True),
+            ("adaptation_domain", 1), ("target_cfl", 1.2),
+            ("target_hcfl", 0.84), ("max_step_increase_pct", 5),
+            ("starting_time_step", -1), ("starting_time_step_den", 0),
+            ("max_time_step", -1), ("max_time_step_den", 0),
+            ("min_time_step", -1), ("min_time_step_den", 0)):
+        assert RunConfig.__dataclass_fields__[name].default == default, name
     # Aerosol-aware Thompson (mp_physics=28) aerosol-source selectors,
     # appended last.  Both defaults are WRF's own Registry defaults
     # (Registry/Registry.EM_COMMON:2656 and

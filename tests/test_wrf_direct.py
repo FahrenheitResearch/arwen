@@ -49,6 +49,8 @@ from gpuwm.physics_compat import (
     MYNN_PROFILE_ID,
     validate_single_domain_physics_profile,
 )
+from gpuwm.native_wrf_contract import native_geometry_contract
+from gpuwm.static.lambert import LambertGrid
 from gpuwm.vertical_contract import expected_coordinate_shapes
 from gpuwm.config import RunConfig
 from gpuwm.core.microphysics_transition import MP8_TO_MP18_POLICY
@@ -1181,3 +1183,66 @@ def test_hierarchy_export_publishes_every_input_and_root_boundary_atomically(
         assert written_updates["wrfinput_d05"]["PARENT_ID"] == 1
         assert written_updates["wrfinput_d06"]["PARENT_ID"] == 2
     assert not list(tmp_path.glob("wrf-ready.tmp-*"))
+
+
+class _UVOnlyCache:
+    """The only two arrays ``_wrfinput_fields`` reads before it rebuilds
+    the projection, so the geometry gate is reached on a cache that
+    carries nothing else."""
+
+    def __init__(self, nz: int, ny: int, nx: int):
+        self._arrays = {
+            "state/u": np.zeros((nz, ny, nx + 1)),
+            "state/v": np.zeros((nz, ny + 1, nx)),
+        }
+
+    def array(self, name):
+        return self._arrays[name]
+
+
+def test_wrfinput_fields_refuse_a_receipt_that_lost_the_nest_anchor():
+    """Negative control on the derived-vs-inherited geometry gate.
+
+    A geometry receipt written before ``known_x``/``known_y`` were
+    carried is exactly a nest receipt with the anchor removed: the
+    exporter rebuilt the projection on ``ProjectedGrid``'s centred WPS
+    default and emitted XLAT/XLONG for a footprint ~300 km south-west of
+    the nest, beside MAPFAC/F/SINALPHA read from the static cache built
+    on the real grid.  Feed the exporter that receipt and require a
+    refusal that names both footprints -- the receipt's own
+    ``lat_range``/``lon_range``, which had no consumer at all, are what
+    it is measured against.
+    """
+    root = LambertGrid(
+        ref_lat=35.5, ref_lon=-98.0, truelat1=30.0, truelat2=60.0,
+        stand_lon=-97.5, dx=9_000.0, dy=9_000.0, e_we=201, e_sn=201)
+    nest = root.nest(50, 50, 3, 201, 201)
+    cfg = SimpleNamespace(nx=200, ny=200, nz=4, dx=3_000.0, dy=3_000.0)
+    geometry = native_geometry_contract(nest, cfg)
+    cache = _UVOnlyCache(cfg.nz, cfg.ny, cfg.nx)
+    valid_time = datetime(2026, 7, 18)
+
+    stripped = {name: value for name, value in geometry.items()
+                if name not in ("known_x", "known_y")}
+    footprint_refusal = "does not reproduce the footprint"
+    with pytest.raises(ValueError, match=footprint_refusal) as refusal:
+        wrf_direct._wrfinput_fields(
+            cache, {}, stripped, valid_time, p_top=5000.0)
+    message = str(refusal.value)
+    assert "lat_range" in message
+    # Both footprints, by value, so the reader can see the displacement.
+    assert repr(geometry["lat_range"][0]) in message
+
+    # A receipt with no recorded footprint at all cannot be checked, and
+    # is refused rather than exported unmeasured.
+    unmeasured = {name: value for name, value in geometry.items()
+                  if name != "lat_range"}
+    with pytest.raises(ValueError, match="carries no lat_range"):
+        wrf_direct._wrfinput_fields(
+            cache, {}, unmeasured, valid_time, p_top=5000.0)
+
+    # The whole receipt rebuilds the nest where the nest actually is, so
+    # the gate passes and the export continues into the prepared arrays.
+    with pytest.raises(KeyError, match="state/qv"):
+        wrf_direct._wrfinput_fields(
+            cache, {}, geometry, valid_time, p_top=5000.0)

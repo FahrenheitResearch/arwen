@@ -35,6 +35,16 @@ redistributable by this repository, so only their hashes appear. The build
 recipe and the namelists are text, and they are committed here in full
 alongside their digests.
 
+Those two are therefore checkable from a clone, and are checked: for every
+manifest here, `tests/test_acceptance_band.py` recomputes the digest of each
+artifact the manifest names and ships beside it
+(`gpuwm.certify.wrf_reference.mismatched_reference_artifacts`). `certify`
+itself asks only whether each of the four values is a well-formed digest, not
+whether it hashes anything -- a value that pins nothing satisfies
+`wrf_reference_hashes_present` -- which is what that repository test exists to
+catch, and it was catching something: this manifest's `build_recipe_sha256`
+did not hash the committed recipe until the value was recomputed from it.
+
 A manifest may carry an `unmeasured` block naming, per hash group, why it is
 absent. Such a manifest parses, validates, and is **refused** by certify. The
 block exists so the refusal is legible: a reader who runs certify and sees

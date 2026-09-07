@@ -50,6 +50,7 @@ tools/hrrr_grib2_bridge-*
 tools/region_global_dealias/target/
 tools/rustwx/target/
 tools/rw_wps/target/
+tools/arwen-tui/target/
 !tools/rw_wps/vendor/**
 # Build output only where a vendored crate carries its own manifest and
 # can therefore be built on its own.  NOT `vendor/**/target/`: that also
@@ -100,3 +101,7 @@ tools/rustwx/vendor/**/__pycache__/
 # force-added, so it cannot silently regress a third time.
 !tools/rustwx/crates/rw-store/tests/goldens/*.nc
 docs/branch-dispositions-private.md
+
+# Cargo checksum manifests require every upstream source and documentation file.
+!tools/arwen-ui-vendor/**
+tools/arwen-ui-vendor/**/__pycache__/

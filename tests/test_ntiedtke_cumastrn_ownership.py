@@ -208,7 +208,7 @@ def test_every_call_site_excuse_names_a_range_and_carries_its_debt():
     range is unowned the excuse carries a visible debt, and when a kernel
     claims it the debt clears.
     """
-    from tests.test_ntiedtke_aliasing_audit import CALL_SITE_DEBTS
+    from test_ntiedtke_aliasing_audit import CALL_SITE_DEBTS
     assert CALL_SITE_DEBTS, "no excuse declares a call-site dependency"
     outstanding = []
     for (routine, dummy), (a, b) in CALL_SITE_DEBTS.items():

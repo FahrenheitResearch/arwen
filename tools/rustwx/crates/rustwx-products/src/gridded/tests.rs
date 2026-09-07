@@ -262,3 +262,54 @@ fn projected_crop_uses_projected_extent_with_padding() {
     assert_eq!(cropped.grid.shape.nx, 3);
     assert_eq!(cropped.grid.shape.ny, 3);
 }
+
+#[test]
+fn cropped_decode_propagates_the_row_window_refusal_instead_of_masking_it() {
+    use grib_core::grib2::{DataRepresentation, Identification, ProductDefinition};
+
+    // Negative control for the crop path's fallback.  This message's Section 6
+    // bitmap covers only the first row of a 3x2 grid, which the row-window
+    // decoder refuses by name.  The full decoder does not notice -- it sizes
+    // its output from the bitmap -- so re-decoding the same bytes turns the
+    // refusal into a rendered tile of half a field.
+    let message = Grib2Message {
+        discipline: 0,
+        identification: Identification::default(),
+        reference_time: chrono::NaiveDate::from_ymd_opt(2026, 4, 14)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap(),
+        grid: GridDefinition {
+            nx: 3,
+            ny: 2,
+            num_data_points: 6,
+            ..GridDefinition::default()
+        },
+        product: ProductDefinition::default(),
+        data_rep: DataRepresentation {
+            template: 0,
+            bits_per_value: 8,
+            section5_num_data_points: 3,
+            ..DataRepresentation::default()
+        },
+        bitmap: Some(vec![true; 3]),
+        raw_data: vec![1, 2, 3],
+    };
+    let crop = GridCrop {
+        x_start: 0,
+        x_end: 3,
+        y_start: 0,
+        y_end: 1,
+    };
+
+    let window = unpack_message_scan_normalized_row_window(&message, 0, 1)
+        .expect_err("a bitmap shorter than the grid must be refused");
+    assert!(window.to_string().contains("shorter than grid point count"));
+
+    let error = unpack_message_normalized_cropped(&message, 3, crop, &[])
+        .expect_err("the crop path must not mask the window decoder's refusal");
+    assert!(
+        error.to_string().contains("shorter than grid point count"),
+        "{error}"
+    );
+}

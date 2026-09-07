@@ -94,8 +94,10 @@ from gpuwm.config import (  # noqa: F401  (re-exported)
     SURFACE_RADIATION_POLICY_WRF_COMPAT_ZERO,
     validate_surface_radiation_policy)
 
-#: A radiation scheme computed this carrier on its own cadence.  The only
-#: source that carries a real sky.
+#: Root CAM climatology evaluated on the shared radiation cadence.
+CARRIER_SOURCE_CAM_OZONE = "cam_ozone"
+
+#: A radiation scheme computed this carrier on its own cadence.
 CARRIER_SOURCE_RADIATION_SCHEME = "radiation_scheme"
 
 #: The caller typed a scalar.  An idealised column may legitimately want a
@@ -123,6 +125,7 @@ CARRIER_SOURCE_UNWRITTEN = "unwritten"
 #: programming error, not a configuration, and is refused at note time so
 #: that a typo cannot become a permanently-accepted provenance.
 CARRIER_SOURCES = frozenset({
+    CARRIER_SOURCE_CAM_OZONE,
     CARRIER_SOURCE_RADIATION_SCHEME,
     CARRIER_SOURCE_DECLARED_CONSTANT,
     CARRIER_SOURCE_EXTERNAL_ARRAY,
@@ -147,6 +150,7 @@ _TIMELESS_SOURCES = frozenset({
 #: the consequence and the receipt names it; ``wrf_compat_zero`` is NOT,
 #: because it is the escape and the escape is what the policy selects.
 _PRODUCED_SOURCES = frozenset({
+    CARRIER_SOURCE_CAM_OZONE,
     CARRIER_SOURCE_RADIATION_SCHEME,
     CARRIER_SOURCE_DECLARED_CONSTANT,
     CARRIER_SOURCE_EXTERNAL_ARRAY,
@@ -570,6 +574,7 @@ def _raise_deferred_carrier(message: str) -> None:
 
 __all__ = [
     "CARRIER_SOURCES",
+    "CARRIER_SOURCE_CAM_OZONE",
     "CARRIER_SOURCE_ANALYTIC_GEOMETRY",
     "CARRIER_SOURCE_DECLARED_CONSTANT",
     "CARRIER_SOURCE_EXTERNAL_ARRAY",

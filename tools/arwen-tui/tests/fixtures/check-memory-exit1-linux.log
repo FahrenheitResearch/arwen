@@ -1,0 +1,16 @@
+input preflight: not applicable -- no [case_data] table. The preparation route validates its own inputs. Continuing to the memory preflight.
+gpuwm memory preflight: FAIL (1 of 3 allocation gates evaluated)
+Configuration: rotation.follow (3 domains)
+GPU readiness: not checked; declared-budget estimate
+Physical GPU capacity: n/a (not measured)
+Target GPU capacity: 16 GiB (declared)
+Free VRAM used for sizing: 9.23 GiB (inferred from --budget-gib; not measured)
+Configured allocation budget: 6 GiB requested
+Effective allocation budget: 6.00 GiB; whole-process budget: 8.73 GiB
+Reserved from free VRAM: 3.23 GiB for allocations; 0.50 GiB for the whole-process estimate
+Forecast execution: resident ([tiles] mode=off)
+BINDING PHASE: forecast needs 13.78 GiB; whole-process budget 8.73 GiB
+WARNING: observed peak envelope 13.78 GiB exceeds the 8.73 GiB budget.
+Host RAM: 91.58 GiB available; forcing decode memory not priced
+  alloc_estimate_le_vram_budget: FAIL
+Use --explain for the full memory breakdown and remedies; --alloc measures allocations on the target GPU.

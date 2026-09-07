@@ -184,6 +184,12 @@ mismatch is escalated with evidence (per-value ULP map, the
 `test_projection_oracle.py` precedent), never averaged away.  The
 harness compares arrays, so any drift is caught at the first field.
 
+**Platform qualification**: the committed lane-1 fixtures are the
+Windows/NumPy 2.2.6 reference. Linux has remaining exact arithmetic
+failures against independently generated native Python output; the
+Windows pass is not a cross-platform qualification. See
+[the measured platform results and reproduction commands](static-platform-qualification.md).
+
 **Corridor cross-implementation caveat**: a corridor SEALED by a
 pre-port preparation embeds `grid_identity_probes` computed by Python
 floats; the port-era runner recomputes them through the default (Rust)

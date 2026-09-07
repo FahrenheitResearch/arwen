@@ -63,6 +63,12 @@ handoffs/**
 evidence/**
 work/**
 
+# Detailed research-catalog campaign audit. Its raw measurements are retained
+# under work/** and are not part of the public snapshot. Keep the original
+# audit and its evidence links together in the development tree; the public
+# research guide and development qualification summary remain distributed.
+docs/dev/research-catalog-review.md
+
 # Campaign ensemble harness.  Every entry point needs a privately-built
 # WRF oracle (wrf.exe/real.exe at pinned SHAs), a private reference
 # bundle, and the campaign's own case directory, none of which a public

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,30 @@ def test_non_object_or_malformed_json_is_refused(tmp_path: Path) -> None:
     broken.write_text("{", encoding="utf-8")
     with pytest.raises(source_pins.SourceBridgePinsError, match="unreadable"):
         source_pins.verify_source_pins(broken)
+
+
+def test_linux_native_release_uses_the_pinned_baseline_and_only_qualified_payload():
+    from tools import build_linux_release_bridges as linux_build
+    text = (REPO_ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
+    job = text.split("\n  bridges:\n", 1)[1].split("\n  prepare:\n", 1)[0]
+    assert linux_build.IMAGE in job
+    assert "docker run --rm --platform linux/amd64" in job
+    assert "--target-dir /work/build/cargo-target --output /work/build/artifacts" in job
+    assert '--source /src --revision "$BUNDLE_SOURCE_REV"' in job
+    assert "target=/src,readonly" in job and "target=/work/rust-toolchain,readonly" in job
+    assert "--reuse-target" not in job  # CI starts with an empty native build area.
+    steps = re.split(r"(?=^      - )", job, flags=re.MULTILINE)
+    builds = [step for step in steps if "run: cargo build" in step]
+    assert len(builds) == len(linux_build.WORKSPACES)
+    assert all("if: matrix.platform == 'win-x86_64'" in step for step in builds)
+    linux_step = next(step for step in steps if "name: build and qualify Linux artifacts" in step)
+    assert "if: matrix.platform == 'linux-x86_64'" in linux_step
+    assert "tools/build_linux_release_bridges.py" in linux_step
+    pack = next(step for step in steps if "name: pack the bundle" in step)
+    assert 'search=(--search "$RUNNER_TEMP/arwen-manylinux/artifacts")' in pack
+    assert '"${search[@]}"' in pack
+    assert '- name: pin the toolchain\n        shell: bash' in job
+    assert 'RUST_TOOLCHAIN: "1.94.0"' in job
 
 
 def test_publish_workflow_has_two_publication_ingresses() -> None:

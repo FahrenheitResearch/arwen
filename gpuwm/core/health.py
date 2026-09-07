@@ -725,6 +725,19 @@ def validate_store_fields(state: Any, carriers: Mapping[str, Any],
     does not carry, so what the gate did NOT see is a number in a receipt
     instead of an absence a reader has to infer.
     """
+    descriptors, coverage = _store_health_descriptors(
+        state, carriers, store, domain_shape=domain_shape,
+        auxiliaries=auxiliaries, extra_tables=extra_tables, p_top=p_top)
+    started = time.perf_counter()
+    report = validate_fields_cpu(descriptors, phase=phase)
+    coverage['seconds'] = time.perf_counter() - started
+    return report, coverage
+
+
+def _store_health_descriptors(state, carriers, store, *, domain_shape,
+                              auxiliaries=None, extra_tables=None,
+                              p_top=_LID_FROM_STATE, device=False):
+    """Bind the existing health rules to the canonical store's actual arrays."""
     auxiliaries = {} if auxiliaries is None else auxiliaries
     ny, nx = int(domain_shape[0]), int(domain_shape[1])
     key_by_id = {id(array): key for key, array in carriers.items()}
@@ -744,7 +757,7 @@ def validate_store_fields(state: Any, carriers: Mapping[str, Any],
         if values is None:
             uncovered.append(field.name)
             continue
-        values = np.asarray(values)
+        values = values if device else np.asarray(values)
         if (values.ndim != int(getattr(field.values, "ndim", values.ndim))
                 or np.dtype(values.dtype) != np.dtype(field.values.dtype)):
             raise ValueError(
@@ -767,7 +780,9 @@ def validate_store_fields(state: Any, carriers: Mapping[str, Any],
                     "auxiliary array and no domain-shaped substitute for it "
                     "was supplied; validating a domain field against the "
                     "template's slab is the defect this gate exists to avoid")
-            auxiliary = np.asarray(auxiliaries[field.name])
+            auxiliary = auxiliaries[field.name]
+            if not device:
+                auxiliary = np.asarray(auxiliary)
             # collect_state_fields' own rule, restated over the substituted
             # pair rather than inherited: a 1-D auxiliary broadcasts over each
             # horizontal plane, and the plane is the DOMAIN's, not the slab's.
@@ -784,18 +799,16 @@ def validate_store_fields(state: Any, carriers: Mapping[str, Any],
         descriptors.append(HealthField(field.name, values, field.rule,
                                        auxiliary, aux_mode, plane))
         covered.append(field.name)
-    started = time.perf_counter()
-    report = validate_fields_cpu(descriptors, phase=phase)
     coverage = {
         "fields_checked": len(descriptors),
         "elements_checked": int(sum(int(f.values.size) for f in descriptors)),
         "bytes_checked": int(sum(int(f.values.nbytes) for f in descriptors)),
-        "seconds": time.perf_counter() - started,
+        "seconds": None,
         "covered": tuple(covered),
         "not_in_store": tuple(uncovered),
         "excluded_integer_fields": tuple(excluded),
     }
-    return report, coverage
+    return tuple(descriptors), coverage
 
 
 def cuda_source() -> str:
@@ -825,8 +838,10 @@ def _cuda_pointer(value: Any, name: str) -> int:
 class StateHealthValidator:
     """Reusable one-launch CUDA validator for one prepared DomainState."""
 
-    def __init__(self, state: Any, *, extra_tables: Mapping[str, Any] | None = None):
+    def __init__(self, state: Any, *, extra_tables: Mapping[str, Any] | None = None,
+                 field_provider=None):
         self.state = state
+        self._field_provider = field_provider
         self.extra_tables = extra_tables
         # The restart classifier already treats integration_health_* scratch
         # as rebuilt.  Metadata is bit-packed into FP32 storage because the
@@ -852,8 +867,9 @@ class StateHealthValidator:
         self.excluded_integer_fields: tuple[HealthField, ...] = ()
 
     def _refresh(self) -> None:
-        collected = collect_state_fields(
+        collected = (collect_state_fields(
             self.state, backend="gpu", extra_tables=self.extra_tables)
+            if self._field_provider is None else self._field_provider())
         fields: list[HealthField] = []
         excluded: list[HealthField] = []
         storage_flags: list[int] = []
@@ -1025,3 +1041,110 @@ __all__ = [
     "theta_ceiling_for_lid",
     "validate_fields_cpu", "validate_state_cpu", "validate_store_fields",
 ]
+
+
+def prepared_store_health_auxiliaries(bundle, cfg) -> dict[str, object]:
+    """The DOMAIN-shaped form of the two gated fields' auxiliary arrays.
+
+    ``collect_state_fields`` checks ``thp`` against the base-state theta and
+    ``mup`` against the base-state dry mass, and on the store-direct road the
+    descriptors come off the slab-height template, so both auxiliaries arrive
+    one slab tall.  The domain's own are in ``bundle.base``, which
+    :class:`gpuwm.ingest.prepared_store.PreparedStore` publishes un-windowed
+    for exactly this kind of reader.
+
+    float32 and not float64, because :meth:`gpuwm.core.state.DomainState
+    .load_base` is what put these numbers on the card on the resident road and
+    it casts them: comparing the same field against an FP64 auxiliary would be
+    a second instrument, one rounding apart from the one being matched.
+    """
+
+    def host(value):
+        if hasattr(value, '__cuda_array_interface__'):
+            import cupy as cp
+            value = cp.asnumpy(value)
+        return np.asarray(value, dtype=np.float32)
+
+    base = bundle.base
+    out: dict[str, object] = {}
+    thb = getattr(base, "thb", None)
+    if thb is not None:
+        out["thp"] = host(thb)
+    mub = getattr(base, "mub", None)
+    if mub is not None:
+        # ``load_base``'s own branch: flat terrain carries a SCALAR dry mass
+        # and fills the (ny, nx) plane with it, terrain carries the plane.
+        out["mup"] = (np.full((int(cfg.ny), int(cfg.nx)), float(mub),
+                              dtype=np.float32) if np.ndim(mub) == 0
+                      else host(mub))
+    return out
+
+
+
+class StoreHealthValidator:
+    """Existing whole-domain rules over a canonical host or device store."""
+
+    def __init__(self, bundle, cfg):
+        from gpuwm.core.streaming import streamed_store_inventory
+
+        self.bundle = bundle
+        self.domain_shape = (int(cfg.ny), int(cfg.nx))
+        self.carriers = streamed_store_inventory()(bundle.template, None)
+        self.device = any(hasattr(value, '__cuda_array_interface__')
+                          for value in bundle.store.values())
+        self.auxiliaries = (
+            {'thp': bundle.template.thb, 'mup': bundle.template.mub2d}
+            if self.device else prepared_store_health_auxiliaries(bundle, cfg))
+        self._device_validator = (StateHealthValidator(
+            bundle.template, field_provider=self._device_fields)
+            if self.device else None)
+
+    def _device_fields(self):
+        fields, self.coverage = _store_health_descriptors(
+            self.bundle.template, self.carriers, self.bundle.store,
+            domain_shape=self.domain_shape, auxiliaries=self.auxiliaries,
+            p_top=getattr(self.bundle.base, 'p_top', None), device=True)
+        return fields
+
+    def validate(self, *, phase=None):
+        if self._device_validator is not None:
+            started = time.perf_counter()
+            report = self._device_validator.validate(phase=phase)
+            self.coverage['seconds'] = time.perf_counter() - started
+            return report
+        report, self.coverage = validate_store_fields(
+            self.bundle.template, self.carriers, self.bundle.store,
+            domain_shape=self.domain_shape, auxiliaries=self.auxiliaries,
+            p_top=getattr(self.bundle.base, "p_top", None), phase=phase)
+        return report
+
+    def require_healthy(self, *, phase=None):
+        report = self.validate(phase=phase)
+        if not report.ok:
+            raise HealthCheckError(report)
+        return report
+
+
+def health_validator_for_domain(model, node):
+    """Validate the domain's canonical state after any initialization route."""
+    from types import SimpleNamespace
+
+    attached = getattr(node.state, '_streamed_domain', None)
+    if attached is not None:
+        template = getattr(attached, 'template', None)
+        if template is None:
+            template = node.state
+        # Classification comes from a real device template. Base arrays and
+        # carriers belong to the current footprint, including after a move.
+        geography = getattr(attached, '_geography', None) or {}
+        base = SimpleNamespace(
+            thb=geography.get('setup/thb', node.state.thb),
+            mub=geography.get('setup/mub2d', node.state.mub2d),
+            p_top=getattr(node.state, 'p_top', None))
+        return StoreHealthValidator(SimpleNamespace(
+            template=template, store=attached.store, base=base), node.cfg.run)
+    prepared = getattr(model, '_prepared_by_grid_id', {}).get(node.cfg.grid_id)
+    bundle = getattr(prepared, 'streamed_store', None)
+    if bundle is None:
+        return StateHealthValidator(node.state)
+    return StoreHealthValidator(bundle, node.cfg.run)

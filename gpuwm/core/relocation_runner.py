@@ -105,19 +105,41 @@ class ManualMoveProvider:
     The rows were validated at config admission (strictly increasing,
     on-boundary, inside the run), so a row left unconsumed at run end is
     a runner defect, and :meth:`unconsumed` lets the receipts say so.
+
+    A RESUME STARTS PAST ROWS THAT ALREADY FIRED, and the queue is
+    strictly ordered: the head is matched EXACTLY, so a row whose
+    opportunity is behind the clock can never match again -- and while it
+    sits at the head it blocks every later row with it.  MEASURED: a
+    resume from 1800 s of a run whose itinerary moved at 1200 s and
+    2400 s executed NEITHER move; the nest stayed at its 1200 s
+    footprint, the two frames after the missed 2400 s move differed from
+    the uninterrupted run, and the restore banner said the resume
+    reproduces that run bit for bit.  Rows behind the clock are therefore
+    retired at the first consultation and named in the summary receipt
+    (:meth:`behind_the_clock`), so the row still AHEAD of the clock
+    fires.  Retiring is the right reading, not a convenience: a row
+    behind a checkpoint executed before that checkpoint was written, and
+    its result is already in the restored state.
     """
 
     def __init__(self, moves):
         self._pending = list(moves)
+        self._behind: list = []
 
     def __call__(self, parent_state, nest_footprint, t, refinement=None):
         # the itinerary is time-driven, and a scripted move has nothing
         # to refine: the placement IS the input.
         del parent_state, nest_footprint, refinement
+        now = float(t)
+        while self._pending:
+            at = float(self._pending[0].at_seconds)
+            if at >= now - 1.0e-6 * max(1.0, abs(at)):
+                break
+            self._behind.append(self._pending.pop(0))
         if not self._pending:
             return None
         head = self._pending[0]
-        if abs(float(head.at_seconds) - float(t)) > (
+        if abs(float(head.at_seconds) - now) > (
                 1.0e-6 * max(1.0, abs(float(head.at_seconds)))):
             return None
         self._pending.pop(0)
@@ -127,6 +149,18 @@ class ManualMoveProvider:
 
     def unconsumed(self):
         return tuple(move.to_json() for move in self._pending)
+
+    def behind_the_clock(self):
+        """Rows retired because the clock was already past them.
+
+        Empty on a run that started at t = 0, where admission has already
+        proved every row is on an opportunity inside the run.  Non-empty
+        only on a resume, and then it is the itinerary this leg inherited
+        rather than executed -- a fact the receipts must carry, because
+        silently dropping a scripted move is the defect one layer over
+        from silently never making it.
+        """
+        return tuple(move.to_json() for move in self._behind)
 
 
 def _atomic_json(path: Path, payload) -> None:
@@ -435,13 +469,19 @@ class RelocationRunner:
             self.receipts[:] = [row for row in self.receipts
                                 if row.get("event") != entry["event"]]
         self.receipts.append(entry)
-        if getattr(model, "_relocation_receipts", None) is not self.receipts:
-            model._relocation_receipts = self.receipts
         # The checkpoint writer holds the MODEL, not the runner, and it
         # has to ask what the tracker's hysteresis is standing at.  Same
         # attachment the receipts already use.
-        if getattr(model, "_relocation_runner", None) is not self:
-            model._relocation_runner = self
+        owner = getattr(model, "_relocation_runner", None)
+        in_collection = (isinstance(owner, RelocationRunnerCollection)
+                         and owner.runners.get(int(self.config.grid_id)) is self)
+        if in_collection:
+            owner.record(int(self.config.grid_id), entry, unique=unique)
+            model._relocation_receipts = owner.receipts
+        else:
+            model._relocation_receipts = self.receipts
+            if owner is not self:
+                model._relocation_runner = self
         if self.receipts_path is not None:
             _atomic_json(self.receipts_path, {
                 "contract": RELOCATION_RUNNER_CONTRACT,
@@ -647,6 +687,8 @@ class RelocationRunner:
         # re-aimed id as self-containment.
         bounds = _replace(self.config, grid_id=int(cont.grid_id),
                           containment=None)
+        reconstruction_args = self._reconstruction_args(
+            parent_node, self.containment_initializer, self.containment_preparer)
         receipt = relocate_child(
             parent_node,
             i_parent_start=int(parent_node.cfg.i_parent_start) + di,
@@ -664,7 +706,8 @@ class RelocationRunner:
                 {int(self.config.grid_id)}),
             on_before_release=(
                 None if before_rebuild is None
-                else (lambda: before_rebuild(int(cont.grid_id)))))
+                else (lambda: before_rebuild(int(cont.grid_id)))),
+            **reconstruction_args)
         self._containment_segment = receipt["segment_state"]
         self.containment_moves_executed += 1
         from gpuwm.core.state import refresh_model_time
@@ -847,6 +890,12 @@ class RelocationRunner:
                 "provider carries no cooldown anchor")
         return applied
 
+    def _reconstruction_args(self, node, initializer, preparer):
+        factory = getattr(self, "streamed_reconstruction_factory", None)
+        if callable(factory) and getattr(node.state, "_streamed_domain", None) is not None:
+            return {"reconstruction": factory(node, initializer=initializer, preparer=preparer)}
+        return {}
+
     def adopt_placement(self, model, node, *, i_parent_start: int,
                         j_parent_start: int, force: bool = False) -> dict:
         """Rebuild ``node`` at an ABSOLUTE placement, for a restore.
@@ -890,7 +939,9 @@ class RelocationRunner:
         # bytes -- phb measured 2**-6 apart.  A resume must re-run the
         # rebuild for any grid the checkpointed run relocated, whatever
         # the numbers say.
-        capture = getattr(self.on_child_built, "capture_outgoing", None)
+        preparer = (self.containment_preparer if int(self.config.grid_id) != grid_id
+                    and self.containment_preparer is not None else self.on_child_built)
+        capture = getattr(preparer, "capture_outgoing", None)
         if callable(capture):
             capture(node)
         if self._segment is None:
@@ -929,21 +980,23 @@ class RelocationRunner:
         if (int(self.config.grid_id) != grid_id
                 and self.containment_initializer is not None):
             initializer = self.containment_initializer
+        reconstruction_args = self._reconstruction_args(node, initializer, preparer)
         receipt = relocate_child(
             node,
             i_parent_start=want[0], j_parent_start=want[1],
             segment=self._segment, bounds=bounds,
             initializer=initializer,
             static_provenance=self.static_provenance,
-            on_child_built=self.on_child_built,
+            on_child_built=preparer,
             scratch_arena=getattr(model, "_scratch_arena", None),
             dycore_state_workspace=getattr(
                 model, "_dycore_state_workspace", None),
             staging=self.staging,
-            reground_descendant=self.reground_descendant)
+            reground_descendant=self.reground_descendant,
+            **reconstruction_args)
         self._segment = receipt["segment_state"]
         refresh_model_time(node.state, node.clock)
-        after_move = getattr(self.on_child_built, "after_move", None)
+        after_move = getattr(preparer, "after_move", None)
         if callable(after_move):
             after_move(node)
         return self._record(model, {
@@ -1094,6 +1147,7 @@ class RelocationRunner:
         # live map wants it for the origin ghost.
         moved_from = centre_latlon(getattr(node, "grid", None))
         fingerprint_before = model.experiment_fingerprint
+        reconstruction_args = self._reconstruction_args(node, self.initializer, self.on_child_built)
         receipt = relocate_child(
             node,
             i_parent_start=int(node.cfg.i_parent_start) + executed_i,
@@ -1109,7 +1163,8 @@ class RelocationRunner:
             reground_descendant=self.reground_descendant,
             on_before_release=(
                 None if before_rebuild is None
-                else (lambda: before_rebuild(grid_id))))
+                else (lambda: before_rebuild(grid_id))),
+            **reconstruction_args)
         self._segment = receipt["segment_state"]
         self.moves_executed += 1
         from gpuwm.core.state import refresh_model_time
@@ -1246,6 +1301,11 @@ class RelocationRunner:
         unconsumed = getattr(self.provider, "unconsumed", None)
         if callable(unconsumed):
             summary["unconsumed_moves"] = list(unconsumed())
+        behind = getattr(self.provider, "behind_the_clock", None)
+        if callable(behind):
+            retired = list(behind())
+            if retired:
+                summary["moves_behind_the_clock"] = retired
         return self._record(model, summary, unique=True)
 
 
@@ -1260,6 +1320,16 @@ class RelocationRunnerCollection:
 
     def __init__(self, runners=()):
         self.runners = {int(r.config.grid_id): r for r in runners}
+        # One ordered tree ledger for the order-sensitive restart move chain.
+        # Per-runner JSON receipts remain independent and unchanged.
+        self.receipts = []
+
+    def record(self, grid_id, entry, *, unique=False):
+        if unique:
+            self.receipts[:] = [row for row in self.receipts
+                               if not (row.get("follower_grid_id") == grid_id
+                                       and row["event"] == entry["event"])]
+        self.receipts.append({**entry, "follower_grid_id": grid_id})
 
     @property
     def target_grid_ids(self):
@@ -1308,11 +1378,29 @@ class RelocationRunnerCollection:
             if gid not in model.nodes_by_grid_id:
                 self.runners.pop(gid, None)
 
+    def adopt_placement(self, model, node, **placement):
+        """Restore through the target's own initializer and physics preparer."""
+        gid = int(node.cfg.grid_id)
+        runner = self.runners.get(gid)
+        if runner is None:
+            owners = [r for r in self.runners.values()
+                      if getattr(r.config, "containment", None) is not None
+                      and int(r.config.containment.grid_id) == gid]
+            if len(owners) != 1:
+                raise RelocationRefusal(
+                    f"d{gid:02d} checkpoint placement has no unique follower "
+                    "or containment reconstruction owner")
+            runner = owners[0]
+        return runner.adopt_placement(model, node, **placement)
+
     def attach_writers(self, writers):
         for runner in self.runners.values():
-            attach = getattr(runner.on_child_built, "attach_writers", None)
-            if callable(attach):
-                attach(writers)
+            for preparer in (runner.on_child_built,
+                             getattr(runner, "reground_descendant", None),
+                             getattr(runner, "containment_preparer", None)):
+                attach = getattr(preparer, "attach_writers", None)
+                if callable(attach):
+                    attach(writers)
 
 
 __all__ = [

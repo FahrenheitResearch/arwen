@@ -34,6 +34,15 @@ from gpuwm.core.grid import (BaseState, compute_hybrid_coeffs,
                              finalize_vertical_coord, make_vertical_coord)
 from gpuwm.core.nest_interp import register_nest, sint
 from gpuwm.core.state import mu_at_u_faces, mu_at_v_faces
+from gpuwm.core import constants as c
+from gpuwm.vertical_remap import (
+    dry_mass_edges,
+    geopotential_thickness_per_mass,
+    rebuild_geopotential,
+    remap_interface_values,
+    remap_layer_means,
+    remap_receipt,
+)
 from gpuwm.ingest.lateral_bc import (
     LateralBoundaries,
     build_lateral_interval_from_sides,
@@ -1515,6 +1524,168 @@ def _vertical_coefficients(raw, dataset):
     return coeffs, hybrid_opt, etac, float(p_top_values[0])
 
 
+
+#: Fields on the child's own ladder are rebuilt, not interpolated: ``PB`` is
+#: an exact function of the ladder and ``MUB``, and both geopotentials come
+#: from the discrete hydrostatic recurrence.  Everything else is rebinned.
+_LADDER_INDEPENDENT_INITIAL_FIELDS = frozenset({
+    "MU", "MUB", "HGT", "PSFC", "MAPFAC_M", "MAPFAC_U", "MAPFAC_V", "F", "E",
+    "SINALPHA", "COSALPHA", "XLAT", "XLONG", "XLAT_U", "XLONG_U", "XLAT_V",
+    "XLONG_V",
+})
+
+
+def resolve_child_ladder(child_eta_levels, *, nz: int | None = None):
+    """Validate one declared child ladder, or ``None`` for 'inherit'.
+
+    ``None`` is the shipped trajectory: the child takes its parent's ladder
+    verbatim and nothing in this module remaps anything.
+    """
+
+    if child_eta_levels is None:
+        return None
+    znw = np.asarray(child_eta_levels, dtype=np.float64).reshape(-1)
+    if nz is not None and znw.size != int(nz) + 1:
+        raise OfflineChildContractError(
+            f"child ladder has {znw.size} interfaces but the child config "
+            f"declares nz={nz}, which needs {int(nz) + 1}: the ladder and "
+            "the level count have to describe one grid")
+    if znw.size < 2 or znw[0] != 1.0 or znw[-1] != 0.0 or not np.all(
+            np.diff(znw) < 0.0):
+        raise OfflineChildContractError(
+            "child eta_levels must decrease strictly from 1.0 at the surface "
+            f"to 0.0 at the model top, got {znw[0]!r} .. {znw[-1]!r}: a "
+            "non-monotone ladder folds the coordinate and the reference dry "
+            "pressure stops decreasing with height")
+    return znw
+
+
+def _mass_edges(znw, mu, hybrid_opt, etac, p_top):
+    return dry_mass_edges(np.asarray(znw, dtype=np.float64),
+                          hybrid_opt=int(hybrid_opt), etac=float(etac),
+                          p_top=float(p_top),
+                          mu=np.asarray(mu, dtype=np.float64))
+
+
+def _remap_geopotential(phi, src_edges, dst_edges):
+    """Remap ``alt = dphi/dm`` and rebuild, rather than interpolating PHI.
+
+    PHI is a coordinate quantity, not an extensive one.  Rebuilding it from
+    the remapped ``alt`` through the same recurrence
+    ``gpuwm/core/grid.py`` :: ``make_base_state`` uses means the child's own
+    ``update_diagnostics`` recovers exactly the ``alt`` that was remapped, so
+    the state satisfies the dycore's discrete hydrostatic relation instead of
+    merely coming close to it.  It also conserves the column's geopotential
+    DEPTH exactly, so the child's model top sits where the parent's did.
+    """
+
+    phi = np.asarray(phi, dtype=np.float64)
+    alt = geopotential_thickness_per_mass(phi, src_edges)
+    return rebuild_geopotential(
+        phi[0], remap_layer_means(src_edges, alt, dst_edges), dst_edges)
+
+
+def _remap_initial_state_to_child_ladder(
+        fields, source_mixing, *, parent_znw, child_znw, hybrid_opt, etac,
+        p_top):
+    """Move one horizontally-SINTed parent state onto the child's ladder.
+
+    Runs once, on the host, in float64, after the horizontal interpolation
+    and before anything is uploaded.  The integration loop never sees it.
+
+    Total fields are remapped and the perturbations re-derived against the
+    NEW base state: a perturbation is bookkeeping relative to a base that is
+    itself changing here, so remapping one directly would carry the parent's
+    base into the child's.
+    """
+
+    receipts = []
+    host = {name: np.asarray(value, dtype=np.float64)
+            for name, value in fields.items()}
+    mub = host["MUB"]
+    mu_total = mub + host["MU"]
+    hyc = compute_hybrid_coeffs(np.asarray(child_znw, dtype=np.float64),
+                               int(hybrid_opt), float(etac), float(c.P0),
+                               float(p_top))
+
+    base_src = _mass_edges(parent_znw, mub, hybrid_opt, etac, p_top)
+    base_dst = _mass_edges(child_znw, mub, hybrid_opt, etac, p_top)
+    tot_src = _mass_edges(parent_znw, mu_total, hybrid_opt, etac, p_top)
+    tot_dst = _mass_edges(child_znw, mu_total, hybrid_opt, etac, p_top)
+
+    out = {name: value for name, value in fields.items()
+           if name in _LADDER_INDEPENDENT_INITIAL_FIELDS}
+
+    # PB is an exact function of the ladder and MUB -- the same expression
+    # make_base_state evaluates -- so it is RECOMPUTED, never rebinned.
+    out["PB"] = (hyc["c3h"][:, None, None] * mub[None]
+                 + hyc["c4h"][:, None, None] + float(p_top))
+    out["PHB"] = _remap_geopotential(host["PHB"], base_src, base_dst)
+
+    # Total geopotential, then the perturbation against the NEW base.
+    phi_total = _remap_geopotential(host["PHB"] + host["PH"], tot_src, tot_dst)
+    out["PH"] = phi_total - out["PHB"]
+
+    # Total potential temperature, then the perturbation against 300 K (the
+    # child's own base theta is derived downstream from the new PB/PHB).
+    theta = remap_layer_means(tot_src, host["T"] + 300.0, tot_dst)
+    receipts.append(remap_receipt("theta", tot_src, host["T"] + 300.0,
+                                  tot_dst, theta))
+    out["T"] = theta - 300.0
+
+    out["W"] = remap_interface_values(tot_src, host["W"], tot_dst)
+    if "P" in host:
+        out["P"] = remap_layer_means(tot_src, host["P"], tot_dst)
+
+    # Momentum carries the mass at its own faces, the same convention
+    # _couple_parent uses for the boundary route.
+    for name, faces in (("U", mu_at_u_faces), ("V", mu_at_v_faces)):
+        if name not in host:
+            continue
+        mu_face = _edge_pinned(np.asarray(faces(mu_total), dtype=np.float64),
+                               mu_total, axis=1 if name == "U" else 0)
+        src = _mass_edges(parent_znw, mu_face, hybrid_opt, etac, p_top)
+        dst = _mass_edges(child_znw, mu_face, hybrid_opt, etac, p_top)
+        out[name] = remap_layer_means(src, host[name], dst)
+
+    child_mixing = {}
+    for name, value in source_mixing.items():
+        array = np.asarray(value, dtype=np.float64)
+        remapped = remap_layer_means(tot_src, array, tot_dst)
+        receipts.append(remap_receipt(name, tot_src, array, tot_dst, remapped))
+        child_mixing[name] = remapped
+
+    znu = 0.5 * (np.asarray(child_znw)[:-1] + np.asarray(child_znw)[1:])
+    out["ZNW"] = np.asarray(child_znw, dtype=np.float64)
+    out["ZNU"] = znu
+    out["P_TOP"] = np.asarray([float(p_top)], dtype=np.float64)
+
+    # Anything not named above rides through UNCHANGED, which is correct only
+    # for a field that does not live on the ladder.  A field that does would
+    # otherwise reach the child at the PARENT's level count inside a dict
+    # whose other members are on the child's -- a mixed-nz state that the
+    # shape checks downstream would not all catch.  Refused by name instead:
+    # a 3-D field added to _INITIAL_CORE_FIELDS later has to be given a
+    # weight here, and the refusal says so.
+    parent_levels = {int(np.asarray(parent_znw).size),
+                     int(np.asarray(parent_znw).size) - 1}
+    for name, value in fields.items():
+        if name in out:
+            continue
+        array = np.asarray(value)
+        if array.ndim >= 3 and int(array.shape[0]) in parent_levels:
+            raise OfflineChildContractError(
+                f"{name} has {array.shape[0]} levels on the parent's ladder "
+                "and no remap weight in "
+                "_remap_initial_state_to_child_ladder, so a child on its own "
+                "ladder would receive it at the parent's level count while "
+                "every other field arrived at the child's.  Give it a weight "
+                "(mass for a layer field, interface for a staggered one) or "
+                "add it to _LADDER_INDEPENDENT_INITIAL_FIELDS if it does not "
+                "live on the ladder.")
+        out[name] = value
+    return out, child_mixing, receipts
+
 _INITIAL_FIELD_STAGGER = MappingProxyType({
     "U": "x", "V": "y", "MAPFAC_U": "x", "MAPFAC_V": "y",
     "XLAT_U": "x", "XLONG_U": "x", "XLAT_V": "y", "XLONG_V": "y",
@@ -1532,6 +1703,7 @@ def interpolate_parent_initial_state(
         physics_binding: ParentPhysicsBinding | None = None,
         target_mp_physics: int | None = None,
         morr_rimed_ice: int | None = None, backend: str = "cpu",
+        child_eta_levels=None,
         diagnose_missing: Callable[[Mapping[str, np.ndarray], Sequence[str]],
                                    Mapping[str, np.ndarray]] | None = None,
 ) -> InterpolatedInitialState:
@@ -1616,6 +1788,35 @@ def interpolate_parent_initial_state(
     fields = {name: _to_host(value) for name, value in interpolated.items()}
     fields.update({name: np.array(raw[name], copy=True, dtype=np.float32)
                    for name in constants})
+    # The child's own ladder, when it declares one.  A child that declares
+    # nothing never reaches this branch and its state is bitwise what it was
+    # before per-domain ladders existed.
+    child_znw = resolve_child_ladder(child_eta_levels)
+    remap_receipts = ()
+    if child_znw is not None:
+        parent_znw = np.asarray(raw["ZNW"], dtype=np.float64).reshape(-1)
+        fields, source_mixing, remap_receipts = (
+            _remap_initial_state_to_child_ladder(
+                fields, {name: _to_host(value)
+                         for name, value in source_mixing.items()},
+                parent_znw=parent_znw, child_znw=child_znw,
+                hybrid_opt=hybrid_opt, etac=etac, p_top=p_top))
+        # PHB stays float64.  The remap above produced the child's base
+        # geopotential in float64 on a ladder the parent never had, and
+        # DomainState.set_base_geopotential subtracts the float32 store
+        # from it to build dphb_resid -- the correction that stops the
+        # diagnosed pressure degrading as 1/dz.  Rounding it here made
+        # that subtraction identically zero, so the FP32 EOS remedy was
+        # OFF on precisely the deep-column route it exists for, while
+        # being on everywhere else.  Every other consumer casts to
+        # float32 explicitly at its own use (``assign`` below), so this
+        # widens nothing downstream.  On the NO-ladder route this block
+        # does not run at all and PHB arrives float32 from the archive,
+        # where the information genuinely does not exist.
+        fields = {name: value if name == "PHB"
+                  else np.asarray(value, dtype=np.float32)
+                  for name, value in fields.items()}
+        fields["PHB"] = np.ascontiguousarray(fields["PHB"], dtype=np.float64)
     receipt = MappingProxyType({
         "path": str(Path(path).resolve()),
         "valid_time": info.valid_time.isoformat(),
@@ -1634,6 +1835,18 @@ def interpolate_parent_initial_state(
         "hybrid_opt": hybrid_opt,
         "etac": etac,
         "p_top": p_top,
+        # None when the child inherited its parent's ladder.  Otherwise the
+        # measured conservation of every field that was rebinned: a remap
+        # that quietly failed to conserve must not look like one that did.
+        "vertical_remap": None if child_znw is None else {
+            "source_levels": int(np.asarray(raw["ZNW"]).size - 1),
+            "target_levels": int(child_znw.size - 1),
+            "child_eta_levels": tuple(float(v) for v in child_znw),
+            "fields": tuple(item.summary() for item in remap_receipts),
+            "max_relative_drift": max(
+                (item.max_relative_drift for item in remap_receipts),
+                default=0.0),
+        },
         "conversion": None if conversion_receipt is None else dict(conversion_receipt),
         "seconds": time.perf_counter() - started,
     })
@@ -1642,6 +1855,116 @@ def interpolate_parent_initial_state(
         MappingProxyType({name: _to_host(value)
                           for name, value in source_mixing.items()}), receipt)
 
+
+def _child_base_geopotential(phb_parent, mub, *, parent_znw, child_znw,
+                             hybrid_opt, etac, p_top):
+    """The child ladder's base geopotential, from the parent's own PHB.
+
+    Shared by the initial-state and lateral-boundary routes so the boundary
+    strips are relative to exactly the base state the domain was built on; a
+    second, subtly different reconstruction here would put a step in the
+    geopotential at the edge of the relaxation zone.
+    """
+
+    return _remap_geopotential(
+        np.asarray(phb_parent, dtype=np.float64),
+        _mass_edges(parent_znw, mub, hybrid_opt, etac, p_top),
+        _mass_edges(child_znw, mub, hybrid_opt, etac, p_top))
+
+
+def _remap_boundary_snapshot_to_child_ladder(
+        interpolated, *, child_mub, child_phb, parent_znw, child_znw,
+        hybrid_opt, etac, p_top, moisture_names):
+    """Move one SINTed, COUPLED boundary strip onto the child's ladder.
+
+    The strips arrive coupled by the parent ladder's ``chm``/``chf``
+    (:func:`_couple_parent`).  Coupling is a per-layer mass weight, so a
+    coupled field is not rebinnable as it stands: it is uncoupled on the
+    child with the parent ladder's weight, remapped, and recoupled with the
+    child ladder's.  Uncoupling against a weight built from the child's own
+    ``mu`` is the convention this module already uses for the cross-physics
+    boundary edge, not a second one invented here.
+    """
+
+    receipts = []
+    child_mu = np.asarray(child_mub, dtype=np.float64) + np.asarray(
+        interpolated["mu"][0], dtype=np.float64)
+
+    def coeffs_for(znw):
+        return compute_hybrid_coeffs(np.asarray(znw, dtype=np.float64),
+                                     int(hybrid_opt), float(etac),
+                                     float(c.P0), float(p_top))
+
+    src_c, dst_c = coeffs_for(parent_znw), coeffs_for(child_znw)
+    faces = {
+        "": child_mu,
+        "x": _edge_pinned(np.asarray(mu_at_u_faces(child_mu),
+                                     dtype=np.float64), child_mu, axis=1),
+        "y": _edge_pinned(np.asarray(mu_at_v_faces(child_mu),
+                                     dtype=np.float64), child_mu, axis=0),
+    }
+    stagger = {"u": "x", "v": "y"}
+    edges = {key: (_mass_edges(parent_znw, value, hybrid_opt, etac, p_top),
+                   _mass_edges(child_znw, value, hybrid_opt, etac, p_top))
+             for key, value in faces.items()}
+
+    def half_weight(co, mu_face):
+        return (co["c1h"][:, None, None] * mu_face[None]
+                + co["c2h"][:, None, None])
+
+    def full_weight(co, mu_face):
+        return (co["c1f"][:, None, None] * mu_face[None]
+                + co["c2f"][:, None, None])
+
+    out = {"mu": interpolated["mu"]}
+    for name, value in interpolated.items():
+        if name == "mu":
+            continue
+        key = stagger.get(name, "")
+        mu_face = faces[key]
+        src_edges, dst_edges = edges[key]
+        array = np.asarray(_to_host(value), dtype=np.float64)
+        if name in ("w", "phi"):
+            plain = array / full_weight(src_c, mu_face)
+            if name == "phi":
+                # Total geopotential, remapped through alt = dphi/dm, then
+                # made a perturbation against the CHILD's base again.
+                total = _remap_geopotential(
+                    np.asarray(child_phb, dtype=np.float64) + plain,
+                    src_edges, dst_edges)
+                child_base = _child_base_geopotential(
+                    child_phb, np.asarray(child_mub, dtype=np.float64),
+                    parent_znw=parent_znw, child_znw=child_znw,
+                    hybrid_opt=hybrid_opt, etac=etac, p_top=p_top)
+                remapped = total - child_base
+            else:
+                remapped = remap_interface_values(src_edges, plain, dst_edges)
+            out[name] = remapped * full_weight(dst_c, mu_face)
+            continue
+        plain = array / half_weight(src_c, mu_face)
+        remapped = remap_layer_means(src_edges, plain, dst_edges)
+        if name in moisture_names or name == "theta":
+            receipts.append(
+                remap_receipt(name, src_edges, plain, dst_edges, remapped))
+        out[name] = remapped * half_weight(dst_c, mu_face)
+    return out, receipts
+
+
+def _edge_pinned(face, centre, *, axis):
+    """``mu`` at a staggered face, with the outer faces pinned to the centre.
+
+    The same convention :func:`_couple_parent` uses; kept in one place so the
+    two routes cannot drift apart.
+    """
+
+    face = np.array(face, dtype=np.float64, copy=True)
+    if axis == 1:
+        face[:, 0] = centre[:, 0]
+        face[:, -1] = centre[:, -1]
+    else:
+        face[0, :] = centre[0, :]
+        face[-1, :] = centre[-1, :]
+    return face
 
 def _base_from_interpolated_initial(initial: InterpolatedInitialState,
                                     cfg):
@@ -1694,6 +2017,70 @@ def _base_from_interpolated_initial(initial: InterpolatedInitialState,
         terrain_z=np.asarray(fields["HGT"], dtype=np.float64))
 
 
+def _require_prepared_child_ladder(initial, cfg) -> None:
+    """The prepared state and the child config must name ONE ladder.
+
+    A prepared state carries the ladder it was remapped onto.  If the config
+    handed to this function names a different one, the arrays would be built
+    against a coordinate the state was never interpolated to -- the level
+    counts might even agree while the interfaces sit elsewhere, so the shape
+    checks downstream would pass and the child would integrate a state whose
+    layers are not where its coordinate says they are.
+    """
+
+    prepared = initial.receipt.get("vertical_remap")
+    declared = None if cfg.eta_levels is None else tuple(
+        float(value) for value in cfg.eta_levels)
+    if prepared is None:
+        if declared is not None:
+            raise OfflineChildContractError(
+                f"child config declares its own {len(declared) - 1}-level "
+                "eta ladder but the prepared state was built on the parent's "
+                "ladder: pass child_eta_levels to "
+                "interpolate_parent_initial_state so the state is remapped "
+                "onto the ladder the child will integrate on")
+        return
+    if declared is None:
+        raise OfflineChildContractError(
+            f"prepared state was remapped onto a "
+            f"{prepared['target_levels']}-level child ladder but the child "
+            "config declares no eta_levels: the config has to carry the "
+            "ladder the state was built for")
+    if declared != tuple(prepared["child_eta_levels"]):
+        raise OfflineChildContractError(
+            f"child config eta_levels ({len(declared) - 1} levels) is not "
+            f"the ladder the state was prepared on "
+            f"({prepared['target_levels']} levels): the state would be "
+            "loaded against a coordinate it was never remapped to")
+
+
+def _require_runnable_child_radiation(cfg, p_top: float) -> None:
+    """Refuse a child ladder this domain's own radiation cannot run.
+
+    ``RunConfig`` carries no model-top pressure, so
+    ``validate_run_config`` reaches
+    ``validate_resolved_physics_vertical_levels`` with ``p_top=None`` and the
+    radiation cap-layer arithmetic is skipped (gpuwm/physics_compat.py, the
+    "RunConfig-only checks" branch).  That was unreachable while a child's nz
+    was pinned to its parent's and real parents run ~50 levels; a child that
+    may now name its own deeper ladder can walk straight into it, and the run
+    would die at the FIRST radiative call -- after the fetch, the SINT, the
+    remap and the whole preparation had been paid for.  The parent archive
+    knows the model top, so the check runs here with it.
+    """
+
+    from gpuwm.physics_compat import (
+        PhysicsVerticalPreflightError,
+        validate_resolved_physics_vertical_levels,
+    )
+
+    try:
+        validate_resolved_physics_vertical_levels(cfg, p_top=float(p_top))
+    except PhysicsVerticalPreflightError as exc:
+        raise OfflineChildContractError(
+            f"child nz={cfg.nz} at the parent's p_top={float(p_top):g} Pa "
+            f"exceeds a radiation adapter's layer ceiling: {exc}") from exc
+
 def build_offline_child_domain_state(
         initial: InterpolatedInitialState, cfg, *, array_module=None):
     """Upload an interpolated parent-only cold start into ``DomainState``.
@@ -1734,6 +2121,8 @@ def build_offline_child_domain_state(
     if int(cfg.mp_physics) != target_mp:
         raise OfflineChildContractError(
             f"child cfg mp_physics={cfg.mp_physics} != prepared target {target_mp}")
+    _require_prepared_child_ladder(initial, cfg)
+    _require_runnable_child_radiation(cfg, float(initial.receipt["p_top"]))
     from gpuwm.core.diagnostics import update_diagnostics
     from gpuwm.core.state import DomainState
     coord, base = _base_from_interpolated_initial(initial, cfg)
@@ -1833,6 +2222,7 @@ def interpolate_parent_boundary_snapshot(
         physics_binding: ParentPhysicsBinding | None = None,
         target_mp_physics: int | None = None,
         morr_rimed_ice: int | None = None, backend: str = "cpu",
+        child_eta_levels=None,
         diagnose_missing: Callable[[Mapping[str, np.ndarray], Sequence[str]],
                                    Mapping[str, np.ndarray]] | None = None,
 ) -> InterpolatedBoundarySnapshot:
@@ -1856,9 +2246,16 @@ def interpolate_parent_boundary_snapshot(
     target_mp = int(source_mp_physics if target_mp_physics is None
                     else target_mp_physics)
     started = time.perf_counter()
+    child_znw = resolve_child_ladder(child_eta_levels)
     with netcdf_bridge.open_dataset(path) as dataset:
         raw, moisture = _raw_parent_state(dataset, int(source_mp_physics))
         coeffs, hybrid_opt, etac, p_top = _vertical_coefficients(raw, dataset)
+        if child_znw is not None:
+            # Needed only to make the child's geopotential a perturbation
+            # against its OWN base; read here rather than in
+            # _raw_parent_state so a child that inherits its parent's ladder
+            # still requires exactly the variables it always did.
+            raw["PHB"] = _read_record(dataset, "PHB")
     coupled, raw_device, parent_chm = _couple_parent(
         raw, moisture, coeffs, backend)
     registrations = {
@@ -1922,6 +2319,18 @@ def interpolate_parent_boundary_snapshot(
         interpolated.update({
             name: child_chm_host * value for name, value in mapped.items()
         })
+    remap_receipts = ()
+    if child_znw is not None:
+        parent_znw = np.asarray(raw["ZNW"], dtype=np.float64).reshape(-1)
+        interpolated, remap_receipts = (
+            _remap_boundary_snapshot_to_child_ladder(
+                interpolated,
+                child_mub=_to_host(sint(raw_device["MUB"], registrations[""])),
+                child_phb=_to_host(sint(
+                    _backend_array(raw["PHB"], backend), registrations[""])),
+                parent_znw=parent_znw, child_znw=child_znw,
+                hybrid_opt=hybrid_opt, etac=etac, p_top=p_top,
+                moisture_names=frozenset(moisture)))
     fields = MappingProxyType({name: _to_host(value)
                                for name, value in interpolated.items()})
     receipt = MappingProxyType({
@@ -1940,6 +2349,14 @@ def interpolate_parent_boundary_snapshot(
         "etac": etac,
         "p_top": p_top,
         "field_inventory": tuple(sorted(fields)),
+        "vertical_remap": None if child_znw is None else {
+            "source_levels": int(np.asarray(raw["ZNW"]).size - 1),
+            "target_levels": int(child_znw.size - 1),
+            "fields": tuple(item.summary() for item in remap_receipts),
+            "max_relative_drift": max(
+                (item.max_relative_drift for item in remap_receipts),
+                default=0.0),
+        },
         "conversion": None if conversion_receipt is None else dict(conversion_receipt),
         "seconds": time.perf_counter() - started,
     })
@@ -1950,6 +2367,7 @@ def build_offline_lateral_boundaries(
         contract: ParentHistoryContract, placement: OfflineChildPlacement, *,
         target_mp_physics: int | None = None,
         morr_rimed_ice: int | None = None, backend: str = "cpu",
+        child_eta_levels=None,
         diagnose_missing: Callable[[Mapping[str, np.ndarray], Sequence[str]],
                                    Mapping[str, np.ndarray]] | None = None,
         spec_bdy_width: int = 5, spec_zone: int = 1, relax_zone: int = 4,
@@ -1978,6 +2396,7 @@ def build_offline_lateral_boundaries(
             physics_binding=contract.physics_binding,
             target_mp_physics=target_mp_physics,
             morr_rimed_ice=morr_rimed_ice, backend=backend,
+            child_eta_levels=child_eta_levels,
             diagnose_missing=diagnose_missing,
         )
         sides = {

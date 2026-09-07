@@ -90,6 +90,9 @@ $ErrorActionPreference = 'Stop'
 # reason inline, a removal says why the coverage is gone, in the commit.
 # ---------------------------------------------------------------------------
 $Manifest = @(
+    # The bundled terminal workspace and its doctor --version probe.
+    'tools/arwen-tui/target/release/arwen-tui.exe'
+
     # GRIB decode + the MET intermediate writer.  The `--engine rust` fetch
     # and prep paths; `gpuwm_preprocess_cpu.dll` is the regrid/transform half.
     'tools/grib1_bridge/target/release/gfs_grib2_bridge.exe'
@@ -222,15 +225,15 @@ Write-Host ("provision_stage1: manifest OK -- {0}/{0} required artifacts present
 # file existence would re-certify the same assumption the copy just made;
 # tests/test_render_rust.py answers the question that matters, because its
 # gate is the product's own renderer_refusal() -- it skips a foreign or
-# unresolvable engine even when a file sits at the path.  45 passed / 0
-# skipped is what a provisioned tree produces.  Any skip means the binaries
+# unresolvable engine even when a file sits at the path. At least 50 passed / 0
+# skipped is the current floor; new passing tests may increase it. Any skip means the binaries
 # did not take effect and the green that follows is fake.
 if ($SkipVerify) {
     Write-Host "provision_stage1: verify SKIPPED by request -- this tree is not gate-ready."
     exit 0
 }
 
-$expectPassed = 45
+$minimumPassed = 50
 $env:PYTHONPATH = ($Target + ';' + (Join-Path $Target 'gpuwm-data'))
 # Do NOT set PYTHONSAFEPATH: it drops the target from sys.path and the
 # editable install's .pth then certifies whatever checkout it points at.
@@ -242,6 +245,7 @@ Write-Host "provision_stage1: instrument check -- tests/test_render_rust.py"
 Push-Location $Target
 try {
     $out = & $Python -m pytest tests/test_render_rust.py -q --no-header -p no:cacheprovider 2>&1
+    $verifyExit = $LASTEXITCODE
 } finally {
     Pop-Location
 }
@@ -254,9 +258,9 @@ $skipped = 0
 if ($text -match '(\d+)\s+passed') { $passed = [int]$Matches[1] }
 if ($text -match '(\d+)\s+skipped') { $skipped = [int]$Matches[1] }
 
-if ($passed -ne $expectPassed -or $skipped -ne 0) {
+if ($verifyExit -ne 0 -or $passed -lt $minimumPassed -or $skipped -ne 0) {
     Write-Host ""
-    Write-Host ("provision_stage1: FAIL -- expected {0} passed / 0 skipped, got {1} passed / {2} skipped." -f $expectPassed, $passed, $skipped)
+    Write-Host ("provision_stage1: FAIL -- expected successful pytest with at least {0} passed / 0 skipped, got exit {1}, {2} passed / {3} skipped." -f $minimumPassed, $verifyExit, $passed, $skipped)
     Write-Host "A skip here means the renderer at the staged path is not the engine the"
     Write-Host "render path will accept -- a link instead of a copy, a stale build, or a"
     Write-Host "GPUWM_RENDERER/RUSTWX_ASSETS_DIR override pointing elsewhere.  Do not run"

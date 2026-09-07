@@ -16,9 +16,12 @@ rather than with a bare list.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
+
+from tools.release_exclusions import matches, read_exclusions
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = REPOSITORY_ROOT / "tools" / "battery" / "stage1_files.txt"
@@ -83,6 +86,67 @@ def test_no_entry_is_listed_twice() -> None:
         f"tools/battery/stage1_files.txt lists {duplicates} more than once; "
         "pytest would collect those files twice and the leg's counts would "
         "overstate the coverage")
+
+
+def _public_entries() -> list[str]:
+    entries = set(_entries())
+    always = MANIFEST.with_name("always_files.txt").read_text(encoding="utf-8")
+    entries.update(line.strip() for line in always.splitlines()
+                   if line.strip() and not line.lstrip().startswith("#"))
+    return sorted(entries)
+
+
+def test_public_battery_lists_survive_the_snapshot_exclusions() -> None:
+    """An excluded campaign suite made the public Stage 1 argv unrunnable."""
+    rules = read_exclusions(REPOSITORY_ROOT)
+    missing = [entry for entry in _public_entries()
+               if not (REPOSITORY_ROOT / entry).is_file()]
+    excluded = [(entry, rule) for entry in _public_entries()
+                if (rule := matches(entry, rules)) is not None]
+    assert not missing and not excluded, (
+        f"public battery lists contain absent files {missing} or release-excluded "
+        f"files {excluded}; keep private preparation gates on their named private leg")
+
+
+def _excluded_imports(source: str, relative: str, rules: list[str]) -> list[str]:
+    """Resolve ordinary Python imports at the repo root and beside the suite."""
+    result = []
+    parent = Path(relative).parent.as_posix()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and not node.level:
+            modules = [node.module or ""]
+            modules += [f"{node.module}.{alias.name}" for alias in node.names
+                        if node.module and alias.name != "*"]
+        else:
+            continue
+        for module in modules:
+            path = module.replace(".", "/")
+            for base in (path, f"{parent}/{path}"):
+                for candidate in (base, base + ".py", base + "/__init__.py"):
+                    if matches(candidate, rules) is not None:
+                        result.append(f"{relative}:{node.lineno}: {module}")
+                        break
+    return sorted(set(result))
+
+
+def test_public_suites_do_not_import_excluded_test_helpers() -> None:
+    """Two public input suites imported a fixture from the excluded campaign test."""
+    rules = read_exclusions(REPOSITORY_ROOT)
+    found = [finding for entry in _public_entries()
+             for finding in _excluded_imports(
+                 (REPOSITORY_ROOT / entry).read_text(encoding="utf-8"), entry, rules)]
+    assert not found, (
+        f"public suites import release-excluded modules: {found}; move reusable "
+        "fixtures into a shipped helper without removing the public assertions")
+
+
+def test_the_public_import_check_rejects_an_excluded_fixture() -> None:
+    found = _excluded_imports(
+        "from private_fixture import make_input\n", "tests/test_public.py",
+        ["tests/private_fixture.py"])
+    assert found == ["tests/test_public.py:1: private_fixture"]
 
 
 @pytest.mark.parametrize("entry", _entries())

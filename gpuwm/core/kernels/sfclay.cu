@@ -7,10 +7,10 @@
 // handles one (j,i) surface column; inputs are the lowest mass-level values
 // already interpolated to mass points exactly as the WRF wrappers do.
 //
-// The incoming znt, ust, mol, hfx, qfx, qsfc, and zol are previous-step/inout
-// fields.  This matters: classic unstable z/L uses old MOL, its strong-stable
-// branch leaves ZOL untouched, and both schemes average newly diagnosed u*
-// with old UST.  Outputs remain FP32 model state;
+// The incoming znt, ust, ustm, mol, hfx, qfx, qsfc, and zol are previous-
+// step/inout fields.  This matters: classic unstable z/L uses old MOL, its
+// strong-stable branch leaves ZOL untouched, and both schemes average newly
+// diagnosed u* with old UST and old USTM.  Outputs remain FP32 model state;
 // gpuwm.verify.npref.np_sfclay is the float64 transcription mirror.
 
 __device__ __forceinline__ double sf_f2d(real x)
@@ -216,7 +216,8 @@ void sfclay_column(
     const real* __restrict__ psfc, const real* __restrict__ tsk,
     const real* __restrict__ pblh, const real* __restrict__ mavail,
     const real* __restrict__ xland, const real* __restrict__ lakemask,
-    real* __restrict__ znt, real* __restrict__ ust, real* __restrict__ mol,
+    real* __restrict__ znt, real* __restrict__ ust,
+    real* __restrict__ ustm, real* __restrict__ mol,
     real* __restrict__ hfx, real* __restrict__ qfx, real* __restrict__ qsfc,
     real* __restrict__ zol_o, real* __restrict__ regime_o,
     real* __restrict__ psim_o, real* __restrict__ psih_o,
@@ -242,6 +243,7 @@ void sfclay_column(
     real uu = u[idx], vv = v[idx], temp = t[idx], qvx = qv[idx];
     real press = p[idx], ps = psfc[idx], ground_t = tsk[idx];
     real z0 = znt[idx], old_ust = ust[idx], old_mol = mol[idx];
+    real old_ustm = ustm[idx];
     real old_zol = zol_o[idx];
     real old_hfx = hfx[idx], old_qfx = qfx[idx], qs = qsfc[idx];
 
@@ -467,6 +469,13 @@ void sfclay_column(
     }
 
     real new_ust = 0.5f * old_ust + 0.5f * karman * wspd / psix;
+    // TKE coupling (module_sf_sfclay.F:800-804,
+    // physics_mmm/sf_sfclayrev.F90:759-763): USTM repeats the UST
+    // relaxation on the wind speed WITHOUT the Beljaars/Mahrt-Sun
+    // vconv/vsgd correction and without WSPD's 0.1 floor, and takes
+    // none of the land floor UST gets below.
+    real wspdi = sqrtf(uu * uu + vv * vv);
+    real new_ustm = 0.5f * old_ustm + 0.5f * karman * wspdi / psix;
     real u10 = uu * psix10 / psix, v10 = vv * psix10 / psix;
     real th2 = thgb + (thx - thgb) * psit2 / psit;
     real q2 = qs + (qvx - qs) * psiq2 / psiq;
@@ -501,7 +510,8 @@ void sfclay_column(
         chs2 = new_ust * karman / psit2;
     }
 
-    znt[idx] = z0out; ust[idx] = new_ust; mol[idx] = new_mol;
+    znt[idx] = z0out; ust[idx] = new_ust; ustm[idx] = new_ustm;
+    mol[idx] = new_mol;
     hfx[idx] = new_hfx; qfx[idx] = new_qfx; qsfc[idx] = qs;
     zol_o[idx] = zol; regime_o[idx] = regime; psim_o[idx] = psim;
     psih_o[idx] = psih; fm_o[idx] = psix; fh_o[idx] = psit; lh_o[idx] = lh;

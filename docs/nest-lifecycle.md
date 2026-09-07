@@ -72,6 +72,25 @@ output directory is not the defect the refusal exists to prevent.
 
 Per-domain followers each own a `uh_follow_window.dNN` accumulator and a
 separate `StormTracker`, so cadence and cooldown state cannot cross-talk.
+
+A streamed parent carries each declared follower window through the same tile
+buffers and canonical store as the fixed spawn/follow windows. Its configured
+children determine the inventory: each follower adds one FP32 horizontal plane
+on its parent, in every tile compute window and in the full-domain store. These
+bytes enter resident and streaming admission. Dormant consumers reserve their
+slots before tile attachment and begin a fresh window when their episode starts;
+another follower's consultation or birth does not reset their siblings.
+
+Lifecycle checkpoints preserve these generated windows with each follower's
+own cadence, segment and cooldown state. Ordinary checkpoints without the
+lifecycle opt-in still omit and clear consumer windows. The shared transport is
+verified with two different follower cadences over a streamed parent and with
+resident/streamed checkpoint continuation. Relocating a streamed child itself
+still requires reconstruction of its canonical store, geography and live tile
+stepper; that separate operation remains guarded. The current follower-parent
+path also retains the existing resident donor projection at consultation, so
+this transport proof is not a bounded-memory relocation proof.
+
 Legacy tree-level `[relocation]` remains supported unchanged. A single child
 cannot select both authorities.
 

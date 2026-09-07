@@ -35,8 +35,10 @@ from gpuwm.io.wrf_output_schema import (
     REGISTRY_VAR_META, SCHEME_OUTPUT_FIELDS, WRF_FIELD_TYPE_INTEGER,
     WRF_FIELD_TYPE_REAL,
 )
-from gpuwm.supervisor import (fsync_file, quarantine_file,
+from gpuwm.supervisor import (_fsync_directory, fsync_file, quarantine_file,
                               replace_file_with_retry, unique_temp_path)
+
+from gpuwm.io.netcdf_serialization import NETCDF4_IO_LOCK
 
 _COMPLETION_ATTR = "GPUWM_WRITE_COMPLETE"
 # netCDF4 releases the GIL around HDF5 calls, while the shipped HDF5 library
@@ -44,7 +46,12 @@ _COMPLETION_ATTR = "GPUWM_WRITE_COMPLETE"
 # each worker's create/write/close/reopen/publish netCDF session is serialized.
 # The Rust engine needs no such serialization of its own, but the publish
 # step's self-validation reopens the tape with netCDF4, so the lock stays.
-_NETCDF4_IO_LOCK = threading.Lock()
+#
+# THE LOCK IS NO LONGER THIS MODULE'S.  Guarding the writer against itself
+# left it unguarded against every other netCDF4 READER in the process, and
+# one of those killed real runs: see gpuwm.io.netcdf_serialization for the
+# measurement.  The name is kept so this module reads as it did.
+_NETCDF4_IO_LOCK = NETCDF4_IO_LOCK
 _ASYNC_WRITER_POLL_SECONDS = 0.05
 
 #: Which library writes the product tape.  ``rust`` (the DEFAULT) is the
@@ -191,6 +198,20 @@ _SOIL_LAYER_FIELDS = frozenset({"TSLB", "SMOIS", "SH2O",
 #: are never assumed, and then quietly assumed 14 for this one because gpuwm's
 #: own files never carried it.  Writing it makes the file say what the reader
 #: had to guess.
+#:
+#: ``NUM_LAND_CAT`` is the same argument one attribute later.  Stock WRF
+#: writes it in every history file (``share/output_wrf.F``, from
+#: ``grid%num_land_cat``, which real.exe takes from the met_em global that
+#: geogrid derived as ``category_max - category_min + 1`` of the dominant
+#: land-use field), and the pinned v4.6.1 reference file in this repository
+#: carries ``NUM_LAND_CAT = 21`` beside exactly the ``MMINLU``/``ISWATER``/
+#: ``ISLAKE``/``ISICE``/``ISURBAN`` values below.  Without it a consumer
+#: handed ``MMINLU = "MODIFIED_IGBP_MODIS_NOAH"`` and ``LU_INDEX`` has to
+#: ASSUME 21 categories to size a table -- the guess this group exists to
+#: retire.  The value here is the legacy MODIS/Noah identity the rest of the
+#: group already states; a run with a resolved land-use dataset overrides it
+#: from that dataset's own index (``GeogSelection.landuse_global_attrs``),
+#: which is what keeps it evidence rather than a constant.
 _DEFAULT_LANDUSE_ATTRS = {
     "MMINLU": "MODIFIED_IGBP_MODIS_NOAH",
     "ISWATER": 17,
@@ -198,7 +219,35 @@ _DEFAULT_LANDUSE_ATTRS = {
     "ISICE": 15,
     "ISURBAN": 13,
     "ISOILWATER": 14,
+    "NUM_LAND_CAT": 21,
 }
+
+
+def _wrf_patch_extent_attrs(nx: int, ny: int, nz: int) -> dict[str, int]:
+    """WRF's ``*_PATCH_*`` extent group for one undecomposed patch.
+
+    Stock WRF writes twelve of these into every history file, one triple of
+    (start, unstaggered end, staggered end) per axis, describing the slab of
+    the domain THIS file holds.  A serial writer holds all of it, so start is
+    1 on every axis (WRF's indices are 1-based), the unstaggered end is the
+    mass-point count and the staggered end is one past it -- the same
+    relationship ``WEST-EAST_GRID_DIMENSION = nx + 1`` already states, said
+    the way the stock tool chain reads it.
+    """
+    return {
+        "WEST-EAST_PATCH_START_UNSTAG": 1,
+        "WEST-EAST_PATCH_END_UNSTAG": nx,
+        "WEST-EAST_PATCH_START_STAG": 1,
+        "WEST-EAST_PATCH_END_STAG": nx + 1,
+        "SOUTH-NORTH_PATCH_START_UNSTAG": 1,
+        "SOUTH-NORTH_PATCH_END_UNSTAG": ny,
+        "SOUTH-NORTH_PATCH_START_STAG": 1,
+        "SOUTH-NORTH_PATCH_END_STAG": ny + 1,
+        "BOTTOM-TOP_PATCH_START_UNSTAG": 1,
+        "BOTTOM-TOP_PATCH_END_UNSTAG": nz,
+        "BOTTOM-TOP_PATCH_START_STAG": 1,
+        "BOTTOM-TOP_PATCH_END_STAG": nz + 1,
+    }
 
 
 def _producer_version() -> str:
@@ -302,7 +351,7 @@ def wrf_global_attrs(
         grid, start_time, *, landuse_attrs=None, grid_id=None,
         parent_id=None, i_parent_start=None, j_parent_start=None,
         parent_grid_ratio=None, dt=None, hybrid_opt=None, etac=None,
-        run=None,
+        run=None, simulation_start_time=None,
         ) -> dict[str, object]:
     """WRF projection/pole/land-use globals derived from case inputs.
 
@@ -316,6 +365,26 @@ def wrf_global_attrs(
     are optional for generic/idealized files, but the real-case runtime
     supplies the complete groups together.  POLE_LAT/POLE_LON stay
     90/0: WPS writes those constants for every non-lat-lon projection.
+
+    ``start_time`` is THIS file's own start and becomes ``START_DATE``;
+    ``simulation_start_time`` is the whole simulation's and becomes
+    ``SIMULATION_START_DATE``.  They are two different facts in WRF, and
+    they differ exactly when a nest declares a delayed start.
+    ``share/output_wrf.F:343-348`` reads ``start_*`` at ``grid%id`` for
+    ``START_DATE``, while ``:361-376`` reads ``simulation_start_*`` at
+    namelist index **1** for ``SIMULATION_START_DATE`` on every history
+    file, and ``share/set_timekeeping.F:379-388`` sets those index-1
+    values once, ``IF ( grid%id .EQ. head_grid%id )``.  So WRF's
+    ``SIMULATION_START_DATE`` is the head grid's start, identical on every
+    domain of the run.  Writing the domain's own value there labelled a
+    d02 frame F+03 where the d01 frame of the same instant was F+09,
+    because ``rw_wrfbatch`` reads this attribute first as the run origin
+    and measures every product's lead from it
+    (``gpuwm/io/surface_wrfout.py`` ``ORIGIN_ATTRS``).
+
+    ``simulation_start_time=None`` means "this file starts the
+    simulation", which every single-domain and idealized caller is, and
+    reproduces the previous single-date behaviour byte for byte.
     """
     # Every projection global below is NC_FLOAT, not NC_DOUBLE.  A Python
     # float would enter netCDF4 as a double, and stock WRF writes all of these
@@ -335,8 +404,22 @@ def wrf_global_attrs(
         "CEN_LAT": np.float32(getattr(grid, "cen_lat", grid.ref_lat)),
         "CEN_LON": np.float32(getattr(grid, "cen_lon", grid.ref_lon)),
         "POLE_LAT": np.float32(90.0), "POLE_LON": np.float32(0.0),
-        "SIMULATION_START_DATE": start_time.strftime("%Y-%m-%d_%H:%M:%S"),
+        "SIMULATION_START_DATE": (
+            start_time if simulation_start_time is None
+            else simulation_start_time).strftime("%Y-%m-%d_%H:%M:%S"),
         "START_DATE": start_time.strftime("%Y-%m-%d_%H:%M:%S"),
+        # The same instant as ``START_DATE``, in the numeric spelling
+        # ARWpost and the older NCL post-processing chain read to place a
+        # file in time.  WRF derives all three in ``set_timekeeping`` from
+        # the domain's own start (``nl_set_gmt``/``nl_set_julyr``/
+        # ``nl_set_julday``), which is the date this writer already stamps
+        # into ``START_DATE``, so the numeric group and the string group
+        # cannot disagree.  GMT is NC_FLOAT and the two day/year counts are
+        # NC_INT on the v4.6.1 reference file.
+        "GMT": np.float32(start_time.hour + start_time.minute / 60.0
+                          + start_time.second / 3600.0),
+        "JULYR": np.int32(start_time.year),
+        "JULDAY": np.int32(start_time.timetuple().tm_yday),
         "GRIDTYPE": "C", **_DEFAULT_LANDUSE_ATTRS,
     }
     if landuse_attrs is not None:
@@ -406,7 +489,9 @@ WRFOUT_INITIAL_CONDITION_SCHEMA = "gpuwm-wrfout-initial-condition-v1"
 #: which cycle or which lead the fields came from (verified against the
 #: reference bundle's own ``met_em.d01`` and ``wrfout_d01`` files).  So
 #: WRF's convention is FOLLOWED where it exists -- ``START_DATE`` and
-#: ``SIMULATION_START_DATE`` keep their WRF meaning untouched, and these
+#: ``SIMULATION_START_DATE`` keep their WRF meaning untouched (which for a
+#: delayed-start nest means two DIFFERENT dates; see
+#: :func:`wrf_global_attrs`), and these
 #: names are SCREAMING_SNAKE NC_CHAR/NC_INT globals like WRF's own -- and
 #: the gap is filled in the ``GPUWM_`` namespace this writer already uses
 #: for ``GPUWM_VERSION``/``GPUWM_FEEDBACK``.
@@ -546,7 +631,20 @@ def wrf_time_str(t_s: float) -> str:
         raise ValueError(
             f"idealized Times seconds {t_s!r} overflows the calendar past "
             "year 9999") from exc
-    return valid.strftime("%Y-%m-%d_%H:%M:%S")
+    # The year is formatted explicitly, not with ``%Y``.  glibc's and
+    # MSVCRT's strftime both emit ``%Y`` UNPADDED, so year 1 came out as
+    # ``1-01-01_00:00:00`` -- 16 characters, not 19.  ``Times`` is a
+    # fixed-width ``(Time, DateStrLen=19)`` char array -- WrfoutWriter's
+    # own ``createDimension("DateStrLen", 19)`` and
+    # ``createVariable("Times", "S1", ("Time", "DateStrLen"))`` -- and
+    # ``write_frame`` null-pads a short record to 19 with
+    # ``encoded.ljust(19, b"\x00")``, so the file
+    # carried ``1-01-01_00:00:00\0\0\0``: a reader taking WRF's fixed
+    # YYYY-MM-DD_HH:MM:SS fields off that gets year ``1-01``, month ``01``
+    # from what is really the day, and a NUL inside the seconds field.
+    # Every other conversion here (%m %d %H %M %S) is zero-padded to two
+    # digits by both C libraries, so only the year needs spelling out.
+    return f"{valid.year:04d}-" + valid.strftime("%m-%d_%H:%M:%S")
 
 
 def _live_state_history_fields(state) -> dict[str, object]:
@@ -1009,6 +1107,15 @@ class WrfoutWriter:
             "WEST-EAST_GRID_DIMENSION": nx + 1,
             "SOUTH-NORTH_GRID_DIMENSION": ny + 1,
             "BOTTOM-TOP_GRID_DIMENSION": nz + 1,
+            # The patch this file holds.  WRF's own netCDF I/O layer and the
+            # ndown-class tools read this group -- not the *_GRID_DIMENSION
+            # group -- for the extent of the data actually in the file, and
+            # the sibling wrfinput export already writes the END half of it.
+            # gpuwm writes one undecomposed patch per domain, so the patch IS
+            # the domain: 1-based start, unstaggered end at the mass count and
+            # staggered end one past it, exactly the values on the pinned
+            # v4.6.1 reference file (``gpuwm/wrf_direct_v461_contract.json``).
+            **_wrf_patch_extent_attrs(nx, ny, nz),
             "MAP_PROJ": 0,
         })
         if global_attrs:
@@ -1275,6 +1382,25 @@ class WrfoutWriter:
                   for name, variable in self.ds.variables.items()}
         times = tuple(self._times)
         try:
+            if self._n == 0:
+                # A tape that never received a frame must not be published.
+                # Every publication step below succeeds on an empty file:
+                # the classic tape freezes its header (which is where
+                # GPUWM_WRITE_COMPLETE is written), finish() finds no
+                # unwritten region because there are no records,
+                # validate_wrfout_file passes with times == () and every
+                # shape carrying Time = 0, and the temp file is renamed onto
+                # its final name.  The completion attribute is exactly what
+                # quarantine_orphan_wrfouts trusts, so the sweep would then
+                # leave a complete-looking, empty wrfout in place forever.
+                # Raising HERE, inside the try, routes it through the same
+                # abandon-and-quarantine path every other publication failure
+                # takes.  A caller that means to discard the file calls
+                # abort(), which is already the documented way to do that.
+                raise ValueError(
+                    f"wrfout {self._final_path.name} was closed with no "
+                    "frames; a history tape carrying zero Times records "
+                    "must not be published (call abort() to discard it)")
             if isinstance(self.ds, _ClassicTape):
                 # The completion attribute is already in the header (the
                 # tape writes it at freeze, last); close() refuses any
@@ -1292,6 +1418,20 @@ class WrfoutWriter:
             # Sharing violations receive the same capped 0.50 s retry as the
             # heartbeat, but a durable wrfout publication remains fail-loud.
             replace_file_with_retry(self._temp_path, self._final_path)
+            # The DATA was made durable above; the NAME is durable only
+            # once the containing directory is synced.  Without this a
+            # machine that loses power seconds after a frame is published
+            # can come back with the file's bytes intact and its directory
+            # entry still naming the hidden temporary -- which the next
+            # run's ``quarantine_orphan_wrfouts`` sweeps into
+            # ``.quarantine`` on the ``.wrfout*.tmp*`` glob.  The frame's
+            # own ready marker is published through
+            # ``supervisor.atomic_write_json``, which DOES fsync its
+            # directory, so the documented invariant "a marker that exists
+            # names a frame that is complete and readable" can invert.
+            # This is the last step of ``supervisor.atomic_publish_file``,
+            # the helper whose docstring says the wrfout handoff uses it.
+            _fsync_directory(self._final_path.parent)
         except BaseException:
             if not self._closed:
                 # A half-closed netCDF handle can fail repeatedly.  Preserve
@@ -2059,8 +2199,10 @@ class PerDomainWrfoutWriters:
                     node.grid, domain_start_time,
                     getattr(case, "geog_selection", None),
                     domain=node.cfg, coord=case.initial_result.coord,
+                    configured_dt=float(node.clock.spec.dt_fp32),
                     feedback=getattr(model, "_feedback_provenance", None),
-                    initial_condition=initial_condition, source=source),
+                    initial_condition=initial_condition, source=source,
+                    simulation_start_time=start_time),
                 abort_event=self._abort_event,
                 grid_id=node.cfg.grid_id,
                 history_selection=self._selection_for(node.cfg))
@@ -2157,7 +2299,8 @@ class PerDomainWrfoutWriters:
                 domain=node.cfg, coord=case.initial_result.coord,
                 feedback=getattr(self.model, "_feedback_provenance", None),
                 initial_condition=self._initial_condition,
-                source=self._source),
+                source=self._source,
+                simulation_start_time=self.start_time),
             abort_event=self._abort_event,
             history_selection=self._selection_for(node.cfg))
 
@@ -2199,9 +2342,11 @@ class PerDomainWrfoutWriters:
             grid, domain_start_time,
             getattr(case, "geog_selection", None),
             domain=node.cfg, coord=case.initial_result.coord,
+            configured_dt=float(node.clock.spec.dt_fp32),
             feedback=getattr(self.model, "_feedback_provenance", None),
             initial_condition=self._initial_condition,
-            source=self._source))
+            source=self._source,
+            simulation_start_time=self.start_time))
 
     def submit(self, node, ticks: int, *, refl_field=None) -> None:
         """One domain's history frame, from wherever that domain's truth is.

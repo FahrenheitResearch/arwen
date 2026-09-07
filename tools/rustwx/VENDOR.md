@@ -958,3 +958,45 @@ neighbour search resolves exact ties by its own undocumented traversal
 order, which is precisely the defect this port exists to remove.
 
 Nothing under `vendor/` changed for this crate.
+
+## crates/rustwx-cross-section and the render theme seam (2026-09-02)
+
+`crates/rustwx-cross-section` is a verbatim copy of Drew's
+`rustwx-cross-section` crate (100k-tor workspace, main at 7232ee4,
+2026-04-29; byte-identical to the copy in the rustwx-mod checkout at
+570a3c1): great-circle section paths, count or spacing sampling, pressure
+or height vertical axes, terrain profiles, along/across wind
+decomposition, 20 named products, 23 palettes and its own RGBA renderer.
+Its one workspace dependency is `rustwx-contour` (already vendored, same
+API); rusttype 0.9.3 was already in the lock.  The font `include_bytes!`
+paths resolve against `rustwx-render/assets/fonts`, as upstream.
+
+Two deliberate divergences in `render.rs`: it gains
+`install_cross_section_fonts(regular, semibold)`, a process-wide override
+read once before the embedded Source Sans 3 faces load, so a render theme
+that names its own font files draws them on section panels as well as on
+maps; and three colours upstream hard-codes (the white halo behind axis
+labels, the white legend backing, the grey header ink) are derived from
+the request's page colour (`label_halo`, `legend_backing`, `muted_text`),
+which on the default white page yields upstream's exact bytes and on a
+dark page keeps the labels legible.  Absent an override the crate behaves
+exactly as upstream.
+
+What is written here rather than taken: `crates/rw-wrfbatch/src/section.rs`
+(the `xsec:` product family).  Upstream's section builder consumes GRIB
+pressure-level fields and reaches WRF only through a crate this tree does
+not vendor; this one reads the wrfout NATIVE levels through `wrf-core`
+(`height`, `tk`, `ter`, `wa`, any raw 3-D variable), locates the section's
+columns bilinearly in grid space from `XLAT`/`XLONG`, and puts every
+column on a 250 m height ladder.  It never touches the rw-store.
+
+The theme seam itself lives in `crates/rustwx-render/src/theme.rs` (new)
+and is applied once at the end of
+`RenderPresentation::for_mode_with_style`; `presentation.rs`, `render.rs`,
+`text.rs`, `lib.rs` and `rustwx-products/src/viewer.rs` consult it.  With
+no theme installed every field stays as the mode and plot style set it,
+and `tools/rustwx_render_regression_gate.py` records that the 59 existing
+fixture PNGs are byte-identical across the change.  A theme changes the
+surface, the inks, the basemap linework, the colorbar chrome, the label
+halo, the fonts, the title and label sizes and the generic-plane ramp; the
+operational weather ladders are untouched unless a theme names a product.

@@ -189,6 +189,29 @@ def _write_manifest(rung: Path, milestone: str, artifacts: list[Path], *,
     (rung / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _passing_value(gate):
+    """A measurement that genuinely satisfies the gate's registered bound.
+
+    Rung reports carry ``value`` beside ``passed`` (``real74_d02.gate_result``
+    writes both), and the pack re-runs the registered comparator on it, so a
+    fixture that declares a verdict with no number under it is not a complete
+    piece of evidence.
+    """
+    if gate.kind in ("max", "min"):
+        return gate.threshold
+    if gate.kind == "strict_max":
+        return gate.threshold / 2.0
+    return None
+
+
+def _evidence_gate_row(gate) -> dict[str, object]:
+    row: dict[str, object] = {"metric": gate.metric, "passed": True}
+    value = _passing_value(gate)
+    if value is not None:
+        row["value"] = value
+    return row
+
+
 def _complete_evidence_root(root: Path) -> None:
     for milestone in nest_gates.MILESTONES:
         if milestone == "P5B":
@@ -199,7 +222,7 @@ def _complete_evidence_root(root: Path) -> None:
         report.write_text(json.dumps({
             "schema": 1,
             "rung": milestone,
-            "gates": [{"metric": gate.metric, "passed": True}
+            "gates": [_evidence_gate_row(gate)
                       for gate in nest_gates.gates_for(milestone)],
         }), encoding="utf-8")
         _write_manifest(rung, milestone, [report])
@@ -459,6 +482,121 @@ def test_evidence_pack_binds_hashes_pins_ledger_and_portable_paths(tmp_path):
                for item in pack["ledger"]["sources"])
     stored = json.loads((output / "evidence-pack.json").read_text("utf-8"))
     assert stored == pack
+    # Every numeric row was re-derived from its own number, not transcribed.
+    numeric = [row for row in pack["gates"]
+               if row["kind"] in nest_gates.NUMERIC_KINDS]
+    assert len(numeric) == pack["counts"]["recomputed"] == 25
+    assert all(row["recomputed_passed"] is True and row["verdict"] == "PASS"
+               for row in numeric)
+    assert pack["counts"]["incomplete"] == pack["counts"]["contradicted"] == 0
+
+
+def _rewrite_evidence_row(root: Path, milestone: str, metric: str,
+                          row: dict[str, object]) -> None:
+    """Replace one gate row in a rung report and re-seal its manifest."""
+    report = root / milestone / f"{milestone}-report.json"
+    payload = json.loads(report.read_text("utf-8"))
+    payload["gates"] = [row if item["metric"] == metric else item
+                        for item in payload["gates"]]
+    report.write_text(json.dumps(payload), encoding="utf-8")
+    _write_manifest(root / milestone, milestone, [report])
+
+
+def test_evidence_pack_refuses_a_verdict_its_own_number_contradicts(tmp_path):
+    """Negative control: the close-out pack must run the comparator itself.
+
+    ``d02_t500_rmse_k`` is registered ``max 2.0``.  A rung report that
+    records a 500 hPa temperature RMSE of 41.7 K and declares itself passed
+    is definitely wrong, and before this fix the pack copied
+    ``record.threshold`` into the row, never compared it to anything, and
+    published ``closeout_ready: true`` with `PASS` beside `threshold: 2.0`.
+    Any producer bug -- or edit -- that flipped a boolean defeated the whole
+    close-out gate.
+    """
+    root = tmp_path / "rungs"
+    _complete_evidence_root(root)
+    _rewrite_evidence_row(root, "N3", "d02_t500_rmse_k", {
+        "metric": "d02_t500_rmse_k", "value": 41.7, "passed": True})
+
+    with pytest.raises(evidence_pack.EvidencePackError,
+                       match="contradicts the registered bound"):
+        evidence_pack.build_evidence_pack(root, tmp_path / "contradicted")
+    assert not (tmp_path / "contradicted").exists()
+
+    pack = evidence_pack.build_evidence_pack(
+        root, tmp_path / "diagnostic", diagnostic_incomplete=True)
+    assert pack["closeout_ready"] is False
+    row = next(item for item in pack["gates"]
+               if item["metric"] == "d02_t500_rmse_k")
+    assert row["verdict"] == "CONTRADICTED"
+    assert row["value"] == 41.7
+    assert row["passed"] is True
+    assert row["recomputed_passed"] is False
+    assert pack["counts"]["contradicted"] == 1
+    markdown = (tmp_path / "diagnostic" / "evidence-pack.md").read_text("utf-8")
+    assert "**CONTRADICTED**" in markdown
+
+
+def test_evidence_pack_refuses_a_numeric_gate_that_measured_nothing(tmp_path):
+    """A blocking numeric row with no number is INCOMPLETE, never PASS."""
+    root = tmp_path / "rungs"
+    _complete_evidence_root(root)
+    _rewrite_evidence_row(root, "N3", "d02_mslp_pattern_correlation", {
+        "metric": "d02_mslp_pattern_correlation", "passed": True})
+
+    with pytest.raises(evidence_pack.EvidencePackError,
+                       match="unmeasured blocking evidence"):
+        evidence_pack.build_evidence_pack(root, tmp_path / "unmeasured")
+
+    pack = evidence_pack.build_evidence_pack(
+        root, tmp_path / "diagnostic", diagnostic_incomplete=True)
+    assert pack["closeout_ready"] is False
+    row = next(item for item in pack["gates"]
+               if item["metric"] == "d02_mslp_pattern_correlation")
+    assert row["verdict"] == "INCOMPLETE"
+    assert row["value"] is None
+    assert row["passed"] is True
+    assert row["recomputed_passed"] is None
+    assert pack["counts"]["incomplete"] == 1
+
+
+@pytest.mark.parametrize(
+    ("metric", "value", "expected"),
+    (
+        # d02_t500_rmse_k is max 2.0; d02_mslp_pattern_correlation is min
+        # 0.95; host_overhead_fraction is strict_max 0.10.
+        ("d02_t500_rmse_k", 2.0, True),
+        ("d02_t500_rmse_k", 2.0000001, False),
+        ("d02_t500_rmse_k", float("nan"), False),
+        ("d02_t500_rmse_k", float("inf"), False),
+        ("d02_t500_rmse_k", "2.0", False),
+        ("d02_t500_rmse_k", True, False),
+        ("d02_mslp_pattern_correlation", 0.95, True),
+        ("d02_mslp_pattern_correlation", 0.9499999, False),
+        ("host_overhead_fraction", 0.0999, True),
+        ("host_overhead_fraction", 0.10, False),
+    ),
+)
+def test_evidence_pack_recomputes_every_numeric_comparator(
+        metric, value, expected):
+    """The re-derivation executes the ledger's own max/min/strict_max rules.
+
+    ``COMPARATORS`` states that a NaN/Inf metric FAILS; a non-numeric value
+    is not a measurement and fails the same way.
+    """
+    record = next(item for item in nest_gates.NEST_GATES
+                  if item.metric == metric)
+
+    assert evidence_pack._recomputed_passed(record, value) is expected
+
+    honest = evidence_pack.FoundEvidence(
+        record.milestone, metric, expected, "fixture#", (), 0, value)
+    assert evidence_pack._gate_verdict(record, honest) == (
+        ("PASS" if expected else "FAIL"), expected)
+    lying = evidence_pack.FoundEvidence(
+        record.milestone, metric, not expected, "fixture#", (), 0, value)
+    assert evidence_pack._gate_verdict(record, lying) == (
+        "CONTRADICTED", expected)
 
 
 def test_evidence_pack_rejects_hash_substitution_escape_and_missing_pin(tmp_path):

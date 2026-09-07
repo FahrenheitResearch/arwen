@@ -1,3 +1,26 @@
+# ======================================================================
+# THIRD-PARTY NOTICE.  Parts of this file are hand transcriptions of
+# third-party work.  ArWen distributes the file under the Apache License
+# 2.0; the notices below belong to the transcribed parts and are kept here
+# because their own licences require it.  Full texts are in the repository
+# NOTICE and in the licenses/ directory.
+#
+#   RRTMG longwave/shortwave, transcribed from WRF v4.6.1
+#   phys/module_ra_rrtmg_lw.F and phys/module_ra_rrtmg_sw.F, which carry
+#   AER's own notice seven and nine times respectively:
+#
+#       Copyright 2002-2008, Atmospheric & Environmental Research, Inc. (AER).
+#       This software may be used, copied, or redistributed as long as it is
+#       not sold and this copyright notice is reproduced on each copy made.
+#       This model is provided as is without any express or implied warranties.
+#                             (http://www.rtweb.aer.com/)
+#
+#   ArWen takes this material under AER's own current grant instead: BSD
+#   3-Clause, "Copyright (c) 2020, Atmospheric and Environmental
+#   Research", published by AER at github.com/AER-RC/RRTMG_LW and
+#   .../RRTMG_SW.  Text in licenses/LICENSE-AER-RRTMG-BSD-3-Clause.txt and
+#   beside the packaged coefficients in gpuwm/data/wrf_radiation/.
+# ======================================================================
 """Forecast adapter for the exact port of WRF v4.6.1's bundled RRTMG.
 
 ``RRTMGLegacyRadiation`` serves ``RunConfig.ra_rrtmg_variant =
@@ -489,7 +512,8 @@ def _r512(nbytes):
 
 
 def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
-                                ncol_day=None, lw_coefficients=None):
+                                ncol_day=None, lw_coefficients=None,
+                                longwave=True, shortwave=True):
     """Peak transient device bytes of ONE adapter call.
 
     Composes the engines' own honest pricing functions
@@ -514,22 +538,24 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
     chunk = None if column_chunk is None else int(column_chunk)
     nc_lw = min(chunk or _lw.LW_BATCH_COLUMN_CHUNK, ncol)
     nc_sw = min(chunk or _sw.SW_BATCH_COLUMN_CHUNK, max(nday, 0))
-    C = lw_coefficients if lw_coefficients is not None else _lw_coeffs()
     f = 4
+    estimate = 0
+    if longwave:
+        C = lw_coefficients if lw_coefficients is not None else _lw_coeffs()
 
-    s_mcl = _r512(nc_lw * _lw.NGPTLW * nlay_lw * f)
-    s_nl = _r512(nc_lw * nlay_lw * f)
-    held_lw = 5 * s_mcl + 3 * s_nl        # mcl slabs + rei/rel/res
-    lw_gen = (held_lw + 5 * s_nl          # play cldfrac ciwp clwp cswp
-              + _r512(_mcica.NBNDLW * nc_lw * nlay_lw * f)   # tauc
-              + _mcica.mcica_device_vram_bytes(
-                  min(nc_lw, _mcica.MCICA_DEVICE_COLUMN_CHUNK),
-                  nlay_lw, _lw.NGPTLW))
-    lw_eng = (held_lw + _lw.lw_batched_vram_bytes(nc_lw, nlay_lw)
-              + _lw.lw_batched_const_bytes(C))
-    estimate = max(lw_gen, lw_eng)
+        s_mcl = _r512(nc_lw * _lw.NGPTLW * nlay_lw * f)
+        s_nl = _r512(nc_lw * nlay_lw * f)
+        held_lw = 5 * s_mcl + 3 * s_nl        # mcl slabs + rei/rel/res
+        lw_gen = (held_lw + 5 * s_nl          # play cldfrac ciwp clwp cswp
+                  + _r512(_mcica.NBNDLW * nc_lw * nlay_lw * f)   # tauc
+                  + _mcica.mcica_device_vram_bytes(
+                      min(nc_lw, _mcica.MCICA_DEVICE_COLUMN_CHUNK),
+                      nlay_lw, _lw.NGPTLW))
+        lw_eng = (held_lw + _lw.lw_batched_vram_bytes(nc_lw, nlay_lw)
+                  + _lw.lw_batched_const_bytes(C))
+        estimate = max(lw_gen, lw_eng)
 
-    if nc_sw:
+    if shortwave and nc_sw:
         s_mcl_s = _r512(nc_sw * _sw.NGPTSW * nlay_sw * f)
         s_nl_s = _r512(nc_sw * nlay_sw * f)
         held_sw = 8 * s_mcl_s + 3 * s_nl_s
@@ -790,12 +816,30 @@ class RRTMGLegacyRadiation:
     #: driver reads to decide whether OLR exists at all.
     publishes_olr = True
 
+    # Read-time cache binding: the common tile gather and moving-grid routes
+    # may change latitude in place. The interpolation must follow that input.
+    geography_cache_dependencies = {
+        "_ozone_lat_interp": (("latitude_deg", "_ozone_latitude"),),
+    }
+
     def __init__(self, start_time, latitude_deg, longitude_deg, *,
                  p_top=None, column_chunk=None, ozone_parent=None,
-                 o3input=2):
+                 o3input=2, longwave=True, shortwave=True, trace_gas_overrides=None):
         if not isinstance(start_time, datetime):
             raise TypeError("radiation_start_time must be a datetime")
         self.start_time = start_time
+        self.longwave = bool(longwave)
+        self.shortwave = bool(shortwave)
+        if not (self.longwave or self.shortwave):
+            raise ValueError("radiation adapter needs at least one spectrum")
+        self.publishes_olr = self.longwave
+        from gpuwm.core.trace_gases import (
+            LEGACY_LW_GASES, LEGACY_SW_GASES, validate_trace_gas_overrides)
+        supported = ((LEGACY_LW_GASES if self.longwave else frozenset())
+                     | (LEGACY_SW_GASES if self.shortwave else frozenset()))
+        self.trace_gas_overrides = (None if trace_gas_overrides is None else
+            validate_trace_gas_overrides(trace_gas_overrides, supported=supported,
+                                         consumer="selected legacy RRTMG spectra"))
         lat = np.asarray(self._host(latitude_deg), np.float32)
         lon = np.asarray(self._host(longitude_deg), np.float32)
         if lat.shape != lon.shape:
@@ -833,19 +877,20 @@ class RRTMGLegacyRadiation:
 
         # ---- fail-closed readiness: assets, tables, kernels ----------
         try:
-            self._C = _lw_coeffs()
+            self._C = _lw_coeffs() if self.longwave else None
         except Exception as exc:
             raise RuntimeError(
                 "ra_rrtmg_variant='rrtmg_legacy' is selected but the "
                 "packaged RRTMG_LW_DATA coefficients cannot be "
                 f"loaded/built: {exc}") from exc
         try:
-            self._sw_tables = _sw_tables()
+            self._sw_tables = _sw_tables() if self.shortwave else None
         except Exception as exc:
             raise RuntimeError(
                 "ra_rrtmg_variant='rrtmg_legacy' is selected but the "
                 "packaged RRTMG_SW_DATA coefficients cannot be "
                 f"loaded/built: {exc}") from exc
+        self._ozone_latitude = None
         if self.o3input == 0:
             # O3DATA is evaluated independently inside lwrad/swrad prep and
             # does not read the CAM climatology or parent-routed o3rad field.
@@ -855,13 +900,13 @@ class RRTMGLegacyRadiation:
         elif self._ozone_provider is None:
             # Root routing: the climatology chain runs here (WRF: o3rad
             # is evaluated on id==1 only).  The latitude interpolation is
-            # WRF's oznini-time work, cached once per domain.
+            # WRF's oznini-time work, cached while latitude is unchanged.
             try:
                 from gpuwm.ingest import wrf_ozone as _ozone
                 self._ozone = _ozone
                 self._ozone_climo = _ozone.load_ozone_climatology()
-                self._ozone_lat_interp = _ozone.interp_ozone_to_latitudes(
-                    self.latitude_deg.reshape(-1), self._ozone_climo)
+                self._ozone_lat_interp = None
+                self._latitude_ozone()
             except Exception as exc:
                 raise RuntimeError(
                     "ra_rrtmg_variant='rrtmg_legacy' is selected but the "
@@ -875,7 +920,8 @@ class RRTMGLegacyRadiation:
             self._ozone_climo = None
             self._ozone_lat_interp = None
         try:
-            self._cuda_sw = _cuda_sw(self._sw_tables)
+            self._cuda_sw = (_cuda_sw(self._sw_tables)
+                             if self.shortwave else None)
         except Exception as exc:
             raise RuntimeError(
                 "ra_rrtmg_variant='rrtmg_legacy' is selected but the "
@@ -883,7 +929,8 @@ class RRTMGLegacyRadiation:
                 f"installation (cupy + a CUDA device are required): {exc}"
             ) from exc
         try:
-            _lw.gpu_preflight()
+            if self.longwave:
+                _lw.gpu_preflight()
             _mcica.mcica_gpu_preflight()
         except Exception as exc:
             raise RuntimeError(
@@ -969,6 +1016,10 @@ class RRTMGLegacyRadiation:
                 "ozone_lat.formatted": OZONE_LAT_SHA256,
                 "ozone_plev.formatted": OZONE_PLEV_SHA256,
             }
+        if not (self.longwave and self.shortwave):
+            identity["spectra"] = {"lw": self.longwave, "sw": self.shortwave}
+        if self.trace_gas_overrides:
+            identity["trace_gas_overrides"] = dict(self.trace_gas_overrides)
         return identity
 
     # ------------------------------------------------------------------
@@ -1000,6 +1051,15 @@ class RRTMGLegacyRadiation:
                 "fix.  Resuming it requires the cloud-radiation seam "
                 "lane's restart migration; rrtmg_legacy will not silently "
                 "rescale or radiate at clip floors")
+
+    def _latitude_ozone(self):
+        """The CAM cache for the current latitude, including reused buffers."""
+        from gpuwm.core.geography_cache import geography_cache
+
+        return geography_cache(
+            self, "_ozone_lat_interp",
+            lambda: self._ozone.interp_ozone_to_latitudes(
+                self.latitude_deg.reshape(-1), self._ozone_climo))
 
     def _mcica_generator(self, gpu_entry):
         """Device McICA twin, resolved through the module attribute at
@@ -1033,15 +1093,11 @@ class RRTMGLegacyRadiation:
                     "state.p_top) to build WRF's Cavallo buffer layers")
             p_top = float(declared)
         nlayers, sw_layers = legacy_radiation_layer_counts(nz, p_top)
-        if nlayers > MAX_LONGWAVE_LAYERS:
+        if self.longwave and nlayers > MAX_LONGWAVE_LAYERS:
             raise ValueError(
                 f"LW nlayers={nlayers} exceeds the batched engine's "
                 f"{MAX_LONGWAVE_LAYERS}-layer bound "
                 "(rlw_rtrn_march RLW_MAXLAY)")
-        if sw_layers > MAX_SHORTWAVE_LAYERS:
-            raise ValueError(
-                f"SW nlay={sw_layers} exceeds the CUDA SW engine's "
-                f"{MAX_SHORTWAVE_LAYERS}-layer bound (RSW_MAXLAY)")
 
         mp_physics = int(getattr(cfg, "mp_physics", 0))
         warm_rain = mp_physics == 1
@@ -1182,14 +1238,22 @@ class RRTMGLegacyRadiation:
             # contract for both modes.
             o33d = np.zeros((ncol, nz), np.float32)
         elif self._ozone_provider is not None:
-            o33d = np.asarray(self._ozone_provider(), np.float32)
+            driver = getattr(state, "physics", None)
+            owner = getattr(driver, "cam_ozone", None)
+            if owner is not None and owner.mode == "parent-interpolated":
+                if driver.call_counts.get("cam_ozone", 0) == 0:
+                    raise RuntimeError("child radiation ran before parent CAM ozone FORCE")
+                grid = cp.asnumpy(driver.o3rad)
+                o33d = np.ascontiguousarray(grid.transpose(1, 2, 0).reshape(-1, nz))
+            else:
+                o33d = np.asarray(self._ozone_provider(), np.float32)
             if o33d.shape != (ncol, nz):
                 raise ValueError(
                     f"ozone_parent provider returned shape {o33d.shape}; "
                     f"this child grid needs ({ncol}, {nz})")
         else:
             ozmixt = self._ozone.ozn_time_int(julday, julian,
-                                              self._ozone_lat_interp)
+                                              self._latitude_ozone())
             o33d = self._ozone.ozn_p_int(p3d, self._ozone_climo.plev,
                                          ozmixt)
         # Retain for child domains (their providers read this field, so a
@@ -1222,16 +1286,20 @@ class RRTMGLegacyRadiation:
                     sel[key] = radii[key][idx]
             return sel
 
+        from gpuwm.core.trace_gases import LEGACY_LW_GASES, LEGACY_SW_GASES, trace_gas_subset
+        lw_gases = trace_gas_subset(self.trace_gas_overrides, LEGACY_LW_GASES) or None
+        sw_gases = trace_gas_subset(self.trace_gas_overrides, LEGACY_SW_GASES) or None
+
         # ---- LW: all columns, adapter chunk == engine chunk -----------
         chunk_lw = self.column_chunk or _lw.LW_BATCH_COLUMN_CHUNK
         rthratenlw = np.zeros((ncol, nz), np.float32)
         glw = np.zeros(ncol, np.float32)
         olr = np.zeros(ncol, np.float32)
-        for c0 in range(0, ncol, chunk_lw):
+        for c0 in range(0, ncol if self.longwave else 0, chunk_lw):
             idx = slice(c0, min(c0 + chunk_lw, ncol))
             pl = _prep.lwrad_prep_batch(
                 **chunk_inputs(idx), emiss=surf["emiss"][idx],
-                nlayers=nlayers,
+                nlayers=nlayers, trace_gas_overrides=lw_gases,
                 subcolumn_generator=self._mcica_generator(
                     _mcica.gpu_generate_lw_subcolumns),
                 **shared)
@@ -1262,7 +1330,7 @@ class RRTMGLegacyRadiation:
         gsw = np.zeros(ncol, np.float32)
         day_idx = np.nonzero(coszen > F(0.0))[0]
         night_idx = np.nonzero(coszen <= F(0.0))[0]
-        if night_idx.size:
+        if self.shortwave and night_idx.size:
             # Wrapper-level night contract: COSZR + the SW_NIGHT_ZEROED
             # list.  None of these reach RadiationResult, but the write
             # keeps the wrapper contract exercised (dossier section 3).
@@ -1271,12 +1339,12 @@ class RRTMGLegacyRadiation:
         else:
             self._night_outputs = None
         chunk_sw = self.column_chunk or _sw.SW_BATCH_COLUMN_CHUNK
-        for c0 in range(0, day_idx.size, chunk_sw):
+        for c0 in range(0, day_idx.size if self.shortwave else 0, chunk_sw):
             idx = day_idx[c0:c0 + chunk_sw]
             ps = _prep.swrad_prep_batch(
                 **chunk_inputs(idx), albedo=surf["albedo"][idx],
                 xcoszen=coszen[idx], solcon=solcon,
-                sf_surface_physics=sf_surface_physics,
+                sf_surface_physics=sf_surface_physics, trace_gas_overrides=sw_gases,
                 subcolumn_generator=self._mcica_generator(
                     _mcica.gpu_generate_sw_subcolumns),
                 **shared)
@@ -1314,7 +1382,8 @@ class RRTMGLegacyRadiation:
             rthratenlw=self._grid3(rthratenlw, nz, ny, nx),
             rthratensw=self._grid3(rthratensw, nz, ny, nx),
             swdown=self._grid2(swdown, ny, nx),
-            glw=self._grid2(glw, ny, nx),
+            glw=(self._grid2(glw, ny, nx) if self.longwave
+                 else fields["glw"]),
             gsw=self._grid2(gsw, ny, nx),
             coszen=self._grid2(coszen, ny, nx),
-            olr=self._grid2(olr, ny, nx))
+            olr=(self._grid2(olr, ny, nx) if self.longwave else None))

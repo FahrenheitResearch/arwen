@@ -41,6 +41,7 @@ from pathlib import Path
 import shutil
 from typing import Mapping, Sequence
 import uuid
+from weakref import WeakValueDictionary
 
 import netCDF4
 import numpy as np
@@ -201,18 +202,20 @@ HIERARCHY_EXPORT_SCHEMA = "gpuwm-native-direct-wrf-hierarchy-export-v1"
 STOCK_WRF_EXPORT_STATUSES = ("READY", "NOT_REQUESTED", "REFUSED")
 
 
-def stock_wrf_export_not_requested() -> dict[str, object]:
+def stock_wrf_export_not_requested(
+        *, schema: str = HIERARCHY_EXPORT_SCHEMA) -> dict[str, object]:
     """The export slot for a preparation that never asked for an export."""
 
     return {
-        "schema": HIERARCHY_EXPORT_SCHEMA,
+        "schema": schema,
         "status": "NOT_REQUESTED",
         "reason": "the caller did not request a stock-WRF export",
     }
 
 
 def stock_wrf_export_refused(
-        error: StockWrfExportUnsupported) -> dict[str, object]:
+        error: StockWrfExportUnsupported, *,
+        schema: str = HIERARCHY_EXPORT_SCHEMA) -> dict[str, object]:
     """The export slot for an export refused on representability.
 
     The message is the export gate's own, unchanged -- it already names
@@ -222,7 +225,7 @@ def stock_wrf_export_refused(
     """
 
     return {
-        "schema": HIERARCHY_EXPORT_SCHEMA,
+        "schema": schema,
         "status": "REFUSED",
         "reason": str(error),
         "unsupported": {
@@ -586,12 +589,18 @@ class PreparedCache:
             _canonical(basis).encode("utf-8")).hexdigest()
         if observed_content != self.header.get("content_sha256"):
             raise ValueError("prepared cache header content digest mismatch")
-        self._loaded: dict[str, np.ndarray] = {}
+        # Boundary export visits every forcing interval.  Retaining every
+        # memmap here exhausted file handles on long forecasts.  Reuse
+        # live arrays without owning them: consumers and their views
+        # keep the mapping valid for exactly as long as they need it.
+        self._loaded: WeakValueDictionary[str, np.ndarray] = (
+            WeakValueDictionary())
         self._verified_files: set[Path] = set()
 
     def array(self, name: str) -> np.ndarray:
-        if name in self._loaded:
-            return self._loaded[name]
+        cached = self._loaded.get(name)
+        if cached is not None:
+            return cached
         try:
             spec = self._arrays[name]
         except KeyError as exc:
@@ -948,7 +957,12 @@ def _global_updates(*, valid_time: datetime, nx: int, ny: int, nz: int,
         "CEN_LON": geometry["center_lon"],
         "TRUELAT1": geometry["truelat1"],
         "TRUELAT2": geometry["truelat2"],
-        "MOAD_CEN_LAT": geometry["ref_lat"],
+        # The mother domain's centre, which every domain of a hierarchy
+        # shares.  `ref_lat` is that value only on a grid whose
+        # reference IS its centre; on a nest it is the (1, 1) corner
+        # latitude, and every consumer that rebuilds the projection from
+        # the history file reads this attribute as the CRS origin.
+        "MOAD_CEN_LAT": geometry.get("moad_cen_lat", geometry["ref_lat"]),
         "STAND_LON": geometry["stand_lon"],
         # Projection identity: WRF convention 1=lambert, 2=polar
         # stereographic, 3=mercator (a receipt without map_proj is a
@@ -1231,6 +1245,55 @@ def _surface_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
     }
 
 
+#: How far a rebuilt mass-grid footprint may sit from the extremes the
+#: geometry receipt recorded, in degrees.  Same value as
+#: ``gpuwm/obs/target_grid.py``'s ``GEOREF_TOLERANCE_DEG``, which gates
+#: the same question from the other end (a wrfout's own XLAT/XLONG
+#: against the projection rebuilt from its global attributes).  The
+#: failure this one exists for -- a projection anchor the receipt did
+#: not carry -- displaces the footprint by half a domain (about 2.7 deg
+#: on a 200x200 3 km nest) and can never displace it by less than half a
+#: cell, so the band is orders below anything it has to catch and orders
+#: above float64 noise on a reconstruction of the same arithmetic
+#: (measured: bitwise equal for both a nest and a translated grid).
+_FOOTPRINT_RANGE_TOLERANCE_DEG = 1.0e-5
+
+
+def _require_rebuilt_footprint(geometry: Mapping[str, object],
+                               latitude: np.ndarray,
+                               longitude: np.ndarray) -> None:
+    """Refuse a rebuilt projection that does not land where the receipt says.
+
+    ``lat_range``/``lon_range`` are written by
+    :func:`gpuwm.native_wrf_contract.native_geometry_contract` from the
+    AUTHORING grid's own mass points, and until this gate they had no
+    consumer anywhere in the export path.  Everything else the emitted
+    file carries for the same cells -- MAPFAC_M/U/V, F, E, SINALPHA,
+    COSALPHA -- is read from the static cache built on that grid, so a
+    rebuild that lands somewhere else emits one file whose latitudes and
+    whose map factors describe two different places, which no inventory,
+    dimension, attribute or finiteness check downstream can see.
+    """
+    drift = {}
+    for name, value in (("lat_range", latitude), ("lon_range", longitude)):
+        recorded = geometry.get(name)
+        if recorded is None:
+            raise ValueError(
+                f"native geometry receipt carries no {name}; the rebuilt "
+                "projection cannot be checked against the grid the statics "
+                "were built on")
+        expected = [float(item) for item in recorded]
+        rebuilt = [float(np.min(value)), float(np.max(value))]
+        offset = max(abs(a - b) for a, b in zip(expected, rebuilt))
+        if offset > _FOOTPRINT_RANGE_TOLERANCE_DEG:
+            drift[name] = {"receipt": expected, "rebuilt": rebuilt,
+                           "degrees": offset}
+    if drift:
+        raise ValueError(
+            "the rebuilt projection does not reproduce the footprint the "
+            f"geometry receipt recorded: {drift}")
+
+
 def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
                      geometry: Mapping[str, object],
                      valid_time: datetime, *,
@@ -1250,8 +1313,20 @@ def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
         geometry["ref_lat"], geometry["ref_lon"], geometry["truelat1"],
         geometry["truelat2"], geometry["stand_lon"], dx, dy,
         nx + 1, ny + 1,
+        # A nest's reference point is its (1, 1) mass point, not its
+        # centre; rebuilding without the anchor took the centred WPS
+        # default and translated every XLAT/XLONG here by half the
+        # domain while MAPFAC/F/SINALPHA beside them stayed on the
+        # correct grid.  A receipt written before the anchor was carried
+        # leaves these None, which is exactly the centred default it
+        # meant -- and `_require_rebuilt_footprint` below is what
+        # refuses when that default is not what the grid was.
+        known_x=geometry.get("known_x"), known_y=geometry.get("known_y"),
+        moad_cen_lat=geometry.get("moad_cen_lat"),
+        moad_cen_lon=geometry.get("moad_cen_lon"),
     )
     lat, lon = grid.latlon_mass()
+    _require_rebuilt_footprint(geometry, lat, lon)
     lat_u, lon_u = grid.latlon_u()
     lat_v, lon_v = grid.latlon_v()
 
@@ -1799,6 +1874,38 @@ def _validated_hierarchy(exp, artifacts: Sequence[PreparedDomainArtifacts]):
     return tuple(pairs)
 
 
+def validate_stock_wrf_export_config(
+        config, *, root: bool = True, configured_suite: bool = False,
+        label: str = "direct-export"):
+    """The exporter's selector/geometry admission, available before ingest.
+
+    Prepared arrays still receive every existing identity, shape and value
+    check when exported. This only answers configuration representability.
+    Historical profile-free export keeps its original fixed physics slice.
+    """
+    from dataclasses import asdict, is_dataclass
+
+    cfg = asdict(config) if is_dataclass(config) else dict(config)
+    try:
+        inventory = stock_wrf_physics_inventory(cfg.get("mp_physics"))
+    except (TypeError, ValueError) as error:
+        raise StockWrfExportUnsupported(
+            f"unsupported {label} microphysics: {error}",
+            unsupported={"mp_physics": (cfg.get("mp_physics"), None)},
+        ) from None
+    required = {"hybrid_opt": 2, "hypsometric_opt": 2,
+                "specified": root, "nested": not root, "spec_bdy_width": 5}
+    if not configured_suite:
+        required.update({"bl_pbl_physics": 1, "sf_sfclay_physics": 91,
+                         "sf_surface_physics": 2})
+    mismatch = {name: (cfg.get(name), expected)
+                for name, expected in required.items() if cfg.get(name) != expected}
+    if mismatch:
+        raise StockWrfExportUnsupported(
+            f"unsupported {label} configuration: {mismatch}", unsupported=mismatch)
+    return inventory
+
+
 def _prepared_domain_context(artifact: PreparedDomainArtifacts, domain,
                              exp, expected_grid, valid_time: datetime):
     cache = PreparedCache(artifact.prepared_cache)
@@ -1816,41 +1923,8 @@ def _prepared_domain_context(artifact: PreparedDomainArtifacts, domain,
             subject=f"d{domain.grid_id:02d} prepared cache",
             header=cache.header, differing=differing))
     cfg = identity["domain_config"]["run"]
-    try:
-        stock_wrf_physics_inventory(cfg.get("mp_physics"))
-    except (TypeError, ValueError) as error:
-        raise StockWrfExportUnsupported(
-            f"unsupported d{domain.grid_id:02d} direct-export "
-            f"microphysics: {error}") from None
-    required = {
-        "bl_pbl_physics": 1,
-        "sf_sfclay_physics": 91,
-        "sf_surface_physics": 2,
-        "hybrid_opt": 2,
-        "hypsometric_opt": 2,
-        "specified": domain.grid_id == 1,
-        "nested": domain.grid_id != 1,
-        "spec_bdy_width": 5,
-    }
-    mismatch = {
-        name: (cfg.get(name), expected)
-        for name, expected in required.items()
-        if cfg.get(name) != expected
-    }
-    if mismatch:
-        # This IS "the physics slice the profile-free compatibility branch
-        # requires" that StockWrfExportUnsupported's docstring names as its
-        # own third category, so it must be catchable.  As a bare
-        # ValueError it escaped native_hierarchy's stock_wrf_export
-        # ="optional" arm and destroyed the whole preparation: a complete,
-        # verified three-domain GPU hierarchy whose only defect was that
-        # its 250 m LES child runs bl_pbl_physics = 0, which no
-        # unchanged-WRF wrfinput set in the v2 slice can represent.  The
-        # export still refuses exactly what it refused before; a caller
-        # whose product IS the export still fails on it.
-        raise StockWrfExportUnsupported(
-            f"unsupported d{domain.grid_id:02d} direct-export "
-            f"configuration: {mismatch}")
+    validate_stock_wrf_export_config(
+        cfg, root=domain.grid_id == 1, label=f"d{domain.grid_id:02d} direct-export")
     prepared_valid_time = datetime.fromisoformat(
         cache.header["metadata"]["user"]["initial_valid_time"])
     if _date_text(prepared_valid_time) != _date_text(valid_time):
@@ -1916,6 +1990,41 @@ def _hierarchy_global_updates(*, valid_time: datetime, cfg,
     return updates
 
 
+def validate_stock_wrf_export_hierarchy(exp):
+    """Configuration-only hierarchy rule shared by early prep and export."""
+    # Native prepared trees hold the unperturbed source states. Their
+    # forecast runner applies bubbles after restoration, a step unchanged
+    # stock WRF cannot recover from these files or their namelist.
+    if getattr(exp, "perturbation", None) is not None:
+        raise StockWrfExportUnsupported(
+            "initial-state [perturbation] is deferred to the native prepared "
+            "domain-tree forecast runner and is not stock-WRF exportable; "
+            "the prepared arrays do not contain the configured bubbles",
+            unsupported={"perturbation": "deferred native initial-state bubbles"})
+    # Stock WRF v4.6.1 normalizes microphysics to one selector across the
+    # hierarchy.  GPUWM's explicit MP8->MP18 edge is executable only in its
+    # own one-way coupler and must never be mislabeled as a READY stock-WRF
+    # export or silently normalized here.
+    from gpuwm.core.microphysics_transition import (
+        resolve_microphysics_transition,
+    )
+    by_id = {domain.grid_id: domain for domain in exp.domains}
+    for domain in exp.domains:
+        if domain.parent_id == 0:
+            continue
+        transition = resolve_microphysics_transition(
+            by_id[domain.parent_id].run, domain.run)
+        if transition.mixed:
+            raise StockWrfExportUnsupported(
+                "mixed-domain microphysics is a GPUWM extension and is not "
+                "stock-WRF exportable; choose one uniform stock-WRF "
+                "mp_physics selector explicitly",
+                unsupported={"mp_physics": (
+                    int(domain.run.mp_physics),
+                    int(by_id[domain.parent_id].run.mp_physics))})
+
+
+
 def export_prepared_wrf_hierarchy(
         exp, domain_artifacts: Sequence[PreparedDomainArtifacts], output_dir,
         *, valid_time: datetime | None = None,
@@ -1938,27 +2047,7 @@ def export_prepared_wrf_hierarchy(
     # file set nobody declared.
     engine = resolve_wrfinput_engine()
 
-    # Stock WRF v4.6.1 normalizes microphysics to one selector across the
-    # hierarchy.  GPUWM's explicit MP8->MP18 edge is executable only in its
-    # own one-way coupler and must never be mislabeled as a READY stock-WRF
-    # export or silently normalized here.
-    from gpuwm.core.microphysics_transition import (
-        resolve_microphysics_transition,
-    )
-    by_id = {domain.grid_id: domain for domain in exp.domains}
-    for domain in exp.domains:
-        if domain.parent_id == 0:
-            continue
-        transition = resolve_microphysics_transition(
-            by_id[domain.parent_id].run, domain.run)
-        if transition.mixed:
-            raise StockWrfExportUnsupported(
-                "mixed-domain microphysics is a GPUWM extension and is not "
-                "stock-WRF exportable; choose one uniform stock-WRF "
-                "mp_physics selector explicitly",
-                unsupported={"mp_physics": (
-                    int(domain.run.mp_physics),
-                    int(by_id[domain.parent_id].run.mp_physics))})
+    validate_stock_wrf_export_hierarchy(exp)
 
     pairs = _validated_hierarchy(exp, tuple(domain_artifacts))
     expected_grids = tuple(grids_from_projection_config(exp))
@@ -2205,40 +2294,10 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
             cfg,
             expert_acknowledgements=tuple(expert_acknowledgements),
             acknowledgement_provenance=acknowledgement_provenance)
-    try:
-        physics_inventory = stock_wrf_physics_inventory(
-            cfg.get("mp_physics"))
-    except (TypeError, ValueError) as error:
-        raise StockWrfExportUnsupported(
-            f"unsupported direct-export microphysics: {error}",
-            unsupported={"mp_physics": (cfg.get("mp_physics"), None)},
-        ) from None
+    physics_inventory = validate_stock_wrf_export_config(
+        cfg, configured_suite=physics_selection is not None)
     contract_bundle = _physics_contract_bundle(
         _load_contract(), physics_inventory.mp_physics)
-    required = {
-        "hybrid_opt": 2,
-        "hypsometric_opt": 2,
-        "specified": True,
-        "nested": False,
-        "spec_bdy_width": 5,
-    }
-    if physics_selection is None:
-        # Compatibility entry point for historical callers and proof
-        # documents.  New front doors always supply a profile and take the
-        # selector-capability path above; omitting it retains the exact v2
-        # stock slice rather than widening an old API implicitly.
-        required.update({
-            "bl_pbl_physics": 1,
-            "sf_sfclay_physics": 91,
-            "sf_surface_physics": 2,
-        })
-    mismatch = {name: (cfg.get(name), expected)
-                for name, expected in required.items()
-                if cfg.get(name) != expected}
-    if mismatch:
-        raise StockWrfExportUnsupported(
-            f"unsupported direct-export configuration: {mismatch}",
-            unsupported=mismatch)
     interval_indices = _forcing_interval_indices(
         cache, boundary_interval_seconds)
     _forcing_offsets, forcing_key = _forcing_offsets_from_identity(identity)

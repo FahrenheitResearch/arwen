@@ -348,6 +348,13 @@ def _run_banned(path: pathlib.Path, cwd: pathlib.Path) -> tuple:
                 "PYTHONPATH": os.pathsep.join([str(_TESTS), str(_ROOT)])})
     command = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider"]
     if _TESTS not in path.parents:
+        # The explicitly loaded project plugin also requires its manifest.
+        # Give this scratch pytest root an exact copy of the canonical list;
+        # neither the must-run checks nor the GPU-ban plugin is disabled.
+        relative_manifest = pathlib.Path("tools/battery/must_run_gates.txt")
+        manifest = cwd / relative_manifest
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_bytes((_ROOT / relative_manifest).read_bytes())
         command += ["-p", "conftest"]
     command += ["-q", str(path)]
     proc = subprocess.run(command, capture_output=True, text=True,

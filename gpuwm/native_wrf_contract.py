@@ -92,11 +92,25 @@ def native_geometry_contract(grid, cfg) -> dict[str, object]:
         "map_proj": getattr(grid, "map_proj", "lambert"),
         "ref_lat": grid.ref_lat,
         "ref_lon": grid.ref_lon,
+        # The INDEX the reference point sits at.  A root grid's
+        # reference is its centre and ``ProjectedGrid.__init__``
+        # defaults ``known_x``/``known_y`` to it, but ``nest()`` anchors
+        # a child at its own (1, 1) mass point and ``translated()``
+        # shifts the anchor by the placement offset, so ref_lat/ref_lon
+        # alone do not locate either of those grids: rebuilt on the
+        # centred default they land half a domain away.
+        "known_x": grid.known_x,
+        "known_y": grid.known_y,
         "truelat1": grid.truelat1,
         "truelat2": grid.truelat2,
         "stand_lon": grid.stand_lon,
         "center_lat": grid.cen_lat,
         "center_lon": grid.cen_lon,
+        # The mother domain's centre, which a nest inherits through
+        # ``nest()`` and does not own -- ``MOAD_CEN_LAT`` has to be the
+        # same value on every domain of a hierarchy.
+        "moad_cen_lat": grid.moad_cen_lat,
+        "moad_cen_lon": grid.moad_cen_lon,
         "lat_range": [float(latitude.min()), float(latitude.max())],
         "lon_range": [float(longitude.min()), float(longitude.max())],
     }
@@ -190,7 +204,7 @@ def native_static_export_fields(
         fields: Mapping[str, object], grid) -> dict[str, object]:
     """Add geometry-derived map/coriolis fields to WPS_GEOG statics.
 
-    Any caller-supplied copy must match the regenerated grid value exactly;
+    Caller-supplied copies must match within bounded floating-point rounding;
     editable static metadata cannot override the namelist-derived geometry.
     """
 
@@ -206,17 +220,20 @@ def native_static_export_fields(
         if name in result:
             stored = np.asarray(result[name], dtype=np.float64)
             regen = np.asarray(value, dtype=np.float64)
-            # Bitwise equality held while every producer and consumer ran
-            # on one machine.  Replaying a prepared cache on another OS
-            # re-derives these trig fields through a different libm, whose
-            # correctly-rounded-to-a-few-ulp answers differ in the last
-            # bits (measured: 4 ulp worst case, MAPFAC_M, Windows-written
-            # cache replayed on glibc).  16 ulps tells those apart from a
-            # genuinely different geometry, which differs by orders of
-            # magnitude more; and the regenerated value still wins below,
-            # so nothing downstream ever sees the stored copy.
-            tol = 16.0 * np.spacing(np.maximum(np.abs(stored),
-                                               np.abs(regen)))
+            # Cross-platform NumPy/libm replay can differ in the last
+            # bits (measured: 4 output ulps in MAPFAC_M).  Rotation first
+            # wraps longitudes and subtracts degree-valued coordinates;
+            # that absolute rounding survives into a near-zero sine or
+            # cosine, where output-relative ulps are the wrong scale.
+            # Linux -> Windows witnesses reached 83 sine output ulps,
+            # but only 5.83e-16 absolute.  Keep the same 16-ulp budget at
+            # unit-vector scale for this dimensionless pair alone:
+            # 16 * spacing(1) = 3.55e-15.  All other fields retain their
+            # output-relative bound.  Regenerated values still win below.
+            scale = np.maximum(np.abs(stored), np.abs(regen))
+            if name in {"SINALPHA", "COSALPHA"}:
+                scale = np.maximum(1.0, scale)
+            tol = 16.0 * np.spacing(scale)
             if stored.shape != regen.shape or not bool(
                     np.all(np.abs(stored - regen) <= tol)):
                 d = np.abs(stored - regen)
@@ -421,8 +438,7 @@ def validate_native_lambert_contracts(
             f"e_vert={nz + 1}) and no explicit eta_levels ladder.  This "
             "route interpolates every forcing time onto an explicit "
             "full-level eta ladder; a level count alone does not define "
-            "one, and WRF's automatic level generator (real.exe) is not "
-            "implemented",
+            "one for this entry point",
             remedy=(
                 f"remedy: two doors reconcile this.  Keep your {nz} "
                 f"levels: add an explicit eta_levels ladder of {nz + 1} "

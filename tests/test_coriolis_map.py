@@ -141,6 +141,54 @@ def test_msf_one_f_zero_bitwise_phase2(case):
     # even with zero net heating — verified by both W6 reviewers and
     # adjudicated on GPU (u/v/w/thp/php/mup/qv moved; qc/qr and all
     # dry/terrain/open entries stayed bitwise, 38/39 pre-recapture).
+    #
+    # RECAPTURED TWICE on 2026-09-03 (lane/fp32-eos-spelling, commits
+    # 962c068da then 6b11e4c99), 25 of 27 entries moving each time -- the
+    # two that held are moist/qc and moist/qr, which are identically zero.
+    #
+    #   962c068da recaptured at the UNPATCHED tip, with the working tree
+    #   byte-identical to d9e48213d, because [dry_flat] and [terrain] were
+    #   ALREADY RED there: the shipped file differed from a fresh run of
+    #   the same builders in 25 of 27 entries (largest, dry_flat/mup,
+    #   2.293e-02 on an rms of 1.081e+01).  That drift is NOT root-caused.
+    #   The recapture is recorded, not endorsed.
+    #
+    #   6b11e4c99 recaptured after the EOS geopotential fix, which moves
+    #   every run's bits by construction (calc_p_alpha stopped forming the
+    #   base layer thickness by cancelling two totals).
+    #
+    # THE CONSEQUENCE, stated plainly because the sentence below no longer
+    # says it: this file describes THIS TIP, not Phase 2.  The dry
+    # dynamics have moved under it many times since add26dc.  Its live
+    # value is detecting the NEXT change to the msf==1 path; it is no
+    # longer evidence of equivalence with the pre-Task-3 code, and it
+    # cannot be used to attribute the drift above.
+    #
+    # NAMED FOLLOW-UP, and the reason this ledger matters: the acoustic
+    # solver still spells the cancellation the EOS just shed.
+    # gpuwm/core/kernels/acoustic.cu:831-843 and :1064-1076 (advance_w_phi
+    # and its msf twin) build the wdwn layer thickness as
+    # (phb[k+1]+php[k+1]) - (phb[k]+php[k]) in float32, once per ACOUSTIC
+    # SUBSTEP rather than once per RK stage.  Measured 2026-09-03 against
+    # a float64 truth on make_base_state columns, max relative error in
+    # the thickness:
+    #
+    #     nz=16  ztop=6400   7.67e-07  ->  6.10e-08  with dphb_resid
+    #     nz=64  ztop=2400   1.24e-04  ->  5.15e-06
+    #     nz=160 ztop=2400   5.62e-05  ->  1.68e-06
+    #     nz=160 ztop=20000  1.46e-05  ->  1.56e-07
+    #
+    # i.e. 12.6x-93.4x, growing 73x from nz=16 to nz=160 -- the direction
+    # every LES configuration moves.  The fix needs NO new memory:
+    # dphb_resid is already resident and already carries the (bstr, boff)
+    # stride convention advance_w uses.  It was NOT taken here because it
+    # moves this pin a THIRD time in one day, and a third recapture on top
+    # of an un-root-caused drift would leave nothing able to attribute any
+    # of the three.  The pin has an independent grader that does not need
+    # recapturing -- tests/test_acoustic.py::test_w_phi_solve_matches_
+    # reference, against the genuine float64 np_acoustic_substep mirror
+    # (npref.py:2837 differences the geopotential in float64) -- and that
+    # is the instrument the follow-up should use.
     import cupy as cp
     import _phase2_pin as pin
     from gpuwm.config import validate_run_config

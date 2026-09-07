@@ -1,0 +1,255 @@
+# Hosted jobs exercise both supported operating systems without a GPU.
+# The manual GPU job requires a trusted default-branch dispatch and a staged
+# WRF reference bundle. An unrun GPU job is not evidence of device correctness.
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_gpu:
+        description: Run the self-hosted GPU and retained WRF case gates
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  syntax:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - name: every python file in the tree compiles
+        run: python -m compileall -q -j 0 gpuwm tilestream tools tests conftest.py
+
+  imports:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - name: install matching editable packages from this checkout
+        run: python -m pip install -e ./gpuwm-data -e ".[dev]"
+      - name: import every module the wheel ships
+        run: python -m tools.import_sweep
+        env:
+          GPUWM_NO_LOCAL_GPU: "1"
+
+  cpu:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          # The public history/diff guards require their approved base commit.
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - name: install matching editable packages from this checkout
+        run: python -m pip install -e ./gpuwm-data -e ".[dev]"
+      - uses: ./.github/actions/build-native
+      # Directory collection admits new tests automatically. Static functional
+      # coverage stays here; three exact WPS comparisons run in the separate
+      # platform-qualification job. Tests
+      # needing external WPS_GEOG or the retained WRF bundle declare that need.
+      - name: the CPU-runnable estate
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            -m "not gpu and not slow and not network and not static_platform_qualification" \
+            tests tilestream
+        env:
+          GPUWM_NO_LOCAL_GPU: "1"
+
+  oracles:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - name: install matching editable packages from this checkout
+        run: python -m pip install -e ./gpuwm-data -e ".[dev]"
+      - uses: ./.github/actions/build-native
+      # The manifest distinguishes shipped fixtures from external data. Slow
+      # tests remain selected here because the committed SW oracle uses them.
+      - name: bitwise oracle decks whose fixtures ship, skips forbidden
+        run: |
+          mapfile -t decks < <(python -c "import pathlib; from tools.battery.no_silent_skip import parse_manifest; print('\n'.join(parse_manifest(pathlib.Path('tools/battery/must_run_gates.txt').read_text(encoding='utf-8'))))")
+          test "${#decks[@]}" -ge 20
+          python -m pytest -q -p no:cacheprovider \
+            -p tools.battery.no_silent_skip \
+            -m "not gpu and not network" "${decks[@]}"
+        env:
+          GPUWM_NO_LOCAL_GPU: "1"
+
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      # TUI Cargo tests invoke the real CLI using this same interpreter.
+      - name: install matching editable packages from this checkout
+        run: python -m pip install -e ./gpuwm-data -e ".[dev]"
+      - name: use the release Rust toolchain
+        run: |
+          rustup toolchain install 1.94.0 --profile minimal
+          echo "RUSTUP_TOOLCHAIN=1.94.0" >> "$GITHUB_ENV"
+          rustup run 1.94.0 rustc --version
+          rustup run 1.94.0 cargo --version
+      - name: offline Rust package gates with their existing coverage floors
+        run: python tools/battery/run_cargo_gates.py --target-dir "$RUNNER_TEMP/gpuwm-cargo-tests"
+      # The zero-dependency dealiaser is outside the battery workspaces.
+      - name: region-global dealiasing tests
+        working-directory: tools/region_global_dealias
+        run: cargo test --locked --offline
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/gpuwm-dealias-tests
+
+  static_qualification:
+    name: Static qualification (${{ matrix.os == 'ubuntu-24.04' && 'Linux UNQUALIFIED' || 'Windows exact comparisons' }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - name: install the declared Python reference profile
+        run: python -m pip install -e ./gpuwm-data -e ".[dev]" numpy==2.2.6
+      - name: use the release Rust toolchain
+        run: |
+          rustup toolchain install 1.94.0 --profile minimal
+          echo "RUSTUP_TOOLCHAIN=1.94.0" >> "$GITHUB_ENV"
+      # Only completed assertion comparisons can be reported UNQUALIFIED on
+      # Linux. Build/load/process errors and missing test results stay fatal.
+      - name: report exact static platform qualification
+        run: python tools/battery/run_static_qualification.py --target-dir "$RUNNER_TEMP/static-qualification-target" --output "$RUNNER_TEMP/static-qualification"
+        env:
+          GPUWM_NO_LOCAL_GPU: "1"
+      - name: retain raw qualification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: static-qualification-${{ matrix.os }}
+          path: ${{ runner.temp }}/static-qualification
+          if-no-files-found: error
+
+  gpu:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_gpu && vars.GPUWM_SELF_HOSTED_GPU == '1' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: [self-hosted, linux, x64, gpu]
+    timeout-minutes: 180
+    env:
+      GPUWM_TEST_WRF74_BUNDLE: ${{ vars.GPUWM_TEST_WRF74_BUNDLE }}
+      GPUWM_REQUIRE_CASE_GATES: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      # The runner supplies its installed CUDA/CuPy stack; package metadata
+      # and source are installed into a fresh environment for this invocation.
+      - name: isolate this checkout from prior package installations
+        run: |
+          environment="$RUNNER_TEMP/gpuwm-ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          python -m venv --system-site-packages "$environment"
+          "$environment/bin/python" -m pip install -e ./gpuwm-data -e ".[dev]"
+          echo "$environment/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/build-native
+      - name: the device is present before anything claims to have used it
+        run: |
+          nvidia-smi
+          python -c "import cupy; assert cupy.cuda.runtime.getDeviceCount() > 0"
+          python -c "from gpuwm.doctor import _cuda_headers_check; c = _cuda_headers_check(); print(c.detail); assert c.status == 'verified', c.brief"
+      - name: the bundle the case gates require is named and present
+        run: |
+          if [ -z "$GPUWM_TEST_WRF74_BUNDLE" ]; then
+            echo "Set GPUWM_TEST_WRF74_BUNDLE to the retained WRF v4.6.1 reference bundle."
+            exit 1
+          fi
+          test -d "$GPUWM_TEST_WRF74_BUNDLE"
+      - name: the case gates the switch arms
+        run: |
+          mapfile -t readers < <(grep -rlE "os\.environ.*GPUWM_REQUIRE_CASE_GATES" --include="test_*.py" tests | sort)
+          test "${#readers[@]}" -ge 2
+          python -m pytest -q -p no:cacheprovider "${readers[@]}"
+      - name: GPU shard 1
+        run: |
+          mapfile -t shard1 < <(python -c "
+          import pathlib
+          text = pathlib.Path('tools/battery/gpu_shard_files.txt').read_text(encoding='utf-8')
+          out = []
+          for raw in text.splitlines():
+              if 'SHARD-2-BEGIN' in raw:
+                  break
+              line = raw.strip()
+              if line and not line.startswith('#'):
+                  out.append(line)
+          print('\n'.join(out))
+          ")
+          test "${#shard1[@]}" -ge 30
+          python -m pytest -q -p no:cacheprovider "${shard1[@]}"
+      # Both declared shards need an executable route on an explicitly
+      # authorized GPU dispatch, including the frozen cumulus oracle decks.
+      - name: GPU shard 2
+        run: |
+          mapfile -t shard2 < <(python -c "
+          import pathlib
+          text = pathlib.Path('tools/battery/gpu_shard_files.txt').read_text(encoding='utf-8')
+          tail = text.split('SHARD-2-BEGIN', 1)[1]
+          print('\n'.join(line.strip() for line in tail.splitlines()
+                          if line.strip() and not line.lstrip().startswith('#')))
+          ")
+          test "${#shard2[@]}" -ge 1
+          python -m pytest -q -p no:cacheprovider "${shard2[@]}"

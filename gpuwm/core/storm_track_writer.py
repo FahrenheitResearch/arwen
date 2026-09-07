@@ -174,7 +174,7 @@ CSV_BASE_COLUMNS = ("valid_time", "lat_deg", "lon_deg", "mslp_mb",
 #: Dropping them also removes a way the file could fail: ``peak_wind_m_s``
 #: refuses when no surface-layer scheme published u10/v10, and an
 #: idealised convective run without one would have faulted EVERY row.
-POSITION_ONLY_FIELDS = ("uh", "reflectivity")
+POSITION_ONLY_FIELDS = ("uh", "reflectivity", "attribute")
 
 #: The whole header for such a run.  ``lat_deg``/``lon_deg`` keep their
 #: names so one plotter reads every track file this module writes; what

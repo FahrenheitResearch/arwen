@@ -1,0 +1,187 @@
+schema = "arwen.case-catalog.v1"
+
+[catalog]
+id = "synthetic-format-demo"
+title = "ArWen case-catalog authoring example (synthetic)"
+version = "1"
+description = "Two format-only entries. Replace with independently documented historical cases; do not invent source availability or physics evidence."
+
+[[catalog.provenance]]
+author = "Example format supplied with ArWen"
+kind = "synthetic-schema-example"
+notes = "No historical facts or performance recommendations are asserted."
+
+[[cases]]
+id = "synthetic-profile-example"
+title = "Synthetic format example: named native profile"
+event_kind = "synthetic"
+synthetic = true
+summary = "Schema demonstration only. This is not a tornado, derecho, hurricane, or other historical event. No archive availability or scientific suitability is asserted."
+recommended_source_option = "gfs-analysis"
+physics_profile = "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1"
+tags = ["synthetic", "format-demo"]
+references = []
+
+[cases.event]
+start_utc = "2026-09-01T00:00:00Z"
+end_utc = "2026-09-01T12:00:00Z"
+
+[[cases.source_options]]
+id = "gfs-analysis"
+source = "gfs"
+cycle_utc = "2026-09-01T00:00:00Z"
+forecast_start_hour = 0
+label = "Illustrative GFS analysis cycle"
+notes = "Example syntax only. The native source calendar and fetch still validate availability."
+
+[cases.tiers]
+
+[cases.tiers.lower]
+root_dx_km = 12.0
+nest_ratios = []
+run_hours = 3
+history_interval_s = 3600
+notes = "Illustrative resource tier; these values are not a recommendation for any historical event."
+
+[cases.tiers.lower.bounds_degrees]
+south = 35
+west = -100
+north = 35.5
+east = -99.5
+
+[cases.tiers.recommended]
+root_dx_km = 12.0
+nest_ratios = [3]
+run_hours = 6
+history_interval_s = 3600
+notes = "Illustrative resource tier; these values are not a recommendation for any historical event."
+
+[cases.tiers.recommended.bounds_degrees]
+south = 34.75
+west = -100.25
+north = 35.75
+east = -99.25
+
+[cases.tiers.upper]
+root_dx_km = 12.0
+nest_ratios = [3, 3]
+run_hours = 12
+history_interval_s = 3600
+notes = "Illustrative resource tier; these values are not a recommendation for any historical event."
+
+[cases.tiers.upper.bounds_degrees]
+south = 34.5
+west = -100.5
+north = 36
+east = -99
+
+[[cases.recommendations]]
+topic = "physics"
+text = "A catalog author must provide a case-specific rationale and real supporting references. The named profile here demonstrates syntax only."
+
+[[cases.recommendations]]
+topic = "soil"
+text = "Describe the soil initialization evidence and limitations here. Prose does not change model settings."
+
+[[cases.recommendations]]
+topic = "unknown-future-research-topic"
+text = "Unrecognized advisory topics remain readable data and never become code."
+
+[cases.metadata]
+authoring_warning = "Do not cite this entry as historical or scientific evidence."
+
+[[cases]]
+id = "synthetic-overrides-example"
+title = "Synthetic format example: typed native scientific overrides"
+event_kind = "synthetic"
+synthetic = true
+summary = "Schema demonstration only. This is not a tornado, derecho, hurricane, or other historical event. No archive availability or scientific suitability is asserted."
+recommended_source_option = "gfs-analysis"
+physics_profile = "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1"
+tags = ["synthetic", "format-demo"]
+references = []
+
+[cases.event]
+start_utc = "2026-09-01T00:00:00Z"
+end_utc = "2026-09-01T12:00:00Z"
+
+[[cases.source_options]]
+id = "gfs-analysis"
+source = "gfs"
+cycle_utc = "2026-09-01T00:00:00Z"
+forecast_start_hour = 0
+label = "Illustrative GFS analysis cycle"
+notes = "Example syntax only. The native source calendar and fetch still validate availability."
+
+[cases.tiers]
+
+[cases.tiers.lower]
+root_dx_km = 12.0
+nest_ratios = []
+run_hours = 3
+history_interval_s = 3600
+notes = "Illustrative resource tier; these values are not a recommendation for any historical event."
+
+[cases.tiers.lower.bounds_degrees]
+south = 35
+west = -100
+north = 35.5
+east = -99.5
+
+[cases.tiers.recommended]
+root_dx_km = 12.0
+nest_ratios = [3]
+run_hours = 6
+history_interval_s = 3600
+notes = "Illustrative resource tier; these values are not a recommendation for any historical event."
+
+[cases.tiers.recommended.bounds_degrees]
+south = 34.75
+west = -100.25
+north = 35.75
+east = -99.25
+
+[cases.tiers.upper]
+root_dx_km = 12.0
+nest_ratios = [3, 3]
+run_hours = 12
+history_interval_s = 3600
+notes = "Illustrative resource tier; these values are not a recommendation for any historical event."
+
+[cases.tiers.upper.bounds_degrees]
+south = 34.5
+west = -100.5
+north = 36
+east = -99
+
+[[cases.recommendations]]
+topic = "physics"
+text = "A catalog author must provide a case-specific rationale and real supporting references. The named profile here demonstrates syntax only."
+
+[[cases.recommendations]]
+topic = "soil"
+text = "Describe the soil initialization evidence and limitations here. Prose does not change model settings."
+
+[[cases.recommendations]]
+topic = "unknown-future-research-topic"
+text = "Unrecognized advisory topics remain readable data and never become code."
+
+[[cases.recommendations]]
+topic = "typed-overrides"
+text = "The explicit numeric settings demonstrate the native override format. They are not recommended for a real case and still require full native combination/memory validation."
+
+[cases.metadata]
+authoring_warning = "Do not cite this entry as historical or scientific evidence."
+
+[cases.native_overrides]
+
+[cases.native_overrides.shared]
+num_soil_layers = 4
+opt_thcnd = 2
+
+[[cases.native_overrides.domains]]
+grid_id = 1
+
+[cases.native_overrides.domains.settings]
+diff_6th_factor = 0.1
+epssm = 0.4

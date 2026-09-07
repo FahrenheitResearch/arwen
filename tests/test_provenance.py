@@ -534,7 +534,13 @@ def test_it_resolves_this_running_worktree():
         == Path(resolved.package_path)
     if resolved.git:
         assert len(resolved.git["commit"]) == 12
-        assert resolved.git["branch"]
+        # A frozen audit worktree can legitimately have a detached HEAD.
+        # Bind the actual commit and ref, including an absent branch, instead
+        # of requiring a branch name that this checkout does not have.
+        expected = provenance.git_dir_identity(WORKTREE)
+        assert expected is not None
+        assert resolved.git["commit_full"] == expected["commit_full"]
+        assert resolved.git["branch"] == expected["branch"]
 
 
 def test_it_imports_without_numpy_or_cupy_in_a_pinned_child():
@@ -679,6 +685,10 @@ def test_git_present_still_reports_the_verified_working_tree(tmp_path):
     _git_init(tmp_path)
     clean = provenance.git_identity(tmp_path)
     assert clean is not None
+    expected_branch = subprocess.run(
+        ["git", "-C", str(tmp_path), "symbolic-ref", "--short", "HEAD"],
+        capture_output=True, text=True, check=True).stdout.strip()
+    assert clean["branch"] == expected_branch
     assert clean["dirty"] is False
     assert "dirty_unknown_reason" not in clean
     assert provenance.worktree_is_clean(clean)
@@ -686,6 +696,107 @@ def test_git_present_still_reports_the_verified_working_tree(tmp_path):
     dirty = provenance.git_identity(tmp_path)
     assert dirty is not None and dirty["dirty"] is True
     assert not provenance.worktree_is_clean(dirty)
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "checkout", "--detach", "--quiet"],
+        capture_output=True, text=True, check=True)
+    detached = provenance.git_identity(tmp_path)
+    assert detached is not None
+    assert detached["commit_full"] == clean["commit_full"]
+    assert detached["branch"] is None
+    assert detached["dirty"] is True
+    assert not provenance.worktree_is_clean(detached)
+    (tmp_path / "tracked.txt").write_text("original\n", encoding="utf-8")
+    detached_clean = provenance.git_identity(tmp_path)
+    assert detached_clean is not None
+    assert detached_clean["commit_full"] == clean["commit_full"]
+    assert detached_clean["branch"] is None
+    assert detached_clean["dirty"] is False
+    assert provenance.worktree_is_clean(detached_clean)
+
+
+@pytest.mark.parametrize("failure", ["timeout", "oserror"])
+def test_an_interrupted_status_scan_keeps_the_commit_unverified(
+        tmp_path, monkeypatch, failure):
+    """A verified checkout can be readable while its status scan cannot run."""
+    _git_init(tmp_path)
+    expected = provenance.git_identity(tmp_path)
+    assert expected is not None and expected["dirty"] is False
+    (tmp_path / "tracked.txt").write_text("changed\n", encoding="utf-8")
+    real_run = subprocess.run
+    commands = []
+
+    def interrupted_status(command, **kwargs):
+        commands.append(command)
+        if "status" in command:
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            raise PermissionError("status process was denied")
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", interrupted_status)
+    identity = provenance.git_identity(tmp_path)
+    assert identity is not None
+    assert identity["commit_full"] == expected["commit_full"]
+    assert identity["branch"] == expected["branch"]
+    assert identity["dirty"] is None and identity["dirty_files"] is None
+    assert identity["untracked_files"] is None
+    assert not provenance.worktree_is_clean(identity)
+    reason = identity["dirty_unknown_reason"]
+    assert ("timed out after 5 seconds" if failure == "timeout"
+            else "PermissionError: status process was denied") in reason
+    assert [command[3] for command in commands] == ["rev-parse", "status"]
+
+
+@pytest.mark.parametrize("refusal", ["status", "root", "unborn"])
+def test_direct_commit_fallback_does_not_override_a_git_refusal(
+        tmp_path, monkeypatch, refusal):
+    from gpuwm import runtime_manifest
+
+    _git_init(tmp_path)
+    real_run = subprocess.run
+
+    def refused_status(command, **kwargs):
+        if "status" in command:
+            if refusal == "unborn":
+                return subprocess.CompletedProcess(command, 0,
+                    stdout="# branch.oid (initial)\n# branch.head main\n")
+            return subprocess.CompletedProcess(command, 128,
+                stdout="", stderr="fatal: repository access refused")
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", refused_status)
+    if refusal == "root":
+        monkeypatch.setattr(runtime_manifest, "git_checkout_root", lambda _: None)
+    # Even a readable existing HEAD cannot overrule the command's refusal
+    # or an unborn-branch answer from the authoritative normal path.
+    assert provenance.git_dir_identity(tmp_path) is not None
+    assert provenance.git_identity(tmp_path) is None
+
+
+def test_the_run_manifest_preserves_a_status_timeout_reason(monkeypatch):
+    """Replay the slow-checkout preparation failure through both identity rungs."""
+    from gpuwm import runtime_manifest
+
+    expected = provenance.git_dir_identity(WORKTREE)
+    if expected is None:
+        pytest.skip("this suite is not running from a readable checkout")
+    real_run = subprocess.run
+    timed_out = []
+
+    def slow_status(command, **kwargs):
+        if "status" in command:
+            timed_out.append(tuple(command[3:]))
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", slow_status)
+    identity = runtime_manifest.provenance(WORKTREE)
+    assert identity["git_commit"] == expected["commit_full"]
+    assert identity["git_status_short"] is None
+    assert "timed out after 5 seconds" in identity["git_status_unknown_reason"]
+    assert not provenance.worktree_is_clean(identity["installed_editable"]["git"])
+    assert ("status", "--short") in timed_out
+    assert ("status", "--porcelain=v2", "--branch") in timed_out
 
 
 def test_no_git_and_no_dot_git_is_still_an_honest_absence(

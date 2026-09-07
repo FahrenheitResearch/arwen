@@ -29,6 +29,8 @@ VERTICAL_STENCIL_POLICY = "wrf-v4.6.1-strict-fp32-zap-close-levels-v1"
 _COMMON_IMPLEMENTATION_SOURCES = (
     "gpuwm/ingest/horiz.py",
     "gpuwm/ingest/preprocess_backend.py",
+    "gpuwm/ingest/interpolation_support.py",
+    "gpuwm/ingest/atmospheric_window.py",
     "gpuwm/ingest/real.py",
     "gpuwm/ingest/vert.py",
 )
@@ -276,9 +278,10 @@ class ParallelCpuPreprocessBackend:
             source_shape = native.source_shape
             target_shape = native.target_shape
 
-            def apply(bound_self, field, method="parabolic"):
+            def apply(bound_self, field, method="parabolic", *, source_support=False):
                 return native.apply(
-                    field, method=method, workers=workers)
+                    field, method=method, workers=workers,
+                    source_support=source_support)
 
         return BoundPlan()
 

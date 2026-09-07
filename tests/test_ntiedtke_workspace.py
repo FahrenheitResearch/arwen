@@ -111,7 +111,7 @@ def test_the_seed_table_is_the_module_s_and_not_a_copy():
     A second copy of the seed table would be the failure this port has
     paid for four times, on the table with the widest blast radius in it.
     """
-    from tests import test_ntiedtke_call_order_vs_source as gate
+    import test_ntiedtke_call_order_vs_source as gate
     assert gate.SEEDS is NT_SEEDS
 
 

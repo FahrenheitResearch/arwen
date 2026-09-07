@@ -41,7 +41,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from gpuwm import speedrun
-from gpuwm.speedrun import (CAPSULE_FILENAME, COMPILE_MODES, SpeedrunRefusal,
+from gpuwm.speedrun import (CAPSULE_FILENAME, COMPILE_MODES,
+                            ColdCacheRefusal, SpeedrunRefusal,
                             StagedInputsMissing)
 
 #: What the door writes beside the run it measured.
@@ -256,12 +257,110 @@ def _cache_census(cache_dir: Path) -> dict[str, Any]:
     }
 
 
-def _prepare_cold_cache(path: Path) -> Path:
-    """Empty a directory so this run pays the NVRTC compile for real."""
+def _is_a_kernel_cache(path: Path, held: list[Path]) -> bool:
+    """Every entry must be a regular, recognizable compiled kernel.
 
-    if path.exists():
-        shutil.rmtree(path)
-    path.mkdir(parents=True, exist_ok=True)
+    A census may count unknown files conservatively for compile timing;
+    deletion cannot.  One kernel beside staged inputs proves nothing
+    about those inputs, and links/reparse points are never cache entries.
+    """
+
+    import stat
+    from gpuwm import kernel_compile_notice as notice
+
+    try:
+        for child in held:
+            info = child.lstat()
+            if (not stat.S_ISREG(info.st_mode)
+                    or getattr(info, "st_file_attributes", 0)
+                    & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+                return False
+    except OSError:
+        return False
+    entries, undecodable, architectures = notice.scan_kernel_cache(path)
+    return (entries == len(held) and undecodable == 0
+            and bool(architectures))
+
+
+def _prepare_cold_cache(path: Path) -> Path:
+    """Empty a directory so this run pays the NVRTC compile for real.
+
+    REFUSES rather than deletes.  ``--cold-cache-dir`` is a bare ``Path``
+    on a command line already carrying relative paths (``--staged
+    ./staged --out speedrun``), and the call site resolves it with
+    ``.expanduser().resolve()``, which turns ``.`` into the working
+    directory and ``~`` into ``$HOME`` before anything else sees them.
+    What used to be here was an unguarded ``shutil.rmtree``: a typed
+    ``--cold-cache-dir .`` deleted the working directory, staged GRIB and
+    run output included, on a flag that reads as a cache knob -- in a
+    tree whose fetch door advertises "nothing is deleted"
+    (:func:`gpuwm.fetch._force_quarantine_output`).
+
+    The only directory this door will empty is one that is absent, empty,
+    or shows positive evidence of being a CuPy kernel cache
+    (:func:`_is_a_kernel_cache`).  The inherited cache, the working
+    directory, the home directory and a filesystem root are refused by
+    name even when they would pass that test, because each has a better
+    remedy than a delete.  Refusing the inherited cache is what makes
+    this flag's own promise -- "it never touches the inherited cache" --
+    a property of the code rather than of the operator's typing.
+    """
+
+    from gpuwm import kernel_compile_notice as notice
+
+    path = path.expanduser().resolve()
+    remedy = ("\n\nRemedy: name a directory that does not exist yet -- this "
+              "door creates it -- e.g. --cold-cache-dir ./cold-kernel-cache.")
+    if path == path.parent:
+        raise ColdCacheRefusal(
+            f"--cold-cache-dir {path} is a filesystem root." + remedy)
+    if path == notice.cupy_kernel_cache_dir().expanduser().resolve():
+        raise ColdCacheRefusal(
+            f"--cold-cache-dir {path} IS the inherited CuPy kernel cache "
+            f"(${notice.CUPY_CACHE_ENV}, or ~/.cupy/kernel_cache).  This "
+            "flag exists to leave that cache alone -- its own help says it "
+            "never touches it -- so emptying it is the one thing it must "
+            "not do." + remedy)
+    if path == Path.cwd().resolve():
+        raise ColdCacheRefusal(
+            f"--cold-cache-dir {path} is the working directory, which holds "
+            "the staged inputs and the run output this record is made of."
+            + remedy)
+    if path == Path.home().resolve():
+        raise ColdCacheRefusal(
+            f"--cold-cache-dir {path} is the home directory." + remedy)
+    if not path.exists():
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    if not path.is_dir():
+        raise ColdCacheRefusal(
+            f"--cold-cache-dir {path} is a file, not a directory." + remedy)
+    try:
+        held = sorted(path.iterdir())
+    except OSError as error:
+        raise ColdCacheRefusal(
+            f"--cold-cache-dir {path} cannot be read ({error}), so this "
+            "door cannot say what emptying it would delete." + remedy
+        ) from error
+    if not held:
+        return path
+    if not _is_a_kernel_cache(path, held):
+        raise ColdCacheRefusal(
+            f"--cold-cache-dir {path} contains entries that are not regular "
+            "compiled CUDA kernels. Nothing was deleted." + remedy)
+    if sorted(path.iterdir()) != held:
+        raise ColdCacheRefusal(
+            f"--cold-cache-dir {path} changed during validation. "
+            "Nothing was deleted." + remedy)
+    # Delete only the entries we inspected, never the entire directory.
+    # A file arriving during clearing must survive rather than being
+    # swept up by a recursive delete.
+    for child in held:
+        child.unlink()
+    if any(path.iterdir()):
+        raise ColdCacheRefusal(
+            f"--cold-cache-dir {path} received new entries while clearing. "
+            "Those entries were preserved; use a fresh directory." + remedy)
     return path
 
 
@@ -920,7 +1019,11 @@ def register_cli(subparsers) -> None:
                         help="EMPTY this directory and point CUPY_CACHE_DIR "
                              "at it for the run, so a cold-cache record can "
                              "be set on a machine whose own cache is warm.  "
-                             "It never touches the inherited cache")
+                             "Only a directory that is absent, empty, or "
+                             "already a CuPy kernel cache is emptied; "
+                             "anything else -- and the inherited cache, the "
+                             "working directory and your home directory by "
+                             "name -- is REFUSED rather than deleted")
     parser.add_argument("--verify", type=Path, default=None, metavar="CAPSULE",
                         help="verify one capsule's seal and evidence and "
                              "print its record line, instead of running "

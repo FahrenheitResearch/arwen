@@ -65,6 +65,87 @@ def test_common_static_and_geometry_writers_are_hash_bound_and_atomic(tmp_path):
     assert not tuple(tmp_path.glob(".*.tmp-*"))
 
 
+def test_geometry_receipt_carries_the_anchor_a_nest_is_actually_built_on():
+    """A nest's reference point is its (1, 1) mass point, not its centre.
+
+    The receipt is the only thing ``_wrfinput_fields`` rebuilds the
+    projection from.  While it carried ``ref_lat``/``ref_lon`` and no
+    ``known_x``/``known_y`` the rebuild fell to ``ProjectedGrid``'s
+    centred WPS default, so every nested XLAT/XLONG came from a
+    footprint displaced by half the domain -- beside MAPFAC/F/SINALPHA
+    read out of the static cache built on the correct grid.
+    """
+    root = LambertGrid(
+        ref_lat=35.5, ref_lon=-98.0, truelat1=30.0, truelat2=60.0,
+        stand_lon=-97.5, dx=9_000.0, dy=9_000.0, e_we=201, e_sn=201)
+    nest = root.nest(50, 50, 3, 201, 201)
+    cfg = SimpleNamespace(nx=200, ny=200, nz=49, dx=3_000.0, dy=3_000.0)
+
+    geometry = native_geometry_contract(nest, cfg)
+    assert geometry["known_x"] == 1.0
+    assert geometry["known_y"] == 1.0
+    # The mother domain's centre, which the nest inherits and which
+    # `ref_lat` is NOT once the reference stops being the centre.
+    assert geometry["moad_cen_lat"] == root.cen_lat
+    assert geometry["moad_cen_lon"] == root.cen_lon
+    assert geometry["ref_lat"] != geometry["moad_cen_lat"]
+
+    def rebuild(**anchor):
+        return LambertGrid(
+            ref_lat=geometry["ref_lat"], ref_lon=geometry["ref_lon"],
+            truelat1=geometry["truelat1"], truelat2=geometry["truelat2"],
+            stand_lon=geometry["stand_lon"],
+            dx=float(geometry["dx_m"]), dy=float(geometry["dy_m"]),
+            e_we=cfg.nx + 1, e_sn=cfg.ny + 1, **anchor).latlon_mass()
+
+    truth_lat, truth_lon = nest.latlon_mass()
+    lat, lon = rebuild(known_x=geometry["known_x"],
+                       known_y=geometry["known_y"])
+    np.testing.assert_array_equal(lat, truth_lat)
+    np.testing.assert_array_equal(lon, truth_lon)
+    # The extremes the receipt records ARE the extremes of that
+    # reconstruction, which is what makes them a gate rather than prose.
+    assert geometry["lat_range"] == [float(lat.min()), float(lat.max())]
+    assert geometry["lon_range"] == [float(lon.min()), float(lon.max())]
+
+    # Rebuilt on the centred default the same receipt lands about 300 km
+    # south-west: 2.97 deg of latitude for this 200x200 3 km nest.
+    centred_lat, _ = rebuild()
+    assert float(np.max(np.abs(centred_lat - truth_lat))) > 2.0
+
+
+def test_geometry_receipt_anchors_a_translated_grid_bitwise():
+    """The same loss reaches ``ProjectedGrid.translated``.
+
+    A translated grid delegates its transforms to its reference with an
+    integer index offset and carries the offset in ``known_x``/
+    ``known_y``; with the anchor in the receipt a plain rebuild
+    reproduces it to the byte, and without it the rebuild is the
+    centred default again.
+    """
+    reference = LambertGrid(
+        ref_lat=35.5, ref_lon=-98.0, truelat1=30.0, truelat2=60.0,
+        stand_lon=-97.5, dx=3_000.0, dy=3_000.0, e_we=201, e_sn=201)
+    moved = reference.translated(7, -11)
+    cfg = SimpleNamespace(nx=200, ny=200, nz=49, dx=3_000.0, dy=3_000.0)
+
+    geometry = native_geometry_contract(moved, cfg)
+    assert (geometry["known_x"], geometry["known_y"]) == (
+        reference.known_x - 7, reference.known_y + 11)
+
+    rebuilt = LambertGrid(
+        ref_lat=geometry["ref_lat"], ref_lon=geometry["ref_lon"],
+        truelat1=geometry["truelat1"], truelat2=geometry["truelat2"],
+        stand_lon=geometry["stand_lon"],
+        dx=float(geometry["dx_m"]), dy=float(geometry["dy_m"]),
+        e_we=cfg.nx + 1, e_sn=cfg.ny + 1,
+        known_x=geometry["known_x"], known_y=geometry["known_y"])
+    moved_lat, moved_lon = moved.latlon_mass()
+    rebuilt_lat, rebuilt_lon = rebuilt.latlon_mass()
+    np.testing.assert_array_equal(rebuilt_lat, moved_lat)
+    np.testing.assert_array_equal(rebuilt_lon, moved_lon)
+
+
 def test_common_static_writer_rejects_nonfinite_and_overwrite(tmp_path):
     path = tmp_path / "native-static.npz"
     with pytest.raises(ValueError, match="not finite"):
@@ -475,6 +556,69 @@ def test_native_static_export_fields_regenerates_geometry_and_rejects_drift():
     with pytest.raises(ValueError, match="MAPFAC_M"):
         native_static_export_fields(
             {"MAPFAC_M": np.zeros_like(grid.mapfac_m())}, grid)
+
+
+@pytest.mark.parametrize("stored,regenerated", [
+    (0.10838588465748007, 0.10838588465748036),
+    (-0.10838588465748007, -0.10838588465748064),
+    (0.09642400711474686, 0.09642400711474657),
+    (-0.09642400711474686, -0.09642400711474627),
+    (0.07244370149523224, 0.07244370149523252),
+    (0.059898661277766094, 0.05989866127776667),
+])
+def test_native_static_rotation_accepts_cross_platform_witnesses(
+        monkeypatch, stored, regenerated):
+    # Exact observed Linux Python 3.13.15 / NumPy 2.5.2 -> Windows
+    # Python 3.13.7 / NumPy 2.2.6 values from the unchanged two-domain
+    # scenario-convection.gentle preparation (five d01 cells, one d02).
+    grid = _grid()
+    sine = np.full((3, 4), regenerated)
+    cosine = np.sqrt(1.0 - sine * sine)
+    monkeypatch.setattr(grid, "rotation_m", lambda: (sine, cosine))
+    stored_sine = np.full((3, 4), stored)
+    assert abs(stored - regenerated) > 16 * np.spacing(abs(regenerated))
+    result = native_static_export_fields({"SINALPHA": stored_sine}, grid)
+    # Admission never substitutes the producer's rounded field.
+    assert result["SINALPHA"] is sine
+    np.testing.assert_array_equal(stored_sine, np.full((3, 4), stored))
+
+
+@pytest.mark.parametrize("field,index", [("SINALPHA", 0), ("COSALPHA", 1)])
+def test_native_static_rotation_rounding_is_bounded_at_zero(
+        monkeypatch, field, index):
+    grid = _grid()
+    rotation = [np.ones((3, 4)), np.ones((3, 4))]
+    rotation[index] = np.zeros((3, 4))
+    monkeypatch.setattr(grid, "rotation_m", lambda: tuple(rotation))
+    rounded = np.full((3, 4), 8 * np.spacing(1.0))
+    result = native_static_export_fields({field: rounded}, grid)
+    assert result[field] is rotation[index]
+    with pytest.raises(ValueError, match=field):
+        native_static_export_fields(
+            {field: np.full((3, 4), 32 * np.spacing(1.0))}, grid)
+
+
+def test_native_static_coriolis_keeps_its_output_relative_rounding_bound():
+    grid = _grid()
+    coriolis, _ = grid.coriolis_m()
+    changed = coriolis + 32 * np.spacing(coriolis)
+    assert np.max(np.abs(changed - coriolis)) < np.spacing(1.0)
+    with pytest.raises(ValueError, match="native static F "):
+        native_static_export_fields({"F": changed}, grid)
+
+
+@pytest.mark.parametrize("change", [{"dx": 12_001.0, "dy": 12_001.0},
+                                   {"ref_lon": -96.99999}])
+def test_native_static_rounding_cannot_admit_spacing_or_placement_drift(change):
+    original = _grid()
+    kwargs = dict(ref_lat=35.0, ref_lon=-97.0, truelat1=30.0, truelat2=60.0,
+                  stand_lon=-97.0, dx=12_000.0, dy=12_000.0,
+                  e_we=5, e_sn=4)
+    kwargs.update(change)
+    changed = LambertGrid(**kwargs)
+    stored = native_static_export_fields({}, original)
+    with pytest.raises(ValueError, match="differs from regenerated grid"):
+        native_static_export_fields(stored, changed)
 
 
 def test_native_static_contract_is_exact_modis_noah_and_preserves_geometry():

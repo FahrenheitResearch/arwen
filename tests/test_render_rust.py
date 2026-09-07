@@ -17,6 +17,7 @@ add no image-library dependency.
 from __future__ import annotations
 
 import datetime
+import re
 import struct
 from pathlib import Path
 from types import SimpleNamespace
@@ -240,7 +241,7 @@ def _frame(seed: int) -> dict:
     }
 
 
-def _write_wrfout(path, stamps, *, grid_id=2, dx=1000.0):
+def _write_wrfout(path, stamps, *, grid_id=2, dx=1000.0, seed_offset=0):
     grid = SimpleNamespace(truelat1=38.5, truelat2=39.5, stand_lon=-96.5,
                            ref_lat=39.0, ref_lon=-96.5)
     attrs = wrf_global_attrs(
@@ -250,7 +251,7 @@ def _write_wrfout(path, stamps, *, grid_id=2, dx=1000.0):
     with WrfoutWriter(path, nx=_NX, ny=_NY, nz=_NZ, dx=dx, dy=dx,
                       global_attrs=attrs) as writer:
         for index, stamp in enumerate(stamps):
-            writer.write_frame(stamp, _frame(seed=7 + index))
+            writer.write_frame(stamp, _frame(seed=7 + index + seed_offset))
     return path
 
 
@@ -1180,6 +1181,100 @@ def test_terrain_product_is_renderable_from_a_wrfout(wrfout, tmp_path, capsys):
 
 
 @needs_renderer
+@pytest.mark.parametrize("single_frame", [False, True],
+                         ids=["minute-axis", "first-frame"])
+def test_general_products_skip_unavailable_subhour_windows(
+        single_frame, wrfout, tmp_path, capsys):
+    """The default TUI request must not fail a good subhour forecast.
+
+    Its one-hour rain product needs a whole-hour window. The real native
+    availability catalog must supply that skip; no shorter accumulation
+    may be drawn or labelled as an hour, and available products still run.
+    """
+
+    import json
+    from gpuwm import render as render_module
+
+    presets = json.loads((Path(render_module.__file__).parent /
+                          "data/tui/plot-presets.json").read_text())
+    general = next(row["products"] for row in presets["presets"]
+                   if row["id"] == presets["default"])
+    assert len(general) == 25 and "qpf_1h" in general
+    if single_frame:
+        wrfout = _write_wrfout(tmp_path / "first-wrfout.nc", _STAMPS[:1])
+    frame_idx = 0 if single_frame else 1
+    reason = ("more than one stored whole-hour frame" if single_frame
+              else "exact-time ordinal axis")
+    out = tmp_path / "general"
+    rc = cli.main(["render", str(wrfout), "--engine", "rust",
+                   "--products", ",".join(general), "--timeidx", str(frame_idx),
+                   "--size", "400x300", "--out", str(out),
+                   "--run-stamp", "off", "--explain"])
+    captured = capsys.readouterr()
+    assert rc == 0, captured.out + captured.err
+    produced = _delivered(out)
+    assert any("composite_reflectivity" in name for name in produced)
+    if single_frame:
+        assert all(name.endswith("_f000.png") for name in produced), produced
+    else:
+        assert all(_LEADS[frame_idx] in name for name in produced), produced
+    assert not any("qpf_1h" in name for name in produced), produced
+    assert "qpf_1h" in captured.err and reason in captured.err
+    assert "render FAIL:" not in captured.err
+
+
+@needs_renderer
+def test_only_unavailable_subhour_window_still_returns_nonzero(
+        wrfout, tmp_path, capsys):
+    """A named skip is not a successful command when no image was drawn."""
+
+    out = tmp_path / "unavailable-only"
+    rc = cli.main(["render", str(wrfout), "--engine", "rust",
+                   "--products", "qpf_1h", "--out", str(out),
+                   "--run-stamp", "off", "--explain"])
+    captured = capsys.readouterr()
+    assert rc == 1 and not _delivered(out)
+    assert "qpf_1h" in captured.err and "exact-time ordinal axis" in captured.err
+    assert "Nothing else was drawn" in captured.err
+    assert "render FAIL:" not in captured.err
+
+
+@needs_renderer
+def test_native_explicit_exact_time_window_remains_a_strict_refusal(
+        wrfout, tmp_path):
+    """The orchestration skip must not weaken the native axis guard."""
+
+    written, failures, skipped = rustwx.run_renderer(
+        RENDERER, wrfout, store_root=tmp_path / "strict-store",
+        out_dir=tmp_path / "strict-png", products="qpf_1h", frames="all",
+        width=400, height=300)
+    assert not written and not skipped
+    assert failures and all("exact-time ordinal axis" in row for row in failures)
+
+
+@needs_renderer
+@pytest.mark.parametrize("problem", ["unknown-product", "corrupt-input"])
+def test_window_availability_does_not_hide_real_render_failures(
+        problem, wrfout, tmp_path, capsys):
+    """Only declared time-axis unavailability may become a skip."""
+
+    source = wrfout
+    products = "composite_reflectivity,qpf_1h"
+    if problem == "unknown-product":
+        products += ",not_a_registered_weather_product"
+    else:
+        source = tmp_path / "broken-wrfout.nc"
+        source.write_bytes(b"not a NetCDF file")
+    out = tmp_path / "failed"
+    rc = cli.main(["render", str(source), "--engine", "rust",
+                   "--products", products, "--out", str(out),
+                   "--run-stamp", "off", "--explain"])
+    captured = capsys.readouterr()
+    assert rc != 0 and "render FAIL:" in captured.err
+    assert not _delivered(out)
+
+
+@needs_renderer
 def test_list_products_whole_hour_axis_serves_windowed(
         wrfout_hourly, tmp_path, capsys):
     rc = cli.main(["render", str(wrfout_hourly), "--engine", "rust",
@@ -1232,14 +1327,116 @@ def test_list_products_rejects_identity_gated_rows(
 
 
 @needs_renderer
+@pytest.mark.parametrize("product", ["qpf_total", "qpf_1h"])
 def test_windowed_products_render_on_whole_hour_stores(
-        wrfout_hourly, tmp_path):
+        product, wrfout_hourly, tmp_path):
     out = tmp_path / "png"
     rc = cli.main(["render", str(wrfout_hourly), "--engine", "rust",
-                   "--products", "qpf_total", "--out", str(out)])
+                   "--products", product, "--out", str(out)])
     assert rc == 0
     produced = _delivered(out)
-    assert any("qpf_total" in name for name in produced), produced
+    assert any(product in name for name in produced), produced
+
+
+@needs_renderer
+def test_split_history_window_matches_the_combined_native_render(tmp_path, capsys):
+    """Hourly split output must draw the same native QPF as one multi-frame file."""
+    stamps = ("1974-04-03_18:00:00", "1974-04-03_19:00:00")
+    first = _write_wrfout(tmp_path / "wrfout_d02_first.nc", stamps[:1])
+    last = _write_wrfout(tmp_path / "wrfout_d02_last.nc", stamps[1:], seed_offset=1)
+    combined = _write_wrfout(tmp_path / "combined.nc", stamps)
+    common = ["--engine", "rust", "--products", "qpf_1h", "--size", "400x300",
+              "--run-stamp", "off"]
+    isolated = tmp_path / "isolated"
+    assert cli.main(["render", str(first), str(last), *common,
+                     "--out", str(isolated)]) == 1
+    assert not _delivered(isolated)
+    assert cli.main(["render", str(last), str(first), "--series", "--engine", "rust",
+                     "--list-products"]) == 0
+    listed = capsys.readouterr().out
+    assert any("qpf_1h" in line and "renderable" in line for line in listed.splitlines())
+    outputs = []
+    for label, paths, flags in (("split", [last, first], ["--series"]),
+                                ("combined", [combined], [])):
+        out = tmp_path / label
+        rc = cli.main(["render", *map(str, paths), *common, *flags, "--out", str(out)])
+        captured = capsys.readouterr()
+        assert rc == 0, captured.out + captured.err
+        outputs.append({path.relative_to(out).as_posix(): path.read_bytes()
+                        for path in out.rglob("*.png")})
+    assert outputs[0] and outputs[0] == outputs[1]
+
+
+def test_series_grouping_keeps_actual_runs_grids_and_episodes_separate(tmp_path):
+    import netCDF4
+    from gpuwm.render import group_history_series
+
+    stamps = ("1974-04-03_18:00:00", "1974-04-03_19:00:00")
+    first = _write_wrfout(tmp_path / "wrfout_d02_first.nc", stamps[:1])
+    last = _write_wrfout(tmp_path / "wrfout_d02_last.nc", stamps[1:])
+    other_domain = _write_wrfout(tmp_path / "wrfout_d03.nc", stamps[:1], grid_id=3)
+    moved = _write_wrfout(tmp_path / "wrfout_d02_moved.nc", stamps[:1])
+    with netCDF4.Dataset(moved, "a") as dataset:
+        dataset.variables["XLAT"][0, 0, 0] += np.float32(0.25)
+    other_start = _write_wrfout(tmp_path / "wrfout_d02_other_start.nc", stamps[:1])
+    with netCDF4.Dataset(other_start, "a") as dataset:
+        dataset.START_DATE = "1974-04-03_17:00:00"
+    independent = []
+    for folder in ("another-run", "episode-002"):
+        directory = tmp_path / folder
+        directory.mkdir()
+        independent.append(_write_wrfout(directory / "wrfout_d02.nc", stamps[:1]))
+    groups = group_history_series([last, other_domain, moved, other_start, *independent, first])
+    assert [first, last] in groups
+    assert {tuple(group) for group in groups if len(group) == 1} == {
+        (path,) for path in (other_domain, moved, other_start, *independent)}
+    duplicate = _write_wrfout(tmp_path / "wrfout_d02_duplicate.nc", stamps[:1])
+    with pytest.raises(ValueError, match="overlapping valid times"):
+        group_history_series([first, duplicate])
+
+
+@needs_renderer
+def test_series_context_provides_window_without_rewriting_early_picture(tmp_path, capsys):
+    stamps = ("1974-04-03_18:00:00", "1974-04-03_19:00:00")
+    first = _write_wrfout(tmp_path / "wrfout_d02_first.nc", stamps[:1])
+    last = _write_wrfout(tmp_path / "wrfout_d02_last.nc", stamps[1:], seed_offset=1)
+    out = tmp_path / "png"
+    common = ["--engine", "rust", "--series", "--products", "2m_temperature,qpf_1h",
+              "--size", "400x300", "--run-stamp", "off", "--out", str(out)]
+    assert cli.main(["render", str(first), *common]) == 0
+    early = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in out.rglob("*.png")}
+    assert early
+    rc = cli.main(["render", str(last), "--context-wrfout", str(first), *common])
+    captured = capsys.readouterr()
+    assert rc == 0, captured.out + captured.err
+    assert {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in early} == early
+    added = set(out.rglob("*.png")) - set(early)
+    assert any("qpf_1h" in path.parts for path in added)
+    assert any("2m_temperature" in path.parts for path in added)
+    assert all("_f001" in path.name for path in added)
+
+
+@needs_renderer
+@pytest.mark.parametrize("missing_hour", [None, 12], ids=["complete-day", "missing-hour"])
+def test_research_long_windows_require_complete_native_writer_history(tmp_path, missing_hour):
+    """Synthetic production-writer fields qualify window availability, not weather skill."""
+    start = datetime.datetime(1974, 4, 3, 18)
+    stamps = [(start + datetime.timedelta(hours=hour)).strftime("%Y-%m-%d_%H:%M:%S")
+              for hour in range(25) if hour != missing_hour]
+    history = _write_wrfout(tmp_path / "full-day.nc", stamps)
+    products = "qpf_6h,2m_temp_0_24h_min,2m_temp_0_24h_max"
+    written, failures, skipped = rustwx.run_renderer(
+        RENDERER, history, store_root=tmp_path / "store", out_dir=tmp_path / "plots",
+        products=products, frames=str(len(stamps) - 1), width=400, height=300)
+    assert not failures, failures
+    assert any("qpf_6h" in str(path) for path in written), (written, skipped)
+    if missing_hour is None:
+        assert len(written) == 3 and not skipped, (written, skipped)
+        assert all(_png_size(path) == (400, 300) for path in written)
+    else:
+        assert len(written) == 1
+        assert {slug for slug, _ in skipped} == {"2m_temp_0_24h_min", "2m_temp_0_24h_max"}
+        assert all("missing" in reason and "12" in reason for _, reason in skipped), skipped
 
 
 def test_list_products_matplotlib_engine(tmp_path, monkeypatch, capsys):
@@ -1470,3 +1667,185 @@ def test_doctor_env_override_naming_missing_file_is_hard(monkeypatch):
     check = _rust_renderer_check()
     assert check.status == "missing"
     assert "names a missing file" in check.detail
+
+
+def test_theme_and_section_reach_the_renderer_invocation(monkeypatch,
+                                                        tmp_path):
+    """A theme is a front-door flag, and saying nothing leaves the
+    invocation byte-identical: no ``--theme`` at all, so the engine
+    draws its own look and the regression gate's hashes hold.  The
+    section line, the isotherm set and the across-line frame travel the
+    same way, verbatim, so the engine's own refusals name a mistake."""
+
+    from gpuwm import render as render_module
+
+    seen = _renderer_spy(monkeypatch, tmp_path)
+
+    render_module.render_wrfouts_rust(
+        [tmp_path / "wrfout_d02_x.nc"], products="t2",
+        timeidx=0, outdir=tmp_path / "png", size=(800, 600))
+    assert "--theme" not in seen[-1]
+    assert "--section" not in seen[-1]
+    assert "--isotherms" not in seen[-1]
+    assert "--section-across" not in seen[-1]
+
+    render_module.render_wrfouts_rust(
+        [tmp_path / "wrfout_d02_x.nc"], products="t2",
+        timeidx=0, outdir=tmp_path / "png", size=(800, 600),
+        theme="dark")
+    assert seen[-1][seen[-1].index("--theme") + 1] == "dark"
+
+    render_module.render_wrfouts_rust(
+        [tmp_path / "wrfout_d02_x.nc"],
+        products="xsec:agent:QCLOUD@cold/wa=1,2,5,10@5",
+        timeidx=0, outdir=tmp_path / "png", size=(800, 600),
+        theme=str(tmp_path / "brand.json"),
+        section="38.32,-99.0,38.32,-98.4",
+        isotherms="0,-5,-10,-15,-20@-10", section_across_km=60)
+    argv = seen[-1]
+    assert argv[argv.index("--theme") + 1] == str(tmp_path / "brand.json")
+    assert argv[argv.index("--section") + 1] == "38.32,-99.0,38.32,-98.4"
+    assert argv[argv.index("--isotherms") + 1] == "0,-5,-10,-15,-20@-10"
+    assert argv[argv.index("--section-across") + 1] == "60.0"
+    # The section product token is engine grammar and passes untouched.
+    assert argv[argv.index("--products") + 1] == \
+        "xsec:agent:QCLOUD@cold/wa=1,2,5,10@5"
+    # A caller that never mentions the section size sends no flag: the
+    # engine draws a cut landscape at the map's width by itself.
+    assert "--section-size" not in argv
+
+    render_module.render_wrfouts_rust(
+        [tmp_path / "wrfout_d02_x.nc"],
+        products="xsec:QCLOUD@cold",
+        timeidx=0, outdir=tmp_path / "png", size=(1800, 1464),
+        section="38.32,-99.0,38.32,-98.4", section_size=(2400, 1200))
+    argv = seen[-1]
+    assert argv[argv.index("--section-size") + 1] == "2400x1200"
+    assert argv[argv.index("--width") + 1] == "1800"
+
+
+def test_theme_and_section_are_on_the_render_parser(monkeypatch, tmp_path):
+    """Typed by a user, not only passed by a caller: ``gpuwm render
+    --theme dark`` and ``--section`` are the doors."""
+
+    seen = _renderer_spy(monkeypatch, tmp_path)
+    wrfout = tmp_path / "wrfout_d02_2026-08-19_00_00_00"
+    wrfout.write_bytes(b"")
+
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        ["render", str(wrfout), "--engine", "rust", "--theme", "dark",
+         "--section", "38.32,-99.0,38.32,-98.4",
+         "--isotherms", "0,-10@-10", "--section-across", "60",
+         "--out", str(tmp_path / "png")])
+    assert args.theme == "dark"
+    assert args.section == "38.32,-99.0,38.32,-98.4"
+    assert args.isotherms == "0,-10@-10"
+    assert args.section_across_km == 60.0
+
+    args = parser.parse_args(
+        ["render", str(wrfout), "--engine", "rust",
+         "--out", str(tmp_path / "png")])
+    assert args.theme is None
+    assert args.section is None
+    assert args.isotherms is None
+    assert args.section_across_km is None
+    assert args.section_size is None
+    assert not seen
+
+    # ``--section-size`` is on the same door, and a value that is not WxH
+    # is refused by name rather than quietly taken as a map size.
+    args = parser.parse_args(
+        ["render", str(wrfout), "--engine", "rust",
+         "--section", "38.32,-99.0,38.32,-98.4",
+         "--section-size", "2400x1200", "--out", str(tmp_path / "png")])
+    assert args.section_size == (2400, 1200)
+    for bad in ("2400", "2400x", "12x9", "axb"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(
+                ["render", str(wrfout), "--engine", "rust",
+                 "--section-size", bad, "--out", str(tmp_path / "png")])
+
+
+def test_the_abi_marker_and_product_parser_carry_the_section_family():
+    """``xsec:`` is engine vocabulary the Python side forwards, so it is
+    part of the handshake (a build predating it answers the old grammar
+    and is refused) and the product parser must not rewrite it."""
+
+    assert "\txsec:\t" in rustwx.RENDERER_ABI_MARKER
+    spec = parse_products_rust(
+        "refl,xsec:cloud:QCLOUD+QRAIN~log/QVAPOR@cold/wa=1,2,5,10@5")
+    assert spec == ("composite_reflectivity,"
+                    "xsec:cloud:QCLOUD+QRAIN~log/QVAPOR@cold/wa=1,2,5,10@5")
+
+
+@needs_renderer
+def test_the_dark_theme_changes_the_pixels_and_no_theme_does_not(
+        wrfout, tmp_path):
+    """The one thing a theme must never do is move a render nobody
+    themed.  Two untitled renders agree byte for byte; the dark built-in
+    differs from them; a theme file with one unknown key is refused
+    before anything is drawn, naming the key."""
+
+    def render(out: Path, *extra: str) -> bytes:
+        rc = cli.main(["render", str(wrfout), "--engine", "rust",
+                       "--products", "t2", "--timeidx", "0",
+                       "--size", "640x480", "--out", str(out), *extra])
+        assert rc == 0, extra
+        produced = [p for p in out.rglob("*.png")]
+        assert len(produced) == 1, produced
+        return Path(render_layout.fs_path(produced[0])).read_bytes()
+
+    first = render(tmp_path / "a")
+    second = render(tmp_path / "b")
+    assert first == second
+    dark = render(tmp_path / "c", "--theme", "dark")
+    assert dark != first
+    named = render(tmp_path / "d", "--theme", "default")
+    assert named == first
+
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"surface": {"canvas": "#000000", "paper": "#fff"}}',
+                   encoding="utf-8")
+    rc = cli.main(["render", str(wrfout), "--engine", "rust",
+                   "--products", "t2", "--timeidx", "0",
+                   "--size", "640x480", "--out", str(tmp_path / "e"),
+                   "--theme", str(bad)])
+    assert rc != 0
+    assert not list((tmp_path / "e").rglob("*.png"))
+
+
+def test_the_abi_marker_matches_the_rust_source_without_a_build():
+    """The Python constant against ``main.rs`` AS TEXT, so it cannot skip.
+
+    ``test_the_pinned_abi_marker_is_the_built_renderer_s_own_answer`` already
+    compares the constant to a BUILT binary, and its docstring argues the
+    no-build skip "cannot hide a mismatch, because there is nothing of this
+    tree's to mismatch with".  That reasoning is what let a real mismatch
+    ship: ``main.rs`` IS of this tree, it is merely not compiled.  Commit
+    26469cd1e added ``mesh:`` and ``meshdiff:`` to the Rust ``ABI_MARKER`` and
+    left ``RENDERER_ABI_MARKER`` behind, so on 2.6.5 ``gpuwm render --engine
+    rust`` refused its own freshly built renderer from ANY source checkout --
+    no binary in existence could satisfy the door -- while every machine
+    without a build skipped the one test that would have said so.
+
+    This reads the Rust literal, so it is red on a bare checkout with no
+    toolchain and no build.  The concrete breakage it prevents: the render
+    door refusing every renderer, which under the render law leaves weather
+    fields undrawn rather than drawn by something else.
+    """
+
+    source = (Path(__file__).resolve().parents[1] / "tools" / "rustwx"
+              / "crates" / "rw-wrfbatch" / "src" / "main.rs")
+    assert source.is_file(), f"{source} is missing"
+    match = re.search(r'const ABI_MARKER:\s*&str\s*=\s*"(.*?)";',
+                      source.read_text(encoding="utf-8"), re.S)
+    assert match, "main.rs no longer declares `const ABI_MARKER: &str`"
+    # Rust line continuations: a trailing backslash-newline eats the newline
+    # and the next line's leading whitespace.
+    literal = re.sub(r"\\\n\s*", "", match.group(1)).replace("\\t", "\t")
+    assert literal == rustwx.RENDERER_ABI_MARKER, (
+        "gpuwm.rustwx.RENDERER_ABI_MARKER and the Rust ABI_MARKER in "
+        f"{source.name} have drifted apart:\n"
+        f"  rust  : {literal!r}\n"
+        f"  python: {rustwx.RENDERER_ABI_MARKER!r}")

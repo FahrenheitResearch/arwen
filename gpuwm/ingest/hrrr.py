@@ -62,7 +62,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _verify_manifest(root: Path, expected_manifest_sha256: str) -> None:
+def _verify_manifest(root: Path, expected_manifest_sha256: str) -> frozenset[Path]:
     manifest = root / "SHA256SUMS"
     expected = str(expected_manifest_sha256).lower()
     if len(expected) != 64 or any(ch not in "0123456789abcdef" for ch in expected):
@@ -119,6 +119,7 @@ def _verify_manifest(root: Path, expected_manifest_sha256: str) -> None:
                         f"expected {expected_digest}, got {payload_hash}")
                 total += path.stat().st_size
         timed.count(bytes_hashed=total)
+    return frozenset(seen)
 
 
 def _read_gate(root: Path) -> dict[str, str]:
@@ -196,6 +197,12 @@ class HrrrNativeSnapshot:
     nx: int
     fields: Mapping[str, np.ndarray]
 
+    def source_cell_latlon(self, rows, cols):
+        """Geographic coordinates of cells in this declared source window."""
+        return hrrr_source_grid().ij_to_latlon(
+            np.asarray(cols, dtype=np.float64) + self.i_start + 1.,
+            np.asarray(rows, dtype=np.float64) + self.j_start + 1.)
+
     def __post_init__(self) -> None:
         if self.forecast_hour not in range(49):
             raise ValueError("the native bridge supports source leads f00..f48")
@@ -241,14 +248,14 @@ def load_hrrr_native_window(
     root = Path(root)
     if not root.is_dir():
         raise FileNotFoundError(f"HRRR bridge directory is missing: {root}")
-    _verify_manifest(root, expected_manifest_sha256)
+    entries = _verify_manifest(root, expected_manifest_sha256)
     gate = _read_gate(root)
-    return _load_verified_hrrr_native_window(root, gate, forecast_hour)
+    return _load_verified_hrrr_native_window(root, gate, forecast_hour, manifest_entries=entries)
 
 
 def _load_verified_hrrr_native_window(
         root: Path, gate: Mapping[str, str],
-        forecast_hour: int) -> HrrrNativeSnapshot:
+        forecast_hour: int, *, manifest_entries=None) -> HrrrNativeSnapshot:
     available_hours = _gate_forecast_hours(gate)
     i_start, i_end, j_start, j_end = _parse_window(gate)
     try:
@@ -270,6 +277,12 @@ def _load_verified_hrrr_native_window(
     for name in _ATMOSPHERE_2D:
         fields[name] = _map_f32(
             atmosphere_dir / f"{name}.f32le", (ny, nx))
+    from .native_supplements import gate_supplement_fields
+    for name in gate_supplement_fields(gate):
+        payload = atmosphere_dir / f"{name}.f32le"
+        if manifest_entries is not None and payload.relative_to(root) not in manifest_entries:
+            raise ValueError(f"supplement payload is not bound by the bridge manifest: {payload}")
+        fields[name] = _map_f32(payload, (ny, nx))
     for name in _SOIL_3D:
         fields[name] = _map_f32(soil_dir / f"{name}.f32le", (9, ny, nx))
     return HrrrNativeSnapshot(
@@ -290,13 +303,13 @@ def load_hrrr_native_series(
     root = Path(root)
     if not root.is_dir():
         raise FileNotFoundError(f"HRRR bridge directory is missing: {root}")
-    _verify_manifest(root, expected_manifest_sha256)
+    entries = _verify_manifest(root, expected_manifest_sha256)
     gate = _read_gate(root)
     requested = tuple(int(hour) for hour in forecast_hours)
     if not requested or len(set(requested)) != len(requested):
         raise ValueError("forecast_hours must be a non-empty unique sequence")
     return tuple(
-        _load_verified_hrrr_native_window(root, gate, hour)
+        _load_verified_hrrr_native_window(root, gate, hour, manifest_entries=entries)
         for hour in requested
     )
 
@@ -1253,6 +1266,8 @@ def interpolate_hrrr_to_lambert(
     # WPS METGRID.TBL routes hydrometeor mass through
     # ``four_pt+average_4pt`` rather than the overshooting parabolic operator.
     # Bilinear interpolation preserves both non-negativity and compact support.
+    if "PMSL" in source:
+        out["PMSL"] = mass_plan.apply(source["PMSL"], method="parabolic")
     for name in ("QC", "QI", "QR", "QS", "QG"):
         out[name] = mass_plan.apply(source[name], method="bilinear")
     # Do not derive/map RH here.  With FLAG_SH, real.exe diagnoses rh_gc from

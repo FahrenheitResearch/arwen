@@ -1,0 +1,13 @@
+{
+  "schema": "arwen.research.hardware-profiles.v1",
+  "status": "unvalidated-candidate-policy",
+  "policy": "Class selects geometry and vertical detail, never capacity. With no --vram-gib, measure actual total and free memory. Preserve recipe duration, cadence and minimum study extent; refuse a fitted footprint below that minimum. Controlled scenarios retain their declared ladder and 49 levels across classes.",
+  "intent_rule": "No nests: regional. Otherwise preferred_finest_dx_km >= 3: mesoscale. Otherwise: storm. Controlled scenarios preserve exact geometry.",
+  "profiles": {
+    "8": {"nz": 49, "regional": {"root_dx_km": 12, "nest_ratios": []}, "mesoscale": {"root_dx_km": 12, "nest_ratios": [3]}, "storm": {"root_dx_km": 4, "nest_ratios": [4]}, "storm_context_minimum_km": 500, "storm_context": {"root_dx_km": 12, "nest_ratios": [4, 3]}, "tradeoff": "Local fine studies use a compact 4 to 1 km pair. Studies requiring at least 500 km of root context use 12 to 3 to 1 km: a coarser context domain buys coverage while preserving the fine focus. Native sizing enforces the required study span."},
+    "12": {"nz": 49, "regional": {"root_dx_km": 9, "nest_ratios": []}, "mesoscale": {"root_dx_km": 12, "nest_ratios": [3]}, "storm": {"root_dx_km": 4, "nest_ratios": [4]}, "storm_context_minimum_km": 500, "storm_context": {"root_dx_km": 12, "nest_ratios": [4, 3]}, "tradeoff": "Regional studies request 9 km spacing. Fine studies requiring at least 500 km of root context use 12 to 3 to 1 km; local studies retain a compact 4 to 1 km pair. Available memory determines actual coverage."},
+    "16": {"nz": 49, "regional": {"root_dx_km": 6, "nest_ratios": []}, "mesoscale": {"root_dx_km": 9, "nest_ratios": [3]}, "storm": {"root_dx_km": 12, "nest_ratios": [4, 3]}, "tradeoff": "Three-domain storm studies add a 12 km context domain around 3 km and 1 km nests; resident cost and preparation increase."},
+    "24": {"nz": 49, "regional": {"root_dx_km": 3, "nest_ratios": []}, "mesoscale": {"root_dx_km": 12, "nest_ratios": [3, 2]}, "storm": {"root_dx_km": 12, "nest_ratios": [4, 3]}, "tradeoff": "Regional studies request 3 km spacing; mesoscale studies add a 2 km inner nest. Storm studies spend available memory on fitted coverage."},
+    "32": {"nz": 64, "regional": {"root_dx_km": 3, "nest_ratios": []}, "mesoscale": {"root_dx_km": 12, "nest_ratios": [3, 2]}, "storm": {"root_dx_km": 12, "nest_ratios": [4, 3]}, "tradeoff": "The 24 GiB horizontal ladders with 64 vertical levels; extra vertical detail consumes memory and runtime, and actual free memory still controls coverage."}
+  }
+}

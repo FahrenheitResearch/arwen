@@ -72,7 +72,10 @@ def test_a_plan_round_trips_through_the_loader_with_paths_made_absolute(
     assert len(plan.sha256) == 64
     # Every run option the route declares is resolved, present or not.
     assert set(plan.run_options) == {
-        "device", "dry_run", "restart", "health_debug"}
+        "device", "dry_run", "restart", "health_debug",
+        "geog_root", "render_products"}
+    assert plan.run_options["geog_root"] is None
+    assert plan.run_options["render_products"] is None
     assert plan.run_options["dry_run"] is False
 
 
@@ -2031,15 +2034,16 @@ def test_a_root_cadence_alone_leaves_the_nest_on_its_default(tmp_path):
     assert _emit(tmp_path, ["--history-interval", "1800"]) == [1800.0, 900.0]
 
 
-def test_a_cadence_off_the_step_grid_is_refused_before_anything_is_written(
+def test_requested_wizard_cadence_derives_a_compatible_clock_before_emission(
         tmp_path):
-    """The engine's own rule, on the wizard's own pre-write round trip."""
+    """An omitted clock can move; the requested output interval cannot."""
 
     import contextlib
     import io as _io
 
     from gpuwm.cli import build_parser
     from gpuwm.domain_wizard import domain_main
+    from gpuwm.experiment import load_experiment
 
     out = tmp_path / "c.toml"
     args = build_parser().parse_args([
@@ -2047,13 +2051,18 @@ def test_a_cadence_off_the_step_grid_is_refused_before_anything_is_written(
         "2024-05-03T12", "--hours", "1", "--vram-gib", "24",
         "--out", str(out), "--history-interval", "7"])
     args.interactive = False
+    assert not out.exists()
     with contextlib.redirect_stdout(_io.StringIO()):
-        with pytest.raises(ValueError) as refusal:
-            domain_main(args)
-    text = str(refusal.value)
-    assert "history_interval_s" in text
-    assert "whole number of that domain's steps" in text
-    assert not out.exists()      # refused BEFORE the file landed
+        assert domain_main(args) == 0
+    # Round-trip the actual public artifact through the shared clock checks.
+    # The old spacing-only 60 s default could not represent this interval.
+    exp = load_experiment(out)
+    assert exp.root.run.dt == 1.0
+    assert exp.root.history_interval_s == 7.0
+    assert exp.root.run.dx == 12000.0
+    assert exp.run_seconds == 3600.0
+    assert "derived root time step adjusted 60 -> 1 s" in out.read_text(
+        encoding="utf-8")
 
 
 def test_cadence_is_an_intent_key_on_both_routes(tmp_path):
@@ -2064,12 +2073,25 @@ def test_cadence_is_an_intent_key_on_both_routes(tmp_path):
     assert "history_interval_s = 1800.0" in resolution["generated_config"]
 
 
-def test_a_bad_intent_cadence_is_a_plan_refusal_not_a_crash(tmp_path):
+def test_intent_cadence_preserves_requested_physics_with_a_derived_clock(tmp_path):
+    from gpuwm.domain_wizard import DEFAULT_PHYSICS_PROFILE, profile_switches
+
     plan = load_plan(_intent_plan(tmp_path, tmp_path / "run",
-                                  history_interval_s=7))
-    with pytest.raises(PlanError) as refusal:
-        resolve_plan(plan, require_inputs=False)
-    assert "history_interval_s" in str(refusal.value)
+        history_interval_s=7, physics_profile=DEFAULT_PHYSICS_PROFILE))
+    resolution, exp, _ = resolve_plan(plan, require_inputs=False)
+    assert exp.root.run.dt == 1.0
+    assert exp.root.history_interval_s == 7.0
+    assert exp.run_seconds == 3600.0
+    # A named suite is caller authority. Its physics periods/selectors must
+    # not be rewritten to accommodate an incompatible author-chosen clock.
+    declared = profile_switches(DEFAULT_PHYSICS_PROFILE)
+    for key in ("mp_physics", "cu_physics", "bl_pbl_physics",
+                "sf_sfclay_physics", "sf_surface_physics",
+                "ra_lw_physics", "ra_sw_physics", "radt", "cudt_minutes"):
+        assert getattr(exp.root.run, key) == declared[key], key
+    assert "history_interval_s = 7.0" in resolution["generated_config"]
+    assert "derived root time step adjusted 60 -> 1 s" in resolution["generated_config"]
+    assert not plan.run_dir.exists()  # resolution still does not launch
 
 
 # ---------------------------------------------------------------------------

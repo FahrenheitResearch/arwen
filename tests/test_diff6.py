@@ -6,8 +6,9 @@ checkerboard loses exactly ``diff_6th_factor`` of its amplitude per applied
 step (within 2%), a smooth 8dx wave is damped at < 1/50 of that rate, the
 monotonic option (diff_6th_opt=2) creates no new extrema on a sharp front
 (while the unlimited operator provably does), and the ``dycore.step`` gate:
-``diff_6th_opt=0`` leaves the step untouched, ``=2`` damps theta' and the
-moisture scalars at the configured rate.
+``diff_6th_opt=0`` leaves the step untouched, ``=2`` damps theta' at the
+configured rate and the moisture scalars at three times it (WRF normalizes
+the scalar rows by the RK sub-step -- see :data:`SCALAR_FACTOR`).
 """
 import numpy as np
 import pytest
@@ -16,6 +17,16 @@ from conftest import requires_gpu
 pytestmark = pytest.mark.gpu
 
 FACTOR = 0.12
+
+# WRF hands ``sixth_order_diffusion`` the caller's dt, and the two callers
+# do not agree: ``rk_tendency`` passes ``grid%dt`` for u/v/w/theta
+# (dyn_em/module_em.F:882/894/907/919) while ``rk_scalar_tend`` passes its
+# ``dt_step`` for the moist/scalar/tke rows (:1425), which on the
+# ``rk_step == 1`` pass that owns the call is ``dt_rk = grid%dt/3.``
+# (dyn_em/solve_em.F:599, :2211).  ``diff_6th_coef =
+# diff_6th_factor*0.015625/(2.0*dt)`` (module_big_step_utilities_em.F:6321),
+# so the scalar filter removes three times the 2dx amplitude per step.
+SCALAR_FACTOR = 3.0 * FACTOR
 
 
 def _checkerboard(ny, nx):
@@ -606,6 +617,43 @@ def test_step_adds_one_time_t_diff6_tendency_to_all_three_rk_stages(
 
 
 @requires_gpu
+def test_diff6_dry_and_scalar_rows_take_different_dt(monkeypatch):
+    """WRF's two ``sixth_order_diffusion`` callers pass different ``dt``.
+
+    ``rk_tendency`` hands ``grid%dt`` to the u/v/w/theta calls
+    (dyn_em/module_em.F:882/894/907/919, all inside ``forward_step:
+    IF( rk_step == 1 )`` at :800, and the routine's ``dt`` dummy is bound to
+    ``grid%dt`` at dyn_em/solve_em.F:892).  ``rk_scalar_tend`` hands its own
+    ``dt_step`` to the moist/scalar/tke call (:1425, inside ``rk_step_1``
+    at :1378), and every ``rk_scalar_tend`` call site passes ``dt_rk``
+    (solve_em.F:2211, :2380, :2473, :2635, :2777), which is ``grid%dt/3.``
+    on ``rk_step == 1`` for ``rk_ord = 3`` (:596-600).  The argument is the
+    filter strength -- ``diff_6th_coef = diff_6th_factor*0.015625/(2.0*dt)``
+    (module_big_step_utilities_em.F:6321) -- so a single ``dt`` for every
+    row is a third of WRF's scalar filter.  Recorded per row rather than
+    measured, so the pin names the divergence instead of a damping ratio.
+    """
+    from gpuwm.config import RunConfig
+    from gpuwm.core import dycore
+
+    cfg = RunConfig(**_STEP_BASE, moist=True, diff_6th_opt=2,
+                    diff_6th_factor=FACTOR)
+    state = _atrest(cfg)
+    seen = {}
+
+    def record(f, tend, mut, c1, c2, factor, dt, opt, **kw):
+        seen[id(f)] = dt
+
+    monkeypatch.setattr(dycore, "launch_diff6", record)
+    dycore.prepare_fixed_tendencies(state, cfg)
+
+    for name in ("u0", "v0", "w0", "thp0"):
+        assert seen[id(getattr(state, name))] == cfg.dt, name
+    for name in ("qv0", "qc0", "qr0"):
+        assert seen[id(getattr(state, name))] == cfg.dt / 3.0, name
+
+
+@requires_gpu
 def test_step_gate_dry_theta_checkerboard():
     # dycore gate: diff_6th_opt=0 leaves a theta' checkerboard essentially
     # untouched over one tiny step; opt=2 removes the configured fraction
@@ -633,8 +681,10 @@ def test_step_gate_dry_theta_checkerboard():
 
 @requires_gpu
 def test_step_moist_scalar_checkerboard():
-    # Moisture path through dycore.step: a qv checkerboard is damped by the
-    # configured fraction per step (opt=0 twin as the reference).
+    # Moisture path through dycore.step: a qv checkerboard is damped by
+    # three times the configured fraction per step, because WRF normalizes
+    # the rk_scalar_tend rows by dt/3 (SCALAR_FACTOR); opt=0 twin as the
+    # reference.
     import cupy as cp
 
     from gpuwm.config import RunConfig
@@ -652,7 +702,7 @@ def test_step_moist_scalar_checkerboard():
         amp[opt] = _cb_amp(cp.asnumpy(s.qv).astype(np.float64), cb)
     assert abs(amp[0] - 0.001) < 1e-5             # opt=0: no diffusion
     ratio = amp[2] / amp[0]
-    assert abs(ratio - (1.0 - FACTOR)) < 0.02 * (1.0 - FACTOR)
+    assert abs(ratio - (1.0 - SCALAR_FACTOR)) < 0.02 * (1.0 - SCALAR_FACTOR)
 
 
 @requires_gpu
@@ -694,7 +744,7 @@ def test_step_moist_mix6_off_spares_moisture_and_keeps_damping_theta():
     # moist_mix6_off = false is WRF's default and must be exactly the
     # behaviour the sibling test already pins.
     on = qv_amp[(False, 2)] / qv_amp[(False, 0)]
-    assert abs(on - (1.0 - FACTOR)) < 0.02 * (1.0 - FACTOR)
+    assert abs(on - (1.0 - SCALAR_FACTOR)) < 0.02 * (1.0 - SCALAR_FACTOR)
 
     # ... and with it true the moisture keeps its amplitude ...
     off = qv_amp[(True, 2)] / qv_amp[(True, 0)]
@@ -707,3 +757,48 @@ def test_step_moist_mix6_off_spares_moisture_and_keeps_damping_theta():
         ratio = th_amp[(mix6_off, 2)] / th_amp[(mix6_off, 0)]
         assert abs(ratio - (1.0 - FACTOR)) < 0.02 * (1.0 - FACTOR), (
             f"theta damping moved with moist_mix6_off = {mix6_off}")
+
+
+@requires_gpu
+def test_diff6_verification_helper_preserves_the_dry_scalar_normalization():
+    """The retained verifier must measure production's distinct row strengths.
+
+    On a periodic 2dx mode with constant horizontal mass, WRF removes F
+    of theta and 3F of moisture: the dry and scalar callers pass dt and
+    dt/3 respectively. Compare both to that analytic amplitude and to the
+    production held tendency, so a shared but wrong normalization cannot
+    pass by agreement alone.
+    """
+    import cupy as cp
+
+    from gpuwm.config import RunConfig
+    from gpuwm.core import dycore
+
+    cfg = RunConfig(**_STEP_BASE, moist=True, mp_physics=6, km_opt=0,
+                    diff_6th_opt=2, diff_6th_factor=FACTOR)
+    state = _atrest(cfg)
+    checker = _checkerboard(cfg.ny, cfg.nx)
+    for name, offset, amplitude in (("thp", 0.0, 0.1), ("qv", 0.01, 0.001)):
+        field = getattr(state, name)
+        field[...] = cp.asarray(
+            np.broadcast_to(offset + amplitude * checker, field.shape),
+            dtype=cp.float32)
+        getattr(state, name + "0")[...] = field
+    before = {name: cp.asnumpy(getattr(state, name)).copy()
+              for name in ("thp", "qv")}
+    dycore.prepare_fixed_tendencies(state, cfg)
+    chm = (state.c1h[:, None, None] * (state.mub2d + state.mup)[None]
+           + state.c2h[:, None, None])
+    predicted = {
+        name: before[name] + cp.asnumpy(
+            cp.float32(cfg.dt) * state.scratch(state.p.shape, slot) / chm)
+        for name, slot in (("thp", "smag_rth"), ("qv", "smag_rqv"))
+    }
+    dycore.apply_diff6(state, cfg)
+    for name, strength in (("thp", FACTOR), ("qv", 3.0 * FACTOR)):
+        actual = cp.asnumpy(getattr(state, name))
+        np.testing.assert_allclose(actual, predicted[name], rtol=2.0e-6,
+                                   atol=2.0e-8, err_msg=name)
+        ratio = _cb_amp(actual, checker) / _cb_amp(before[name], checker)
+        np.testing.assert_allclose(ratio, 1.0 - strength,
+                                   rtol=2.0e-6, atol=2.0e-7, err_msg=name)

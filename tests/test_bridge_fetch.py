@@ -950,7 +950,7 @@ def test_the_bundle_tool_writes_a_deterministic_archive(tmp_path, platform):
     assert digests[0] == digests[1]
 
 
-def test_the_bundle_tool_names_the_artifact_it_cannot_find(tmp_path):
+def test_the_bundle_tool_names_the_artifact_it_cannot_find(tmp_path, monkeypatch):
     result = subprocess.run(
         [sys.executable, str(BUNDLE_TOOL), "pack", "--release", "v0.0.0-test",
          "--platform", "linux-x86_64", "--search", str(tmp_path),
@@ -958,6 +958,27 @@ def test_the_bundle_tool_names_the_artifact_it_cannot_find(tmp_path):
         capture_output=True, text=True)
     assert result.returncode != 0
     assert "grib1_bridge" in (result.stderr + result.stdout)
+
+    # Fixture discovery must find every crate the registry now bundles,
+    # and a missing file must still make that set incomplete. Keep the
+    # user-level fallback empty so no installed binary can mask the hole.
+    root = tmp_path / "checkout"
+    monkeypatch.setitem(globals(), "REPO_ROOT", root)
+    monkeypatch.setattr(bridges, "default_bridge_dir", lambda: tmp_path / "empty")
+    monkeypatch.setattr(bridge_assets, "host_platform", lambda: "linux-x86_64")
+    built = []
+    for artifact in bridge_assets.BUNDLED_ARTIFACTS:
+        path = (root / artifact.crate / "target" / "release"
+                / bridge_assets.artifact_filename(artifact, "linux-x86_64"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"discovery fixture, not executable proof")
+        built.append(path)
+    assert set(_built_artifact_dirs()) == {path.parent for path in built}
+    for path in built:
+        contents = path.read_bytes()
+        path.unlink()
+        assert _built_artifact_dirs() is None, path.name
+        path.write_bytes(contents)
 
 
 # ---------------------------------------------------------------------------
@@ -967,8 +988,8 @@ def test_the_bundle_tool_names_the_artifact_it_cannot_find(tmp_path):
 def _built_artifact_dirs() -> list[Path] | None:
     """Directories holding this machine's own built Rust artifacts.
 
-    A checkout that has run ``cargo build --release`` in both vendored
-    workspaces, or the user-level directory a previous ``fetch-bridges``
+    A checkout that has built every crate the bundle registry names,
+    or the user-level directory a previous ``fetch-bridges``
     filled.  None means the machine simply has nothing to pack, which is
     a skip rather than a failure.
     """
@@ -979,8 +1000,8 @@ def _built_artifact_dirs() -> list[Path] | None:
     wanted = [bridge_assets.artifact_filename(artifact, host)
               for artifact in bridge_assets.BUNDLED_ARTIFACTS]
     groups = [
-        [bridges.crate_dir() / "target" / "release",
-         REPO_ROOT / "tools" / "rustwx" / "target" / "release"],
+        list(dict.fromkeys(REPO_ROOT / artifact.crate / "target" / "release"
+                           for artifact in bridge_assets.BUNDLED_ARTIFACTS)),
         [bridges.default_bridge_dir()],
     ]
     for group in groups:
@@ -1013,6 +1034,10 @@ def real_bundle(tmp_path_factory):
     # honest --source-rev exists for them.
     revisions: set[str] = set()
     for artifact in bridge_assets.BUNDLED_ARTIFACTS:
+        if artifact.vendored:
+            # The unchanged pin command below verifies its declared ABI and
+            # bytes. A verbatim upstream crate carries no checkout HEAD stamp.
+            continue
         name = bridge_assets.artifact_filename(artifact, host)
         path = next(directory / name for directory in directories
                     if (directory / name).is_file())
@@ -1025,8 +1050,8 @@ def real_bundle(tmp_path_factory):
     if len(revisions) != 1:
         pytest.skip("this machine's built artifacts are from "
                     f"{len(revisions)} different source revisions "
-                    f"({', '.join(sorted(revisions))}); rebuild both "
-                    "workspaces from one checkout")
+                    f"({', '.join(sorted(revisions))}); rebuild all "
+                    "ArWen-authored workspaces from one checkout")
     source_rev = revisions.pop()
 
     work = tmp_path_factory.mktemp("bridge-bundle")

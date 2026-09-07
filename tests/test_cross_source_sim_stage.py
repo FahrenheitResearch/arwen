@@ -35,8 +35,10 @@ ROOT = Path(__file__).parents[1]
 FIXTURES = ROOT / "tests" / "data" / "aigefs_member_hybrid"
 PROFILE_SOURCE = "aigefs"
 PROFILE_ID = "aigefs-member-hybrid-grib2-v1"
-EXPERIMENT_CONFIG = ROOT / "configs" / "aigefs_member_demo.toml"
-WPS_NAMELIST = ROOT / "configs" / "aigefs_member_demo.namelist.wps"
+# Exact 0cd2d5981 config bytes sealed by proof.json. Later demo edits are
+# not this retained preparation; both original digests remain unchanged.
+EXPERIMENT_CONFIG = FIXTURES / "aigefs_member_demo.toml"
+WPS_NAMELIST = FIXTURES / "aigefs_member_demo.namelist.wps"
 
 
 def _canonical_hash(payload: dict) -> str:
@@ -131,3 +133,42 @@ def test_a_failed_binding_alignment_refuses(prepared_tree):
     proof["proof_content_sha256"] = _canonical_hash(proof)
     with pytest.raises(ValueError, match="alignment"):
         _validate(prepared, proof, manifest)
+
+
+@pytest.mark.parametrize("tamper", [None, "mapping", "data", "provenance"])
+def test_real_cross_source_receipt_also_binds_caller_authored_authorities(prepared_tree, tamper):
+    """The retained real producer receipt is also valid under an honest generic identity."""
+    prepared, proof, manifest = prepared_tree
+    proof, manifest = copy.deepcopy(proof), copy.deepcopy(manifest)
+    receipt = proof["source_composition"]
+    for role in ("mapping", "composition"):
+        path = prepared / "source-evidence" / (role + ".json")
+        authority = json.loads(path.read_text(encoding="utf-8"))
+        authority["name"] = "caller-authored-" + role
+        path.write_text(json.dumps(authority, sort_keys=True) + "\n", encoding="utf-8")
+        manifest[role + "_sha256"] = _sha256(path)
+        receipt[role]["sha256"] = _sha256(path)
+    manifest_path = prepared / "source-evidence" / "input-manifest.json"
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+    receipt["input_manifest"]["sha256"] = _sha256(manifest_path)
+    if tamper:
+        entry = receipt["contributing_sources"][0]
+        record = entry["data"][0] if tamper == "data" else entry[tamper]
+        record["sha256"] = "0" * 64
+    content = dict(receipt)
+    content.pop("receipt_content_sha256")
+    receipt["receipt_content_sha256"] = hashlib.sha256(runner._canonical(content).encode()).hexdigest()
+    proof["proof_content_sha256"] = _canonical_hash(proof)
+    def validate():
+        runner._manifest_file_specs("mapped", manifest, None, proof)
+        return runner._validate_packaged_mapped_evidence(
+            prepared_root=prepared, proof=proof, manifest=manifest,
+            manifest_sha256=_sha256(manifest_path), source="mapped",
+            experiment_config=EXPERIMENT_CONFIG, wps_namelist=WPS_NAMELIST)
+    if tamper:
+        with pytest.raises(ValueError, match="contributing"):
+            validate()
+    else:
+        paths, authority, member = validate()
+        assert authority["mapping_sha256"] == manifest["mapping_sha256"]
+        assert member is None

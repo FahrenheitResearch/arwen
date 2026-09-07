@@ -88,7 +88,7 @@ impl ClassicFile {
         let file_data = self.data.as_slice();
 
         if var.is_record_var {
-            let record_stride = compute_record_stride(&self.root_group.variables);
+            let record_stride = compute_record_stride(&self.root_group.variables)?;
             data::read_record_variable(file_data, var, self.numrecs, record_stride)
         } else {
             data::read_non_record_variable(file_data, var)
@@ -219,7 +219,7 @@ impl ClassicFile {
             return read_non_record_variable_slice_direct(file_data, var, &resolved);
         }
 
-        let record_stride = compute_record_stride(&self.root_group.variables);
+        let record_stride = compute_record_stride(&self.root_group.variables)?;
         read_record_variable_slice_direct(file_data, var, self.numrecs, record_stride, &resolved)
     }
 
@@ -276,7 +276,7 @@ impl ClassicFile {
         file_data: &[u8],
     ) -> Result<ArrayD<T>> {
         if var.is_record_var {
-            let record_stride = compute_record_stride(&self.root_group.variables);
+            let record_stride = compute_record_stride(&self.root_group.variables)?;
             data::read_record_variable(file_data, var, self.numrecs, record_stride)
         } else {
             data::read_non_record_variable(file_data, var)

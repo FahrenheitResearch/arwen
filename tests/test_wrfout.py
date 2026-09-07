@@ -146,6 +146,67 @@ def test_wrfout_roundtrip(tmp_path):
     ds.close()
 
 
+def test_wrfout_publication_fsyncs_the_directory_that_names_the_frame(
+        monkeypatch, tmp_path):
+    """The frame's DATA was durable; its NAME was not.
+
+    ``close`` open-codes the produce / fsync / validate / rename sequence
+    that ``supervisor.atomic_publish_file`` performs, and dropped that
+    helper's last step.  POSIX ``rename(2)`` is atomic for concurrent
+    readers and is not durable until the containing directory's metadata
+    is synced, so a machine that loses power seconds after a frame is
+    published can come back with the file's bytes intact and its
+    directory entry still naming the hidden temporary -- which the next
+    run's ``quarantine_orphan_wrfouts`` sweeps into ``.quarantine`` on the
+    ``.wrfout*.tmp*`` glob.  The frame-ready marker beside it IS published
+    through ``supervisor.atomic_write_json``, which fsyncs its own
+    directory, so the ordering can invert and the documented invariant "a
+    marker that exists names a frame that is complete and readable"
+    becomes false.
+
+    Driven through a writer SHELL rather than a real tape: the property
+    under test is the publication sequence, and every other step of it is
+    covered by the round trips above.
+
+    RED before the fix: ``wrfout._fsync_directory`` does not exist, so
+    there is nothing to record.
+    """
+    from gpuwm.io import wrfout as wrfout_module
+
+    class _Ds:
+        variables: dict = {}
+
+        def setncattr(self, name, value):
+            pass
+
+        def close(self):
+            pass
+
+    writer = object.__new__(WrfoutWriter)
+    writer._closed = False
+    writer._n = 1
+    writer._times = ["1974-04-03_18:00:00"]
+    writer._temp_path = tmp_path / ".wrfout_d01.tmp.1.0"
+    writer._final_path = tmp_path / "wrfout_d01_1974-04-03_18-00-00.nc"
+    writer._temp_path.write_bytes(b"a published frame")
+    writer.ds = _Ds()
+
+    synced = []
+    real_fsync_directory = wrfout_module._fsync_directory
+    monkeypatch.setattr(wrfout_module, "validate_wrfout_file",
+                        lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        wrfout_module, "_fsync_directory",
+        lambda directory: (synced.append(Path(directory)),
+                           real_fsync_directory(directory))[1])
+
+    writer.close()
+
+    assert writer._final_path.read_bytes() == b"a published frame"
+    assert not writer._temp_path.exists()
+    assert synced == [writer._final_path.parent]
+
+
 def test_wrfout_moist_terrain_fields_and_attrs(tmp_path):
     """Phase 2 Task 12: QVAPOR/QCLOUD/QRAIN, HGT, and the terrain-consistent
     (per-column 3-D) PHB base roundtrip, and every variable carries the WRF
@@ -403,6 +464,119 @@ def test_wrfout_real74_time_topology_vertical_and_coordinate_metadata(
         assert ds["XLAT_V"].coordinates == "XLONG_V XLAT_V"
 
 
+def _v461_reference_globals():
+    """The pinned v4.6.1 WRF product's own global attributes.
+
+    ``gpuwm/wrf_direct_v461_contract.json`` is this repository's extracted
+    contract of a REAL WRF v4.6.1 file, so it is an oracle rather than a
+    transcription: an attribute this exporter is supposed to write the way
+    WRF writes it can be compared against the value WRF actually wrote.
+    """
+    import json
+    from pathlib import Path as _Path
+
+    path = (_Path(__file__).resolve().parents[1] / "gpuwm"
+            / "wrf_direct_v461_contract.json")
+    return json.loads(path.read_text())["wrfinput"]["global_attributes"]
+
+
+def test_the_wrf_time_globals_and_land_category_count_match_the_reference():
+    """GMT/JULYR/JULDAY/NUM_LAND_CAT: four globals stock WRF always writes.
+
+    The emitted set was 46 attributes against the pinned v4.6.1 reference
+    file's 92, and four of the differences are attributes stock WRF writes
+    into EVERY history file and that this run already knows.  ARWpost and
+    the older NCL post-processing chain place a file in time by
+    ``GMT``/``JULYR``/``JULDAY`` rather than by the ``START_DATE`` string,
+    and a consumer handed ``MMINLU`` and ``LU_INDEX`` with no
+    ``NUM_LAND_CAT`` has to ASSUME a category count to size a table --
+    which is the guess the ``ISOILWATER`` entry beside it was added to
+    retire.
+
+    Driven off the reference file's own values: for the instant the
+    reference file starts at, this writer must produce the numbers the
+    reference file carries.
+
+    RED before the fix: ``wrf_global_attrs`` emits none of the four, so the
+    first lookup raises ``KeyError``.
+    """
+    from datetime import datetime as _datetime
+
+    from gpuwm.io.wrfout import wrf_global_attrs
+
+    reference = _v461_reference_globals()
+    start = _datetime.strptime(reference["SIMULATION_START_DATE"],
+                               "%Y-%m-%d_%H:%M:%S")
+    grid = SimpleNamespace(
+        truelat1=38.5, truelat2=38.5, stand_lon=-97.5,
+        ref_lat=35.5, ref_lon=-98.0, cen_lat=35.5, cen_lon=-98.0,
+        moad_cen_lat=35.5)
+    attrs = wrf_global_attrs(grid, start)
+
+    assert float(attrs["GMT"]) == reference["GMT"]
+    assert int(attrs["JULYR"]) == reference["JULYR"]
+    assert int(attrs["JULDAY"]) == reference["JULDAY"]
+    # NC_FLOAT and NC_INT, like WRF's own -- not the NC_DOUBLE/NC_INT64 a
+    # bare Python float or int would become.
+    assert attrs["GMT"].dtype == np.dtype(np.float32)
+    assert attrs["JULYR"].dtype == np.dtype(np.int32)
+    assert attrs["JULDAY"].dtype == np.dtype(np.int32)
+    # The land-use identity group states its own category count, and the
+    # count belongs to the table the other five members name.
+    for name in ("NUM_LAND_CAT", "MMINLU", "ISWATER", "ISLAKE", "ISICE",
+                 "ISURBAN", "ISOILWATER"):
+        assert attrs[name] == reference[name], name
+
+    # A time of day, so GMT is not accidentally right at midnight only.
+    noon_thirty = wrf_global_attrs(
+        grid, _datetime(2026, 7, 18, 12, 30, 36))
+    assert float(noon_thirty["GMT"]) == np.float32(12.51)
+    assert int(noon_thirty["JULDAY"]) == 199
+
+
+def test_the_patch_extent_globals_match_the_reference_file():
+    """The twelve ``*_PATCH_*`` globals WRF's own I/O layer reads.
+
+    ``WEST-EAST_GRID_DIMENSION`` says how big the DOMAIN is; the patch
+    group says which slab of it THIS FILE holds, and it is what WRF's
+    netCDF I/O layer and the ndown-class tools read for extent.  gpuwm
+    writes one undecomposed patch per domain, so start is 1 on every axis
+    and the two ends bracket the mass/staggered counts -- which is exactly
+    what the reference file carries, and the relationship is checked
+    against ITS dimensions rather than restated here.
+
+    RED before the fix: ``gpuwm.io.wrfout`` has no
+    ``_wrf_patch_extent_attrs``, so the import raises ``ImportError``.
+    """
+    from gpuwm.io.wrfout import _wrf_patch_extent_attrs
+
+    reference = _v461_reference_globals()
+    # The reference's own domain size, read the way the file states it.
+    nx = int(reference["WEST-EAST_GRID_DIMENSION"]) - 1
+    ny = int(reference["SOUTH-NORTH_GRID_DIMENSION"]) - 1
+    nz = int(reference["BOTTOM-TOP_GRID_DIMENSION"]) - 1
+
+    emitted = _wrf_patch_extent_attrs(nx, ny, nz)
+    expected = {name: reference[name] for name in reference
+                if "_PATCH_" in name}
+    assert len(expected) == 12, (
+        "the reference file lost its patch group; this test would then "
+        "compare nothing")
+    assert emitted == expected
+
+    # A different domain moves the ends and never the starts.
+    other = _wrf_patch_extent_attrs(7, 5, 3)
+    assert other["WEST-EAST_PATCH_END_UNSTAG"] == 7
+    assert other["WEST-EAST_PATCH_END_STAG"] == 8
+    assert other["SOUTH-NORTH_PATCH_END_UNSTAG"] == 5
+    assert other["SOUTH-NORTH_PATCH_END_STAG"] == 6
+    assert other["BOTTOM-TOP_PATCH_END_UNSTAG"] == 3
+    assert other["BOTTOM-TOP_PATCH_END_STAG"] == 4
+    assert set(other) == set(emitted)
+    assert all(value == 1 for name, value in other.items()
+               if name.endswith(("_PATCH_START_UNSTAG", "_PATCH_START_STAG")))
+
+
 @pytest.mark.gpu
 @requires_gpu
 def test_state_frame_from_domain_state():
@@ -566,6 +740,13 @@ def test_wrf_time_str():
     assert wrf_time_str(58 * 86400.0) == "0001-02-28_00:00:00"
     assert wrf_time_str(59 * 86400.0) == "0001-03-01_00:00:00"
     assert wrf_time_str(365 * 86400.0) == "0002-01-01_00:00:00"
+    # And the year is FOUR digits wide, always.  strftime("%Y") is unpadded
+    # on glibc and MSVCRT, so the idealized epoch used to emit a 16-character
+    # record that write_frame null-padded into the 19-wide Times array
+    # WrfoutWriter declares -- shifting every field of WRF's fixed
+    # YYYY-MM-DD_HH:MM:SS layout.  Width is the property, so assert width.
+    for seconds in (0.0, 305.0, 365 * 86400.0, 999 * 365 * 86400.0):
+        assert len(wrf_time_str(seconds)) == 19, seconds
     with pytest.raises(ValueError, match="non-negative"):
         wrf_time_str(-1.0)
     with pytest.raises(ValueError, match="overflows"):
@@ -1040,7 +1221,15 @@ def test_per_domain_writer_builds_static_metadata_once(
             coord=SimpleNamespace(hybrid_opt=2, etac=0.2)))
     node = SimpleNamespace(
         cfg=cfg, grid=grid, state=object(),
-        clock=SimpleNamespace(tick_den=1))
+        # `spec` is not optional in a clock stand-in any more: the writer
+        # stamps the CONFIGURED step on the tape (`configured_dt`), which
+        # under an adaptive clock is the only place the step the run was
+        # asked for survives -- the live one moves every root step.  This
+        # fake carried only `tick_den` and the suite went red on the line
+        # the moment that argument landed, unseen because no battery file
+        # covered the per-domain writer's construction.
+        clock=SimpleNamespace(tick_den=1,
+                              spec=SimpleNamespace(dt_fp32=30.0)))
     model = SimpleNamespace(
         _prepared_by_grid_id={1: case},
         walk_parent_first=lambda: (node,))

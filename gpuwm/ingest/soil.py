@@ -345,6 +345,26 @@ def _soil_temperature_elevation_delta(terrain, source_orography, terrestrial):
 #: sharpest gradient either field has.
 _SNOW_OVERSHOOT_FRACTION = 0.25
 
+#: The other side of the same band: ceilings past which a snow field is
+#: a unit error rather than a snowpack.  There is no bounded-stencil
+#: story up here -- the horizontal operators cannot overshoot ABOVE the
+#: source maximum by orders of magnitude, so a value this large is what
+#: the source said, in whatever unit the route believed it was said in.
+#: The two ceilings are one column stated twice, related by the same
+#: 5:1 liquid-to-depth ratio (200 kg m-3) the SNOW/SNOWH reconciliation
+#: below uses, so a field derived from its partner cannot land outside
+#: its own bound.  100 m is a bit over twice the deepest real field this
+#: preprocessor has been handed (the 44.5 m maximum recorded below) and
+#: well past the deepest snow ever measured; 20 000 kg m-2 is that
+#: column's water equivalent, itself twice the ECMWF land scheme's cap
+#: on permanent snow (10 m of water equivalent).  A ceiling catches a
+#: factor of 1000 -- metres of water equivalent read as kg m-2, or the
+#: reverse -- and it cannot catch a factor of two.  It is a plausibility
+#: bound, not a substitute for the field arriving under the name that
+#: states its unit.
+_SNOW_WATER_CEILING_KG_M2 = 2.0e4
+_SNOW_DEPTH_CEILING_M = 1.0e2
+
 #: A route that declares no source mesh is announced once per process, not
 #: once per forcing time and per domain, on the same reasoning as
 #: ``horiz.py``'s ``_REPORTED_FRACTIONAL_RECOVERY``: the fact is a property
@@ -353,7 +373,8 @@ _SNOW_OVERSHOOT_FRACTION = 0.25
 _REPORTED_MISSING_SOIL_MESH: set = set()
 
 
-def _admitted_snow_field(name: str, value: np.ndarray, shape) -> np.ndarray:
+def _admitted_snow_field(name: str, value: np.ndarray, shape,
+                         ceiling: float, unit: str) -> np.ndarray:
     """Admit one snow field, repairing bounded overshoot at zero.
 
     Snow water and snow depth are physically non-negative, so a negative
@@ -369,6 +390,12 @@ def _admitted_snow_field(name: str, value: np.ndarray, shape) -> np.ndarray:
     -- a fill value, a unit error, a broken decode -- still refuses,
     with the numbers in the sentence.  Fields already non-negative are
     untouched, so every previously passing case is byte-identical.
+
+    The band is two-sided.  ``ceiling`` is the plausibility bound above
+    which the field is not a snowpack at all (see
+    ``_SNOW_WATER_CEILING_KG_M2``), and it is checked whatever the
+    minimum is -- the early return below is for the overshoot repair,
+    not for admission.
     """
     if value.shape != tuple(shape):
         raise ValueError(
@@ -378,6 +405,12 @@ def _admitted_snow_field(name: str, value: np.ndarray, shape) -> np.ndarray:
         raise ValueError(
             f"{name} carries {int(np.count_nonzero(~np.isfinite(value)))} "
             f"non-finite value(s) of {value.size}")
+    largest = float(np.max(value))
+    if largest > ceiling:
+        raise ValueError(
+            f"{name} is above the plausibility ceiling of {ceiling:.6g} "
+            f"{unit}: {int(np.count_nonzero(value > ceiling))} value(s) "
+            f"of {value.size}, field maximum {largest:.6g} {unit}")
     smallest = float(np.min(value))
     if smallest >= 0.0:
         return value
@@ -631,7 +664,7 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
                          water_temperature=None,
                          water_temperature_policy=None,
                          soil_mesh=None,
-                         route=None) -> NoahSoilState:
+                         route=None, fractional_seaice: bool = False) -> NoahSoilState:
     """Map ERA5 layers, GFS Noah layers, or native HRRR depth nodes to Noah.
 
     This is ``module_soil_pre.F:init_soil_2_real`` with layer input:
@@ -841,10 +874,13 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
     # must be XLAND=1; otherwise the driver's earlier open-water return masks
     # the xice branch.
     xice[terrestrial] = 0.0
-    sea_ice = (~terrestrial) & (xice >= 0.5)
-    # fractional_seaice=0: adjust_for_seaice_post snaps ice to one and
-    # removes sub-threshold fractions (module_soil_pre.F:258-262,301-302).
-    xice[sea_ice] = 1.0
+    if not isinstance(fractional_seaice, (bool, np.bool_)):
+        raise TypeError("fractional_seaice must be boolean")
+    sea_ice = (~terrestrial) & (xice >= (0.02 if fractional_seaice else 0.5))
+    # WRF adjust_for_seaice_post preserves fractions in its fractional arm;
+    # the historical/default binary arm snaps retained ice to one.
+    if not fractional_seaice:
+        xice[sea_ice] = 1.0
     xice[(~terrestrial) & (~sea_ice)] = 0.0
     effective_land = terrestrial | sea_ice
     landmask = effective_land.astype(np.float64)
@@ -1113,8 +1149,10 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
     snowh = (_host(fields["SNOWH"]) if snowh_present
              else np.zeros(shape, dtype=np.float64))
     snow, snowh = (
-        _admitted_snow_field("snow water", snow, shape),
-        _admitted_snow_field("snow depth", snowh, shape))
+        _admitted_snow_field("snow water", snow, shape,
+                             _SNOW_WATER_CEILING_KG_M2, "kg m-2"),
+        _admitted_snow_field("snow depth", snowh, shape,
+                             _SNOW_DEPTH_CEILING_M, "m"))
     if not snow_present and snowh_present:
         snow = snowh * (1000.0 / 5.0)
     elif snow_present and not snowh_present:

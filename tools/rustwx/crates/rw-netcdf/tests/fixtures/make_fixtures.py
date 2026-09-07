@@ -123,7 +123,17 @@ def make_mixed() -> None:
     print(f"wrote {path} ({path.stat().st_size} bytes)")
 
 
+def make_times() -> None:
+    values = np.frombuffer(b"2021-12-30_17:00:00" + b"2021-12-30_18:00:00" + b"a b\x00c" + b"\x00" * 14, dtype="S1").reshape(3, 19)
+    for container, name in [("NETCDF3_CLASSIC", "times.nc1"), ("NETCDF3_64BIT_OFFSET", "times.nc2"), ("NETCDF3_64BIT_DATA", "times.nc5"), ("NETCDF4", "times.nc4")]:
+        with netCDF4.Dataset(HERE / name, "w", format=container) as ds:
+            ds.createDimension("Time", None)
+            ds.createDimension("DateStrLen", 19)
+            ds.createVariable("Times", "S1", ("Time", "DateStrLen"), zlib=container == "NETCDF4")[:] = values
+
+
 if __name__ == "__main__":
     make_axes()
     make_sizes()
     make_mixed()
+    make_times()

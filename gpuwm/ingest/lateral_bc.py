@@ -10,6 +10,7 @@ from typing import Mapping, Sequence
 import numpy as np
 
 from gpuwm.core.kernels import get_kernel
+from gpuwm.grid_requirements import boundary_axis
 
 #: Every transported hydrometeor/number/volume scalar the coupled-units
 #: machinery accepts, shared by the three sites that used to spell it
@@ -45,6 +46,54 @@ def _host(value):
     return np.asarray(value, dtype=np.float64)
 
 
+def _immutable_boundary_array(value):
+    source = np.asarray(value)
+    if source.dtype.hasobject:
+        raise TypeError("boundary tables must have a numeric dtype")
+    packed = np.ascontiguousarray(source)
+    return np.frombuffer(packed.tobytes(order="C"),
+                         dtype=packed.dtype).reshape(packed.shape)
+
+
+@dataclass(frozen=True)
+class RationalTimeLaw:
+    """Optional law f(t) = value + t*(tendency+t*q)/(1+t*d).
+
+    ``value`` and ``tendency`` retain their t=0 value and derivative meanings.
+    q and d are per-cell coefficients. This representation includes a ratio
+    of quadratic and linear polynomials, such as a thermodynamic conversion
+    of independently interpolated mass-coupled temperature and moisture.
+    """
+    quadratic: np.ndarray
+    denominator_rate: np.ndarray
+
+    def __post_init__(self):
+        for name in ("quadratic", "denominator_rate"):
+            array = _immutable_boundary_array(getattr(self, name))
+            if not np.all(np.isfinite(array)):
+                raise ValueError(f"boundary time law {name} must be finite")
+            object.__setattr__(self, name, array)
+
+
+def evaluate_boundary_side(side, seconds):
+    """Host forcing authority: value and derivative at one interval offset."""
+    t = float(seconds)
+    if not np.isfinite(t):
+        raise ValueError("boundary evaluation time must be finite")
+    value = np.asarray(side.value, dtype=np.float64)
+    tendency = np.asarray(side.tendency, dtype=np.float64)
+    law = getattr(side, "time_law", None)
+    if law is None:
+        return value + t*tendency, tendency
+    q = np.asarray(law.quadratic, dtype=np.float64)
+    d = np.asarray(law.denominator_rate, dtype=np.float64)
+    denominator = 1.0 + t*d
+    if np.any(denominator <= 0.0):
+        raise ValueError("boundary time-law denominator must stay positive")
+    return (value + t*(tendency+t*q)/denominator,
+            (tendency+2.0*t*q+t*t*q*d)/(denominator*denominator))
+
+
 @dataclass(frozen=True)
 class SideBoundary:
     """One immutable host-side boundary table and its time tendency.
@@ -59,24 +108,38 @@ class SideBoundary:
     value: np.ndarray
     tendency: np.ndarray
 
-    def __post_init__(self):
-        def immutable_array(value):
-            source = np.asarray(value)
-            if source.dtype.hasobject:
-                raise TypeError("boundary tables must have a numeric dtype")
-            packed = np.ascontiguousarray(source)
-            # A bytes backing makes immutability irreversible through
-            # ``setflags(write=True)`` as well as ordinary item assignment.
-            result = np.frombuffer(packed.tobytes(order="C"),
-                                   dtype=packed.dtype).reshape(packed.shape)
-            return result
+    time_law: RationalTimeLaw | None = None
 
-        value = immutable_array(self.value)
-        tendency = immutable_array(self.tendency)
+    def __post_init__(self):
+        value = _immutable_boundary_array(self.value)
+        tendency = _immutable_boundary_array(self.tendency)
         if tendency.shape != value.shape:
             raise ValueError("boundary value and tendency shapes differ")
+        law = self.time_law
+        if law is not None:
+            if not isinstance(law, RationalTimeLaw):
+                raise TypeError("boundary time_law must be RationalTimeLaw")
+            if (law.quadratic.shape != value.shape or
+                    law.denominator_rate.shape != value.shape):
+                raise ValueError("boundary time-law shapes differ from value")
+            if not np.isfinite(value).all() or not np.isfinite(tendency).all():
+                raise ValueError("rational boundary value/tendency must be finite")
         object.__setattr__(self, "value", value)
         object.__setattr__(self, "tendency", tendency)
+
+    def array_items(self):
+        yield "value", self.value
+        yield "tendency", self.tendency
+        if self.time_law is not None:
+            yield "quadratic", self.time_law.quadratic
+            yield "denominator_rate", self.time_law.denominator_rate
+
+    def window(self, index):
+        law = self.time_law
+        return SideBoundary(
+            self.value[index], self.tendency[index],
+            None if law is None else RationalTimeLaw(
+                law.quadratic[index], law.denominator_rate[index]))
 
 
 @dataclass(frozen=True)
@@ -94,7 +157,25 @@ class BoundaryInterval:
     fields: Mapping[str, FieldBoundary]
 
     def __post_init__(self):
-        object.__setattr__(self, "fields", MappingProxyType(dict(self.fields)))
+        fields = MappingProxyType(dict(self.fields))
+        duration = float(self.end_seconds - self.start_seconds)
+        for boundary in fields.values():
+            for name in ("west", "east", "south", "north"):
+                side = getattr(boundary, name)
+                if side.time_law is not None:
+                    if not np.isfinite(duration) or duration <= 0.0:
+                        raise ValueError("rational boundary interval must have positive finite duration")
+                    # A linear denominator reaches its extrema at endpoints.
+                    rate = side.time_law.denominator_rate
+                    if np.any(1.0 + duration*rate <= 0.0):
+                        raise ValueError("boundary time-law denominator crosses zero in interval")
+                    # Device storage rounds coefficients to FP32; validate the
+                    # actual consumer representation as well as host authority.
+                    if (not all(np.isfinite(np.asarray(a, np.float32)).all()
+                                for _, a in side.array_items()) or
+                            np.any(1.0 + duration*np.asarray(rate, np.float32) <= 0.0)):
+                        raise ValueError("boundary time law is invalid in device precision")
+        object.__setattr__(self, "fields", fields)
 
 
 @dataclass(frozen=True)
@@ -131,6 +212,13 @@ class RollingNestBoundaries:
 class _DeviceSideBoundary:
     value: object
     tendency: object
+    time_law: object | None = None
+
+
+@dataclass(frozen=True)
+class _DeviceRationalTimeLaw:
+    quadratic: object
+    denominator_rate: object
 
 
 @dataclass(frozen=True)
@@ -171,6 +259,9 @@ class _DeviceLateralBoundaries:
     active_host_interval_id: int | None = None
     packed_forcing: object | None = None
     external_reload_count: int = 0
+    evaluated_interval: _DeviceBoundaryInterval | None = None
+    evaluated_key: tuple | None = None
+    evaluated_packed: object | None = None
     #: Monotonic per state, bumped by every ``attach_nest_boundaries`` --
     #: i.e. every FORCE.  It exists for the streamed-child corridor: a tile
     #: buffer's packed table windows record the generation they were copied
@@ -209,7 +300,7 @@ def _field_boundary(first, second, duration, width):
         first, second = first[None], second[None]
     if first.ndim != 3 or second.shape != first.shape:
         raise ValueError("boundary fields must be matching 2-D or 3-D arrays")
-    if min(first.shape[-2:]) < 2 * width:
+    if min(first.shape[-2:]) < boundary_axis(width):
         raise ValueError("domain is too small for the requested boundary width")
 
     def side(a, b):
@@ -283,6 +374,12 @@ def _weights(width, spec_zone, relax_zone, dt, spec_exp, *, wrf_real=False):
     return fcx, gcx
 
 
+#: How many distinct Davies-weight sets a domain may hold at once.  One
+#: is enough for a fixed clock; the headroom is for an adaptive one,
+#: where the set is recomputed whenever dt moves.
+_MAX_LBC_WEIGHT_SLOTS = 1
+
+
 def lateral_boundary_clock_dt(cfg) -> float:
     """Return WRF's model-clock ``dt`` for lateral-BC coefficients."""
     clock_dt = float(getattr(cfg, "clock_dt", 0.0))
@@ -296,7 +393,7 @@ def _perimeter_count(ny: int, nx: int, width: int) -> int:
 
 
 def _validate_frame_domain(ny: int, nx: int, width: int, purpose: str) -> None:
-    if width < 1 or min(ny, nx) <= 2 * width:
+    if width < 1 or min(ny, nx) <= boundary_axis(width):
         raise ValueError(f"{purpose} width leaves no unique interior frame")
 
 
@@ -389,8 +486,101 @@ def _reload_streaming_external_interval(
                 host_side.value, dtype=xp.float32)
             device_side.tendency[...] = xp.asarray(
                 host_side.tendency, dtype=xp.float32)
+            if (host_side.time_law is None) != (device_side.time_law is None):
+                raise RuntimeError("streaming lateral time-law inventory changed")
+            if host_side.time_law is not None:
+                for coefficient in ("quadratic", "denominator_rate"):
+                    getattr(device_side.time_law, coefficient)[...] = xp.asarray(
+                        getattr(host_side.time_law, coefficient), dtype=xp.float32)
     resident.active_host_interval_id = id(interval)
     resident.external_reload_count += 1
+
+
+def boundary_storage_shapes(boundaries, *, streaming=False):
+    """Exact FP32 forcing and reusable evaluation storage, before allocation."""
+    intervals = boundaries.intervals[:1] if streaming else boundaries.intervals
+    def count(interval, coefficients):
+        return sum(array.size for boundary in interval.fields.values()
+                   for name in ("west", "east", "south", "north")
+                   for key, array in getattr(boundary, name).array_items()
+                   if coefficients or key in ("value", "tendency"))
+    shapes = {"lbc_forcing_tables": (sum(count(iv, True) for iv in intervals),)}
+    if any(getattr(boundary, name).time_law is not None
+           for iv in intervals for boundary in iv.fields.values()
+           for name in ("west", "east", "south", "north")):
+        shapes["lbc_evaluated_tables"] = (max(count(iv, False) for iv in intervals),)
+    return shapes
+
+
+def _allocate_evaluated_interval(state):
+    resident = state._lateral_boundary_device
+    shapes = boundary_storage_shapes(state.lateral_boundaries,
+                                     streaming=resident.streaming_external)
+    shape = shapes.get("lbc_evaluated_tables")
+    if shape is None:
+        return
+    slot = "lbc_evaluated_tables"
+    packed = _lbc_scratch(state, shape, slot)
+    resident.scratch_slots.add(slot)
+    resident.device_nbytes += int(packed.nbytes)
+    resident.evaluated_packed = packed
+
+
+def _evaluate_device_interval(state, interval, dtbc):
+    """Evaluate optional time laws once at the shared clock's launch time.
+
+    Every field is evaluated when any side needs a nonlinear law. Returning
+    zero dtbc then prevents the existing kernels applying interpolation twice.
+    The linear-only path returns its original arrays and offset unchanged.
+    """
+    nonlinear = any(side.time_law is not None
+                    for boundary in interval.fields.values()
+                    for side in (boundary.west, boundary.east,
+                                 boundary.south, boundary.north))
+    if not nonlinear:
+        return interval, dtbc
+    resident = state._lateral_boundary_device
+    t = np.float32(dtbc)
+    if not np.isfinite(t):
+        raise ValueError("boundary evaluation time must be finite")
+    key = (id(interval), float(t), resident.external_reload_count)
+    if resident.evaluated_key == key:
+        return resident.evaluated_interval, np.float32(0.0)
+    offset = 0
+    packed = resident.evaluated_packed
+    fields = {}
+    host = getattr(state, "_host_setup_state", False)
+    for name, boundary in interval.fields.items():
+        sides = {}
+        for side_name in ("west", "east", "south", "north"):
+            side = getattr(boundary, side_name)
+            size = side.value.size
+            value = packed[offset:offset+size].reshape(side.value.shape)
+            offset += size
+            tendency = packed[offset:offset+size].reshape(side.value.shape)
+            offset += size
+            if host:
+                if side.time_law is None:
+                    value[...] = side.value + t*side.tendency
+                    tendency[...] = side.tendency
+                else:
+                    pair = evaluate_boundary_side(side, float(t))
+                    value[...], tendency[...] = pair
+            else:
+                law = side.time_law
+                args = (side.value, side.tendency)
+                kernel_name = "evaluate_linear_boundary"
+                if law is not None:
+                    args += (law.quadratic, law.denominator_rate)
+                    kernel_name = "evaluate_rational_boundary"
+                kernel = get_kernel("lbc_time", kernel_name)
+                kernel(((size+_THREADS-1)//_THREADS,), (_THREADS,),
+                       (*args, value, tendency, t, np.int32(size)))
+            sides[side_name] = _DeviceSideBoundary(value, tendency)
+        fields[name] = _DeviceFieldBoundary(**sides)
+    resident.evaluated_interval = _DeviceBoundaryInterval(MappingProxyType(fields))
+    resident.evaluated_key = key
+    return resident.evaluated_interval, np.float32(0.0)
 
 
 def _active_device_interval(state, cfg):
@@ -415,16 +605,16 @@ def _active_device_interval(state, cfg):
             # first FORCE's forcing forever.
             reload_tables(state)
         return (resident.intervals[0], resident.clock.dtbc_launch_fp32,
-                resident.clock.spec.dt_fp32, 0.0)
+                resident.clock.dt_fp32, 0.0)   # LIVE
     boundaries = state.lateral_boundaries
     elapsed = (state.elapsed_seconds if resident.clock is None
                else resident.clock.elapsed_seconds)
     interval = boundaries.interval_at(elapsed)
-    return (_resident_interval(state, interval),
-            (state.elapsed_seconds - interval.start_seconds
-             if resident.clock is None
-             else resident.clock.dtbc_launch_fp32),
-            lateral_boundary_clock_dt(cfg), cfg.spec_exp)
+    dtbc = (state.elapsed_seconds - interval.start_seconds
+            if resident.clock is None else resident.clock.dtbc_launch_fp32)
+    device, offset = _evaluate_device_interval(
+        state, _resident_interval(state, interval), dtbc)
+    return (device, offset, lateral_boundary_clock_dt(cfg), cfg.spec_exp)
 
 
 def _resident_weights(state, width, spec_zone, relax_zone, dt, spec_exp, *,
@@ -441,15 +631,43 @@ def _resident_weights(state, width, spec_zone, relax_zone, dt, spec_exp, *,
     if hit is None:
         fcx, gcx = _weights(
             key[0], key[1], key[2], key[3], key[4], wrf_real=key[5])
+        # BOUNDED.  The key carries dt, so under a FIXED clock this cache
+        # holds exactly one entry for the life of the run and the bound
+        # never engages.  Under an adaptive clock dt changes almost every
+        # step, so an unbounded cache allocates a fresh
+        # `lbc_weights_<n>` scratch slot per distinct timestep -- tiny in
+        # bytes (2 x spec_bdy_width float32) and unbounded in COUNT,
+        # which the canonical-state digest refuses outright: it audits
+        # the lbc_weights_ prefix and knows only slot 0.
+        #
+        # Recomputing these is what WRF does anyway -- adapt_timestep
+        # calls lbc_fcx_gcx at :430 precisely because the Davies weights
+        # are a function of dt -- so a cache that never hits is pure
+        # growth.  The oldest entry's SLOT is reused, and its key is
+        # dropped in the same breath so no live entry can alias the
+        # arrays being overwritten.
+        if len(resident.weights) >= _MAX_LBC_WEIGHT_SLOTS:
+            oldest = next(iter(resident.weights))
+            resident.weights.pop(oldest, None)
+            resident.next_weight_slot = (
+                resident.next_weight_slot - 1) % _MAX_LBC_WEIGHT_SLOTS
         slot = f"lbc_weights_{resident.next_weight_slot}"
+        # A slot the resident already owns is being OVERWRITTEN, not
+        # allocated, so its bytes are already in device_nbytes.  Counting
+        # them again would report an unbounded footprint for a cache the
+        # bound above makes constant -- and gpuwm sizes VRAM off this
+        # number.
+        reused = slot in resident.scratch_slots
         packed = _lbc_scratch(state, (2, int(width)), slot)
         packed[0] = cp.asarray(fcx, dtype=cp.float32)
         packed[1] = cp.asarray(gcx, dtype=cp.float32)
         hit = (packed[0], packed[1])
         resident.weights[key] = hit
         resident.scratch_slots.add(slot)
-        resident.device_nbytes += int(packed.nbytes)
-        resident.next_weight_slot += 1
+        if not reused:
+            resident.device_nbytes += int(packed.nbytes)
+        resident.next_weight_slot = (
+            resident.next_weight_slot + 1) % _MAX_LBC_WEIGHT_SLOTS
     return hit
 
 
@@ -502,9 +720,14 @@ def apply_specified_relaxation(field, tendency, boundary: FieldBoundary, *,
     if width < spec_zone + relax_zone:
         raise ValueError("boundary width is smaller than spec_zone + relax_zone")
     sides = []
+    nonlinear = any(getattr(side, "time_law", None) is not None for side in
+                    (boundary.west, boundary.east, boundary.south, boundary.north))
     for side in (boundary.west, boundary.east, boundary.south, boundary.north):
-        sides.extend((cp.asarray(side.value, dtype=cp.float32),
-                      cp.asarray(side.tendency, dtype=cp.float32)))
+        pair = (evaluate_boundary_side(side, dtbc) if nonlinear
+                else (side.value, side.tendency))
+        sides.extend(cp.asarray(array, dtype=cp.float32) for array in pair)
+    if nonlinear:
+        dtbc = 0.0
     if weights is None:
         fcx, gcx = _weights(width, spec_zone, relax_zone, dt, spec_exp)
         fcx = cp.asarray(fcx)
@@ -632,20 +855,14 @@ def _coupled_device_fields(state):
     if state.has_msf:
         result["u"] /= state.msfu[None]
         result["v"] /= state.msfv[None]
-    # WRF specified-domain moisture policy without hydrometeor boundary
-    # arrays: only water vapor is carried by the external LBC snapshots.
-    # Condensate species use flow_dep_bdy after their RK scalar update.
-    #
-    # REGISTERED DEVIATION, mp_physics=28.  nc/nwfa/nifa are deliberately NOT
-    # added here.  WRF's Registry does give qnwfa/qnifa real ``bdy`` arrays
-    # (fed from the WIF metgrid stream that ArWen has no ingest for), so on a
-    # specified domain ArWen advects AEROSOL-FREE air in through every inflow
-    # face and monotonically depletes nwfa/nifa in the boundary zone.  The
-    # full argument, its bounds and its blast radius are written down once, in
-    # gpuwm/core/moist.py's module docstring; extending this dict is the
-    # change that would retire it, and it must not happen by accident.
-    if state.qv is not None:
-        result["qv"] = chm * state.qv
+    # The decision belongs to the analysis producer, before any tile
+    # cloning. Runtime consumers use the bound table inventory itself.
+    for name in getattr(state, "_external_scalar_boundary_fields", ("qv",)):
+        if getattr(state, name, None) is None:
+            if name == "qv":  # dry legacy/direct snapshot callers
+                continue
+            raise ValueError(f"analysis boundary field {name} has no state array")
+        result[name] = chm * getattr(state, name)
     return result
 
 
@@ -692,6 +909,16 @@ def couple_nest_field(state, field_name: str, *, out):
 def uncouple_feedback_field(state, field_name: str, coupled, reg, *,
                             spec_zone=1):
     """Write one restricted coupled field into the parent prognostic state.
+
+    NOT ON THE FEEDBACK PATH.  WRF's child-to-parent feedback restricts the
+    RAW prognostics -- ``share/mediation_feedback_domain.F`` and
+    ``feedback_domain_em_part1/part2`` contain no ``couple_or_uncouple_em``,
+    and ``inc/nest_feedbackup_interp.inc:23-27`` hands ``copy_fcn`` the bare
+    ``grid%u_2``/``ngrid%u_2`` -- so ``NestCoupler.feedback_commit`` now
+    restricts uncoupled fields straight into the parent and this inverse has
+    no caller.  Retained, not deleted, because it is the exact inverse of
+    ``couple_nest_field`` and the FORCE path's coupled convention is
+    unchanged.
 
     ``coupled`` already contains ``copy_fcn`` output in the parent's field
     geometry.  Only the exact WRF feedback rectangle is uncoupled; all cells
@@ -1089,7 +1316,7 @@ def attach_lateral_boundaries(state, boundaries: LateralBoundaries) -> None:
         for boundary in interval.fields.values()
         for side in (boundary.west, boundary.east,
                      boundary.south, boundary.north)
-        for array in (side.value, side.tendency)
+        for _, array in side.array_items()
     )
     _release_resident_scratch(state)
     forcing_slot = "lbc_forcing_tables"
@@ -1121,7 +1348,10 @@ def attach_lateral_boundaries(state, boundaries: LateralBoundaries) -> None:
                 # This is deliberately the same dtype path formerly executed
                 # in every hot call: NumPy float64 -> CuPy float32.
                 sides[side_name] = _DeviceSideBoundary(
-                    upload(side.value), upload(side.tendency))
+                    upload(side.value), upload(side.tendency),
+                    None if side.time_law is None else _DeviceRationalTimeLaw(
+                        upload(side.time_law.quadratic),
+                        upload(side.time_law.denominator_rate)))
             fields[name] = _DeviceFieldBoundary(**sides)
         device_intervals.append(_DeviceBoundaryInterval(
             MappingProxyType(fields)))
@@ -1132,6 +1362,7 @@ def attach_lateral_boundaries(state, boundaries: LateralBoundaries) -> None:
         {}, {forcing_slot}, int(packed.nbytes), clock=carried_clock)
     state.lateral_boundaries = boundaries
     state.elapsed_seconds = 0.0
+    _allocate_evaluated_interval(state)
 
 
 def _carried_external_clock(state):
@@ -1175,7 +1406,9 @@ def attach_streaming_lateral_boundaries(
 
     def layout(interval):
         return tuple(
-            (name,) + _boundary_field_shape(interval.fields[name])
+            (name,) + _boundary_field_shape(interval.fields[name]) + tuple(
+                getattr(interval.fields[name], side).time_law is not None
+                for side in ("west", "east", "south", "north"))
             for name in inventory)
 
     reference_layout = layout(first)
@@ -1190,7 +1423,7 @@ def attach_streaming_lateral_boundaries(
         for boundary in first.fields.values()
         for side in (boundary.west, boundary.east,
                      boundary.south, boundary.north)
-        for array in (side.value, side.tendency)
+        for _, array in side.array_items()
     )
     _release_resident_scratch(state)
     forcing_slot = "lbc_forcing_tables"
@@ -1210,7 +1443,10 @@ def attach_streaming_lateral_boundaries(
         for side_name in ("west", "east", "south", "north"):
             side = getattr(boundary, side_name)
             sides[side_name] = _DeviceSideBoundary(
-                view(side.value), view(side.tendency))
+                view(side.value), view(side.tendency),
+                None if side.time_law is None else _DeviceRationalTimeLaw(
+                    view(side.time_law.quadratic),
+                    view(side.time_law.denominator_rate)))
         fields[name] = _DeviceFieldBoundary(**sides)
     device_interval = _DeviceBoundaryInterval(MappingProxyType(fields))
     state._lateral_boundary_device = _DeviceLateralBoundaries(
@@ -1220,6 +1456,7 @@ def attach_streaming_lateral_boundaries(
     state.lateral_boundaries = boundaries
     state.elapsed_seconds = 0.0
     _reload_streaming_external_interval(state, first)
+    _allocate_evaluated_interval(state)
 
 
 def bind_lateral_boundary_clock(state, clock) -> None:
@@ -1509,8 +1746,8 @@ def apply_state_boundary_values(state, cfg, elapsed_seconds=None) -> None:
         t = (state.elapsed_seconds if elapsed_seconds is None
              else float(elapsed_seconds))
         interval = boundaries.interval_at(t)
-        device_interval = _resident_interval(state, interval)
-        dtbc = t - interval.start_seconds
+        device_interval, dtbc = _evaluate_device_interval(
+            state, _resident_interval(state, interval), t - interval.start_seconds)
     # The legacy path coupled every full field using old MU, installed MU,
     # then uncoupled every full field using new MU.  The fused finalizers
     # retain that roundoff-visible operation order without materializing the
@@ -1537,39 +1774,41 @@ def _raw_float32_c_arrays(arrays, cp) -> bool:
 
 
 def _apply_flow_dependent_boundary_generic(field, u_flux, v_flux,
-                                           spec_zone, cp) -> None:
+                                           spec_zone, cp, inflow_value=0.0) -> None:
     """Stride/dtype-aware compatibility path from the original public API."""
     nz, ny, nx = field.shape
-    zero = cp.zeros((), dtype=field.dtype)
+    inflow = cp.asarray(inflow_value, dtype=field.dtype)
     for d in range(spec_zone):
         cols = cp.arange(d, nx - d)
         inner_i = cp.clip(cols, spec_zone, nx - 1 - spec_zone)
         field[:, d, cols] = cp.where(
             v_flux[:, d, cols] < 0.0,
-            field[:, spec_zone, inner_i], zero)
+            field[:, spec_zone, inner_i], inflow)
         jn = ny - 1 - d
         field[:, jn, cols] = cp.where(
             v_flux[:, jn + 1, cols] > 0.0,
-            field[:, ny - 1 - spec_zone, inner_i], zero)
+            field[:, ny - 1 - spec_zone, inner_i], inflow)
 
         rows = cp.arange(d + 1, ny - d - 1)
         if rows.size:
             inner_j = cp.clip(rows, spec_zone, ny - 1 - spec_zone)
             field[:, rows, d] = cp.where(
                 u_flux[:, rows, d] < 0.0,
-                field[:, inner_j, spec_zone], zero)
+                field[:, inner_j, spec_zone], inflow)
             ie = nx - 1 - d
             field[:, rows, ie] = cp.where(
                 u_flux[:, rows, ie + 1] > 0.0,
-                field[:, inner_j, nx - 1 - spec_zone], zero)
+                field[:, inner_j, nx - 1 - spec_zone], inflow)
 
 
-def apply_flow_dependent_boundaries(fields, u_flux, v_flux, spec_zone) -> None:
+def apply_flow_dependent_boundaries(fields, u_flux, v_flux, spec_zone, *,
+                                    inflow_value=0.0) -> None:
     """Batched WRF ``flow_dep_bdy`` for unstaggered hydrometeor fields.
 
     Outflow copies the first interior row/column (zero gradient); inflow is
-    zero because no external hydrometeor boundary data exist.  Y sides own
-    the four corners exactly as in ``share/module_bc.F``.
+    zero for ordinary hydrometeors. QNN uses the resolved ``ccn_conc`` as
+    ``inflow_value`` (WRF ``flow_dep_bdy_qnn``, module_bc.F:2460-2583).
+    Y sides own the four corners exactly as in ``share/module_bc.F``.
     """
     import cupy as cp
 
@@ -1590,7 +1829,7 @@ def apply_flow_dependent_boundaries(fields, u_flux, v_flux, spec_zone) -> None:
     if not _raw_float32_c_arrays((*fields, u_flux, v_flux), cp):
         for field in fields:
             _apply_flow_dependent_boundary_generic(
-                field, u_flux, v_flux, spec_zone, cp)
+                field, u_flux, v_flux, spec_zone, cp, inflow_value)
         return
     padded = fields + (fields[-1],) * (9 - len(fields))
     frame_count = _perimeter_count(ny, nx, spec_zone)
@@ -1599,7 +1838,7 @@ def apply_flow_dependent_boundaries(fields, u_flux, v_flux, spec_zone) -> None:
     kernel(((count + _THREADS - 1) // _THREADS,), (_THREADS,), (
         *padded, u_flux, v_flux, np.int32(len(fields)),
         np.int32(spec_zone), np.int32(nz), np.int32(ny), np.int32(nx),
-        np.int32(frame_count)))
+        np.int32(frame_count), np.float32(inflow_value)))
 
 
 def apply_flow_dependent_boundary(field, u_flux, v_flux, spec_zone) -> None:

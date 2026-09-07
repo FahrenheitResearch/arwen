@@ -19,6 +19,36 @@
 //          al[k]  = dph/phm/log(pfd/pfu) - alb[k]
 //          alt[k] = al[k] + alb[k]
 //        with mu = mub + mu' the total dry column mass (WRF MUTS).
+//
+// TWO CANCELLATIONS, and the FP32 spelling that removes them.  Both
+// differences above are formed from numbers far larger than themselves,
+// so in FP32 the diagnosed alt degrades as 1/dz -- the direction every
+// LES configuration moves.  Measured against the float64 mirror on a
+// random 1 K state (relative error in p): opt 1, 2.1e-6 at nz=16 and
+// 2.9e-5 at nz=160; opt 2, 4.3e-6 and 1.2e-4.
+//
+//   1. dph.  The layer thickness is ~368 J/kg over a 2400 m column at
+//      nz=64 while the total geopotentials are ~2.4e4 J/kg, so summing
+//      phb+php first spends ulp(2.4e4) on it.  This kernel differences
+//      the base and the perturbation SEPARATELY -- both subtractions are
+//      exact -- and adds dphb_resid[k], the float64 base thickness minus
+//      that float32 base subtraction (gpuwm/core/state.py
+//      set_base_geopotential).  The correction is a property of the
+//      profile the kernel is reading, so a stale one is worth at most one
+//      ulp of phb, never a wrong layer.
+//   2. log(pfd/pfu), opt 2 only.  pfd and pfu are independently rounded
+//      at ~1e5 Pa and their ratio is 1 + O(dz/H), so WRF's spelling puts
+//      ulp(1e5) into a ~470 Pa difference: 1.7e-5 relative, which is the
+//      DOMINANT error on the production path and is untouched by fixing
+//      dph.  This kernel writes the identical quantity as
+//      log1p((pfd - pfu)/pfu) with pfd - pfu = dc3f[k]*mu + dc4f[k] --
+//      p_top cancels identically -- from float64-differenced
+//      coefficients.  Measured at nz=160: 1.15e-4 -> 5.5e-7 in p
+//      (4 seeds, 4.98e-7 to 5.50e-7).
+//      This is a deliberate divergence from WRF's text (F:1046), of the
+//      never-bit-exact-to-a-bug kind: same quantity, one spelling that
+//      cancels and one that does not.  The dycore parity target is
+//      MPAS-A in the hex port, not WRF here.
 //   p    full pressure via the ideal-gas EOS on the moist potential
 //        temperature theta_m = theta*(1 + Rv/Rd*qv) (ARW ch. 2; theta_m
 //        reduces to theta bitwise when moist = 0 or qv = 0):
@@ -47,6 +77,9 @@ void calc_p_alpha(const real* __restrict__ thp,   // (nz,   ny, nx) theta'
                   const real* __restrict__ mup,   // (ny, nx)       mu'
                   const real* __restrict__ thb,   // (nz[,ny,nx])   base theta
                   const real* __restrict__ phb,   // (nz+1[,ny,nx]) base geopot.
+                  const real* __restrict__ dphbr, // (nz[,ny,nx]) base-thickness
+                                                  //   float64-minus-float32
+                                                  //   residual
                   const real* __restrict__ alb,   // (nz[,ny,nx])   base alpha
                   const real* __restrict__ rdnw,  // (nz,)  1/dnw (< 0)
                   const real* __restrict__ c1h,   // (nz,)  dB/deta
@@ -55,6 +88,8 @@ void calc_p_alpha(const real* __restrict__ thp,   // (nz,   ny, nx) theta'
                   const real* __restrict__ c4h,   // (nz,)  (eta-B)(p0-pt)
                   const real* __restrict__ c3f,   // (nz+1,) full-level c3
                   const real* __restrict__ c4f,   // (nz+1,) full-level c4
+                  const real* __restrict__ dc3f,  // (nz,) c3f[k] - c3f[k+1]
+                  const real* __restrict__ dc4f,  // (nz,) c4f[k] - c4f[k+1]
                   const real* __restrict__ mub,   // (ny, nx) base column mass
                   const real* __restrict__ qv,    // (nz, ny, nx) vapor (moist)
                   real p_top, int hypso,
@@ -78,14 +113,16 @@ void calc_p_alpha(const real* __restrict__ thp,   // (nz,   ny, nx) theta'
     for (int k = 0; k < nz; ++k) {
         real th  = thb[k * kstr + coff] + thp[IDX3(k, j, i)];
         if (moist) th *= 1.0f + RVOVRD * qv[IDX3(k, j, i)];
-        real dph = (phb[(k + 1) * kstr + coff] + php[IDX3(k + 1, j, i)])
-                 - (phb[k * kstr + coff]       + php[IDX3(k,     j, i)]);
+        real dphb = (phb[(k + 1) * kstr + coff] - phb[k * kstr + coff])
+                  + dphbr[k * kstr + coff];
+        real dph = dphb
+                 + (php[IDX3(k + 1, j, i)] - php[IDX3(k, j, i)]);
         real a, ap;
         if (hypso == 2) {
             real pfu = c3f[k + 1] * mu + c4f[k + 1] + p_top;
-            real pfd = c3f[k]     * mu + c4f[k]     + p_top;
+            real dpf = dc3f[k]    * mu + dc4f[k];   // = pfd - pfu exactly
             real phm = c3h[k]     * mu + c4h[k]     + p_top;
-            ap = dph / phm / logf(pfd / pfu) - alb[k * kstr + coff];
+            ap = dph / phm / log1pf(dpf / pfu) - alb[k * kstr + coff];
             a  = ap + alb[k * kstr + coff];
         } else {
             a  = -dph * rdnw[k] / (c1h[k] * mu + c2h[k]);

@@ -11,7 +11,11 @@ claim links, and compares the breadth the sentence asserts against the
 
 The guard is ENFORCED: there is no carried list any more.  Every audited
 site was rewritten against the committed receipt, so any finding at all in
-``docs/public`` fails the build.
+the published set fails the build.  The published set is ``docs/public``
+AND the repository root, because the prediction above came true: rooted at
+``docs/public`` alone, this gate was green through a release in which
+``README.md``'s verification table carried the retired sentence over a
+receipt whose verdict is FAIL.  See :func:`published_markdown`.
 
 Four rules bite.  Three read the claim -- is it linked to a receipt, does
 it infer the whole state from one carrier group, is it broader than the
@@ -32,6 +36,7 @@ anything.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import importlib.util
 import json
 import re
@@ -45,6 +50,7 @@ from gpuwm.verify.t0_state_digest import (
     CARRIER_GROUPS,
     SCHEMA_ID,
 )
+from tools.release_exclusions import matches, read_exclusions
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_DOCS = REPO_ROOT / "docs" / "public"
@@ -312,6 +318,38 @@ def check_tree(docs_root: Path, root: Path) -> list[Finding]:
     return findings
 
 
+def published_markdown(root: Path) -> list[Path]:
+    """Every Markdown document the release publishes, in a stable order.
+
+    ``docs/public`` was the whole scan root, and it is not the whole
+    published set.  ``README.md``, ``SPEEDRUN.md``, ``PROVENANCE.md``,
+    ``PUBLIC_RELEASE_ACCEPTANCE.md`` and ``CHANGELOG.md`` sit at the
+    repository root, ship with the release, and are read far more often
+    than the deep pages -- and the sentence retired from
+    ``VERIFICATION.md`` reappeared in the README's verification table,
+    unlinked, over a receipt whose verdict is FAIL, while the build
+    stayed green.  That is the failure this module's own docstring
+    predicted: a doc fix alone just moves the unbacked sentence
+    somewhere else, and "somewhere else" turned out to be one directory
+    up.
+
+    Nothing else in the tree is walked.  ``tools/`` and ``docs/manual``
+    are working material rather than published claims, and
+    ``tests/fixtures/public_claim_backing`` holds the negative controls,
+    which are written to fail this guard on purpose.
+    """
+    return sorted({*root.glob("*.md"),
+                   *(root / "docs" / "public").rglob("*.md")})
+
+
+def check_published(root: Path) -> list[Finding]:
+    """The guard over the published set rather than over one directory."""
+    findings: list[Finding] = []
+    for path in published_markdown(root):
+        findings.extend(check_markdown(path, root))
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # the audited sites, retired
 # ---------------------------------------------------------------------------
@@ -454,8 +492,13 @@ def test_the_group_vocabulary_covers_every_registered_group():
 
 
 def test_the_public_docs_carry_no_unbacked_t0_claim():
-    """THE gate, enforced: any finding at all fails the build."""
-    findings = check_tree(PUBLIC_DOCS, REPO_ROOT)
+    """THE gate, enforced: any finding at all fails the build.
+
+    Over the whole published set -- ``docs/public`` AND the repository
+    root -- because rooted at ``docs/public`` alone this gate reported
+    green while ``README.md`` carried the retired sentence.
+    """
+    findings = check_published(REPO_ROOT)
     assert findings == [], "\n".join(str(finding) for finding in findings)
 
 
@@ -489,24 +532,96 @@ def test_an_injected_claim_fails_the_enforced_gate(tmp_path: Path):
         findings)
 
 
+def test_a_claim_planted_in_a_root_document_fails_the_enforced_gate(
+        tmp_path: Path):
+    """THE scope control, and the one that was missing.
+
+    The same sentence, in the same tree, in the file every reader opens
+    first.  Rooted at ``docs/public`` the guard returns nothing for it --
+    asserted here beside the finding, because a scope hole is invisible
+    from inside the scope -- which is how the retired claim lived in
+    ``README.md`` through a release with the enforced gate green.
+    """
+    (tmp_path / "docs" / "public").mkdir(parents=True)
+    (tmp_path / "README.md").write_text(
+        "ArWen reproduces the WRF initial state at the FP32 floor on every\n"
+        "domain of every case.\n", encoding="utf-8")
+    findings = check_published(tmp_path)
+    assert [finding.rule for finding in findings] == ["unbacked-claim"], (
+        findings)
+    assert findings[0].path == "README.md"
+    # The old scan root is why this was invisible, not the detector.
+    assert check_tree(tmp_path / "docs" / "public", tmp_path) == []
+
+
+def test_every_root_release_document_is_inside_the_scan():
+    """The widening is a set, and the set is named.
+
+    A guard that scans "the root" by accident scans whatever happens to
+    be there.  These five are the root documents the release publishes,
+    and the README is the one the finding was found in.
+    """
+    scanned = {path.relative_to(REPO_ROOT).as_posix()
+               for path in published_markdown(REPO_ROOT)}
+    assert {"README.md", "CHANGELOG.md", "PROVENANCE.md", "SPEEDRUN.md",
+            "PUBLIC_RELEASE_ACCEPTANCE.md"} <= scanned
+    assert "docs/public/VERIFICATION.md" in scanned
+    # Working material and the negative-control fixtures stay out: the
+    # fixtures are written to fail this guard, so scanning them would make
+    # the enforced gate permanently red for the wrong reason.
+    assert not any(name.startswith(("tools/", "tests/", "docs/manual/"))
+                   for name in scanned), sorted(scanned)
+
+
+def test_the_readme_verification_table_is_still_scanned_as_a_claim():
+    """The README fix has to be a backing, not a deletion.
+
+    ``README.md`` could pass the widened gate by removing every
+    recognizable t=0 claim, which is the same silence the gate had before
+    the root was scanned.  At least one block must still register, and
+    every block that registers must link a receipt.
+    """
+    rel = "README.md"
+    blocks = [block for block in split_blocks(
+        (REPO_ROOT / rel).read_text(encoding="utf-8"), rel)
+        if claim_sentences(block)]
+    assert blocks, "README.md no longer states a t=0 result at all"
+    for block in blocks:
+        assert _linked_receipts(block, REPO_ROOT), block.line
+
+
 # ---------------------------------------------------------------------------
 # a cited receipt has to survive the release, and say how it came out
 # ---------------------------------------------------------------------------
 
 
-def _release_exclusion_rules() -> list[str]:
-    """The snapshot builder's own rules, loaded from its own module.
+def _release_exclusion_rules() -> tuple[list[str], Callable[[str, list[str]], str | None]]:
+    """The same rules and matcher used by the private snapshot builder.
 
-    Re-implementing the match would let this test and the builder drift,
-    and the whole point is that what the docs link is what a reader who
-    downloads the release actually gets.
+    The matcher ships publicly because receipt-survival checks still run in
+    the sanitized clone, where work/build_release_snapshot.py is absent.
     """
-    spec = importlib.util.spec_from_file_location(
-        "_release_snapshot_for_test",
-        REPO_ROOT / "work" / "build_release_snapshot.py")
+    return read_exclusions(REPO_ROOT), matches
+
+
+def test_release_rules_work_in_a_public_copy_without_publisher_scaffolding(tmp_path):
+    """The sanitized clone must still reject a receipt excluded from release."""
+    public = tmp_path / "public"
+    (public / "tools").mkdir(parents=True)
+    helper = public / "tools" / "release_exclusions.py"
+    helper.write_bytes((REPO_ROOT / "tools" / helper.name).read_bytes())
+    (public / "RELEASE-EXCLUDE.txt").write_text(
+        "# public rules\n\nevidence/**\ndocs/private.md\n", encoding="utf-8")
+    assert not (public / "work").exists()
+    spec = importlib.util.spec_from_file_location("_public_release_rules", helper)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.read_exclusions(), module.matches
+    rules = module.read_exclusions(public)
+    assert rules == ["evidence/**", "docs/private.md"]
+    assert module.matches("evidence/receipt.json", rules) == "evidence/**"
+    assert module.matches("docs/private.md", rules) == "docs/private.md"
+    assert module.matches("evidence-public/receipt.json", rules) is None
+    assert module.matches("docs/private.md/child", rules) is None
 
 
 def _linked_receipt_targets() -> list[tuple[str, str]]:

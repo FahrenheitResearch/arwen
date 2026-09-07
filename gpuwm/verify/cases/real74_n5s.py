@@ -656,6 +656,22 @@ def _restore_active_moisture(state, raw: Mapping[str, np.ndarray], cfg,
                 f"WRF input lacks active mp_physics={cfg.mp_physics} "
                 f"field {wrf_name}")
 
+    # mp=16: WRF DISCARDS the wrfinput CCN reservoir.  QNCCN is a required
+    # member of WDM6_NUMBER_WRFINPUT above and the loop just overwrote
+    # DomainState's allocation-time fill with it, but WRF floods the whole
+    # nn memory window with ccn_conc on the first microphysics call --
+    # module_mp_wdm6.F:220-227, ``if (itimestep .eq. 1) ... nn(i,k,j) =
+    # ccn0``, unconditional in the file's value -- and dyn_em/start_em.F:
+    # 1750-1774 has already written the same grid%ccn_conc into
+    # scalar(...,p_qnn) at init, its WDM6 arm being an explicit NO OP that
+    # leaves ccn_conc at the namelist value.  real.exe never fills QNCCN
+    # (dyn_em/module_initialize_real.F names neither qnn nor ccn), so the
+    # restored field is zeros and an empty reservoir shuts off pcact/ncact
+    # activation -- the source term WDM6's double-moment warm rain is built
+    # on.  Restore-then-reflood is the order both WRF writes run in.
+    if cfg is not None and int(cfg.mp_physics) == 16:
+        state.nn[...] = array_module.float32(cfg.wdm6_ccn_conc)
+
     # DomainState owns RK-beginning copies only for prognostic fields.  Sync
     # every active one that exists, including all ten NSSL-only fields.
     for state_name in dict.fromkeys(state_names):
@@ -702,7 +718,7 @@ def restore_domain_state(restored: RestoredDomain, cfg, *, scratch_arena=None,
     state.thp[...] = cp.asarray(
         (raw["T"].astype(np.float32) + np.float32(300.0))
         - raw["T_INIT"].astype(np.float32), dtype=cp.float32)
-    state.phb[...] = cp.asarray(raw["PHB"], dtype=cp.float32)
+    state.set_base_geopotential(raw["PHB"])
     state.mub = None
     state.mub2d[...] = cp.asarray(raw["MUB"], dtype=cp.float32)
     state.pb[...] = cp.asarray(raw["PB"], dtype=cp.float32)

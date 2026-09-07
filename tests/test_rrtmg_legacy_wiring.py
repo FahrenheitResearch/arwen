@@ -974,7 +974,7 @@ def test_child_construction_site_requires_the_parent():
     assert "radiation_parent is None" in source
     assert "ParentOzoneProvider" in source
     guard = source.index("radiation_parent is None")
-    construct = source.index("RRTMGLegacyRadiation(")
+    construct = source.index("make_radiation(")
     assert guard < construct
 
     # The call, and its position relative to driver construction.
@@ -984,3 +984,69 @@ def test_child_construction_site_requires_the_parent():
     assert adapter_call < driver_call, (
         "the radiation adapter (which carries the fail-closed ozone "
         "guard) must be consulted before the physics driver is built")
+
+
+@gpu_gate
+def test_live_latitude_cache_matches_fresh_owners(env, monkeypatch):
+    """A neutral tile reused north/south/north matches fresh radiation."""
+    from gpuwm.core.rrtmg_legacy import RRTMGLegacyRadiation
+    from gpuwm.ingest import wrf_ozone
+    shape = (env.ny, env.nx)
+    reused = RRTMGLegacyRadiation(
+        START, np.zeros(shape, np.float32), env.lon.reshape(shape),
+        p_top=env.p_top)
+    interp = wrf_ozone.interp_ozone_to_latitudes
+    calls = []
+    def measured(*args, **kwargs):
+        calls.append(1)
+        return interp(*args, **kwargs)
+    for latitude in (env.lat, -env.lat, env.lat):
+        fresh = RRTMGLegacyRadiation(
+            START, latitude.reshape(shape).copy(), env.lon.reshape(shape),
+            p_top=env.p_top)
+        want = _host_result(_call(fresh, env))
+        reused.latitude_deg[:] = latitude.reshape(shape)
+        with monkeypatch.context() as patch:
+            patch.setattr(wrf_ozone, "interp_ozone_to_latitudes", measured)
+            count = len(calls)
+            for _ in range(DUAL_RUNS):
+                got = _host_result(_call(reused, env))
+                for name in want:
+                    bits_equal(name, got[name], want[name])
+            assert len(calls) == count + 1
+        np.testing.assert_array_equal(reused._ozone_latitude,
+                                      reused.latitude_deg)
+
+
+@gpu_gate
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("shape", [(2, 3), (6, 1)])
+def test_geography_audit_tracks_bound_caches_and_snapshot_bytes(dtype, shape, monkeypatch):
+    from gpuwm.core.geography_cache import geography_cache
+    from tilestream import driver, physics_inventory
+    scheme = SimpleNamespace(
+        latitude_deg=np.arange(6, dtype=dtype).reshape(shape),
+        longitude_deg=np.zeros(shape, dtype=dtype),
+        cache=None,
+        geography_cache_dependencies={"cache": (("latitude_deg", "snapshot"),)})
+    geography_cache(scheme, "cache", lambda: np.arange(12).reshape(6, 2))
+    state = SimpleNamespace(p=np.zeros((4, *shape), np.float32),
+                            physics=SimpleNamespace(radiation_callable=scheme))
+    driver.assert_geography_gathered(state)
+    # Snapshot may be stale between gathering and reading; the owner refreshes.
+    scheme.latitude_deg[:] += 10
+    driver.assert_geography_gathered(state)
+    monkeypatch.setattr(physics_inventory, "carrier_manifest", lambda state: {})
+    report = physics_inventory.geography_report(state, state.physics)
+    assert report["cache_snapshot_host_bytes"] == 6 * np.dtype(dtype).itemsize
+    assert report["cache_snapshots"] == [
+        ("driver.radiation_callable.snapshot", shape, str(np.dtype(dtype)),
+         scheme.snapshot.nbytes)]
+    with pytest.raises(driver.GeographyNotGatherable, match="cache input"):
+        driver.assert_geography_gathered(state, keys=["radiation/longitude_deg"])
+    del scheme.snapshot
+    with pytest.raises(driver.GeographyNotGatherable, match="snapshot missing"):
+        driver.assert_geography_gathered(state)
+    scheme.geography_cache_dependencies = {}
+    with pytest.raises(driver.GeographyNotGatherable, match="flattened-column"):
+        driver.assert_geography_gathered(state)

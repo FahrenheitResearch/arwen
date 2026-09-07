@@ -80,10 +80,33 @@ def test_node_contract_validates_and_reports_its_geometry():
         float(d) for d in HRRR_SOIL_NODE_DEPTHS_M)
 
 
-def test_node_contract_requires_both_endpoints():
-    with pytest.raises(ValueError, match="0.0 m and the deepest at 3.0"):
-        validate_soil_layer_contract(
-            _node_contract(depths=(0.0, 0.1, 0.4, 1.0, 2.0)))
+@pytest.mark.parametrize("depths", [(0.01, 0.04, 0.1, 0.3, 0.6, 1., 1.6, 3.),
+                                    (0.0, 0.1, 0.4, 1.0, 2.0), (0.05, 0.25, 0.7, 1.5)])
+def test_node_contract_requires_actual_noah_target_coverage(depths):
+    contract = validate_soil_layer_contract(_node_contract(depths=depths))
+    values = (280 + np.asarray(depths) * 3)[:, None, None]
+    temperature, _ = _remap_declared_soil(values, values/1000, contract,
+                                         tsk=np.array([[100.]]), deep=np.array([[400.]]))
+    np.testing.assert_allclose(temperature[:, 0, 0], 280 + NOAH_LAYER_MIDPOINTS_M*3, rtol=0, atol=1e-12)
+
+
+@pytest.mark.parametrize("depths", [(0.1, 0.4, 1., 3.), (0., 0.1, 0.4, 1.)])
+def test_node_contract_refuses_uncovered_target_midpoints(depths):
+    with pytest.raises(ValueError, match="do not cover Noah target"):
+        validate_soil_layer_contract(_node_contract(depths=depths))
+
+
+@pytest.mark.parametrize("count", [6, 9])
+def test_noah_coverage_does_not_invent_ruc_surface_node(count):
+    from gpuwm.ingest.ruc_soil import remap_soil_to_ruc_levels
+    depths = (0.01, 0.04, 0.1, 0.3, 0.6, 1., 1.6, 3.)
+    validate_soil_layer_contract(_node_contract(depths=depths))
+    with pytest.raises(ValueError, match="RUC level 1.*outside the source"):
+        remap_soil_to_ruc_levels(
+            source_temperature=np.full((8,1,1),280), source_moisture=np.full((8,1,1),.3),
+            source_levels_cm=np.array([1,4,10,30,60,100,160,300]), source_geometry="levels",
+            skin_temperature=np.array([[280.]]),deep_temperature=np.array([[280.]]),
+            landmask=np.array([[1.]]), num_soil_layers=count)
 
 
 def test_node_contract_refuses_a_layer_remap_kind():
@@ -233,3 +256,28 @@ def test_layer_contracts_are_unchanged():
         tsk=np.full((2, 2), 300.0), deep=np.full((2, 2), 285.0))
     np.testing.assert_array_equal(soil_t, temperature)
     np.testing.assert_array_equal(soil_m, moisture)
+
+
+def test_fractional_seaice_selects_real_soil_column_and_preserves_default_bytes():
+    from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
+    from gpuwm.ingest.soil_contract import MAPPED_SOIL_MOISTURE, MAPPED_SOIL_TEMPERATURE
+    shape=(1,3)
+    fields={"SKINTEMP":np.full(shape,268.),"LANDSEA":np.zeros(shape),
+            "SEAICE":np.array([[.01,.2,.7]]), "SNOW":np.zeros(shape),"SNOWH":np.zeros(shape),
+            MAPPED_SOIL_TEMPERATURE:np.full((9,*shape),280.),
+            MAPPED_SOIL_MOISTURE:np.full((9,*shape),.3)}
+    kw=dict(sf_surface_physics=2,soil_type=np.full(shape,14),
+            deep_soil_temperature=np.full(shape,280.),soil_layer_contract=_node_contract(),
+            landmask=np.zeros(shape),water_temperature_policy="wrf_compat")
+    old=preprocess_land_surface_soil(fields,**kw)
+    binary=preprocess_land_surface_soil(fields,fractional_seaice=False,**kw)
+    fractional=preprocess_land_surface_soil(fields,fractional_seaice=True,**kw)
+    for name in ("tsk","soil_temperature","soil_moisture","liquid_moisture","landmask","xice"):
+        np.testing.assert_array_equal(getattr(old,name),getattr(binary,name))
+    np.testing.assert_array_equal(binary.xice,[[0,0,1]])
+    np.testing.assert_array_equal(fractional.xice,[[0,.2,.7]])
+    np.testing.assert_array_equal(binary.landmask,[[0,0,1]])
+    np.testing.assert_array_equal(fractional.landmask,[[0,1,1]])
+    depths=(np.arange(4)+.5)*.75
+    expected=((3-depths)*268+depths*271.4)/3
+    np.testing.assert_allclose(fractional.soil_temperature[:,0,1],expected,rtol=0,atol=1e-12)

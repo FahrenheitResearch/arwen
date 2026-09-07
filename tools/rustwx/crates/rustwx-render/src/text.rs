@@ -23,6 +23,23 @@ enum FontKind {
 
 static FONTS: OnceLock<FontSet> = OnceLock::new();
 
+/// Font files a theme installed before the first glyph was drawn.  Read
+/// ahead of the environment override and the embedded faces; a path that
+/// does not load is reported once and that weight keeps the embedded face.
+static FONT_OVERRIDE: OnceLock<FontOverride> = OnceLock::new();
+
+#[derive(Debug, Clone, Default)]
+struct FontOverride {
+    regular: Option<PathBuf>,
+    bold: Option<PathBuf>,
+}
+
+/// Install theme font paths.  A no-op after the fonts have been loaded
+/// (the first text draw), which is why callers install themes first.
+pub fn install_font_override(regular: Option<PathBuf>, bold: Option<PathBuf>) {
+    let _ = FONT_OVERRIDE.set(FontOverride { regular, bold });
+}
+
 pub fn draw_text(img: &mut RgbaImage, text: &str, x: i32, y: i32, color: Rgba, scale: u32) {
     draw_text_inner(img, text, x, y, color, scale, 1.0, FontKind::Regular);
 }
@@ -60,6 +77,28 @@ pub fn draw_text_right(
 
 pub fn text_width(text: &str, scale: u32) -> u32 {
     measure_text(text, scale, 1.0, FontKind::Regular)
+}
+
+pub(crate) fn draw_text_right_with_factor(
+    img: &mut RgbaImage,
+    text: &str,
+    x_right: i32,
+    y: i32,
+    color: Rgba,
+    scale: u32,
+    size_factor: f32,
+) {
+    let w = measure_text(text, scale, size_factor, FontKind::Regular);
+    draw_text_inner(
+        img,
+        text,
+        x_right - w as i32,
+        y,
+        color,
+        scale,
+        size_factor,
+        FontKind::Regular,
+    );
 }
 
 pub fn text_width_bold(text: &str, scale: u32) -> u32 {
@@ -318,6 +357,23 @@ fn load_font(bold: bool) -> Option<Font<'static>> {
 }
 
 fn load_font_override(bold: bool) -> Option<Font<'static>> {
+    if let Some(installed) = FONT_OVERRIDE.get() {
+        let path = if bold {
+            installed.bold.as_ref()
+        } else {
+            installed.regular.as_ref()
+        };
+        if let Some(path) = path {
+            match load_font_from_path(path.clone()) {
+                Some(font) => return Some(font),
+                None => eprintln!(
+                    "THEME_FONT\t{} font {} did not load; using the embedded face",
+                    if bold { "bold" } else { "regular" },
+                    path.display()
+                ),
+            }
+        }
+    }
     let env_keys = if bold {
         ["RUSTWX_RENDER_FONT_BOLD", "WRF_RENDER_FONT_BOLD"]
     } else {

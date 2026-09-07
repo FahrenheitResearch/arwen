@@ -496,9 +496,6 @@ def _stub_sealed_root(monkeypatch, chain, root: Path):
                         lambda wps, geog, ids: (
                             chain.static_catalog,
                             {"selections": {"d01": None}}))
-    from gpuwm.static import highres_production
-    monkeypatch.setattr(highres_production, "refuse_inert_highres",
-                        lambda *a, **k: None)
 
     return SimpleNamespace(
         root_preparation=root, root_domain_spec=root / "d01-target.json",

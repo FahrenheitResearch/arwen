@@ -7,7 +7,9 @@ mod contour_fill;
 mod draw;
 mod error;
 mod features;
+pub mod footer;
 pub mod georeference;
+pub mod mesh_cells;
 mod overlay;
 mod panel;
 mod presentation;
@@ -17,6 +19,7 @@ mod rasterize;
 mod render;
 mod request;
 mod text;
+pub mod theme;
 pub mod weather;
 
 pub use contour_fill::{
@@ -97,6 +100,12 @@ use crate::render::{
     trim_vertical_canvas_whitespace,
 };
 pub use crate::text::format_tick;
+pub use crate::theme::{
+    FooterTheme, MeshTheme, PresentationTheme, RenderTheme, RenderThemeFile, THEME_ENV,
+    active_theme, install_theme,
+};
+pub use crate::footer::{FooterFields, clear_footer_fields, footer_fields, set_footer_fields};
+pub use crate::mesh_cells::{MeshCell, MeshCellsLayer, MeshDrawStyle};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::path::Path;
@@ -476,6 +485,27 @@ impl RustRenderer {
                 image_timing.postprocess_ms = image_timing.postprocess_ms.saturating_add(trim_ms);
                 image_timing.total_ms = image_timing.total_ms.saturating_add(trim_ms);
                 let render_to_image_ms = image_timing.total_ms;
+                // The strip is composed AFTER every pass that can move the
+                // map inside the canvas, and only under it, so map_x, map_y
+                // and the published georeference still describe the written
+                // PNG.  Both halves are required: a theme that names a footer
+                // and caption fields the caller installed.  Neither built-in
+                // theme names one, so no existing render grows a strip and
+                // the pixel gate stays green.
+                let composed =
+                    match (theme::active_theme().footer.as_ref(), footer::footer_fields()) {
+                        (Some(footer_theme), Some(fields)) => {
+                            let fields = fields.with_panel_defaults(
+                                request.title.as_deref(),
+                                request.subtitle_left.as_deref(),
+                            );
+                            Some(footer::compose(&trimmed, footer_theme, &fields))
+                        }
+                        _ => None,
+                    };
+                let trimmed = composed.unwrap_or(trimmed);
+                image_timing.image_w = trimmed.width();
+                image_timing.image_h = trimmed.height();
                 let (bytes, png_encode_ms) =
                     encode_rgba_png_profile_with_options(&trimmed, png_options);
                 Ok((
@@ -637,11 +667,15 @@ fn with_render_state_profile_with_style<T>(
         request.visual_mode
     };
     let presentation = RenderPresentation::for_mode_with_style(visual_mode, plot_style);
+    // A theme may name this product's colormap; the scale keeps its own
+    // levels, extend mode and mask, only the colours are replaced.
+    let themed_scale =
+        theme::active_theme().product_scale_override(&request.field.product, &request.scale);
     let cmap = if overlay_only {
         blank_fill_colormap()
     } else {
         build_colormap(
-            &request.scale,
+            themed_scale.as_ref().unwrap_or(&request.scale),
             ColormapBuildOptions {
                 render_density: plot_style.render_density(request.render_density),
                 legend: request.legend,
@@ -761,7 +795,9 @@ fn with_render_state_profile_with_style<T>(
                     marker_outline: place_label.style.marker_outline.into(),
                     marker_outline_width: place_label.style.marker_outline_width,
                     label_color: place_label.style.label_color.into(),
-                    label_halo: place_label.style.label_halo.into(),
+                    label_halo: presentation
+                        .theme
+                        .substitute_white_halo(place_label.style.label_halo.into()),
                     label_halo_width_px: place_label.style.label_halo_width_px,
                     label_scale: place_label.style.label_scale,
                     label_offset_x_px: place_label.style.label_offset_x_px,
@@ -816,7 +852,9 @@ fn with_render_state_profile_with_style<T>(
                 stride_y: layer.stride_y,
                 spacing_px: layer.spacing_px,
                 color: presentation.barb_color(layer.color.into()),
-                halo_color: layer.halo_color.into(),
+                halo_color: presentation
+                    .theme
+                    .substitute_white_halo(layer.halo_color.into()),
                 halo_width: layer.halo_width,
                 width: layer.width,
                 length_px: layer.length_px,
@@ -849,7 +887,10 @@ fn with_render_state_profile_with_style<T>(
             title: request.title.clone().or(default_title),
             subtitle_left: request.subtitle_left.clone(),
             subtitle_center: request.subtitle_center.clone(),
-            subtitle_right: request.subtitle_right.clone(),
+            // A theme may name the provenance label drawn here; a product
+            // that carries none stays bare.
+            subtitle_right: theme::active_theme()
+                .source_subtitle(request.subtitle_right.clone()),
             cbar_tick_step: request.cbar_tick_step,
             colorbar_mode: request.legend.mode,
             chrome_scale: request.chrome_scale,
@@ -868,6 +909,15 @@ fn with_render_state_profile_with_style<T>(
             rgba_grid,
             projected_polygons,
             projected_data_polygons,
+            mesh_cells: request.mesh_cells.as_ref().map(|layer| {
+                crate::render::MeshCellsOverlay {
+                    cells: layer.cells.clone(),
+                    style: crate::mesh_cells::MeshDrawStyle::from_theme(
+                        theme::active_theme().mesh,
+                        1,
+                    ),
+                }
+            }),
             projected_place_labels,
             projected_points,
             projected_lines,

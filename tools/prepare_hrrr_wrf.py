@@ -152,7 +152,7 @@ def _verify_manifest_payloads(root: Path, entries: dict[str, str]) -> None:
 
 def _source_manifest_extension(*, predecessor: Path, extended: Path,
                                source_root: Path, old_hours, new_hours,
-                               cycle: datetime) -> dict[str, object]:
+                               cycle: datetime, supplemental_paths=()) -> dict[str, object]:
     old_entries = _manifest_entries(predecessor)
     new_entries = _manifest_entries(extended)
     _verify_manifest_payloads(source_root, new_entries)
@@ -169,10 +169,15 @@ def _source_manifest_extension(*, predecessor: Path, extended: Path,
         f"hrrr.t{cycle:%H}z.wrfnatf{lead:02d}.grib2",
         f"hrrr.t{cycle:%H}z.soilf{lead:02d}.grib2",
     ))
+    expected_added += [
+        path.resolve().relative_to(source_root.resolve()).as_posix()
+        for path in supplemental_paths
+        if path.resolve().relative_to(source_root.resolve()).as_posix() not in old_entries]
+    expected_added = sorted(set(expected_added))
     if added != expected_added or list(new_hours) != list(old_hours) + [lead]:
         raise ValueError(
             "extended source manifest must add exactly the next atmosphere "
-            "and soil objects")
+            "and soil objects plus explicitly declared supplement objects")
     return {
         "schema": "gpuwm-source-manifest-prefix-extension-v1",
         "predecessor_sha256": _sha256(predecessor),
@@ -225,9 +230,15 @@ def _bridge_manifest_extension(*, predecessor: Path, suffix: Path,
         name.startswith(f"atmosphere-f{lead:02d}/") for name in appended)
     soil_count = sum(
         name.startswith(f"soil-f{lead:02d}/") for name in appended)
-    if atmosphere_count != 22 or soil_count != 2:
+    from gpuwm.ingest.native_supplements import gate_supplement_fields
+    suffix_fields = gate_supplement_fields(dict(
+        row.split("\t", 1) for row in (suffix / "gate.txt").read_text().splitlines() if row))
+    if suffix_fields and ("supplement-inventory.tsv" not in old_entries
+                          or "supplement-inventory.tsv" not in suffix_entries):
+        raise ValueError("supplement selection receipt is not bound by predecessor/suffix manifests")
+    if atmosphere_count != 22 + len(suffix_fields) or soil_count != 2:
         raise ValueError(
-            "suffix bridge lacks the exact 22 atmosphere and 2 soil fields")
+            "suffix bridge lacks its declared atmosphere/supplement and soil fields")
     if set(retained) & set(appended):
         raise ValueError("suffix bridge overwrites a retained payload")
     output.mkdir(parents=True, exist_ok=False)
@@ -252,6 +263,8 @@ def _bridge_manifest_extension(*, predecessor: Path, suffix: Path,
             "forecast_hours", "series_count"}:
         if prior_gate[key] != suffix_gate[key]:
             raise ValueError(f"suffix bridge changes immutable gate field {key}")
+    if gate_supplement_fields(prior_gate) != suffix_fields:
+        raise ValueError("supplement inventory changes the sealed prefix; prepare the complete window to change fields")
     prior_gate["forecast_hours"] = ",".join(map(str, new_hours))
     prior_gate["series_count"] = str(len(new_hours))
     gate_path = output / "gate.txt"
@@ -272,6 +285,18 @@ def _bridge_manifest_extension(*, predecessor: Path, suffix: Path,
     }
     _write_json_create(output / "extension-authority.json", authority)
     output_entries = {**retained, **appended}
+    if suffix_fields:
+        receipt_name = "supplement-inventory.tsv"
+        old_rows = (predecessor / receipt_name).read_text().splitlines()
+        new_rows = (suffix / receipt_name).read_text().splitlines()
+        if not old_rows or not new_rows or old_rows[0] != new_rows[0]:
+            raise ValueError("supplement inventory schema changes during extension")
+        terminal_rows = [row for row in new_rows[1:] if int(row.split("\t", 1)[0]) == lead]
+        if len(terminal_rows) != len(suffix_fields):
+            raise ValueError("supplement inventory lacks the appended source time")
+        receipt_path = output / receipt_name
+        receipt_path.write_text("\n".join(old_rows + terminal_rows) + "\n", encoding="utf-8", newline="\n")
+        output_entries[receipt_name] = _sha256(receipt_path)
     output_entries["gate.txt"] = _sha256(gate_path)
     output_entries["extension-authority.json"] = _sha256(
         output / "extension-authority.json")
@@ -301,77 +326,22 @@ def _bridge_manifest_extension(*, predecessor: Path, suffix: Path,
         ],
     }
 
+from gpuwm.ingest.microphysics_cold_start import cold_start_contract
+from gpuwm.physics_compat import single_domain_runtime_switches
+
 _HRRR_COLD_START_CONTRACT = {
-    WSM6_PROFILE_ID: ((), {}),
-    KESSLER_PROFILE_ID: ((), {}),
-    MYNN_PROFILE_ID: ((), {}),
-    MYNN_RTE_RRTMGP_PROFILE_ID: ((), {}),
-    MYNN_RUC_PROFILE_ID: ((), {}),
-    MYNN_RUC_RTE_RRTMGP_PROFILE_ID: ((), {}),
-    RUC_PROFILE_ID: ((), {}),
-    NOAHMP_PROFILE_ID: ((), {}),
-    MYNN_NOAHMP_PROFILE_ID: ((), {}),
-    MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID: ((), {}),
-    THOMPSON_PROFILE_ID: (
-        ("QNICE", "QNRAIN"),
-        {"ni": (0.0, 0), "nr": (0.0, 0)},
-    ),
-    MORRISON_PROFILE_ID: (
-        ("QNRAIN", "QNICE", "QNSNOW", "QNGRAUPEL"),
-        {
-            "nc": (0.0, 0),
-            "nr": (0.0, 0),
-            "ni": (0.0, 0),
-            "ns": (0.0, 0),
-            "ng": (0.0, 0),
-        },
-    ),
-    NSSL2_PROFILE_ID: (
-        (
-            "QHAIL", "QNDROP", "QNRAIN", "QNICE", "QNSNOW",
-            "QNGRAUPEL", "QNHAIL", "QNCCN", "QVGRAUPEL", "QVHAIL",
-        ),
-        {
-            "qh": (0.0, 0),
-            "qndrop": (0.0, 0),
-            "qnr": (0.0, 0),
-            "qni": (0.0, 0),
-            "qns": (0.0, 0),
-            "qng": (0.0, 0),
-            "qnh": (0.0, 0),
-            "qnn": (408163264.0, 1304600734),
-            "qvolg": (0.0, 0),
-            "qvolh": (0.0, 0),
-        },
-    ),
-    # P3's Registry scalar members (Registry.EM_COMMON:3038): both number
-    # moments and the prognostic rime pair.  HRRR supplies none of them,
-    # all four cold-start at exact FP32 zero, and the scheme is defined at
-    # that zero (nitot floored at nsmall, module_mp_p3.F:2572-2573; an
-    # unsupported rime pair zeroed in calc_bulkRhoRime, :6799-6813) --
-    # the same policy gpuwm/ingest/real.py records for mp=50.
-    P3_LEGACY_RRTMG_PROFILE_ID: (
-        ("QNICE", "QNRAIN", "QIR", "QIB"),
-        {
-            "ni": (0.0, 0),
-            "nr": (0.0, 0),
-            "qir": (0.0, 0),
-            "qib": (0.0, 0),
-        },
-    ),
+    profile: cold_start_contract(single_domain_runtime_switches(profile))
+    for profile in SINGLE_DOMAIN_PHYSICS_PROFILES
 }
-_HRRR_COLD_START_CONTRACT[NSSL2_LEGACY_RRTMG_PROFILE_ID] = (
-    _HRRR_COLD_START_CONTRACT[NSSL2_PROFILE_ID])
-# The cold-start species contract is a microphysics property, not a
-# radiation one (B4-ROUTE-QUALIFICATION.md section 1, item 4), so the
-# legacy-RRTMG Thompson profile reuses the Thompson entry verbatim.
-_HRRR_COLD_START_CONTRACT[THOMPSON_LEGACY_RRTMG_PROFILE_ID] = (
-    _HRRR_COLD_START_CONTRACT[THOMPSON_PROFILE_ID])
-# The same costing one component further: the gray-zone sibling selects a
-# different PBL closure and changes nothing about which species the source
-# supplies or what an absent one cold-starts to.
-_HRRR_COLD_START_CONTRACT[THOMPSON_SHINHONG_LEGACY_RRTMG_PROFILE_ID] = (
-    _HRRR_COLD_START_CONTRACT[THOMPSON_PROFILE_ID])
+
+
+def _configuration_arguments(command, args):
+    if args.physics_profile is not None:
+        command.extend(("--physics-profile", args.physics_profile))
+    if args.experiment_config is not None:
+        command.extend(("--experiment-config", str(args.experiment_config.resolve())))
+    if args.wps_namelist is not None:
+        command.extend(("--wps-namelist", str(args.wps_namelist.resolve())))
 
 
 def _run(command: list[str], env: dict[str, str],
@@ -921,7 +891,7 @@ def _validated_retention_evidence(
 
 def _validated_physics_receipt(
         preparation_report: dict[str, object], *,
-        requested_profile: str) -> dict[str, object]:
+        requested_profile: str | None, expected_selection=None) -> dict[str, object]:
     """Retain one exact runner profile and its cold-start evidence."""
 
     physics = preparation_report.get("physics")
@@ -930,9 +900,23 @@ def _validated_physics_receipt(
             or physics.get("profile") != requested_profile):
         raise RuntimeError(
             "HRRR preparation physics receipt differs from the request")
+    if expected_selection is not None:
+        from gpuwm.hrrr_configuration import resolved_run_settings
+        expected = resolved_run_settings(expected_selection)
+        observed = physics.get("resolved")
+        # Sealed suffix preparation runs only its one-hour subwindow. The
+        # independently checked forcing window owns this one changing value.
+        if not isinstance(observed, dict) or any(
+                observed.get(name) != value for name, value in expected.items()
+                if name != "run_seconds"):
+            raise RuntimeError("HRRR preparation resolved physics differs from the request")
     initialization = physics.get("hrrr_initialization")
-    expected_wrf_fields, expected_state_fields = \
-        _HRRR_COLD_START_CONTRACT[requested_profile]
+    selection = expected_selection
+    if selection is None:
+        if requested_profile is None:
+            raise RuntimeError("configured preparation requires independent physics authority")
+        selection = single_domain_runtime_switches(requested_profile)
+    expected_wrf_fields, expected_state_fields = cold_start_contract(selection)
     if (not isinstance(initialization, dict)
             or initialization.get("schema") != HRRR_INITIALIZATION_SCHEMA
             or initialization.get("source_absent_wrf_fields")
@@ -968,6 +952,7 @@ def _sealed_extension(args, *, valid_time: datetime,
                       source_forecast_hours, output: Path,
                       env: dict[str, str], decoder: Path,
                       started: float,
+                      configured=None,
                       namelist_invariant: dict[str, str]) -> int:
     """Prepare only the shared terminal/new-hour slab and append it."""
     from gpuwm.ingest.prepared_cache import (
@@ -1013,10 +998,12 @@ def _sealed_extension(args, *, valid_time: datetime,
     observed_source_sha = _sha256(source_manifest)
     if observed_source_sha != args.source_manifest_sha256.lower():
         raise ValueError("source manifest digest differs from the request")
+    from gpuwm.ingest.native_supplements import supplement_bindings
     source_proof = _source_manifest_extension(
         predecessor=required_prior["source_snapshot"],
         extended=source_manifest, source_root=args.source_root.resolve(),
-        old_hours=old_hours, new_hours=new_hours, cycle=valid_time)
+        old_hours=old_hours, new_hours=new_hours, cycle=valid_time,
+        supplemental_paths=[path for _, path in supplement_bindings(getattr(args, "supplement", ()))])
     prior_header = json.loads(
         (required_prior["cache"] / "header.json").read_text(
             encoding="utf-8"))
@@ -1042,6 +1029,19 @@ def _sealed_extension(args, *, valid_time: datetime,
         raise ValueError("predecessor prepared cache is not prefix sealed")
     PreparedCacheReader(
         required_prior["cache"], expected_identity=prior_identity).verify_all()
+    if args.experiment_config is not None:
+        from gpuwm.static.highres_production import load_static_highres, static_highres_identity
+        requested_highres = load_static_highres(args.experiment_config)
+        previous_highres = prior_identity.get("source_identity", {}).get("static_highres")
+        requested_identity = static_highres_identity(requested_highres)
+        # A sealed extension appends forcing and keeps every existing static
+        # byte. It cannot change an active overlay under a new declaration.
+        previous_active = isinstance(previous_highres, dict) and previous_highres.get("enabled")
+        if (previous_active or (requested_highres is not None and requested_highres.enabled)) \
+                and previous_highres != requested_identity:
+            raise ValueError("sealed extension changes high-resolution statics while retaining "
+                             "the predecessor's static bytes; rebuild preparation for the "
+                             "changed geography settings")
     prior_namelist_invariant = prior_identity.get(
         "namelist_extension_invariant")
     if prior_namelist_invariant is None:
@@ -1082,7 +1082,9 @@ def _sealed_extension(args, *, valid_time: datetime,
         for path in (atmosphere, soil):
             if not path.is_file():
                 raise FileNotFoundError(path)
-        rows.append(f"{hour}\t{atmosphere}\t{soil}\n")
+        from gpuwm.ingest.native_supplements import series_supplement_suffix
+        suffix = series_supplement_suffix(getattr(args, "supplement", ()))
+        rows.append(f"{hour}\t{atmosphere}\t{soil}{suffix}\n")
     series.write_text("".join(rows), encoding="utf-8", newline="\n")
     suffix_bridge = extension_work / "native-bridge"
     suffix_cache = extension_work / "prepared-cache"
@@ -1103,7 +1105,6 @@ def _sealed_extension(args, *, valid_time: datetime,
         "--static-cache", str(required_prior["static"]),
         "--static-receipt", str(required_prior["static_receipt"]),
         "--namelist-input", str(args.namelist_input.resolve()),
-        "--physics-profile", args.physics_profile,
         "--prepared-cache", str(suffix_cache),
         "--prepare-only", "--run-seconds", "3600",
         "--history-interval-seconds", str(args.history_interval_seconds),
@@ -1112,6 +1113,7 @@ def _sealed_extension(args, *, valid_time: datetime,
         "--domain-spec", str(args.domain_spec.resolve()),
         "--preprocess-backend", args.preprocess_backend,
     ]
+    _configuration_arguments(benchmark, args)
     for acknowledgement in args.ack:
         benchmark.extend(("--ack", acknowledgement))
     if args.prepare_workers is not None:
@@ -1138,7 +1140,8 @@ def _sealed_extension(args, *, valid_time: datetime,
             requested_preprocess_workers=args.preprocess_workers,
             requested_pipeline_workers=args.pipeline_workers, final_hour=1)
     physics_receipt = _validated_physics_receipt(
-        suffix_report, requested_profile=args.physics_profile)
+        suffix_report, requested_profile=args.physics_profile,
+        expected_selection=configured.root.run)
     merged_bridge = native / "native-bridge"
     bridge_proof = _bridge_manifest_extension(
         predecessor=required_prior["bridge"], suffix=suffix_bridge,
@@ -1248,8 +1251,9 @@ def _sealed_extension(args, *, valid_time: datetime,
         "--geometry-receipt", str(output / "native-geometry-receipt.json"),
         "--output", str(output / "wrf-native-input"),
         "--valid-time", valid_time.strftime("%Y-%m-%d_%H:%M:%S"),
-        "--physics-profile", args.physics_profile,
     ]
+    export_command.extend(("--physics-profile", args.physics_profile)
+                          if args.physics_profile is not None else ("--experiment-config-suite",))
     for acknowledgement in args.ack:
         export_command.extend(("--ack", acknowledgement))
     export_started = time.perf_counter()
@@ -1300,11 +1304,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--source-manifest", type=Path, required=True)
     parser.add_argument("--source-manifest-sha256", required=True)
+    parser.add_argument("--supplement", action="append", default=[],
+                        help="PMSL=GRIB donor, bound by the source manifest; repeat for multiple files")
     static = parser.add_mutually_exclusive_group(required=True)
     static.add_argument("--geog-root", type=Path)
     static.add_argument("--static-cache", type=Path)
     parser.add_argument("--static-receipt", type=Path)
     parser.add_argument("--domain-spec", type=Path)
+    parser.add_argument("--experiment-config", type=Path)
     parser.add_argument("--namelist-input", type=Path, required=True)
     parser.add_argument(
         "--wps-namelist", type=Path,
@@ -1317,9 +1324,8 @@ def _parser() -> argparse.ArgumentParser:
               "bundle exists"))
     parser.add_argument(
         "--physics-profile",
-        choices=SINGLE_DOMAIN_PHYSICS_PROFILES,
-        default=ROUTE_DEFAULT_PHYSICS_PROFILE,
-        help="explicit GPUWM HRRR physics/runtime contract",
+        default=None,
+        help="optional equality assertion against a named physics template",
     )
     parser.add_argument(
         "--ack", action="append", default=[],
@@ -1348,10 +1354,10 @@ def _parser() -> argparse.ArgumentParser:
         "--extend-root-preparation", type=Path,
         help=("sealed predecessor root; decode only its terminal overlap and "
               "the one newly arrived hour"))
-    parser.add_argument("--run-seconds", type=int, default=43_200)
+    parser.add_argument("--run-seconds", type=int)
     parser.add_argument(
         "--history-interval-seconds", type=_positive_finite_seconds,
-        default=300.0,
+        default=None,
         help=("future GPUWM history cadence bound into the prepared-cache "
               "identity; preparation itself writes no history frames"),
     )
@@ -1399,7 +1405,8 @@ def _require_microphysics_tables(profile: str) -> None:
     from gpuwm.physics_compat import single_domain_runtime_switches
     from gpuwm.table_assets import require_thompson_tables
 
-    switches = single_domain_runtime_switches(profile)
+    switches = (single_domain_runtime_switches(profile)
+                if isinstance(profile, str) else vars(profile))
     if int(switches["mp_physics"]) == THOMPSON_MP_PHYSICS:
         require_thompson_tables(assets=CLASSIC_TABLE_ASSETS)
 
@@ -1418,8 +1425,30 @@ def main(argv: list[str] | None = None) -> int:
         return _prepare_from_argv(argv)
 
 
+def _configured_defaults(args):
+    if args.run_seconds is not None and args.history_interval_seconds is not None:
+        return
+    from gpuwm.hrrr_configuration import native_configuration_defaults
+    configured = native_configuration_defaults(
+        experiment_config=args.experiment_config,
+        namelist_input=getattr(args, "namelist_input", None),
+        domain_spec=getattr(args, "domain_spec", None),
+        wps_namelist=getattr(args, "wps_namelist", None),
+        physics_profile=getattr(args, "physics_profile", None),
+        acknowledgements=tuple(getattr(args, "ack", ())))
+    if args.run_seconds is None:
+        args.run_seconds = configured.run_seconds
+    if args.history_interval_seconds is None:
+        args.history_interval_seconds = configured.root.history_interval_s
+
+
 def _prepare_from_argv(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    from gpuwm.ingest.native_supplements import supplement_bindings
+    for _, path in supplement_bindings(args.supplement):
+        if not path.is_file():
+            raise FileNotFoundError(f"declared PMSL donor is missing: {path}")
+    _configured_defaults(args)
     explain.set_explain(explain.explain_enabled(args))
     cycle, _legacy = resolve_cycle_flags(
         args.cycle, args.valid_time,
@@ -1444,7 +1473,26 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
     # removed the reason this route's default had to be a suite that
     # needs no tables, which is why the default could be flipped to a
     # full-radiation one at all.
-    _require_microphysics_tables(args.physics_profile)
+    from gpuwm.hrrr_configuration import resolve_root_experiment
+    from gpuwm.ingest.hrrr_target import load_hrrr_target_domain
+    from gpuwm.vertical_contract import explicit_vertical_from_wrf_namelist
+    target = load_hrrr_target_domain(args.domain_spec)
+    vertical = explicit_vertical_from_wrf_namelist(
+        args.namelist_input, expected_nz=target.nz, context="native preparation")
+    configured, experiment_tables = resolve_root_experiment(
+        target=target, vertical=vertical, namelist_input=args.namelist_input,
+        start_time=model_start_time, run_seconds=args.run_seconds,
+        experiment_config=args.experiment_config, wps_namelist=args.wps_namelist,
+        physics_profile=args.physics_profile, acknowledgements=tuple(args.ack),
+        history_interval_seconds=args.history_interval_seconds)
+    from gpuwm.case_data import optional_case_data_from_tables
+    from gpuwm.ingest.native_supplements import native_pressure_policy, require_native_pressure_field
+    companion_source = args.experiment_config or args.namelist_input
+    declared_case = optional_case_data_from_tables(
+        experiment_tables, source=str(companion_source), base_dir=Path(companion_source).parent)
+    require_native_pressure_field(native_pressure_policy(args.namelist_input, declared_case),
+                                  bindings=supplement_bindings(args.supplement))
+    _require_microphysics_tables(configured.root.run)
     if args.prepare_workers is not None and args.prepare_workers not in range(1, 33):
         raise ValueError("prepare-workers must be between 1 and 32")
     if args.preprocess_workers is not None and args.preprocess_workers < 1:
@@ -1507,9 +1555,16 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
             args, valid_time=valid_time,
             source_forecast_hours=source_forecast_hours,
             output=output, env=env, decoder=decoder, started=started,
-            namelist_invariant=namelist_invariant)
+            configured=configured, namelist_invariant=namelist_invariant)
     output.mkdir(parents=True)
 
+    from gpuwm.static.highres_production import load_static_highres
+    highres = load_static_highres(args.experiment_config)
+    static_arguments = ([] if args.experiment_config is None else [
+        "--experiment-config", str(args.experiment_config.resolve()),
+        "--case-date", model_start_time.date().isoformat()])
+    static_domain_arguments = ([] if args.domain_spec is None else [
+        "--domain-spec", str(args.domain_spec.resolve())])
     geometry_receipt = output / "native-geometry-receipt.json"
     if args.geog_root is not None:
         static_cache = output / "native-static.npz"
@@ -1517,8 +1572,9 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
         _run([
             sys.executable, str(REPO / "tools" / "hrrr_build_native_static.py"),
             "--geog-root", str(args.geog_root.resolve()),
-            "--domain-spec", str(args.domain_spec.resolve()),
+            *static_domain_arguments,
             "--output", str(static_cache), "--receipt", str(static_receipt),
+            *static_arguments,
         ], env)
     else:
         static_cache = args.static_cache.resolve()
@@ -1550,8 +1606,17 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
         # someone had already asked for it by name.
         sealed_static = output / "native-static.npz"
         sealed_receipt = output / "native-static-receipt.json"
-        _link_file_create(static_cache, sealed_static)
-        _link_file_create(static_receipt, sealed_receipt)
+        if highres is not None and highres.enabled:
+            _run([
+                sys.executable, str(REPO / "tools" / "hrrr_build_native_static.py"),
+                "--static-cache", str(static_cache), "--static-receipt", str(static_receipt),
+                *static_domain_arguments,
+                "--output", str(sealed_static), "--receipt", str(sealed_receipt),
+                *static_arguments,
+            ], env)
+        else:
+            _link_file_create(static_cache, sealed_static)
+            _link_file_create(static_receipt, sealed_receipt)
         static_cache = sealed_static
         static_receipt = sealed_receipt
     geometry_command = [
@@ -1579,7 +1644,9 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
         for path in (atmosphere, soil):
             if not path.is_file():
                 raise FileNotFoundError(path)
-        rows.append(f"{hour}\t{atmosphere}\t{soil}\n")
+        from gpuwm.ingest.native_supplements import series_supplement_suffix
+        suffix = series_supplement_suffix(getattr(args, "supplement", ()))
+        rows.append(f"{hour}\t{atmosphere}\t{soil}{suffix}\n")
     series.write_text("".join(rows), encoding="utf-8")
     _namelist_start_advisory(
         namelist_input, model_start_time, cycle=valid_time,
@@ -1600,12 +1667,12 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
         "--static-cache", str(static_cache),
         "--static-receipt", str(static_receipt),
         "--namelist-input", str(namelist_input),
-        "--physics-profile", args.physics_profile,
         "--prepared-cache", str(native / "prepared-cache"),
         "--prepare-only", "--run-seconds", str(args.run_seconds),
         "--history-interval-seconds", str(args.history_interval_seconds),
         "--outdir", str(native / "preparation-report"),
     ]
+    _configuration_arguments(benchmark, args)
     # Unconditional.  Only the benchmark holds the experiment tables this
     # route builds in code, so only it can render the authority a
     # config-driven stage will bind -- and every prepared tree needs one,
@@ -1660,7 +1727,8 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
          requested_pipeline_workers=args.pipeline_workers,
          final_hour=final_hour)
     physics_receipt = _validated_physics_receipt(
-        preparation_report, requested_profile=args.physics_profile)
+        preparation_report, requested_profile=args.physics_profile,
+        expected_selection=configured.root.run)
 
     bridge_manifest = native / "native-bridge" / "SHA256SUMS"
     export_started = time.perf_counter()
@@ -1675,8 +1743,9 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
         # of the cycle/model-start collision: an exported wrfinput has
         # exactly one valid time and no lead to be read against.
         "--valid-time", model_start_time.strftime(HRRR_TIME_FORMAT),
-        "--physics-profile", args.physics_profile,
     ]
+    export_command.extend(("--physics-profile", args.physics_profile)
+                          if args.physics_profile is not None else ("--experiment-config-suite",))
     for acknowledgement in args.ack:
         export_command.extend(("--ack", acknowledgement))
     stock_wrf_export = _stock_wrf_export(

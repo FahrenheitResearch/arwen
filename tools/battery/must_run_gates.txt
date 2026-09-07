@@ -1,0 +1,128 @@
+# GATES WHOSE FIXTURES SHIP IN THIS REPOSITORY.
+#
+# Runner: tools/battery/no_silent_skip.py, registered by default from
+# tests/conftest.py and available to any leg as
+#
+#     python -m pytest -p tools.battery.no_silent_skip <files...>
+#
+# Static gate: tests/test_must_run_gates.py.
+#
+# WHY THIS LIST EXISTS
+# --------------------
+# tools/battery/no_silent_deselection.py and tools/battery/list_census.json
+# count COLLECTED items, and a skipped item is collected.  So a deck whose
+# every test skips contributes its full count to the census, clears its floor,
+# and the leg is green.  The tree's own worked example, at this commit:
+# tools/rrtmg_wrf461_oracle/lw_gate.py:23-26 defaults its fixture root to
+# ~/.claude/jobs/fea7a141/tmp/rrtmg_lw/fixtures -- one agent job's scratch
+# directory on one machine -- and tests/test_rrtmg_lw_numpy.py:38 is a
+# whole-module skipif on that directory existing.  It exists in no clone, so
+# every RRTMG longwave bitwise gate skips everywhere, inside a module whose
+# own line 92 reads "this gate must never silently skip again".
+#
+# Every file below reads fixtures that are COMMITTED TO THIS REPOSITORY
+# (gpuwm/data/*/oracle, tools/*_wrf461_oracle/, tests/data/), so there is no
+# environment to blame: if it skips, coverage left.  Measured at a70ade37,
+# each entry carries no cupy import, no pytest.skip, no skipif and no
+# importorskip, and each module executes its module scope on a bare CPU box.
+#
+# FORMAT
+#   tests/test_x.py                 a skip is a failure (ceiling 0)
+#   tests/test_x.py  skips<=N       at most N tests may skip
+#   tests/test_x.py  skips<=*  # why   the count is a property of the fixture
+#                                      data, not a constant; the entirely-
+#                                      skipped arm still applies.  The reason
+#                                      comment is required by
+#                                      tests/test_must_run_gates.py.
+#
+# ADDING an entry is cheap and is how a new committed-fixture deck becomes
+# binding.  REMOVING one is a claim that the deck's fixtures stopped shipping;
+# say so in the commit.
+
+# --- RRTMG shortwave: 13 MB of fixtures in tools/rrtmg_wrf461_oracle/
+#     sw_fixtures/, recorded from unmodified WRF v4.6.1 by
+#     sw_fixture_driver.F90.  pytest.mark.slow, so every battery leg's
+#     -m "... and not slow" deselects it: it is on this list because it CAN
+#     run anywhere and is therefore worth requiring somewhere.
+tests/test_rrtmg_sw_oracle.py  skips<=*  # night columns: SW is not called on
+                                         # them, and how many of the fixture
+                                         # columns are night is fixture data
+
+# --- Grell-Freitas cumulus, against tools/gf_wrf461_oracle/
+tests/test_gf_deep_parity.py
+tests/test_gf_driver_parity.py
+tests/test_gf_shallow_parity.py
+
+# --- MYNN, against tools/mynn_wrf461_oracle/ and tools/mynn_pbl_wrf461_oracle/
+tests/test_mynn_dmp_sibling.py
+tests/test_mynn_surface.py
+
+# --- Noah-MP, against gpuwm/data/noahmp/oracle/ and tools/noahmp_wrf461_oracle/
+tests/test_noahmp_bareflux.py
+tests/test_noahmp_driver.py
+tests/test_noahmp_oracle_harness.py
+tests/test_noahmp_radiation.py
+tests/test_noahmp_snow.py
+tests/test_noahmp_soilwater.py
+tests/test_noahmp_vegprecip.py
+tests/test_noahmp_water.py
+tests/test_noahmp_water_sflx_crosscheck.py
+
+# --- RUC land surface and soil ingest, against tools/ruc_wrf461_oracle/,
+#     tools/ruc_soil_ingest_wrf461_oracle/ and gpuwm/data/ruc/oracle/.
+#     tests/test_ruc.py is the file the 2026-08-28 fault injection retired
+#     with one marker line; it is now required to RUN, not merely to collect.
+tests/test_ruc.py
+tests/test_ruc_soil_ingest.py
+tests/test_ruc_soil_wiring.py
+tests/test_ruc_source_matrix.py
+
+# --- map projections, against tests/data/llxy_oracle/ and
+#     tools/llxy_wrf461_oracle/
+tests/test_projection_oracle.py
+
+# --- Thompson oracle provenance, against gpuwm/data/thompson/oracle{,-aero}/
+tests/test_thompson_aerosol_oracle_provenance.py
+tests/test_thompson_oracle_provenance.py
+
+tests/test_tui_cli.py
+
+# --- DECLARED-SKIPPING-BEGIN -------------------------------------------------
+#
+# Below this line: every module in the test tree that carries a MODULE-LEVEL
+# skip -- a `pytestmark` skipif or a `pytest.skip(allow_module_level=True)` --
+# and cannot be made to run in a fresh clone.  Nothing enforces a count here.
+# What is enforced, by tests/test_must_run_gates.py, is that the SET is
+# complete: a module-level skip gate that appears in neither half of this file
+# fails that test.  So a new deck cannot start skipping silently -- it must be
+# declared, with the reason, in this file.
+#
+# Format: one path, then the reason, on the same line after two spaces.
+#
+tests/test_rrtmg_lw_numpy.py   the RRTMG longwave oracle fixtures are not in
+#                              this repository.  Their default location is one
+#                              developer's scratch tree
+#                              (tools/rrtmg_wrf461_oracle/lw_gate.py:23-26,
+#                              ~/.claude/jobs/fea7a141/...), and regenerating
+#                              them needs a WRF v4.6.1 source tree plus
+#                              gfortran (lw_build.sh), so no clone and no
+#                              hosted runner can restore this coverage.
+#                              Audit: rad-01-01 / xc-05-05.  The remedy is to
+#                              commit the fixtures the way sw_fixtures/ was
+#                              committed, and then move this entry up.
+tests/test_rrtmg_lw_cuda.py    the same fixtures as its NumPy twin above, and
+#                              additionally a CUDA device.
+tests/test_rrtmg_sw_cuda.py    needs a CUDA device (the shortwave fixtures do
+#                              ship; only the device is absent).  Runs on the
+#                              gpu lane of .github/workflows/ci.yml.
+tests/test_wrfout_dual_write.py  needs the Rust NetCDF writer built in this
+#                              checkout (cargo build --release); a wheel
+#                              install carries it, a bare source tree does not.
+tests/test_excluded_subsystem_absent.py  scans tracked files, so it needs a git
+#                              checkout; it is meaningless in an unpacked sdist.
+tests/test_no_forecast_gate.py  needs bash and the gate script; skipped on a
+#                              Windows box with no bash on PATH.
+tests/test_remote_worker_linux.py  needs Linux /proc process ownership and POSIX process groups; runs on the hosted Linux CPU lane and skips on Windows.
+
+# Independent met_em fixtures are generated locally; reading them needs native decode.
+tests/test_metem_ingest.py    needs netCDF4 and the compiled Rust rw_netcdf decoder; build tools/rustwx and set GPUWM_RW_NETCDF to execute this deck.

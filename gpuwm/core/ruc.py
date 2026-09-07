@@ -1,3 +1,26 @@
+# ======================================================================
+# THIRD-PARTY NOTICE.  Parts of this file are hand transcriptions of
+# third-party work.  ArWen distributes the file under the Apache License
+# 2.0; the notices below belong to the transcribed parts and are kept here
+# because their own licences require it.  Full texts are in the repository
+# NOTICE and in the licenses/ directory.
+#
+# For the two libm grants the text also sits beside the code, in
+# gpuwm/core/kernels/LICENSE-third-party.txt.
+#
+#   FDLIBM -- the tanhf reduction and the expm1f it is built on. Developed
+#   at SunPro and converted to single precision at Cygnus Support; glibc
+#   carries it substantially unmodified and presents it, in its own
+#   LICENSES file, as Sun's code.  The notice below is the whole of the
+#   licence: its one condition is that it be preserved.
+#
+#       Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+#
+#       Developed at SunPro, a Sun Microsystems, Inc. business.
+#       Permission to use, copy, modify, and distribute this
+#       software is freely granted, provided that this notice
+#       is preserved.
+# ======================================================================
 """RUC LSM parameter loading, geometry, cold start, and surface setup.
 
 The routines here transcribe executable pieces from WRF v4.6.1
@@ -1938,7 +1961,13 @@ def ruc_soil_temperature_step(
     delt: float,
     conflx: float = 0.5,
     nroot: object = 4,
-    cvw: float = 4183.0,
+    # WRF's `soil` binds this dummy to its own `cw`, the VOLUMETRIC heat
+    # capacity of water: module_sf_ruclsm.F:731 `cw =4.183e6` (assigned
+    # nowhere else in the file), :2435 `cvw=cw`, :2662 the `call soiltemp`
+    # constants group, :4634 the dummy.  `rainf*cvw*prcpms` at :4743/:4752
+    # needs J m-3 K-1 against `prcpms` in m s-1 to come out in W m-2, so the
+    # mass-specific 4183.0 is a factor of 1000 short.
+    cvw: float = 4.183e6,
 ) -> RucSoilTemperature:
     """Transcribe WRF ``soiltemp`` for snow-free nine-level land columns."""
 

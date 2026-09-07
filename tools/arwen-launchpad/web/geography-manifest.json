@@ -1,0 +1,79 @@
+{
+  "schema": "arwen.geography-assets.v1",
+  "generated_utc": "2026-09-05T11:28:04.846565+00:00",
+  "display_only": true,
+  "base_commit": "b0fd85b9f8d4b90bcc835a029aa7d223a8e0e907",
+  "geonames": {
+    "downloaded": "2026-09-05",
+    "url": "https://download.geonames.org/export/dump/",
+    "license": "CC-BY-4.0",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "files": {
+      "cities15000.zip": {
+        "bytes": 3315294,
+        "sha256": "5712101abe25fada52f40fa77d3f7b1c61f1f603322d37d0c7ecd6ab0794f3fe"
+      },
+      "cities15000.txt": {
+        "bytes": 8425321,
+        "sha256": "5bc1a7b90cb88ac162e17e43e2190f34d22be2e5c0dfada3f26a3676b052503d"
+      },
+      "admin1CodesASCII.txt": {
+        "bytes": 151536,
+        "sha256": "590651498043f674accda2b7f46d21286cda0e290b02f8561c5005eee9a5448c"
+      },
+      "countryInfo.txt": {
+        "bytes": 31678,
+        "sha256": "93bafc525813f22e4711ff9ed6d626343094ce48c26388dc7c49189b3d7d5512"
+      },
+      "readme.txt": {
+        "bytes": 8843,
+        "sha256": "b1957379b6c1242c700c98ac9a8aa0a09f56c3c0a50ee72175527005f48ef2c5"
+      }
+    }
+  },
+  "natural_earth": {
+    "url": "https://www.naturalearthdata.com/",
+    "license": "public domain",
+    "files": {
+      "tools/rustwx/assets/basemap/natural_earth_10m/ne_10m_land.shp": {
+        "bytes": 7166824,
+        "sha256": "4cad3a49bc75c1a4c2f3d7efae04f2f8e63151c96764b2658effabf524331fa6"
+      },
+      "tools/rustwx/assets/basemap/natural_earth_10m/ne_10m_lakes.shp": {
+        "bytes": 2682580,
+        "sha256": "11064fa55ed91b56a0d86733643c1a5bfcc137fdf044e83f471978a5b86617e1"
+      },
+      "tools/rustwx/assets/basemap/natural_earth_10m/ne_10m_admin_1_states_provinces_lines.shp": {
+        "bytes": 7363120,
+        "sha256": "c89b8545fdb03a764df9de2efeadf0d6735169d94b48a315b5e233780e073ab5"
+      },
+      "tools/rustwx/assets/basemap/natural_earth_10m/ne_10m_admin_0_boundary_lines_land.shp": {
+        "bytes": 1295520,
+        "sha256": "b6811b9e2f6ed40b31622e6d261210c5e6afded9b7ad71977d3658293f56373f"
+      }
+    }
+  },
+  "outputs": {
+    "geography.json": {
+      "bytes": 18833827,
+      "sha256": "3a0d589a91ad072173a0d52349520968144e694d9f267dd7cf94e7c6c0ecb8f9"
+    },
+    "geography.json.gz": {
+      "bytes": 7315732,
+      "sha256": "d927e33b7b62f4b74eafee77bd40498ae06a7d00fe8193682ec0af821e1283a5"
+    }
+  },
+  "places": 34136,
+  "simplification_degrees": 0.0025,
+  "coordinate_rounding_svg_units": 0.001,
+  "procedure": [
+    "Download the named GeoNames files and verify source SHA256s. Extract only cities15000.txt from the ZIP.",
+    "cargo run --release --locked --bin build-geography --manifest-path tools/arwen-launchpad/Cargo.toml -- tools/rustwx/assets/basemap GEONAMES_SOURCE_DIR OUTPUT_JSON",
+    "Package OUTPUT_JSON with Python standard-library gzip.compress(data,mtime=0) into web/geography.json.gz (Python 3.13.7 used).",
+    "Verify output SHA256s. Source parsing and geographic simplification are performed by the Rust builder; gzip is packaging only."
+  ],
+  "builder": {
+    "path": "tools/arwen-launchpad/src/bin/build-geography.rs",
+    "sha256": "2c4a2f6b1fb21f561bb4b86f8053475184bae6853c50f7af0231412a48f0fa12"
+  }
+}

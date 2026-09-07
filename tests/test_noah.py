@@ -785,6 +785,46 @@ def test_snow_beyond_the_overshoot_band_still_refuses_with_its_numbers():
         preprocess_noah_soil(fields, soil_type=soil_type)
 
 
+def test_snow_above_the_plausibility_ceiling_refuses_with_its_numbers():
+    """Negative control on the other side of the band.
+
+    A kg m-2 snow water equivalent read as ERA5 metres, or the reverse,
+    is a factor of 1000, and no arm of the SNOW/SNOWH reconciliation can
+    see it: when both fields are present neither arm fires, so the state
+    goes into the LSM at 2e5 kg m-3 with nothing said.  The ceiling is
+    the only thing that can notice, so feed it the wrong number and
+    require a refusal that names it.
+    """
+    from gpuwm.ingest.soil import preprocess_noah_soil
+
+    fields, soil_type = _snow_case([0.30, 0.30, 0.30])
+    # 60 kg m-2 of snow water equivalent, multiplied by 1000 by a route
+    # that believed the name meant metres.
+    fields["SNOW"] = np.full((1, 3), 60.0e3)
+    with pytest.raises(ValueError, match="plausibility ceiling") as refusal:
+        preprocess_noah_soil(fields, soil_type=soil_type)
+    message = str(refusal.value)
+    assert "snow water" in message
+    assert "20000" in message
+    assert "60000" in message
+    assert "kg m-2" in message
+
+    # The same snowpack under the name that states its unit is admitted
+    # unchanged, and neither reconciliation arm rewrites it.
+    fields["SNOW"] = np.full((1, 3), 60.0)
+    soil = preprocess_noah_soil(fields, soil_type=soil_type)
+    np.testing.assert_array_equal(soil.snow_water, 60.0)
+    np.testing.assert_array_equal(soil.snow_depth, 0.30)
+
+    # Snow depth carries the same ceiling, one column at the
+    # reconciliation's own 200 kg m-3: the same 0.30 m pack published in
+    # millimetres and read as metres is the same factor of 1000.
+    fields, soil_type = _snow_case([300.0, 0.0, 0.0])
+    with pytest.raises(ValueError, match="plausibility ceiling") as refusal:
+        preprocess_noah_soil(fields, soil_type=soil_type)
+    assert "snow depth" in str(refusal.value)
+
+
 def test_reconciled_era5_sea_ice_exercises_noah_ice_branch(params):
     from gpuwm.ingest.soil import preprocess_noah_soil
 

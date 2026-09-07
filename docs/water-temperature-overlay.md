@@ -292,3 +292,26 @@ the overlay render (before/after pair delivered with the reproduction
 assets), and the lake-wide dewpoint dropped about 1.6 K as the FLake
 warm patches (294+ K skin in late May) gave way to the analysis's
 ~286 K -- the climatologically right value for the date.
+
+
+## Prepared input routes
+
+`[case_data].water_temperature_overlay` and `water_temperature_policy` also
+apply to native and mapped preparation, including child domains. Each child
+uses its own target land-use table. Overlays are sampled in geographic
+coordinates supplied by the source geometry, including cropped projected
+sources. Preparation records the selected policy and the overlay file's
+SHA-256; changed overlay bytes invalidate publication or reuse.
+
+The optional `[case_data]` table uses the same schema as ordinary case loading.
+Its `sfcp_to_sfcp` choice reaches root initialization and every boundary or
+child initializer. `false` requires an actual canonical `PMSL` field in Pa.
+A native-level input without sea-level pressure cannot satisfy that request;
+preparation reports the missing field rather than substituting `true`.
+When both a native namelist and CaseData explicitly declare this choice,
+they must agree.
+
+A prebuilt static cache without land-use metadata needs its matching
+`--geog-root` to apply an explicitly requested policy that distinguishes
+lakes from ocean. An explicit declaration is never silently replaced with
+another policy.

@@ -701,7 +701,8 @@ def test_nssl2_maps_first_class_without_substitution(tmp_path):
     assert not any(item.key == "mp_physics" for item in report.substitutions)
 
 
-def test_target_thompson_mynn_ruc_suite_imports_without_substitution(tmp_path):
+@pytest.mark.parametrize("soil_layers", [6, 9])
+def test_target_thompson_mynn_ruc_suite_imports_without_substitution(tmp_path, soil_layers):
     inp = INPUT_TEXT.replace("mp_physics = 55, 55",
                              "mp_physics = 8, 8").replace(
         "sf_sfclay_physics = 91, 91",
@@ -710,7 +711,7 @@ def test_target_thompson_mynn_ruc_suite_imports_without_substitution(tmp_path):
         "sf_surface_physics = 3, 3").replace(
         "bl_pbl_physics = 11, 11",
         "bl_pbl_physics = 5, 5").replace(
-        " bldt = 0, 0,", " num_soil_layers = 9,\n bldt = 0, 0,")
+        " bldt = 0, 0,", f" num_soil_layers = {soil_layers},\n bldt = 0, 0,")
     toml_text, report = import_namelists(
         *_pair(tmp_path, inp=inp), name="friend_suite")
     output = tmp_path / "friend-suite.toml"
@@ -718,13 +719,22 @@ def test_target_thompson_mynn_ruc_suite_imports_without_substitution(tmp_path):
     cfg = load_experiment(output).root.run
     assert (cfg.mp_physics, cfg.sf_sfclay_physics,
             cfg.sf_surface_physics, cfg.bl_pbl_physics,
-            cfg.num_soil_layers) == (8, 5, 3, 5, 9)
+            cfg.num_soil_layers) == (8, 5, 3, 5, soil_layers)
     assert [item.key for item in report.substitutions] == [
         "ra_lw_physics/ra_sw_physics"
     ]
 
 
-def test_split_radiation_imports_natively_and_refuses_the_unpaired_half(
+@pytest.mark.parametrize("soil_layers", [5, 7, 10])
+def test_imported_ruc_soil_geometry_still_requires_a_defined_count(tmp_path, soil_layers):
+    inp = INPUT_TEXT.replace("mp_physics = 55, 55", "mp_physics = 8, 8").replace(
+        "sf_surface_physics = 2, 2", "sf_surface_physics = 3, 3").replace(
+        " bldt = 0, 0,", f" num_soil_layers = {soil_layers},\n bldt = 0, 0,")
+    with pytest.raises(ValueError, match="soil"):
+        import_namelists(*_pair(tmp_path, inp=inp))
+
+
+def test_split_radiation_imports_each_implemented_spectrum(
         tmp_path):
     """Both split pairs import as themselves, and 1/4 is still refused.
 
@@ -763,11 +773,16 @@ def test_split_radiation_imports_natively_and_refuses_the_unpaired_half(
     assert all("ra_" not in substitution.key
                for substitution in report.substitutions)
 
-    # RRTM longwave with a shortwave that has no adapter beside it.
-    with pytest.raises(ValueError, match="ra_lw_physics=1") as raised:
-        import_namelists(*_pair(tmp_path, inp=_radiation(1, 4)),
-                         name="rrtm_unpaired")
-    assert "ra_sw_physics=1" in str(raised.value)
+    # Independent RRTM LW and RRTMG SW keep both requested selectors.
+    for variant in (None, "rte-rrtmgp", "rrtmg_legacy"):
+        text, _ = import_namelists(*_pair(tmp_path, inp=_radiation(1, 4)),
+                                  name="rrtm_mixed", rrtmg_variant=variant)
+        output.write_text(text)
+        mixed = load_experiment(output)
+        assert all((d.run.ra_lw_physics, d.run.ra_sw_physics) == (1, 4)
+                   for d in mixed.domains)
+        expected = "rrtmg_legacy" if variant is None else variant
+        assert all(d.run.ra_rrtmg_variant == expected for d in mixed.domains)
 
     # The implemented half of the same split representation still imports, and
     # this is where the other half of the native-split coverage lives:
@@ -819,6 +834,25 @@ def test_morr_rimed_ice_import_rejects_invalid_value(tmp_path):
                              "&physics\n morr_rimed_ice = 2,\n")
     with pytest.raises(ValueError, match="morr_rimed_ice"):
         import_namelists(*_pair(tmp_path, inp=inp))
+
+
+@pytest.mark.parametrize("pair", [(4, 1), (1, 4), (0, 4), (4, 0)])
+def test_mixed_modern_rrtmg_discloses_the_selected_spectrum_without_changing_optics(tmp_path, pair):
+    inp = INPUT_TEXT.replace(" ra_lw_physics = 4, 4,", f" ra_lw_physics = {pair[0]}, {pair[0]},").replace(
+        " ra_sw_physics = 4, 4,", f" ra_sw_physics = {pair[1]}, {pair[1]},")
+    # The native null-radiation branches keep their existing required physics acknowledgements.
+    acknowledgements = (CONSTANT_DOWNWARD_LONGWAVE_ACK,) if pair[0] == 0 else ()
+    text, report = import_namelists(*_pair(tmp_path, inp=inp), acknowledgements=acknowledgements)
+    output = tmp_path / "mixed-radiation.toml"
+    output.write_text(text)
+    exp = load_experiment(output)
+    assert (exp.root.run.ra_lw_physics, exp.root.run.ra_sw_physics) == pair
+    assert exp.root.run.ra_rrtmg_variant == "rte-rrtmgp"
+    assert exp.root.run.wrf_rrtmg_compatibility == "none"
+    assert 'ra_rrtmg_variant = "rte-rrtmgp"' in text
+    selected = "ra_lw_physics" if pair[0] == 4 else "ra_sw_physics"
+    rows = [row for row in report.substitutions if row.key == selected]
+    assert len(rows) == 1 and "RTE+RRTMGP" in rows[0].gpuwm_name
 
 
 def test_wsm6_and_hail_opt_import_without_substitution(tmp_path):
@@ -1854,7 +1888,7 @@ def test_report_carries_three_explicit_sections(tmp_path):
     _, report = _import_with(tmp_path,
                              extra_physics=" swint_opt = 0,\n")
     formatted = report.format()
-    assert "Translated (namelist -> experiment TOML):" in formatted
+    assert "Other parsed controls (not a configuration-equivalence claim):" in formatted
     assert "Fixed by ArWen (validated against the only implemented " \
            "value):" in formatted
     assert "Not implemented (namelist keys consumed without a gpuwm " \
@@ -1924,6 +1958,61 @@ def _strip_hand_declared_settings(text: str) -> tuple[str, dict[str, str]]:
     return "".join(kept), found
 
 
+# 399d95a8602515a4b6c8c445bdcf007ccf3b1245 made these existing WRF
+# defaults explicit. Exact before/after importer replay reproduces the retained
+# receipt / current emission respectively; the original campaign receipt stays
+# unchanged. This block is an enumerated spelling delta, not hand-declared input.
+_HISTORICAL_ADAPTIVE_DEFAULT_BLOCK = """\
+# Adaptive time step (Registry.EM_COMMON:2269-2281).  Off unless
+# the namelist asked for it; with it off every value below is
+# WRF's Registry default and nothing reads them.
+use_adaptive_time_step = false
+step_to_output_time = true
+adaptation_domain = 1
+target_cfl = 1.2
+target_hcfl = 0.84
+max_step_increase_pct = 5
+starting_time_step = -1
+starting_time_step_den = 0
+max_time_step = -1
+max_time_step_den = 0
+min_time_step = -1
+min_time_step_den = 0
+"""
+
+
+def _harmonize_historical_adaptive_defaults(historical: str, emitted: str) -> str:
+    anchor = "\nhypsometric_opt = 2\n"
+    block = _HISTORICAL_ADAPTIVE_DEFAULT_BLOCK
+    assert block not in historical
+    assert historical.count(anchor) == 1
+    assert emitted.count(block) == 1, "historical adaptive defaults changed"
+    assert emitted.count(anchor + block) == 1
+    return historical.replace(anchor, anchor + block)
+
+
+@pytest.mark.parametrize("line", _HISTORICAL_ADAPTIVE_DEFAULT_BLOCK.splitlines())
+def test_historical_adaptive_harmonization_does_not_hide_changed_defaults_or_comments(
+    tmp_path, line,
+):
+    # The live importer supplies the positive side. Every one of the twelve
+    # settings and three comments remains pinned; this is not a key stripper.
+    emitted, _ = import_namelists(*_pair(tmp_path))
+    historical = emitted.replace(_HISTORICAL_ADAPTIVE_DEFAULT_BLOCK, "")
+    assert _harmonize_historical_adaptive_defaults(historical, emitted) == emitted
+    changed = emitted.replace(line + "\n", line + " changed\n", 1)
+    with pytest.raises(AssertionError, match="historical adaptive defaults changed"):
+        _harmonize_historical_adaptive_defaults(historical, changed)
+
+
+def test_historical_adaptive_harmonization_refuses_missing_or_duplicate_block(tmp_path):
+    emitted, _ = import_namelists(*_pair(tmp_path))
+    historical = emitted.replace(_HISTORICAL_ADAPTIVE_DEFAULT_BLOCK, "")
+    for changed in (historical, emitted + _HISTORICAL_ADAPTIVE_DEFAULT_BLOCK):
+        with pytest.raises(AssertionError, match="historical adaptive defaults changed"):
+            _harmonize_historical_adaptive_defaults(historical, changed)
+
+
 @requires_bundle
 def test_effective_bundle_round_trip_reproduces_committed_toml(tmp_path):
     """The explicit effective namelist reproduces the committed config."""
@@ -1967,6 +2056,11 @@ def test_effective_bundle_round_trip_reproduces_committed_toml(tmp_path):
         assert receipt_line in harmonized
         assert imported_line in toml_text
         harmonized = harmonized.replace(receipt_line, imported_line)
+    # The later adaptive-clock importer spells out twelve defaults the old
+    # receipt omitted. Admit exactly that attributed block, never any changed
+    # clock setting; the independent loaded-experiment test below still checks
+    # all resolved controls against the untouched historical receipt.
+    harmonized = _harmonize_historical_adaptive_defaults(harmonized, toml_text)
     # The committed flagship config = importer output + the hand-declared
     # [case_data] table (declared inputs are not derivable from namelists)
     # + the hand-declared [experiment] settings named above (gpuwm-only knobs
@@ -2081,19 +2175,19 @@ def test_cli_import_namelist_unported_selector_refuses_without_traceback(
     runner-generated namelist pair carrying ra_lw_physics=1 crashed
     ``gpuwm import-namelist`` with a stack trace where every neighbouring
     refusal (unmapped keys, FDDA, mosaic) printed one actionable line.  The
-    1/1 pair itself now imports -- the WRF RRTM longwave port landed -- so the
-    fixture moves to the pairing that is still refused, RRTM longwave beside
-    RRTMGP shortwave.  The boundary this test owns is unchanged, and so is the
-    message prefix it checks: the refusal still opens with the selector."""
+    1/1 and independent implemented spectra now import, so selector999
+    supplies the actual missing implementation for this CLI-boundary test.
+    """
     unported = INPUT_TEXT.replace(
-        " ra_lw_physics = 4, 4,", " ra_lw_physics = 1, 1,")
+        " ra_lw_physics = 4, 4,", " ra_lw_physics = 999, 999,")
     wps_path, inp_path = _pair(tmp_path, inp=unported)
     out = tmp_path / "resolved.toml"
     rc = cli.main(["import-namelist", str(wps_path), str(inp_path),
                    "--output", str(out)])
     assert rc == 2
     err = capsys.readouterr().err
-    assert "gpuwm import-namelist: ra_lw_physics=1" in err
+    assert "gpuwm import-namelist:" in err
+    assert "ra_lw_physics" in err and "999" in err
     assert "Traceback" not in err
     assert not out.exists()  # refusal precedes any output publication
 
@@ -2350,3 +2444,81 @@ def test_shinhong_parent_chain_round_trips_per_domain_without_remap(
     exp = _load(tmp_path, toml_text, name="sh-parent-chain.toml")
     assert [dc.run.bl_pbl_physics for dc in exp.domains] == [11, 11, 0]
     assert [dc.run.km_opt for dc in exp.domains] == [4, 4, 3]
+
+
+@pytest.mark.parametrize("replacement", ["", " input_from_file = .true.,"])
+def test_input_from_file_omission_and_short_tail_keep_registry_false(tmp_path, replacement):
+    inp = INPUT_TEXT.replace(" input_from_file = .true., .true.,", replacement)
+    with pytest.raises(ValueError, match="WRF defaults omitted entries"):
+        import_namelists(*_pair(tmp_path, inp=inp))
+
+
+def test_parsed_control_inventory_does_not_claim_value_equivalence(tmp_path):
+    _, report = import_namelists(*_pair(tmp_path))
+    text = report.format()
+    assert "Other parsed controls" in text
+    assert "not a configuration-equivalence claim" in text
+    assert "Translated (namelist -> experiment TOML)" not in text
+
+
+@pytest.mark.parametrize("pairs", [((1,1),(4,4)),((4,4),(1,1)),
+    ((0,0),(4,1)),((4,1),(1,4)),((1,0),(0,1)),((0,1),(4,0))])
+@pytest.mark.parametrize("variant", [None,"rte-rrtmgp","rrtmg_legacy"])
+def test_namelist_preserves_each_domains_radiation_selection(tmp_path,pairs,variant):
+    from gpuwm.config import radiation_scheme_ids
+    text=INPUT_TEXT.replace(" ra_lw_physics = 4, 4,",
+        f" ra_lw_physics = {pairs[0][0]}, {pairs[1][0]},").replace(
+        " ra_sw_physics = 4, 4,",f" ra_sw_physics = {pairs[0][1]}, {pairs[1][1]},")
+    text=text.replace("&physics\n","&physics\n swrad_scat=0.8,\n")
+    if any(lw==0 for lw,_ in pairs):
+        # Prescribed skin temperature consumes no fabricated constant GLW.
+        # This isolates selector translation from the independent surface-
+        # radiation declaration policy on an LSM with no longwave source.
+        text=text.replace(" sf_surface_physics = 2, 2,"," sf_surface_physics = 0, 0,")
+    from gpuwm.physics_compat import CONSTANT_DOWNWARD_LONGWAVE_ACK
+    declared = ((CONSTANT_DOWNWARD_LONGWAVE_ACK,)
+                if any(lw==0 and sw>0 for lw,sw in pairs) else ())
+    translated,report=import_namelists(*_pair(tmp_path,inp=text),name="mixed_radiation",
+        rrtmg_variant=variant,acknowledgements=declared)
+    output=tmp_path/"translated.toml";output.write_text(translated,encoding="utf-8")
+    exp=load_experiment(output)
+    assert tuple(radiation_scheme_ids(dc.run) for dc in exp.domains) == pairs
+    for dc,pair in zip(exp.domains,pairs):
+        expected="rrtmg_legacy" if variant=="rrtmg_legacy" or (variant is None and 4 in pair) else "rte-rrtmgp"
+        assert dc.run.ra_rrtmg_variant == expected
+        if pair[1]==1:
+            assert dc.run.swrad_scat == 0.8
+    if 4 in pairs[1] and pairs[0]!=pairs[1]:
+        assert any(item.key.endswith("[d02]") for item in report.substitutions)
+
+
+@pytest.mark.parametrize("variant", [None,"rte-rrtmgp","rrtmg_legacy"])
+@pytest.mark.parametrize("setting", ["o3input","use_mp_re"])
+def test_wrf_scalar_radiation_control_applies_to_active_child_engine(tmp_path,variant,setting):
+    from gpuwm.config import radiation_scheme_ids
+    text=INPUT_TEXT.replace(" ra_lw_physics = 4, 4,"," ra_lw_physics = 1, 4,").replace(
+        " ra_sw_physics = 4, 4,"," ra_sw_physics = 1, 4,")
+    text=text.replace("&physics\n",f"&physics\n {setting}=0,\n")
+    if variant=="rte-rrtmgp":
+        with pytest.raises(ValueError,match=setting):
+            import_namelists(*_pair(tmp_path,inp=text),name="selected_modern_limit",rrtmg_variant=variant)
+    else:
+        translated,_=import_namelists(*_pair(tmp_path,inp=text),name="scalar_preserved",rrtmg_variant=variant)
+        output=tmp_path/"translated.toml";output.write_text(translated,encoding="utf-8")
+        exp=load_experiment(output)
+        assert tuple(radiation_scheme_ids(dc.run) for dc in exp.domains) == ((1,1),(4,4))
+        assert all(getattr(dc.run,setting)==0 for dc in exp.domains)
+
+
+def test_inactive_wrf_scalar_radiation_values_remain_declared(tmp_path):
+    text = INPUT_TEXT.replace(" ra_lw_physics = 4, 4,", " ra_lw_physics = 1, 0,").replace(
+        " ra_sw_physics = 4, 4,", " ra_sw_physics = 1, 0,").replace(
+        " sf_surface_physics = 2, 2,", " sf_surface_physics = 0, 0,")
+    text = text.replace("&physics\n", "&physics\n o3input=0,\n use_mp_re=0,\n icloud=0,\n")
+    translated, _ = import_namelists(*_pair(tmp_path, inp=text), name="inactive_scalars",
+                                      rrtmg_variant=None)
+    output = tmp_path / "translated.toml"
+    output.write_text(translated, encoding="utf-8")
+    exp = load_experiment(output)
+    assert all((dc.run.o3input, dc.run.use_mp_re, dc.run.icloud) == (0,0,0)
+               for dc in exp.domains)

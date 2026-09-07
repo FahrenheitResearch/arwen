@@ -45,6 +45,14 @@ clone that ingests GRIB sources.  The clean-clone rule is:
 | `grib2_inventory` | Strict GRIB2 inventory/decode probe.  Emits one TSV row per message (raw identifiers, grid definition, packing, decode statistics) -- the manifest/receipt tool for auditing what a downloaded GRIB2 file actually contains before anything ingests it. |
 | `grib2_dump` | Dumps selected GRIB2 fields as little-endian float64 with a TSV header, for decoder cross-checks against independent readers. |
 
+The ERA5 bridge also accepts `grib1_bridge --inventory INPUT.grb`. It
+writes versioned JSON message headers to stdout using the same native
+section parser as normal decode, retaining one packed message at a time.
+It does not unpack field values or coordinate arrays. The wizard uses this
+mode to measure supplied forcing times before fitting a grid. A failed
+command's partial stdout is not a usable inventory; complete field and
+spatial validation still belongs to normal input preflight.
+
 ## Validation posture
 
 Every bridge is fail-closed: unexpected editions, grids, packing, missing

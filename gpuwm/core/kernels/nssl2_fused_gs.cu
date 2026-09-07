@@ -3083,21 +3083,21 @@ extern "C" __global__ void nssl2_fused_gs(
 
     const int k = idx / ncol;
     const int column_index = idx - k * ncol;
-    // WRF's microphysics driver supplies a mass-level W field to NSSL, then
-    // nssl_2mom_gs averages that value with the next mass level (kp1 is
-    // clamped at the top).  GPUWM owns interface W, so reproduce both
-    // averaging operations here rather than stopping after interface-to-mass
-    // centering.  The explicit RN operations preserve the two FP32 stores in
-    // the WRF driver/GS boundary.
+    // module_mp_nssl_2mom.F:14174-14176
+    //   kp1 = Min(nz, kgs(mgs)+1)
+    //   wvel(mgs) = (0.5)*(w(igs(mgs),jgs,kp1) + w(igs(mgs),jgs,kgs(mgs)))
+    // The driver copies the STAGGERED w straight into the GS slab
+    // (:2827 wn(ix,1,kz) = w(ix,kz,jy), kz = kts..kte, no de-staggering), so
+    // that statement IS the interface-to-mass average and WRF performs it
+    // once.  The clamp is therefore on the upper INTERFACE, not on a second
+    // mass level: the slab holds only nz entries, so the top mass level
+    // degenerates to wvel = w(nz).  In this kernel's zero-based indexing
+    // WRF's kp1-1 is exactly min(k + 1, nz - 1).  The explicit RN operations
+    // hold WRF's add-then-scale order against FMA contraction.
     const int velocity_kp = min(k + 1, nz - 1);
-    const float w_mass = __fmul_rn(0.5f, __fadd_rn(
+    const float w_center = __fmul_rn(0.5f, __fadd_rn(
         vertical_velocity[k * ncol + column_index],
-        vertical_velocity[(k + 1) * ncol + column_index]));
-    const float w_mass_kp = __fmul_rn(0.5f, __fadd_rn(
-        vertical_velocity[velocity_kp * ncol + column_index],
-        vertical_velocity[(velocity_kp + 1) * ncol + column_index]));
-    const float w_center = __fmul_rn(
-        0.5f, __fadd_rn(w_mass_kp, w_mass));
+        vertical_velocity[velocity_kp * ncol + column_index]));
     const int target_km = max(k - 1, 0);
     // Exact WRF kgsp=MIN(k+1,nz-1) in one-based indexing.
     const int target_kp = min(k + 1, nz - 2);

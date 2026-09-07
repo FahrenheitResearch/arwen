@@ -178,3 +178,85 @@ def test_golden_set_carries_no_case_token():
     for token in ("real74", "1974", "ohio", "hrrr"):
         assert token not in text, (
             f"case token {token!r} leaked into the wrfout attribute golden set")
+
+
+def test_a_delayed_start_nest_keeps_the_simulations_start_date(tmp_path):
+    """audit io-01-02: START_DATE is per domain, SIMULATION_START_DATE is not.
+
+    WRF writes them from two different places.  ``share/output_wrf.F:343-348``
+    reads ``start_*`` at ``grid%id`` for ``START_DATE``, while ``:361-376``
+    reads ``simulation_start_*`` at namelist index **1** for
+    ``SIMULATION_START_DATE`` on every history file, and
+    ``share/set_timekeeping.F:379-388`` sets those index-1 values once,
+    ``IF ( grid%id .EQ. head_grid%id )`` -- so WRF's SIMULATION_START_DATE is
+    the head grid's start, identical on every domain.
+
+    ``PerDomainWrfoutWriters`` passes each domain's own ``cfg.start_time``
+    when it declares one, and that value went to BOTH attributes.  Because
+    ``rw_wrfbatch`` reads SIMULATION_START_DATE first as the run origin and
+    measures every product's lead from it (``surface_wrfout.ORIGIN_ATTRS``),
+    a d02 frame valid at 09Z was labelled F+03 while the d01 frame of the
+    same instant was labelled F+09: two panels of one run, one valid time,
+    two lead labels.
+    """
+    simulation_start = datetime.datetime(2026, 7, 18, 0)
+    nest_start = datetime.datetime(2026, 7, 18, 6)
+
+    nest = _global_wrf_attrs(
+        _grid(), nest_start, domain=_domain(), coord=_coord(),
+        simulation_start_time=simulation_start)
+    assert nest["START_DATE"] == "2026-07-18_06:00:00"
+    assert nest["SIMULATION_START_DATE"] == "2026-07-18_00:00:00"
+
+    # The mother domain, whose own start IS the simulation's, is unchanged.
+    mother = _global_wrf_attrs(
+        _grid(), simulation_start, domain=_domain(), coord=_coord(),
+        simulation_start_time=simulation_start)
+    assert mother["START_DATE"] == "2026-07-18_00:00:00"
+    assert mother["SIMULATION_START_DATE"] == "2026-07-18_00:00:00"
+
+    # Omitting it means "this file starts the simulation", which is what
+    # every single-domain and idealized caller is, and it must reproduce
+    # the previous single-date behaviour attribute for attribute.
+    legacy = _global_wrf_attrs(
+        _grid(), nest_start, domain=_domain(), coord=_coord())
+    assert legacy["SIMULATION_START_DATE"] == legacy["START_DATE"]
+    assert legacy == _global_wrf_attrs(
+        _grid(), nest_start, domain=_domain(), coord=_coord(),
+        simulation_start_time=nest_start)
+
+
+def test_every_per_domain_writer_hands_over_the_simulations_start():
+    """The plumbing half, asserted at the call sites that own it.
+
+    The unit check above passes even if ``PerDomainWrfoutWriters`` still
+    sends the domain's own start to both attributes, because the default
+    keeps the two equal.  Three call sites construct a domain's global
+    attributes from a per-domain ``domain_start_time`` -- ``__init__``,
+    ``add_domain`` and ``refresh_domain`` -- and a repair that reaches two
+    of them leaves the third writing the old, wrong origin on exactly the
+    domains a relocation or a mid-run spawn produced.  Same shape as
+    ``test_every_wrfout_caller_with_a_config_resolves_the_soil_axis``.
+    """
+    import ast
+
+    source = (Path(__file__).resolve().parents[1] / "gpuwm" / "io"
+              / "wrfout.py").read_text(encoding="utf-8")
+    calls = [node for node in ast.walk(ast.parse(source))
+             if isinstance(node, ast.Call)
+             and getattr(node.func, "id", "") == "_global_wrf_attrs"]
+    assert len(calls) == 3, [node.lineno for node in calls]
+    for node in calls:
+        keywords = {keyword.arg for keyword in node.keywords}
+        assert "simulation_start_time" in keywords, (
+            f"gpuwm/io/wrfout.py:{node.lineno} builds a domain's global "
+            "attributes without simulation_start_time, so a delayed-start "
+            "nest would publish its own start as the run origin")
+        # And it must be the RUN's start, not the domain's -- passing
+        # `domain_start_time` here would satisfy the keyword and change
+        # nothing.
+        value = next(keyword.value for keyword in node.keywords
+                     if keyword.arg == "simulation_start_time")
+        spelling = ast.unparse(value)
+        assert spelling in ("start_time", "self.start_time"), spelling
+        assert node.args[1].id == "domain_start_time", ast.unparse(node.args[1])

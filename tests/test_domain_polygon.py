@@ -149,6 +149,48 @@ def test_unfittable_buffered_polygon_refuses_without_writing(
     assert not out.exists()
 
 
+def test_measured_low_free_memory_never_shrinks_the_requested_polygon(
+        tmp_path, monkeypatch, capsys):
+    from gpuwm import domain_wizard
+
+    polygon = _write(tmp_path / "requested.geojson", {
+        "type": "Polygon", "coordinates": [
+            _ring(-101.0, 32.0, -93.0, 39.0)]})
+    original_polygon = polygon.read_bytes()
+    probe = {"total_bytes": 32 * domain_wizard.GIB,
+             "free_bytes": 12 * domain_wizard.GIB, "profile": None}
+    monkeypatch.setattr(domain_wizard, "device_memory_probe_subprocess",
+                        lambda: dict(probe))
+    command = [
+        "domain", "--polygon", str(polygon), "--buffer-km", "50",
+        "--root-dx", "3", "--source", "gfs", "--cycle", "2000-01-01T00",
+        "--hours", "3",
+    ]
+    accepted = tmp_path / "accepted.toml"
+    assert cli_main([*command, "--out", str(accepted)]) == 0
+    capsys.readouterr()
+    experiment = load_experiment(accepted)
+    verify_polygon_containment(
+        experiment, load_polygon_footprint(polygon), (50.0,))
+    assert experiment.root.run.dx == 3000.0
+
+    # The capacity and requested footprint stay fixed. Only the sampled
+    # available memory changes: an explicit polygon must be refused,
+    # never reduced to a smaller area or replaced by a coarser grid.
+    prior_files = {path: path.read_bytes() for path in tmp_path.iterdir()
+                   if path.is_file()}
+    probe["free_bytes"] = 2 * domain_wizard.GIB
+    refused = tmp_path / "refused.toml"
+    assert cli_main([*command, "--out", str(refused)]) == 2
+    captured = capsys.readouterr()
+    assert "polygon plus the requested per-level buffers requires" in captured.err
+    assert "Traceback" not in captured.err
+    assert not refused.exists()
+    assert {path: path.read_bytes() for path in tmp_path.iterdir()
+            if path.is_file()} == prior_files
+    assert polygon.read_bytes() == original_polygon
+
+
 def test_polygon_input_is_local_and_buffer_count_matches_levels(
         tmp_path, capsys):
     with pytest.raises(ValueError, match="local GeoJSON file path"):

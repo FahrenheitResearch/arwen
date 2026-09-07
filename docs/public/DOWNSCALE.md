@@ -34,6 +34,12 @@ The real filename pattern is `gpuwmrst_d0N_YYYY-MM-DD_HH_MM_SS.npz`, for
 example `gpuwmrst_d01_2024-05-06_01_00_00.npz`. A stock-WRF parent uses
 `--parent-namelist namelist.input` instead.
 
+Choose the restart from the selected history domain. The front door checks
+its domain identity, dimensions and grid spacing against the archive before
+deriving child physics or time step. A restart from another nest is refused.
+The child duration must also fit entirely inside the archived forcing window;
+both `--point --hours` and a supplied child config are checked on `--dry-run`.
+
 **2. For a full-physics child, nothing extra -- but a child-grid file
 raises the fidelity.** Land identity and the soil warm start have to come
 from somewhere, and `gpuwm downscale` now resolves that itself: with no
@@ -59,6 +65,14 @@ gpuwm downscale: RUN\wrfout_d01_2024-05-06_00_00_00 south_north=48 does not matc
 
 Where such a file comes from depends on your route -- see
 [Route 2](#route-2-the-prepared-sources), which writes one per nest.
+
+Matching dimensions alone do not establish the grid. An explicit surface
+must include `XLAT` and `XLONG` matching the selected child placement. The
+front door compares them with native parent-to-child mass coordinates,
+allowing float32/projection differences up to one percent of a child cell
+(at least 2 m), and checks `DX`/`DY` when present. A same-shaped surface from
+another location is refused before preprocessing. The plan records the
+measured coordinate separation and tolerance.
 
 ## Which route builds your parent -- ask the registry
 
@@ -580,21 +594,69 @@ and the child into separate directories and compose labeled pair sheets:
 gpuwm render --pair out/parent/png out/child/png --out out/compare
 ```
 
+## Giving the child its own vertical levels
+
+An LES child usually wants the levels, not just the columns: `docs/public/LES.md`
+measures the nested child carrying 12.7% of its turbulence in the subgrid model
+against 7.9% for a properly resolved column, because it inherits its parent's
+ladder. `--child-levels` gives it its own:
+
+```bash
+gpuwm downscale parent/ --parent-restart parent/gpuwmrst_d01_final.npz   --point 39.5,-84.0 --ratio 5 --child-levels 96,2.5 --out out/child
+```
+
+`N,STRETCH` is the level count and the tanh clustering toward the ground; the
+derived `child.toml` carries the resulting ladder explicitly as `eta_levels`, so
+the grid the child was prepared on is the grid it integrates on and both are
+readable in the config. The initial state and the whole lateral boundary table
+set are remapped once, at preparation, on the host; the integration loop is
+unchanged.
+
+The remap conserves what it moves. Because every admissible ladder makes the
+reference dry pressure run from `p_s` at the surface to `p_top` at the model top
+identically, two ladders sharing `p_top`/`hybrid_opt`/`etac` partition the same
+column with coincident endpoints, and moving a field between them is exact
+rebinning rather than interpolation. Measured on a prepared child: water
+substance drifts 1.2e-16 relative, potential temperature 0.0, the column's dry
+mass closes to 0.0 Pa, and the child's model top lands on the parent's exactly.
+
+Two things it will refuse, both by name: a bare level count with no stretch
+(a uniform ladder under a stretched parent is a different atmosphere, not a
+finer sampling of one), and a ladder whose depth its own radiation cannot run
+(RRTMGP tops out at model plus cap layers <= 128, so `nz = 120` at
+`p_top = 5000 Pa` is refused at preparation rather than at the first radiative
+call).
+
+Those three coordinate parameters stay shared with the parent deliberately: they
+are what make the endpoints coincide, and a per-domain `p_top` would leave the
+remap extrapolating above the model top with no state to extrapolate from.
+
 ## Known limits
 
-- **No vertical remapping.** The child keeps the parent's eta levels, and
-  terrain is SINT-inherited from the parent rather than rebuilt at the
+- **Terrain is SINT-inherited** from the parent rather than rebuilt at the
   child's resolution. Downscaling a coarse-terrain source gives the child
   that coarse terrain at a fine grid spacing.
-- **A full-physics ERA5 child is not reachable on this release** -- see
-  Route 1, step 8.
+- **Legacy RRTMG with `o3input = 2` needs a resident parent's initialized
+  ozone.** Standalone child physics refuses that dependency. A successful
+  config plan or CPU boundary preparation does not establish radiation
+  initialization; any alternative ozone treatment must be explicit in the
+  reviewed child physics.
+- **The child's eta ladder is its own only if you ask for one.** Without
+  `--child-levels` the child keeps the parent's levels, exactly as before.
+  With it the child is built on its own ladder through a conservative
+  vertical remap; `p_top`, `hybrid_opt` and `etac` stay shared with the
+  parent, and a level count given without a stretch is refused rather than
+  filled in with a uniform ladder.
 - **`gpuwm downscale --card` defaults to `24gb`** while `gpuwm domain`
   measures the local card.
 - **A single-domain `gpuwm domain` emission sets
   `restart_interval_s = 0.0`**, so it produces a parent that cannot be
   downscaled until you edit it.
-- One child per invocation; nest the workflow by downscaling the
-  downscaled run's own archive.
+- One fixed child per invocation; repeat the workflow with the downscaled
+  run's own compatible archive. A parent series whose geometry changes as
+  a nest moves is refused, and the standalone child config does not accept
+  a relocation block. Live moving nests use the prepared-corridor route in
+  [TUI task modes](TUI-TASK-MODES.md#follow-weather-without-changing-what-the-tracker-means).
 - Stock-WRF parents work (history plus `namelist.input` as physics
   evidence) with the same explicit-cadence contract; a point-mode child of
   a WRF parent needs `--child-config`, because a WRF namelist carries no

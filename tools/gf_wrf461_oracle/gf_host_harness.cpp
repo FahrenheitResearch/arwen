@@ -148,6 +148,14 @@ extern "C" void host_gf_fzu(const float *a, const float *b, float *out, int n)
     }
 }
 
+// The gamma gate's no-GPU arm.  gfk_tgamma is ArWen's own correctly rounded
+// gamma since 2.6.6 (docs/gf_gamma_known_delta.md) and
+// tests/test_gf_gamma_correctly_rounded.py::
+// test_host_compiled_gfk_tgamma_is_correctly_rounded grades it here against
+// the 113-bit reference with no GPU involved.  The test skips when this
+// symbol is missing, so a stale .so degrades to a skip rather than a lie.
+extern "C" float gf_host_tgamma(float x) { return gfk_tgamma(x); }
+
 extern "C" void host_gf_const_dump(unsigned int *out)
 {
     blockDim.x = 1; threadIdx.x = 0;

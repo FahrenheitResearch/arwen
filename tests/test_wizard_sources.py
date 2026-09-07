@@ -174,20 +174,31 @@ def test_fetch_table_is_emitted_exactly_where_the_fetch_door_reaches(
 @pytest.mark.parametrize("source", sorted(_sources_with_public_bytes()))
 def test_routed_source_prints_a_runnable_fetch_next_step(
         tmp_path, capsys, source):
-    """Step 1 of the printed recipe is a command, not an apology.
-
-    A source whose bytes this ArWen can download must get a pasteable
-    ``gpuwm fetch`` line out of `gpuwm domain`; printing "stage the bytes
-    yourself" for a model with a live route is the field exhibit that
-    makes a reader conclude the route does not exist.
-    """
+    """Automatic routes print go; separate acquisition routes retain fetch."""
+    import shlex
+    from gpuwm.cli import build_parser
+    from gpuwm.runplan import PlanError, prepared_chain_for_source
 
     rc, out = _emit(tmp_path / source, source)
     assert rc == 0
     printed = capsys.readouterr().out
-    assert f"gpuwm fetch --source {source} " in printed, printed
-    assert "has no download route" not in printed, printed
     config = tomllib.loads(out.read_text(encoding="utf-8"))
+    try:
+        prepared_chain_for_source(source)
+        automatic = "case_data" not in config
+    except PlanError:
+        automatic = False
+    if automatic:
+        line = next(line.strip() for line in printed.split("next:")[-1].splitlines()
+                    if line.strip().startswith("gpuwm go "))
+        args = build_parser().parse_args(shlex.split(line)[1:])
+        assert args.config.resolve() == out.resolve()
+        assert args.data_dir is None  # Same managed downloads as the terminal.
+        assert not args.dry_run
+        assert f"{line} --dry-run" in printed
+    else:
+        assert f"gpuwm fetch --source {source} " in printed
+    assert "has no download route" not in printed, printed
     assert config["fetch"]["source"] == source
 
 
@@ -209,7 +220,9 @@ def test_printed_fetch_step_plans_through_the_real_planner(
     from gpuwm.fetch import parse_cycle
     from gpuwm import fetch_routes
 
-    rc, _ = _emit(tmp_path / source, source)
+    # The ordinary next step is now one gpuwm go command. The explicit
+    # explanation retains the individual fetch recipe for scripted workflows.
+    rc, _ = _emit(tmp_path / source, source, "--explain")
     assert rc == 0
     line = next(l for l in capsys.readouterr().out.splitlines()
                 if "gpuwm fetch --source " in l)

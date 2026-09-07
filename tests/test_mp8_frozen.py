@@ -220,8 +220,19 @@ FROZEN_MODULE_DIGESTS = {
     'diagnostics': (
         # Re-pinned for the two-way feedback landing (88fdf60b9,
         # "bitwise-gated" by its own suite).  Not an mp=8 unit.
-        'b2f877f0c2f6b06a573ac71f0a46c94b173d5eca00b0aa96016db85f05cb489f',
-        'd8d36d28a856e4f8b04a19eb850186f0c16d98f64b4c03d54efc2d8b3e9ca4ca'),
+        # Re-pinned again for the EOS spelling change: calc_p_alpha stopped
+        # forming the layer geopotential thickness by differencing two
+        # ~2.4e4 J/kg totals and stopped writing opt 2's log ratio as
+        # log(pfd/pfu).  No physics moved -- the same two quantities are
+        # computed by a spelling that does not cancel.  Measured against
+        # the float64 mirror, relative error in p on a random 1 K state:
+        # opt 1, 2.06e-6 -> 3.64e-7 at nz=16 and 2.89e-5 -> 4.13e-7 at
+        # nz=160; opt 2, 4.25e-6 -> 4.54e-7 and 1.15e-4 -> 5.49e-7.  The
+        # error stopped tracking 1/dz, which is what
+        # tests/test_diagnostics.py::
+        # test_eos_error_does_not_scale_with_vertical_resolution pins.
+        '384bf67ce6fff289e611b363720c46cac54275ec91b35019866d8cd1970bb347',
+        'eb691c936bea58f860a6e05d01874481ef9feba9c55bed4a59240b3e4317101a'),
     'diff6': (
         '7dbcfb2d4e259ad36a3d29705e936a276b56e9ea52511c5f82054749e38302e9',
         '563febbc809cd53695782a77095b3ab01f60c64866657091b790f792f39a5394'),
@@ -293,11 +304,29 @@ FROZEN_MODULE_DIGESTS = {
         # Re-pinned for the column-workspace move (48ff6b813), measured
         # on node-1 with its two declared bit-moving placements named in
         # the commit.  Not an mp=8 unit.
-        '2fc1cbef7be1b7482ff795cdcf48746e708a1d3a7caefb5c2ff5ace2d49cbbf6',
-        '09ee4871fe2424180029548f44c32e7d7ac4518e2237a76c438f74081e864180'),
+        #
+        # RE-PINNED by the WRF-parity shallow-TIMEC repair (PAR-CU-KF-05).
+        # module_cu_kfeta.F:1598-1600 sets TIMEC=2400. for the shallow arm
+        # and then ROUNDS it to FLOAT(NINT(TIMEC/DT))*DT; :2571-2573 sets
+        # TIMEC = 2400. again immediately before the feedback loop, and the
+        # six tendencies at :2603-2640 divide by that un-rounded value.  The
+        # kernel divided all six by the rounded one.  Everything WRF keeps
+        # rounded stays rounded here: the closure, AINCMX/AINC, DTIME/DTT/
+        # NSTEP, the TADVEC comparison (:2569) and TIMEC_KF (:2387).  This
+        # MOVES ANSWERS on shallow KF columns whenever DT does not divide
+        # 2400 -- the pinned case is DT=90, where the rounded TIMEC is 2430
+        # and every shallow tendency was 1.23% low (1 - 2400/2430).  kf is
+        # not an mp=8 translation unit and thompson.cu is byte-unchanged.
+        # Measured against the float64 mirror by tests/test_kf.py::
+        # test_shallow_feedback_tendencies_divide_by_an_unrounded_2400.
+        '6a2207a03f0a8d93413eafe0dd47d214fcd0f98f2e18a967f7922b05dc959bb3',
+        '30c369d5b1dadcf2555e7372b71047f42b893180bfdb6b14e1da924f83fc3bf6'),
     'lbc_flow': (
-        '09ad5f0ad10b75efb9207c5217aa6eba2c4a4a45d20bf111dd517c2867b92e64',
-        '6383f03f152f827b1bef4cc3fb42b3e4dd0a34aa5e817dbf9323f894398de0c4'),
+        # 4febd041f supplies resolved WDM6/NSSL inflow concentrations.
+        # docs/dev/qnn-specified-inflow.md records 4 CPU + 10 GPU
+        # edge/corner, velocity and scalar transport controls.
+        '68a743950e30e308676fada38f96ea3139d283447028edfeb85d2d64c36441fa',
+        '233391c535605271d70b32dc5ce85321cb0ed633340dae3fe2cd3ebcf08ab6ba'),
     'lbc_state': (
         'fadf66fea201e4eac56e8a58d72b11940325b142a4e08fcc0b8db80fd78b53ec',
         '4cd1c59322d6a800eaebee8182a5a2a25413c37ffe4681f56a164a71ebd3a47b'),
@@ -324,8 +353,28 @@ FROZEN_MODULE_DIGESTS = {
         # per-field max_ulp moves and the overall 1,709,094,255 / sr is
         # unchanged; the fixture mismatch count rises 3,512 -> 3,554 of
         # 10,948.  Recorded in the morrison-mp10 registry warnings.
-        '85d723f915f3cb0b727b65656075ce53b9e4f8f0da454334fa1f14d51a60e018',
-        '5bc1ef49f02b39052ef73c17d449e31d0361faa18524e6d8da050c3bd79c4092'),
+        #
+        # RE-PINNED by the WRF-parity PGAM density repair (PAR-MP-MORR-10).
+        # module_mp_morr_two_moment.F:3918-3920 builds the PGAM reference
+        # density as DUM = PRES(K)/(287.15*T3D(K)) from the CURRENT T3D, and
+        # by that line T3D has moved: the tendency apply (:3710), the
+        # sedimentation evaporation (:3735-3758) and the ice melt and both
+        # homogeneous freezings (:3805-3843) all precede it.  RHO(K) is
+        # built once at :1325 and is NOT that density.  morr_bound scaled
+        # the stale RHO by RD/287.15 instead, so PGAM -- and through it the
+        # cloud-droplet spectral shape and EFFC -- came from the entry-time
+        # temperature.  The sibling site :1558 is downstream of a T3D change
+        # too (:1504, :1511), and morr_process_level applies the same melt
+        # to *temp before its call, so the one repair corrects both call
+        # sites.  This MOVES ANSWERS wherever a level's temperature changed
+        # within the step: EFFC feeds RRTMG, so radiation moves with it.
+        # morrison is not an mp=8 translation unit and thompson.cu is
+        # byte-unchanged.  Measured by tests/test_morr_rimed_ice.py::
+        # test_pgam_reference_density_is_rebuilt_from_the_current_temperature,
+        # which compiles module_source("morrison") and drives morr_bound
+        # through ctypes.
+        '270af004b00f0962d2f39cb120d14c246fdfcb99770c0c45b855b4cd1adff3d1',
+        '1c4148b5e49a63feb7deecffcde9dd523fccccc89d79f26918102366c34b6ca5'),
     'mynn_pbl': (
         'b53ab90e634e61367afadfaa77667c8f2eb2430fc061ce9976509fe0e2f4490e',
         '87f80d06cc7724fd1277eefbf91738fe8eb0e774768ed64292cb1157f19a2d84'),
@@ -333,9 +382,13 @@ FROZEN_MODULE_DIGESTS = {
         'a94de3ff2da95c37e12b437123b4a3807ac1318c524b339609f6024f4d21f85b',
         '891ec5d565c720afabab57169f1a3b1aa95efc3d1ac84e87ffbd4ebb239c57fe'),
     'nest': (
+        # e1bdd7741 + d17f1d08b preserve global terrain coordinates and
+        # sequential donor arithmetic through bounded child operands.
+        # Measured 8d317e5ec: 34 focused + 29 resident CUDA controls;
+        # 295d6ec0a: public moving/restart, 137 exact arrays per domain.
         # Re-pinned with diagnostics for 88fdf60b9's parent smoothers.
-        '565d5eeda0f2907d256a09ed6cf555416281a0a266eac795922256d6eef2dc7c',
-        'f4c1e5726308e4b069398f788ff17038051a50798bc34c50c8e21bdafabc31db'),
+        '7aa2d1102fbbedaa9655850d1dc3403f3d995f9d1167da8fdd5a8ab7a2ac569f',
+        '7b627569381652445f132287d81bda319eb5c7a156f854c46e034cdb98a226ac'),
     'nest_microphysics': (
         # Re-pinned for the mp=50 (P3) mixed-edge ratification: the generic
         # microphysics_edge_field kernel gained the source_qir/source_qib
@@ -347,8 +400,26 @@ FROZEN_MODULE_DIGESTS = {
         'add31c6944c01f68c05c37480f34be461be81de377f8229ed3c63368c262cedc',
         'fdf0a5b48cc21accb6dc74c2209538d75dbcb20c49e5be5a041fd21f4d1faad7'),
     'noah': (
-        'c3eefebad446acb74bcb3c3666f90789f278560fabfefc0b08da9d38496bf245',
-        '57c25845288d4de8c66030c8a0ead986dd03355c49f1cdaabcebadfcb2835a85'),
+        # RE-PINNED by the WRF-parity FRZX repair (NOAH-01).  WRF renames
+        # this quantity twice on its way down and gpuwm followed the NAME
+        # instead of the ARGUMENT: REDPRM (module_sf_noahlsm.F:2477-2478)
+        # builds FRZX = FRZK*FRZFACT; SFLX passes FRZX at :769 and :784;
+        # the receiving dummy is spelled FRZFACT in NOPAC (:1909), SNOPAC
+        # (:3015) and SMFLX (:2670); SMFLX passes it on at :2785/:2794/:2803
+        # and SRT (:3655) names it back to FRZX, spending it at :3795 as
+        # ACRT = CVFRZ*FRZX/DICE.  noah_column was handing noah_smflx the
+        # bare FRZFACT, so the frozen-ground infiltration limit ran on a
+        # dimensionless ratio instead of FRZK*FRZFACT and SRT's ACRT
+        # exponent collapsed.  This MOVES ANSWERS, hard, on frozen ground:
+        # measured against the WRF oracle the sfcrunoff distance falls from
+        # 60,641,303 ULP to 2,812, and sh2o, smcrel and smois go from 6,508
+        # / 4,729 / 1,627 ULP to exactly bitwise.  noah is not an mp=8
+        # translation unit and thompson.cu is byte-unchanged.  Measured by
+        # tests/test_noah_wrf461_parity.py (the re-pinned BASELINE_MAX_ULP
+        # table), ::test_the_mirror_reproduces_wrfs_frozen_ground_infiltration
+        # and ::test_the_kernel_hands_smflx_the_same_word_the_mirror_does.
+        'd7ae4d2ccac5ca6c32c575031337a3dfa7dfe8c37a14bf64167e57be3ac373fc',
+        'b8adda8aa53d0749c1a08f9a2e760930d7046654bfb04e6e72ffa170725461dc'),
     'noahmp_bareflux': (
         '54fb5065e95b24d4cf676e2deda29bae44b3e9305d3d98cbc1abf5ed55f444ce',
         'fbb19fc8b5668ea2edbcc1270f8ffe367475124ffa0ce99d3bc34639f3f31e9f'),
@@ -356,14 +427,33 @@ FROZEN_MODULE_DIGESTS = {
         'bd555be10ccade5a5bdddcaf4c56b7f4353dae1208fc48a5586fb7ce7d32d643',
         'f1913fe0054adb74188effa6499b799e989cfb1e96ecd676edcd43df0083030e'),
     'noahmp_energy': (
-        '46c5f15a0590357144f5447093dff1fc2f6dcdd2edf98aefec63a45cd7f35090',
-        '53f9a5d9d243a1445c9ad1ec5725d3393e7f08f54ea88eb2622dc8d51ae6b58c'),
+        # RE-PINNED at 2.6.6 by the licence cut.  `nmpe_tanhf` loses glibc's
+        # redundant `if (ix == 0) return x;` -- the one edit in the FDLIBM
+        # group attributable to reading glibc's text and to nothing else, so
+        # it is expression this Apache-2.0 distribution should not carry.
+        # FDLIBM never had it and the tree already shipped tanh without it
+        # (mynn_pbl.cu, mynn_dmp_sibling.cu).  It is redundant because the
+        # |x| < 2**-55 branch returns x*(1+x), which is x for both signed
+        # zeros.  NOTHING MOVES: the two forms were compiled side by side
+        # with the shipped bodies and a host shim and compared on all
+        # 4,294,967,296 float32 bit patterns -- 0 differ, tanh(+0) = +0 and
+        # tanh(-0) = -0 in both.  Four lines of comment came in with it.
+        '4fd4b5a86ec97371e01aac13d2c5e40e40546b64a77c39e6fb674c96be69d209',
+        'bd91acf9bf987c5116e894b67e0ecbe47ae5bad5f1237095fe822da7fcd6b0a2'),
     'noahmp_fluxprep': (
         'eef473608e9d1c0176574c6bd72183659249b42a022f8d63d77c611de506f4ed',
         '4ae139ef5d31234b5e9fdbc04c4cfd3c5156cd91d0326e5544b5b78f7c17fb31'),
     'noahmp_leaves': (
-        '0ce9461705395dccbfebed3d9d27e87eebaeaca79896ae369eaa02ec1e77307f',
-        'c0dd5d46d2cfe191d36d74c68331ddfecd6a5f0174ad6582460b399eb6afc388'),
+        # RE-PINNED at 2.6.6 by the licence cut, and for the same reason as
+        # noahmp_energy above.  `r_log10`'s zero path was glibc's
+        # `-two25 / fabsf(x)`, a division whose only work is to raise
+        # divide-by-zero on the way to -inf; FDLIBM divides by a `zero`
+        # variable instead, so the spelling is glibc's own.  ArWen returns the
+        # -inf directly.  NOTHING MOVES: compared on all 4,294,967,296 float32
+        # bit patterns -- 0 differ, log10(+-0) = 0xFF800000 in both.  Five
+        # lines of comment came in with it.
+        '4a3b6ce94993ab1c7055de39880e1209b54527751dcda07f26aa4b4a612f3497',
+        'e27a5b92bd5f9ee64e0e9a9e496228e4b4b7b4a43ca3f7708a272a8234030ebd'),
     'noahmp_libm_slab': (
         '0144fa7d142a8d24f5f0f52bd0dade987312cd97c2a2efad9a6f33edb1a35fda',
         'c7cdc57aa7d3d507d2b57935df13e16dba87dd783384e28a7240b95a536f39a7'),
@@ -392,8 +482,29 @@ FROZEN_MODULE_DIGESTS = {
         '4154bace0d97235503d4ca9ed6cb4877c8543762f2f384dfc8883fe3b2ed429e',
         '6cfeaef3fd00b8054d1761fd8bcfd6a920a6fb476f53986672ef300cbadd53ba'),
     'nssl2': (
-        '18e828ed1d6c2d2d69c5e146c7b1d661f3d474a7246cf38daf45e6b0d49951d4',
-        'a9639658a1d2f0a8127293682ec14aead9eee86735fbfa1ec5853d3e78812cbd'),
+        # RE-PINNED by the WRF-parity qxmin(lh) repair (NSSLA-01).  The Bigg
+        # rain-freezing gate used the graupel minimum mixing ratio 1.e-7 set
+        # at module_mp_nssl_2mom.F:2095, missing the overwrite eight lines
+        # later at :2103: `IF ( lh .gt. 1 .and. lnh .gt. 1 ) qxmin(lh) =
+        # 1.0e-12`.  Under the option-18 default (ipconc=5 by
+        # module_physics_init.F:4633-4641) the index block at :1650-1667
+        # gives lnh = 14 and lh = 7 (:658), so the override is
+        # unconditionally live at both use sites -- the minimum-transfer
+        # gate (:17653) and the volume/SETVT gate (:14205/:14213).  The
+        # sibling nssl2.cu:4274 already used 1.0e-12f.  This MOVES ANSWERS
+        # in the five-decade window between the two constants, where the
+        # transfer was being suppressed to zero.  nssl2 is not an mp=8
+        # translation unit and thompson.cu is byte-unchanged.  Measured on
+        # the device by tests/test_nssl2_gpu.py::
+        # test_bigg_rain_freezing_uses_the_two_moment_graupel_qxmin.
+        # 9a8b0da23 rounds Bigg's rain-mass multiply before subtracting,
+        # preserving the WRF FP32 state used by the later number bound.
+        # This changes mp=18, not Thompson's mp=8 translation unit. The
+        # exact parent source reproduces both old pins through the real
+        # loader; retained NSSL GPU oracle comparisons grade arithmetic
+        # without widening the existing tolerances.
+        '0541eb4f5353d8379af80100fb231893698fcde0521706357a5afc7c88569679',
+        '24a7e4af3fab46b6c9dffbc58438287eebc7c5151dde8c11ec815491476ff044'),
     'nssl2_diagnostics': (
         'a95ae9e0bc3dd20a13865cfa6d1148d2a78ee5d7c17c9c1bca9a0c8dbdf19868',
         '331b4a9734959260ab515216e24ee7100eac18d8e6d646b1e0e8bf21c0c23374'),
@@ -418,17 +529,66 @@ FROZEN_MODULE_DIGESTS = {
         'd1c729369bdf59859f178622402f138e2c9b67f4f12fa5661162924c7cf542ec',
         '0ae24c4f406b91a4d849f5ce171838264be81254544dc04693550f3355a14511'),
     'nssl2_fused_gs': (
-        'a07aee42bbed62c88d033cd0b99c30bc2d751626fa975d61fe1e1abf8ae1f41e',
-        'b630f6a93f7a43b2ea88e350fdf2f7037eabc9ecfcdf0f65788330327ddf620b'),
+        # RE-PINNED by the WRF-parity vertical-velocity centering repair
+        # (G-01).  The kernel averaged interface w to mass level TWICE,
+        # delivering 0.25*w[k] + 0.5*w[k+1] + 0.25*w[k+2] where
+        # module_mp_nssl_2mom.F:14174-14176 delivers 0.5*(w[k] + w[k+1]) --
+        # a half-level upward shift plus 1-2-1 smoothing.  The premise of
+        # the comment that put it there ("WRF's microphysics driver supplies
+        # a mass-level W field") is false: solve_em.F hands the driver the
+        # staggered grid%w_2 and :2827 copies it into the GS slab with no
+        # de-staggering, so wvel = 0.5*(w(kp1)+w(kgs)) IS the single
+        # interface-to-mass average and its Min(nz, kgs+1) clamp is on the
+        # upper INTERFACE.  This MOVES ANSWERS for every mp_physics=18 run
+        # with vertical shear in w: wvel is the linear factor in WRF's
+        # icenucopt=1 primary-ice source (:20733-20738) and also its > 0
+        # gate.  nssl2_fused_gs is not an mp=8 translation unit and
+        # thompson.cu is byte-unchanged, so the mp=8 numerics guarantee is
+        # untouched.  Measured against WRF's own instrumented oracle by
+        # tests/test_nssl2_fused_gs.py::
+        # test_official_wrf_oracle_pins_the_single_average_and_its_top_clamp
+        # (all 240 rows satisfy w_center == 0.5*(w_lower+w_upper)) and ::
+        # test_official_wrf_oracle_rows_reach_qiint_with_a_shifted_w_center
+        # (12 rows reach the qiint computation, where the old rule overstated
+        # wvel by 1.18x to 2.06x); the kernel's spelling is held by ::
+        # test_cuda_centres_interface_w_onto_mass_levels_exactly_once, which
+        # replaces a source pin that asserted the two-stage average.
+        '8b4ad70fcde7a2fb5889c07045505c25d77440d1b96913adac1b54eaf1187e2a',
+        '4606e9061c788322ffa6a92a3f9a1a58cd5bcd4b4e7753eaccd3b2c96cd72b30'),
     'nssl2_nucond': (
-        '20afd579594f30076b1e7d157383b125950509b4a9823f4d2772e7a0f0aa759b',
-        '88776c363984e019f933de384e85989641531650128de57cddb07f30347f5e92'),
+        # RE-PINNED by the WRF-parity raw-w repair (N-02).  The low-T cnuc
+        # hack at module_mp_nssl_2mom.F:10122 tests the RAW staggered
+        # element `w(igs(mgs),jgs,kgs(mgs))` -- the cell's own bottom face --
+        # and the kernel averaged the two interfaces onto the mass level
+        # first.  That is not WRF being sloppy: NUCOND spans :9611-12215 and
+        # the only wvel assignment inside it is at :10381, 259 lines
+        # downstream, so the routine has no averaged w to read at :10122.
+        # The mass-level average survives everywhere WRF does compute one.
+        # This MOVES ANSWERS on sheared columns below 265 K where the raw
+        # face and the average straddle the 2.0 m/s gate.  nssl2_nucond is
+        # not an mp=8 translation unit and thompson.cu is byte-unchanged.
+        # Measured by tests/test_nssl2_contract.py::
+        # test_the_low_temperature_cnuc_hack_reads_the_raw_staggered_w,
+        # a two-sided gate: it also requires the mass-level average to
+        # survive at its two legitimate sites, so it cannot go green by
+        # deleting the averaging everywhere.
+        '224e22e7f0ab40965444d9dbdca6796c6d43a3404bdbb434425954d44d2b2555',
+        '311068aa8b1f2dd2d0a5cb38cf5d936c2b2e5ac9e6c5e4f764695e3aa01418a9'),
     'nssl2_qvexcess': (
         '6906dcd9f8822d73d87ff3cb6e545a1b1ddef567c16c658435d4f669f1f369dc',
         '89d27036499b7f57d780c594308766b83ef711fbc9d9c5d0ece2e79c270f6626'),
     'openbc': (
-        'a929bad2ec82ae36f86dcc10e1d315460f8af947cbcfd7bdbd87696e40e57624',
-        '00b901c9f26df6447906726324593fe7b476679629ed1ab6ca16537cfbc27044'),
+        # 6d9c9b999 folds CFL over owned columns of one domain sweep.
+        # Measured 0d2a79ed4: 41 CUDA controls; public resident/streamed
+        # 448 fields and resumed/continuous 150 fields exactly agree.
+        # 399d95a86 appends the adaptive timestep's w_cfl_stat probe;
+        # d7c5a9eca corrects its strict-threshold comment. The entire old
+        # file remains an exact prefix: existing boundary kernels do not
+        # change. Restoring the parent source through the real loader
+        # reproduces both old pins; test_wrf_cfl_histogram grades the new
+        # measurement against its independent CPU reference.
+        'c7217de931f41cc30ccb8f31281ab8da2c1bf770c0621a16522f0b656eb3b872',
+        'c15740b46301a3814fbe5c8ecab6daeff20e6997b012798873543c5aa601e01c'),
     'pd_advection': (
         '606e396872b2c42bafcff8d46d6a4c16d0f1c4f0fc796bb1728f4ae3678c309c',
         'd9e8649915c1a8bd0b65354131baa8fc29d00f921d61849bb4fa0d47b065c9ea'),
@@ -459,10 +619,13 @@ FROZEN_MODULE_DIGESTS = {
         'edb6bcb71a9d0763d3576b602db0afa05ec5eddc9bc63548f4991f34bd6d718c',
         '07af9ba6f5a0ed7e3c735f0b574041aace48f306e2641e7563252ae992a2cfd9'),
     'rrtmg_sw': (
+        # f7c2aadea removes an unused macro; host launch coverage now
+        # includes every layer. Measured d8ef9d086: 156 CUDA controls
+        # including independent WRF 80/129-layer reference fixtures.
         # Re-pinned for the one-instruction subnormal armor (65944605a,
         # exact in binary64 per its message; witness at 25ad40769).
-        '1d2f967e09a299e1f8a9964a940f53d14a4dfbc42cb132161839e7db2de94478',
-        '6cc32f3a8a32e2539e4c8aba4ca927355cf08516d2a0bc98f3dd99623a8e709a'),
+        '0301818b55046062ef0b89edc1c2ddc85adb361a4bfd03bc278f56c5fb139aef',
+        '288e905955ad26e2f216928eb81cba05800d75c0e29e2172f34b9f89002d36cd'),
     'rrtmgp_cloud': (
         '015aec6065be8a23bcec1ce5421ae28cfbc74de1d6a7713a75bc1a78d1f7bc08',
         '5976824ca813f3e40a8b6d73ccb88d39b333f110054bb502d482817a3a7c6ad7'),
@@ -553,8 +716,31 @@ FROZEN_MODULE_DIGESTS = {
         # this line, so the mp=8 numerics guarantee is untouched; the
         # healthy path is proven bit-exact under pinned fixtures and an
         # adversarial sweep.
-        '35d6ee87153254719ff64b5691f64515b90548f17936627207b7bd13bb39a655',
-        '7f4e2fecbd39dfaca190ac59016d441cbf606101ae126cdfc401c5886720aeea'),
+        #
+        # RE-PINNED by the WRF-parity USTM repair (SFC-01).  The kernel
+        # produced no USTM at all: module_sf_sfclay.F:800-804 (and
+        # physics_mmm/sf_sfclayrev.F90:759-763) relaxes a SECOND friction
+        # velocity on WSPDI = sqrt(ux*ux+vx*vx) -- the speed WITHOUT the
+        # Beljaars/Mahrt-Sun vconv/vsgd correction, without WSPD's 0.1 floor
+        # and without UST's land floor -- and USTM is unconditional Registry
+        # state (Registry.EM_COMMON:1954) that WRF hands to tke_rhs and
+        # vertical_diffusion_2 (module_first_rk_step_part2.F:914,:1066).
+        # ArWen recomputed it in a CuPy post-pass gated on
+        # km_opt in (2,3,4) and bl_pbl_physics == 0; that post-pass is now
+        # deleted and the line lives where WRF has it.  This MOVES ANSWERS:
+        # <=1 ULP on the LES path (the kernel contracts uu*uu+vv*vv into an
+        # FMA where the three CuPy kernels did not) and first-order for
+        # km_opt=2 with a PBL scheme on, where the TKE surface shear source
+        # was identically zero.  sfclay is not an mp=8 translation unit and
+        # thompson.cu is byte-unchanged, so the mp=8 numerics guarantee is
+        # untouched.  Measured on the CPU authority by tests/test_sfclay.py::
+        # test_ustm_relaxes_on_the_uncorrected_wind_speed and ::
+        # test_ustm_takes_neither_the_wind_floor_nor_the_land_floor, with the
+        # kernel held to the float64 mirror by ::
+        # test_sfclay_kernel_writes_ustm_and_not_a_copy_of_ust and by every
+        # standing SFCLAY_OUTPUTS sweep, which now grades ustm.
+        '1e0687817889897b950b5ae47e0f0cff58f0a97b32e5b65bcf3bf1ce15215f22',
+        'c26f5f0590d0e42ca033795ba801acd269e07fb7ed8f54213dfb385d5cff7f2b'),
     'smag2d': (
         # Re-pinned on the 1.5 integration line: feature/les-integration's
         # verified km_opt=2/3 work edits smag2d.cu after this table was
@@ -601,8 +787,29 @@ FROZEN_MODULE_DIGESTS = {
         # validated in both directions
         # (docs/kernel_local_memory_bounds.md).  ysu is not an mp=8
         # translation unit; the mp=8 numerics guarantee is untouched.
-        '5a1200db4b547f85f8982e45970cbd1a1878d92f004dd252b3cdc8447140de83',
-        '95230655ec4689282f6556f11d808365421af24206c60681199722d3147e0fa4'),
+        #
+        # RE-PINNED AGAIN by the WRF-parity pblflg repair (par-pbl-ysu-01
+        # and -04).  Two branch structures, both re-read at
+        # phys/physics_mmm/bl_ysu.F90 before the edit: :703-728 guards the
+        # thermal-enhanced Richardson sweep with if(pblflg(i)) and the
+        # kernel did not, so a column WRF holds in the local-K regime was
+        # being switched to full non-local YSU at convective onset; and
+        # :765/:766 are two INDEPENDENT statements, so nesting the second
+        # inside the first let a theta-li revival reach :832 with kpbl == 1
+        # and index one level below the column.  This MOVES ANSWERS on both
+        # paths -- see the release note -- and both are measured on the CPU
+        # authority by tests/test_ysu.py::
+        # test_the_thermal_enhanced_sweep_cannot_raise_pblflg and ::
+        # test_a_theta_li_revival_that_leaves_kpbl_at_one_is_extinguished,
+        # with the kernel's own spelling held to the mirror's by ::
+        # test_the_kernel_spells_wrfs_two_pblflg_rules_like_the_mirror.
+        # The same bytes also carry par-pbl-ysu-03 (the enhanced sweep's
+        # result reaches the theta-li scan unclamped, because :718-728 has
+        # no counterpart to the clamp at :646 and :823), landed in the same
+        # window by the lane that owns it; the kernel and
+        # gpuwm.verify.npref.np_ysu_column carry it identically.
+        '251dc8469b13a18a86f8a4a6546ceb9bb7680407a3f4afa03290d1140a48964b',
+        '4725831d8c4ad0660eff7d792f34c3eb8eb71e6e672293612100634c68200a7f'),
 }
 
 # -- R2 --------------------------------------------------------------------
@@ -644,8 +851,15 @@ STATE_ARRAY_SHAPES_MP8 = {
     'c4f': (5,),
     'c4h': (4,),
     'cosa': (6, 8),
+    # The EOS's float64-derived base-thickness correction and the
+    # float64-differenced full-level coefficient drops that replaced the
+    # two cancelling subtractions in calc_p_alpha.  Derived setup, priced
+    # like every other allocation; see gpuwm/core/kernels/diagnostics.cu.
+    'dc3f': (4,),
+    'dc4f': (4,),
     'dn': (4,),
     'dnw': (4,),
+    'dphb_resid': (4,),
     'e': (6, 8),
     'effc': (4, 6, 8),
     'effi': (4, 6, 8),
@@ -774,7 +988,7 @@ NEST_FIELD_KINDS_MP8 = (
     'qv', 'qc', 'qr', 'qi', 'qs', 'qg', 'nr', 'ni',
 )
 STATE_ARRAY_SHAPES_DIGEST = (
-    '46ab221ff2a84d7b0e5caa8fc575a77b448e3d443cd277b03f49cf0d2c7fa92a')
+    '9bf527776f97f6e401d5c8084b31a58015f36c388eabba5dc3cc4eaefbaa124c')
 SCRATCH_SLOT_REGISTRY_DIGEST = (
     'cfa4fe7ed787889825d504ebb122e0a7042cc8de177ae33367b6cfc8f3ec6d2c')
 ORACLE_FIXTURE_COUNT = 92

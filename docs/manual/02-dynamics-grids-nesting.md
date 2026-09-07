@@ -40,11 +40,21 @@ the Registry's 5000 Pa [docs/public/CONFIGURATION.md:125-126].
 
 Two hard properties a WRF user must plan around:
 
-- **No vertical nesting, by construction.** The vertical grid is single-sourced
-  from `ExperimentConfig.vertical` and per-domain vertical keys are rejected
-  outright. A 250 m LES child runs its parents' level count; it cannot be given more
-  levels than the 3 km domain above it [docs/public/LES.md:341-345]. The
-  consequences for sub-km work are measured in section 2.8.
+- **No vertical nesting in a LIVE tree, by construction.** The vertical grid of an
+  inline nest tree is single-sourced from `ExperimentConfig.vertical` and per-domain
+  vertical keys are rejected outright: a 250 m LES child inside a running tree takes
+  its parents' level count [docs/public/LES.md:341-345]. The consequences for sub-km
+  work are measured in section 2.8. **An OFFLINE child is not bound by this.**
+  `gpuwm downscale --child-levels N,STRETCH` builds a standalone child on its own
+  eta ladder off archived parent history, through a conservative vertical remap
+  (`gpuwm/vertical_remap.py`): the child's initial state and its whole lateral
+  boundary table set are rebinned once, at preparation, on the host, and the child
+  then integrates normally. `p_top`, `hybrid_opt` and `etac` stay shared with the
+  parent -- that is what makes the two ladders span the same column with coincident
+  endpoints, so the remap conserves dry mass and every water substance to roundoff
+  (measured: water 1.2e-16 relative, potential temperature 0.0, column dry mass
+  closing to 0.0 Pa, and the child's model top landing on the parent's exactly).
+  A child that names no ladder inherits its parent's, bitwise as before.
 - **`nz <= 128` is what has been run; the solver now admits 256.** The acoustic
   solver's per-thread stack column bound is compiled from a tier ladder
   (129/193/257) chosen by `nz`; above 256 the host raises before any launch, a loud

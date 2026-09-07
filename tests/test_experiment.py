@@ -511,6 +511,31 @@ def test_rejects_non_divisible_cadences(tmp_path):
     assert exp.root.run.bldt == 0.0
 
 
+@pytest.mark.parametrize("shared,setting", [
+    ("ra_physics = 90", "radt"),
+    ("moist = true\ncu_physics = 1", "cudt_minutes"),
+    ("bl_pbl_physics = 1\nsf_sfclay_physics = 91", "bldt"),
+])
+def test_decimal_minute_cadence_uses_the_declared_clock(tmp_path, shared, setting):
+    # 2.4 minutes is exactly 144 s, two root steps and six child steps.
+    text = BASE.format(experiment="restart_interval_s = 0.0", shared=shared,
+                       d01=f"{setting} = 2.4", d02=f"{setting} = 1.2")
+    text = text.replace("time_step = 60", "time_step = 72")
+    text = text.replace("history_interval_s = 900.0", "history_interval_s = 864.0")
+    exp = load_experiment(_write(tmp_path, text=text))
+    assert getattr(exp.root.run, setting) == 2.4
+    assert getattr(exp.domain(2).run, setting) == 1.2
+    from gpuwm.core.clock import resolve_clock
+    clock = resolve_clock(exp)
+    clock_key = {"radt":"radt_ticks", "cudt_minutes":"cudt_ticks", "bldt":"bldt_ticks"}[setting]
+    assert getattr(clock.spec(1), clock_key) == 144 * clock.tick_den
+    assert getattr(clock.spec(2), clock_key) == 72 * clock.tick_den
+    # Nearby decimal values must still fail exact step alignment.
+    with pytest.raises(ValueError, match="whole number"):
+        load_experiment(_write(tmp_path, text=text.replace(
+            f"{setting} = 2.4", f"{setting} = 2.400000000000001")))
+
+
 def test_rejects_hand_typed_child_dx_mismatch(tmp_path):
     """THE pinned 500-m fixture: a hand-typed 500 m child dx against
     ratio 3 from 1 km is a hard error -- the chain derives 1000/3 m."""

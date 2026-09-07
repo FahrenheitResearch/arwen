@@ -682,7 +682,13 @@ def ruc_soil_temperature_step_cuda(
     delt: float,
     conflx: float = 0.5,
     nroot: object = 4,
-    cvw: float = 4183.0,
+    # WRF's `soil` binds this dummy to its own `cw`, the VOLUMETRIC heat
+    # capacity of water: module_sf_ruclsm.F:731 `cw =4.183e6` (assigned
+    # nowhere else in the file), :2435 `cvw=cw`, :2662 the `call soiltemp`
+    # constants group, :4634 the dummy.  `rainf*cvw*prcpms` at :4743/:4752
+    # needs J m-3 K-1 against `prcpms` in m s-1 to come out in W m-2, so the
+    # mass-specific 4183.0 is a factor of 1000 short.
+    cvw: float = 4.183e6,
 ) -> RucSoilTemperatureCuda:
     """Run WRF's snow-free nine-level ``soiltemp`` solve on GPU."""
 

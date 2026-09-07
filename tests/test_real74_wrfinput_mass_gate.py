@@ -59,9 +59,13 @@ _INPUTS_MISSING = (
     or not (BUNDLE / "met_em" / "met_em.d01.1974-04-03_12_00_00.nc").is_file()
     or not (REPO / "configs" / "real74" / "soilhgt.d01.nc").is_file()
 )
-# A gate that can silently vanish is not a gate: assembly/ratification runs
-# set GPUWM_REQUIRE_CASE_GATES=1, which converts the environmental skip
-# into a hard failure when the pinned inputs are absent.
+# A gate that can silently vanish is not a gate: the `gpu` lane of
+# .github/workflows/ci.yml sets GPUWM_REQUIRE_CASE_GATES=1, which converts
+# the environmental skip into a hard failure when the pinned inputs are
+# absent.  Until that lane existed the claim was unbacked -- a tree-wide grep
+# for the name returned only the two test files that READ it, so no runner,
+# script or workflow ever threw the switch (audit xc-06-04).  The switch is
+# gated by tests/test_ci_workflow.py.
 _REQUIRE_GATES = os.environ.get("GPUWM_REQUIRE_CASE_GATES") == "1"
 
 requires_inputs = pytest.mark.skipif(

@@ -47,45 +47,14 @@ it is not a science-tuning option and production configurations leave it
 enabled.  A dry state has no qv allocation and stays on the exact legacy
 kernel expressions without cq scratch or launch work.
 
-DELIBERATE DEVIATION -- ZERO AEROSOL INFLOW ON A SPECIFIED DOMAIN (mp=28).
-ArWen carries only ``qv`` from an external lateral-boundary snapshot
-(``gpuwm/ingest/lateral_bc.py::_coupled_device_fields``); every other
-transported scalar gets WRF's flow-dependent boundary
-(``module_bc.F::flow_dep_bdy``) with ZERO inflow value, so on an inflow face
-the incoming air carries none of that species.  For the hydrometeors this
-policy predates mp=28 and is already registered.  mp_physics=28 extends it to
-``nc``/``nwfa``/``nifa``, and there the consequence is qualitatively
-different: hydrometeors are locally re-created by microphysics from qv, but
-aerosol number has NO source term anywhere in ``mp_thompson`` except the fixed
-surface emission (``module_mp_thompson.F:1310-1327``) and ``thompson_init``'s
-one-shot profile fill (:493-528, which runs once and only when the field is
-domain-wide < 1e-15).  Aerosol-free inflow therefore MONOTONICALLY DEPLETES
-nwfa/nifa in the upstream boundary zone for as long as the run continues.
+External aerosol forcing follows the supplied table inventory. WRF
+solve_em.F:2803-2839 captures aerosol spec/relax tendencies on RK stage 1
+when aer_init_opt>0; :2904-2930 excludes those fields from flow-dependent
+zero inflow. The input producer's selected aerosol fields are retained in
+coupled snapshots and wrfbdy tables. Unsupplied ordinary number moments
+keep their existing flow-dependent boundary treatment. General WRF
+have_bcs_scalar forcing is a separate, currently unrepresented input option.
 
-WRF does not have this behaviour.  Its Registry declares both tracers with
-the boundary dimension and an explicit boundary interpolator --
-``registry.new3d_wif:87-90``::
-
-    state real qnwfa ikjftb scalar 1 - i0rhusdf=(bdy_interp:dt) "QNWFA" ...
-    state real qnifa ikjftb scalar 1 - i0rhusdf=(bdy_interp:dt) "QNIFA" ...
-
--- where the trailing ``b`` of ``ikjftb`` is what allocates qnwfa_b*/qnwfa_bt*,
-exactly as for qv.  So WRF really does force aerosol at the boundary from the
-WIF metgrid stream.  The v1 decision is to
-register the divergence rather than extend the LBC ingest, because ArWen has
-no WIF ingest at all (the WIF climatology landed later, in
-``gpuwm/ingest/wif_climatology.py``, and is the mp=28 default since
-lane/wif-default) and inventing
-one boundary species' inflow while the other eight stay flow-dependent would
-be a worse, less legible inconsistency.  Consequences, stated so a reader does
-not have to rediscover them: the depletion is bounded below by WRF's own
-terminal clamp (``nwfa >= 11.1E6`` and ``nifa >= naIN1*0.01 == 5.0E3`` at
-:3977-3982, with naIN1 = 0.5E6 at :95), so it
-cannot go negative, cannot NaN, and cannot trip the health gate -- it is a
-slow, silent, physically wrong trend confined to the specified zone plus the
-relaxation zone.  Interior forecasts on a nested or large domain are
-unaffected on any timescale where boundary air has not reached the region of
-interest.
 """
 
 from __future__ import annotations
@@ -99,8 +68,10 @@ from gpuwm.config import RunConfig
 from gpuwm.core import constants as c
 from gpuwm.core.advection import launch_flux_div_scalar
 from gpuwm.core.grid import BaseState, VerticalCoord
+from gpuwm.grid_requirements import FIFTH_ORDER_STENCIL_AXIS
 from gpuwm.core.kernels import get_kernel
 from gpuwm.core.state import DTYPE, DomainState, init_at_rest
+from gpuwm.core.wdm6_constants import WDM6_NUMBER_SPECIES
 from gpuwm.core import tke_budget
 
 _TPB = 128  # threads per block along i (i fastest)
@@ -287,6 +258,11 @@ def extra_moist_species(state: DomainState) -> tuple[str, ...]:
         return NSSL_SPECIES
     if getattr(state, "nwfa", None) is not None:
         return ICE_MASS_SPECIES + THOMPSON_AERO_NUMBER_SPECIES
+    # WDM6 alone allocates nn. Its complete Registry scalar package is
+    # qnn/qnc/qnr (Registry.EM_COMMON:3031); the generic Morrison presence
+    # filter below intentionally excludes diagnostic nc and cannot own it.
+    if getattr(state, "nn", None) is not None:
+        return ICE_MASS_SPECIES + WDM6_NUMBER_SPECIES
     numbers = tuple(name for name in TRANSPORTED_NUMBER_SPECIES
                     if getattr(state, name, None) is not None)
     return ICE_MASS_SPECIES + numbers
@@ -327,9 +303,9 @@ def launch_pd_fluxes(q, q0, ru, rv, rw, mut, coord, dx, dy, dt,
     >= 7 cells so the degrade bands cannot overlap.
     """
     nz, ny, nx = q.shape
-    if open_x and nx < 7:
+    if open_x and nx < FIFTH_ORDER_STENCIL_AXIS:
         raise ValueError(f"open_x PD advection needs nx >= 7, got {nx}")
-    if open_y and ny < 7:
+    if open_y and ny < FIFTH_ORDER_STENCIL_AXIS:
         raise ValueError(f"open_y PD advection needs ny >= 7, got {ny}")
     if has_msf is None:
         has_msf = msft is not None
@@ -639,12 +615,29 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
             apply_state_scalar_lateral_boundary as apply_scalar_lbc,
         )
         if cfg.specified:
-            # Preserve d01's frozen qv held-slot operation order exactly.
-            held = state.scratch((nz, ny, nx), "lbc_qv_held")
-            held_lbc["qv"] = held
-            if apply_relax:
-                held[...] = 0
-                apply_scalar_lbc(state, cfg, "qv", held, apply_relax=True)
+            # Capture each supplied external scalar once at RK stage 1.
+            # Scalar tables have the same mass coupling as qv. WRF retains
+            # scalar_tend through all three stages (solve_em.F:2803-2868).
+            from gpuwm.boundary_fields import potential_external_scalar_fields
+            from gpuwm.ingest.lateral_bc import _active_device_interval
+            supplied = _active_device_interval(state, cfg)[0].fields
+            for name in potential_external_scalar_fields(cfg):
+                if name not in supplied:
+                    continue
+                # Keep the finite slot inventory explicit for the allocation
+                # census; each slot is priced and classified independently.
+                if name == "qv":
+                    held = state.scratch((nz, ny, nx), "lbc_qv_held")
+                elif name == "nwfa":
+                    held = state.scratch((nz, ny, nx), "lbc_nwfa_held")
+                elif name == "nifa":
+                    held = state.scratch((nz, ny, nx), "lbc_nifa_held")
+                else:
+                    raise KeyError(f"unregistered external scalar hold: {name}")
+                held_lbc[name] = held
+                if apply_relax:
+                    held[...] = 0
+                    apply_scalar_lbc(state, cfg, name, held, apply_relax=True)
     if pd:
         bufs = (state.scratch((nz, ny, nx + 1), "pd_fxl"),
                 state.scratch((nz, ny, nx + 1), "pd_fxc"),
@@ -823,15 +816,32 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                            if fixed_tendencies is not None else None),
                     clamp=final)
     if cfg.specified:
-        from gpuwm.ingest.lateral_bc import apply_flow_dependent_boundaries
-        fields = tuple(getattr(state, name) for name in moist_species(state)
-                       if name != "qv")
-        # The fused CUDA ABI carries nine independent fields per launch.
-        # NSSL's full option-18 scalar package is larger, so submit adjacent
-        # Registry-order batches; each field operation is independent.
-        for start in range(0, len(fields), 9):
-            apply_flow_dependent_boundaries(
-                fields[start:start + 9], ru, rv, cfg.spec_zone)
+        _apply_specified_scalar_flow_boundaries(state, cfg, ru, rv, held_lbc)
+
+
+def _apply_specified_scalar_flow_boundaries(state, cfg, ru, rv, held_lbc):
+    """WRF solve_em.F:2893-2930: QNN precedes the ordinary scalar branch."""
+    from gpuwm.core.microphysics_transition import NSSL2_BACKGROUND_CCN_PER_KG
+    from gpuwm.ingest.lateral_bc import apply_flow_dependent_boundaries
+
+    species = moist_species(state)
+    qnn_name = "nn" if cfg.mp_physics == 16 else "qnn"
+    if qnn_name in species:
+        # start_em.F:1750-1760 leaves WDM6's namelist ccn_conc intact but
+        # replaces NSSL's grid value with nssl_cccn/1.225. NSSL's admitted
+        # parameter identity pins that result to this FP32 concentration.
+        inflow = (cfg.wdm6_ccn_conc if cfg.mp_physics == 16
+                  else NSSL2_BACKGROUND_CCN_PER_KG)
+        apply_flow_dependent_boundaries(
+            (getattr(state, qnn_name),), ru, rv, cfg.spec_zone,
+            inflow_value=inflow)
+    fields = tuple(getattr(state, name) for name in species
+                   if name not in ("qv", qnn_name) and name not in held_lbc)
+    # The CUDA ABI carries nine independent fields per launch. NSSL's
+    # full scalar package is larger; retain adjacent Registry-order batches.
+    for start in range(0, len(fields), 9):
+        apply_flow_dependent_boundaries(
+            fields[start:start + 9], ru, rv, cfg.spec_zone)
 
 
 def init_moist_balanced(cfg: RunConfig, coord: VerticalCoord,

@@ -333,6 +333,36 @@ def hold(kind: str, target: str | Path, *, timeout_s: float | None = None,
     return OutputLock(kind, target, timeout_s=timeout_s, progress=progress)
 
 
+def active_writer(kind: str, target: str | Path) -> bool:
+    """Inspect an existing writer lock without creating files or waiting.
+
+    Managed cache selection must queue behind an active partial download,
+    rather than mistake its unfinished receipt for damage and duplicate it.
+    An unreadable lock is conservatively treated as active; the real fetch
+    still acquires its normal exclusive lock before it can write anything.
+    """
+    path = lock_path(kind, target)
+    key = str(path).lower() if os.name == "nt" else str(path)
+    with _REGISTRY_GUARD:
+        entry = _HELD.get(key)
+        if entry is not None and entry.depth > 0:
+            return True
+    try:
+        stream = path.open("r+b")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    with stream:
+        try:
+            if not _try_lock(stream):
+                return True
+            _unlock(stream)
+            return False
+        except OSError:
+            return True
+
+
 # ---------------------------------------------------------------------------
 # Atomic publication
 # ---------------------------------------------------------------------------

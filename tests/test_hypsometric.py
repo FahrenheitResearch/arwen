@@ -314,23 +314,39 @@ def test_fp32_split_opt2_preserves_opt2_diagnostic():
         base.alb.shape))
     php = _fp32_geopotential_split(base, coord, dry_mass, alpha,
                                    hypsometric_opt=2)
-    # Re-diagnose alt with the kernel's opt-2 FP32 arithmetic.
+    # Re-diagnose alt with the kernel's opt-2 FP32 arithmetic -- the
+    # spelling calc_p_alpha actually runs: an exact float32 base
+    # difference plus the float64 residual, and log1p on the
+    # float64-differenced coefficient drops.
+    phb64 = np.asarray(base.phb, dtype=np.float64)
     phb32 = np.asarray(base.phb, dtype=np.float32)
+    resid = np.asarray(np.diff(phb64, axis=0)
+                       - np.diff(phb32, axis=0).astype(np.float64),
+                       dtype=np.float32)
+    c3f64 = np.asarray(coord.c3f, dtype=np.float64)
+    c4f64 = np.asarray(coord.c4f, dtype=np.float64)
     c3f = np.asarray(coord.c3f, dtype=np.float32)
     c4f = np.asarray(coord.c4f, dtype=np.float32)
     c3h = np.asarray(coord.c3h, dtype=np.float32)
     c4h = np.asarray(coord.c4h, dtype=np.float32)
+    dc3f = np.asarray(c3f64[:-1] - c3f64[1:], dtype=np.float32)
+    dc4f = np.asarray(c4f64[:-1] - c4f64[1:], dtype=np.float32)
     mu32 = np.asarray(dry_mass, dtype=np.float32)
     pt32 = np.float32(p_top)
-    total = np.asarray(phb32 + php, dtype=np.float32)
     worst = 0.0
     for k in range(coord.dnw.size):
         pfu = c3f[k + 1] * mu32 + c4f[k + 1] + pt32
-        pfd = c3f[k] * mu32 + c4f[k] + pt32
         phm = c3h[k] * mu32 + c4h[k] + pt32
-        dphi = np.asarray(total[k + 1] - total[k], dtype=np.float32)
+        dpf = np.asarray(dc3f[k] * mu32 + dc4f[k], dtype=np.float32)
+        dphb = np.asarray(
+            np.asarray(phb32[k + 1] - phb32[k], dtype=np.float32) + resid[k],
+            dtype=np.float32)
+        dphi = np.asarray(
+            dphb + np.asarray(php[k + 1] - php[k], dtype=np.float32),
+            dtype=np.float32)
         diagnosed = np.asarray(
-            np.asarray(dphi / phm, dtype=np.float32) / np.log(pfd / pfu),
+            np.asarray(dphi / phm, dtype=np.float32)
+            / np.log1p(np.asarray(dpf / pfu, dtype=np.float32)),
             dtype=np.float32).astype(np.float64)
         err = np.abs(diagnosed - alpha[k]) / alpha[k]
         worst = max(worst, float(err.max()))
@@ -338,6 +354,12 @@ def test_fp32_split_opt2_preserves_opt2_diagnostic():
     # but it must sit on it.  Had the split optimized the opt-1 operator
     # instead, the opt-2 rediagnosis error would be the inter-operator
     # discrepancy, O((dp/p)^2/12) ~ 5e-4 — three orders larger.
+    # The bound stays 16 ulps rather than the measured 1.46 because it
+    # also has to hold on coarser columns.  It is NOT slack: quantizing
+    # against the pre-residual operator and re-diagnosing with the one
+    # calc_p_alpha runs measures 15.17 ulps here -- inside 16, so this
+    # test alone would not have caught the mismatched search.  What
+    # catches it is the ratio, 1.46 against 15.17 on one probe.
     assert worst < 16.0 * np.finfo(np.float32).eps
 
 
@@ -385,7 +407,7 @@ def test_device_matches_mirror_both_options(opt):
         cp.asnumpy(s.php).astype(np.float64),
         cp.asnumpy(s.mup).astype(np.float64), base, coord,
         hypsometric_opt=opt)
-    np.testing.assert_allclose(cp.asnumpy(s.p), p_ref, rtol=2e-5)
-    np.testing.assert_allclose(cp.asnumpy(s.alt), alt_ref, rtol=2e-5)
-    np.testing.assert_allclose(cp.asnumpy(s.al), al_ref, rtol=2e-5,
-                               atol=2e-5)
+    np.testing.assert_allclose(cp.asnumpy(s.p), p_ref, rtol=1e-6)
+    np.testing.assert_allclose(cp.asnumpy(s.alt), alt_ref, rtol=1e-6)
+    np.testing.assert_allclose(cp.asnumpy(s.al), al_ref, rtol=1e-6,
+                               atol=1e-6)

@@ -87,6 +87,8 @@ def _prepared(tmp_path, monkeypatch, *time_flags):
     static_receipt = tmp_path / "static.json"
     static_receipt.write_text("{}", encoding="utf-8")
 
+    from test_prepare_hrrr_wrf import _configured_wrapper_input
+    authority = _configured_wrapper_input(tmp_path, namelist)
     commands = []
 
     def fake_run(command, env):
@@ -102,6 +104,7 @@ def _prepared(tmp_path, monkeypatch, *time_flags):
     monkeypatch.setattr(prepare, "_run", fake_run)
     with pytest.raises(_Captured):
         prepare.main([
+            "--experiment-config", str(authority),
             "--source-root", str(source),
             "--source-manifest", str(manifest),
             "--source-manifest-sha256", "0" * 64,

@@ -769,10 +769,11 @@ def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
     # `gpuwm.mpas_mesh.MpasBridge.candidates`; their markers belong here
     # so `gpuwm fetch-bridges` and the release cut can tell an old build
     # of the generator from this one.
+    # The terminal also has its own tools/arwen-tui source-build ladder.
     assert extra == {"region_global_dealias", "netcdf_writer",
                      "gpuwm_mapped_engine", "static_fields", "obs_regrid",
                      "rw_mpas_mesh", "rw_mpas_static", "rw_mpas_init",
-                     "rw_mpas_convert", "rw_mpas_lbc"}
+                     "rw_mpas_convert", "rw_mpas_lbc", "arwen-tui"}
 
 
 def test_the_decoder_door_gates_the_contract_for_every_caller(
@@ -1645,7 +1646,7 @@ def _force_every_gap(monkeypatch, tmp_path, *, windows, shape, mode,
         # test was red, and the paste it rejected carried `git clone
         # https://.../arwen gpuwm` from the mapped-engine remedy alone.
         for crate in ("grib1_bridge", "rustwx", "region_global_dealias",
-                      "rw_wps"):
+                      "rw_wps", "arwen-tui"):
             (root / "tools" / crate).mkdir(parents=True, exist_ok=True)
             (root / "tools" / crate / "Cargo.toml").write_text(
                 "[package]\n", encoding="utf-8")

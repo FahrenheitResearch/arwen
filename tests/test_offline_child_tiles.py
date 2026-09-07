@@ -87,6 +87,24 @@ def test_a_tiling_under_mode_off_is_refused(tmp_path):
         load_streaming_options(path)
 
 
+def test_a_pinned_key_under_mode_auto_is_refused(tmp_path):
+    """The AUTO twin of the rule above, at the door a user reaches.
+
+    ``auto``'s documented product IS the planner's tiling, so a key that
+    pins one of the planner's own answers beside it is a request the mode
+    cannot honour -- and it did not honour it: ``nbuffers = 2`` planned 3
+    on the tree this was found on, with nothing warning and the receipt
+    recording the request beside the outcome.  Refused where the fix is
+    obvious rather than silently overridden where it is not, which is the
+    ruling the per-domain budget keys already carry.
+    """
+
+    path = _child_toml(
+        tmp_path, tiles_block='[tiles]\nmode = "auto"\nnbuffers = 2\n')
+    with pytest.raises(ValueError, match="nbuffers"):
+        load_streaming_options(path)
+
+
 def test_off_binds_the_dycore_step_itself(tmp_path):
     """No ``[tiles]`` means no branch at all -- the same function object.
 

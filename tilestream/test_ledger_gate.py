@@ -28,9 +28,9 @@ the routes wire the builders     ``gpuwm run`` and the prepared tree route
 the receipt names the mode       ``off`` must produce an EMPTY entry (the
                                  pre-streaming receipt, byte for byte), and
                                  ``on`` must produce a non-empty one
-the two VRAM models              the band where they disagree, walked and
-                                 printed -- an OPEN DEFECT, pinned so that
-                                 reconciling them turns this file red
+the two VRAM models              old empirical resident fit cannot strand
+                                 an auto run whose configured resident
+                                 envelope requires the fitting tile road
 ===============================  =========================================
 
 CPU only.  Nothing here needs a card; every quantity is shape arithmetic.
@@ -180,8 +180,17 @@ def test_the_run_route_streams_instead_of_refusing():
     assert 'refuse_unrouted_streaming(exp, "gpuwm run"' not in src, (
         "gpuwm run still refuses [tiles] at its front door while wiring "
         "the builders behind it")
-    # The tree arm and the single-domain arm, both.
-    assert "builders=_streaming.builders_for_tree(model, exp.tiles)" in src
+    # The tree arm now delegates after retaining its cold Machine. Check
+    # both ends of that call, rather than requiring allocation wiring to
+    # remain textually inside the public runner.
+    assert "return _run_built_experiment(" in src
+    assert "planning_machine=planning_machine" in src
+    tree_src = inspect.getsource(runtime._run_built_experiment)
+    assert "builders=_streaming.builders_for_tree(model, exp.tiles)" in tree_src
+    assert "steppers = _streaming.steppers_for_tree(" in tree_src
+    assert "machine=planning_machine" in tree_src
+    assert 'resident_estimate=getattr(model.memory_ledger, "estimate", None)' in tree_src
+    # The fixed single-domain arm still binds its standalone builder.
     assert "standalone_domain_builder(" in src
     assert "stepper=single_stepper" in src
     # And the relay agrees.  "unrouted" here would refuse at resolve time.
@@ -269,123 +278,37 @@ def test_the_on_receipt_names_the_mode_and_the_decision():
 
 
 # --------------------------------------------------------------------------
-# THE OPEN DEFECT: two models, one question
+# CONFIGURED AUTO ADMISSION: the old disagreement is a regression control
 # --------------------------------------------------------------------------
 
-def _band(free_bytes: int, step: int = 16, limit: int = 2048):
-    """Sizes where autoplan says RESIDENT and preflight REFUSES anyway."""
-    from tilestream import autoplan as A
 
-    ap_budget = int(free_bytes * (1.0 - A.VRAM_HEADROOM))
-    lo = hi = None
-    n = step
-    while n <= limit:
-        exp = _exp(n)
-        cfg = exp.root.run
-        cells = cfg.nx * cfg.ny * cfg.nz
-        resident = A.footprint_for(cfg).resident_bytes(cells)
-        envelope = pf.estimate_experiment(exp).peak_envelope_bytes
-        streams = resident > ap_budget
-        refuses = envelope > free_bytes
-        if (not streams) and refuses:
-            lo = n if lo is None else lo
-            hi = n
-        elif lo is not None and streams:
-            break
-        n += step
-    return lo, hi
+def test_auto_uses_the_configured_resident_admission():
+    """The old empirical resident answer cannot strand a fitting tile road.
 
-
-def test_the_two_vram_models_disagree_and_auto_answers_the_wrong_one():
-    """OPEN DEFECT, pinned so that fixing it turns this file red.
-
-    ``[tiles] mode = "auto"`` asks :mod:`tilestream.autoplan` whether the
-    domain fits.  The route that runs it, and ``gpuwm go``'s memory gate
-    before that, ask :func:`gpuwm.core.preflight.estimate_experiment`.  The
-    two models price the full(real74) rung at 541 B/cell and ~887 B/cell
-    respectively, so on every card there is a band of domain sizes where
-    autoplan says "resident is fine" -- streaming therefore never fires --
-    and preflight then refuses the run outright.  A user in that band who
-    turned streaming on to make their domain fit is refused anyway, for a
-    reason that has nothing to do with the mode they turned on.
-
-    WHICH MODEL TO MOVE IS A MEASUREMENT, and it has been taken -- see
-    ``tilestream/ledger_probe.py``'s docstring.  On an RTX 5090 at 352^2 x 49
-    full physics the CuPy pool ALONE holds 6.656 GiB against autoplan's
-    7.019 GiB prediction for the whole device, leaving 0.36 GiB for a CUDA
-    context autoplan's own constant puts at 0.39.  Autoplan is the optimistic
-    one; preflight's refusal in this band is the defensible number, and it is
-    ``auto``'s decision NOT to stream that is wrong.  Two rungs on one card is
-    a direction, not a re-fit: reconciling them wants autoplan's 29-point
-    measurement redone before either constant moves.
-
-    THE BAND PINS BELOW ARE THE 2.5.1 LINE'S, re-derived 2026-08-20 on
-    the Windows cut box (the envelope's platform form).  They have moved
-    three times in three days, and every move is the same shape:
-    preflight's envelope fell, so it refuses from a LARGER n, so a band's
-    LOW edge rose while its HIGH edge stayed exactly where it was.  That
-    asymmetry is the evidence the move is preflight's alone -- the high
-    edge is autoplan's "resident stops fitting" crossing, and autoplan
-    has not been touched.
-
-    * 2026-08-18, the memgate-3080 landing: the x1.75-with-pool-constants
-      Windows envelope became the RTX 3080-measured WDDM form and the
-      size-independent term fell from ~8.8 GiB to ~2.9 GiB.  Lows rose to
-      416/640/752.
-    * 2026-08-20, the measured-VRAM-reserve landing: the fit gate stopped
-      paying for the same bytes twice -- the machine-peak envelope
-      carries the CUDA context and the kernel backing store, and the
-      budget had subtracted them again -- and the context stopped being
-      one card's 2026-07-26 reading applied to every card.  MEASURED
-      here now: envelope 6.14 GiB at 224^2 x 49 against a 2.90 GiB alloc
-      estimate (was 6.39), 11.13 GiB at 416^2 (was 12.39), 14.75 GiB at
-      512^2 (was 16.72), with the size-independent non-pool term at 2.74
-      GiB.  Lows rose to 448/704/832.
-    * 2026-08-20, the RRTMGP optimisation: the LW solver derives the
-      Planck sources in registers instead of materializing lay/lev/sfc,
-      the fused solvers make the finalized optics cubes disappear, and
-      each RTE phase lays its outputs over the slots that are dead by
-      then.  The chunk workspace fell 758,887,500 -> 347,287,500 B at the
-      3125-column chunk, and that is a SIZE-INDEPENDENT 0.4408 GiB off the
-      envelope at EVERY n (the 411,600,000 B saving times the 1.15
-      allocator headroom).  A constant drop can only move an edge whose
-      preceding rung sat within it ABOVE free, and exactly one did: the
-      5070 at n=448, envelope 12.256 -> 11.815 GiB against 11.900 free,
-      an excess of 0.356 GiB that is less than the 0.441 drop -- so its
-      low rose 448 -> 464.  The 4090 at n=688 (23.316 -> 22.875 against
-      23.500) and the 5090 at n=816 (31.120 -> 30.680 against 31.400)
-      were already BELOW their free bytes before the change, so 704 and
-      832 are unmoved and this is the first move to touch one card only.
-      Lows are now 464/704/832.
-    * 2026-08-30, the model-top default move (fix(ptop), 48d0c43f9,
-      whose pin sweep d380a1d21 missed this file exactly as it missed
-      the two workspace equality pins in tests/test_preflight.py): the
-      chunk workspace at the priced default fell 719,650,000 ->
-      708,750,000 B -- the 12 above-model LW layers -- a size-independent
-      10,900,000 B that is 12.5 MB off the envelope at every n after the
-      1.15 allocator headroom.  A drop that small can only move an edge
-      whose rung sat within it above free, and exactly one did: the 4090
-      at n=704, so its low rose 704 -> 720 and the 5070/5090 edges are
-      unmoved.  Lows are now 464/720/832.
-
-    The disagreement is therefore NARROWER again on this line, but it is
-    not reconciled, and the defect stands.
-
-    WHEN THE TWO MODELS ARE RECONCILED, DELETE THIS TEST.  It asserts the
-    presence of the defect, which is the only way an arithmetic-only audit
-    can keep a silent regression from re-opening it.
+    No measurement coefficients or card-name thresholds are repinned here.
+    The conservative configured envelope chooses the road; the existing
+    tile ledger continues to price that road. Actual GPU peak calibration
+    remains the separate ledger_probe experiment above.
     """
-    bands = {}
-    for name, free_gib in (("5070", 11.9), ("4090", 23.5), ("5090", 31.4)):
-        lo, hi = _band(int(free_gib * GIB))
-        bands[name] = (lo, hi)
-        assert lo is not None, (
-            f"no disagreement band on the {name} -- if the models were "
-            "reconciled, delete this test; if the ladder changed, re-derive")
-    assert bands["5070"] == (464, 512), bands
-    assert bands["4090"] == (720, 816), bands
-    assert bands["5090"] == (832, 976), bands
-    return "; ".join(f"{k}: n in [{v[0]}, {v[1]}]" for k, v in bands.items())
+    from tilestream import autoplan
+    results = []
+    for n, free_gib in ((704, 23.5), (960, 31.4)):
+        exp = _exp(n, "auto")
+        machine = autoplan.Machine(int(free_gib * GIB), 256 * GIB)
+        estimate = dataclasses.replace(pf.estimate_experiment(exp),
+                                       envelope_family="windows")
+        old = streaming.decide(exp.root.run, dataclasses.replace(
+            exp.tiles, resident_context=None), machine=machine)
+        assert not old.stream
+        assert estimate.peak_envelope_bytes > machine.vram_bytes - pf.EXTERNAL_MARGIN_BYTES
+        fixed = streaming.decide(exp.root.run, exp.tiles, machine=machine,
+                                 resident_estimate=estimate)
+        assert fixed.stream
+        envelope = streaming.streamed_envelope(exp.root.run, exp.tiles,
+                                               machine=machine, decision=fixed)
+        assert envelope.peak_vram_bytes <= machine.vram_bytes - pf.EXTERNAL_MARGIN_BYTES
+        results.append(f"{n}x{n}: resident exceeds allowance; tiled forecast fits")
+    return "; ".join(results)
 
 
 def test_gpuwm_go_admits_tiles_and_gates_them_before_the_download():
@@ -427,10 +350,8 @@ def test_gpuwm_go_admits_tiles_and_gates_them_before_the_download():
     * a ``[tiles]`` table no stage could honour -- an invalid mode -- is
       still REFUSED on this side of the download, as a ``GoRefusal``
       naming the table, not a traceback after a 160 MiB fetch;
-    * the one ``[tiles]`` shape the chain genuinely cannot run -- a tree
-      whose coupling edge has both ends streamed -- is refused before the
-      fetch by the core's own edge sentence, relayed at load time.  And
-      ``gpuwm go`` proper still refuses the tree as a tree first.
+    * a stationary tree preserves both requested streamed endpoints on
+      ordinary planning call, before the fetch.
     """
     import contextlib
     import io
@@ -491,33 +412,19 @@ def test_gpuwm_go_admits_tiles_and_gates_them_before_the_download():
             raise AssertionError(
                 "gpuwm go planned a config whose [tiles] table no stage can "
                 "honour; that refusal belongs before the download")
-        # THE SHAPE THAT CANNOT RUN: both ends of a coupling edge streamed.
-        # Refused at load, relayed by the door, before the fetch -- through
-        # the tree arm (run-plan's), since go proper never reaches [tiles]
-        # on a tree at all:
+        # A stationary tree may stream both endpoints; its plan retains
+        # every requested domain before any fetch takes place.
         tree_streamed = Path(tmp) / "go_tree_stream.toml"
         tree_streamed.write_text(
             tree.read_text(encoding="utf-8") + '\n[tiles]\nmode = "on"\n',
             encoding="utf-8")
-        try:
-            go_cli.plan_from_config(
-                tree_streamed, outdir=Path(tmp) / "c", allow_tree=True)
-        except go_cli.GoRefusal as error:
-            assert "BOTH ends streamed" in str(error), str(error)
-        else:
-            raise AssertionError(
-                "a tree with every coupling edge streamed was admitted; "
-                "the coupler refuses that shape at the first FORCE, after "
-                "the fetch and both preparations")
-        try:
-            go_cli.plan_from_config(tree_streamed, outdir=Path(tmp) / "d")
-        except go_cli.GoRefusal as error:
-            assert "single-domain runner" in str(error), str(error)
-        else:
-            raise AssertionError("go proper admitted a domain tree")
+        tree_plan = go_cli.plan_from_config(
+            tree_streamed, outdir=Path(tmp) / "c")
+        assert tree_plan["tiles"]["mode"] == "on"
+        assert tree_plan["tiles"]["asked"] == ["d01", "d02"]
         return ("gpuwm go plans the control silently, records the mode='on' "
                 "routing on the plan, refuses an invalid [tiles] table as a "
-                "GoRefusal, and refuses the both-ends-streamed tree -- all "
+                "GoRefusal, and preserves both-streamed tree settings -- all "
                 "before the fetch stage runs")
 
 
@@ -531,7 +438,7 @@ TESTS = [
     test_the_tree_route_streams_instead_of_refusing,
     test_the_off_receipt_is_empty,
     test_the_on_receipt_names_the_mode_and_the_decision,
-    test_the_two_vram_models_disagree_and_auto_answers_the_wrong_one,
+    test_auto_uses_the_configured_resident_admission,
 ]
 
 

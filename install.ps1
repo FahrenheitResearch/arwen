@@ -9,8 +9,9 @@
 #
 # What it does, in order (every step is re-run safe):
 #   1. finds the checkout (or clones $env:GPUWM_REPO_URL into .\gpuwm);
-#   2. creates .venv if absent and installs -e ".[gpu-cuNN,render]" into
-#      it, where NN is the CUDA major this box's driver reports (CuPy
+#   2. creates .venv if absent, installs the checkout's gpuwm-data
+#      companion, then installs -e ".[gpu-cuNN,render]" into it,
+#      where NN is the CUDA major this box's driver reports (CuPy
 #      ships one wheel per major and the wrong one dies at its first
 #      cuBLAS load); -Cuda overrides the detection, and an undetectable
 #      major is announced rather than defaulted quietly;
@@ -23,9 +24,9 @@
 #   5. builds the vendored Rust GRIB bridges offline in
 #      tools\grib1_bridge;
 #   6. builds the vendored production render engine offline in
-#      tools\rustwx (skip with -NoRender or GPUWM_INSTALL_NO_RENDER=1;
-#      `gpuwm render` falls back to matplotlib until it is built);
-#   7. finishes with `gpuwm doctor` and exits with doctor's status.
+#      tools\rustwx (skip with -NoRender or GPUWM_INSTALL_NO_RENDER=1);
+#   7. builds the terminal workspace offline in tools\arwen-tui;
+#   8. finishes with `gpuwm doctor` and exits with doctor's status.
 #
 # Environment:
 #   GPUWM_REPO_URL     clone source when run outside a checkout
@@ -159,6 +160,10 @@ if (@('12', '13') -contains "$CudaMajor") {
     Say '-Cuda 13 in that case; gpuwm doctor judges the pairing at the'
     Say 'end of this script either way.'
 }
+Say 'installing the matching gpuwm-data companion from this checkout (editable)'
+Invoke-Step 'pip install gpuwm-data' {
+    & $venvPython -m pip install -e gpuwm-data
+}
 Say "installing gpuwm with the [$gpuExtra,render] extras (editable)"
 Invoke-Step 'pip install' {
     & $venvPython -m pip install -e ".[$gpuExtra,render]"
@@ -229,7 +234,7 @@ try {
 }
 if ($NoRender) {
     Say 'skipping the tools\rustwx render engine (-NoRender);'
-    Say 'gpuwm render uses the matplotlib fallback until it is built'
+    Say 'stage it with gpuwm fetch-bridges, or request --engine matplotlib'
 } else {
     Say 'building the vendored render engine in tools\rustwx (offline,'
     Say 'locked; the long pole of install -- skip with -NoRender)'
@@ -241,6 +246,15 @@ if ($NoRender) {
     } finally {
         Pop-Location
     }
+}
+Say 'building the terminal workspace in tools\arwen-tui (offline, locked)'
+Push-Location 'tools\arwen-tui'
+try {
+    Invoke-Step 'cargo build (arwen-tui)' {
+        cargo build --release --locked --offline
+    }
+} finally {
+    Pop-Location
 }
 
 # ------------------------------------------------------------------ doctor

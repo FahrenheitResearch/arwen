@@ -131,6 +131,7 @@ __all__ = [
     "CheckpointError",
     "DomainSetup",
     "domain_physics_setup",
+    "driver_restart_header",
     "read_store_restart",
     "restart_scalars",
     "store_restart_header",
@@ -387,17 +388,8 @@ def restart_scalars(header: Mapping[str, Any]) -> dict:
     return scalars
 
 
-def store_restart_header(arrays: Mapping[str, np.ndarray],
-                         scalars: Mapping[str, Any],
-                         setup: DomainSetup, cfg, *,
-                         run_trackers=None) -> dict:
-    """Compose the v5 restart header for an out-of-core domain.
-
-    Field for field what ``restart.write_restart`` composes, from the same
-    functions, with the two domain-shaped inputs taken from ``setup``
-    instead of from a state that does not exist.  ``arrays`` is the store's
-    carrier map; only its shapes and dtypes are read here.
-    """
+def driver_restart_header(scalars: Mapping[str, Any]) -> dict | None:
+    """Encode every driver scalar carrier for either streamed writer."""
     driver_header = None
     if "call_counts" in scalars:
         driver_header = {
@@ -422,6 +414,21 @@ def store_restart_header(arrays: Mapping[str, np.ndarray],
         if "surface_radiation_policy" in scalars:
             driver_header["surface_radiation_policy"] = str(
                 scalars["surface_radiation_policy"])
+    return driver_header
+
+
+def store_restart_header(arrays: Mapping[str, np.ndarray],
+                         scalars: Mapping[str, Any],
+                         setup: DomainSetup, cfg, *,
+                         run_trackers=None) -> dict:
+    """Compose the v5 restart header for an out-of-core domain.
+
+    Field for field what ``restart.write_restart`` composes, from the same
+    functions, with the two domain-shaped inputs taken from ``setup``
+    instead of from a state that does not exist.  ``arrays`` is the store's
+    carrier map; only its shapes and dtypes are read here.
+    """
+    driver_header = driver_restart_header(scalars)
     physics_setup = setup.physics_setup
     if physics_setup is None:
         raise CheckpointError(

@@ -251,6 +251,99 @@ def test_coare_style_marine_flux_sanity(option):
     assert 6.0 < scalar("u10") < 12.0
 
 
+@pytest.mark.parametrize("option", [91, 1])
+def test_ustm_relaxes_on_the_uncorrected_wind_speed(option):
+    """WRF's second friction velocity (``module_sf_sfclay.F:799-804``,
+    ``physics_mmm/sf_sfclayrev.F90:757-763``).
+
+    ``UST`` relaxes toward ``karman*WSPD/PSIX``, and ``WSPD`` carries the
+    Beljaars/Mahrt-Sun ``vconv``/``vsgd`` additions plus a 0.1 m/s floor
+    (:502,:528-529).  ``USTM`` repeats the relaxation on ``WSPDI``, the
+    raw ``sqrt(ux*ux+vx*vx)`` (:801).  It is not a diagnostic copy of
+    ``UST``: ``vertical_diffusion_2`` and ``tke_rhs`` are handed
+    ``grid%ustm`` (``dyn_em/module_first_rk_step_part2.F:914,:1066``), so
+    an unwritten or aliased USTM is a wrong surface momentum source.
+    """
+    from gpuwm.verify.npref import np_sfclay
+
+    shape = (1, 1)
+    full = lambda value: np.full(shape, value, np.float32)
+    karman, u, v = 0.4, 5.0, 0.0
+    old_ust, old_ustm = 0.25, 0.0625        # both exact in FP32
+    out = np_sfclay(
+        full(u), full(v), full(300.0), full(0.01), full(100000.0),
+        full(40.0), full(100000.0), full(305.0), full(0.1), full(800.0),
+        full(1.0), full(1.0), option=option, qsfc=full(0.01),
+        ust=full(old_ust), ustm=full(old_ustm), mol=full(0.0),
+        hfx=full(200.0), qfx=full(1.0e-4), dx=1000.0,
+    )
+
+    psix = float(out["fm"][0, 0])
+    wspd = float(out["wspd"][0, 0])
+    wspdi = np.sqrt(u * u + v * v)
+    # A convective land column, so WSPD really did pick up vconv and the
+    # two wind speeds are different numbers.
+    assert wspd > wspdi
+    assert float(out["ust"][0, 0]) == (0.5 * old_ust
+                                       + 0.5 * karman * wspd / psix)
+    assert float(out["ustm"][0, 0]) == (0.5 * old_ustm
+                                        + 0.5 * karman * wspdi / psix)
+    assert float(out["ustm"][0, 0]) != float(out["ust"][0, 0])
+
+
+@pytest.mark.parametrize("option", [91, 1])
+def test_ustm_takes_neither_the_wind_floor_nor_the_land_floor(option):
+    """A windless land column separates the two friction velocities.
+
+    ``WSPD`` cannot fall below 0.1 m/s (``module_sf_sfclay.F:529``) and
+    ``UST`` is then floored again over land (:817-819, 0.1 classic /
+    0.001 revised).  ``WSPDI`` has neither guard, so USTM is pure
+    relaxation: exactly half its incoming value here.
+    """
+    from gpuwm.verify.npref import np_sfclay
+
+    shape = (1, 1)
+    full = lambda value: np.full(shape, value, np.float32)
+    old_ustm = 0.0625
+    out = np_sfclay(
+        full(0.0), full(0.0), full(300.0), full(0.01), full(100000.0),
+        full(40.0), full(100000.0), full(300.0), full(0.1), full(800.0),
+        full(1.0), full(1.0), option=option, qsfc=full(0.01),
+        ust=full(0.0), ustm=full(old_ustm), mol=full(0.0),
+        hfx=full(0.0), qfx=full(0.0), dx=1000.0,
+    )
+
+    assert float(out["wspd"][0, 0]) == 0.1
+    assert float(out["ustm"][0, 0]) == 0.5 * old_ustm
+    if option == 91:
+        # UST sits exactly on its land floor while USTM sits below it,
+        # which is only possible because WRF floors UST alone.
+        assert float(out["ust"][0, 0]) == 0.1
+        assert float(out["ustm"][0, 0]) < 0.1
+
+
+def test_sfclay_publishes_ustm_as_unconditional_registry_state():
+    """The producer half of the USTM path.
+
+    ``Registry.EM_COMMON:1954`` declares USTM ``ij misc 1 - r`` -- plain,
+    unconditional, restart-carried state -- and ``module_surface_driver.F``
+    passes it positionally to both MM5 schemes (:2073, :2127), so
+    ``PRESENT(USTM)`` is never false in an EM build.  ArWen's consumers read
+    ``fields["ustm"]`` (``dycore.py:970``, ``:1164``); publishing it from the
+    scheme's own output set is what makes that read a computed value instead
+    of an array nobody writes.
+    """
+    from gpuwm.core.physics_inventory import SFCLAY_OUTPUTS
+    from gpuwm.core.preflight import physics_field_names_2d
+
+    assert "ustm" in SFCLAY_OUTPUTS
+    # No km_opt / bl_pbl_physics predicate gates it.
+    assert "ustm" in physics_field_names_2d()
+    assert "ustm" in physics_field_names_2d(
+        RunConfig(**_BASE_CFG, sf_sfclay_physics=1, km_opt=1,
+                  bl_pbl_physics=1))
+
+
 @pytest.mark.gpu
 @requires_gpu
 @pytest.mark.parametrize("option", [91, 1])
@@ -283,6 +376,44 @@ def test_sfclay_kernel_matches_float64_mirror_all_regimes(option):
             scale = max(float(np.max(np.abs(ref[name]))), 1.0e-7)
             np.testing.assert_allclose(actual, ref[name], rtol=5.0e-4,
                                        atol=5.0e-5 * scale, err_msg=name)
+
+
+@pytest.mark.gpu
+@requires_gpu
+@pytest.mark.parametrize("option", [91, 1])
+def test_sfclay_kernel_writes_ustm_and_not_a_copy_of_ust(option):
+    """The kernel half of ``module_sf_sfclay.F:799-804``.
+
+    ``_allocate_result`` seeds ``result.ustm`` from the incoming inout
+    array, so a kernel that never wrote USTM would hand back the zeros it
+    was given -- which is exactly what ``vertical_diffusion_2`` and
+    ``tke_rhs`` read before this line existed.  The column is convective
+    land, so ``vconv`` separates the two friction velocities.
+    """
+    import cupy as cp
+
+    from gpuwm.core.sfclay import sfclay
+    from gpuwm.verify.npref import np_sfclay
+
+    shape = (1, 1)
+    host = lambda value: np.full(shape, value, np.float32)
+    args = dict(
+        u=host(5.0), v=host(0.0), t=host(300.0), qv=host(0.01),
+        p=host(100000.0), dz8w=host(40.0), psfc=host(100000.0),
+        tsk=host(305.0), znt=host(0.1), pblh=host(800.0),
+        mavail=host(1.0), xland=host(1.0))
+    inout = dict(qsfc=host(0.01), ust=host(0.25), ustm=host(0.0),
+                 mol=host(0.0), hfx=host(200.0), qfx=host(1.0e-4))
+
+    got = sfclay(*(cp.asarray(v) for v in args.values()), option=option,
+                 dx=1000.0,
+                 **{k: cp.asarray(v) for k, v in inout.items()})
+    ref = np_sfclay(*args.values(), option=option, dx=1000.0, **inout)
+
+    ustm = float(got.ustm.get()[0, 0])
+    assert ustm > 0.0                       # written, not the seeded zero
+    assert ustm != float(got.ust.get()[0, 0])
+    assert ustm == pytest.approx(float(ref["ustm"][0, 0]), rel=5.0e-4)
 
 
 @pytest.mark.gpu

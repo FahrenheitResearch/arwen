@@ -105,25 +105,11 @@ _ACK_BLOCK = re.compile(
 
 def _radiation_fully_off(tmp_path: Path, *, declared: bool,
                          name: str = "radiation_fully_off.toml") -> Path:
-    """The smoke config with BOTH radiation streams off, either way round.
+    """The smoke config with both radiation streams explicitly disabled.
 
-    Two layers refuse this physics and they answer in a fixed order.
-    :func:`gpuwm.experiment.load_experiment` runs the DECLARATION guard
-    (``gpuwm.physics_compat.radiation_off_land_surface_refusal``): a land
-    surface with no radiation scheme at all is refused unless the file
-    declares the experiment.  Only a config that gets past it exists as
-    an ``Experiment`` at all, and only then can
-    ``gpuwm.hrrr_route_inputs.validate_route_physics`` answer the second,
-    separate question -- whether the HRRR run route ADMITS the pair.
-
-    ``declared=True`` is therefore what a test of the ROUTE layer needs:
-    the arm carries the tokens, loads, and is refused by the route for
-    the route's own reason.  ``declared=False`` strips the declaration so
-    the arm never reaches the route at all, which is the load-layer pin
-    (:func:`test_a_token_less_radiation_off_config_is_refused_at_load`).
-
-    The tokens are read from the guards that own them, so a rename moves
-    these fixtures with it.
+    The shared land-surface declaration check still applies. Once declared,
+    a configuration uses the common runtime checks without a source pair list.
+    Tokens are read from their owning guards.
     """
 
     from gpuwm.physics_compat import (CONSTANT_DOWNWARD_LONGWAVE_ACK,
@@ -141,7 +127,7 @@ def _radiation_fully_off(tmp_path: Path, *, declared: bool,
             f"# JUSTIFY {CONSTANT_DOWNWARD_LONGWAVE_ACK}: a test arm, never "
             f"a forecast.\n"
             f"# JUSTIFY {RADIATION_OFF_LAND_SURFACE_ACK}: this arm exists to "
-            f"be refused by the RUN ROUTE, so it has to load first.  Both "
+            f"exercise the radiation-off runtime selection. Both "
             f"streams off under Noah is two claims and takes two tokens.\n"
             f'acknowledgements = ["{CONSTANT_DOWNWARD_LONGWAVE_ACK}", '
             f'"{RADIATION_OFF_LAND_SURFACE_ACK}"]\n')
@@ -272,15 +258,8 @@ def test_the_l4_arm_resolves_the_ysu_profile_unchanged(tmp_path):
         receipt, "hrrr.root_preparation.profile")["detail"]
 
 
-def test_route_refuses_a_pbl_outside_the_registered_admission(tmp_path):
-    """The reverse control: admission is enumerated, not widened.
-
-    MYNN (5) is implemented, shipped, and carries its own single-domain
-    profiles -- and those profiles are not route-compatible suites, so
-    no registered profile pins ``bl_pbl_physics = 5`` on this route and
-    all three gates still refuse it by name.  "The route admits 11 now"
-    would have made this config run.
-    """
+def test_route_accepts_implemented_pbl_without_profile_membership(tmp_path):
+    """Implemented MYNN settings do not require a matching source preset."""
 
     from gpuwm.experiment import load_experiment
     from gpuwm.hrrr_route_inputs import (HrrrRouteInputError,
@@ -293,61 +272,19 @@ def test_route_refuses_a_pbl_outside_the_registered_admission(tmp_path):
                                    "bl_pbl_physics = 5"),
                       encoding="utf-8")
 
-    with pytest.raises(HrrrRouteInputError, match=r"bl_pbl_physics=5"):
-        validate_route_physics(load_experiment(config))
-
+    validate_route_physics(load_experiment(config))
     receipt = _receipt(config)
-    assert receipt["status"] == "REFUSED"
-    assert set(receipt["refusing_gates"]) == {
-        "hrrr.route_inputs.physics",
-        "hrrr.root_preparation.profile",
-        "hrrr.hierarchy.slice",
-    }
-    assert "bl_pbl_physics=5" in _gate(
-        receipt, "hrrr.hierarchy.slice")["detail"]
+    assert _gate(receipt, "hrrr.route_inputs.physics")["status"] == "ADMITS"
+    assert _gate(receipt, "hrrr.root_preparation.profile")["status"] == "ADMITS"
+    assert _gate(receipt, "hrrr.hierarchy.slice")["status"] == "ADMITS"
 
 
-def test_the_admitted_pbl_set_is_what_registered_profiles_pin():
-    """The admission is keyed to the registry, not to an opinion.
-
-    Both gates carry an enumerated set rather than a single pinned
-    value, and the enumeration is only legitimate because a registered
-    HRRR preparation profile pins each member: a value nothing can
-    prepare a root for would be a gate that admits what the next stage
-    refuses.  This recomputes the set from the shipped profile table --
-    every profile whose OTHER route-pinned switches the route already
-    admits -- and requires the two gates to agree with it and with each
-    other.
-    """
-
-    from gpuwm.hrrr_hierarchy_direct import _ADMITTED_PBL_PHYSICS
-    from gpuwm.hrrr_route_inputs import (ADMITTED_PBL_PHYSICS,
-                                         ADMITTED_RADIATION_PAIRS,
-                                         REQUIRED_PHYSICS,
-                                         SUPPORTED_MICROPHYSICS)
-    from gpuwm.physics_compat import (SINGLE_DOMAIN_PHYSICS_PROFILES,
-                                      single_domain_runtime_switches)
-
-    pinned: dict[str, int] = {}
-    for profile in SINGLE_DOMAIN_PHYSICS_PROFILES:
-        row = single_domain_runtime_switches(profile)
-        if any(row[switch] != value
-               for switch, value in REQUIRED_PHYSICS.items()):
-            continue
-        if (row["ra_lw_physics"],
-                row["ra_sw_physics"]) not in ADMITTED_RADIATION_PAIRS:
-            continue
-        if row["mp_physics"] not in SUPPORTED_MICROPHYSICS:
-            continue
-        pinned[profile] = row["bl_pbl_physics"]
-
-    assert set(pinned.values()) == set(ADMITTED_PBL_PHYSICS)
-    assert _ADMITTED_PBL_PHYSICS == ADMITTED_PBL_PHYSICS
-    assert pinned["thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1"] == 11
-    assert pinned["thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1"] == 1
-    # MYNN is shipped and its profiles are not route-compatible suites,
-    # which is why 5 is not in the admission.
-    assert 5 not in ADMITTED_PBL_PHYSICS
+def test_native_source_does_not_gate_pbl_on_registered_profile_membership():
+    from gpuwm.hrrr_route_inputs import route_physics_problems
+    from gpuwm.physics_compat import WSM6_PROFILE_ID, single_domain_runtime_switches
+    switches = single_domain_runtime_switches(WSM6_PROFILE_ID)
+    for pbl in (0, 1, 5, 11):
+        assert route_physics_problems(dict(switches, bl_pbl_physics=pbl)) == []
 
 
 def test_the_registered_gray_zone_pair_differs_in_one_switch():
@@ -379,18 +316,8 @@ def test_the_registered_gray_zone_pair_differs_in_one_switch():
         "the candidate label must name the receipt that upgrades it")
 
 
-def test_route_refuses_a_radiation_pair_outside_the_admitted_set(tmp_path):
-    """The pair gate admits exactly {(0, 1), (4, 4)} -- a schema-valid
-    pair outside that set is refused at emission with the pair named,
-    which keeps the widening bounded to the two compositions the motion
-    costed.  (A MIXED 4/1 pair never reaches this gate at all: the
-    experiment schema's coupled-adapter rule refuses it first.)
-
-    The arm is DECLARED because this is a test of the route layer: the
-    load-time declaration guard governs what a config may say and would
-    otherwise answer first, which is a different refusal and is pinned
-    separately by
-    :func:`test_a_token_less_radiation_off_config_is_refused_at_load`."""
+def test_route_accepts_declared_radiation_off(tmp_path):
+    """The native source accepts an explicitly declared radiation-off selection."""
 
     from gpuwm.experiment import load_experiment
     from gpuwm.hrrr_route_inputs import (HrrrRouteInputError,
@@ -398,8 +325,7 @@ def test_route_refuses_a_radiation_pair_outside_the_admitted_set(tmp_path):
 
     config = _radiation_fully_off(tmp_path, declared=True)
     exp = load_experiment(config)
-    with pytest.raises(HrrrRouteInputError, match=r"\(0, 0\)"):
-        validate_route_physics(exp)
+    validate_route_physics(exp)
 
 
 def test_preflight_names_the_single_domain_runner_before_a_node_is_booked():
@@ -459,16 +385,12 @@ def test_preflight_names_the_tree_runner_for_a_real_tree():
 
 
 def test_preflight_cli_exit_status_follows_the_verdict(tmp_path):
-    # Both battery configs are ADMITTED since the four-item route motion
-    # landed; the refused leg uses a schema-valid radiation pair the
-    # route does not admit, derived from the smoke config.  It is a
-    # DECLARED arm so that the CLI reaches a VERDICT: a config the
-    # load-time guard refuses never becomes a receipt at all and exits 2
-    # as a config error, which is the sibling pin below.
+    # Valid configurations earn route receipts; missing required physical
+    # declarations remain configuration errors before a receipt is formed.
     admitted = tmp_path / "admitted.json"
     faithful = tmp_path / "faithful.json"
     refused = tmp_path / "refused.json"
-    refused_config = _radiation_fully_off(tmp_path, declared=True)
+    refused_config = _radiation_fully_off(tmp_path, declared=False)
     assert preflight.main([
         "--experiment-config", str(SIZING_SMOKE),
         "--receipt", str(admitted), "--quiet"]) == 0
@@ -477,30 +399,16 @@ def test_preflight_cli_exit_status_follows_the_verdict(tmp_path):
         "--receipt", str(faithful), "--quiet"]) == 0
     assert preflight.main([
         "--experiment-config", str(refused_config),
-        "--receipt", str(refused), "--quiet"]) == 1
+        "--receipt", str(refused), "--quiet"]) == 2
     assert json.loads(admitted.read_text())["status"] == "ADMITTED"
     assert json.loads(faithful.read_text())["status"] == "ADMITTED"
-    assert json.loads(refused.read_text())["status"] == "REFUSED"
+    assert not refused.exists()  # malformed/undeclared config never earns a route receipt
 
 
 def test_a_token_less_radiation_off_config_is_refused_at_load(tmp_path):
-    """The two refusal layers, in the order they answer.
+    """Missing physical-experiment declarations fail configuration loading.
 
-    FIRST the declaration guard, at
-    :func:`gpuwm.experiment.load_experiment`: it governs WHAT A CONFIG
-    MAY DECLARE, and a land surface with both radiation streams off is
-    not a thing a file may say by accident.  SECOND the route admission
-    gate, ``gpuwm.hrrr_route_inputs.validate_route_physics``: it governs
-    WHAT THE ROUTE ADMITS, and it can only ever see a config that got
-    past the first layer.  The two tests directly above hold the second
-    layer; this one holds the first, and the pair is what keeps either
-    from being quietly satisfied by the other.
-
-    The consequence a caller sees is the exit code, and the two are not
-    the same answer.  A token-less config is a CONFIG ERROR: the loader
-    raised, the preflight never formed a verdict, it exits 2 and writes
-    no receipt.  A declared config that the route refuses is a VERDICT:
-    exit 1, with a REFUSED receipt on disk saying which gate said so.
+    No route verdict or receipt exists when the shared loader refuses the file.
     """
 
     from gpuwm.experiment import load_experiment
@@ -894,25 +802,17 @@ def test_launch_script_survives_a_pre_existing_tmux_server(tmp_path):
     assert "echo 127 > exit.code" in script
 
 
-def test_node_plan_refuses_a_suite_the_run_route_refuses(tmp_path):
-    """A physics the ArWen arm cannot run must not reach a node either.
-
-    The arm is DECLARED so the config loads and the refusal on test is
-    the ROUTE's own, which is what this test is named for; the load-time
-    declaration guard is held by
-    :func:`test_a_token_less_radiation_off_config_is_refused_at_load`.
-    """
+def test_node_plan_accepts_declared_radiation_off(tmp_path):
+    """Node planning accepts the same declared configuration as the runtime."""
 
     from gpuwm.hrrr_route_inputs import HrrrRouteInputError
 
     config = _radiation_fully_off(tmp_path, declared=True)
     outdir = tmp_path / "node"
-    with pytest.raises(HrrrRouteInputError, match="ra_sw_physics"):
-        node_plan.build(config, outdir, ranks=24,
-                        repository_root=REPOSITORY_ROOT)
+    node_plan.build(config, outdir, ranks=24, repository_root=REPOSITORY_ROOT)
     assert node_plan.main([
         "--experiment-config", str(config),
-        "--outdir", str(tmp_path / "cli")]) == 1
+        "--outdir", str(tmp_path / "cli")]) == 0
 
 
 def test_node_plan_prices_the_arms_from_the_committed_speed_anchor(tmp_path):

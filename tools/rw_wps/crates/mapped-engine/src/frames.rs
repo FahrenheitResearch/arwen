@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 
 use crate::array;
 use crate::assemble::DecodedCollection;
-use crate::derive::{evaluate_derivation, CanonicalField};
+use crate::derive::{derivation_dependencies, evaluate_derivation, CanonicalField};
 use crate::model::{Mapping, GRID_FAMILY_LAMBERT, PROJECTED_AXIS_UNIT_M};
 use crate::refusal::{frame_invalid, mapping_invalid, Result};
 
@@ -348,8 +348,8 @@ pub fn require_one_inventory(inventories: &BTreeSet<Vec<String>>) -> Result<()> 
 
 /// The whole series at once -- `inspect` and the goldens want this.
 ///
-/// A frameset WRITE does not: see `write_frameset`, which materializes
-/// one valid time, writes it, and drops it.
+/// A frameset WRITE does not: see `write_frameset`, which pulls one
+/// decoded time and materializes its canonical fields on demand.
 pub fn materialize_frames(
     mapping: &Mapping,
     collection: &DecodedCollection,
@@ -433,6 +433,34 @@ fn validate_frame_axes(collection: &DecodedCollection, fields: &[CanonicalField]
     Ok(())
 }
 
+/// One canonical descriptor, shared by the whole-frame oracle and the
+/// field writer. Its digest always covers the full original field.
+fn field_descriptor(field: &CanonicalField, time: &Value, digest: &str) -> Value {
+    json!({
+        "canonical_name": field.name,
+        "units": field.units,
+        "dimensions": field.axes,
+        "grid_location": field.location,
+        "vertical_coordinate": if field.axes.iter().any(|axis| axis == "vertical") {
+            Value::String("atmosphere".to_owned())
+        } else if field.axes.iter().any(|axis| axis == "soil") {
+            Value::String("soil".to_owned())
+        } else {
+            Value::Null
+        },
+        "time": time,
+        "data_reference": format!("sha256:{digest}"),
+        "dtype": "<f8",
+        "shape": field.values.shape(),
+        "missing_value_policy": if field.missing_count > 0 {
+            "explicit_missing"
+        } else {
+            "reject_nonfinite"
+        },
+        "source_field": field.source_references.join(";"),
+    })
+}
+
 /// `mapped_source._frame_header`.
 fn frame_header(
     mapping: &Mapping,
@@ -510,32 +538,7 @@ fn frame_header(
         use rayon::prelude::*;
         fields.par_iter().map(|field| {
             let flat = array::contiguous(&field.values);
-            json!({
-                "canonical_name": field.name,
-                "units": field.units,
-                "dimensions": field.axes,
-                "grid_location": field.location,
-                "vertical_coordinate": if field.axes.iter().any(|axis| axis == "vertical") {
-                    Value::String("atmosphere".to_owned())
-                } else if field.axes.iter().any(|axis| axis == "soil") {
-                    Value::String("soil".to_owned())
-                } else {
-                    Value::Null
-                },
-                "time": time,
-                "data_reference": format!(
-                    "sha256:{}",
-                    crate::digest::array_sha256(field.values.shape(), &flat)
-                ),
-                "dtype": "<f8",
-                "shape": field.values.shape(),
-                "missing_value_policy": if field.missing_count > 0 {
-                    "explicit_missing"
-                } else {
-                    "reject_nonfinite"
-                },
-                "source_field": field.source_references.join(";"),
-            })
+            field_descriptor(field, &time, &crate::digest::array_sha256(field.values.shape(), &flat))
         }).collect()
     });
     let declaration = mapping.grid_declaration()?;
@@ -722,7 +725,7 @@ fn require_wrf_initial_state(header: &Value) -> Result<()> {
 /// `<f8` bytes rides beside them, so a reader can tell a grid that was
 /// re-parsed exactly from one that a JSON round trip moved by an ulp.
 /// A bare array could not: the values would still look like an axis.
-fn axis_document(values: &[f64]) -> Value {
+pub(crate) fn axis_document(values: &[f64]) -> Value {
     let mut payload = Vec::with_capacity(values.len() * 8);
     for value in values {
         payload.extend_from_slice(&value.to_le_bytes());
@@ -745,14 +748,144 @@ pub struct SeriesSummary {
     pub grid_fingerprint: String,
 }
 
+/// A field's input versions. Recording versions preserves the original
+/// fixpoint evaluator even when a direct field seeds a derived field of
+/// the same name; the later value must not become its own dependency.
+struct FieldStep {
+    name: String,
+    derivation: Option<String>,
+    dependencies: Vec<(String, usize)>,
+}
+
+/// Writer-only ownership of one decoded time. Direct arrays move out of
+/// the decoder collection on first use. Derived arrays live only until
+/// their last derivation or publication consumer; the writer never asks
+/// for a second complete canonical frame alongside the source arrays.
+struct FieldMaterializer<'a> {
+    mapping: &'a Mapping,
+    collection: DecodedCollection,
+    key: (NaiveDateTime, Option<String>),
+    steps: Vec<FieldStep>,
+    output: Vec<usize>,
+    remaining: Vec<usize>,
+    available: BTreeMap<usize, CanonicalField>,
+}
+
+impl<'a> FieldMaterializer<'a> {
+    fn new(
+        mapping: &'a Mapping,
+        collection: DecodedCollection,
+        plan: &FramePlan,
+        key: &(NaiveDateTime, Option<String>),
+    ) -> Result<Self> {
+        let mut steps = Vec::new();
+        let mut versions = BTreeMap::new();
+        // Validate every direct input, including one subsequently
+        // replaced by a derivation. Publication never hides a bad input.
+        for ((time, member, name), direct) in &collection.direct {
+            if *time != key.0 || *member != key.1 { continue; }
+            let field = mapping.field(name)?;
+            field.units_target()?;
+            field.location()?;
+            CanonicalField::validate_values(name, &direct.axes, &direct.values, direct.missing_count)?;
+            versions.insert(name.clone(), steps.len());
+            steps.push(FieldStep { name: name.clone(), derivation: None, dependencies: Vec::new() });
+        }
+        let mut pending: BTreeSet<String> = mapping.fields()?.into_iter()
+            .filter(|field| field.derivation().is_some()).map(|field| field.name.clone()).collect();
+        while !pending.is_empty() {
+            let mut progress = false;
+            for name in pending.clone() {
+                let field = mapping.field(&name)?;
+                let derivation = field.derivation().expect("pending entries are derived");
+                let operation = mapping.derivation(derivation).ok_or_else(|| mapping_invalid(format!(
+                    "field {name} names unknown derivation '{derivation}'")))?;
+                let Some(dependencies) = derivation_dependencies(operation, mapping.vertical()?, &name)?
+                    else { continue; };
+                if dependencies.iter().any(|name| !versions.contains_key(name)) { continue; }
+                let dependencies = dependencies.into_iter().map(|name| {
+                    let version = versions[&name];
+                    (name, version)
+                }).collect();
+                versions.insert(name.clone(), steps.len());
+                steps.push(FieldStep { name: name.clone(), derivation: Some(derivation.to_owned()), dependencies });
+                pending.remove(&name);
+                progress = true;
+            }
+            if !progress {
+                return Err(frame_invalid(format!(
+                    "derived fields have missing dependencies or a cycle: {}",
+                    pending.iter().cloned().collect::<Vec<_>>().join(", "))));
+            }
+        }
+        let missing: Vec<&String> = plan.required_names.iter()
+            .filter(|name| !versions.contains_key(*name)).collect();
+        if !missing.is_empty() {
+            return Err(frame_invalid(format!(
+                "mapped frame at {} lacks required fields {}", key.0,
+                crate::refusal::python_list_repr(&missing))));
+        }
+        let output: Vec<usize> = plan.declared_names.iter()
+            .filter_map(|name| versions.get(name).copied()).collect();
+        let mut remaining = vec![0; steps.len()];
+        for step in &steps {
+            for (_, dependency) in &step.dependencies { remaining[*dependency] += 1; }
+        }
+        for id in &output { remaining[*id] += 1; }
+        Ok(Self { mapping, collection, key: key.clone(), steps, output, remaining,
+                  available: BTreeMap::new() })
+    }
+
+    fn names(&self) -> Vec<String> {
+        self.output.iter().map(|id| self.steps[*id].name.clone()).collect()
+    }
+
+    fn materialize(&mut self, id: usize) -> Result<()> {
+        if self.available.contains_key(&id) { return Ok(()); }
+        let name = self.steps[id].name.clone();
+        let dependencies = self.steps[id].dependencies.clone();
+        for (_, dependency) in &dependencies { self.materialize(*dependency)?; }
+        let field = self.mapping.field(&name)?;
+        let result = if let Some(derivation) = &self.steps[id].derivation {
+            let operands: BTreeMap<String, &CanonicalField> = dependencies.iter()
+                .map(|(name, dependency)| (name.clone(), &self.available[dependency])).collect();
+            let operation = self.mapping.derivation(derivation).expect("planned derivation exists");
+            let (values, axes, source_references) = evaluate_derivation(
+                operation, &operands, &self.collection, &field, &name, self.mapping.vertical()?)?
+                .ok_or_else(|| frame_invalid(format!("planned derivation {name} lost its dependencies")))?;
+            let missing_count = array::count_nan(&values);
+            CanonicalField { name: name.clone(), units: field.units_target()?.to_owned(),
+                axes, location: field.location()?.to_owned(), staggering: field.staggering().to_owned(),
+                values, missing_count, source_references }.validated()?
+        } else {
+            let direct = self.collection.direct.remove(&(self.key.0, self.key.1.clone(), name.clone()))
+                .expect("planned direct field is moved exactly once");
+            // Its complete values were validated before planning.
+            CanonicalField { name: name.clone(), units: field.units_target()?.to_owned(),
+                axes: direct.axes, location: field.location()?.to_owned(),
+                staggering: field.staggering().to_owned(), values: direct.values,
+                missing_count: direct.missing_count, source_references: direct.references }
+        };
+        self.available.insert(id, result);
+        for (_, dependency) in dependencies { self.consume(dependency); }
+        Ok(())
+    }
+
+    fn consume(&mut self, id: usize) {
+        self.remaining[id] -= 1;
+        if self.remaining[id] == 0 { self.available.remove(&id); }
+    }
+}
+
 /// Write `frames.json` + `frames.f64` into `directory`, PULLING one valid
 /// time at a time from `slice`.
 ///
 /// The writer never sees the whole series.  `slice` is handed one
 /// `(valid_time, member)` key at a time, in the order the frameset writes
-/// them, and returns a collection carrying THAT key alone; the frame is
-/// materialized from it, written, and both are dropped before the next
-/// key is asked for.  Named breakage, measured on real RRFS bytes (3 km
+/// them, and returns a collection carrying THAT key alone; each field is
+/// materialized, written, and released after its final consumer. The
+/// decoded time is dropped before the next key is asked for. Named
+/// breakage, measured on real RRFS bytes (3 km
 /// CONUS, 45 pressure levels): a writer handed the assembled series held
 /// every valid time's arrays at once, so a seven-time preparation needed
 /// about 65 GiB of host memory and was killed by the OOM reaper on
@@ -764,6 +897,17 @@ pub fn write_frameset(
     mapping: &Mapping,
     series: &SeriesSummary,
     input_sha256: &BTreeMap<String, String>,
+    slice: impl FnMut(&(NaiveDateTime, Option<String>)) -> Result<DecodedCollection>,
+) -> Result<Value> {
+    write_frameset_with_window(directory, mapping, series, input_sha256, false, slice)
+}
+
+pub fn write_frameset_with_window(
+    directory: &std::path::Path,
+    mapping: &Mapping,
+    series: &SeriesSummary,
+    input_sha256: &BTreeMap<String, String>,
+    request_windows: bool,
     mut slice: impl FnMut(&(NaiveDateTime, Option<String>)) -> Result<DecodedCollection>,
 ) -> Result<Value> {
     let plan = plan_frames(mapping, &series.source_cycles)?;
@@ -788,38 +932,89 @@ pub fn write_frameset(
     // re-reading the file: a real frameset is multi-gigabyte.
     let mut stream_digest = <sha2::Sha256 as sha2::Digest>::new();
     let mut frame_documents = Vec::with_capacity(plan.keys.len());
+    let mut windowed = false;
     for key in &plan.keys {
         let (valid_time, member) = key;
-        // ONE valid time, pulled, materialized, written and dropped
-        // before the next key is asked for.
+        // ONE valid time, with canonical fields pulled on demand and
+        // released after their final consumer. Source decoder residency
+        // is separate; this removes the duplicate complete frame.
         let collection = slice(key)?;
-        let collection = &collection;
-        let frame = materialize_frame(mapping, collection, &plan, *valid_time, member)?;
-        let frame = &frame;
-        inventories.insert(frame.fields.iter().map(|f| f.name.clone()).collect());
-        // Every field's array digest for this frame, computed
-        // CONCURRENTLY and consumed by position below.  The digests are
-        // independent of the stream layout -- each covers one field's
-        // own dtype, shape and bytes -- so they can be taken before a
-        // byte is written, while the WRITE stays strictly sequential
-        // because the offsets are cumulative and the whole-stream digest
-        // is order-dependent.
-        let field_digests: Vec<String> = crate::threads::install(|| {
-            use rayon::prelude::*;
-            frame
-                .fields
-                .par_iter()
-                .map(|field| {
-                    crate::digest::array_sha256(
-                        field.values.shape(),
-                        &array::contiguous(&field.values),
-                    )
-                })
-                .collect()
+        validate_frame_axes(&collection, &[])?;
+        let source_cycle = collection.source_cycles[key];
+        let mut header = frame_header(mapping, *valid_time, source_cycle, &collection, &[])?;
+        let mut fields = FieldMaterializer::new(mapping, collection, &plan, key)?;
+        let names = fields.names();
+        let soil_count = mapping.soil_layer_count()?.filter(|count| *count > 0);
+        if soil_count.is_some() {
+            for name in ["soil_temperature", "volumetric_soil_moisture"] {
+                if !names.iter().any(|field| field == name) {
+                    return Err(frame_invalid(format!("mapped frame at {valid_time} lacks {name}")));
+                }
+            }
+        }
+        let window = if request_windows {
+            crate::window::request_for_source(&fields.collection.latitude, &fields.collection.longitude,
+                &header["grid"], &names, frame_documents.len(), &series.grid_fingerprint)?
+        } else { None };
+        windowed |= window.is_some();
+        let mut pressure_levels = None;
+        inventories.insert(names);
+        let time = json!({
+            "reference_time": utc_isoformat(source_cycle), "valid_time": utc_isoformat(*valid_time),
+            "lead_seconds": (*valid_time - source_cycle).num_seconds(), "statistic": "instantaneous",
+            "interval_start": Value::Null, "interval_end": Value::Null, "accumulation_reset": Value::Null,
         });
-        let mut field_documents = Vec::with_capacity(frame.fields.len());
-        for (field, field_sha256) in frame.fields.iter().zip(field_digests) {
-            let flat = array::contiguous(&field.values);
+        let mut descriptors = Vec::with_capacity(fields.output.len());
+        let mut field_documents = Vec::with_capacity(fields.output.len());
+        for id in fields.output.clone() {
+            fields.materialize(id)?;
+            let field = &fields.available[&id];
+            let finite_required = plan.required_names.contains(&field.name)
+                && field.name != "soil_temperature" && field.name != "volumetric_soil_moisture";
+            if finite_required && field.values.iter().any(|value| !value.is_finite()) {
+                return Err(frame_invalid(format!(
+                    "required mapped field {} is not finite at {valid_time}", field.name)));
+            }
+            if let Some(soil_count) = soil_count {
+                if ["soil_temperature", "volumetric_soil_moisture"].contains(&field.name.as_str()) {
+                    let axis = field.axes.iter().position(|axis| axis == "soil")
+                        .ok_or_else(|| frame_invalid(format!("{} has no soil axis", field.name)))?;
+                    let observed = field.values.shape()[axis] as i64;
+                    if observed != soil_count {
+                        return Err(frame_invalid(format!(
+                            "{} has {observed} layers, target declares {soil_count}", field.name)));
+                    }
+                }
+            }
+            validate_frame_axes(&fields.collection, std::slice::from_ref(field))?;
+            if let Some(window) = &window { window.validate_field(field)?; }
+            let original_flat = array::contiguous(&field.values);
+            // Hash once over the complete source. The same digest enters
+            // the original canonical header and the field descriptor.
+            let field_sha256 = crate::digest::array_sha256(field.values.shape(), &original_flat);
+            descriptors.push(field_descriptor(field, &time, &field_sha256));
+            if header["vertical_coordinates"].get("soil").is_none() {
+                if let Some(axis) = field.axes.iter().position(|axis| axis == "soil") {
+                    header["vertical_coordinates"]["soil"] = json!({
+                        "coordinate": "soil_depth", "level_count": field.values.shape()[axis],
+                        "level_values": Vec::<f64>::new(), "a_coefficients": Vec::<f64>::new(),
+                        "b_coefficients": Vec::<f64>::new(), "positive": "down", "units": "index",
+                    });
+                }
+            }
+            let retained = window.as_ref().filter(|w| w.fields.contains(&field.name));
+            let shape = retained.map_or_else(|| field.values.shape().to_vec(),
+                |w| w.shape(field.values.shape()[0]).to_vec());
+            let flat = if let Some(w) = retained {
+                if field.name == "air_pressure" {
+                    pressure_levels = Some(crate::window::pressure_levels(
+                        &original_flat, w.source_shape[0] * w.source_shape[1])?);
+                }
+                std::borrow::Cow::Owned(w.crop(&original_flat, shape[0]))
+            } else { original_flat };
+            let payload_digest = if retained.is_some() {
+                crate::digest::array_sha256(&shape, &flat)
+            } else { field_sha256.clone() };
             let length = (flat.len() * 8) as u64;
             // Encoded, digested into the whole-stream hash, and
             // written through a FIXED buffer, a chunk at a time.  One
@@ -828,7 +1023,7 @@ pub fn write_frameset(
             // double the peak of every decode this seam exists to make
             // cheaper -- the same reason the reader streams its hash
             // instead of reading the stream whole.  The field's OWN
-            // digest was taken above, off this thread.
+            // digest was taken above from the full original values.
             let mut chunk: Vec<u8> = Vec::with_capacity(STREAM_CHUNK * 8);
             for values in flat.chunks(STREAM_CHUNK) {
                 chunk.clear();
@@ -842,43 +1037,63 @@ pub fn write_frameset(
                     ))
                 })?;
             }
-            field_documents.push(json!({
+            let mut field_document = json!({
                 "name": field.name,
                 "units": field.units,
                 "axes": field.axes,
                 "location": field.location,
                 "staggering": field.staggering,
-                "shape": field.values.shape(),
+                "shape": shape,
                 "dtype": "<f8",
                 "offset": offset,
                 "length": length,
-                "sha256": field_sha256,
-                "missing_count": field.missing_count,
+                "sha256": payload_digest,
+                "missing_count": if retained.is_some() {
+                    flat.iter().filter(|v| v.is_nan()).count()
+                } else { field.missing_count },
                 "source_references": field.source_references,
-            }));
+            });
+            if retained.is_some() {
+                field_document["original"] = json!({
+                    "shape": field.values.shape(), "sha256": field_sha256,
+                    "missing_count": field.missing_count,
+                    "validation": "complete-canonical-field-before-window-v1",
+                });
+            }
+            field_documents.push(field_document);
             offset += length;
+            fields.consume(id);
         }
+        header["fields"] = Value::Array(descriptors);
+        require_wrf_initial_state(&header)?;
         // Every MappedSourceFrame scalar rides the frame, not the
         // document: the reader rebuilds one dataclass per entry and
         // re-runs its validators, and a frame that had to borrow its
         // mapping digest, its input digests or its grid fingerprint
         // from an enclosing object could be replayed under a different
         // decode's provenance without anything noticing.
-        frame_documents.push(json!({
-            "valid_time": naive_isoformat(frame.valid_time),
-            "member": frame.member,
-            "source_cycle": naive_isoformat(frame.source_cycle),
-            "latitude": axis_document(&frame.latitude),
-            "longitude": axis_document(&frame.longitude),
-            "vertical_kind": frame.vertical_kind,
-            "vertical_units": frame.vertical_units,
-            "vertical_values": axis_document(&frame.vertical_values),
+        let mut frame_document = json!({
+            "valid_time": naive_isoformat(*valid_time),
+            "member": member,
+            "source_cycle": naive_isoformat(source_cycle),
+            "latitude": axis_document(&fields.collection.latitude),
+            "longitude": axis_document(&fields.collection.longitude),
+            "vertical_kind": mapping.vertical()?.get("kind").and_then(crate::node::Node::as_str).unwrap_or_default(),
+            "vertical_units": mapping.vertical()?.get("units").and_then(crate::node::Node::as_str).unwrap_or_default(),
+            "vertical_values": axis_document(&fields.collection.vertical_values),
             "grid_fingerprint": series.grid_fingerprint,
             "mapping_sha256": mapping.sha256,
             "input_sha256": input_sha256,
             "fields": field_documents,
-            "header": frame.header,
-        }));
+            "header": header,
+        });
+        if let Some(w) = window {
+            frame_document["atmospheric_window"] = w.document();
+            if let Some(levels) = pressure_levels {
+                frame_document["original_pressure_hpa"] = axis_document(&levels);
+            }
+        }
+        frame_documents.push(frame_document);
     }
     // Checked once the whole series has been written, from the names
     // alone.  The frameset is scratch until the caller reads it back,
@@ -889,7 +1104,7 @@ pub fn write_frameset(
         crate::refusal::missing_input(format!("cannot flush the frame stream: {error}"))
     })?;
     let document = json!({
-        "schema": crate::FRAMESET_SCHEMA,
+        "schema": if windowed { crate::window::FRAMESET_SCHEMA } else { crate::FRAMESET_SCHEMA },
         "engine": {"name": crate::ENGINE_NAME, "version": crate::ENGINE_VERSION},
         // One object, not a bare name beside a loose byte count: the
         // reader verifies path, size and whole-stream digest together
@@ -921,6 +1136,117 @@ pub fn write_frameset(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn chain_fixture(self_seed: bool) -> (Mapping, DecodedCollection, FramePlan) {
+        let source = json!({"units": {"source": "1", "target": "1"}, "location": "mass",
+            "source_axes": ["y", "x"], "target_axes": ["y", "x"]});
+        let mut middle = source.clone();
+        middle["derivation"] = json!("double");
+        middle["units"]["scale"] = json!(2.0);
+        let mut output = source.clone();
+        output["derivation"] = json!("triple");
+        output["units"]["scale"] = json!(3.0);
+        let fields = if self_seed { json!({"source": middle}) }
+            else { json!({"source": source, "middle": middle, "output": output}) };
+        let document = json!({"coordinates": {"vertical": {"kind": "pressure", "units": "Pa"}},
+            "fields": fields, "derivations": [
+                {"name": "double", "operation": "copy", "source": "source"},
+                {"name": "triple", "operation": "copy", "source": "middle"}]});
+        let payload = serde_json::to_vec(&document).unwrap();
+        let mapping = Mapping { doc: crate::node::Node::parse(&payload).unwrap(),
+            sha256: crate::digest::bytes_sha256(&payload), path: "<field-stream-test>".to_owned() };
+        let valid_time = NaiveDateTime::parse_from_str("2026-08-17 06:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        let direct = crate::assemble::DirectValue { name: "source".to_owned(), valid_time,
+            member: None, source_cycle: valid_time, axes: vec!["y".to_owned(), "x".to_owned()],
+            values: ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&[2, 2]), vec![1., 2., 3., 4.]).unwrap(),
+            missing_count: 0, references: vec!["@source".to_owned()] };
+        let collection = DecodedCollection { latitude: vec![1., 2.], longitude: vec![3., 4.],
+            vertical_values: vec![100000.], direct: BTreeMap::from([((valid_time, None, "source".to_owned()), direct)]),
+            source_cycles: BTreeMap::from([((valid_time, None), valid_time)]),
+            grid_fingerprint: "grid".to_owned(), hybrid_a: Vec::new(), hybrid_b: Vec::new() };
+        let plan = FramePlan { keys: vec![(valid_time, None)],
+            declared_names: if self_seed { vec!["source".to_owned()] }
+                else { ["source", "middle", "output"].map(str::to_owned).to_vec() },
+            required_names: BTreeSet::new() };
+        (mapping, collection, plan)
+    }
+
+    #[test]
+    fn field_writer_moves_direct_arrays_and_releases_last_consumers() {
+        let (mapping, collection, plan) = chain_fixture(false);
+        let pointer = collection.direct.values().next().unwrap().values.as_ptr();
+        let mut fields = FieldMaterializer::new(&mapping, collection, &plan, &plan.keys[0]).unwrap();
+        let ids = fields.output.clone();
+        fields.materialize(ids[0]).unwrap();
+        assert_eq!(fields.available[&ids[0]].values.as_ptr(), pointer);
+        assert!(fields.collection.direct.is_empty());
+        fields.consume(ids[0]);
+        assert!(fields.available.contains_key(&ids[0]), "the derivation still needs its source");
+        fields.materialize(ids[1]).unwrap();
+        assert!(!fields.available.contains_key(&ids[0]));
+        fields.consume(ids[1]);
+        fields.materialize(ids[2]).unwrap();
+        assert!(!fields.available.contains_key(&ids[1]));
+        assert_eq!(array::contiguous(&fields.available[&ids[2]].values).as_ref(), &[6., 12., 18., 24.]);
+        fields.consume(ids[2]);
+        assert!(fields.available.is_empty());
+        assert!(fields.remaining.iter().all(|uses| *uses == 0));
+    }
+
+    #[test]
+    fn a_direct_seed_keeps_its_version_when_derived_under_the_same_name() {
+        let (mapping, collection, plan) = chain_fixture(true);
+        let mut fields = FieldMaterializer::new(&mapping, collection, &plan, &plan.keys[0]).unwrap();
+        let id = fields.output[0];
+        fields.materialize(id).unwrap();
+        assert_eq!(array::contiguous(&fields.available[&id].values).as_ref(), &[2., 4., 6., 8.]);
+        assert_eq!(fields.available.len(), 1);
+        fields.consume(id);
+        assert!(fields.available.is_empty());
+    }
+
+    #[test]
+    fn replaced_direct_inputs_are_validated_and_unseeded_cycles_refuse() {
+        let (mapping, mut collection, plan) = chain_fixture(true);
+        collection.direct.values_mut().next().unwrap().values[[0, 0]] = f64::INFINITY;
+        let refusal = FieldMaterializer::new(&mapping, collection, &plan, &plan.keys[0]).err().unwrap();
+        assert!(refusal.message.contains("contains infinity"));
+        let (mapping, mut collection, plan) = chain_fixture(true);
+        collection.direct.clear();
+        let refusal = FieldMaterializer::new(&mapping, collection, &plan, &plan.keys[0]).err().unwrap();
+        assert!(refusal.message.contains("missing dependencies or a cycle"));
+    }
+
+    #[test]
+    fn field_writer_matches_the_complete_canonical_oracle_on_owned_netcdf_bytes() {
+        let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let golden_root = crate_root.join("tests/goldens");
+        let golden: Value = serde_json::from_slice(&std::fs::read(golden_root.join("netcdf-pressure-level.json")).unwrap()).unwrap();
+        let repository = crate_root.ancestors().nth(4).unwrap();
+        let mapping_path = repository.join(golden["mapping"].as_str().unwrap());
+        let mapping = Mapping::load(&mapping_path.display().to_string()).unwrap();
+        let inputs: Vec<String> = golden["input_names"].as_array().unwrap().iter()
+            .map(|name| golden_root.join(name.as_str().unwrap()).display().to_string()).collect();
+        let collection = crate::engine::decode_collection(&mapping, &inputs, &mut |_| {}).unwrap();
+        let oracle = materialize_frames(&mapping, &collection).unwrap();
+        let series = SeriesSummary { source_cycles: collection.source_cycles.clone(),
+            grid_fingerprint: collection.grid_fingerprint.clone() };
+        let scratch = std::env::temp_dir().join(format!("gpuwm-field-writer-oracle-{}", std::process::id()));
+        let mut remaining = collection;
+        let document = write_frameset(&scratch, &mapping, &series, &crate::engine::input_digests(&inputs).unwrap(),
+            |key| Ok(crate::engine::carve_valid_time(&mut remaining, key))).unwrap();
+        let mut expected = Vec::new();
+        for (index, frame) in oracle.iter().enumerate() {
+            assert_eq!(document["frames"][index]["header"], frame.header);
+            for field in &frame.fields {
+                for value in array::contiguous(&field.values).iter() { expected.extend_from_slice(&value.to_le_bytes()); }
+            }
+        }
+        assert_eq!(std::fs::read(scratch.join("frames.f64")).unwrap(), expected);
+        std::fs::remove_file(scratch.join("frames.f64")).unwrap();
+        std::fs::remove_file(scratch.join("frames.json")).unwrap();
+        std::fs::remove_dir(scratch).unwrap();
+    }
 
     #[test]
     fn naive_and_utc_isoformats_match_pythons_two_spellings() {

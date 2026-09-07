@@ -43,6 +43,7 @@ _HEADER = (
 #: Emission order.  ``[[domain]]`` last, matching every shipped config,
 #: because ``[shared]`` defaults have to be in scope when they are read.
 _TABLE_ORDER = ("experiment", "projection", "shared")
+_COMPANION_TABLES = ("case_data", "static", "ingest")
 
 #: Long numeric arrays (eta ladders) wrap at this many values per line.
 _ARRAY_WRAP = 5
@@ -113,7 +114,7 @@ def render_experiment_document(raw: Mapping[str, object]) -> str:
             or not domains:
         raise ExperimentDocumentError(
             "an experiment document needs at least one [[domain]] table")
-    unknown = set(tables) - set(_TABLE_ORDER)
+    unknown = set(tables) - set(_TABLE_ORDER) - set(_COMPANION_TABLES)
     if unknown:
         raise ExperimentDocumentError(
             f"unsupported experiment table(s) {sorted(unknown)}")
@@ -128,6 +129,12 @@ def render_experiment_document(raw: Mapping[str, object]) -> str:
         if not isinstance(entries, Mapping):
             raise ExperimentDocumentError(f"[{name}] must be a table")
         chunks.append(_render_table(name, entries))
+    companions = {name: tables[name] for name in _COMPANION_TABLES if name in tables}
+    if companions:
+        # The shared branching emitter already round-trips arbitrary nested
+        # tables, including static.highres and per-domain source orography.
+        from gpuwm.toml_document import emit_experiment_toml
+        chunks.append(emit_experiment_toml(companions))
     for domain in domains:
         if not isinstance(domain, Mapping):
             raise ExperimentDocumentError("[[domain]] entries must be tables")
@@ -156,7 +163,8 @@ def publish_experiment_document(
     reason -- it dates every forcing frame and is not a domain field.
     """
 
-    from gpuwm.experiment import load_experiment
+    import tomllib
+    from gpuwm.experiment import build_experiment_from_config_tables
     from gpuwm.ingest.prepared_cache import prepared_domain_config_identity
 
     target = Path(path)
@@ -167,7 +175,12 @@ def publish_experiment_document(
     with target.open("x", encoding="utf-8", newline="\n") as stream:
         stream.write(text)
     try:
-        reloaded = load_experiment(target)
+        # This is a new document, not a request to reread the incoming case.
+        # Validate the actual emitted bytes without redirecting them through
+        # a process-wide capture bound to the original source path.
+        reloaded = build_experiment_from_config_tables(
+            tomllib.loads(target.read_text(encoding="utf-8")),
+            source=str(target), base_dir=target.resolve().parent)
         expected = [prepared_domain_config_identity(domain)
                     for domain in experiment.domains]
         observed = [prepared_domain_config_identity(domain)

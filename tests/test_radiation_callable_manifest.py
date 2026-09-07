@@ -139,7 +139,9 @@ def test_every_registered_radiation_callable_is_walked_here():
 
     import gpuwm.core.physics as physics
 
-    source = inspect.getsource(physics.initialize_physics)
+    from gpuwm.core.radiation_composition import make_radiation
+    assert "make_radiation(" in inspect.getsource(physics.initialize_physics)
+    source = inspect.getsource(make_radiation)
     registered = {
         "AnalyticClearSkyRadiation": "walked above",
         "RRTMGLegacyRadiation": (
@@ -152,6 +154,8 @@ def test_every_registered_radiation_callable_is_walked_here():
             "exercised by every RTE+RRTMGP run's digest"),
         "DudhiaShortwaveRadiation": "walked above",
         "RRTMDudhiaRadiation": "walked above",
+        "RRTMLongwaveRadiation": "walked above",
+        "ComposedRadiation": "component inventory and retained ozone tested in test_radiation_composition",
     }
     constructed = {name for name in registered
                    if f"{name}(" in source}

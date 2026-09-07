@@ -806,7 +806,10 @@ _FORBIDDEN_NUMPY_TRANSCENDENTALS = (
 #: the word WRF's table carries and the word the CUDA kernel recomputes.
 _PSI_TABLE_PROBES = {
     "psim_stable": (0x80000000, 0xC161143B, 0xC19238F9),
-    "psih_stable": (0x80000000, 0xC1498947, 0xC180848C),
+    # Word 500 moved 0xC1498947 -> 0xC1498945 when the `1./1.1` exponent
+    # was folded at REAL(4) as gfortran folds it (module_sf_mynn.F:2099);
+    # words 0 and 1000 are unchanged by that constant.
+    "psih_stable": (0x80000000, 0xC1498945, 0xC180848C),
     "psim_unstable": (0x00000000, 0x4008D7AE, 0x402A252E),
     "psih_unstable": (0x00000000, 0x40457542, 0x4069F756),
 }
@@ -884,6 +887,59 @@ def test_the_psi_tables_are_the_pinned_glibc_words():
         assert tuple(int(got[i]) for i in (0, 500, 1000)) == probes, name
 
 
+def test_psih_stable_folds_one_over_one_point_one_at_real4():
+    """`1./1.1` in WRF is a REAL(4) quotient of REAL(4) literals.
+
+    ``module_sf_mynn.F:2095-2101``::
+
+        REAL function psih_stable_full(zolf)
+             REAL :: zolf
+             psih_stable_full=-5.3*log(zolf+(1+zolf**1.1)**(1./1.1))
+
+    Both literals are default REAL, and gfortran folds the quotient at the
+    operand kind, so the exponent the compiled oracle uses is
+    ``round_f32(1.0f / 1.1f) = 0x3F68BA2E``.  Evaluating ``1.0 / 1.1`` in
+    Python first computes in binary64 and rounds to ``0x3F68BA2F``, one ULP
+    high.  nvcc folds ``1.0f / 1.1f`` in single at
+    ``gpuwm/core/kernels/mynn_surface.cu:17``, so the REAL(4) word is also
+    what makes this host reference and the CUDA kernel agree.
+
+    The table is rebuilt here both ways rather than compared against a
+    recorded digest, so this asserts which of the two constants WRF's line
+    means -- not merely that the shipped words have not moved.
+    """
+
+    from gpuwm.core.noahmp_libm import logf, powf
+
+    F = np.float32
+    real4 = F(1.0) / F(1.1)               # gfortran / nvcc
+    real8 = F(1.0 / 1.1)                  # Python's binary64 quotient
+    assert int(real4.view(np.uint32)) == 0x3F68BA2E
+    assert int(real8.view(np.uint32)) == 0x3F68BA2F
+
+    def psih_stable_full(zolf, exponent):
+        """mynn_surface._psih_stable_full with the exponent as a parameter."""
+        zolf = F(zolf)
+        return F(-F(5.3) * logf(
+            zolf + powf(F(1.0) + powf(zolf, F(1.1)), exponent)))
+
+    def table(exponent):
+        return np.asarray(
+            [psih_stable_full(F(1.0) * F(n) * F(0.01), exponent)
+             for n in range(1001)], dtype=np.float32)
+
+    shipped = mynn_surface.psi_tables()[1]
+    np.testing.assert_array_equal(shipped.view(np.uint32),
+                                  table(real4).view(np.uint32))
+
+    # ... and the two exponents really do build different tables, so the
+    # equality above is a choice and not an identity.
+    residue = fp32_ulp_distance(table(real4), table(real8))
+    moved = int(np.count_nonzero(residue))
+    assert moved == 268, moved
+    assert int(residue.max()) == 3, int(residue.max())
+
+
 def test_the_psi_tables_replaced_words_numpy_actually_got_wrong():
     """The failing form of the pin above, and the size of the defect.
 
@@ -912,7 +968,11 @@ def test_the_psi_tables_replaced_words_numpy_actually_got_wrong():
     # Measured on Windows NumPy 2.2.6 / CPython 3.13.7: 364 of 4004 words,
     # worst 32 ULP in _PSIM_UNSTAB where psimk cancels near zolf = 0.  The
     # count is host-dependent (it is NumPy's error, not ours), so this
-    # asserts the defect is present and large, not its exact size.
+    # asserts the defect is present and large, not its exact size.  It rose
+    # to 811 on WSL NumPy 2.4.3 once the module folded `1./1.1` at REAL(4)
+    # and this verbatim pre-lane reconstruction kept the binary64 fold: 268
+    # of the extra words are that exponent, not NumPy.  The band still
+    # measures the same thing, so the reconstruction stays verbatim.
     assert 100 <= differing <= 1200, differing
     assert 8 <= int(residue.max()) <= 4096, int(residue.max())
 

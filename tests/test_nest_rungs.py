@@ -438,6 +438,31 @@ def test_n2c_imports_exact_frozen_boundary_blowup_predicate():
     assert record.kind == "max" and record.threshold is not None
 
 
+@pytest.mark.parametrize("interior", [
+    float("nan"), float("inf"),
+], ids=["nan-interior", "inf-interior"])
+@pytest.mark.parametrize("boundary", [1.0e9, 500.0, 40.0])
+def test_boundary_blowup_fires_when_its_own_yardstick_is_unmeasurable(
+        boundary, interior):
+    """Negative control: an unmeasurable interior must not pass the gate.
+
+    This bound normalises the child's boundary against the same run's free
+    interior, so the interior maximum IS the yardstick.  ``max(nan, 1.0)``
+    is ``nan`` and ``x > nan`` is False, so before the fix a NaN or +Inf
+    interior maximum switched the only boundary-reflection detector in the
+    nest ladder off completely: a boundary vertical velocity of 1e9 m/s
+    scored ``False`` -- did not fire -- and the gate reported PASS.
+    """
+    assert boundary_zone_blowup(boundary, interior)
+
+
+def test_boundary_blowup_still_accepts_an_ordinary_quiet_run():
+    """The added leg is monotone: nothing finite and healthy changed."""
+    for boundary, interior in ((0.0, 0.0), (3.0, 2.0), (5.0, 1.0),
+                               (10.0, 2.0), (25.0, 5.0)):
+        assert not boundary_zone_blowup(boundary, interior)
+
+
 def test_n2c_structural_verdict_is_explicit_and_missing_is_failure(tmp_path):
     statistics = {
         name: {"finite": True, "mean": 0.0, "stddev": 0.0, "rms": 0.0,

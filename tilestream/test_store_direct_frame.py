@@ -505,6 +505,101 @@ def test_store_digest_equals_the_resident_digest(scope):
     assert direct["field_order"] == resident["field_order"]
 
 
+class _StandInDriver:
+    """The three counters ``canonical_state_digest`` reads off the driver.
+
+    Its ARRAYS come from ``restart._driver_manifest``, which is the one
+    walk both roads share by name and neither road can be handed here (a
+    real ``PhysicsDriver`` needs a device); the tests below substitute
+    that call and leave everything else on the production path.
+    """
+
+    call_counts = {"radiation": 3, "microphysics": 7}
+    ysu_nan_guard_fires = 0
+    microphysics_updates = 7
+
+
+def _driver_scalars(state):
+    """``carrier_scalars``' shape for a domain that is running physics."""
+    return {"elapsed_seconds": state.elapsed_seconds,
+            "call_counts": dict(_StandInDriver.call_counts),
+            "ysu_nan_guard_fires": _StandInDriver.ysu_nan_guard_fires,
+            "microphysics_updates": _StandInDriver.microphysics_updates}
+
+
+def test_the_restart_only_driver_slot_is_in_neither_digest(monkeypatch):
+    """A member the store road CANNOT produce must not move the document.
+
+    ``restart.RESTART_ONLY_DRIVER_SLOTS`` -- today legacy RRTMG's
+    ``radiation/o33d_grid`` -- is emitted by ``restart._driver_manifest``,
+    which the resident road calls directly, and is POPPED by
+    ``physics_inventory.carrier_manifest``, which is the only way the store
+    road can be built.  So for ``ra_rrtmg_variant = "rrtmg_legacy"`` -- what
+    several shipped physics profiles select, with ``o3input`` defaulting to
+    a value that fills the field on every radiation call -- the resident
+    digest carried one member the store digest structurally could not, and
+    that moves ``array_count``, ``field_order``, ``inventory_sha256`` and
+    ``sha256``: every field of the document.  Two runs of the same case in
+    the two modes published different ``final_state_digest`` values for
+    bit-identical weather, under a module whose headline says the two "must
+    agree BIT FOR BIT".
+
+    The fixture above carries no legacy-RRTMG adapter, which is exactly why
+    the equality test above did not see this.
+
+    RED before the fix: ``legacy`` differs from both ``plain`` and
+    ``direct`` on every field.
+    """
+    from gpuwm.io import restart as restart_io
+
+    slot, = sorted(restart_io.RESTART_ONLY_DRIVER_SLOTS)
+    state, store, _ = _digest_pair()
+    state.physics = _StandInDriver()
+    scalars = _driver_scalars(state)
+    assert slot not in store, (
+        "carrier_manifest pops this slot, so no store can hold it -- if one "
+        "can, the asymmetry is on the other side and this test is wrong")
+
+    monkeypatch.setattr(restart_io, "_driver_manifest", lambda driver: {})
+    plain = canonical_state_digest(state, _Clock())
+
+    # The same domain, same weather, with the legacy adapter's o33d grid.
+    monkeypatch.setattr(restart_io, "_driver_manifest",
+                        lambda driver: {slot: _ramp((NZ, NY, NX), 21)})
+    legacy = canonical_state_digest(state, _Clock())
+
+    assert slot not in legacy["field_order"]
+    assert legacy == plain
+    assert legacy == canonical_store_digest(store, scalars, _Clock())
+
+
+def test_active_cam_owner_is_hashed_once_on_both_roads(monkeypatch):
+    from gpuwm.io import restart as restart_io
+    from tilestream.physics_inventory import streaming_inventory
+
+    state, _, _ = _digest_pair()
+    # This control is before output staging; the helper's synthetic frame
+    # stash is tested separately by the frame-inventory cases above.
+    state._scratch.pop("refl_10cm")
+    state.physics = _StandInDriver()
+    state.physics.o3rad = _ramp((NZ, NY, NX), 21)
+    # The driver walker owns this canonical key; carrier_manifest decides
+    # whether this explicit owner belongs in the actual store inventory.
+    monkeypatch.setattr(restart_io, "_driver_manifest",
+                        lambda driver: {"radiation/o33d_grid": driver.o3rad})
+    store = {key: value.copy() for key, value in streaming_inventory(state).items()}
+    scalars = _driver_scalars(state)
+    resident = canonical_state_digest(state, _Clock())
+    assert resident == canonical_store_digest(store, scalars, _Clock())
+    assert resident["field_order"].count("radiation/o33d_grid") == 1
+    state.physics.o3rad[0, 0, 0] += np.float32(1.)
+    changed = canonical_state_digest(state, _Clock())
+    assert changed["sha256"] != resident["sha256"]
+    assert changed != canonical_store_digest(store, scalars, _Clock())
+    store["radiation/o33d_grid"][0, 0, 0] += np.float32(1.)
+    assert changed == canonical_store_digest(store, scalars, _Clock())
+
+
 def test_the_carry_class_is_in_the_store_and_in_neither_digest():
     """A tracker window moves between steps and hashes in no digest.
 

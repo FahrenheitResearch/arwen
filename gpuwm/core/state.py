@@ -308,7 +308,7 @@ def refresh_model_time(state, clock, *, kernel_launch: bool = False,
     if kernel_launch:
         value = float(clock.elapsed_seconds_fp32)
     else:
-        ticks = clock.ticks + (clock.spec.step_ticks if after_step else 0)
+        ticks = clock.ticks + (clock.step_ticks if after_step else 0)
         value = ticks / clock.tick_den
     state.elapsed_seconds = value
     # The domain's own ACTIVATION EPOCH, from the same tick authority.
@@ -382,6 +382,10 @@ class DomainState:
         if xp is not np and xp is not cp:
             raise TypeError("array_module must be numpy or cupy")
         self._host_setup_state = array_module is np
+        # Analysis-producer metadata only. Once coupled snapshots are made,
+        # their immutable field inventory owns forcing through cache/restart.
+        from gpuwm.boundary_fields import external_scalar_fields
+        self._external_scalar_boundary_fields = external_scalar_fields(cfg)
         if self._host_setup_state and (scratch_arena is not None
                                        or dycore_state_workspace is not None):
             raise ValueError(
@@ -746,7 +750,9 @@ class DomainState:
         self.mu_pp = rebuilt("mu_pp", ny, nx)
         self.p_pp = rebuilt("p_pp", nz, ny, nx)
         self.p_pp_old = rebuilt("p_pp_old", nz, ny, nx)
-        self.ww_pp = rebuilt("ww_pp", nz + 1, ny, nx)
+        # advance_mu_th skips the forced outer column; sumflux still reads
+        # its held Omega''. A child must never overwrite this domain's carrier.
+        self.ww_pp = zeros(nz + 1, ny, nx)
         # Acoustic specific volume alpha'' (Task 4): diagnosed with p'' each
         # substep and consumed by advance_uv's alpha''*d(pb)/dx term, which
         # is nonzero on eta surfaces over terrain.
@@ -760,11 +766,13 @@ class DomainState:
             self.pb = zeros(nz)
             self.alb = zeros(nz)
             self.phb = zeros(nz + 1)
+            self.dphb_resid = zeros(nz)
         else:
             self.thb = zeros(nz, ny, nx)
             self.pb = zeros(nz, ny, nx)
             self.alb = zeros(nz, ny, nx)
             self.phb = zeros(nz + 1, ny, nx)
+            self.dphb_resid = zeros(nz, ny, nx)
         self.mub = DTYPE(0.0)
         self.p_top = None
 
@@ -787,6 +795,14 @@ class DomainState:
         self.c4h = zeros(nz)
         self.c3f = zeros(nz + 1)
         self.c4f = zeros(nz + 1)
+        # Full-level DROPS of the same pair, dc3f[k] = c3f[k] - c3f[k+1],
+        # differenced once in float64 by load_base.  The opt-2 EOS needs
+        # pfd - pfu, and adjacent c3f entries sit ~1/nz apart while each
+        # carries half an ulp of 1, so redoing the subtraction on the
+        # stored FP32 coefficients costs a factor 13 at nz=160 (measured
+        # 6.5e-7 -> 8.3e-6 relative in p).
+        self.dc3f = zeros(nz)
+        self.dc4f = zeros(nz)
 
         # Map-scale factors at mass/u/v points and Coriolis parameters
         # f = 2*Omega*sin(lat), e = 2*Omega*cos(lat) at mass points (Phase 3
@@ -880,7 +896,7 @@ class DomainState:
                      "c1h", "c2h", "c1f", "c2f", "c3h", "c4h", "c3f", "c4f"):
             getattr(self, name)[...] = xp.asarray(getattr(coord, name),
                                                   dtype=np.float32)
-        for name in ("thb", "pb", "alb", "phb"):
+        for name in ("thb", "pb", "alb"):
             dev = getattr(self, name)
             host = np.asarray(getattr(base, name), dtype=np.float64)
             if host.ndim != dev.ndim:
@@ -889,6 +905,13 @@ class DomainState:
                     f"allocated for {dev.ndim}-D profiles: cfg.terrain_opt "
                     "must match the terrain_z the base state was built with")
             dev[...] = xp.asarray(host, dtype=np.float32)
+        # Full-level coefficient DROPS, differenced once in float64 from
+        # the coord's own values (see the dc3f allocation).  p_top cancels
+        # out of pfd - pfu identically, so the pair needs no finalization.
+        c3f64 = np.asarray(coord.c3f, dtype=np.float64)
+        c4f64 = np.asarray(coord.c4f, dtype=np.float64)
+        self.dc3f[...] = xp.asarray(c3f64[:-1] - c3f64[1:], dtype=np.float32)
+        self.dc4f[...] = xp.asarray(c4f64[:-1] - c4f64[1:], dtype=np.float32)
         self.p_top = DTYPE(base.p_top)
         if np.ndim(base.mub) == 0:
             self.mub = DTYPE(base.mub)
@@ -901,15 +924,7 @@ class DomainState:
             self.mub2d[...] = xp.asarray(base.mub, dtype=np.float32)
         self.ht[...] = (0.0 if base.terrain_z is None
                         else xp.asarray(base.terrain_z, dtype=np.float32))
-        # Own the host geopotential backing the invariant spacing cache.
-        # BaseState is mutable, and np.asarray would alias an FP64 base.phb;
-        # a later caller mutation could then change height_half() without
-        # invalidating _dz_min.  The device load already has copy semantics,
-        # so retain the same snapshot on host as well.
-        self._phb_host = np.array(base.phb, dtype=np.float64, copy=True)
-        z_half = _height_half_from_phb(self._phb_host)
-        self._dz_min = (float(np.diff(z_half, axis=0).min())
-                        if z_half.shape[0] > 1 else None)
+        self.set_base_geopotential(base.phb)
 
         # WRF surface extrapolation weights (dyn_em module_initialize):
         # quadratic-in-eta extrapolation of half-level fields to znw[0].
@@ -923,6 +938,67 @@ class DomainState:
         if coord.dnw.size >= 1:
             self.cfn = DTYPE(1.0 + coord.fnp[-1])
             self.cfn1 = DTYPE(-coord.fnp[-1])
+
+    def set_base_geopotential(self, phb) -> None:
+        """Install the base geopotential and everything derived from it.
+
+        The sanctioned writer for ``phb``.  Besides the FP32 device copy
+        it refreshes the two caches that are functions of it: the float64
+        host snapshot behind ``height_half()``/``_dz_min``, and
+        ``dphb_resid``.
+
+        ``dphb_resid[k]`` is the float64 base layer thickness MINUS the
+        float32 subtraction ``phb[k+1] - phb[k]`` the EOS kernel performs
+        on the stored profile.  The kernel adds it back, recovering the
+        thickness to ulp(dphb) instead of ulp(phb): over a 2400 m column
+        at nz=64 that is ~368 J/kg reconstructed from two ~2.4e4 J/kg
+        numbers, so FP32 storage alone costs 5e-6 relative and the cost
+        grows as 1/dz (measured 2.1e-6 at nz=16, 2.9e-5 at nz=160 in p).
+
+        The residual spelling, rather than a stored absolute thickness,
+        is deliberate: it is what makes this cache SAFE to be stale.  A
+        caller that assigns ``state.phb[...]`` directly leaves the
+        correction describing the previous profile, and the kernel then
+        adds a <=1-ulp-of-phb number to the correct FP32 difference of
+        the profile it was actually handed -- the pre-fix answer, never a
+        wrong one.  A stored thickness would instead diagnose the OLD
+        column's alt, and so a wrong p, pressure-gradient force and
+        acoustic sound speed.  ``height_half()`` has no such protection,
+        which is the other reason the in-tree writers come through here.
+        """
+        xp = _state_array_module(self)
+        host = np.asarray(phb.get() if hasattr(phb, "get") else phb,
+                          dtype=np.float64)
+        if host.ndim != self.phb.ndim:
+            raise ValueError(
+                f"base state phb is {host.ndim}-D but the state was "
+                f"allocated for {self.phb.ndim}-D profiles: cfg.terrain_opt "
+                "must match the terrain_z the base state was built with")
+        if host.shape != self.phb.shape:
+            raise ValueError(
+                f"base state phb has shape {host.shape}, the state was "
+                f"allocated for {tuple(self.phb.shape)}: the grid this "
+                "column profile was built on is not the grid the state "
+                "holds, so nz or the horizontal extent disagree.  Writing "
+                "it would either overrun the allocation or silently "
+                "broadcast one column's geopotential across the domain, "
+                "and dphb_resid would then describe a profile no cell "
+                "has")
+        stored = np.asarray(host, dtype=np.float32)
+        self.phb[...] = xp.asarray(stored)
+        # np.diff on the float32 view is the kernel's own subtraction.
+        self.dphb_resid[...] = xp.asarray(
+            np.diff(host, axis=0) - np.diff(stored, axis=0).astype(np.float64),
+            dtype=np.float32)
+        # Own the host geopotential backing the invariant spacing cache.
+        # BaseState is mutable, and np.asarray would alias an FP64 base.phb;
+        # a later caller mutation could then change height_half() without
+        # invalidating _dz_min.  The device load already has copy semantics,
+        # so retain the same snapshot on host as well.
+        self._phb_host = np.array(host, dtype=np.float64, copy=True)
+        z_half = _height_half_from_phb(self._phb_host)
+        self._dz_min = (float(np.diff(z_half, axis=0).min())
+                        if z_half.shape[0] > 1 else None)
 
     def set_map_coriolis(self, msft=None, msfu=None, msfv=None,
                          f=None, e=None, sina=None, cosa=None) -> None:

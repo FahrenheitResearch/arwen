@@ -61,6 +61,32 @@ reproduce them, not because their proofs are optional:
       `tools/battery/always_files.txt`, so a lane now runs the specific gate
       those two cuts tripped over -- but the promotion closes one hole, not
       the class.  Stage 1 is the list that catches the next one.
+- [ ] **The private preparation leg passed before the snapshot was built.**
+      From the private preparation checkout, run the publisher and campaign
+      suites named in `work/pretag_private_files.txt`, with the battery's
+      provisioned Python environment:
+
+          $env:GPUWM_NO_LOCAL_GPU = "1"
+          $private = @(Get-Content work/pretag_private_files.txt | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith("#") })
+          if ($private.Count -ne 5) { throw "private pretag manifest changed; reconcile its named coverage" }
+          foreach ($file in $private) { if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "missing private pretag suite: $file" } }
+          python -m pytest -q -p no:cacheprovider -m "not gpu and not slow and not network" @private
+          if ($LASTEXITCODE -ne 0) { throw "private pretag leg failed" }
+
+      Require the input campaign suite's 48 self-contained CPU tests,
+      all four campaign-plan gates plus the private-manifest control, and the
+      snapshot builder's 29 controls
+      (6 front-door, 20 machine-path and 3 executable-mode tests), with no
+      failures or skips among those 82 required checks. Also report the existing
+      `test_production_wrfbdy_decodes_to_wrfinput_perimeter` result separately:
+      it uses the private registered `out/n5s-inputs` pair and is **NOT_RUN**
+      when those optional campaign inputs are absent. Do not count that skip
+      as a pass. Retain per-file counts, the named optional result and the exact
+      private source revision with the snapshot proof.
+      `tools/n5s/**`, its campaign test and the builder under `work/**` are
+      deliberately excluded from public source. Their private proof does not
+      replace Stage 1 on the committed public candidate; the public list must
+      contain only files that survive the snapshot exclusions.
 - [ ] **The publish workflow's own `test` job list, run with NO GPU extra
       installed, BEFORE the tag.**  A second item about order, for a second
       reason: stage 1 above proves the tip on the box it runs on, and that
@@ -145,6 +171,21 @@ reproduce them, not because their proofs are optional:
       `tools/rw_wps` (the mapped decode engine, which every mapped
       source runs on by default), once per published platform
       (`gpuwm.bridge_assets.SUPPORTED_PLATFORMS`).
+- [ ] Build `tools/arwen-tui` with `cargo build --release --locked --offline`
+      on both native platforms and include its target/release directory in
+      bundle packing. The terminal executable must carry the same source
+      revision stamp as the other gpuwm-owned native tools. From each clean
+      wheel installation, `gpuwm tui --snapshot terminal.html` must resolve
+      the verified installed executable and emit the terminal preview.
+- [ ] Run the real terminal journeys against the installed release executable
+      and Python environment. `tools/battery/tui_journeys.py` and its recipes
+      in `tools/battery/tui-journeys/` cover creation, a changed second forecast,
+      reopening the first configuration, native launch planning and direct
+      calendar-year selection. Retain terminal captures and worker exit
+      receipts; use `--scope installed-artifact`. These planning journeys
+      supplement the actual acquisition/preparation, forecast, restart and
+      Rust-render acceptance runs. A planning pass does not certify those
+      later stages.
 - [ ] `python tools/build_bridge_bundle.py pack --release <tag>
       --platform <platform> --search <each target/release> --out
       dist-bridges` on each of those platforms.

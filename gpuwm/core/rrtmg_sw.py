@@ -1,3 +1,26 @@
+# ======================================================================
+# THIRD-PARTY NOTICE.  Parts of this file are hand transcriptions of
+# third-party work.  ArWen distributes the file under the Apache License
+# 2.0; the notices below belong to the transcribed parts and are kept here
+# because their own licences require it.  Full texts are in the repository
+# NOTICE and in the licenses/ directory.
+#
+#   RRTMG longwave/shortwave, transcribed from WRF v4.6.1
+#   phys/module_ra_rrtmg_lw.F and phys/module_ra_rrtmg_sw.F, which carry
+#   AER's own notice seven and nine times respectively:
+#
+#       Copyright 2002-2008, Atmospheric & Environmental Research, Inc. (AER).
+#       This software may be used, copied, or redistributed as long as it is
+#       not sold and this copyright notice is reproduced on each copy made.
+#       This model is provided as is without any express or implied warranties.
+#                             (http://www.rtweb.aer.com/)
+#
+#   ArWen takes this material under AER's own current grant instead: BSD
+#   3-Clause, "Copyright (c) 2020, Atmospheric and Environmental
+#   Research", published by AER at github.com/AER-RC/RRTMG_LW and
+#   .../RRTMG_SW.  Text in licenses/LICENSE-AER-RRTMG-BSD-3-Clause.txt and
+#   beside the packaged coefficients in gpuwm/data/wrf_radiation/.
+# ======================================================================
 """Legacy RRTMG shortwave (WRF v4.6.1 ``phys/module_ra_rrtmg_sw.F``, option
 ``ra_sw_physics = 4``) - NumPy FP32 reference port, held at max_ulp 0 against
 the Fortran compiled with gfortran (kind_rb = kind(1.0), i.e. FP32).
@@ -91,7 +114,19 @@ NMOL = 7
 JPBAND = 29
 JPB1, JPB2 = 16, 29
 RRSW_SCON = F(1.36822e+03)
-MAX_RADIATION_LAYERS = 64
+# All layer arrays use caller-owned workspace; there is no fixed SW ceiling.
+MAX_RADIATION_LAYERS = None
+
+
+def _radiation_layer_count(value):
+    from operator import index
+    try:
+        count = index(value)
+    except TypeError as error:
+        raise ValueError("radiation layer count must be a positive integer") from error
+    if isinstance(value, (bool, np.bool_)) or not 0 < count <= np.iinfo(np.int32).max // NGPTSW:
+        raise ValueError("radiation layer count must be positive and fit the CUDA int32 layer/g-point index")
+    return count
 
 NG_BAND = (16,) * 14                                   # ng(16:29)
 NSPA = (9, 9, 9, 9, 1, 9, 9, 1, 9, 1, 0, 1, 9, 1)      # nspa(16:29)
@@ -2454,7 +2489,7 @@ def earth_sun(idn):
         "no verified FP32 sinf/cosf transcription is provided")
 
 
-def option4_trace_gases(yr):
+def option4_trace_gases(yr, overrides=None):
     """The ghg_input = 0 trace-gas values of RRTMG_SWRAD, with WRF's exact
     mixed precision: the co2 expression is evaluated in REAL(4) (including
     a REAL(4) exp) and only then widened to the REAL(8) local.
@@ -2463,7 +2498,14 @@ def option4_trace_gases(yr):
     """
     co2 = F(F(F(280.0) + F(F(90.0) * expf(F(F(0.02) * (int(yr) - 2000))))) *
             F(1.0e-6))
-    return co2, F(1774.0e-9), F(319.0e-9), F(0.209488)
+    values = (co2, F(1774.0e-9), F(319.0e-9), F(0.209488))
+    if overrides is None:
+        return values
+    from gpuwm.core.trace_gases import LEGACY_SW_GASES, validate_trace_gas_overrides
+    selected = validate_trace_gas_overrides(
+        overrides, supported=LEGACY_SW_GASES, consumer="legacy RRTMG shortwave")
+    return tuple(F(selected[name]) if name in selected else value
+                 for name, value in zip(("co2", "ch4", "n2o", "o2"), values))
 
 
 def inatm_sw(tab: SWTables, nlay, icld, iaer, play, plev, tlay, tlev, tsfc,
@@ -2913,7 +2955,7 @@ class CudaSW:
                       module=self.module)
         self.tab_gpu = cp.asarray(packed)
         self.ngb_gpu = cp.asarray(np.asarray(tab.ngb, dtype=np.int32))
-        self.max_nlay = MAX_RADIATION_LAYERS - 1
+        self.max_nlay = None  # retained API attribute: workspace has no fixed layer ceiling
 
     def _k(self, name):
         return self.module.get_function(name)
@@ -2921,6 +2963,7 @@ class CudaSW:
     # ---- stage drivers (all arrays FP32; returns cupy arrays) ----
 
     def setcoef(self, nlayers, pavel, tavel, coldry, wkl):
+        nlayers = _radiation_layer_count(nlayers)
         cp = self.cp
         f = lambda a: cp.asarray(np.asarray(a, np.float32))
         pavel, tavel, coldry = f(pavel[:nlayers]), f(tavel[:nlayers]), f(coldry[:nlayers])
@@ -2931,7 +2974,7 @@ class CudaSW:
                  ("colh2o", "colco2", "colo3", "coln2o", "colch4", "colo2",
                   "colmol", "co2mult", "selffac", "selffrac", "forfac",
                   "forfrac", "fac00", "fac01", "fac10", "fac11")}
-        self._k("rsw_setcoef")((1,), (64,), (
+        self._k("rsw_setcoef")(((nlayers + 63) // 64,), (64,), (
             np.int32(nlayers), self.tab_gpu, pavel, tavel, coldry, wkl,
             ints["jp"], ints["jt"], ints["jt1"], ints["indself"],
             ints["indfor"], ints["tflag"], ints["lflag"],
@@ -3089,7 +3132,7 @@ class CudaSW:
     def spcvmc(self, nlayers, palbd, palbp, pcldfmc, ptaucmc, pasycmc,
                pomgcmc, ptaormc, ptaua, pasya, pomga, prmu0, adjflux, sc):
         cp = self.cp
-        assert nlayers + 1 <= self.max_nlay + 1
+        nlayers = _radiation_layer_count(nlayers)
         sfluxzen, taug, taur = self.taumol(nlayers, sc)
         nl1 = nlayers + 1
         g = lambda: cp.zeros((nl1, NGPTSW), cp.float32, order="F")
@@ -3112,7 +3155,7 @@ class CudaSW:
                 ("pbbfd", "pbbfu", "pbbcd", "pbbcu", "pbbfddir", "pbbcddir",
                  "puvfd", "puvcd", "puvfddir", "puvcddir",
                  "pnifd", "pnicd", "pnifddir", "pnicddir")}
-        self._k("rsw_spc_accum")((1,), (64,), (
+        self._k("rsw_spc_accum")(((nl1 + 63) // 64,), (64,), (
             np.int32(nlayers), self.ngb_gpu, zincflx, zcd, zcu, zfd, zfu,
             ztdbt_nodel, ztdbtc_nodel,
             outs["pbbfd"], outs["pbbfu"], outs["pbbcd"], outs["pbbcu"],
@@ -3149,7 +3192,7 @@ class CudaSW:
                 "optics would be silently discarded -- fails closed")
         if int(dyofyr) > 0:
             earth_sun(dyofyr)
-        nlayers = int(nlay)
+        nlayers = _radiation_layer_count(nlay)
         f = lambda a: cp.asarray(np.asarray(a, np.float32))
 
         # inatm: host scalar prep (adjflux/solvar/tbound), device coldry/wkl
@@ -3164,7 +3207,7 @@ class CudaSW:
         pdp = cp.zeros(nlayers, cp.float32)
         coldry = cp.zeros(nlayers, cp.float32)
         wkl = cp.zeros((MXMOL, nlayers), cp.float32, order="F")
-        self._k("rsw_inatm_layers")((1,), (64,), (
+        self._k("rsw_inatm_layers")(((nlayers + 63) // 64,), (64,), (
             np.int32(nlayers), np.float32(self.tab.grav),
             np.float32(self.tab.avogad), plev_g,
             f(h2ovmr[:nlayers]), f(co2vmr[:nlayers]), f(o3vmr[:nlayers]),
@@ -3236,7 +3279,7 @@ class CudaSW:
 
         swhr = cp.zeros(nlayers, cp.float32)
         swhrc = cp.zeros(nlayers, cp.float32)
-        self._k("rsw_post")((1,), (64,), (
+        self._k("rsw_post")(((nlayers + 63) // 64,), (64,), (
             np.int32(nlayers), np.float32(self.tab.heatfac), pdp,
             out["pbbfu"], out["pbbfd"], out["pbbcu"], out["pbbcd"],
             swhr, swhrc))
@@ -3348,9 +3391,8 @@ class CudaSW:
                 "(cldovrlp = 2); fails closed")
         if int(dyofyr) > 0:
             earth_sun(dyofyr)   # raises: unreachable via WRF option 4
-        nlayers = int(nlay)
+        nlayers = _radiation_layer_count(nlay)
         ncol = int(ncol)
-        assert nlayers + 1 <= self.max_nlay + 1
         nl1 = nlayers + 1
         if column_chunk:
             chunk = int(column_chunk)

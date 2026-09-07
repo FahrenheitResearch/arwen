@@ -776,3 +776,48 @@ def test_no_source_mesh_is_announced_rather_than_silently_skipped(
     assert "declared none" in captured.err
     soil_module._REPORTED_MISSING_SOIL_MESH.clear()
 
+
+
+@pytest.mark.parametrize("angle", [0., 37., 90.])
+@pytest.mark.parametrize("longitude", [0., 179.99])
+def test_reversible_projected_mesh_measures_distance_not_axis_components(angle, longitude):
+    from gpuwm.ingest.soil_downscale import soil_mesh_plan_from_case
+    from types import SimpleNamespace
+
+    # A reversible rotated grid with different x/y widths, crossing the
+    # longitude seam in half the cases. It exposes no source latitude axes.
+    c, sn = np.cos(np.deg2rad(angle)), np.sin(np.deg2rad(angle))
+    def forward(x, y):
+        x, y = np.asarray(x) * .04, np.asarray(y) * .03
+        return sn * x + c * y, (longitude + c * x - sn * y + 180) % 360 - 180
+    def inverse(lat, lon):
+        lon = (lon - longitude + 180) % 360 - 180
+        return (c * lon + sn * lat) / .04, (-sn * lon + c * lat) / .03
+    source = SimpleNamespace(ij_to_latlon=forward, latlon_to_ij=inverse)
+    j, i = np.mgrid[-4:5, -5:6]
+    lat, lon = forward(i / 4., j / 3.)
+    plan = soil_mesh_plan_from_case(None, (lat, lon), source_grid=source)
+    np.testing.assert_allclose(plan.footprint_cells, (4., 3.), rtol=1e-7)
+    off = soil_mesh_plan_from_case(None, (lat, lon), source_grid=source,
+                                  case_data={"ingest": {"soil_texture_downscale": False}})
+    assert off.enabled is False and off.footprint_cells == plan.footprint_cells
+
+
+def test_actual_native_grid_uses_bounded_shared_geometry_stencil(monkeypatch):
+    from gpuwm.ingest.hrrr import hrrr_source_grid
+    from gpuwm.ingest.soil_downscale import soil_mesh_plan_from_case
+    source = hrrr_source_grid()
+    j, i = np.mgrid[-4:5, -5:6]
+    lat, lon = source.ij_to_latlon(800. + i / 3., 500. + j / 3.)
+    calls = []
+    original = source.ij_to_latlon
+    def bounded(x, y):
+        calls.append(np.asarray(x).size)
+        assert np.asarray(x).size <= 4
+        return original(x, y)
+    monkeypatch.setattr(source, "ij_to_latlon", bounded)
+    plan = soil_mesh_plan_from_case(None, (lat, lon), source_grid=source)
+    np.testing.assert_allclose(plan.footprint_cells, (3., 3.), rtol=1e-7)
+    assert calls == [4]
+    from gpuwm.ingest.soil_downscale import source_mesh_receipt
+    assert source_mesh_receipt(plan, announce=False)["spacing_metric"] == "great-circle-angle"

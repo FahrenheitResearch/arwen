@@ -619,6 +619,35 @@ def _resolve_path(base_dir: Path, value, key: str, source: str) -> Path:
     return path
 
 
+def resolved_case_data_paths(raw: dict, *, base_dir: Path, source: str) -> dict:
+    """Preserve declared inputs when publishing a config in another folder.
+
+    Resolve only path keys owned by this schema. Do not expand forcing globs:
+    their eventual match set is still decided by the normal input owner.
+    """
+    import copy
+    result = copy.deepcopy(raw)
+    for key in ("vtable", "wps_namelist", "geog_root", "water_temperature_overlay"):
+        if key in result:
+            result[key] = str(_resolve_path(base_dir, result[key], key, source).resolve())
+    if "forcing" in result:
+        value = result["forcing"]
+        entries = value if isinstance(value, list) else [value]
+        paths = [str(_resolve_path(base_dir, item, "forcing", source).resolve())
+                 for item in entries]
+        result["forcing"] = paths if isinstance(value, list) else paths[0]
+    if "source_orography" in result:
+        value = result["source_orography"]
+        if isinstance(value, dict):
+            result["source_orography"] = {
+                key: str(_resolve_path(base_dir, item, "source_orography." + key,
+                                       source).resolve()) for key, item in value.items()}
+        else:
+            result["source_orography"] = str(_resolve_path(
+                base_dir, value, "source_orography", source).resolve())
+    return result
+
+
 def _resolve_forcing(base_dir: Path, value, source: str, *,
                      require_match: bool = True) -> tuple[Path, ...]:
     entries = value if isinstance(value, list) else [value]
@@ -830,11 +859,6 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
         raise ValueError(
             f"sfcp_to_sfcp in [case_data] of {source} must be a boolean, "
             f"got {sfcp!r}.")
-    if not sfcp:
-        raise ValueError(
-            f"sfcp_to_sfcp=false branch is not implemented in {source}: "
-            "WRF reconstructs surface pressure from PMSL and pressure/GHT "
-            "profiles through sfcprs3; copying PSFC is not equivalent.")
 
     co2 = raw.get("co2_vmr")
     if co2 is not None:
@@ -900,6 +924,63 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
         output_domain=domain, forcing_interval_s=interval,
         water_temperature_overlay=overlay_path,
         water_temperature_policy=water_policy)
+
+
+
+def optional_case_data_from_tables(raw: dict, *, source: str, base_dir: Path):
+    """Validate optional scientific companions without opening weather inputs."""
+    table = raw.get("case_data")
+    if table is None:
+        return None
+    return build_case_data(table, source=source, base_dir=base_dir,
+                           require_inputs=False)
+
+
+def optional_case_data_from_config(path, *, expected_sha256=None):
+    """Read optional companions from the same captured authority as the case."""
+    from gpuwm.config_authority import read_config_authority
+    authority = read_config_authority(path)
+    if expected_sha256 is not None and authority.sha256 != expected_sha256:
+        raise ValueError("case-data experiment authority digest differs from its pin")
+    return optional_case_data_from_tables(
+        tomllib.loads(authority.payload.decode("utf-8")),
+        source=str(authority.source), base_dir=authority.base_dir)
+
+
+def preparation_case_policy(data, *, sfcp_to_sfcp=None):
+    """Scientific preparation operands; source identity binds overlay bytes separately."""
+    from gpuwm.ingest.water_temperature import resolve_water_temperature_policy
+    overlay = None if data is None else data.water_temperature_overlay
+    if sfcp_to_sfcp is not None and type(sfcp_to_sfcp) is not bool:
+        raise ValueError("sfcp_to_sfcp must be a boolean")
+    if (data is not None and sfcp_to_sfcp is not None
+            and data.sfcp_to_sfcp != sfcp_to_sfcp):
+        raise ValueError("case_data.sfcp_to_sfcp differs from the explicit namelist setting")
+    pressure = (data.sfcp_to_sfcp if data is not None else
+                True if sfcp_to_sfcp is None else sfcp_to_sfcp)
+    return {
+        "sfcp_to_sfcp": pressure,
+        "water_temperature_policy": resolve_water_temperature_policy(data),
+        "water_temperature_overlay": None if overlay is None else str(overlay.resolve()),
+    }
+
+
+def trace_gas_overrides_from_tables(raw: dict, *, source: str, base_dir: Path):
+    """Resolve declared gases through the case-data schema without decoding inputs."""
+    data = optional_case_data_from_tables(raw, source=source, base_dir=base_dir)
+    return ({"co2": data.co2_vmr}
+            if data is not None and data.co2_vmr is not None else None)
+
+
+def trace_gas_overrides_from_config(path, *, expected_sha256=None):
+    """Read gas settings from the same immutable bytes as experiment loading."""
+    from gpuwm.config_authority import read_config_authority
+    authority = read_config_authority(path)
+    if expected_sha256 is not None and authority.sha256 != expected_sha256:
+        raise ValueError("trace-gas experiment authority digest differs from its pin")
+    return trace_gas_overrides_from_tables(
+        tomllib.loads(authority.payload.decode("utf-8")),
+        source=str(authority.source), base_dir=authority.base_dir)
 
 
 def load_case_data(path: str | Path) -> CaseDataConfig:

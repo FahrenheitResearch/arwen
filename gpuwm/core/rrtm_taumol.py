@@ -1,3 +1,17 @@
+# ======================================================================
+# THIRD-PARTY NOTICE.  Parts of this file are hand transcriptions of
+# third-party work.  ArWen distributes the file under the Apache License
+# 2.0; the notices below belong to the transcribed parts and are kept here
+# because their own licences require it.  Full texts are in the repository
+# NOTICE and in the licenses/ directory.
+#
+#   RRTM longwave, transcribed from WRF v4.6.1 phys/module_ra_rrtm.F.
+#   That file carries AER's authorship -- Eli J. Mlawer, Steven J.
+#   Taubman, Shepard A. Clough, Atmospheric & Environmental Research, Inc.
+#   -- but no copyright line and no licence clause, so it falls under
+#   WRF's public-domain declaration.  AER is credited here as a matter of
+#   accuracy rather than of condition.
+# ======================================================================
 """TAUMOL: WRF v4.6.1 RRTM longwave band optical depths (TAUGB1--TAUGB16).
 
 Direct transcription of ``phys/module_ra_rrtm.F:4488-6191``.  The Fortran

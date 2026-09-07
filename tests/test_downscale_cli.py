@@ -185,6 +185,11 @@ def test_downscale_cli_dry_run_child_config_mode(tmp_path, capsys):
         "--child-config", str(child_toml), "--ratio", "1",
         "--i-parent-start", "4", "--j-parent-start", "4",
         "--out", str(tmp_path / "child-run"), "--dry-run"]
+    # A child's 300-second output interval is not a ceiling on its hourly
+    # parent's boundary data. The old research guide conflated these.
+    assert cli_main(rc_args + ["--max-boundary-interval-seconds", "300"]) == 2
+    refused = capsys.readouterr()
+    assert "300" in refused.err
     assert cli_main(rc_args) == 0
     captured = capsys.readouterr()
     assert "downscale_plan" in captured.out
@@ -781,13 +786,16 @@ def _point_args(tmp_path, *, ny=18, nx=20):
         _give_the_parent_a_real_projection(frame, ny=ny, nx=nx)
     restart = _restart_evidence(
         tmp_path / "gpuwmrst_d01_final.npz",
-        dict(_SURFACE_PARENT_CONFIG, nx=nx, ny=ny, grid_id=1,
+        dict(_SURFACE_PARENT_CONFIG, nx=nx, ny=ny, nz=2, grid_id=1,
              dt=3.0, run_seconds=7200.0, nested=False, specified=False))
     return [
         "downscale", str(tmp_path),
         "--parent-restart", str(restart),
         "--point", "39.5,-84.0",
         "--ratio", "1", "--child-size", "12,10",
+        # _history's compact archive has two levels; the runnable child
+        # requires at least four and declares its own remapping ladder.
+        "--child-levels", "4,2.5",
         "--hours", "0.25", "--output-interval-seconds", "900",
         "--out", str(tmp_path / "child-run")]
 

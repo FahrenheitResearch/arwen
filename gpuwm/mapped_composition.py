@@ -1149,17 +1149,6 @@ class MappedSourceBundle:
             release()
 
 
-#: The absent prognostic fields a composition initializes to explicit
-#: zero, and the regular-source name each lands under.
-_ZERO_INITIALIZED = {
-    "cloud_water_mixing_ratio": "QC",
-    "rain_water_mixing_ratio": "QR",
-    "cloud_ice_mixing_ratio": "QI",
-    "snow_mixing_ratio": "QS",
-    "graupel_or_hail_mixing_ratio": "QG",
-}
-
-
 def _frame_summary(frames) -> tuple[tuple[object, tuple[str, ...], str], ...]:
     """``(valid_time, field names, terrain digest)`` per frame, cheaply.
 
@@ -1202,8 +1191,9 @@ class _RegularSnapshots(_ABCSequence):
     """
 
     def __init__(self, bundle: "MappedSourceBundle",
-                 order: tuple[int, ...] | None = None):
+                 order: tuple[int, ...] | None = None, *, target_grids=()):
         self._bundle = bundle
+        self._target_grids = tuple(target_grids)
         self._order = (
             tuple(range(len(bundle.frames))) if order is None else tuple(order))
         land_policy = bundle.soil_layer_contract["missing"]["land"]
@@ -1231,7 +1221,37 @@ class _RegularSnapshots(_ABCSequence):
         times = self.valid_times
         order = sorted(range(len(self._order)), key=lambda index: times[index])
         return _RegularSnapshots(
-            self._bundle, tuple(self._order[index] for index in order))
+            self._bundle, tuple(self._order[index] for index in order),
+            target_grids=self._target_grids)
+
+    def for_grids(self, grids):
+        """Keep full donor fields and pack only exact atmospheric support."""
+        return _RegularSnapshots(self._bundle, self._order, target_grids=grids)
+
+    def snapshot_metadata(self, position: int):
+        """Describe the fixed snapshot ABI without copying its field arrays."""
+        from gpuwm.ingest.source_metadata import SourceSnapshotMetadata
+        from gpuwm.source_frame import validate_source_frame
+
+        index = self._order[int(position)]
+        frames = self._bundle.frames
+        coordinates = getattr(frames, "coordinates", None)
+        if coordinates is None:
+            frame = frames[index]
+            latitude, longitude = frame.latitude, frame.longitude
+            header = frame.header
+        else:
+            latitude, longitude = coordinates(index)
+            header = frames.header(index)
+        validate_source_frame(header)
+        grid = header.grid
+        projection = (None if grid.projection == "regular_latitude_longitude"
+                      else {"family": grid.projection,
+                            "parameters": dict(grid.parameters)})
+        # _pack always constructs Era5Snapshot, for every mapped input format.
+        # Full field validation still happens in that constructor and frameset.
+        return SourceSnapshotMetadata(
+            Era5Snapshot, latitude, longitude, projection)
 
     def source_pressure_hpa(self, position: int):
         """The level ladder of one snapshot, read from pressure alone.
@@ -1244,6 +1264,9 @@ class _RegularSnapshots(_ABCSequence):
 
         index = self._order[int(position)]
         frames = self._bundle.frames
+        pressure_levels = getattr(frames, "pressure_levels_hpa", None)
+        if self._target_grids and pressure_levels is not None:
+            return pressure_levels(index)
         field = getattr(frames, "field", None)
         if field is None:
             pressure = frames[index].fields["air_pressure"].values
@@ -1251,40 +1274,53 @@ class _RegularSnapshots(_ABCSequence):
             pressure = field(index, "air_pressure").values
         return np.median(np.asarray(pressure), axis=(1, 2)) / 100.0
 
-    def _pack(self, index: int):
-        frame = self._bundle.frames[index]
+    def _pack(self, index: int, *, full=False):
+        fieldwise = getattr(self._bundle.frames, "fieldwise_frame", None)
+        frame = (fieldwise(index) if fieldwise is not None else
+                 self._bundle.frames[index])
+        options = {}
+        if self._target_grids and not full:
+            from gpuwm.ingest.atmospheric_window import atmospheric_window_for_grids
+            from gpuwm.ingest.source_metadata import SourceSnapshotMetadata
+            source_grid = frame.header.grid
+            projection = (None if source_grid.projection == "regular_latitude_longitude"
+                          else {"family": source_grid.projection,
+                                "parameters": dict(source_grid.parameters)})
+            window = atmospheric_window_for_grids(SourceSnapshotMetadata(
+                Era5Snapshot, frame.latitude, frame.longitude, projection), self._target_grids)
+            if window is not None:
+                window_provider = getattr(frame, "with_atmospheric_window", None)
+                if window_provider is not None:
+                    frame = window_provider(window)
+                # The fallback retains the source, not this sequence's
+                # one-snapshot cache. Capturing self would create a cycle
+                # that kept the last atmosphere alive until cyclic GC.
+                fallback = _RegularSnapshots(self._bundle)
+                options = {"atmospheric_window": window,
+                           "full_snapshot_factory": lambda: fallback._pack(index, full=True)}
         snapshot = mapped_frames_to_regular_snapshots(
-            (frame,), soil_land_repair=self._soil_land_repair)[0]
-        fields = dict(snapshot.fields)
-        if "SOURCE_OROGRAPHY" not in fields:
+            (frame,), soil_land_repair=self._soil_land_repair,
+            initialize_absent_hydrometeors=True, **options)[0]
+        if "SOURCE_OROGRAPHY" not in snapshot.fields:
             raise ValueError(
                 "canonical terrain did not reach the regular-source ABI")
-        if MAPPED_SOIL_TEMPERATURE not in fields \
-                or MAPPED_SOIL_MOISTURE not in fields:
+        if MAPPED_SOIL_TEMPERATURE not in snapshot.fields \
+                or MAPPED_SOIL_MOISTURE not in snapshot.fields:
             raise ValueError("canonical mapped soil arrays are absent")
-        pressure = np.asarray(fields["PRES"])
-        policies = frame.header.initialization_policies
-        for canonical, output in _ZERO_INITIALIZED.items():
-            if policies.get(canonical) != "explicit_zero_with_adapter_validation":
-                raise ValueError(
-                    f"absent {canonical} lacks the supported explicit-zero policy"
-                )
-            fields[output] = np.zeros_like(pressure)
-        return Era5Snapshot(
-            valid_time=snapshot.valid_time,
-            levels_hpa=snapshot.levels_hpa,
-            latitude=snapshot.latitude,
-            longitude=snapshot.longitude,
-            fields=fields,
-            projection=snapshot.projection,
-        )
+        # Materialized providers may still cache a complete canonical frame.
+        # The snapshot owns its copies; that cache has no packing consumer.
+        release = getattr(self._bundle.frames, "release_frame", None)
+        if release is not None:
+            release(frame)
+        return snapshot
 
     def __getitem__(self, position):
         if isinstance(position, slice):
             return _RegularSnapshots(
                 self._bundle,
                 tuple(self._order[index]
-                      for index in range(*position.indices(len(self._order)))))
+                      for index in range(*position.indices(len(self._order)))),
+                target_grids=self._target_grids)
         value = int(position)
         if value < 0:
             value += len(self._order)
@@ -1494,6 +1530,12 @@ def _compose_scratch_base(destination: Path | None) -> Path | None:
     3. ``None`` -- the system temp, for callers with no real output
        directory (in-memory recompose paths), whose streams are sized
        to what they already hold in memory.
+
+    The ``decode`` and ``inspect`` routes in :mod:`gpuwm.mapped_source`
+    resolve through the same function with no destination, so the ONE
+    variable covers every temporary the engine route writes; a
+    0.25-degree analysis decode once died on the tmpfs quota with the
+    variable set, because only the compose scratch honored it.
     """
 
     import os
@@ -1546,6 +1588,7 @@ def _compose_through_engine(
     member: str | None = None,
     member_identity: str | None = None,
     scratch_destination: Path | None = None,
+    atmospheric_grids=(),
 ) -> MappedSourceBundle:
     """Compose on the Rust engine, keeping every policy check on this side.
 
@@ -1597,9 +1640,25 @@ def _compose_through_engine(
             contributing_mappings=contributing,
             input_manifest=manifest_path,
             input_manifest_sha256=manifest_sha256,
+            engine=engine,
+            atmospheric_grids=atmospheric_grids,
         )
         evidence = mapped_engine_bridge.read_composition_evidence(directory)
-        frames = mapped_engine_bridge.open_frameset(directory, retain=work)
+        def full_fallback():
+            # Re-read the same sealed source through the unchanged full writer
+            # only if a later consumer needs donors beyond the proven window.
+            # The new bundle revalidates all source/composition identities.
+            return _compose_through_engine(
+                engine=engine, mapping_path=mapping_path, composition_path=composition_path,
+                manifest_path=manifest_path, manifest_sha256=manifest_sha256,
+                primary=primary, supplements=supplements, provenance=provenance,
+                contributing=contributing, contract=contract, bindings=bindings,
+                terrain_spec=terrain_spec, decoders=decoders, snapshots=snapshots,
+                before=before, member=member, member_identity=member_identity,
+                scratch_destination=scratch_destination).frames
+        frames = mapped_engine_bridge.open_frameset(
+            directory, retain=work,
+            **({"full_fallback": full_fallback} if atmospheric_grids else {}))
         return _composed_bundle_from_frames(
             frames=frames,
             evidence=evidence,
@@ -1764,6 +1823,7 @@ def decode_composed_source(
     grib2_inventory: str | Path | None = None,
     grib2_dump: str | Path | None = None,
     scratch_destination: str | Path | None = None,
+    atmospheric_grids=(),
 ) -> MappedSourceBundle:
     """Decode a complete mapped source with scientifically sourced terrain.
 
@@ -2000,6 +2060,7 @@ def decode_composed_source(
             scratch_destination=(
                 None if scratch_destination is None
                 else Path(scratch_destination)),
+            atmospheric_grids=atmospheric_grids,
         )
     combined = _decode_partition(
         _partition_mapping(mapping, terrain_only=False), primary, decoders,

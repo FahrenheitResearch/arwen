@@ -29,11 +29,10 @@
 #     $gpushard = @(Get-Content (Join-Path $CUT 'tools/battery/gpu_shard_files.txt') |
 #         ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
 #
-#   It runs on a DESIGNATED GPU NODE (node-1 class: a 16 GB sm_120 card, a
-#   CUDA toolkit whose headers CuPy can compile against, and a cupy wheel
-#   matching the box's CUDA major -- see the rental playbook).  It does NOT
-#   run on Drew's desktop card: GPU authorization is a state Drew sets, and
-#   a release leg must not assume it.
+#   It runs on an authorized CUDA device with a working compiler/header
+#   stack and enough memory for the selected tests. Authorization can name
+#   a local desktop or a designated node; it is not a GPU-model restriction.
+#   The trusted manual GPU dispatch in ci.yml runs BOTH declared shards.
 #
 #   Run it with GPUWM_NO_LOCAL_GPU UNSET.  That variable is what makes the
 #   CPU legs honest; setting it here would skip the entire shard and report
@@ -52,10 +51,16 @@
 #   place here: that the file really is GPU-bound, so a CPU leg cannot be
 #   mistaken for coverage of it.
 #
-# SHARD 1 is below and is the per-cut leg.  SHARD 2 (the GF cumulus family)
-# is listed at the bottom and is weekly, on the audit's reasoning that
-# frozen bit-exact oracle ports carry the mass and almost none of the
-# defects.
+# SHARD 1 is below; SHARD 2 begins at the explicit marker near the bottom.
+# Both run on each authorized CI GPU dispatch. Shard 2 groups cumulus
+# comparisons against a pinned WRF v4.6.1 reference corpus:
+# corpus -- the Grell-Freitas family (tests/test_gf_*.py) and, since
+# d0c23dad0 (2.6.4), the New Tiedtke family (tests/test_ntiedtke_*.py).
+# tests/test_gpu_shard_manifest.py pins that rule by filename; a third
+# family widens it here first.
+# The corpus is pinned, not the implementation: Grell-Freitas deliberately
+# differs from WRF's gamma implementation. See docs/gf_gamma_known_delta.md
+# before interpreting its comparisons; no blanket bitwise WRF claim applies.
 
 # ---------------------------------------------------------------------------
 # SHARD 1a: the WRF-parity dycore, whole-module GPU.
@@ -320,20 +325,69 @@ tests/test_mpas_column_batch_gpu.py
 tests/test_p3_front_door.py
 
 # ---------------------------------------------------------------------------
-# SHARD 2 (WEEKLY, not per-cut): the GF cumulus family.
-#
-# The audit's shard-design finding is that defect density is inverted
-# against test mass: frozen bit-exact WRF leaf ports carry the tests and
-# almost none of the defects, because they are pinned to an oracle that
-# cannot drift.  GF cumulus is 376 GPU tests across these files and NINE OF
-# THEM HAVE NEVER CO-MOVED WITH A FIX.  That is what a working frozen-oracle
-# pin looks like, not a reason to delete them -- but it is the right first
-# cut when the GPU battery needs sharding, so they run weekly rather than on
-# every cut.
-#
-# Entries below this line are shard 2.  The gate keeps the two blocks
-# separate so a runner cannot silently promote one into the per-cut leg.
+# The cumulus reference family occupies shard 2 at the explicit marker.
+# Membership stays separate for reporting; both shards execute on the same
+# authorized CI dispatch. GF's documented gamma delta remains deliberate.
 # ---------------------------------------------------------------------------
+
+# CumulusResult's momentum pair (d0c23dad0, 2.6.4): the inertness gate for
+# every scheme that supplies no momentum (Grell-Freitas, Kain-Fritsch must
+# not move by a bit) and the negative control that the supplied pair
+# reaches the momentum stacks through YSU's face coupling.  Device rows
+# (a DomainState on the card); a coupling contract, not an oracle parity
+# suite, so it stays in shard 1 rather than the reference-family shard where 7391fa8db
+# first listed it.
+tests/test_cumulus_momentum_extension.py
+
+# CFL geometry is active dycore behavior, so it belongs on the per-cut leg.
+# w_cfl_stat's 32-bin vert_cfl histogram against a CPU reference
+# (docs/ADAPTIVE-TIMESTEP.md section 11).  Nothing type-checks
+# kernels/openbc.cu's CFL_HIST_BINS/CFL_HIST_SCALE against the host's
+# _CFL_HIST_BINS/_CFL_HIST_SCALE, so the bin edges are asserted against
+# the kernel's own arithmetic.  It is on THIS list rather than stage 1
+# because the whole module is `pytest.importorskip("cupy")`: on the CPU
+# leg it would collect and skip every test while the line read as
+# coverage -- the same miss tests/test_anisotropic_mixing_w_stability.py
+# is kept off stage 1 for.
+tests/test_wrf_cfl_histogram.py
+
+# Recent shared runtime changes: these actual CUDA controls run on every cut.
+tests/test_both_streamed_nesting.py
+tests/test_cam_ozone.py
+tests/test_radiation_composition.py
+tests/test_trace_gas_overrides_gpu.py
+tests/test_acoustic_carrier_lifetime.py
+tests/test_attached_store_health_gpu.py
+tests/test_streamed_lifecycle_restart.py
+tests/test_rrtmg_legacy_selection.py
+
+# Actual driver attributes for every boundary-time entry point.
+tests/test_lbc_time_frame.py
+
+# Actual CUDA follower windows retain independent clocks across three restart storage directions.
+tests/test_follow_window_transport_gpu.py
+
+# Actual atmospheric support and scalar forcing consumers run on every cut.
+tests/test_analyzed_scalar_boundaries.py
+tests/test_atmospheric_window_gpu.py
+tests/test_mapped_atmospheric_writer_gpu.py
+tests/test_nest_bounded_operands.py
+tests/test_nest_window_gpu.py
+tests/test_streamed_relocation_rebuild_gpu.py
+tests/test_qnn_specified_inflow.py
+tests/test_wrfinput_physics_fields.py
+tests/test_metgrid_number_initialization_gpu.py
+
+# Actual cadence, streamed timestep, allocation and attribute-following paths.
+# Mixed CPU/GPU files are included so their marked device branches have a lane.
+tests/test_sase_cadence_gpu.py
+tests/test_adaptive_stream_gpu.py
+tests/test_rrtm_memory.py
+tests/test_relocation_held_physics_gpu.py
+tests/test_attribute_tracking_gpu.py
+tests/test_model_stability_gpu.py
+tests/test_nssl2_gpu.py
+
 # SHARD-2-BEGIN
 tests/test_gf_deep_cuda.py
 tests/test_gf_shallow_cuda.py
@@ -354,7 +408,6 @@ tests/test_gf_engine_smoke.py
 # it is tools/battery/stage1_files.txt, not this file.
 # New Tiedtke (cu_physics = 16, d0c23dad0): the stage and pipeline parity suites
 # against the WRF v4.6.1 oracle corpus, all device rows.
-tests/test_cumulus_momentum_extension.py
 tests/test_ntiedtke_adjust_parity.py
 tests/test_ntiedtke_cloud_depth_parity.py
 tests/test_ntiedtke_cuascn_parity.py

@@ -31,8 +31,8 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use super::{
-    bytes, clear_error, register_fieldset, set_error, utf8, with_fieldset,
-    with_grid, ERR, OK,
+    bytes, clear_error, guard, register_fieldset, set_error, utf8,
+    with_fieldset, with_grid, ERR, OK,
 };
 use crate::error::StaticError;
 use crate::highres::{self, BoundRasterSpec};
@@ -189,39 +189,41 @@ pub unsafe extern "C" fn gpuwm_static_highres_terrain(
     request_len: usize,
     out_handle: *mut u64,
 ) -> i32 {
-    clear_error();
-    let Some(text) = (unsafe { utf8(request_json, request_len) }) else {
-        return set_error("highres request pointer/UTF-8 invalid");
-    };
-    let request: TerrainRequest = match serde_json::from_str(text) {
-        Ok(request) => request,
-        Err(err) => return set_error(format!("highres terrain JSON: {err}")),
-    };
-    let spec = match resolve_spec(grid, request.grid_spec) {
-        Ok(spec) => spec,
-        Err(message) => return set_error(message),
-    };
-    let halo = request.halo.unwrap_or(HALO);
-    let built = request.terrain.open().and_then(|raster| {
-        highres::build_terrain_grid(
-            &spec,
-            &raster,
-            halo,
-            request.smooth_passes,
-        )
-    });
-    match built {
-        Err(err) => set_error(err.to_string()),
-        Ok(hgt) => {
-            if out_handle.is_null() {
-                return set_error("out_handle is null");
+    guard(ERR, || {
+        clear_error();
+        let Some(text) = (unsafe { utf8(request_json, request_len) }) else {
+            return set_error("highres request pointer/UTF-8 invalid");
+        };
+        let request: TerrainRequest = match serde_json::from_str(text) {
+            Ok(request) => request,
+            Err(err) => return set_error(format!("highres terrain JSON: {err}")),
+        };
+        let spec = match resolve_spec(grid, request.grid_spec) {
+            Ok(spec) => spec,
+            Err(message) => return set_error(message),
+        };
+        let halo = request.halo.unwrap_or(HALO);
+        let built = request.terrain.open().and_then(|raster| {
+            highres::build_terrain_grid(
+                &spec,
+                &raster,
+                halo,
+                request.smooth_passes,
+            )
+        });
+        match built {
+            Err(err) => set_error(err.to_string()),
+            Ok(hgt) => {
+                if out_handle.is_null() {
+                    return set_error("out_handle is null");
+                }
+                let mut fields = FieldSet::default();
+                fields.fields.insert("HGT_M".into(), Field::Plane(hgt));
+                unsafe { *out_handle = register_fieldset(fields) };
+                OK
             }
-            let mut fields = FieldSet::default();
-            fields.fields.insert("HGT_M".into(), Field::Plane(hgt));
-            unsafe { *out_handle = register_fieldset(fields) };
-            OK
         }
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -522,30 +524,32 @@ pub unsafe extern "C" fn gpuwm_static_highres_overrides(
     request_len: usize,
     out_handle: *mut u64,
 ) -> i32 {
-    clear_error();
-    let Some(text) = (unsafe { utf8(request_json, request_len) }) else {
-        return set_error("highres request pointer/UTF-8 invalid");
-    };
-    let request: OverridesRequest = match serde_json::from_str(text) {
-        Ok(request) => request,
-        Err(err) => return set_error(format!("highres overrides JSON: {err}")),
-    };
-    let spec = match resolve_spec(grid, request.grid_spec.clone()) {
-        Ok(spec) => spec,
-        Err(message) => return set_error(message),
-    };
-    match build_overrides(&spec, &request) {
-        Err(err) => set_error(err.to_string()),
-        Ok((fields, audit)) => {
-            if out_handle.is_null() {
-                return set_error("out_handle is null");
+    guard(ERR, || {
+        clear_error();
+        let Some(text) = (unsafe { utf8(request_json, request_len) }) else {
+            return set_error("highres request pointer/UTF-8 invalid");
+        };
+        let request: OverridesRequest = match serde_json::from_str(text) {
+            Ok(request) => request,
+            Err(err) => return set_error(format!("highres overrides JSON: {err}")),
+        };
+        let spec = match resolve_spec(grid, request.grid_spec.clone()) {
+            Ok(spec) => spec,
+            Err(message) => return set_error(message),
+        };
+        match build_overrides(&spec, &request) {
+            Err(err) => set_error(err.to_string()),
+            Ok((fields, audit)) => {
+                if out_handle.is_null() {
+                    return set_error("out_handle is null");
+                }
+                let handle = register_fieldset(fields);
+                remember_audit(handle, audit);
+                unsafe { *out_handle = handle };
+                OK
             }
-            let handle = register_fieldset(fields);
-            remember_audit(handle, audit);
-            unsafe { *out_handle = handle };
-            OK
         }
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -567,55 +571,57 @@ pub unsafe extern "C" fn gpuwm_static_highres_merge(
     request_len: usize,
     out_handle: *mut u64,
 ) -> i32 {
-    clear_error();
-    let Some(text) = (unsafe { utf8(request_json, request_len) }) else {
-        return set_error("highres request pointer/UTF-8 invalid");
-    };
-    let request: MergeRequest = match serde_json::from_str(text) {
-        Ok(request) => request,
-        Err(err) => return set_error(format!("highres merge JSON: {err}")),
-    };
-    let Some(baseline_set) = with_fieldset(baseline, FieldSet::clone) else {
-        return set_error(format!("unknown fieldset handle {baseline}"));
-    };
-    let Some(override_set) = with_fieldset(overrides, FieldSet::clone) else {
-        return set_error(format!("unknown fieldset handle {overrides}"));
-    };
-    let merged = match request.mode.as_str() {
-        "terrain" => {
-            let hgt = match override_set.fields.get("HGT_M") {
-                Some(Field::Plane(grid)) => grid.clone(),
-                _ => {
-                    return set_error(
-                        "terrain-only overrides missing ['HGT_M']",
-                    )
-                }
-            };
-            highres::merge_terrain_override(&baseline_set, &hgt)
-        }
-        "all" => {
-            highres::merge_highres_overrides(&baseline_set, &override_set)
-        }
-        other => {
-            return set_error(format!(
-                "unknown merge mode {other:?} (terrain|all)"
-            ))
-        }
-    };
-    match merged {
-        Err(err) => set_error(err.to_string()),
-        Ok((fields, audit)) => {
-            if out_handle.is_null() {
-                return set_error("out_handle is null");
+    guard(ERR, || {
+        clear_error();
+        let Some(text) = (unsafe { utf8(request_json, request_len) }) else {
+            return set_error("highres request pointer/UTF-8 invalid");
+        };
+        let request: MergeRequest = match serde_json::from_str(text) {
+            Ok(request) => request,
+            Err(err) => return set_error(format!("highres merge JSON: {err}")),
+        };
+        let Some(baseline_set) = with_fieldset(baseline, FieldSet::clone) else {
+            return set_error(format!("unknown fieldset handle {baseline}"));
+        };
+        let Some(override_set) = with_fieldset(overrides, FieldSet::clone) else {
+            return set_error(format!("unknown fieldset handle {overrides}"));
+        };
+        let merged = match request.mode.as_str() {
+            "terrain" => {
+                let hgt = match override_set.fields.get("HGT_M") {
+                    Some(Field::Plane(grid)) => grid.clone(),
+                    _ => {
+                        return set_error(
+                            "terrain-only overrides missing ['HGT_M']",
+                        )
+                    }
+                };
+                highres::merge_terrain_override(&baseline_set, &hgt)
             }
-            let handle = register_fieldset(fields);
-            let audit_json = serde_json::to_string(&audit)
-                .unwrap_or_else(|_| "{}".into());
-            remember_audit(handle, audit_json);
-            unsafe { *out_handle = handle };
-            OK
+            "all" => {
+                highres::merge_highres_overrides(&baseline_set, &override_set)
+            }
+            other => {
+                return set_error(format!(
+                    "unknown merge mode {other:?} (terrain|all)"
+                ))
+            }
+        };
+        match merged {
+            Err(err) => set_error(err.to_string()),
+            Ok((fields, audit)) => {
+                if out_handle.is_null() {
+                    return set_error("out_handle is null");
+                }
+                let handle = register_fieldset(fields);
+                let audit_json = serde_json::to_string(&audit)
+                    .unwrap_or_else(|_| "{}".into());
+                remember_audit(handle, audit_json);
+                unsafe { *out_handle = handle };
+                OK
+            }
         }
-    }
+    })
 }
 
 /// Copy the audit JSON remembered for a fieldset handle; returns the
@@ -629,22 +635,26 @@ pub unsafe extern "C" fn gpuwm_static_highres_audit_json(
     buf: *mut u8,
     cap: usize,
 ) -> i64 {
-    clear_error();
-    let registry = AUDITS.lock().expect("audit registry poisoned");
-    match registry.get(&handle) {
-        None => {
-            drop(registry);
-            set_error(format!("no audit recorded for fieldset {handle}"));
-            ERR as i64
+    guard(ERR as i64, || {
+        clear_error();
+        let registry = AUDITS.lock().expect("audit registry poisoned");
+        match registry.get(&handle) {
+            None => {
+                drop(registry);
+                set_error(format!("no audit recorded for fieldset {handle}"));
+                ERR as i64
+            }
+            Some(audit) => copy_out(buf, cap, audit),
         }
-        Some(audit) => copy_out(buf, cap, audit),
-    }
+    })
 }
 
 /// Release the audit JSON remembered for a fieldset handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn gpuwm_static_highres_audit_drop(handle: u64) {
-    AUDITS.lock().expect("audit registry poisoned").remove(&handle);
+    guard((), || {
+        AUDITS.lock().expect("audit registry poisoned").remove(&handle);
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -680,53 +690,55 @@ pub unsafe extern "C" fn gpuwm_static_highres_fieldset_new(
     data_len: usize,
     out_handle: *mut u64,
 ) -> i32 {
-    clear_error();
-    let Some(text) = (unsafe { utf8(spec_json, spec_len) }) else {
-        return set_error("fieldset spec pointer/UTF-8 invalid");
-    };
-    let spec: FieldsetSpec = match serde_json::from_str(text) {
-        Ok(spec) => spec,
-        Err(err) => return set_error(format!("fieldset spec JSON: {err}")),
-    };
-    let total: usize = spec
-        .fields
-        .iter()
-        .map(|entry| entry.planes * entry.ny * entry.nx)
-        .sum();
-    if total != data_len {
-        return set_error(format!(
-            "fieldset spec declares {total} values, caller offered \
-             {data_len}"
-        ));
-    }
-    if data.is_null() && data_len > 0 {
-        return set_error("fieldset data pointer is null");
-    }
-    let values =
-        unsafe { std::slice::from_raw_parts(data, data_len) };
-    let mut fields = FieldSet::default();
-    let mut cursor = 0usize;
-    for entry in &spec.fields {
-        let n = entry.planes * entry.ny * entry.nx;
-        let slice = values[cursor..cursor + n].to_vec();
-        cursor += n;
-        let field = if entry.planes == 1 {
-            Field::Plane(Grid2 { ny: entry.ny, nx: entry.nx, data: slice })
-        } else {
-            Field::Stack(Stack3 {
-                planes: entry.planes,
-                ny: entry.ny,
-                nx: entry.nx,
-                data: slice,
-            })
+    guard(ERR, || {
+        clear_error();
+        let Some(text) = (unsafe { utf8(spec_json, spec_len) }) else {
+            return set_error("fieldset spec pointer/UTF-8 invalid");
         };
-        fields.fields.insert(entry.name.clone(), field);
-    }
-    if out_handle.is_null() {
-        return set_error("out_handle is null");
-    }
-    unsafe { *out_handle = register_fieldset(fields) };
-    OK
+        let spec: FieldsetSpec = match serde_json::from_str(text) {
+            Ok(spec) => spec,
+            Err(err) => return set_error(format!("fieldset spec JSON: {err}")),
+        };
+        let total: usize = spec
+            .fields
+            .iter()
+            .map(|entry| entry.planes * entry.ny * entry.nx)
+            .sum();
+        if total != data_len {
+            return set_error(format!(
+                "fieldset spec declares {total} values, caller offered \
+                 {data_len}"
+            ));
+        }
+        if data.is_null() && data_len > 0 {
+            return set_error("fieldset data pointer is null");
+        }
+        let values =
+            unsafe { std::slice::from_raw_parts(data, data_len) };
+        let mut fields = FieldSet::default();
+        let mut cursor = 0usize;
+        for entry in &spec.fields {
+            let n = entry.planes * entry.ny * entry.nx;
+            let slice = values[cursor..cursor + n].to_vec();
+            cursor += n;
+            let field = if entry.planes == 1 {
+                Field::Plane(Grid2 { ny: entry.ny, nx: entry.nx, data: slice })
+            } else {
+                Field::Stack(Stack3 {
+                    planes: entry.planes,
+                    ny: entry.ny,
+                    nx: entry.nx,
+                    data: slice,
+                })
+            };
+            fields.fields.insert(entry.name.clone(), field);
+        }
+        if out_handle.is_null() {
+            return set_error("out_handle is null");
+        }
+        unsafe { *out_handle = register_fieldset(fields) };
+        OK
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -747,24 +759,26 @@ pub unsafe extern "C" fn gpuwm_static_highres_usda(
     n: usize,
     out: *mut i16,
 ) -> i32 {
-    clear_error();
-    if (sand.is_null() || silt.is_null() || clay.is_null() || out.is_null())
-        && n > 0
-    {
-        return set_error("usda buffers are null");
-    }
-    let sand = unsafe { std::slice::from_raw_parts(sand, n) };
-    let silt = unsafe { std::slice::from_raw_parts(silt, n) };
-    let clay = unsafe { std::slice::from_raw_parts(clay, n) };
-    match highres::usda_texture_category(sand, silt, clay) {
-        Err(err) => set_error(err.to_string()),
-        Ok(categories) => {
-            unsafe {
-                std::ptr::copy_nonoverlapping(categories.as_ptr(), out, n)
-            };
-            OK
+    guard(ERR, || {
+        clear_error();
+        if (sand.is_null() || silt.is_null() || clay.is_null() || out.is_null())
+            && n > 0
+        {
+            return set_error("usda buffers are null");
         }
-    }
+        let sand = unsafe { std::slice::from_raw_parts(sand, n) };
+        let silt = unsafe { std::slice::from_raw_parts(silt, n) };
+        let clay = unsafe { std::slice::from_raw_parts(clay, n) };
+        match highres::usda_texture_category(sand, silt, clay) {
+            Err(err) => set_error(err.to_string()),
+            Ok(categories) => {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(categories.as_ptr(), out, n)
+                };
+                OK
+            }
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -972,26 +986,28 @@ pub unsafe extern "C" fn gpuwm_static_highres_resample(
     request_len: usize,
     out_handle: *mut u64,
 ) -> i32 {
-    clear_error();
-    let Some(text) = (unsafe { utf8(request_json, request_len) }) else {
-        return set_error("highres request pointer/UTF-8 invalid");
-    };
-    let request: ResampleRequest = match serde_json::from_str(text) {
-        Ok(request) => request,
-        Err(err) => return set_error(format!("highres resample JSON: {err}")),
-    };
-    match resample(&request) {
-        Err(err) => set_error(err.to_string()),
-        Ok((fields, audit)) => {
-            if out_handle.is_null() {
-                return set_error("out_handle is null");
+    guard(ERR, || {
+        clear_error();
+        let Some(text) = (unsafe { utf8(request_json, request_len) }) else {
+            return set_error("highres request pointer/UTF-8 invalid");
+        };
+        let request: ResampleRequest = match serde_json::from_str(text) {
+            Ok(request) => request,
+            Err(err) => return set_error(format!("highres resample JSON: {err}")),
+        };
+        match resample(&request) {
+            Err(err) => set_error(err.to_string()),
+            Ok((fields, audit)) => {
+                if out_handle.is_null() {
+                    return set_error("out_handle is null");
+                }
+                let handle = register_fieldset(fields);
+                remember_audit(handle, audit);
+                unsafe { *out_handle = handle };
+                OK
             }
-            let handle = register_fieldset(fields);
-            remember_audit(handle, audit);
-            unsafe { *out_handle = handle };
-            OK
         }
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1020,29 +1036,31 @@ pub unsafe extern "C" fn gpuwm_static_highres_transform_points(
     y: *mut f64,
     n: usize,
 ) -> i32 {
-    clear_error();
-    let Some(text) = (unsafe { utf8(request_json, request_len) }) else {
-        return set_error("highres request pointer/UTF-8 invalid");
-    };
-    let request: TransformRequest = match serde_json::from_str(text) {
-        Ok(request) => request,
-        Err(err) => {
-            return set_error(format!("highres transform JSON: {err}"))
+    guard(ERR, || {
+        clear_error();
+        let Some(text) = (unsafe { utf8(request_json, request_len) }) else {
+            return set_error("highres request pointer/UTF-8 invalid");
+        };
+        let request: TransformRequest = match serde_json::from_str(text) {
+            Ok(request) => request,
+            Err(err) => {
+                return set_error(format!("highres transform JSON: {err}"))
+            }
+        };
+        if (x.is_null() || y.is_null()) && n > 0 {
+            return set_error("transform_points buffers are null");
         }
-    };
-    if (x.is_null() || y.is_null()) && n > 0 {
-        return set_error("transform_points buffers are null");
-    }
-    let to = match Crs::parse_override(&request.to) {
-        Ok(crs) => crs,
-        Err(err) => return set_error(err.to_string()),
-    };
-    let xs = unsafe { std::slice::from_raw_parts_mut(x, n) };
-    let ys = unsafe { std::slice::from_raw_parts_mut(y, n) };
-    match crate::raster::transform_points(&Crs::Geographic, &to, xs, ys) {
-        Err(err) => set_error(err.to_string()),
-        Ok(()) => OK,
-    }
+        let to = match Crs::parse_override(&request.to) {
+            Ok(crs) => crs,
+            Err(err) => return set_error(err.to_string()),
+        };
+        let xs = unsafe { std::slice::from_raw_parts_mut(x, n) };
+        let ys = unsafe { std::slice::from_raw_parts_mut(y, n) };
+        match crate::raster::transform_points(&Crs::Geographic, &to, xs, ys) {
+            Err(err) => set_error(err.to_string()),
+            Ok(()) => OK,
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1320,29 +1338,31 @@ pub unsafe extern "C" fn gpuwm_static_highres_derive_window(
     buf: *mut u8,
     cap: usize,
 ) -> i64 {
-    clear_error();
-    let Some(text) = (unsafe { utf8(request_json, request_len) }) else {
-        set_error("highres request pointer/UTF-8 invalid");
-        return -1;
-    };
-    let request: DeriveRequest = match serde_json::from_str(text) {
-        Ok(request) => request,
-        Err(err) => {
-            set_error(format!("highres derive JSON: {err}"));
+    guard(ERR as i64, || {
+        clear_error();
+        let Some(text) = (unsafe { utf8(request_json, request_len) }) else {
+            set_error("highres request pointer/UTF-8 invalid");
             return -1;
-        }
-    };
-    match derive_window(&request) {
-        Err(failure) => {
-            set_error(failure.error.to_string());
-            if failure.coverage {
-                -2
-            } else {
-                -1
+        };
+        let request: DeriveRequest = match serde_json::from_str(text) {
+            Ok(request) => request,
+            Err(err) => {
+                set_error(format!("highres derive JSON: {err}"));
+                return -1;
             }
+        };
+        match derive_window(&request) {
+            Err(failure) => {
+                set_error(failure.error.to_string());
+                if failure.coverage {
+                    -2
+                } else {
+                    -1
+                }
+            }
+            Ok(audit) => copy_out(buf, cap, &audit),
         }
-        Ok(audit) => copy_out(buf, cap, &audit),
-    }
+    })
 }
 
 /// Keep the shared byte helper referenced (mirror of grid.rs).

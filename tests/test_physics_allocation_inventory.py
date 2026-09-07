@@ -188,6 +188,11 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # would be recording if the increment were folded the other way.
     'gpuwm/core/dycore.py': {
         '__init__': 1,
+        # One cached uint32 (32768, 36) CFL ring per grid, reused across
+        # steps, tiles and state replacements.  cfl_inventory binds its
+        # 4,718,592 bytes to estimate_domain and the tile planner; the
+        # resident/per-grid charge and reuse are gated by test_cfl_memory.
+        '_wrf_cfl_buffer': 1,
         'launch_coriolis_curvature': 2,
         'launch_diff6': 2,
         'reset': 1,
@@ -393,7 +398,13 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     'gpuwm/core/nssl2_radiation.py': {},
     'gpuwm/core/refl.py': {},
     'gpuwm/core/rrtmgp.py': {
-        '__call__': 6,
+        # Four flux arrays still allocate once each per call. Independent
+        # LW/SW switches add mutually exclusive zero-initializer branches
+        # beside their four empty-initializer branches: eight AST sites,
+        # four executed allocations, plus the two existing hydrometeor
+        # defaults. All four float32 (ncol, nz+1) flux arrays remain priced
+        # as columns/{lw_up,lw_dn,sw_up,sw_dn} by rrtmgp_column_shapes.
+        '__call__': 10,
         '_cloud_optics': 1,
         '_finalize_cloud_optics': 2,
         '_gas_optics': 5,

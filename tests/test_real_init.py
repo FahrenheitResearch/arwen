@@ -1190,7 +1190,7 @@ class _ReferencePreprocessBackend:
 def _analyzed_hrrr_real_init(
         mp_physics, *, state_backend="cpu", terrain_m=0.0,
         drop=(), reshape=None, wif_grid_latlon=None, wif_valid_date=None,
-        **config_overrides):
+        analyzed_species=None, **config_overrides):
     """One decoded-native-HRRR real initialization, never a fabricated state.
 
     ``drop`` removes analyzed species from the decoded snapshot and
@@ -1252,7 +1252,8 @@ def _analyzed_hrrr_real_init(
         terrain, source_orography=terrain, p_top=10000.0, use_sh_qv=True,
         preprocess_backend=_ReferencePreprocessBackend(),
         state_backend=state_backend,
-        wif_grid_latlon=wif_grid_latlon, wif_valid_date=wif_valid_date)
+        wif_grid_latlon=wif_grid_latlon, wif_valid_date=wif_valid_date,
+        analyzed_species=analyzed_species)
     return result, cfg
 
 
@@ -1305,6 +1306,56 @@ def test_mp28_real_ingest_retains_every_analyzed_hydrometeor():
         np.testing.assert_array_equal(
             _host_array(getattr(state, name)),
             _host_array(getattr(control.state, name)))
+
+
+def test_the_moist_pressure_recurrence_loads_total_water():
+    """WRF's initial ``p'`` recurrence carries every moist species.
+
+    ``module_initialize_real.F:3913-3916`` accumulates
+    ``qtot = sum(moist(i,kk,j,im), im = PARAM_FIRST_SCALAR, num_3d_m)`` --
+    ``num_3d_m = num_moist`` (:1856) -- and the hydrometeor ``vert_interp``
+    calls that fill those slots (:1862-1982) all run before the recurrence
+    at :3908, so the analyzed condensate is loaded there, not just vapour.
+    Both ``qvf2 = 1./(1.+qtot)`` and ``qvf1 = qtot*qvf2`` are built from it,
+    and the downward leg (:3931-3935) repeats the sum on the half-level
+    average.
+
+    The oracle is the recurrence itself replayed on this initialization's
+    own state: it reads only ``qtot``, ``mu``, the base state and the
+    vertical coordinate (``pressure_guess`` supplies shape and the finite
+    check), so feeding it the ingested qv+qc+qr+qi+qs+qg must reproduce
+    ``total_pressure`` exactly.  Feeding it vapour alone -- what a
+    vapour-only ingest produces -- must NOT, and the second assertion pins
+    that the two really are distinguishable here.
+    """
+    from gpuwm.ingest.real import _make_real_base, _rebalance_moist_pressure
+
+    result, cfg = _analyzed_hrrr_real_init(6)
+    coord = make_vertical_coord(
+        cfg.nz, hybrid_opt=2, etac=0.2,
+        eta_levels=np.linspace(1.0, 0.0, cfg.nz + 1))
+    base = _make_real_base(
+        coord, np.zeros((cfg.ny, cfg.nx)), 10000.0, cfg.base_temp,
+        hypsometric_opt=cfg.hypsometric_opt)
+    vapour = _host_array(result.state.qv).astype(np.float64)
+    # WRF's own accumulation order: the moist package's qc,qr,qi,qs,qg
+    # after qv, summed left to right.
+    condensate = None
+    for name in ("qc", "qr", "qi", "qs", "qg"):
+        species = _host_array(getattr(result.state, name)).astype(np.float64)
+        assert np.count_nonzero(species) > 0, name
+        condensate = species if condensate is None else condensate + species
+    dry_mass = np.asarray(result.dry_mass, dtype=np.float64)
+    pressure = np.asarray(result.total_pressure, dtype=np.float64)
+
+    total_water = _rebalance_moist_pressure(
+        pressure.copy(), vapour + condensate, dry_mass, base, coord)
+    vapour_only = _rebalance_moist_pressure(
+        pressure.copy(), vapour, dry_mass, base, coord)
+    np.testing.assert_array_equal(pressure, total_water)
+    # The condensate is worth several Pa on this column, so the equality
+    # above is a real discriminator and not two ways of writing qv.
+    assert np.abs(total_water - vapour_only).max() > 1.0
 
 
 def test_mp28_real_ingest_requires_the_analyzed_inventory_by_name():
@@ -2251,3 +2302,33 @@ def test_rh_lane_surface_qv_already_carries_the_same_floor():
         np.zeros((2, 2)))
 
     assert np.all(bone_dry == _WRF_QV_MIN_VALUE)
+
+
+def test_explicit_five_analyzed_species_preserves_native_state_bytes():
+    legacy, _ = _analyzed_hrrr_real_init(6)
+    declared, _ = _analyzed_hrrr_real_init(6, analyzed_species=HRRR_ANALYZED_HYDROMETEORS)
+    for name in ("mup", "thp", "php", "qv", "qc", "qr", "qi", "qs", "qg", "u", "v", "w"):
+        np.testing.assert_array_equal(_host_array(getattr(legacy.state, name)),
+                                      _host_array(getattr(declared.state, name)))
+    for name in ("total_pressure", "total_specific_volume", "surface_qv"):
+        np.testing.assert_array_equal(getattr(legacy,name),getattr(declared,name))
+
+
+@pytest.mark.parametrize("selected", [(), ("QC",), ("QC", "QR")])
+def test_declared_analyzed_inventory_retains_only_file_supplied_mass(selected):
+    absent=tuple(name for name in HRRR_ANALYZED_HYDROMETEORS if name not in selected)
+    result, _ = _analyzed_hrrr_real_init(6, drop=absent, analyzed_species=selected)
+    receipt=result.hydrometeor_initialization
+    assert receipt["declared_analyzed_species"]==list(selected)
+    assert set(receipt["source_absent_state_fields"])=={name.lower() for name in absent}
+    for name in absent:
+        assert np.count_nonzero(_host_array(getattr(result.state,name.lower())))==0
+        assert receipt["source_absent_state_fields"][name.lower()]["nonzero_count"]==0
+    for name in selected:
+        assert np.count_nonzero(_host_array(getattr(result.state,name.lower())))>0
+    assert np.isfinite(result.total_pressure).all()
+
+
+def test_declared_analyzed_field_cannot_be_absent():
+    with pytest.raises(KeyError,match="QC"):
+        _analyzed_hrrr_real_init(6,drop=("QC",),analyzed_species=("QC",))

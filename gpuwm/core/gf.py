@@ -2,8 +2,14 @@
 
 The scheme itself is ``gpuwm/core/kernels/gf.cu`` -- the whole of WRF
 v4.6.1's GFDRV per column, held at max_ulp 0 against the byte-frozen
-oracle by ``tests/test_gf_gfdrv_cuda.py`` with fzu computed on the device.
-This module is only the seam: it packs the engine's column state into the
+oracle by ``tests/test_gf_gfdrv_cuda.py`` with ``fzu`` PINNED from that
+capture.  ``fzu`` is pinned because gamma is a DELIBERATE DIVERGENCE from
+WRF since 2.6.6 -- ArWen's is correctly rounded and glibc's, which
+gfortran binds WRF's ``gamma()`` intrinsic to, is not
+(docs/gf_gamma_known_delta.md).  THIS adapter does not pin: the shipped
+forecast computes the correctly rounded value, the three override slots
+stay 0, and the pin exists only for column-by-column comparison against a
+WRF capture.  This module is only the seam: it packs the engine's column state into the
 kernel's input layout, launches ``gf_gfdrv_stage`` over every column, and
 returns the driver's Task-1 :class:`~gpuwm.core.physics.CumulusResult`
 (rates held until the next due call, RAINCV consumed once per due call --
@@ -79,6 +85,15 @@ _GF_KMAX_DEFAULT = 40
 # parity suites.
 _IN_LEV = ("u", "v", "w", "t", "qv", "p", "pi", "rho", "dz8w", "p8w",
            "rthften", "rqvften", "rthraten", "rthblten", "rqvblten")
+#: gf.cu's DINS_ order.  The last three are the per-column ``fzu`` override
+#: (``<= 0`` means "compute it"), which this adapter always leaves at 0 --
+#: the shipped forecast uses ArWen's own correctly rounded gamma.  They exist
+#: because gamma is a DELIBERATE DIVERGENCE from WRF
+#: (docs/gf_gamma_known_delta.md) and a run being graded column-by-column
+#: against a WRF capture pins them from that capture; the parity suites are
+#: the only callers that ever set them.
+_IN_SCA = ("ht", "hfx", "qfx", "xland", "dt", "dx",
+           "fzu_up", "fzu_dn", "fzu_sh")
 _OUT_LEV = ("rthcuten", "rqvcuten", "rqccuten", "rqicuten", "dudt", "dvdt",
             "gdc", "gdc2",
             "outt", "outq", "outqc", "outu", "outv",
@@ -277,12 +292,13 @@ class GrellFreitas:
         # -- the outer clock when the case integrates internal substeps,
         # the same idiom as the KF adapter.
         clock_dt = DTYPE(_model_clock_dt(cfg))
-        scin = cp.empty((ncol, 6), dtype=DTYPE)
+        scin = cp.zeros((ncol, len(_IN_SCA)), dtype=DTYPE)
         scin[:, 0] = state.ht.reshape(ncol)
         scin[:, 1] = fields["hfx"].reshape(ncol)
         scin[:, 2] = fields["qfx"].reshape(ncol)
         scin[:, 3] = fields["xland"].reshape(ncol)
         scin[:, 4] = clock_dt
+        # slots 6/7/8 stay 0: fzu is COMPUTED, not pinned, on this path.
         dx_column = (None if self._driver is None
                      else getattr(self._driver, "gf_dx_column", None))
         if dx_column is None:

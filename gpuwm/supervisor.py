@@ -21,6 +21,7 @@ import json
 import math
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -42,6 +43,10 @@ from gpuwm.certify.capsule import emit_run_capsule
 # reach a terminal -- so anything lifted OUT of a capsule and printed
 # has to go through this first.
 from gpuwm.explain import split as explain_split
+# A killed run's only chance to say anything.  Both processes below are
+# front doors that own a whole run, and neither had a signal handler:
+# SIGTERM killed them at SIG_DFL with nothing printed.
+from gpuwm.signal_report import report_on_signal
 
 
 HEARTBEAT_SCHEMA = "gpuwm.run-progress/v1"
@@ -74,6 +79,15 @@ FAILURE_CAPSULE_TEXT_ROLES = frozenset({"vtable", "wps_namelist"})
 
 HEARTBEAT_NAME = "run-progress.json"
 FAILURE_CAPSULE_NAME = "failure-capsule.json"
+
+# Where a supervised worker's own output lands, in --outdir, one pair per
+# fresh process: 01 is the first launch and the number increments for each
+# recovery attempt.  Named here because the WORKER is where a traceback is
+# written -- the parent's terminal carries none of it -- so `gpuwm run
+# --help` has to be able to say the file name without re-typing it.
+WORKER_STDOUT_NAME = "worker-{attempt:02d}.stdout.log"
+WORKER_STDERR_NAME = "worker-{attempt:02d}.stderr.log"
+
 COMPUTE_MEMORY_THRESHOLD_MIB = 64
 MICROPHYSICS_TRANSITION_RECEIPT_NAME = "microphysics-transitions.json"
 
@@ -841,18 +855,62 @@ class GPUProcess:
     process_type: str | None = None
 
 
+def _nvidia_smi_failure(arguments: list[str], reason: str, *,
+                       remedy: str, stdout=None, stderr=None) -> GPUPreflightError:
+    # NVIDIA tools can put an NVML error on stdout while leaving stderr
+    # empty. TimeoutExpired can carry bytes even with text=True. Preserve
+    # both streams as diagnostics; neither is evidence of a successful query.
+    details = []
+    for name, value in (("stderr", stderr), ("stdout", stdout)):
+        if isinstance(value, bytes):
+            value = value.decode("utf-8", errors="replace")
+        if value and value.strip():
+            details.append(f"  nvidia-smi {name}: {value.strip()}")
+    return GPUPreflightError("\n".join((
+        f"GPU preflight failed closed: nvidia-smi {reason}; "
+        "the required GPU state checks did not complete.",
+        f"  {remedy}",
+        f"  Failed query arguments: {arguments!r}",
+        *details,
+    )))
+
+
 def _run_nvidia_smi(arguments: list[str]) -> str:
+    remedy = ("Run nvidia-smi in the same shell and restore working NVIDIA "
+              "driver/runtime access before retrying the forecast.")
     try:
         result = subprocess.run(
             ["nvidia-smi", *arguments], check=False, capture_output=True,
-            text=True, timeout=20)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        raise GPUPreflightError(
-            f"GPU preflight failed closed: nvidia-smi unavailable: {exc}") from exc
+            text=True, encoding="utf-8", errors="replace", timeout=20)
+    except FileNotFoundError as exc:
+        raise _nvidia_smi_failure(
+            arguments, "was not found on PATH", remedy=(
+                "Make NVIDIA's nvidia-smi available on PATH in this "
+                "environment, then run nvidia-smi in the same shell before "
+                "retrying the forecast.")) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise _nvidia_smi_failure(
+            arguments, f"timed out after {exc.timeout:g} seconds",
+            remedy=remedy, stdout=exc.stdout, stderr=exc.stderr) from exc
+    except OSError as exc:
+        raise _nvidia_smi_failure(
+            arguments, f"could not be started ({exc})", remedy=(
+                "Check executable access in this environment. " + remedy)) from exc
     if result.returncode != 0:
-        raise GPUPreflightError(
-            "GPU preflight failed closed: nvidia-smi returned "
-            f"{result.returncode}: {result.stderr.strip()}")
+        reason = f"exited with status {result.returncode}"
+        if os.name == "posix" and result.returncode < 0:
+            # POSIX subprocess returns -SIGNAL. Windows return codes are
+            # exit/exception statuses and retain their original numeric code.
+            try:
+                name = signal.Signals(-result.returncode).name
+            except ValueError:
+                pass
+            else:
+                reason = (f"terminated by {name} (signal {-result.returncode}, "
+                          f"return code {result.returncode})")
+        raise _nvidia_smi_failure(
+            arguments, reason, remedy=remedy,
+            stdout=result.stdout, stderr=result.stderr)
     return result.stdout
 
 
@@ -1578,7 +1636,8 @@ def supervise_experiment(
         prep_timeout_seconds: float | None = None,
         health_debug: bool = False, allow_shared_gpu: bool = False,
         lock_path: str | Path | None = None,
-        directory_hash: str | None = None) -> SupervisorResult:
+        directory_hash: str | None = None,
+        on_progress: Callable[[Heartbeat], None] | None = None) -> SupervisorResult:
     """Run an experiment under exclusive-GPU fresh-process supervision."""
     if max_restarts < 0:
         raise ValueError("max_restarts must be nonnegative")
@@ -1631,8 +1690,8 @@ def supervise_experiment(
             # p99 history.
             history = RollingStepWall()
             started_at = utc_now()
-            stdout_path = outdir / f"worker-{attempts:02d}.stdout.log"
-            stderr_path = outdir / f"worker-{attempts:02d}.stderr.log"
+            stdout_path = outdir / WORKER_STDOUT_NAME.format(attempt=attempts)
+            stderr_path = outdir / WORKER_STDERR_NAME.format(attempt=attempts)
             stdout_logs.append(stdout_path)
             stderr_logs.append(stderr_path)
             env = os.environ.copy()
@@ -1733,6 +1792,8 @@ def supervise_experiment(
                         last_heartbeat = current
                         last_signal_monotonic = time.monotonic()
                     integrating_seen |= current.status == "integrating"
+                    if on_progress is not None:
+                        on_progress(current)
                 silent_seconds = time.monotonic() - last_signal_monotonic
                 if (not integrating_seen and prep_timeout_seconds is not None
                         and silent_seconds > prep_timeout_seconds):
@@ -2042,25 +2103,50 @@ def register_cli(subparsers: argparse._SubParsersAction,
 
 
 def supervise_from_cli(args: argparse.Namespace) -> int:
-    result = supervise_experiment(
-        args.config, args.outdir, restart=args.restart,
-        gpu_uuid=args.gpu_uuid,
-        max_restarts=args.supervisor_max_restarts,
-        prep_timeout_seconds=args.prep_timeout,
-        allow_shared_gpu=args.allow_shared_gpu,
-        health_debug=args.health_debug,
-        directory_hash=getattr(args, "directory_input_hash", None))
-    transition_receipt, transition_sha = _current_transition_receipt(
+    # THE process the shell waits on, and the one whose death the reader
+    # sees as a bare `Terminated`.  It is also the process that knows the
+    # worker log exists: the forecast's own output is redirected into
+    # --outdir and never reaches this terminal, so a reader whose run was
+    # killed has evidence they have not been told about.
+    # BOTH worker logs.  The traceback is on stderr, but the forcing
+    # decode's own line -- how many valid times were decoded and what
+    # they cost in host RAM -- is printed on stdout, and on this path
+    # that is a file too.  Naming only one of them sends a reader whose
+    # run was killed by the host to the half that does not carry the
+    # figure.
+    from gpuwm.progress import ForecastProgress, format_elapsed, line
+    progress = ForecastProgress()
+    progress.write(f"Starting forecast. Outputs: {Path(args.outdir).resolve()}")
+    with report_on_signal(
+            f"gpuwm {getattr(args, 'command', 'run')}",
+            heartbeat=Path(args.outdir) / HEARTBEAT_NAME,
+            logs=(Path(args.outdir) / WORKER_STDERR_NAME.format(attempt=1),
+                  Path(args.outdir) / WORKER_STDOUT_NAME.format(attempt=1))):
+        result = supervise_experiment(
+            args.config, args.outdir, restart=args.restart,
+            gpu_uuid=args.gpu_uuid,
+            max_restarts=args.supervisor_max_restarts,
+            prep_timeout_seconds=args.prep_timeout,
+            allow_shared_gpu=args.allow_shared_gpu,
+            health_debug=args.health_debug,
+            directory_hash=getattr(args, "directory_input_hash", None),
+            on_progress=progress)
+    transition_receipt, _ = _current_transition_receipt(
         args.outdir, result.run_id, result.heartbeat.config_digest)
-    print({"run_id": result.run_id, "status": result.heartbeat.status,
-           "attempts": result.attempts,
-           "completed_seconds": result.heartbeat.model_elapsed_seconds,
-           "last_durable_wrfout": result.heartbeat.last_durable_wrfout,
-           "last_checkpoint": result.heartbeat.last_checkpoint,
-           "microphysics_transition_receipt": (
-               str(transition_receipt) if transition_receipt is not None
-               else None),
-           "microphysics_transition_receipt_sha256": transition_sha})
+    heartbeat = result.heartbeat
+    line(f"Forecast complete: {format_elapsed(heartbeat.model_elapsed_seconds)} "
+         f"simulated ({heartbeat.outer_step} steps).")
+    line(f"Outputs: {Path(args.outdir).resolve()}")
+    if result.attempts > 1:
+        line(f"Completed after {result.attempts - 1} automatic recovery attempt(s).")
+    if heartbeat.last_checkpoint is not None:
+        line(f"Latest checkpoint: {heartbeat.last_checkpoint}")
+    if result.stdout_logs:
+        line(f"Detailed log: {result.stdout_logs[-1]}")
+    if result.stderr_logs:
+        line(f"Diagnostics: {result.stderr_logs[-1]}")
+    if transition_receipt is not None:
+        line(f"Microphysics transitions: {transition_receipt}")
     return 0
 
 
@@ -2104,7 +2190,15 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "worker":
-        return _worker_main(args)
+        # Installed at the door rather than inside `_worker_main` so it
+        # covers the argument parsing and the environment reads too, and
+        # so the report is bounded by the process rather than by a try
+        # block.  Descriptor 2 here is worker-NN.stderr.log, which is
+        # where the reader is being sent.
+        with report_on_signal(
+                "gpuwm run worker",
+                heartbeat=Path(args.outdir) / HEARTBEAT_NAME, worker=True):
+            return _worker_main(args)
     raise AssertionError(args.command)
 
 
@@ -2129,4 +2223,5 @@ __all__ = [
     "stale_threshold_seconds", "supervise_experiment",
     "supervise_from_cli", "utc_now", "validate_manifest_checkpoint",
     "write_failure_capsule", "write_heartbeat", "unique_temp_path",
+    "WORKER_STDERR_NAME", "WORKER_STDOUT_NAME",
 ]

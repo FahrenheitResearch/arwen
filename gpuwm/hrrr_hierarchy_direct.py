@@ -59,74 +59,6 @@ from gpuwm.core.microphysics_transition import resolve_microphysics_transition
 
 
 SCHEMA = "gpuwm-native-hrrr-hierarchy-direct-v1"
-_SUPPORTED_PHYSICS = {
-    "sf_sfclay_physics": 91,
-    "sf_surface_physics": 2,
-    "cu_physics": 0,
-}
-#: The PBL closures the certified native HRRR slice admits on the ROOT,
-#: the same enumerated set
-#: :data:`gpuwm.hrrr_route_inputs.ADMITTED_PBL_PHYSICS` admits at
-#: emission, and admitted here for the same reason: each member is the
-#: value a REGISTERED HRRR preparation profile pins -- 1 (YSU) for the
-#: profiles this route has always carried, 11 (Shin-Hong 2015) for
-#: ``thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1``, the composition a
-#: physics-fidelity arm selecting divergence-ledger entry L3 resolves to.
-#: It was a single pinned 1 in :data:`_SUPPORTED_PHYSICS` until that
-#: template was registered.
-#:
-#: Widening the slice this way costs nothing in PREPARATION and is the
-#: same evidence the child exemption below already rests on: preparation
-#: writes static fields and an interpolated initial state, and the
-#: closure selects tendencies only the forecast computes (the grep
-#: recorded at :data:`_DOMAIN_PREPARATION_OVERRIDES` returns a single hit
-#: for ``bl_pbl_physics``, and it is a comment).  What the registration
-#: adds is the other half: a root PREPARED for this suite, by a shipped
-#: profile, rather than a suite nothing can prepare.
-_ADMITTED_PBL_PHYSICS = frozenset({1, 11})
-#: Radiation is admitted as a (ra_lw_physics, ra_sw_physics) PAIR, the
-#: same two pairs :data:`gpuwm.hrrr_route_inputs.ADMITTED_RADIATION_PAIRS`
-#: admits at emission (B4 route-qualification motion, items 1-3): the
-#: certified (0, 1) validation suite and the resolved RRTMG (4, 4) pair
-#: the shipped registry's prepared-tree row already claims for HRRR.
-#: The evidence that widening preparation this way is safe is the same
-#: evidence this file already published for ``bl_pbl_physics`` at
-#: :data:`_CHILD_PHYSICS_SLICE_OVERRIDES`: preparation writes static
-#: fields and an interpolated initial state, and a sweep of
-#: ``gpuwm/ingest/``, ``gpuwm/native_hierarchy.py``,
-#: ``gpuwm/native_domain_artifacts.py`` and ``tools/prepare_hrrr_wrf.py``
-#: for ``ra_physics|ra_lw_physics|ra_sw_physics|ra_rrtmg_variant``
-#: returns zero hits -- radiation selects tendencies only the forecast
-#: computes.  ``ra_physics = 0`` stays pinned beside the pair because
-#: both admitted compositions spell radiation explicitly, and
-#: ``validate_run_config`` requires exactly that spelling.
-_ADMITTED_RADIATION_PAIRS = frozenset({(0, 1), (4, 4)})
-# WRF v4.6.1 Registry/Registry.EM_COMMON:3015 declares Kessler's
-# qv/qc/qr package.  Native-HRRR initialization retains QC/QR and produces
-# an explicit discard receipt for the source-only frozen species before this
-# direct hierarchy path sees the state.
-#: 28 is aerosol-aware Thompson (Registry/Registry.EM_COMMON:3036).  It is
-#: admitted here on the same footing as every other entry -- this set answers
-#: "does the direct hierarchy path know this selector", not "is the scheme
-#: mature".  Maturity and reachability are the registry's answer, and mp=28
-#: is registered as a per-domain component override with no template, so
-#: adding it here cannot make it a default anywhere.
-#:
-#: 50 (P3) is admitted on the same footing as every other entry.  Its
-#: former exclusion stood on two legs and both are gone: the ingest
-#: hydrometeor gap is fixed (``HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE``
-#: retains QC/QR/QI for the one-ice-category package and the number
-#: moments and rime pair start at the allocator's defined FP32 zero,
-#: gpuwm/ingest/real.py), and the rime-pair mixed-edge closure is
-#: ratified in microphysics_transition, so a P3 domain sits under or over
-#: any ported partner.  The "six-species output" worry recorded beside
-#: them was never a breakage: gpuwm/io/wrfout.py's history rows are
-#: presence-guarded and carry QIR/QIB, so a P3 run's wrfout omits
-#: QSNOW/QGRAUP exactly as stock WRF's Registry does.  Defined,
-#: documented, unit-tested is the admission bar
-#: (tests/test_hrrr_hierarchy_direct.py drives the mp=50 rows through
-#: the same plan legs every other scheme takes).
-_SUPPORTED_MICROPHYSICS = frozenset({1, 6, 8, 10, 16, 18, 28, 50})
 _DOMAIN_PREPARATION_OVERRIDES = frozenset({
     "cu_physics", "cudt_minutes", "radt", "radt_minutes", "bldt",
     "diff_6th_factor", "epssm", "spec_exp", "mp_physics", "moist",
@@ -179,20 +111,6 @@ _DOMAIN_PREPARATION_OVERRIDES = frozenset({
     "inflow_perturbation", "inflow_perturbation_seed",
     "inflow_perturbation_amplitude_scale", "inflow_perturbation_faces",
 })
-#: Switches of the certified HRRR root slice -- :data:`_SUPPORTED_PHYSICS`
-#: and the enumerated :data:`_ADMITTED_PBL_PHYSICS` beside it -- that a
-#: CHILD may hold away from.  The slice is a statement about what the
-#: native-HRRR INITIALIZATION supports, and it is pinned in full on the
-#: root, which is the domain that is actually initialized from HRRR and
-#: the domain the optional stock-WRF export's own v2-slice branch reads.
-#: Nothing in the preparation consumes a child's PBL selection (see the
-#: note in _DOMAIN_PREPARATION_OVERRIDES); pinning it here refused the
-#: PBL-off LES child that the experiment schema, the forecast runner and
-#: the namelist importer all admit, and refused it after the expensive
-#: root preparation had already run.  A child therefore stays free of the
-#: root's enumerated admission too: an LES child runs PBL off, which no
-#: preparation profile pins and none needs to.
-_CHILD_PHYSICS_SLICE_OVERRIDES = frozenset({"bl_pbl_physics"})
 _MAX_PUBLIC_DOMAINS = 21
 
 
@@ -314,7 +232,6 @@ def _require_raw_stock_delta(
         ("time_control", "io_form_boundary"): [2],
         ("domains", "num_metgrid_levels"): [51],
         ("domains", "num_metgrid_soil_levels"): [9],
-        ("domains", "sfcp_to_sfcp"): [True],
         ("physics", "isfflx"): [1],
         ("physics", "ifsnow"): [1],
         ("physics", "icloud"): [1],
@@ -323,7 +240,13 @@ def _require_raw_stock_delta(
         ("physics", "sf_urban_physics"): [0] * max_dom,
         ("physics", "sst_update"): [0],
     }
-    observed_pins = {}
+    surface_pressure = native.get("domains", {}).get("sfcp_to_sfcp")
+    if (not isinstance(surface_pressure, list) or len(surface_pressure) != 1
+            or type(surface_pressure[0]) is not bool
+            or not _same_typed_values(
+                stock.get("domains", {}).get("sfcp_to_sfcp"), surface_pressure)):
+        raise ValueError("native and stock namelists must declare the same boolean sfcp_to_sfcp")
+    observed_pins = {"domains.sfcp_to_sfcp": surface_pressure}
     for (section, key), expected in certified_pins.items():
         observed = native.get(section, {}).get(key)
         observed_pins[f"{section}.{key}"] = observed
@@ -683,53 +606,9 @@ def _supported_hierarchy_slice(exp, root_target, *, forcing_hours) -> None:
             raise ValueError(
                 f"d{domain.grid_id:02d} must use the sealed root's "
                 f"{root_target.nz}-level vertical grid")
-        if domain.run.mp_physics not in _SUPPORTED_MICROPHYSICS:
-            raise ValueError(
-                f"d{domain.grid_id:02d} requests MP"
-                f"{domain.run.mp_physics}; HRRR hierarchy preparation "
-                f"supports {sorted(_SUPPORTED_MICROPHYSICS)}")
-        exempt = (frozenset() if domain is root_domain
-                  else _CHILD_PHYSICS_SLICE_OVERRIDES)
-        if ("bl_pbl_physics" not in exempt
-                and int(domain.run.bl_pbl_physics)
-                not in _ADMITTED_PBL_PHYSICS):
-            raise ValueError(
-                f"d{domain.grid_id:02d} is outside the certified native "
-                f"HRRR PBL slice: bl_pbl_physics="
-                f"{domain.run.bl_pbl_physics}; the route admits "
-                f"{sorted(_ADMITTED_PBL_PHYSICS)}, each pinned by a "
-                "registered HRRR preparation profile.")
-        mismatch = {
-            name: (getattr(domain.run, name), expected)
-            for name, expected in _SUPPORTED_PHYSICS.items()
-            if getattr(domain.run, name) != expected and name not in exempt
-        }
-        if mismatch:
-            raise ValueError(
-                f"d{domain.grid_id:02d} is outside the certified native "
-                f"HRRR physics slice: {mismatch}")
-        # Compared in the RESOLVED explicit form, through the config's own
-        # resolver: the WRF namelist importer emits a coupled 4/4 request
-        # as the historical aggregate spelling (ra_physics=4 with the
-        # split fields at their -1 defaults), and gpuwm/config.py
-        # documents that spelling as preserving the aggregate exactly.
-        # Comparing raw fields here made the (4, 4) admission unreachable
-        # for every namelist-imported experiment -- the error text
-        # advertised a case no import could satisfy -- while the same
-        # selection spelled explicitly passed.  radiation_scheme_ids is
-        # the production resolver and itself refuses an incoherent
-        # spelling (mixed split/aggregate), so nothing is widened: the
-        # admitted physics is the same two resolved pairs.
-        pair = radiation_scheme_ids(domain.run)
-        if pair not in _ADMITTED_RADIATION_PAIRS:
-            raise ValueError(
-                f"d{domain.grid_id:02d} is outside the certified native "
-                f"HRRR radiation slice: resolved (ra_lw_physics, "
-                f"ra_sw_physics)={pair}; the route admits "
-                f"{sorted(_ADMITTED_RADIATION_PAIRS)}."
-                "  Under (0, 1) the separately supplied stock-WRF "
-                "namelist selects longwave 1; under (4, 4) both arms "
-                "run 4.")
+        radiation_scheme_ids(domain.run)  # validate selector coherence
+        # The configured initializer and shared runtime own physics capability.
+        # A registered source/preset pair is evidence, not an execution requirement.
         expected_run = dict(root_run)
         expected_run.update({
             "grid_id": domain.grid_id,
@@ -772,8 +651,9 @@ def _compare_stock_experiment(native_exp, stock_exp) -> None:
                 f"select ra_lw_physics={expected} (RRTM substitutes the "
                 "native arm's disabled longwave; any other native "
                 "longwave carries unchanged)")
-    native = asdict(native_exp)
-    stock = asdict(stock_exp)
+    from gpuwm.experiment import experiment_config_document
+    native = experiment_config_document(native_exp)
+    stock = experiment_config_document(stock_exp)
     for document in (native, stock):
         document["name"] = "normalized"
         for domain in document["domains"]:
@@ -906,11 +786,12 @@ def _source_identity(cpu_bridge: Path) -> dict[str, object]:
     return identity
 
 
-def _surface_state(restored, static_fields, *, sf_surface_physics):
+def _surface_state(restored, static_fields, *, sf_surface_physics, num_soil_layers=None):
     if restored.surface is None:
         return preprocess_land_surface_soil(
             restored.met.fields,
             sf_surface_physics=int(sf_surface_physics),
+            num_soil_layers=num_soil_layers,
             soil_type=static_fields["SCT_DOM"],
             deep_soil_temperature=static_fields["TMN"],
         )
@@ -1004,13 +885,25 @@ def prepare_hrrr_hierarchy(
     identity = cache_header.get("identity")
     if not isinstance(identity, dict):
         raise ValueError("root preparation cache lacks an identity")
+    from gpuwm.case_data import preparation_case_policy
+    case_policy = identity.get("source_identity", {}).get("preparation_case_policy")
+    if case_policy is None:
+        # Older sealed roots used the documented true/default-water operands.
+        case_policy = preparation_case_policy(None)
+    if type(case_policy.get("sfcp_to_sfcp")) is not bool:
+        raise ValueError("sealed root preparation lacks a boolean sfcp_to_sfcp policy")
+    if stock_runtime_delta["certified_native_runtime"]["domains.sfcp_to_sfcp"] != [case_policy["sfcp_to_sfcp"]]:
+        raise ValueError("hierarchy sfcp_to_sfcp differs from the sealed root preparation")
     forcing_hours = tuple(identity.get("forcing_hours", ()))
     native_exp, native_resolved, native_report = _native_experiment(
         Path(wps_namelist), Path(namelist_input),
         rrtmg_variant=_sealed_root_rrtmg_variant(identity),
         acknowledgements=tuple(acknowledgements))
-    from gpuwm.static.highres_production import refuse_inert_highres
-    refuse_inert_highres(root_domain_spec, lane="native-HRRR static path")
+    from gpuwm.static.highres_production import parse_static_table
+    declared_highres = identity.get("source_identity", {}).get("static_highres")
+    static_highres = parse_static_table(
+        None if declared_highres is None else {"highres": declared_highres},
+        source="sealed root preparation", base_dir=Path(root_preparation))
     target = load_hrrr_target_domain(root_domain_spec)
     _supported_hierarchy_slice(
         native_exp, target, forcing_hours=forcing_hours)
@@ -1035,6 +928,10 @@ def prepare_hrrr_hierarchy(
 
     static_fields, static_receipt = verify_hrrr_native_static(
         paths["static_cache"], paths["static_receipt"], target)
+    from gpuwm.static.highres_production import require_prepared_highres
+    if static_highres is not None and static_highres.enabled:
+        require_prepared_highres(static_receipt, target.grid(), config=static_highres,
+                                 domain_id=1, case_date=native_exp.start_time.date())
     observed_source_sha = sha256_file(Path(source_manifest))
     if (observed_source_sha != source_manifest_sha256
             or identity.get("source_manifest_sha256") != observed_source_sha):
@@ -1085,13 +982,22 @@ def prepare_hrrr_hierarchy(
         cfg=native_exp.root.run, static=static_fields)
     root_soil = _surface_state(
         restored, static_fields,
-        sf_surface_physics=native_exp.root.run.sf_surface_physics)
+        sf_surface_physics=native_exp.root.run.sf_surface_physics,
+        num_soil_layers=native_exp.root.run.num_soil_layers)
     restore_seconds = time.perf_counter() - restore_started
 
     snapshots_started = time.perf_counter()
     snapshots = load_hrrr_native_series(
         paths["bridge"], sealed_source_leads(identity, forcing_hours)[:1],
         expected_manifest_sha256=bridge_sha)
+    from gpuwm.ingest.water_overlay import (
+        load_bound_water_overlay, overlay_snapshot_sequence, verify_overlay_sequence)
+    water_overlay, water_binding = load_bound_water_overlay(
+        case_policy.get("water_temperature_overlay"))
+    sealed_water_binding = identity.get("source_identity", {}).get("water_temperature_overlay")
+    if water_binding != sealed_water_binding:
+        raise ValueError("water overlay differs from the sealed root preparation")
+    snapshots = overlay_snapshot_sequence(snapshots, water_overlay, binding=water_binding)
     static_catalog, catalog_receipt = verified_static_catalog(
         Path(wps_namelist), Path(geog_root),
         [domain.grid_id for domain in native_exp.domains])
@@ -1101,8 +1007,9 @@ def prepare_hrrr_hierarchy(
             "WPS d01 GEOG selection differs from the sealed root static "
             "selection")
     catalog = NestedInputCatalog(
-        snapshots=tuple(snapshots), static_catalog=static_catalog,
-        files=tuple(static_catalog.files),
+        snapshots=snapshots, static_catalog=static_catalog,
+        water_temperature_policy=case_policy["water_temperature_policy"],
+        files=tuple(static_catalog.files), static_highres=static_highres,
         provenance={
             "adapter": "native-HRRR-hierarchy-direct-v1",
             "bridge_manifest_sha256": bridge_sha,
@@ -1162,6 +1069,7 @@ def prepare_hrrr_hierarchy(
             root_met=restored.met, root_soil=root_soil,
             root_static_fields=static_fields,
             root_boundaries=restored.boundaries,
+            sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
             bridge_manifest_sha256=bridge_sha,
             source_manifest_sha256=observed_source_sha,
             namelist_sha256=namelist_sha,
@@ -1186,6 +1094,7 @@ def prepare_hrrr_hierarchy(
             stock_wrf_export="optional",
         )
         hierarchy_seconds = time.perf_counter() - hierarchy_started
+        verify_overlay_sequence(snapshots)
         # AFTER the artifact join, and inside the same staging directory
         # the atomic publication renames: the hierarchy tree is already
         # sealed on its own terms, and the corridor set lands beside it
@@ -1196,7 +1105,7 @@ def prepare_hrrr_hierarchy(
             exp=native_exp, grids=grids, static_catalog=static_catalog,
             directory=(staging / "hierarchy-artifacts"
                        / STATICS_CORRIDOR_DIRNAME),
-            statics_corridor=statics_corridor)
+            statics_corridor=statics_corridor, static_highres=static_highres)
         stock_copy = staging / "namelist.input"
         shutil.copyfile(stock_wrf_namelist_input, stock_copy)
         payload = {

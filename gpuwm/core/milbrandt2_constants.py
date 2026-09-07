@@ -1,3 +1,22 @@
+# ======================================================================
+# THIRD-PARTY NOTICE.  Parts of this file are hand transcriptions of
+# third-party work.  ArWen distributes the file under the Apache License
+# 2.0; the notices below belong to the transcribed parts and are kept here
+# because their own licences require it.  Full texts are in the repository
+# NOTICE and in the licenses/ directory.
+#
+#   The GAMMLN log-gamma coefficients and their evaluation, taken from WRF
+#   v4.6.1 phys/module_mp_thompson.F:5325-5347, which preserves the notice
+#   immediately above and below that routine:
+#
+#       (C) Copr. 1986-92 Numerical Recipes Software 2.02
+#
+#   ArWen's position on this material -- taken from WRF, reproduced in
+#   order to match WRF bit for bit, and the standard Lanczos g=5 n=6
+#   coefficient set -- is set out in
+#   licenses/NOTICE-Numerical-Recipes.txt.  The notice is preserved here
+#   because WRF preserved it.
+# ======================================================================
 """Milbrandt-Yau 2-moment (WRF ``mp_physics=9``) first-call constants.
 
 WRF v4.6.1 ``phys/module_mp_milbrandt2mom.F`` computes its SAVE-attributed

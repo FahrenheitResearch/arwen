@@ -68,9 +68,32 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
-#: The clean base this branch was re-applied onto.  Used only by the
-#: diff scan, which skips itself when the object is not present.
-CLEAN_BASE = "f27fc897ab88a6f7e5cfc59d3573f3285aeda9fd"
+#: Public snapshots have their own forward history; the private preparation
+#: base must never be imported merely to make a public history scan run.
+PUBLIC_CLEAN_BASE = "a70ade37b666d26623cb23772cdeb9a132ee9656"
+PRIVATE_CLEAN_BASE = "f27fc897ab88a6f7e5cfc59d3573f3285aeda9fd"
+
+
+def _history_base() -> str:
+    """Choose an approved ancestor, preferring the published 2.6.5 baseline.
+
+    Never fall back to HEAD or to an arbitrary available commit. If neither
+    approved base is available, the public pin remains unresolved and the
+    separate armed-scan guards fail by name.
+    """
+    for base in (PUBLIC_CLEAN_BASE, PRIVATE_CLEAN_BASE):
+        try:
+            result = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", base, "HEAD"], cwd=ROOT,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            return PUBLIC_CLEAN_BASE
+        if result.returncode == 0:
+            return base
+    return PUBLIC_CLEAN_BASE
+
+
+CLEAN_BASE = _history_base()
 
 #: Vendored third-party trees, excluded from every scan here.  They carry
 #: innocent matches -- an OpenSSL assembly comment in `ring`, and one
@@ -78,7 +101,8 @@ CLEAN_BASE = "f27fc897ab88a6f7e5cfc59d3573f3285aeda9fd"
 #: ordinary-English names in Tier 2 below (naming that file here would
 #: trip this module's own diff scan, which is the point of Tier 2).
 #: Nobody edits either tree in this repository.
-VENDOR = ("tools/rustwx/vendor/", "tools/rw_wps/vendor/")
+VENDOR = ("tools/rustwx/vendor/", "tools/rw_wps/vendor/",
+          "tools/arwen-ui-vendor/crates-io/")
 
 #: The release exclusion manifest, read so this gate's idea of "what a
 #: public release carries" cannot drift from the builder's.
@@ -357,6 +381,23 @@ def test_no_tracked_source_contains_the_excluded_subsystem():
         + "\n  ".join(offenders))
 
 
+def _diff_offenders(diff: str) -> list[str]:
+    offenders = []
+    current = ""
+    for line in diff.splitlines():
+        if line.startswith("+++ b/"):
+            current = line[len("+++ b/"):]
+            continue
+        if current.startswith(VENDOR) or not line.startswith("+") or line.startswith("+++"):
+            continue
+        token = _tier1_match(line)
+        if token is not None:
+            offenders.append(f"{current}: {token!r} in: {line[:120]}")
+            if len(offenders) > 40:
+                break
+    return offenders
+
+
 def test_the_whole_branch_diff_against_its_clean_base_is_clean():
     """The release acceptance check, made permanent.
 
@@ -364,7 +405,7 @@ def test_the_whole_branch_diff_against_its_clean_base_is_clean():
     question the release asks: is everything this branch ADDED to its clean
     base still clean?
 
-    TIER-1 ONLY, and every path -- shipped or not -- because Tier-1 names
+    TIER-1 ONLY, and every authored path -- shipped or not -- because these names
     identify the subsystem unambiguously and have no innocent use here.
 
     Tier-2 was originally applied to this diff too, on the premise that
@@ -388,19 +429,7 @@ def test_the_whole_branch_diff_against_its_clean_base_is_clean():
     except (OSError, subprocess.CalledProcessError):
         pytest.skip("the clean base is not present in this clone")
 
-    offenders: list[str] = []
-    current = ""
-    for line in diff.decode("utf-8", "replace").splitlines():
-        if line.startswith("+++ b/"):
-            current = line[len("+++ b/"):]
-            continue
-        if not line.startswith("+") or line.startswith("+++"):
-            continue
-        token = _tier1_match(line)
-        if token is not None:
-            offenders.append(f"{current}: {token!r} in: {line[:120]}")
-            if len(offenders) > 40:
-                break
+    offenders = _diff_offenders(diff.decode("utf-8", "replace"))
     assert not offenders, (
         "a line this branch ADDS to its clean base names the excluded "
         "subsystem.  The release acceptance check greps exactly this "

@@ -152,13 +152,25 @@ def test_the_scan_walks_a_staged_tree_and_skips_vendored_and_binary(tmp_path):
     (tmp_path / "crate" / "vendor" / "foo").mkdir(parents=True)
     (tmp_path / "crate" / "vendor" / "foo" / "lib.rs").write_text(
         f"// built at {MAC_HOME}\n", encoding="utf-8")
+    shared = tmp_path / "tools" / "arwen-ui-vendor"
+    (shared / "crates-io" / "foo").mkdir(parents=True)
+    (shared / "crates-io" / "foo" / "lib.rs").write_text(
+        f"// upstream capture: {MAC_HOME}\n", encoding="utf-8")
+    # Similar names and first-party siblings must remain in scope.
+    (shared / "build.py").write_text(
+        f"path = {POSIX_HOME}\n", encoding="utf-8")
+    (shared / "crates-io-local").mkdir()
+    (shared / "crates-io-local" / "lib.rs").write_text(
+        f"// path = {MAC_HOME}\n", encoding="utf-8")
     # Real binary: a NUL in the first block is what "not text" means.
     (tmp_path / "capture.bin").write_bytes(
         b"\x00\x01\x02" + WINDOWS_PROFILE.encode("utf-8") + b"\n")
 
     hits = snap.machine_path_hits(str(tmp_path))
-    assert [(rel, number) for rel, number, _, _ in hits] == [
-        ("docs/guide.md", 1)]
+    assert sorted((rel, number) for rel, number, _, _ in hits) == [
+        ("docs/guide.md", 1),
+        ("tools/arwen-ui-vendor/build.py", 1),
+        ("tools/arwen-ui-vendor/crates-io-local/lib.rs", 1)]
 
 
 @requires_builder

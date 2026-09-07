@@ -251,11 +251,24 @@ def _logf(x):
 
 
 def _tgammaf(x):
-    """glibc's ``tgammaf``, MODELLED -- see this module's docstring.
+    """The CORRECTLY ROUNDED float32 gamma -- and, since 2.6.6, the shipped
+    kernel's answer too.
 
-    Up to 2 ULP from what glibc actually returns; 31 of the 51 arguments in
-    ``gf-pow-probe.txt``'s ``pgamma`` table disagree.  This is the only
-    non-bitwise call in the reference and it is confined to ``fzu``.
+    It is NOT glibc's ``tgammaf``, and this docstring used to describe it as
+    a model of one.  It is not: ``float32(math.gamma(float64(x)))`` is
+    correctly rounded on every float32 of [0.25, 36] and glibc 2.39 is not
+    on 39.44 per cent of them, worst 6 ULP.  Up to 2 ULP separate the two;
+    31 of the 51 arguments in ``gf-pow-probe.txt``'s ``pgamma`` table
+    disagree.  This is the only non-bitwise-against-WRF call in the
+    reference and it is confined to ``fzu``.
+
+    Through 2.6.5 the CUDA kernel transcribed glibc's LGPL ``e_gammaf_r.c``
+    and so disagreed with THIS function.  That transcription is deleted and
+    ``gfk_tgamma`` is now ArWen's own correctly rounded gamma: MEASURED, it
+    returns the same word as the line below on all 59,768,833 float32 of
+    [0.25, 36], so the CPU and CUDA paths agree bitwise where they used to
+    differ on 23,575,230 of them.  The divergence from WRF that both now
+    carry is written up in ``docs/gf_gamma_known_delta.md``.
     """
     return F(math.gamma(float(F(x))))
 

@@ -363,14 +363,16 @@ def test_cuda_sources_keep_four_rates_and_wrf_number_seed_statement_order():
     assert "KF_PHASE_NO_SEPARATE_SNOW" in kf
     assert "KF_PHASE_SEPARATE_SNOW" in kf
     assert "(parcel_q[nk]+thetaeu[nk])*KF_RLF/cpm" in kf
-    assert "rqccuten[index] = parcel_t[nk]/timec" in kf
-    assert "rqicuten[index] = parcel_q[nk]/timec" in kf
-    assert "rqrcuten[index] = resolved_precip[nk]/timec" in kf
-    assert "rqscuten[index] = thetaeu[nk]/timec" in kf
+    assert "rqccuten[index] = parcel_t[nk]/tendency_timec" in kf
+    assert "rqicuten[index] = parcel_q[nk]/tendency_timec" in kf
+    assert "rqrcuten[index] = resolved_precip[nk]/tendency_timec" in kf
+    assert "rqscuten[index] = thetaeu[nk]/tendency_timec" in kf
     # WRF's warm-rain branch folds frozen mass only after applying the
     # corresponding latent-fusion adjustment to TG.
-    assert "rqccuten[index] = (parcel_t[nk]+parcel_q[nk])/timec" in kf
-    assert "rqrcuten[index] = (resolved_precip[nk]+thetaeu[nk])/timec" in kf
+    assert ("rqccuten[index] = (parcel_t[nk]+parcel_q[nk])"
+            "/tendency_timec" in kf)
+    assert ("rqrcuten[index] = (resolved_precip[nk]+thetaeu[nk])"
+            "/tendency_timec" in kf)
     latent = kf.index("tg[nk] -= (parcel_q[nk]+thetaeu[nk])*KF_RLF/cpm")
     theta_rate = kf.rindex("rthcuten[index] =")
     assert latent < theta_rate

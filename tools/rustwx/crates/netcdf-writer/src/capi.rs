@@ -61,12 +61,14 @@ pub const NCWRITE_ABI_VERSION: u32 = 1;
 /// must refuse (outside git, or a dirty tree).
 #[unsafe(no_mangle)]
 pub extern "C" fn gpuwm_ncwrite_source_rev() -> *const std::os::raw::c_char {
-    static SOURCE_REV_STAMP: &str = concat!(
-        "GPUWM_BRIDGE_SOURCE_REV=",
-        env!("GPUWM_BRIDGE_SOURCE_REV"),
-        "\0"
-    );
-    SOURCE_REV_STAMP.as_ptr().cast()
+    guard(std::ptr::null(), || {
+        static SOURCE_REV_STAMP: &str = concat!(
+            "GPUWM_BRIDGE_SOURCE_REV=",
+            env!("GPUWM_BRIDGE_SOURCE_REV"),
+            "\0"
+        );
+        SOURCE_REV_STAMP.as_ptr().cast()
+    })
 }
 
 const OK: i32 = 0;
@@ -87,6 +89,36 @@ fn set_error(message: impl Into<String>) -> i32 {
 
 fn clear_error() {
     LAST_ERROR.with(|slot| slot.borrow_mut().clear());
+}
+
+/// Turn a panic below this seam into the ABI's own refusal.
+///
+/// An unwind that reaches an `extern "C"` boundary aborts the process on the
+/// edition this workspace pins, so a panic in a decoder would take the host
+/// Python interpreter with it instead of returning the negative code and
+/// last-error string this ABI documents.  Every entry point runs its body
+/// through here, the same discipline `tools/grib1_bridge/src/lib.rs` applies
+/// to its own exports.
+pub(crate) fn guard<T>(on_panic: T, body: impl FnOnce() -> T) -> T {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        Ok(value) => value,
+        Err(payload) => {
+            let detail = payload
+                .downcast_ref::<&str>()
+                .map(|text| (*text).to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic payload".to_string());
+            // `try_borrow_mut`, not `borrow_mut`: the panic may have come from
+            // inside the last-error accessor itself, and a second panic here
+            // would abort exactly what this guard exists to prevent.
+            LAST_ERROR.with(|slot| {
+                if let Ok(mut message) = slot.try_borrow_mut() {
+                    *message = format!("panic in the netcdf-writer seam: {detail}");
+                }
+            });
+            on_panic
+        }
+    }
 }
 
 fn fail(err: NcWriteError) -> i32 {
@@ -114,7 +146,9 @@ unsafe fn utf8<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
 /// The seam's ABI version, for the loader's static handshake.
 #[unsafe(no_mangle)]
 pub extern "C" fn gpuwm_ncwrite_abi_version() -> u32 {
-    NCWRITE_ABI_VERSION
+    guard(0, || {
+        NCWRITE_ABI_VERSION
+    })
 }
 
 /// Copy the last error message for this thread into `buf`; returns the
@@ -125,14 +159,16 @@ pub extern "C" fn gpuwm_ncwrite_abi_version() -> u32 {
 /// `buf` must be writable for `cap` bytes, or null when `cap` is 0.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gpuwm_ncwrite_last_error(buf: *mut u8, cap: usize) -> usize {
-    LAST_ERROR.with(|slot| {
-        let message = slot.borrow();
-        let source = message.as_bytes();
-        if !buf.is_null() && cap > 0 {
-            let n = source.len().min(cap);
-            unsafe { std::ptr::copy_nonoverlapping(source.as_ptr(), buf, n) };
-        }
-        source.len()
+    guard(0, || {
+        LAST_ERROR.with(|slot| {
+            let message = slot.borrow();
+            let source = message.as_bytes();
+            if !buf.is_null() && cap > 0 {
+                let n = source.len().min(cap);
+                unsafe { std::ptr::copy_nonoverlapping(source.as_ptr(), buf, n) };
+            }
+            source.len()
+        })
     })
 }
 
@@ -140,20 +176,22 @@ pub unsafe extern "C" fn gpuwm_ncwrite_last_error(buf: *mut u8, cap: usize) -> u
 /// Returns null on a bad format code.
 #[unsafe(no_mangle)]
 pub extern "C" fn gpuwm_ncwrite_schema_new(format: u32) -> *mut Schema {
-    clear_error();
-    let format = match format {
-        1 => NcFormat::Classic,
-        2 => NcFormat::Offset64,
-        5 => NcFormat::Cdf5,
-        other => {
-            set_error(format!(
-                "unknown classic format code {other}; expected 1 (CDF-1), \
-                 2 (CDF-2) or 5 (CDF-5)"
-            ));
-            return std::ptr::null_mut();
-        }
-    };
-    Box::into_raw(Box::new(Schema::new(format)))
+    guard(std::ptr::null_mut(), || {
+        clear_error();
+        let format = match format {
+            1 => NcFormat::Classic,
+            2 => NcFormat::Offset64,
+            5 => NcFormat::Cdf5,
+            other => {
+                set_error(format!(
+                    "unknown classic format code {other}; expected 1 (CDF-1), \
+                     2 (CDF-2) or 5 (CDF-5)"
+                ));
+                return std::ptr::null_mut();
+            }
+        };
+        Box::into_raw(Box::new(Schema::new(format)))
+    })
 }
 
 /// Free a schema that was never handed to `gpuwm_ncwrite_create`.
@@ -163,9 +201,11 @@ pub extern "C" fn gpuwm_ncwrite_schema_new(format: u32) -> *mut Schema {
 /// freed or consumed already.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gpuwm_ncwrite_schema_free(schema: *mut Schema) {
-    if !schema.is_null() {
-        drop(unsafe { Box::from_raw(schema) });
-    }
+    guard((), || {
+        if !schema.is_null() {
+            drop(unsafe { Box::from_raw(schema) });
+        }
+    })
 }
 
 /// Define a dimension. Returns the dimid, or -1 on error.
@@ -180,21 +220,23 @@ pub unsafe extern "C" fn gpuwm_ncwrite_def_dim(
     len: u64,
     unlimited: i32,
 ) -> i64 {
-    clear_error();
-    let Some(schema) = (unsafe { schema.as_mut() }) else {
-        return set_error("def_dim called with a null schema") as i64;
-    };
-    let Some(name) = (unsafe { utf8(name, name_len) }) else {
-        return set_error("def_dim name is not valid UTF-8") as i64;
-    };
-    let len = match usize::try_from(len) {
-        Ok(len) => len,
-        Err(_) => return set_error("dimension length exceeds platform usize") as i64,
-    };
-    match schema.def_dim(name, len, unlimited != 0) {
-        Ok(dimid) => dimid as i64,
-        Err(err) => fail(err) as i64,
-    }
+    guard(ERR as i64, || {
+        clear_error();
+        let Some(schema) = (unsafe { schema.as_mut() }) else {
+            return set_error("def_dim called with a null schema") as i64;
+        };
+        let Some(name) = (unsafe { utf8(name, name_len) }) else {
+            return set_error("def_dim name is not valid UTF-8") as i64;
+        };
+        let len = match usize::try_from(len) {
+            Ok(len) => len,
+            Err(_) => return set_error("dimension length exceeds platform usize") as i64,
+        };
+        match schema.def_dim(name, len, unlimited != 0) {
+            Ok(dimid) => dimid as i64,
+            Err(err) => fail(err) as i64,
+        }
+    })
 }
 
 /// Define a variable. `dimids` points at `ndims` dimids. Returns the
@@ -211,36 +253,38 @@ pub unsafe extern "C" fn gpuwm_ncwrite_def_var(
     ndims: usize,
     dimids: *const u64,
 ) -> i64 {
-    clear_error();
-    let Some(schema) = (unsafe { schema.as_mut() }) else {
-        return set_error("def_var called with a null schema") as i64;
-    };
-    let Some(name) = (unsafe { utf8(name, name_len) }) else {
-        return set_error("def_var name is not valid UTF-8") as i64;
-    };
-    let Some(ty) = NcType::from_code(nc_type) else {
-        return set_error(format!("unknown nc_type code {nc_type}")) as i64;
-    };
-    let ids: Vec<usize> = if ndims == 0 {
-        Vec::new()
-    } else {
-        if dimids.is_null() {
-            return set_error("def_var dimids is null but ndims > 0") as i64;
-        }
-        let raw = unsafe { std::slice::from_raw_parts(dimids, ndims) };
-        let mut ids = Vec::with_capacity(ndims);
-        for &value in raw {
-            match usize::try_from(value) {
-                Ok(id) => ids.push(id),
-                Err(_) => return set_error("dimid exceeds platform usize") as i64,
+    guard(ERR as i64, || {
+        clear_error();
+        let Some(schema) = (unsafe { schema.as_mut() }) else {
+            return set_error("def_var called with a null schema") as i64;
+        };
+        let Some(name) = (unsafe { utf8(name, name_len) }) else {
+            return set_error("def_var name is not valid UTF-8") as i64;
+        };
+        let Some(ty) = NcType::from_code(nc_type) else {
+            return set_error(format!("unknown nc_type code {nc_type}")) as i64;
+        };
+        let ids: Vec<usize> = if ndims == 0 {
+            Vec::new()
+        } else {
+            if dimids.is_null() {
+                return set_error("def_var dimids is null but ndims > 0") as i64;
             }
+            let raw = unsafe { std::slice::from_raw_parts(dimids, ndims) };
+            let mut ids = Vec::with_capacity(ndims);
+            for &value in raw {
+                match usize::try_from(value) {
+                    Ok(id) => ids.push(id),
+                    Err(_) => return set_error("dimid exceeds platform usize") as i64,
+                }
+            }
+            ids
+        };
+        match schema.def_var(name, ty, &ids) {
+            Ok(varid) => varid as i64,
+            Err(err) => fail(err) as i64,
         }
-        ids
-    };
-    match schema.def_var(name, ty, &ids) {
-        Ok(varid) => varid as i64,
-        Err(err) => fail(err) as i64,
-    }
+    })
 }
 
 /// Attach an attribute. `varid < 0` means the global attribute list.
@@ -260,36 +304,38 @@ pub unsafe extern "C" fn gpuwm_ncwrite_put_att(
     nelems: usize,
     data: *const u8,
 ) -> i32 {
-    clear_error();
-    let Some(schema) = (unsafe { schema.as_mut() }) else {
-        return set_error("put_att called with a null schema");
-    };
-    let Some(name) = (unsafe { utf8(name, name_len) }) else {
-        return set_error("put_att name is not valid UTF-8");
-    };
-    let Some(ty) = NcType::from_code(nc_type) else {
-        return set_error(format!("unknown nc_type code {nc_type}"));
-    };
-    let byte_len = match nelems.checked_mul(ty.size()) {
-        Some(len) => len,
-        None => return set_error("attribute byte length overflows platform usize"),
-    };
-    let Some(raw) = (unsafe { bytes(data, byte_len) }) else {
-        return set_error("put_att data is null but nelems > 0");
-    };
-    let value = match decode_attr(ty, raw, nelems) {
-        Ok(value) => value,
-        Err(message) => return set_error(message),
-    };
-    let result = if varid < 0 {
-        schema.put_global_attr(name, value)
-    } else {
-        schema.put_var_attr(varid as usize, name, value)
-    };
-    match result {
-        Ok(()) => OK,
-        Err(err) => fail(err),
-    }
+    guard(ERR, || {
+        clear_error();
+        let Some(schema) = (unsafe { schema.as_mut() }) else {
+            return set_error("put_att called with a null schema");
+        };
+        let Some(name) = (unsafe { utf8(name, name_len) }) else {
+            return set_error("put_att name is not valid UTF-8");
+        };
+        let Some(ty) = NcType::from_code(nc_type) else {
+            return set_error(format!("unknown nc_type code {nc_type}"));
+        };
+        let byte_len = match nelems.checked_mul(ty.size()) {
+            Some(len) => len,
+            None => return set_error("attribute byte length overflows platform usize"),
+        };
+        let Some(raw) = (unsafe { bytes(data, byte_len) }) else {
+            return set_error("put_att data is null but nelems > 0");
+        };
+        let value = match decode_attr(ty, raw, nelems) {
+            Ok(value) => value,
+            Err(message) => return set_error(message),
+        };
+        let result = if varid < 0 {
+            schema.put_global_attr(name, value)
+        } else {
+            schema.put_var_attr(varid as usize, name, value)
+        };
+        match result {
+            Ok(()) => OK,
+            Err(err) => fail(err),
+        }
+    })
 }
 
 fn decode_attr(ty: NcType, raw: &[u8], nelems: usize) -> Result<AttrValue, String> {
@@ -335,23 +381,25 @@ pub unsafe extern "C" fn gpuwm_ncwrite_create(
     path: *const u8,
     path_len: usize,
 ) -> *mut NcWriter {
-    clear_error();
-    if schema.is_null() {
-        set_error("create called with a null schema");
-        return std::ptr::null_mut();
-    }
-    let schema = *unsafe { Box::from_raw(schema) };
-    let Some(path) = (unsafe { utf8(path, path_len) }) else {
-        set_error("create path is not valid UTF-8");
-        return std::ptr::null_mut();
-    };
-    match NcWriter::create(PathBuf::from(path), schema) {
-        Ok(writer) => Box::into_raw(Box::new(writer)),
-        Err(err) => {
-            fail(err);
-            std::ptr::null_mut()
+    guard(std::ptr::null_mut(), || {
+        clear_error();
+        if schema.is_null() {
+            set_error("create called with a null schema");
+            return std::ptr::null_mut();
         }
-    }
+        let schema = *unsafe { Box::from_raw(schema) };
+        let Some(path) = (unsafe { utf8(path, path_len) }) else {
+            set_error("create path is not valid UTF-8");
+            return std::ptr::null_mut();
+        };
+        match NcWriter::create(PathBuf::from(path), schema) {
+            Ok(writer) => Box::into_raw(Box::new(writer)),
+            Err(err) => {
+                fail(err);
+                std::ptr::null_mut()
+            }
+        }
+    })
 }
 
 /// Write a whole fixed variable. `data` is native-endian, `nbytes` long.
@@ -366,14 +414,16 @@ pub unsafe extern "C" fn gpuwm_ncwrite_write_var(
     data: *const u8,
     nbytes: usize,
 ) -> i32 {
-    clear_error();
-    let Some(writer) = (unsafe { writer.as_mut() }) else {
-        return set_error("write_var called with a null writer");
-    };
-    let Some(raw) = (unsafe { bytes(data, nbytes) }) else {
-        return set_error("write_var data is null but nbytes > 0");
-    };
-    with_payload(nc_type, raw, |payload| writer.write_var(varid as usize, payload))
+    guard(ERR, || {
+        clear_error();
+        let Some(writer) = (unsafe { writer.as_mut() }) else {
+            return set_error("write_var called with a null writer");
+        };
+        let Some(raw) = (unsafe { bytes(data, nbytes) }) else {
+            return set_error("write_var data is null but nbytes > 0");
+        };
+        with_payload(nc_type, raw, |payload| writer.write_var(varid as usize, payload))
+    })
 }
 
 /// Write one record slab of a record variable.
@@ -389,15 +439,17 @@ pub unsafe extern "C" fn gpuwm_ncwrite_write_record(
     data: *const u8,
     nbytes: usize,
 ) -> i32 {
-    clear_error();
-    let Some(writer) = (unsafe { writer.as_mut() }) else {
-        return set_error("write_record called with a null writer");
-    };
-    let Some(raw) = (unsafe { bytes(data, nbytes) }) else {
-        return set_error("write_record data is null but nbytes > 0");
-    };
-    with_payload(nc_type, raw, |payload| {
-        writer.write_record(recno, varid as usize, payload)
+    guard(ERR, || {
+        clear_error();
+        let Some(writer) = (unsafe { writer.as_mut() }) else {
+            return set_error("write_record called with a null writer");
+        };
+        let Some(raw) = (unsafe { bytes(data, nbytes) }) else {
+            return set_error("write_record data is null but nbytes > 0");
+        };
+        with_payload(nc_type, raw, |payload| {
+            writer.write_record(recno, varid as usize, payload)
+        })
     })
 }
 
@@ -476,15 +528,17 @@ where
 /// `writer` live and not previously finished or aborted.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gpuwm_ncwrite_finish(writer: *mut NcWriter) -> i32 {
-    clear_error();
-    if writer.is_null() {
-        return set_error("finish called with a null writer");
-    }
-    let writer = *unsafe { Box::from_raw(writer) };
-    match writer.finish() {
-        Ok(()) => OK,
-        Err(err) => fail(err),
-    }
+    guard(ERR, || {
+        clear_error();
+        if writer.is_null() {
+            return set_error("finish called with a null writer");
+        }
+        let writer = *unsafe { Box::from_raw(writer) };
+        match writer.finish() {
+            Ok(()) => OK,
+            Err(err) => fail(err),
+        }
+    })
 }
 
 /// Free a writer WITHOUT finishing it. The file on disk stays incomplete
@@ -494,9 +548,11 @@ pub unsafe extern "C" fn gpuwm_ncwrite_finish(writer: *mut NcWriter) -> i32 {
 /// `writer` live and not previously finished or aborted.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gpuwm_ncwrite_abort(writer: *mut NcWriter) {
-    if !writer.is_null() {
-        drop(unsafe { Box::from_raw(writer) });
-    }
+    guard((), || {
+        if !writer.is_null() {
+            drop(unsafe { Box::from_raw(writer) });
+        }
+    })
 }
 
 /// Read a finished classic file back and record which float variables
@@ -512,18 +568,20 @@ pub unsafe extern "C" fn gpuwm_ncwrite_abort(writer: *mut NcWriter) {
 /// `path`/`path_len` must describe `path_len` readable UTF-8 bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gpuwm_ncwrite_scan_nonfinite(path: *const u8, path_len: usize) -> i32 {
-    clear_error();
-    LAST_SCAN.with(|slot| slot.borrow_mut().clear());
-    let Some(text) = (unsafe { utf8(path, path_len) }) else {
-        return set_error("scan_nonfinite path is not valid UTF-8");
-    };
-    match crate::scan::scan_nonfinite(PathBuf::from(text)) {
-        Ok(names) => {
-            LAST_SCAN.with(|slot| *slot.borrow_mut() = names.join("\n"));
-            OK
+    guard(ERR, || {
+        clear_error();
+        LAST_SCAN.with(|slot| slot.borrow_mut().clear());
+        let Some(text) = (unsafe { utf8(path, path_len) }) else {
+            return set_error("scan_nonfinite path is not valid UTF-8");
+        };
+        match crate::scan::scan_nonfinite(PathBuf::from(text)) {
+            Ok(names) => {
+                LAST_SCAN.with(|slot| *slot.borrow_mut() = names.join("\n"));
+                OK
+            }
+            Err(err) => fail(err),
         }
-        Err(err) => fail(err),
-    }
+    })
 }
 
 /// Copy the last sweep's report for this thread into `buf` -- the
@@ -535,14 +593,16 @@ pub unsafe extern "C" fn gpuwm_ncwrite_scan_nonfinite(path: *const u8, path_len:
 /// `buf` must be writable for `cap` bytes, or null when `cap` is 0.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gpuwm_ncwrite_last_scan(buf: *mut u8, cap: usize) -> usize {
-    LAST_SCAN.with(|slot| {
-        let report = slot.borrow();
-        let source = report.as_bytes();
-        if !buf.is_null() && cap > 0 {
-            let n = source.len().min(cap);
-            unsafe { std::ptr::copy_nonoverlapping(source.as_ptr(), buf, n) };
-        }
-        source.len()
+    guard(0, || {
+        LAST_SCAN.with(|slot| {
+            let report = slot.borrow();
+            let source = report.as_bytes();
+            if !buf.is_null() && cap > 0 {
+                let n = source.len().min(cap);
+                unsafe { std::ptr::copy_nonoverlapping(source.as_ptr(), buf, n) };
+            }
+            source.len()
+        })
     })
 }
 
@@ -554,8 +614,10 @@ pub unsafe extern "C" fn gpuwm_ncwrite_last_scan(buf: *mut u8, cap: usize) -> us
 /// `writer` live.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gpuwm_ncwrite_num_records(writer: *const NcWriter) -> u64 {
-    match unsafe { writer.as_ref() } {
-        Some(writer) => writer.num_records(),
-        None => u64::MAX,
-    }
+    guard(u64::MAX, || {
+        match unsafe { writer.as_ref() } {
+            Some(writer) => writer.num_records(),
+            None => u64::MAX,
+        }
+    })
 }

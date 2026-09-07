@@ -39,3 +39,27 @@ python tools/morrison_wrf461_oracle/validate_morrison_oracle.py `
 
 The second command is diagnostic only. Disabling contraction globally is not a
 shipped parity fix.
+
+
+The 2026-09-04 platform check used unchanged production source from integration
+commit `7af9e74f7366e2eab36bc30e9662e3a20f9e6615`. On an RTX 3080 (sm_86),
+WSL Ubuntu 24.04, Python 3.12.3, CuPy 14.2.0, CUDA runtime 12.9, NVRTC 12.8
+and driver API 13.3, the complete 19-field residual is pinned as
+`MEASURED_SM86_LINUX_MAX_ULP` in `tests/test_morrison_wrf461_parity.py`.
+The same card under native Windows, Python 3.13, CuPy 14.0.1 and CUDA
+runtime/NVRTC 13.0 reproduces the existing `MEASURED_SM89_LINUX_MAX_ULP`
+signature exactly. Architecture alone does not identify the signature.
+
+A fresh GNU Fortran 13.3.0 / glibc 2.39 build of the four byte-pinned WRF
+modules reproduced both reference CSVs exactly after line-ending normalization:
+
+- `morrison-levels.csv`: `fd3da3055881ebe8756d9274d9c276478cf6de02799c3904df0dfd822d74e78b`
+- `morrison-surface.csv`: `fa45f06b0aef1ab604b1df7c0832bf3a466fe4ca55f14a10e28c66990ace06e7`
+
+The Linux production measurement contains 3,563 differing values out of
+10,948. A no-FMAD diagnostic still differs in 3,403 values. These controls
+rule out reference drift and show that disabling contraction does not establish
+WRF agreement. The added signature records an observed compiler/platform
+residual; the strict bitwise acceptance xfail remains. A separate GPU control
+changes the latent-heat intercept from 3.1484e6 to 3.1494e6 in an in-memory
+compilation and requires the complete signature guard to reject that change.

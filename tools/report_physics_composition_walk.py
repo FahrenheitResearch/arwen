@@ -261,7 +261,7 @@ COVERAGE_RULE = (
     "x km_opt.  These six are walked exhaustively because every documented "
     "coupling in gpuwm's admission code lies between them (the WRF v4.6.1 "
     "PBL/surface-layer matrix, the land-surface exchange-coefficient seam, "
-    "the LW/SW adapter pairing, the SASE and LES turbulence rules).  "
+    "radiation/land-surface requirements, the SASE and LES turbulence rules).  "
     "mp_physics and cu_physics are held at the default template's pair "
     "(8 / 1).",
     "TIER B -- FULL cartesian over the two axes tier A holds, mp_physics x "
@@ -279,11 +279,10 @@ COVERAGE_RULE = (
     "refused by that rule, and the after -- built by DOING WHAT THE "
     "MESSAGE SAYS -- must be accepted.  A refusal whose own remedy is "
     "itself refused is a defect, and this tier is what catches it "
-    "(it caught one: see the km_opt=2 entry).  A companion property in "
-    "the test -- every refusal names a selector a user can change -- "
-    "caught the other: the coupled-LW/SW-adapter refusal, the single most "
-    "frequent refusal in the space, used to name no config key and no "
-    "offending value at all.",
+    "(it caught one: see the km_opt=2 entry).  Every refusal also names "
+    "a selector a user can change.  The former coupled-LW/SW and "
+    "classic-RRTM/Dudhia-only rules are retired: independently selected "
+    "spectra now compose, and accepted before/after pairs are not remedies.",
     "TIER E -- schema completeness.  For each axis, every integer in "
     "[-1, 99] plus 900 and 901 is offered to the loader and classified by "
     "whether the refusal is the axis's own schema message.  The measured "
@@ -397,16 +396,9 @@ _SASE = {"bl_pbl_physics": SASE_PBL_SCHEME, "sf_sfclay_physics": 1,
 #: these entries cover exactly the rules the walk produced -- a new refusal
 #: cannot land without someone demonstrating that its advice works.
 REMEDIES = (
-    {"id": "coupled-lw-sw-adapters",
-     "remedy": "'Set ra_lw_physics = ra_sw_physics = 4 (RTE+RRTMGP) or = 90' "
-               "-- and this walk is why the message names the two keys and "
-               "the values it got.  It used to read only 'RTE+RRTMGP (4) "
-               "and analytic radiation (90) are coupled LW/SW adapters and "
-               "must be selected on both components', which is the most "
-               "frequent refusal in the whole space and named no config "
-               "key a user could act on",
-     "before": _suite(ra_lw_physics=4, ra_sw_physics=90),
-     "after": _suite(ra_lw_physics=4, ra_sw_physics=4)},
+    # Independent spectrum composition retired the coupled-LW/SW and
+    # classic-RRTM/Dudhia-only refusals. Their former before cases now
+    # accept unchanged and are covered by the positive composition gate.
     {"id": "wrf-461-pbl-surface-layer-matrix",
      "remedy": "the citation names the surface-layer class the PBL needs; "
                "YSU fatals unless isfc=1, which is sf_sfclay_physics 1 or 91",
@@ -429,12 +421,6 @@ REMEDIES = (
                "layer the config asked for",
      "before": _suite(bl_pbl_physics=1, sf_sfclay_physics=2),
      "after": _suite(bl_pbl_physics=2, sf_sfclay_physics=2)},
-    {"id": "rrtm-longwave-is-the-classic-dudhia-pair",
-     "remedy": "'ra_lw_physics=1 (WRF RRTM longwave) is implemented only as "
-               "WRF's classic pair with ra_sw_physics=1 (Dudhia "
-               "shortwave)' -- so set the shortwave the pair names",
-     "before": _suite(ra_lw_physics=1, ra_sw_physics=4),
-     "after": _suite(ra_lw_physics=1, ra_sw_physics=1)},
     # The MP9 cloud-optics refusal offers two remedies.  The pair follows
     # the SECOND, "select ra_lw_physics=0/ra_sw_physics=1 (Dudhia)",
     # because it moves only axes this walk already sweeps; the first,

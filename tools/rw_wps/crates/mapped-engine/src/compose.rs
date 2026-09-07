@@ -993,7 +993,8 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
     // valid time is read.
     let source_keys: Vec<crate::assemble::TimeKey> = stream.keys().to_vec();
     let mut position = 0usize;
-    let document = crate::frames::write_frameset(&output, &union, &series, &digests, |key| {
+    let document = crate::frames::write_frameset_with_window(
+        &output, &union, &series, &digests, invocation.atmospheric_window, |key| {
         let source_key = source_keys[position].clone();
         position += 1;
         // The frameset's key and the decode's key differ only in the
@@ -1068,7 +1069,7 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
     Ok(json!({
         "event": "receipt",
         "subcommand": "compose",
-        "schema": crate::FRAMESET_SCHEMA,
+        "schema": document["schema"],
         "frames": frame_count,
         "output": output.display().to_string(),
         "grid_fingerprint": series.grid_fingerprint,

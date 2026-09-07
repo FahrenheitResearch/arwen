@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 #: Versioned label recorded in every inventory entry.
 WRFOUT_INVENTORY_CONTRACT = "gpuwm-ensemble-wrfout-inventory.v1"
@@ -387,16 +387,24 @@ def _canonical_spelling(relative: str) -> str | None:
     """``relative`` as :func:`canonical_relative_path` would spell it.
 
     ``None`` when there is no such spelling -- an absolute path, a
-    leading separator, or a ``..``/``.`` segment, none of which name a
-    file inside the member directory.
+    leading separator, a backslash anywhere, an empty segment, or a
+    ``..``/``.`` segment, none of which name a file inside the member
+    directory in the one form the writer records.
+
+    Judged on the TEXT and never through the host's path rules: the
+    inventory is a portable document read on both platforms, so a
+    backslash is a Windows separator wherever the record is read.  Split
+    with ``Path()`` on POSIX, ``member_001\\wrfout`` is one segment
+    holding a legal filename byte and its own canonical spelling, and a
+    record the writer would never produce verified there while the same
+    record was refused on Windows.
     """
-    if relative[0] in "/\\":
+    if "\\" in relative or relative[0] == "/":
         return None
-    candidate = Path(relative)
-    if candidate.is_absolute() or candidate.drive or candidate.root:
-        return None
-    parts = candidate.parts
-    if not parts or any(part in ("..", ".") for part in parts):
+    if PureWindowsPath(relative).drive or PureWindowsPath(relative).root:
+        return None                  # absolute on the platform that has drives
+    parts = relative.split("/")
+    if any(part in ("", "..", ".") for part in parts):
         return None
     return "/".join(parts)
 

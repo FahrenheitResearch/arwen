@@ -1300,10 +1300,11 @@ def precondition_geography_gathered(nx=192, ny=160, tile=64, halo=16, nz=NZ,
     * BEFORE -- the same buffer with its geography REBUILT from ``tile_cfg``
       -- must differ on every tile, and the reported displacement is the
       headline number.
-    * :func:`driver.assert_geography_gathered` must refuse a driver carrying
-      legacy RRTMG's ``(ny*nx, 59, 12)`` latitude-interpolated ozone cache,
-      and must ACCEPT a uniform one (a guard that refuses everything is not a
-      guard).
+    * :func:`driver.assert_geography_gathered` must refuse an UNDECLARED
+      ``(ny*nx, 59, 12)`` latitude-interpolated ozone cache and accept a
+      uniform constant. Real legacy RRTMG declares its live latitude
+      dependency and refreshes before reading; this injected cache has no
+      owner invalidation contract.
     * geography must be READ-ONLY across a real 8-step run at this rung, with
       a carrier changing to prove the run was not a no-op.
     """
@@ -1440,8 +1441,8 @@ def precondition_geography_gathered(nx=192, ny=160, tile=64, halo=16, nz=NZ,
         pass
     else:
         raise AssertionError(
-            "assert_geography_gathered accepted a latitude-interpolated "
-            "ozone cache; it would not catch legacy RRTMG")
+            "assert_geography_gathered accepted an undeclared "
+            "latitude-interpolated cache without owner invalidation")
     pdrv.radiation_callable._ozone_lat_interp = uniform
     driver.assert_geography_gathered(parent)
     del pdrv.radiation_callable._ozone_lat_interp
@@ -1458,9 +1459,9 @@ def precondition_geography_gathered(nx=192, ny=160, tile=64, halo=16, nz=NZ,
             "assert_geography_gathered accepted a gather set with no scheme "
             "latitude/longitude in it")
     out.append(f"NEGATIVE CONTROL guard: a {tuple(varying.shape)} "
-               f"latitude-interpolated ozone cache "
-               f"({varying.nbytes / (nx * ny * nz):.1f} B/mass-cell, the "
-               f"legacy-RRTMG layout) is REFUSED -- horizontal axes are the "
+               f"undeclared latitude-interpolated cache "
+               f"({varying.nbytes / (nx * ny * nz):.1f} B/mass-cell) "
+               f"is REFUSED -- horizontal axes are the "
                f"LEADING axis, so no gather and no halo reaches it; the "
                f"uniform-latitude version is accepted; and a gather set of "
                f"the {len(setup_only)} setup arrays alone is REFUSED for "

@@ -544,6 +544,13 @@ def test_ruc_soil_temperature_cuda_matches_unmodified_wrf_oracle():
         delt=60.0,
         conflx=0.5,
         nroot=cp.asarray(columns["nroot"].astype(np.int32)),
+        # soiltemp.csv's harness passed cvw = 4183.0 where WRF's `soil`
+        # passes cw = 4.183e6 (module_sf_ruclsm.F:731 -> :2435 -> :2662),
+        # and only the `warm_rain` case has rainf/=0.  Passed explicitly for
+        # the same reason as the host twin in tests/test_ruc.py; the
+        # routine's default is now WRF's value.  OWED: regenerate the
+        # `warm_rain` block at cvw = 4.183e6 and drop this argument.
+        cvw=4183.0,
     )
     cp.cuda.get_current_stream().synchronize()
     assert len(rows) == 36

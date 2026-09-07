@@ -565,6 +565,20 @@ def test_soil_temperature_step_matches_unmodified_wrf_oracle():
         delt=float(columns["delt"][0]),
         conflx=float(columns["conflx"][0]),
         nroot=columns["nroot"].astype(np.int32),
+        # gpuwm/data/ruc/oracle/soiltemp.csv was produced by a standalone
+        # harness that passed cvw = 4183.0, the MASS-specific heat capacity
+        # of water, where WRF's `soil` passes its `cw` = 4.183e6
+        # (module_sf_ruclsm.F:731 -> :2435 -> :2662).  Only the `warm_rain`
+        # case has rainf/=0, so only its nine rows depend on the value at
+        # all, but for those rows the fixture is an oracle for `soiltemp`
+        # AT cvw = 4183.0 and not for `soiltemp` as `soil` calls it.  Passed
+        # explicitly so the routine's default -- corrected to WRF's
+        # 4.183e6, and pinned by
+        # test_soil_temperature_step_default_cvw_is_wrf_volumetric_cw -- is
+        # not silently what this fixture grades.  OWED: regenerate the
+        # `warm_rain` block from a harness that passes cvw = cw = 4.183e6
+        # and drop this argument.
+        cvw=4183.0,
     )
     assert len(rows) == 36
     for name, expected in (
@@ -579,6 +593,52 @@ def test_soil_temperature_step_matches_unmodified_wrf_oracle():
             expected.view(np.uint32),
             err_msg=name,
         )
+
+
+def test_soil_temperature_step_default_cvw_is_wrf_volumetric_cw():
+    """`soiltemp`'s cvw is WRF's volumetric `cw`, 4.183e6, not 4183.
+
+    `module_sf_ruclsm.F:731` sets `cw =4.183e6` inside `lsmruc` and nothing
+    else in the file assigns `cw`; `soil` receives it in the constants group
+    (`:1815`), sets `:2435 cvw=cw`, and passes it as the `cvw` argument of
+    the `call soiltemp` at `:2650-2665`, where `:4634` declares it
+    `intent(in)`.  Its three consumers -- `:4743` `tdenom`, `:4752` `bb` and
+    `:4825` the `x` storage diagnostic -- all multiply it by `prcpms`, which
+    is in m s-1, so the constant has to be J m-3 K-1 for the product to be a
+    flux.  4183 J kg-1 K-1 is the mass-specific value and is a factor of
+    1000 short.
+
+    Pinned both ways: the declared default, and the arithmetic, so a default
+    that were restored to 4183 could not hide behind a signature that still
+    said 4.183e6.  The behavioural half uses the fixture's own `warm_rain`
+    case, the only one with `rainf /= 0`.
+    """
+    import inspect
+
+    signature = inspect.signature(ruc_soil_temperature_step)
+    assert signature.parameters["cvw"].default == 4.183e6
+
+    _, profiles, columns = _soiltemp_oracle()
+    values = _soiltemp_inputs(profiles, columns)
+    common = dict(delt=float(columns["delt"][0]),
+                  conflx=float(columns["conflx"][0]),
+                  nroot=columns["nroot"].astype(np.int32))
+    default = ruc_soil_temperature_step(dict(values), **common)
+    volumetric = ruc_soil_temperature_step(dict(values), cvw=4.183e6, **common)
+    mass = ruc_soil_temperature_step(dict(values), cvw=4183.0, **common)
+
+    np.testing.assert_array_equal(default.storage.view(np.uint32),
+                                  volumetric.storage.view(np.uint32))
+    # ... and the two constants really do reach the solve, on exactly the
+    # one rainy column, so neither comparison above is vacuous.
+    moved = np.flatnonzero(
+        volumetric.storage.view(np.uint32) != mass.storage.view(np.uint32))
+    assert moved.size == 1, moved
+    rainy = int(moved[0])
+    assert float(mass.storage[rainy]) == float(columns["storage"][rainy]), (
+        "the fixture's rainy row is the 4183.0 answer; if this stops holding "
+        "soiltemp.csv has been regenerated and the cvw argument in "
+        "test_soil_temperature_step_matches_unmodified_wrf_oracle should go")
 
 
 def test_soil_temperature_step_preserves_inputs_and_rejects_contract_drift():

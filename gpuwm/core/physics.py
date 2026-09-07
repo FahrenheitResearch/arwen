@@ -37,7 +37,8 @@ from typing import Mapping
 import cupy as cp
 import numpy as np
 
-from gpuwm.config import (CU_SCHEMES, MYJ_PBL_SCHEME, MYJ_SFCLAY_SCHEME,
+from gpuwm.config import (CUMULUS_ADVECTIVE_FORCING_SCHEMES,
+                          CU_SCHEMES, MYJ_PBL_SCHEME, MYJ_SFCLAY_SCHEME,
                           NOAHMP_OPTION_IDENTITY, RUC_OPTION_IDENTITY,
                           SASE_PBL_SCHEME, RunConfig,
                           radiation_enabled, radiation_scheme_ids,
@@ -50,6 +51,7 @@ from gpuwm.core import constants as c
 # existing `from gpuwm.core.physics import ...` keeps resolving.
 from gpuwm.core.physics_inventory import (
     PBL_RQI_MICROPHYSICS,
+    PBL_SHARED_FORCING, pbl_raw_rate_names,
     _HMIX_K_DIAG_NAMES,
     hmix_k_diag_names,
     microphysics_scratch_slots,
@@ -684,7 +686,7 @@ def _physics_interval_steps(minutes: float, dt: float | Fraction) -> int:
     if minutes <= 0.0:
         return 1
     if isinstance(dt, Fraction):
-        steps = Fraction(minutes) * 60 / dt
+        steps = Fraction(str(minutes)) * 60 / dt
         if steps.denominator != 1:
             raise ValueError(
                 f"physics cadence {minutes} min is not a whole number of "
@@ -1328,6 +1330,7 @@ class PhysicsTendencies:
     rqr: cp.ndarray | None = None
     rqi: cp.ndarray | None = None
     rqs: cp.ndarray | None = None
+    rw: cp.ndarray | None = None
 
     @classmethod
     def zeros(
@@ -1339,35 +1342,34 @@ class PhysicsTendencies:
         def scalar():
             return cp.zeros((nz, ny, nx), dtype=DTYPE)
 
-        unknown = set(optional_components) - {"rqr", "rqi", "rqs"}
+        unknown = set(optional_components) - {"rqr", "rqi", "rqs", "rw"}
         if unknown:
             raise ValueError(f"unknown optional tendency components {unknown}")
         result = cls(cp.zeros((nz, ny, nx + 1), dtype=DTYPE),
                      cp.zeros((nz, ny + 1, nx), dtype=DTYPE),
                      scalar(), scalar(), scalar())
         for name in optional_components:
-            setattr(result, name, scalar())
+            setattr(result, name, cp.zeros((nz + 1, ny, nx), dtype=DTYPE)
+                    if name == "rw" else scalar())
         return result
 
     def materialize(self, components: tuple[str, ...]) -> None:
         """Keep config-defined held categories present from time zero."""
         for name in components:
             if getattr(self, name) is None:
-                setattr(self, name, cp.zeros_like(self.rqc))
+                value = (cp.zeros((self.rqc.shape[0] + 1,) + self.rqc.shape[1:],
+                                  dtype=self.rqc.dtype)
+                         if name == "rw" else cp.zeros_like(self.rqc))
+                setattr(self, name, value)
 
     def add_to_slow(self, state: DomainState) -> None:
         """Add the held forward tendencies to the current RK slow slot."""
         state.ru_t += self.ru
         state.rv_t += self.rv
         state.rth_t += self.rtheta
-        # SASE-only w forcing.  ``rw`` is deliberately a PLAIN attribute,
-        # never a dataclass field: the restart component manifest
-        # (TENDENCY_COMPONENTS) stays byte-identical, and the held value
-        # is restart-REBUILT under the enforced SASE bldt == 0 invariant
-        # (every compute() replaces it before any read).  Neither YSU nor
-        # MYNN produces a w tendency, so every existing path is
-        # byte-inert here.
-        rw = getattr(self, "rw", None)
+        # Optional held z-face momentum, serialized in the same coupled
+        # representation as ru/rv. Schemes without it retain None.
+        rw = self.rw
         if rw is not None:
             state.rw_t += rw
 
@@ -1377,8 +1379,7 @@ class PhysicsTendencies:
         if base is not None:
             return base
         # ``extra_scalars`` is deliberately a PLAIN attribute, never a
-        # dataclass field, on exactly the ``rw`` terms above: the restart
-        # component manifest (TENDENCY_COMPONENTS) stays byte-identical,
+        # dataclass field: its restart component manifest stays unchanged,
         # and the held value is restart-REBUILT under the enforced
         # bl_mynn_mixscalars=1 => bldt=0 invariant (every compute()
         # replaces it before any read).  Producers: the MYNN mixscalars
@@ -1746,6 +1747,8 @@ class PhysicsDriver:
     #: silently-created empty one would let a driver assembled without a
     #: contract consume whatever its buffers held -- which is the defect
     #: the contract exists to close, reintroduced through the back door.
+    cam_ozone = None
+    o3rad = None
     carriers = None
     surface_moisture_ledger = None
     carriers_need_producer_refresh = False
@@ -1757,6 +1760,8 @@ class PhysicsDriver:
                  ruc_params=None, glw_provenance="declared",
                  carriers=None):
         self.state = state
+        self.cam_ozone = None
+        self.o3rad = None
         self.fields = fields
         # Where this domain's downward longwave came from; see the class
         # attribute above.  A driver assembled directly owns its own GLW
@@ -1862,7 +1867,8 @@ class PhysicsDriver:
             composed_components if physics_reuses_pbl_composition(cfg)
             else pbl_components)
         self.pbl_tendencies = PhysicsTendencies.zeros(
-            state, optional_components=pbl_initial_components)
+            state, optional_components=pbl_initial_components +
+            (("rw",) if cfg.bl_pbl_physics == SASE_PBL_SCHEME else ()))
         self.radiation_tendencies = PhysicsTendencies.zeros(state)
         self.cumulus_tendencies = PhysicsTendencies.zeros(
             state, optional_components=cumulus_components)
@@ -1893,8 +1899,23 @@ class PhysicsDriver:
             state, "rthften", None)
         self.gf_rqvdynten: cp.ndarray | None = getattr(
             state, "rqvften", None)
-        self.gf_rthblten: cp.ndarray | None = None
-        self.gf_rqvblten: cp.ndarray | None = None
+        # Own these buffers from construction: a tile's inventory must be
+        # complete before its first PBL call, and gather/restore must keep
+        # writing the same arrays that its cumulus adapter reads.
+        self.gf_rthblten: cp.ndarray | None = (
+            cp.zeros(state.p.shape, dtype=DTYPE)
+            if cfg.cu_physics in CUMULUS_ADVECTIVE_FORCING_SCHEMES else None)
+        self.gf_rqvblten: cp.ndarray | None = (
+            cp.zeros(state.p.shape, dtype=DTYPE)
+            if cfg.cu_physics in CUMULUS_ADVECTIVE_FORCING_SCHEMES else None)
+        # Positive PBL cadence needs its A-grid rates after a grid move.
+        # Face-coupled momentum cannot be inverted to recover those rates.
+        self.pbl_raw_rates: dict[str, cp.ndarray] = {}
+        for name in pbl_raw_rate_names(cfg):
+            shared = getattr(self, PBL_SHARED_FORCING.get(name, ""), None)
+            self.pbl_raw_rates[name] = (
+                shared if shared is not None
+                else cp.zeros(state.p.shape, dtype=DTYPE))
         self.gf_dx_column: cp.ndarray | None = None
         # OLR, WRF's TOA outgoing longwave (Registry.EM_COMMON:1839).  The
         # buffer exists exactly when the attached longwave scheme declares
@@ -1964,6 +1985,20 @@ class PhysicsDriver:
         self.sase_active = cfg.bl_pbl_physics == SASE_PBL_SCHEME
         self.last_sase_ledger: dict[str, float] | None = None
         self.sase_nan_guard_fires = 0
+        #: Set by gpuwm.core.adaptive_clock when the run uses a live dt;
+        #: None on every fixed-clock run, which is the state `compute`
+        #: reads as "decide radiation the ordinary way".  Declared here
+        #: rather than attached from outside so the restart manifest's
+        #: source cross-check can see it, and so its absence is a
+        #: statement rather than an accident.
+        self.radiation_due_override = None
+        #: The same, for cumulus.  `_cumulus_step_due` reads
+        #: `itimestep % stepcu == 0`, and under an adaptive clock neither
+        #: number counts what it says: `itimestep` is reconstructed from
+        #: elapsed/cfg.dt and `stepcu` is re-derived from the momentary
+        #: dt below.  gpuwm.core.adaptive_clock decides on elapsed model
+        #: time and puts the answer here.  None on every fixed-clock run.
+        self.cumulus_due_override = None
         if self.sase_active:
             self.call_counts["sase"] = 0
             # SPLIT SUBGRID-FLUX DIAGNOSTIC (cfg.sase_flux_diag,
@@ -2661,6 +2696,28 @@ class PhysicsDriver:
                  if "rqs" in cumulus_components else None))
         self.cumulus_tendencies.materialize(cumulus_components)
 
+    def recouple_after_relocation(self, state: DomainState,
+                                   cfg: RunConfig) -> None:
+        """Rebuild held physics on the relocated mass and map factors.
+
+        These are the last producer's physical rates, shifted by the common
+        continuation inventory. No scheme runs and no cadence is advanced.
+        Momentum uses the ordinary A-grid coupling before face interpolation;
+        scaling already averaged face tendencies cannot reproduce it.
+        """
+        if self.pbl_raw_rates:
+            self.pbl_tendencies = couple_ysu_tendencies(
+                state, cfg, self.pbl_raw_rates)
+            self.pbl_tendencies.materialize(
+                _pbl_optional_tendency_components(cfg))
+            if "dw" in self.pbl_raw_rates:
+                self.pbl_tendencies.rw = couple_sase_w_tendency(
+                    state, cfg, self.pbl_raw_rates["dw"])
+        if self.radiation_active:
+            self.radiation_tendencies = couple_column_tendencies(
+                state, cfg, rtheta=self.rthratenlw + self.rthratensw)
+        self.recouple_cumulus_tendencies(state, cfg)
+
     def _compose_tendencies(self, cfg: RunConfig) -> None:
         """Compose held PBL/radiation/cumulus components in WRF order."""
         if not (self.radiation_active or self.cu_physics):
@@ -2674,6 +2731,11 @@ class PhysicsDriver:
             # once; positive cadence keeps the separate historical target.
             self.tendencies = pbl
         target = self.tendencies
+        # The composed RK target borrows this immutable held component;
+        # none of the other current producers adds vertical momentum.
+        # In particular a skipped PBL call must not lose it when the
+        # scalar/radiation sum uses a separate target.
+        target.rw = pbl.rw
         # THE SECOND HALF OF THE MOMENTUM DEFECT.  These two lanes were
         # ASSIGNED from the PBL alone while every scalar lane below
         # ACCUMULATES pbl + radiation + cumulus.  So even once
@@ -2898,17 +2960,6 @@ class PhysicsDriver:
             self.sfclay_result, option=option, dx=cfg.dx,
             isfflx=bool(cfg.isfflx),
             isftcflx=cfg.isftcflx, iz0tlnd=cfg.iz0tlnd)
-        if cfg.km_opt in (2, 3, 4) and cfg.bl_pbl_physics == 0:
-            # module_sf_sfclay.F:799-803 and the corresponding revised-MM5
-            # path update UST and USTM from the same PSIX, but USTM uses the
-            # wind magnitude without the convective-velocity correction.
-            wspdi = cp.sqrt(
-                atmosphere["u"][0] * atmosphere["u"][0]
-                + atmosphere["v"][0] * atmosphere["v"][0])
-            f["ustm"][...] = (
-                DTYPE(0.5) * f["ustm"]
-                + DTYPE(0.5) * DTYPE(0.4) * wspdi / f["fm"]
-            ).astype(DTYPE)
         if self.ruc_params is not None:
             ice_component = ((f["xice"] >= DTYPE(0.5))
                              & (f["xice"] <= DTYPE(1.0)))
@@ -3025,11 +3076,18 @@ class PhysicsDriver:
         that a PBL scheme added later cannot be wired up correctly and
         still silently starve the cumulus scheme.
         """
-        # Raw, PRE-coupling: couple_ysu_tendencies multiplies into NEW
-        # arrays (chm * rates["dtheta"]) and never writes back, so these
-        # references stay the physical rates GFDRV wants.
-        self.gf_rthblten = rates["dtheta"]
-        self.gf_rqvblten = rates["dqv"]
+        # Raw, PRE-coupling, copied into the persistent carrier buffers.
+        # Rebinding to a producer's temporary arrays would leave a tile's
+        # gather/scatter views pointing at the previous PBL call's storage.
+        if self.gf_rthblten is not None:
+            self.gf_rthblten[...] = rates["dtheta"]
+            self.gf_rqvblten[...] = rates["dqv"]
+        for name, target in getattr(self, "pbl_raw_rates", {}).items():
+            shared = PBL_SHARED_FORCING.get(name)
+            if shared and target is getattr(self, shared, None):
+                continue  # the canonical GF/New Tiedtke lane was filled above
+            source = rates.get(name)
+            target[...] = 0.0 if source is None else source
         return couple_ysu_tendencies(
             self.state if state is None else state, cfg, rates)
 
@@ -3393,7 +3451,13 @@ class PhysicsDriver:
         self.pbl_tendencies.materialize(pbl_components)
         # All bldt=0 consumers are above.  Positive cadence preserves the
         # historical diagnostic retention byte-for-byte.
-        self.last_ysu = out if physics_retains_ysu_output(cfg) else None
+        if physics_retains_ysu_output(cfg):
+            # Diagnostics retain their existing dict; its raw-rate entries
+            # share the canonical carried buffers instead of a second copy.
+            out.update(self.pbl_raw_rates)
+            self.last_ysu = out
+        else:
+            self.last_ysu = None
 
     def _run_mynn_pbl(self, atmosphere: Mapping[str, cp.ndarray],
                       cfg: RunConfig) -> None:
@@ -3640,8 +3704,8 @@ class PhysicsDriver:
                   cfg: RunConfig) -> None:
         """One SASE-L1 update replacing the YSU slot (stage-3 Task 6).
 
-        Sequence per due surface/PBL step (bldt == 0 is enforced at
-        initialize_physics, so "due" means every model step):
+        Sequence per due surface/PBL step (positive cadence holds the
+        coupled tendencies between calls):
 
         1. Destagger the C-grid winds to A-grid WORK COPIES -- the
            atmosphere dict's u/v are read again by cumulus after this
@@ -4230,7 +4294,11 @@ class PhysicsDriver:
         except FloatingPointError:
             self.sase_nan_guard_fires += 1
             raise
-        pbl = self._couple_pbl_slot(cfg, rates, state=state)
+        # The atmosphere supplies a zero ice placeholder when the state
+        # has no ice species. Do not publish a held category for it.
+        coupled_rates = {name: value for name, value in rates.items()
+                         if name != "dqi" or getattr(state, "qi", None) is not None}
+        pbl = self._couple_pbl_slot(cfg, {**coupled_rates, "dw": dw}, state=state)
         pbl.rw = couple_sase_w_tendency(state, cfg, dw)
         self.pbl_tendencies = pbl
         self.last_sase_ledger = ledger
@@ -4288,12 +4356,50 @@ class PhysicsDriver:
 
         # WRF solve_em ordering: radiation precedes surface/PBL physics.
         self.stepra = _physics_interval_steps(self.radt_minutes, cfg.dt)
-        radiation_due = _radiation_step_due(
-            itimestep, self.stepra, self.radt_minutes)
-        if radiation_enabled(cfg) and radiation_due:
-            atmosphere = _prepare_atmosphere(state)
-            self._run_radiation(atmosphere, state, cfg)
-            self.call_counts["radiation"] += 1
+        # ADAPTIVE CLOCK OVERRIDE.  None on every fixed-dt run, so the
+        # predicate below is reached unchanged and nothing moves.
+        #
+        # It exists because BOTH inputs to that predicate stop meaning
+        # what they say once dt varies: `itimestep` is reconstructed a few
+        # lines up as elapsed/cfg.dt, which is not the step count when the
+        # steps were different sizes, and `stepra` is re-derived from the
+        # current dt on every call.  A phase condition on two drifting
+        # numbers fires irregularly -- measured at a 373 s interval
+        # against a 358 s target, and at 660 s when stepra was frozen
+        # instead.  gpuwm's carrier contract notices; WRF, which has no
+        # such contract, does not.
+        #
+        # gpuwm.core.adaptive_clock decides on elapsed MODEL TIME and puts
+        # the answer here.  Radiation should follow the sun, not a step
+        # counter that no longer counts steps.
+        override = getattr(self, "radiation_due_override", None)
+        if override is None:
+            radiation_due = _radiation_step_due(
+                itimestep, self.stepra, self.radt_minutes)
+        else:
+            radiation_due = bool(override)
+        if radiation_due:
+            if (self.cam_ozone is not None
+                    and self.cam_ozone.mode == "root-climatology"):
+                atmosphere = _prepare_atmosphere(state)
+                self.o3rad.set(self.cam_ozone.evaluate(
+                    atmosphere["pressure"], state.elapsed_seconds))
+                self.call_counts["cam_ozone"] += 1
+                self.carriers.declare("o3rad", source="cam_ozone",
+                                      model_time=state.elapsed_seconds)
+            if radiation_enabled(cfg):
+                if atmosphere is None:
+                    atmosphere = _prepare_atmosphere(state)
+                self._run_radiation(atmosphere, state, cfg)
+                self.call_counts["radiation"] += 1
+                if (self.cam_ozone is not None
+                        and self.cam_ozone.mode == "legacy-root"):
+                    from gpuwm.core.radiation_composition import legacy_radiation_adapter
+                    legacy = legacy_radiation_adapter(self.radiation_callable)
+                    self.o3rad.set(legacy._o33d_grid)
+                    self.call_counts["cam_ozone"] += 1
+                    self.carriers.declare("o3rad", source="cam_ozone",
+                                          model_time=state.elapsed_seconds)
 
         # WRF fixed-dt surface/PBL cadence: the mandatory ITIMESTEP=1 call
         # is followed by calls where MOD(ITIMESTEP, STEPBL) == 0.
@@ -4393,9 +4499,17 @@ class PhysicsDriver:
         # WRF cumulus follows the PBL call and its rates are held until the
         # next STEP* event, exactly like radiation.
         self.stepcu = _physics_interval_steps(self.cudt_minutes, cfg.dt)
-        if (cfg.cu_physics
-                and _cumulus_step_due(
-                    itimestep, self.stepcu, self.cudt_minutes)):
+        # ADAPTIVE CLOCK OVERRIDE, on radiation's terms and for radiation's
+        # reason (see the block above the radiation predicate).  None on
+        # every fixed-dt run, so the predicate below is reached unchanged
+        # and nothing moves.
+        cu_override = getattr(self, "cumulus_due_override", None)
+        if cu_override is None:
+            cumulus_due = _cumulus_step_due(
+                itimestep, self.stepcu, self.cudt_minutes)
+        else:
+            cumulus_due = bool(cu_override)
+        if cfg.cu_physics and cumulus_due:
             if atmosphere is None:
                 atmosphere = _prepare_atmosphere(state)
             # WRF's cumulus driver early-returns on non-due steps
@@ -4563,9 +4677,9 @@ class PhysicsDriver:
             output["PBLH"] = self._sase_output_pblh()
             if self.sase_flux_diag is not None:
                 # SPLIT SUBGRID-FLUX DIAGNOSTIC (cfg.sase_flux_diag).  The
-                # buffers hold the flux of the single step that ended at
-                # this instant -- SASE pins bldt == 0, so its seam runs
-                # every model step and this is an INSTANTANEOUS flux, not
+                # buffers hold the most recent due PBL call flux,
+                # retained between calls at a positive PBL cadence.
+                # This is the producer's instantaneous flux, not
                 # a history-interval mean.  Zeros at the t=0 frame,
                 # before any SASE step has run.
                 output.update(
@@ -4720,10 +4834,11 @@ def initialize_physics(
         swdown=None, glw=None, pblh=0.0, mavail=1.0,
         landuse=None, xland=None, xice_threshold=None,
         noah_params=None, radiation=None, cumulus=None,
+        landuse_dataset="MODIFIED_IGBP_MODIS_NOAH",
         radiation_start_time=None, radiation_latitude=None,
         radiation_longitude=None,
         noahmp_start_time=None, noahmp_latitude=None,
-        noahmp_longitude=None) -> PhysicsDriver:
+        noahmp_longitude=None, cam_ozone=None) -> PhysicsDriver:
     """Allocate and attach persistent physics state and scheme callables.
 
     An mp-only configuration also receives a driver: microphysics itself is
@@ -4772,7 +4887,7 @@ def initialize_physics(
     :func:`gpuwm.physics_compat.radiation_off_land_surface_refusal` read
     at load -- two separate claims, two separate tokens.
     """
-    if not physics_driver_required(cfg):
+    if not physics_driver_required(cfg) and cam_ozone is None:
         raise ValueError("initialize_physics requires at least one enabled "
                          "physics scheme")
     ra_lw_physics, ra_sw_physics = radiation_scheme_ids(cfg)
@@ -4800,54 +4915,9 @@ def initialize_physics(
                 "radiation production adapter "
                 f"(LW/SW={ra_lw_physics}/{ra_sw_physics}) requires "
                 + ", ".join(missing))
-        if (ra_lw_physics, ra_sw_physics) == (90, 90):
-            from gpuwm.core.analytic_radiation import AnalyticClearSkyRadiation
-            radiation = AnalyticClearSkyRadiation(
-                radiation_start_time, radiation_latitude,
-                radiation_longitude)
-        elif (ra_lw_physics, ra_sw_physics) == (4, 4):
-            from gpuwm.physics_compat import (
-                RRTMG_VARIANT_LEGACY, rrtmg_variant)
-            if rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY:
-                # Explicit legacy-RRTMG selection constructs the exact
-                # WRF v4.6.1 port; its constructor fails closed if the
-                # assets/kernels are unavailable.  Never substitute
-                # RTE+RRTMGP.  Root ozone routing: a child domain must be
-                # wired through runtime.prepare_child_case, which passes
-                # an explicit adapter with the parent ozone provider.
-                from gpuwm.core.rrtmg_legacy import RRTMGLegacyRadiation
-                radiation = RRTMGLegacyRadiation(
-                    radiation_start_time, radiation_latitude,
-                    radiation_longitude,
-                    p_top=getattr(state, "p_top", None),
-                    o3input=cfg.o3input)
-            else:
-                from gpuwm.core.rrtmgp import RRTMGPRadiation
-                radiation = RRTMGPRadiation(
-                    radiation_start_time, radiation_latitude,
-                    radiation_longitude)
-        elif (ra_lw_physics, ra_sw_physics) == (0, 1):
-            from gpuwm.core.dudhia import DudhiaShortwaveRadiation
-            radiation = DudhiaShortwaveRadiation(
-                radiation_start_time, radiation_latitude,
-                radiation_longitude, swrad_scat=cfg.swrad_scat,
-                icloud=cfg.icloud)
-        elif (ra_lw_physics, ra_sw_physics) == (1, 1):
-            # WRF's classic pair.  Unlike 4/4 and 90/90 this is not one
-            # coupled adapter: RRTMDudhiaRadiation composes the RRTM
-            # longwave adapter with the Dudhia shortwave adapter exactly
-            # as module_radiation_driver.F dispatches lwrad_select and
-            # swrad_select independently.  RRTM owns the GLW buffer.
-            from gpuwm.core.rrtm_lw import RRTMDudhiaRadiation
-            radiation = RRTMDudhiaRadiation(
-                radiation_start_time, radiation_latitude,
-                radiation_longitude,
-                p_top=getattr(state, "p_top", None),
-                icloud=cfg.icloud, swrad_scat=cfg.swrad_scat)
-        else:
-            raise ValueError(
-                "unsupported built-in radiation pair "
-                f"{ra_lw_physics}/{ra_sw_physics}")
+        from gpuwm.core.radiation_composition import make_radiation
+        radiation = make_radiation(cfg, radiation_start_time, radiation_latitude,
+                                   radiation_longitude, p_top=getattr(state, "p_top", None))
     if not radiation_active and radiation is not None:
         raise ValueError("radiation callable requires an active LW or SW scheme")
     if cfg.cu_physics == 1 and cumulus is None:
@@ -4900,12 +4970,6 @@ def initialize_physics(
             raise ValueError(
                 "SASE requires a DomainState allocated with "
                 f"bl_pbl_physics={SASE_PBL_SCHEME} (prognostic e_sgs)")
-        if cfg.bldt != 0.0:
-            raise ValueError(
-                "SASE requires bldt=0: its w tendency rides the PBL "
-                "stack as a plain attribute rebuilt every step rather "
-                "than a serialized field, so a positive PBL cadence "
-                "would carry it across steps unserialized")
         if cfg.km_opt != 0:
             raise ValueError(
                 "SASE supplies the mixing the km_opt operator would "
@@ -5030,10 +5094,11 @@ def initialize_physics(
     if cfg.sf_sfclay_physics == 5:
         for name in MYNN_SURFACE_OUTPUTS:
             if name not in f:
-                if name == "ustm":
-                    f[name] = cp.ascontiguousarray(f["ust"].copy())
-                else:
-                    f[name] = cp.zeros(shape, dtype=DTYPE)
+                f[name] = cp.zeros(shape, dtype=DTYPE)
+        # USTM arrives from SFCLAY_OUTPUTS above at WRF's cold-start zero.
+        # MYNN's own initialization seeds it from UST, so restate that here
+        # rather than through the "not in f" guard, which no longer fires.
+        f["ustm"][...] = f["ust"]
         if int(cfg.sf_surface_physics) == 3:
             # MYNN_SEAICE_WRAPPER's automatic ``*_SEA`` arrays are retained
             # between the two surface calls and RUC's post-call reblend.
@@ -5067,16 +5132,6 @@ def initialize_physics(
         # kernel applies it per column, so the allocation just has to be a
         # real number rather than the 1e-4 cold start the MM5 layers use.
         f["ustm"][...] = f["ust"]
-    elif cfg.km_opt in (2, 3, 4) and cfg.bl_pbl_physics == 0:
-        # WRF Registry state USTM is the friction velocity without SFCLAY's
-        # convective-wind correction.  vertical_diffusion_2 consumes USTM,
-        # not UST, when diff_opt=2 runs with the PBL off.  Keep it scoped to
-        # that newly admitted path so established YSU inventories and
-        # certified-profile bytes remain unchanged.  km_opt=3 joined the
-        # predicate with the 3-D Smagorinsky port: without it the PBL-off
-        # consumer predicate would silently evaluate False and MOST surface
-        # fluxes would vanish under the new closure.
-        f["ustm"] = cp.zeros(shape, dtype=DTYPE)
     result = SFClayResult(**{name: f[name] for name in SFCLAY_OUTPUTS})
 
     defaults = {
@@ -5196,7 +5251,7 @@ def initialize_physics(
     # VEGPARM/SOILPARM/GENPARM bundle and make wrfout's live-surface gate
     # (which keys on noah_params) claim a Noah state that never ran.
     if noah_params is None and int(cfg.sf_surface_physics) == 2:
-        noah_params = pack_params(load_tables())
+        noah_params = pack_params(load_tables(mminlu=landuse_dataset))
     if noah_params is not None and int(cfg.sf_surface_physics) != 2:
         raise ValueError(
             "noah_params is the sf_surface_physics=2 parameter bundle and "
@@ -5225,6 +5280,7 @@ def initialize_physics(
         # the geometry unreachable rather than safe: this is the line that
         # makes the two the same run.
         ruc_params = RucRuntimeParameters(
+            dataset_identifier=landuse_dataset,
             seaice_albedo_default=cfg.seaice_albedo_default,
             num_soil_layers=n_soil)
 
@@ -5237,8 +5293,10 @@ def initialize_physics(
     noahmp_params = None
     noahmp_geometry = None
     if int(cfg.sf_surface_physics) == 4:
-        noahmp_params = (NoahmpRuntimeParameters() if xice_threshold is None
+        noahmp_params = (NoahmpRuntimeParameters(dataset_identifier=landuse_dataset)
+                         if xice_threshold is None
                          else NoahmpRuntimeParameters(
+                             dataset_identifier=landuse_dataset,
                              xice_threshold=float(xice_threshold)))
         latitude = (noahmp_latitude if noahmp_latitude is not None
                     else radiation_latitude)
@@ -5332,6 +5390,8 @@ def initialize_physics(
                            ruc_params=ruc_params,
                            glw_provenance=glw_provenance,
                            carriers=carriers)
+    if cam_ozone is not None:
+        driver.cam_ozone = cam_ozone
     # CLASSIFICATION RECEIPT: which source decided XLAND and how many
     # columns each surface class took under the active identity.  Rebuilt
     # at every construction from the same inputs (restart classification:
@@ -5425,6 +5485,9 @@ def initialize_physics(
         driver.cumulus_callable, "ensure_trigger_history", None)
     if _ensure_history is not None:
         _ensure_history(state)
+    if cam_ozone is not None:
+        from gpuwm.core.cam_ozone import attach_cam_ozone
+        attach_cam_ozone(state, cfg, cam_ozone)
 
     return driver
 

@@ -137,28 +137,12 @@ def test_the_route_default_is_the_strongest_admissible_full_radiation_suite():
     default is in it, so a profile that gains or loses admissibility
     moves this assertion rather than aging quietly beside it.
     """
-    from gpuwm.hrrr_route_inputs import (ADMITTED_PBL_PHYSICS,
-                                         ADMITTED_RADIATION_PAIRS,
-                                         REQUIRED_PHYSICS,
-                                         SUPPORTED_MICROPHYSICS)
+    from gpuwm.hrrr_route_inputs import route_physics_problems
     from gpuwm.physics_compat import SINGLE_DOMAIN_PHYSICS_PROFILES
-
-    admissible = []
-    for profile in SINGLE_DOMAIN_PHYSICS_PROFILES:
-        switches = single_domain_runtime_switches(profile)
-        pair = (int(switches["ra_lw_physics"]),
-                int(switches["ra_sw_physics"]))
-        if any(int(switches[key]) != value
-               for key, value in REQUIRED_PHYSICS.items()):
-            continue
-        if int(switches["bl_pbl_physics"]) not in ADMITTED_PBL_PHYSICS:
-            continue
-        if pair not in ADMITTED_RADIATION_PAIRS:
-            continue
-        if int(switches["mp_physics"]) not in SUPPORTED_MICROPHYSICS:
-            continue
-        if pair == (4, 4):
-            admissible.append(profile)
+    admissible = [profile for profile in SINGLE_DOMAIN_PHYSICS_PROFILES
+                  if not route_physics_problems(single_domain_runtime_switches(profile))
+                  and single_domain_runtime_switches(profile)["ra_lw_physics"] > 0
+                  and single_domain_runtime_switches(profile)["ra_sw_physics"] > 0]
     assert ROUTE_DEFAULT_PHYSICS_PROFILE in admissible, (
         f"the route default is not admissible; admissible 4/4 suites are "
         f"{admissible}")

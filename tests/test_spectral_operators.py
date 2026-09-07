@@ -341,7 +341,22 @@ def test_poisson_solution_and_rhs_are_zero_mean():
     rhs = wave(ny, nx, kx=2) + 3.0   # non-zero mean removed by policy
     result = solve_poisson(rhs, dy_m=DY, dx_m=DX, boundary="periodic",
                            periodic_domain=True)
-    assert abs(float(np.mean(result.values))) < 1e-10
+    # The solver zeroes the DC coefficient, so the mean of the solution is
+    # pure float64 round-off: the inverse FFT's O(eps log2 N) per-element
+    # error and the pairwise-summed mean's own O(eps log2 N) error, both
+    # relative to the field's magnitude (~3.3e7 here, 1/k^2 of the RHS
+    # amplitude).  MEASURED at this N=576: |mean| = 5.2e-11 on one
+    # platform's numpy and 2.9e-10 on another's, i.e. 0.0008 and 0.004 of
+    # this bar; the absolute 1e-10 it replaces was 0.007 eps of the field
+    # and split the platforms on FFT library round-off alone.
+    scale = float(np.abs(result.values).max())
+    n_points = result.values.size
+    bar = np.finfo(np.float64).eps * math.log2(n_points) * scale
+    mean = abs(float(np.mean(result.values)))
+    assert mean < bar, (
+        f"|mean| = {mean:.3e} against eps*log2(N)*max|psi| = {bar:.3e} "
+        f"(max|psi| = {scale:.3e}, N = {n_points}); measured 5.2e-11 and "
+        f"2.9e-10 on two float64 FFT builds when this bar was written")
     assert result.rhs_mean_removed == pytest.approx(3.0, rel=1e-9)
     with pytest.raises(ValueError, match="zero horizontal mean"):
         solve_poisson(rhs, dy_m=DY, dx_m=DX, boundary="periodic",

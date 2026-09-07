@@ -8,6 +8,7 @@ unbounded on EITHER side, NaN fails), and the exit-0/exit-1 paths via a
 stubbed case runner.  The end-to-end straka subprocess run stays a GPU
 test.
 """
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -182,6 +183,72 @@ def test_real_case_config_name_is_required(monkeypatch, tmp_path, capsys):
     assert rc == 2
     err = capsys.readouterr().err
     assert err.startswith("gpuwm static:") and "case" in err
+
+
+@pytest.mark.parametrize("failed_query", ["identity", "processes", "pmon"])
+@pytest.mark.parametrize("failure", ["signal", "missing", "timeout"])
+def test_run_reports_failed_gpu_preflight_before_launching_worker(
+        monkeypatch, tmp_path, capsys, failed_query, failure):
+    """Exercise the public run door, real selection, and exclusivity checks."""
+    from gpuwm import capabilities, case_data, provenance_gate, supervisor
+
+    config = tmp_path / "run64.toml"
+    config.write_text("[experiment]\nname = 'preflight-control'\n",
+                      encoding="utf-8")
+    outdir = tmp_path / "out"
+    monkeypatch.setattr(capabilities, "require_for_command", lambda _: None)
+    monkeypatch.setattr(provenance_gate, "announce", lambda _: None)
+    monkeypatch.setattr(case_data, "load_experiment_case",
+                        lambda *args, **kwargs: (object(), object()))
+    monkeypatch.setattr(supervisor, "resolved_input_hashes",
+                        lambda *args, **kwargs: {})
+    monkeypatch.setattr(supervisor, "default_lock_path",
+                        lambda _: tmp_path / "gpu.lock")
+    calls = []
+
+    def run(command, **kwargs):
+        assert command[0] == "nvidia-smi"
+        query = ("pmon" if command[1] == "pmon" else
+                 "processes" if command[1].startswith("--query-compute-apps=")
+                 else "identity")
+        calls.append(query)
+        if query == failed_query:
+            if failure == "missing":
+                raise FileNotFoundError("missing nvidia-smi")
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(command, 20)
+            return subprocess.CompletedProcess(command, -11, "", "")
+        output = "0, GPU-test, 610.74, RTX 5090\n" if query == "identity" else ""
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    def forbidden_worker(*args, **kwargs):
+        pytest.fail("a failed GPU query must prevent forecast worker launch")
+
+    # Replace only the supervisor's subprocess reference. CLI provenance and
+    # other unrelated modules retain their own real subprocess implementation.
+    process_api = SimpleNamespace(**vars(subprocess))
+    process_api.run = run
+    process_api.Popen = forbidden_worker
+    monkeypatch.setattr(supervisor, "subprocess", process_api)
+    code = cli.main(["run", str(config), "--outdir", str(outdir),
+                     "--allow-shared-gpu"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "gpuwm run: GPU preflight failed closed" in captured.err
+    assert "nvidia-smi in the same shell" in captured.err
+    assert "Traceback" not in captured.err
+    assert "Forecast complete" not in captured.out
+    assert {"signal": "SIGSEGV" if os.name == "posix" else "status -11",
+            "missing": "not found on PATH",
+            "timeout": "timed out after 20 seconds"}[failure] in captured.err
+    expected_calls = {
+        "identity": ["identity"],
+        "processes": ["identity", "identity", "processes"],
+        "pmon": ["identity", "identity", "processes", "pmon"],
+    }
+    assert calls == expected_calls[failed_query]
+    assert not list(outdir.glob("worker-*.log"))
+    assert not (outdir / supervisor.HEARTBEAT_NAME).exists()
 
 
 def test_missing_cupy_is_a_clean_install_gap_message(monkeypatch,

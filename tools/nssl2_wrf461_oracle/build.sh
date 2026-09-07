@@ -10,14 +10,19 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 wrf_root=$(realpath "$1")
 build_dir=$(realpath -m "$2")
 official_source="$wrf_root/phys/module_mp_nssl_2mom.F"
-expected_source_sha=5aaae368289694c929d38365d77d445e4f22291a30a48555df7a21d470b72ae3
+# The pinned d66e442f Git blob is LF. The original oracle recorded the
+# byte-identical statements in a Windows CRLF checkout; admit exactly those
+# two byte forms and preserve the actual input hash in SOURCE_SHA256.
+expected_source_sha_lf=1eb1b138b75ff3b0cfe33c23779f4ec9b72e57a5455a53ef11c9e55ae0f42722
+expected_source_sha_crlf=5aaae368289694c929d38365d77d445e4f22291a30a48555df7a21d470b72ae3
 
 if [ ! -f "$official_source" ]; then
   echo "missing official WRF source: $official_source" >&2
   exit 2
 fi
 actual_source_sha=$(sha256sum "$official_source" | awk '{print $1}')
-if [ "$actual_source_sha" != "$expected_source_sha" ]; then
+if [ "$actual_source_sha" != "$expected_source_sha_lf" ] \
+   && [ "$actual_source_sha" != "$expected_source_sha_crlf" ]; then
   echo "unexpected module_mp_nssl_2mom.F SHA-256: $actual_source_sha" >&2
   exit 2
 fi

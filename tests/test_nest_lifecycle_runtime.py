@@ -809,7 +809,33 @@ def test_the_route_still_reaches_the_admission_seam():
     from gpuwm import runtime
 
     source = inspect.getsource(runtime.run_experiment)
-    assert "admit_restart_with_lifecycle(exp, restart)" in source
+    assert "_run_built_experiment(" in source
+    shared = inspect.getsource(runtime._run_built_experiment)
+    assert "admit_restart_with_lifecycle(exp, restart)" in shared
+
+
+def test_public_tree_dispatch_reaches_lifecycle_admission(monkeypatch, tmp_path):
+    """The extracted scheduled helper still receives the actual resume input."""
+    from gpuwm import runtime
+    from gpuwm.core import model as model_module, streaming
+
+    exp = _exp(tmp_path, LIFECYCLE)
+    data = object()
+    checkpoint = tmp_path / "declared-checkpoint.npz"
+    tree = SimpleNamespace(_input_catalog=object())
+    monkeypatch.setattr(model_module, "build_experiment", lambda got_exp, got_data: tree)
+    monkeypatch.setattr(streaming, "cold_planning_machine", lambda got_exp: None)
+    monkeypatch.setattr(runtime, "resolved_tree_config_report", lambda *_: "")
+    monkeypatch.setattr(runtime, "build_real_relocation_runners", lambda *_: None)
+    monkeypatch.setattr(runtime, "build_real_spawn_runner", lambda *_: None)
+    class AdmissionReached(Exception):
+        pass
+    def admission(got_exp, got_restart):
+        assert got_exp is exp and got_restart is checkpoint
+        raise AdmissionReached
+    monkeypatch.setattr(runtime, "admit_restart_with_lifecycle", admission)
+    with pytest.raises(AdmissionReached):
+        runtime.run_experiment(exp, data, tmp_path / "run", restart=checkpoint)
 
 
 # ---------------------------------------------------------------------------

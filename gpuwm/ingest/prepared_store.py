@@ -52,6 +52,7 @@ enough for both produces bit-identical frames, which is the parity gate.
 
 from __future__ import annotations
 
+import gc
 import time
 from dataclasses import dataclass, fields, is_dataclass, replace
 from types import MappingProxyType, SimpleNamespace
@@ -406,27 +407,9 @@ def _boundaries_from_cache(reader, metadata):
     returned as they come off disk -- the whole series, host-side -- and the
     windowing decides what ever reaches the card.
     """
-    from gpuwm.ingest.lateral_bc import (BoundaryInterval, FieldBoundary,
-                                         LateralBoundaries, SideBoundary)
+    from gpuwm.ingest.prepared_cache import _reader_boundaries
 
-    lbc = metadata["lbc"]
-    intervals = []
-    for index, interval_meta in enumerate(lbc["intervals"]):
-        field_map = {}
-        for name in interval_meta["fields"]:
-            sides = {}
-            for side_name in ("west", "east", "south", "north"):
-                prefix = f"lbc/{index}/{name}/{side_name}"
-                sides[side_name] = SideBoundary(
-                    reader.read_array(f"{prefix}/value"),
-                    reader.read_array(f"{prefix}/tendency"))
-            field_map[name] = FieldBoundary(**sides)
-        intervals.append(BoundaryInterval(
-            float(interval_meta["start_seconds"]),
-            float(interval_meta["end_seconds"]), field_map))
-    return LateralBoundaries(
-        tuple(intervals), int(lbc["spec_bdy_width"]), int(lbc["spec_zone"]),
-        int(lbc["relax_zone"]))
+    return _reader_boundaries(reader)
 
 
 def store_from_prepared_cache(path, *, expected_identity, cfg, static,
@@ -435,9 +418,14 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
                               budget_bytes: int | None = None,
                               verify_payload: bool = True,
                               center_lat=None, constant_glw_wm2=None,
-                              inventory_fn=None,
+                              inventory_fn=None, physics_initializer=None,
                               log=print) -> PreparedStore:
     """Load a prepared cache into pinned host arrays, slab by slab.
+
+    ``physics_initializer`` optionally initializes a caller's existing
+    physics contract on each row window. It receives the same inputs as
+    ``initialize_prepared_physics`` plus ``row_start`` and ``domain_rows``
+    for windowing caller-owned setup fields. The default is unchanged.
 
     No domain-shaped device array is ever allocated.  The peak device
     residency is one slab's state plus its physics; the peak HOST transient
@@ -556,10 +544,19 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
         # initialize_landuse reads it for the LANDUSE.TBL season, and a slab
         # that used its own centre would pick a different season for the same
         # column depending on which slab it landed in.
-        initialize_prepared_physics(
+        physics_args = (
             result, cfg_slab, met_slab, surface_slab, static_slab,
-            landuse_attrs, grid_slab, valid_time,
+            landuse_attrs, grid_slab, valid_time)
+        physics_kwargs = dict(
             center_lat=cen_lat, constant_glw_wm2=constant_glw_wm2)
+        if physics_initializer is None:
+            initialize_prepared_physics(*physics_args, **physics_kwargs)
+        else:
+            physics_initializer(
+                *physics_args, **physics_kwargs,
+                row_start=j0, domain_rows=ny)
+        # Do not retain result/state through this call tuple into the next slab.
+        del physics_args
         # Exactly where the resident road primes the DOMAIN before attach
         # (prepared_domain_builder), and for the same reason: REFL_10CM and
         # the other lazily-allocated slots are absent from a state that has
@@ -631,6 +628,7 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
         else:
             del state
         del inv, ginv, result
+        gc.collect()
         cp.get_default_memory_pool().free_all_blocks()
         log(f"    slab {index + 1}/{len(slabs)} rows {j0}..{j0 + rows} "
             f"in {time.perf_counter() - t0:.1f}s")
@@ -654,7 +652,7 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
             "and neither is the interior value the whole domain would have "
             "produced.  Slabbing this cache needs a y-halo for those "
             "carriers before its store can be trusted.")
-    boundaries = (None if metadata["lbc"].get("intervals") is None
+    boundaries = (None if (metadata.get("lbc") or {}).get("intervals") is None
                   else _boundaries_from_cache(reader, metadata))
     missing = tuple(sorted(set(store) - seen))
     receipt = MappingProxyType({

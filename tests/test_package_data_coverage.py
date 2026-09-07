@@ -873,9 +873,25 @@ def test_license_metadata_is_an_spdx_expression_not_the_pasted_text() -> None:
         "project.license must be the bare SPDX expression string; a table "
         "(file= or text=) puts the whole license text into `pip show`")
 
+    # `licenses/*` joined the list at 2.6.6 and is not decoration: MIT
+    # (Arm), the FDLIBM/SunPro notice, BSD-3-Clause (AER RRTMG, RTE+RRTMGP,
+    # Py-ART/Argonne, MPAS, NumPy) and SIL OFL 1.1 each condition
+    # redistribution on their text travelling with the copy, and a wheel
+    # carrying only LICENSE + NOTICE performed none of them.  The glob is
+    # asserted as a glob rather than expanded, because the set of texts
+    # grows and the pin is on the DECLARATION, not on the inventory --
+    # tests/test_licence_notices_ship.py holds the inventory.
     shipped = project.get("license-files", [])
-    assert shipped == ["LICENSE", "NOTICE"], shipped
+    assert shipped == ["LICENSE", "NOTICE", "licenses/*"], shipped
     for name in shipped:
+        if name.endswith("/*"):
+            directory = REPO_ROOT / name[:-2]
+            assert directory.is_dir(), (
+                f"pyproject globs a licence directory that does not exist: "
+                f"{name}")
+            assert any(directory.iterdir()), (
+                f"pyproject globs an empty licence directory: {name}")
+            continue
         assert (REPO_ROOT / name).is_file(), (
             f"pyproject names a license file that does not exist: {name}")
 

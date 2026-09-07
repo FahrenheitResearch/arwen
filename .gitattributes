@@ -57,3 +57,6 @@ gpuwm/verify/*.json text eol=lf
 # apply, and the README beside them publishes their digests.
 evidence/upstream/** -text
 tools/noahmp_wrf461_oracle/*.sh text eol=lf
+
+# Preserve upstream checksum bytes, including shell scripts in the UI mirror.
+tools/arwen-ui-vendor/crates-io/** -text

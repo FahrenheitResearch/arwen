@@ -1249,7 +1249,7 @@ void noah_column(const int* __restrict__ ivgtyp,
                        smcwlt, smcref, shdfac, cmcmax, smcdry, cfactr,
                        nroot, rtdis, fxexp, edir1k, ec1k, et1k, ett1k);
             noah_smflx(smc, cmc, dt, prcp1, zsoil, swc, slope, kdt,
-                       frzfact, smcmax, bexp, smcwlt, dksat, dwsat,
+                       frzx, smcmax, bexp, smcwlt, dksat, dwsat,
                        shdfac, cmcmax, edir1k, ec1k, et1k, runoff1,
                        runoff2, runoff3, drip);
             eta = eta1 * 1000.0f;
@@ -1257,7 +1257,7 @@ void noah_column(const int* __restrict__ ivgtyp,
             dew = -etp1;
             prcp1 = prcp1 + dew;
             noah_smflx(smc, cmc, dt, prcp1, zsoil, swc, slope, kdt,
-                       frzfact, smcmax, bexp, smcwlt, dksat, dwsat,
+                       frzx, smcmax, bexp, smcwlt, dksat, dwsat,
                        shdfac, cmcmax, edir1k, ec1k, et1k, runoff1,
                        runoff2, runoff3, drip);
         }
@@ -1399,7 +1399,7 @@ void noah_column(const int* __restrict__ ivgtyp,
                       - (double)etanrg - (double)flx3);
         }
         noah_smflx(smc, cmc, dt, prcp1, zsoil, swc, slope, kdt,
-                   frzfact, smcmax, bexp, smcwlt, dksat, dwsat, shdfac,
+                   frzx, smcmax, bexp, smcwlt, dksat, dwsat, shdfac,
                    cmcmax, edir1k, ec1k, et1k, runoff1, runoff2,
                    runoff3, drip);
         real zz1 = 1.0f;

@@ -1,3 +1,26 @@
+# ======================================================================
+# THIRD-PARTY NOTICE.  Parts of this file are hand transcriptions of
+# third-party work.  ArWen distributes the file under the Apache License
+# 2.0; the notices below belong to the transcribed parts and are kept here
+# because their own licences require it.  Full texts are in the repository
+# NOTICE and in the licenses/ directory.
+#
+#   RRTMG longwave/shortwave, transcribed from WRF v4.6.1
+#   phys/module_ra_rrtmg_lw.F and phys/module_ra_rrtmg_sw.F, which carry
+#   AER's own notice seven and nine times respectively:
+#
+#       Copyright 2002-2008, Atmospheric & Environmental Research, Inc. (AER).
+#       This software may be used, copied, or redistributed as long as it is
+#       not sold and this copyright notice is reproduced on each copy made.
+#       This model is provided as is without any express or implied warranties.
+#                             (http://www.rtweb.aer.com/)
+#
+#   ArWen takes this material under AER's own current grant instead: BSD
+#   3-Clause, "Copyright (c) 2020, Atmospheric and Environmental
+#   Research", published by AER at github.com/AER-RC/RRTMG_LW and
+#   .../RRTMG_SW.  Text in licenses/LICENSE-AER-RRTMG-BSD-3-Clause.txt and
+#   beside the packaged coefficients in gpuwm/data/wrf_radiation/.
+# ======================================================================
 """Bit-exact NumPy port of WRF v4.6.1's RRTMG McICA subcolumn generators.
 
 Source authority: ``module mcica_subcol_gen_lw`` in

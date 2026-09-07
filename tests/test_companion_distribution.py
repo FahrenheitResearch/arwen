@@ -463,10 +463,14 @@ def test_the_install_shaped_tree_really_hides_the_companion(
     assert "gpuwm_data" in probe.stderr
 
 
-@pytest.mark.parametrize("door", ["check", "domain"])
+@pytest.mark.parametrize("door,flags", [
+    ("check", ()), ("check", ("--alloc",)),
+    ("check", ("--budget-gib", "24")), ("check", ("--free-gib", "24")),
+    ("domain", ()),
+])
 def test_a_front_door_without_the_companion_refuses_without_a_traceback(
-    door: str, install_shaped_root: Path, experiment_config: Path,
-    tmp_path: Path,
+    door: str, flags: tuple[str, ...], install_shaped_root: Path,
+    experiment_config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The breakage: `gpuwm check` relayed a 20-frame traceback at exit 1.
 
@@ -482,13 +486,17 @@ def test_a_front_door_without_the_companion_refuses_without_a_traceback(
     line, and a reader does NOT see a stack.
     """
 
-    argv = ((door, str(experiment_config)) if door == "check"
+    # Both gaps are real here: the companion is absent and local GPU use
+    # is disabled. The cheap CPU dependency refusal must win in every mode.
+    monkeypatch.setenv("GPUWM_NO_LOCAL_GPU", "1")
+    argv = ((door, str(experiment_config), *flags) if door == "check"
             else (*_DOMAIN_ARGV, "--out", str(tmp_path / "case.toml")))
     result = _run_front_door(install_shaped_root, tmp_path, *argv)
     output = result.stdout + result.stderr
 
     assert result.returncode != 0, (
         f"gpuwm {door} exited 0 without the companion:\n{output}")
+    assert "gpuwm GPU readiness:" not in output, output
     frames = _traceback_frames(output)
     assert "Traceback (most recent call last)" not in output and not frames, (
         f"gpuwm {door} relayed a traceback ({len(frames)} frames) instead "
@@ -505,6 +513,25 @@ def test_a_front_door_without_the_companion_refuses_without_a_traceback(
         f"remedy: {data_assets.companion_install_command()}"), (
         "the refusal must END in the command that fixes it; its last line "
         f"is {spoken[-1]!r}\n{output}")
+
+
+def test_installed_check_with_companion_preserves_disabled_gpu_refusal(
+    tmp_path: Path, experiment_config: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restoring the dependency exposes the genuine GPU refusal unchanged."""
+    root = _installed_shaped_tree(tmp_path / "site-packages")
+    (root / "sitecustomize.py").unlink()
+    _link_directory(COMPANION_ROOT / data_assets.COMPANION_PACKAGE,
+                    root / data_assets.COMPANION_PACKAGE)
+    monkeypatch.setenv("GPUWM_NO_LOCAL_GPU", "1")
+    result = _run_front_door(root, tmp_path, "check", str(experiment_config))
+    output = result.stdout + result.stderr
+    assert result.returncode == 2, output
+    assert "gpuwm GPU readiness: UNVERIFIED. device not touched." in output
+    assert "gpuwm doctor --explain" in output
+    assert "ERA5 native-GRIB1 route only" not in output
+    assert "Traceback" not in output and not _traceback_frames(output)
+    assert "pip install gpuwm-data" not in output
 
 
 def test_a_front_door_with_an_incomplete_companion_refuses_without_a_traceback(

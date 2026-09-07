@@ -863,26 +863,38 @@ def test_ack_delivery_unions_flag_and_toml_with_source_provenance(
 
 
 @pytest.mark.parametrize("delivery", ("flag", "toml"))
-def test_wrong_ack_id_refuses_with_the_exact_two_short_forms(
-        tmp_path, delivery):
+def test_unrecognized_ack_id_keeps_expert_advisory_without_blocking_physics(
+        tmp_path, monkeypatch, delivery):
     from gpuwm.gfs_direct import front_door_physics_selection
+    from gpuwm import physics_compat
 
     toml = ("wrong-id-v2",) if delivery == "toml" else ()
     flag = ("wrong-id-v2",) if delivery == "flag" else ()
     exp = _noahmp_experiment(
         load_experiment(_wizard_single_domain_config(tmp_path)), toml)
-    with pytest.raises(ValueError) as caught:
-        front_door_physics_selection(
-            exp, physics_profile=NOAHMP_PROFILE_ID,
-            expert_acknowledgements=flag)
-    message = str(caught.value)
-    assert "\n" not in message
-    assert "d01 resolved physics tuple (" in message
-    assert (
-        "--ack noahmp-host-column-throughput-v1 or "
-        'acknowledgements = ["noahmp-host-column-throughput-v1"]'
-        in message
-    )
+    warnings = []
+    monkeypatch.setattr(physics_compat, "warn", lambda message, **kwargs: warnings.append(message))
+    receipt = front_door_physics_selection(
+        exp, physics_profile=NOAHMP_PROFILE_ID, expert_acknowledgements=flag)
+    assert receipt["profile"] == NOAHMP_PROFILE_ID
+    assert receipt["governance"]["acknowledged"] is False
+    assert receipt["governance"]["required_acknowledgements"] == [
+        "noahmp-host-column-throughput-v1"]
+    advisory = [message for message in warnings if "evidence advisory unacknowledged" in message]
+    other_warnings = [message for message in warnings if message not in advisory]
+    assert len(advisory) == 1
+    assert "running with its evidence advisory unacknowledged" in advisory[0]
+    assert ("--ack noahmp-host-column-throughput-v1 or "
+            'acknowledgements = ["noahmp-host-column-throughput-v1"]') in advisory[0]
+    warnings.clear()
+    acknowledged = front_door_physics_selection(
+        exp, physics_profile=NOAHMP_PROFILE_ID,
+        expert_acknowledgements=("noahmp-host-column-throughput-v1",))
+    # Other measured throughput notices remain true regardless of the ack.
+    assert warnings == other_warnings
+    assert acknowledged["governance"]["acknowledged"] is True
+    assert acknowledged["selectors"] == receipt["selectors"]
+    assert acknowledged["resolved"] == receipt["resolved"]
 
 
 @pytest.mark.parametrize("delivery", ("flag", "toml", "both"))
@@ -1228,17 +1240,39 @@ def test_the_gfs_front_door_forwards_the_export_request_only_when_declined():
             _gfs_front_door_args([]), allowed=frozenset())
 
 
-def test_the_export_request_is_a_gfs_route_flag_and_says_so_elsewhere():
-    from gpuwm import source_cli
+def test_export_intent_reaches_mapped_preparation_and_stays_route_scoped(monkeypatch):
+    from gpuwm import source_cli, mapped_direct
 
     args = _gfs_front_door_args(["--no-stock-wrf-export"])
     for validator in (source_cli._required_era5_args,
                       source_cli._required_twentycr_args,
-                      source_cli._required_mapped_args,
                       source_cli._required_hrrr_args):
         errors = validator(args)
-        assert any("--no-stock-wrf-export" in error for error in errors), \
-            validator.__name__
+        assert any("--no-stock-wrf-export" in error for error in errors), validator.__name__
+
+    class ReachedPreparation(Exception):
+        pass
+    observed = []
+    def prepare(**kwargs):
+        observed.append(kwargs["stock_wrf_export"])
+        raise ReachedPreparation
+    monkeypatch.setattr(mapped_direct, "load_mapping", lambda path: {"format": "netcdf"})
+    monkeypatch.setattr(mapped_direct, "prepare_mapped_wrf", prepare)
+    base = ["--source", "mapped", "--source-format", "netcdf",
+        "--mapping", "mapping.toml", "--composition", "composition.json",
+        "--input", "atmosphere.nc", "--supplement", "terrain=terrain.nc",
+        "--provenance", "terrain=terrain.json", "--source-manifest", "manifest.json",
+        "--source-manifest-sha256", "a" * 64, "--wps-namelist", "namelist.wps",
+        "--experiment-config", "case.toml", "--output-root", "prep", "--geog-root", "geog"]
+    for extra, expected in ((["--no-stock-wrf-export"], "off"),
+                            (["--stock-wrf-export", "required"], "required")):
+        args = source_cli._parser().parse_args(base + extra)
+        assert source_cli._required_mapped_args(args) == []
+        command = source_cli._mapped_command(args)
+        assert command[command.index("--stock-wrf-export") + 1] == expected
+        with pytest.raises(ReachedPreparation):
+            mapped_direct.main(command[3:])
+        assert observed[-1] == expected
 
 
 def test_the_gfs_adapter_cli_carries_the_export_request_to_the_preparation(
@@ -1391,19 +1425,19 @@ def test_the_corridor_request_is_refused_by_the_routes_that_cannot_seal_one():
     """`--statics-corridor` is no longer GFS-only.
 
     A moving nest needs terrain and land use for everywhere it can reach,
-    so the mapped and ERA5 routes learned to seal a corridor too, and
-    both therefore ACCEPT the flag now.  The routes that cannot build one
+    so the mapped, ERA5 and native 20CRv3 routes seal corridors too and
+    accept the flag. The routes that cannot build one
     still refuse it by name, which is the half worth pinning: a flag
     that is silently ignored is worse than one that is refused.
     """
     from gpuwm import source_cli
 
     args = _gfs_front_door_args(["--statics-corridor"])
-    for validator in (source_cli._required_twentycr_args,
-                      source_cli._required_hrrr_args):
+    for validator in (source_cli._required_hrrr_args,):
         errors = validator(args)
         assert any("--statics-corridor" in error for error in errors),             validator.__name__
-    for validator in (source_cli._required_era5_args,
+    for validator in (source_cli._required_twentycr_args,
+                      source_cli._required_era5_args,
                       source_cli._required_mapped_args):
         errors = validator(args)
         assert not any("--statics-corridor" in error for error in errors),             validator.__name__

@@ -174,8 +174,11 @@ CuPy keys its cache by target architecture, so a cache full of another card's
 binaries is warm on disk and cold in every way that costs time.
 
 `--cold-cache-dir DIR` empties a directory and points `CUPY_CACHE_DIR` at it, so
-a cold record can be set on a machine whose own cache is warm. It never touches
-the inherited cache.
+a cold record can be set on a machine whose own cache is warm. It empties only a
+directory that is absent, empty, or already a CuPy kernel cache — one whose files
+decode as compiled CUDA kernels — and refuses anything else rather than deleting
+it. The inherited cache, the working directory, your home directory and a
+filesystem root are refused by name, so it never touches the inherited cache.
 
 ## Determinism is a screen, not a claim
 

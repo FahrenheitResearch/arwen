@@ -61,6 +61,8 @@ pub struct RenderOpts {
     /// Typical stack: ocean → land → lakes.
     pub projected_polygons: Vec<ProjectedPolygon>,
     pub projected_data_polygons: Vec<ProjectedPolygon>,
+    /// An unstructured mesh drawn cell by cell in the variable-data pass.
+    pub mesh_cells: Option<MeshCellsOverlay>,
     pub projected_place_labels: Vec<ProjectedPlaceLabelOverlay>,
     pub projected_points: Vec<ProjectedPointOverlay>,
     pub projected_lines: Vec<ProjectedPolyline>,
@@ -68,6 +70,15 @@ pub struct RenderOpts {
     pub barbs: Vec<BarbOverlay>,
     pub streamlines: Vec<StreamlineOverlay>,
     pub presentation: RenderPresentation,
+}
+
+/// The mesh layer as the renderer holds it: the cells and the resolved
+/// style, so the supersample pass can scale the hairline without reaching
+/// back into the theme.
+#[derive(Debug, Clone)]
+pub struct MeshCellsOverlay {
+    pub cells: Vec<crate::mesh_cells::MeshCell>,
+    pub style: crate::mesh_cells::MeshDrawStyle,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -226,6 +237,7 @@ impl Default for RenderOpts {
             rgba_grid: None,
             projected_polygons: vec![],
             projected_data_polygons: vec![],
+            mesh_cells: None,
             projected_place_labels: vec![],
             projected_points: vec![],
             projected_lines: vec![],
@@ -252,6 +264,13 @@ struct Layout {
     subtitle_y: u32,
     text_scale: u32,
     label_gap: u32,
+    /// Label halo (opaque; each use sets its own alpha).  White unless a
+    /// theme names the surface colour.
+    halo: Rgba,
+    /// Title size factor from the theme; 1.0 draws exactly as before.
+    title_factor: f32,
+    /// Subtitle and colorbar label size factor from the theme.
+    label_factor: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -498,6 +517,9 @@ fn compute_layout(
         },
         text_scale,
         label_gap,
+        halo: presentation.theme.halo_with_alpha(255),
+        title_factor: presentation.theme.title_factor(),
+        label_factor: presentation.theme.label_factor(),
     }
 }
 
@@ -2213,6 +2235,9 @@ fn scale_render_opts_for_supersample(opts: &RenderOpts, factor: u32) -> RenderOp
             .label_offset_y_px
             .saturating_mul(factor as i32);
     }
+    if let Some(mesh) = scaled.mesh_cells.as_mut() {
+        mesh.style.edge_width_px *= factor as f32;
+    }
     for contour in &mut scaled.contours {
         contour.width = contour.width.max(1).saturating_mul(factor);
         contour.major_width = contour
@@ -2838,7 +2863,7 @@ fn maybe_place_contour_label(
         x: tx,
         y: ty,
         color: label_color,
-        halo: Rgba::with_alpha(255, 255, 255, 248),
+        halo: Rgba { a: 248, ..layout.halo },
         halo_width_px: contour_label_halo_width(layout),
         scale: label_scale,
         size_factor: label_size_factor,
@@ -3636,7 +3661,7 @@ fn draw_extrema_labels(
     // labels but muted so they don't feel neon over colored data.
     let h_color = Rgba::new(24, 84, 168);
     let l_color = Rgba::new(176, 46, 42);
-    let halo = Rgba::with_alpha(255, 255, 255, 230);
+    let halo = Rgba { a: 230, ..layout.halo };
 
     for point in &highs {
         draw_extrema_marker(
@@ -4199,6 +4224,28 @@ fn draw_variable_layers(
             opts.presentation,
             Some(polygon_clip_rect),
         );
+        if let Some(mesh) = opts.mesh_cells.as_ref() {
+            // Projected once into pixel space, then filled and stroked.  The
+            // fill colour comes from the SAME colormap the colorbar is drawn
+            // from, so a reader matching a cell to a swatch is matching it to
+            // the value that coloured it.
+            let mut rings: Vec<Vec<(f64, f64)>> = Vec::with_capacity(mesh.cells.len());
+            let mut colors: Vec<Rgba> = Vec::with_capacity(mesh.cells.len());
+            for cell in &mesh.cells {
+                rings.push(project_ring_unclipped(extent, &cell.ring, layout));
+                colors.push(match cell.value {
+                    Some(value) => opts.cmap.map(value),
+                    None => mesh.style.empty,
+                });
+            }
+            crate::mesh_cells::draw_mesh_cells_pixels(
+                img,
+                &rings,
+                &colors,
+                mesh.style,
+                Some(polygon_clip_rect),
+            );
+        }
     }
 
     let rasterize_start = Instant::now();
@@ -4500,13 +4547,14 @@ fn draw_chrome_and_colorbar(
             .filter(|text| !text.is_empty())
         {
             let fitted = ellipsize_text_to_width(title, row_width, layout.text_scale, true);
-            text::draw_text_bold(
+            text::draw_text_bold_with_factor(
                 img,
                 &fitted,
                 chrome_left as i32,
                 title_y as i32,
                 title_color,
                 layout.text_scale,
+                layout.title_factor,
             );
         }
         let subtitle_available = row_width.saturating_sub(18u32.saturating_mul(layout.text_scale));
@@ -4527,13 +4575,14 @@ fn draw_chrome_and_colorbar(
             if truncated {
                 warn_subtitle_truncated("left", left, &fitted);
             }
-            text::draw_text(
+            text::draw_text_with_factor(
                 img,
                 &fitted,
                 chrome_left as i32,
                 subtitle_y as i32,
                 subtitle_color,
                 layout.text_scale,
+                layout.label_factor,
             );
         }
         if let Some(center) = opts
@@ -4547,13 +4596,14 @@ fn draw_chrome_and_colorbar(
             if truncated {
                 warn_subtitle_truncated("center", center, &fitted);
             }
-            text::draw_text(
+            text::draw_text_with_factor(
                 img,
                 &fitted,
                 centered_text_left(&fitted, chrome_center, layout.text_scale, false),
                 subtitle_y as i32,
                 subtitle_color,
                 layout.text_scale,
+                layout.label_factor,
             );
         }
         if let Some(right) = opts
@@ -4582,13 +4632,14 @@ fn draw_chrome_and_colorbar(
             if truncated {
                 warn_subtitle_truncated("right", right, &fitted);
             }
-            text::draw_text_right(
+            text::draw_text_right_with_factor(
                 img,
                 &fitted,
                 chrome_right as i32,
                 subtitle_y as i32,
                 subtitle_color,
                 layout.text_scale,
+                layout.label_factor,
             );
         }
     } else {
@@ -4767,13 +4818,14 @@ fn draw_chrome_and_colorbar(
                             img.width(),
                             layout.text_scale,
                         ) {
-                            text::draw_text(
+                            text::draw_text_with_factor(
                                 img,
                                 &label,
                                 lx,
                                 tick_y,
                                 label_color,
                                 layout.text_scale,
+                                layout.label_factor,
                             );
                         }
                     }
@@ -4822,13 +4874,14 @@ fn draw_chrome_and_colorbar(
                             img.height(),
                             layout.text_scale,
                         ) {
-                            text::draw_text(
+                            text::draw_text_with_factor(
                                 img,
                                 &label,
                                 label_x,
                                 ly,
                                 label_color,
                                 layout.text_scale,
+                                layout.label_factor,
                             );
                         }
                     }

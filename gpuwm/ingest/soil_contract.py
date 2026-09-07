@@ -377,13 +377,8 @@ def _node_depths(
         raise ValueError(
             f"{label} selectors must all use one common source format"
         )
-    if depths[0] != 0.0 or depths[-1] < 3.0:
-        raise ValueError(
-            f"{label} must sample both endpoints of the WRF soil column: "
-            "the shallowest node at 0.0 m and the deepest at 3.0 m or "
-            "deeper, so the linear node remap needs no synthetic "
-            "surface/deep anchors"
-        )
+    if len(depths) < 2:
+        raise ValueError(f"{label} needs at least two distinct nodes for interpolation")
     return tuple(depths)
 
 
@@ -1059,6 +1054,14 @@ def validate_soil_layer_contract(
             "widening this comparison would fabricate a soil column"
         )
 
+    if has_nodes:
+        target_depths = tuple((top + bottom) / 2.0 for top, bottom in target)
+        if node_depths[0] > target_depths[0] or node_depths[-1] < target_depths[-1]:
+            raise ValueError(
+                f"soil source nodes {node_depths[0]}..{node_depths[-1]} m do not cover "
+                f"Noah target midpoints {target_depths[0]}..{target_depths[-1]} m; "
+                "the node remap has no extrapolation policy")
+
     remap = _object(
         contract["remap"],
         "composition.soil_layers.remap",
@@ -1079,8 +1082,8 @@ def validate_soil_layer_contract(
             "kind", "source_value_location", "target_value_location",
         }:
             raise ValueError(
-                "linear node remap takes no anchors: the 0 m and 3 m "
-                "endpoint nodes are the source's own samples"
+                "linear node remap takes no anchors: the source must "
+                "cover the actual target samples"
             )
         if remap["source_value_location"] != "level_node" \
                 or remap["target_value_location"] != "layer_midpoint":
@@ -1343,10 +1346,9 @@ def ruc_soil_remap_policy(value: object) -> dict[str, object]:
 
     ``source_nodes``  -> ``flag_soil_levels``
         The producer's own point samples are the interpolation samples,
-        with no synthetic anchors.  :func:`_node_depths` already requires a
-        0.0 m node and a node at 3.0 m or deeper, so every one of RUC's
-        nine target depths is bracketed by construction and WRF's
-        ``:1958-1968`` search cannot leave a level unset.  This admits the
+        with no synthetic anchors. The RUC evaluator checks these source
+        samples against its requested six- or nine-level target; an
+        uncovered level is refused before interpolation.  This admits the
         RUC-family ladders (HRRR/RAP/RRFS publish TSOIL/SOILW at exactly
         RUC's nine depths, where the remap is the identity) AND any other
         published ladder, because WRF's arm INTERPOLATES -- the identity is

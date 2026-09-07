@@ -125,8 +125,18 @@ def test_state_manifest_matches_restart_classification(d01_cfg):
              | set(pf.state_array_shapes(gf_cfg)))
     classified = (set(restart.STATE_SERIALIZED_ATTRS)
                   | set(restart.STATE_REBUILT_ATTRS)
-                  | set(restart.STATE_SETUP_ARRAYS))
+                  | set(restart.CHECKPOINT_ONLY_STATE)
+                  | set(restart.STATE_SETUP_ARRAYS)
+                  | set(restart.STATE_DERIVED_SETUP_ARRAYS))
     assert names == classified
+    # The derived setup arrays are priced like every other allocation and
+    # classified like every other attribute, but they are deliberately
+    # OUTSIDE the fingerprint's byte stream: each is a function of an
+    # array already in it, so hashing them would reject every earlier
+    # checkpoint to hash the same numbers twice.
+    for name in restart.STATE_DERIVED_SETUP_ARRAYS:
+        assert name not in restart.STATE_SETUP_ARRAYS
+        assert restart.classify_state_attr(name) == "derived_setup"
     # And the specific names this port added, so a later edit cannot make
     # the equality hold again by deleting them from BOTH sides.
     for name in ("nwfa", "nifa", "nwfa2d", "nifa2d"):
@@ -282,9 +292,10 @@ def test_physics_shapes_scheme_selection(d01_cfg, exp4):
                  "wstar3_2", "cloudflg"):
         assert transient[f"ysu_output/{name}"] == s2
 
-    # Every positive cadence keeps the exact historical storage path.
+    # Positive cadence retains raw rates once, shared with the diagnostic dict.
     held = pf.physics_array_shapes(dataclasses.replace(d01_cfg, bldt=5.0))
-    assert held["last_ysu/du"] == nzs
+    assert held["pbl_raw_rates/du"] == nzs
+    assert "last_ysu/du" not in held
     assert held["last_ysu/cloudflg"] == s2
     assert held["tendencies/rqr"] == nzs
     assert held["tendencies/rqi"] == nzs
@@ -312,8 +323,11 @@ def test_physics_manifest_groups_cover_restart_driver_attrs(d01_cfg):
     conditional/rebuilt driver arrays are cross-pinned to their lifetime
     decisions.  Active Morrison diagnostics are absent here because the
     driver aliases the separately counted serialized ``mp_*`` scratch set."""
-    groups = {name.split("/")[0] for name in
-              pf.physics_array_shapes(d01_cfg)}
+    # Conditional raw-rate owners need a representative positive-cadence
+    # GF configuration as well as the default every-step KF configuration.
+    groups = {name.split("/")[0]
+              for cfg in (d01_cfg, dataclasses.replace(d01_cfg, cu_physics=3, bldt=2.))
+              for name in pf.physics_array_shapes(cfg)}
     scalar_attrs = {"microphysics_updates", "call_counts",
                     "ysu_nan_guard_fires",
                     # The surface-radiation carrier contract: two scalars
@@ -322,8 +336,12 @@ def test_physics_manifest_groups_cover_restart_driver_attrs(d01_cfg):
                     # FIELDS ride the serialized surface inventory, which
                     # is where their shapes are already accounted for.
                     "carriers"}
+    ozone = pf.physics_array_shapes(d01_cfg, cam_ozone=True)
+    assert ozone["radiation/o33d_grid"] == (d01_cfg.nz, d01_cfg.ny, d01_cfg.nx)
+    groups.add("o3rad")  # direct owner retains the historical radiation/o33d_grid key
     assert set(restart.DRIVER_SERIALIZED_ATTRS) - scalar_attrs <= groups
-    assert "last_ysu" not in groups
+    assert "last_ysu" not in {name.split("/")[0]
+                               for name in pf.physics_array_shapes(d01_cfg)}
     assert "last_ysu" in restart.DRIVER_REBUILT_ATTRS
     assert "microphysics" not in restart.DRIVER_SERIALIZED_ATTRS
     assert "microphysics" in restart.DRIVER_REBUILT_ATTRS
@@ -332,7 +350,7 @@ def test_physics_manifest_groups_cover_restart_driver_attrs(d01_cfg):
 def test_physics_lifetime_audit_is_exact_name_closed_world(d01_cfg):
     names = [name for row in pf.PHYSICS_ARRAY_LIFETIME_AUDIT
              for name in row.names]
-    assert len(names) == len(set(names)) == 56
+    assert len(names) == len(set(names)) == 69  # four optional rw names + raw dw
     assert {row.disposition for row in pf.PHYSICS_ARRAY_LIFETIME_AUDIT} == {
         "transient_when_bldt_zero", "aliases_serialized_scratch",
         "aliases_fresh_pbl_at_bldt_zero", "retained_family_state"}
@@ -347,6 +365,41 @@ def test_physics_lifetime_audit_is_exact_name_closed_world(d01_cfg):
     for name in names:
         assert pf.physics_array_lifetime(name) is not None
     assert pf.physics_array_lifetime("last_ysu/future_component") is None
+
+
+@pytest.mark.parametrize("mp_physics", (0, 6, 18, 50))
+def test_dry_map_coupling_uses_registered_scratch(monkeypatch, mp_physics):
+    """The allowlisted helper may allocate only the four priced dry rows."""
+    from gpuwm.core import dycore, state as state_mod
+
+    monkeypatch.setattr(state_mod, "cp", np)
+    cfg = RunConfig(**_TINY, moist=bool(mp_physics),
+                    mp_physics=mp_physics, km_opt=4)
+    state = state_mod.DomainState(cfg)
+    state.has_msf = True
+    state.msft[...] = state.msfu[...] = state.msfv[...] = 1.25
+    requested = {}
+    scratch = state.scratch
+
+    def tracked(shape, slot, dtype=None):
+        array = scratch(shape, slot, dtype=dtype)
+        requested[slot] = (array.shape, array.nbytes)
+        return array
+
+    monkeypatch.setattr(state, "scratch", tracked)
+    specs = dycore._smag2d_specs(state, None, None, time_t=True)
+    dycore._couple_dry_mixing_map_factor(state, specs)
+    expected = {
+        "smag_ru": (cfg.nz, cfg.ny, cfg.nx + 1),
+        "smag_rv": (cfg.nz, cfg.ny + 1, cfg.nx),
+        "smag_rw": (cfg.nz + 1, cfg.ny, cfg.nx),
+        "smag_rth": (cfg.nz, cfg.ny, cfg.nx),
+    }
+    registry = pf.scratch_slot_registry(cfg)
+    assert set(requested) == set(expected)
+    for name, shape in expected.items():
+        assert requested[name] == (shape, 4 * math.prod(shape))
+        assert registry[name] == shape
 
 
 def test_physics_fields_union_covers_sources():
@@ -746,6 +799,8 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
                           mp_physics=16),
                 RunConfig(**_TINY, moist=True, mp_physics=18),
                 RunConfig(**_TINY, moist=True, mp_physics=28),
+                RunConfig(**_TINY, moist=True, mp_physics=28,
+                          specified=True, aer_init_opt=1, wif_input_opt=1),
                 # P3 one-category owns the only three ice-diagnostic slots
                 # in the tree (p3_vmi/p3_di/p3_rhopo); without this arm they
                 # are invisible to the completeness gate.  moist_cq and
@@ -789,6 +844,10 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
         ("gpuwm/core/dycore.py", "add_smag2d_tendencies"),
         ("gpuwm/core/dycore.py", "_compute_wrf_smag_tendencies"),
         ("gpuwm/core/dycore.py", "prepare_fixed_tendencies"),
+        # The real spec producer feeds this helper the four dry carrying
+        # slots. test_dry_map_coupling_uses_registered_scratch checks the
+        # requests and their byte sizes through DomainState.scratch.
+        ("gpuwm/core/dycore.py", "_couple_dry_mixing_map_factor"),
         ("gpuwm/core/dycore.py", "add_fixed_dry_tendencies"),
         ("gpuwm/core/dycore.py", "apply_diff6"),
         ("gpuwm/core/diffusion.py", "add_diffusion_tendencies"),
@@ -799,6 +858,9 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
         ("gpuwm/ingest/lateral_bc.py", "_resident_weights"),
         ("gpuwm/ingest/lateral_bc.py", "attach_lateral_boundaries"),
         ("gpuwm/ingest/lateral_bc.py", "attach_streaming_lateral_boundaries"),
+        # Actual immutable forcing prices this slot; test_boundary_time_law
+        # checks registered shape and byte equality in both directions.
+        ("gpuwm/ingest/lateral_bc.py", "_allocate_evaluated_interval"),
         ("gpuwm/core/preflight.py", "run_alloc_preflight"),
         ("gpuwm/core/nest.py", "_scratch"),
         # MYNN draws its whole declared workspace in two loops over the same
@@ -860,7 +922,16 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
         # allocator here and the classifier cannot drift apart, and a
         # near-miss under the same stem still fails closed on both sides.
         # tests/test_restart.py pins that in both directions.
-        ("gpuwm/runtime.py", "build_real_relocation_runners"),
+        ("gpuwm/core/uh_diag.py", "allocate_declared_follower_windows"),
+        # Tile buffers allocate the same classified tracker slots as their
+        # source state, resized to the compute window. The two-follower
+        # transport controls prove exact inventory, pricing and CUDA folding.
+        ("gpuwm/core/streaming.py", "make"),
+        # Cold prepared-store slabs reserve the same declared follower
+        # windows before their carrier inventory freezes. The focused test
+        # below executes this source's slot producer and allocation loop,
+        # pinning the entire requested set, shapes, and restart classes.
+        ("gpuwm/prepared_domain_tree_forecast.py", "physics"),
     }
     # The one sanctioned getattr(state, "scratch") lookup: lateral_bc's
     # duck-type guard, whose resulting Name call the scanner classifies.
@@ -900,6 +971,49 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
     assert not problems, "\n".join(problems)
     # The allowlist may not silently rot either.
     assert seen_variable_sites == allowed_variable_sites
+
+
+def test_prepared_store_follower_slots_match_declared_registry():
+    """Bind the scanner exemption to the actual producer and allocation loop."""
+    from types import SimpleNamespace
+    from gpuwm.core.uh_diag import declared_follower_slots
+
+    path = ROOT / "gpuwm/prepared_domain_tree_forecast.py"
+    source = ast.parse(path.read_text(encoding="utf-8"))
+    restore = next(node for node in ast.walk(source)
+                   if isinstance(node, ast.FunctionDef)
+                   and node.name == "restore_store_domain")
+    physics = next(node for node in restore.body
+                   if isinstance(node, ast.FunctionDef) and node.name == "physics")
+    producer = [node for node in restore.body if isinstance(node, ast.Assign)
+                and any(isinstance(target, ast.Name) and target.id == "slots"
+                        for target in node.targets)]
+    loops = [node for node in physics.body if isinstance(node, ast.For)
+             and isinstance(node.iter, ast.Name) and node.iter.id == "slots"]
+    assert len(producer) == len(loops) == 1
+    sites = _scan_scratch_tree(ast.Module(body=[physics], type_ignores=[]),
+                              path.relative_to(ROOT).as_posix())
+    assert sites == [("variable", None, "gpuwm/prepared_domain_tree_forecast.py", "physics")]
+    code = compile(ast.Module(body=[producer[0], loops[0]], type_ignores=[]), str(path), "exec")
+    domains = [SimpleNamespace(grid_id=gid, parent_id=parent, follow=follow)
+               for gid, parent, follow in ((1, 0, None), (2, 1, object()),
+                                           (3, 1, object()), (4, 2, object()),
+                                           (5, 2, None))]
+    expected = {1: ("uh_follow_window.d02", "uh_follow_window.d03"),
+                2: ("uh_follow_window.d04",), 3: (), 4: (), 5: ()}
+    cfg = SimpleNamespace(ny=7, nx=11)
+    for domain in domains:
+        requests = []
+
+        def scratch(shape, slot):
+            requests.append((shape, slot))
+
+        exec(code, {"declared_follower_slots": declared_follower_slots,
+                    "exp": SimpleNamespace(domains=domains), "domain": domain,
+                    "result": SimpleNamespace(state=SimpleNamespace(scratch=scratch)),
+                    "cfg": cfg})
+        assert requests == [((7, 11), slot) for slot in expected[domain.grid_id]]
+        assert all(restart.classify_scratch_slot(slot) == "carry" for _, slot in requests)
 
 
 def test_experimental_thompson_scratch_registry_is_complete():
@@ -1959,29 +2073,27 @@ def test_mp28_lateral_boundary_allow_lists_accept_the_new_scalars():
         assert "COUPLED_SCALAR_STATE_FIELDS" in source, func.__name__
 
 
-def test_mp28_external_lbc_carries_only_qv_and_says_so():
-    """The registered deviation, pinned so it cannot be un-registered by
-    accident.  ArWen gives every non-qv scalar a flow-dependent boundary with
-    ZERO inflow; for aerosols that monotonically depletes nwfa/nifa in the
-    upstream boundary zone, which WRF does not do (its Registry gives
-    qnwfa/qnifa real bdy arrays).  If someone extends
-    ``_coupled_device_fields``, this test fails and the prose that explains
-    the deviation must be retired in the same diff."""
-    import inspect
-
-    from gpuwm.core import moist
-    from gpuwm.ingest import lateral_bc
-
-    source = inspect.getsource(lateral_bc._coupled_device_fields)
-    coupled = {line.split('"')[1] for line in source.splitlines()
-               if line.strip().startswith('result["')
-               or line.strip().startswith('"')}
-    for name in ("nwfa", "nifa", "nc", "qc", "qr", "qi", "qs", "qg"):
-        assert name not in coupled, name
-    assert "qv" in coupled
-    # The deviation is written down where a reader will find it.
-    assert "ZERO AEROSOL INFLOW" in moist.__doc__
-    assert "REGISTERED DEVIATION" in source
+def test_mp28_external_lbc_uses_supplied_aerosols_and_retains_synthetic_behavior():
+    from dataclasses import replace
+    from gpuwm.core.state import DomainState
+    from gpuwm.boundary_fields import external_scalar_fields
+    from gpuwm.ingest.lateral_bc import domain_boundary_snapshot
+    cfg = RunConfig(nx=8, ny=8, nz=4, dx=1000., dy=1000., ztop=10000.,
+                    dt=1., run_seconds=1., moist=True, mp_physics=28,
+                    specified=True, aer_init_opt=1, wif_input_opt=1)
+    for supplied in (False, True):
+        selected = cfg if supplied else replace(
+            cfg, aer_init_opt=0, wif_input_opt=0, mp28_aerosol_source="synthetic")
+        state = DomainState(selected, array_module=np)
+        state.c1h[:] = 1.; state.c2h[:] = 0.
+        state.c1f[:] = 1.; state.c2f[:] = 0.; state.mub2d[:] = 10000.
+        state.nwfa[:] = 123.; state.nifa[:] = 456.
+        snapshot = domain_boundary_snapshot(state)
+        assert set(snapshot) == {"u", "v", "theta", "phi", "mu", *external_scalar_fields(selected)}
+        assert not {"nc", "nr", "ni", "qc", "qr", "qi", "qs", "qg"} & set(snapshot)
+        if supplied:
+            np.testing.assert_array_equal(snapshot["nwfa"], 1230000.)
+            np.testing.assert_array_equal(snapshot["nifa"], 4560000.)
 
 
 def test_mp28_mixed_nest_edge_is_refused_by_name():
@@ -2599,11 +2711,19 @@ def test_estimate_domain_itemization_pins(exp1):
     # 4*49*(2*250 + 2*198) = 175,616 B, plus 7 surface slots x
     # 4*(2*250 + 2*198) = 3,584 B: 2,985,472 + 25,088 = 3,010,560 B on
     # top of the previous 564,250,212-B scratch pin.
+    # SFCLAY's USTM state (3669990e8c) adds one FP32 surface plane:
+    # 4 * 200 * 250 = 200,000 B. Its actual producer/inventory is checked
+    # by test_sfclay; this is distinct from OLR below.
     # Physics carries the domain's OLR publication buffer, one resident
     # (ny, nx) FP32 field: 4 * 200 * 250 = 200,000 B.
+    # The EOS's base-thickness correction dphb_resid adds one (nz, ny, nx)
+    # FP32 field to a terrain state, 4*49*200*250 = 9,800,000 B, and the
+    # float64-differenced coefficient drops dc3f/dc4f a further
+    # 2 * 4 * 49 = 392 B: 9,800,392 B on top of the previous
+    # 563,557,756-B state pin.
     assert by_cat == {
-        "state": 563557756,
-        "physics": 275906760,
+        "state": 573358148,
+        "physics": 276106760,
         # KF hold + expiry mask + ring-guard saves, plus the v1.1
         # co-located vertical-CFL reduction field: one extra FP32 word in
         # each of the 256 `integration_health_partial` blocks and in the
@@ -2616,7 +2736,7 @@ def test_estimate_domain_itemization_pins(exp1):
     }
     assert d01.resident_bytes == sum(
         v for c, v in by_cat.items() if c != "transient")
-    assert d01.resident_bytes == 1473842400
+    assert d01.resident_bytes == 1483842792
     assert est.resident_bytes == d01.resident_bytes + est.k_tables_bytes
     assert d01.transient_bytes == 441262500
 
@@ -2674,8 +2794,14 @@ def test_estimate_4dom_golden_pins(exp4, est4):
     # OLR publication buffer: one resident (ny, nx) FP32 field per 4/4
     # domain, so each domain gains exactly 4*ny*nx B -- 200,000 /
     # 800,000 / 1,004,004 / 1,440,000 on d01--d04 (sum 3,444,004 B).
-    assert per_domain == {1: 1503530600, 2: 5403918992,
-                          3: 6800616700, 4: 9730339968}
+    # EOS correction 6b11e4c994 allocates dphb_resid (nz,ny,nx) and
+    # dc3f/dc4f (nz each). SFCLAY 3669990e8c adds USTM (ny,nx).
+    # These persisted after the old pins: per-domain increases are
+    # 4*((nz+1)*ny*nx + 2*nz), totaling 172,201,768 B. Actual state
+    # allocation shapes are independently checked against NumPy-backed
+    # DomainState, and USTM is in the surface producer's inventory.
+    assert per_domain == {1: 1513530992, 2: 5443919384,
+                          3: 6850817292, 4: 9802340360}
     nest = {d.grid_id: d.category_bytes("nest") for d in est4.domains}
     assert nest == {1: 0, 2: 103165552, 3: 149390256, 4: 193084928}
     # The post-CQ request includes both simultaneously live nested-force
@@ -2689,9 +2815,16 @@ def test_estimate_4dom_golden_pins(exp4, est4):
     assert est4.scratch_arena_bytes == 3315315836
     # 9,471,818,140 requested - 3,315,315,836 physical = 6,156,502,304 B.
     assert est4.scratch_arena_saved_bytes == 6156502304
-    assert est4.dycore_state_request_bytes == 4930458300
-    assert est4.dycore_state_workspace_bytes == 2061345600
-    assert est4.dycore_state_saved_bytes == 2869112700
+    # Omega'' retains its forced boundary column. Domain ownership replaces
+    # the unsafe maximum backing with four allocations: sum172,200,200 B,
+    # max72,000,000 B, so physical residency increases by100,200,200 B.
+    omega_bytes = [4 * (dc.run.nz + 1) * dc.run.ny * dc.run.nx
+                   for dc in exp4.domains]
+    assert sum(omega_bytes) == 172_200_200
+    assert max(omega_bytes) == 72_000_000
+    assert est4.dycore_state_request_bytes == 4930458300 - sum(omega_bytes)
+    assert est4.dycore_state_workspace_bytes == 2061345600 - max(omega_bytes)
+    assert est4.dycore_state_saved_bytes == 2869112700 - 100_200_200
     # Ring snapshot slots are resident (arena-excluded): the ports-branch
     # residency plus the exact 23,815,680-B ring total, plus the
     # 3,444,004-B four-domain OLR publication total.
@@ -2699,7 +2832,7 @@ def test_estimate_4dom_golden_pins(exp4, est4):
     # g-point CSR the gas tables now upload (see
     # test_estimate_experiment_shared_counting).  Nothing else in residency
     # moved -- the optimisation is a workspace and kernel change.
-    assert est4.resident_bytes == 14436568552
+    assert est4.resident_bytes == 14708970520
     # The case configures column_chunk = 6250 (byte-identical to 3125,
     # 33% faster per radiation call); the 3125 numbers stay pinned in the
     # ladder below, so the trade this bought is on the record both ways.
@@ -2715,9 +2848,9 @@ def test_estimate_4dom_golden_pins(exp4, est4):
     # +3,444,004 B: the four-domain OLR publication total.
     # -1,331,736,416 B against the pre-optimisation pin: the 1,331,750,000 B
     # of workspace the phase change removed, less the 13,584 B of CSR.
-    assert est4.subtotal_bytes == 18339058552
+    assert est4.subtotal_bytes == 18611460520
     assert est4.alloc_estimate_bytes == math.ceil(
-        1.15 * est4.subtotal_bytes) == 21089917335
+        1.15 * est4.subtotal_bytes) == 21403179598
     # Chunk ladder after arena sharing and physics-persistent reclamation.
     # The 1024-descriptor health-slot registration adds 49,168 B/domain to
     # the audited scratch; the pins below are computed on the merged tree.
@@ -2730,8 +2863,8 @@ def test_estimate_4dom_golden_pins(exp4, est4):
     # The ladder FLATTENED with the workspace: the whole rung-to-rung spread
     # is 1.15 x the workspace difference, and the workspace is now 2.85x
     # smaller, so 6250 -> 256 buys 824 MB where it used to buy 2,293 MB.
-    assert ladder == {6250: 21089917335, 3125: 20660133585,
-                      1562: 20445172945, 256: 20265557720}
+    assert ladder == {6250: 21403179598, 3125: 20973395848,
+                      1562: 20758435208, 256: 20578819983}
 
 
 def test_d01_calibration_bounds_measured_fixture(exp1):
@@ -2745,10 +2878,11 @@ def test_d01_calibration_bounds_measured_fixture(exp1):
     measured = pf.CAL_D01_POOL_USED_PEAK_BYTES
     # Enforced bound: measured <= estimate.
     assert est.alloc_estimate_bytes >= measured
-    # CQ-off removes 29,688,200 B: 1,451,294,432 - 29,688,200 =
-    # 1,421,606,232 B, so the old fixture is now about 11% above residency.
+    # Current residency includes the EOS residual/coefficient arrays and
+    # USTM: 1,483,842,792 B, about 94% of the historical 1.47-GiB peak.
+    # This comparison does not turn that old run into a new measurement.
     ratio = est.domains[0].resident_bytes / measured
-    assert 0.93 <= ratio <= 0.94
+    assert 0.94 <= ratio <= 0.95
 
 
 def test_calibration_constants_pin_the_measurement_record():
@@ -2833,37 +2967,13 @@ def test_reserve_policy_split_proposals():
 
 def test_n0_probe_projection_flags_stale_calibration_after_exact_aliases(
         exp4, est4):
-    """The old probe cannot certify the post-alias measured-bound gate.
+    """Project retained bytes explicitly; never relabel them a fresh probe.
 
-    Its pool-used projection loses the exact physical diff6 and Smag bytes,
-    while the proportional estimator loses 1.15 times those amounts.
-    Historically the projection sat 26,185,543 B ABOVE the estimate and
-    the measured-bound leg exposed the staleness.  The ring-guard
-    mp_ring_save_* family then grew the audited scratch by 23,815,680 B
-    across the four domains (x1.15 headroom = 27,388,032 B of estimate),
-    which consumed that margin: composed with the ports-branch growth
-    (health descriptors, nested-force slots) and the OLR publication
-    buffers (x1.15 headroom = 3,960,605 B of estimate) the stale
-    projection sat 5,277,330 B BELOW the estimate and the measured-bound
-    leg read True.
-
-    The RRTMGP optimisation put it back ABOVE, by 94,588,299 B, so the
-    leg reads False again.  Nothing about the receipt changed: the
-    default-chunk workspace fell 1,025,700,000 -> 359,825,000 B when the
-    Planck sources left the ledger, and the two sides of this comparison
-    do not fall together.  The projection is raw measured bytes, so it
-    drops by that 665,875,000 B exactly; the estimate is the 1.15
-    allocator-headroom multiple, so it drops by 765,740,629 B.  The
-    difference is the 0.15 that was headroom on bytes nobody allocates
-    any more -- 99,881,250 B, less 1.15 x the 13,584 B of new gas-table
-    CSR, i.e. 99,865,629 B on top of the old -5,277,330.
-
-    The algebra stays pinned exactly.  A False measured-bound leg here is
-    the pre-alias regime restored: the leg exposes the retained receipt's
-    staleness instead of concealing it.  The next N0 certification still
-    MUST take a fresh probe receipt (PROBE_POOL_USED_PEAK_BYTES) rather
-    than trust this projection -- an estimate whose workspace term shrank
-    by two thirds is not a bound the old receipt was measured against.
+    The old receipt predates the EOS residual/coefficient arrays and USTM.
+    Its algebra must add their physical allocation once, whereas the
+    estimator adds their 1.15 headroom multiple. The resulting margin is
+    53,728,004 B. PROBE_POOL_USED_PEAK_BYTES remains the original record;
+    this constructed projection cannot certify a live measured-bound gate.
     """
     # ``PROBE_POOL_USED_PEAK_BYTES`` is a receipt taken at the LIBRARY default
     # chunk, so it must be projected against the default-chunk estimate.
@@ -2872,11 +2982,15 @@ def test_n0_probe_projection_flags_stale_calibration_after_exact_aliases(
     # never allocated -- concealing exactly the staleness this test exposes.
     est = pf.estimate_experiment(exp4, column_chunk=pf.DEFAULT_COLUMN_CHUNK)
     diff6_alias_saved = 141_237_600
-    projected_used = (pf.PROBE_POOL_USED_PEAK_BYTES
+    added_persistents = sum(
+        4 * ((dc.run.nz + 1) * dc.run.ny * dc.run.nx + 2 * dc.run.nz)
+        for dc in exp4.domains)
+    assert added_persistents == 172_201_768
+    projected_used = (pf.PROBE_POOL_USED_PEAK_BYTES + added_persistents
                       - est.dycore_state_saved_bytes
                       - (3035550000 - est.workspace_bytes)
                       - diff6_alias_saved - 141_120_000)
-    assert projected_used - est.alloc_estimate_bytes == 94_588_299
+    assert projected_used - est.alloc_estimate_bytes == 53_728_004
     legs = pf.evaluate_alloc_gates(
         measured_used_bytes=projected_used,
         estimate_bytes=est.alloc_estimate_bytes,
@@ -2960,7 +3074,14 @@ def _run_check(argv):
     sub = parser.add_subparsers(dest="command", required=True)
     pf.register_cli(sub)
     args = parser.parse_args(argv)
-    return args.func(args)
+    args.explain = True  # This suite pins the detailed memory breakdown.
+    # These tests isolate memory admission; GPU readiness has its own
+    # compile-failure controls and must not contact a device in CPU tests.
+    from unittest.mock import patch
+    from gpuwm.doctor import Check
+    with patch("gpuwm.doctor._cuda_headers_check", return_value=Check(
+            "CUDA kernel headers", "verified", "fixture kernels ready")):
+        return args.func(args)
 
 
 def test_check_cli_estimator_json(capsys):
@@ -2977,11 +3098,11 @@ def test_check_cli_estimator_json(capsys):
     # -1,531,496,879 B on the RRTMGP optimisation: 1.15 x the
     # 1,331,750,000 B of chunk workspace the phase change removed at this
     # case's 6250 chunk, less 1.15 x the 13,584 B of gas-table CSR it added.
-    assert payload["alloc_estimate_bytes"] == 21089917335
+    assert payload["alloc_estimate_bytes"] == 21403179598
     # All requested moist-CQ slots are represented; the shared arena aliases
     # their lifetimes without changing the exact physical backing.
     assert payload["scratch_arena_saved_bytes"] == 6156502304
-    assert payload["dycore_state_saved_bytes"] == 2869112700
+    assert payload["dycore_state_saved_bytes"] == 2869112700 - 100_200_200
     assert payload["domains"]["d04"]["by_category"]["nest"] == 193084928
     assert payload["gates"]["alloc_estimate_le_wddm_budget"] is True
     # Estimator-only mode: the measured legs stay unevaluated.
@@ -3025,7 +3146,10 @@ def test_check_cli_estimator_json(capsys):
     # ceiling.  Against that, the two workspaces are charged for the
     # columns actually in flight: 443,555,840 B for KF (170 SMs x 8 blocks
     # x 32 lanes x 52 slots x 49 levels x 4 B) and 313,344,000 B for YSU.
-    assert payload["reserve_bytes"] == 3807318705
+    # EOS/USTM growth adds 5,940,961 B to the 3% retention term.
+    # Difference of the two rounded 3% retention terms, not a rounded delta.
+    assert payload["reserve_bytes"] == 3813259666 + (
+        math.ceil(0.03 * 21403179598) - math.ceil(0.03 * 21287949368))
     reference = pf.card_local_memory_profile(None)
     exp_4dom = load_experiment_case(CONFIG_4DOM)[0]
     assert payload["reserve_components"]["device_overhead_bytes"] == (
@@ -3049,12 +3173,10 @@ def test_check_cli_over_budget_fails_and_names_the_lever(capsys):
     assert rc == 1
     assert "alloc_estimate_le_wddm_budget: FAIL" in out
     assert "OVER BUDGET" in out
-    # ONE halving now closes a 19.5 GiB budget where two used to be needed.
-    # The lever is the largest halving of the case's 6250 whose estimate
-    # fits: 6250 is 21,089,917,335 against a 20,937,965,568 B budget, and
-    # 3125 is 20,660,133,585.  Before the RRTMGP workspace change 3125 still
-    # came to 21,425,874,214 and the search had to go one rung further.
-    assert "--column-chunk 3125" in out
+    # Per-domain acoustic ownership costs another115,230,230 B including
+    # headroom.3125 is now20,973,395,848 B, above the20,937,965,568 B budget;
+    #1562 is20,758,435,208 B and is the largest halving that fits.
+    assert "--column-chunk 1562" in out
 
 
 def test_check_over_budget_envelope_exits_nonzero(capsys, monkeypatch):
@@ -3390,10 +3512,12 @@ def test_check_cli_legacy_config_wraps(capsys):
     payload = json.loads(capsys.readouterr().out)
     assert rc == 0
     assert list(payload["domains"]) == ["d01"]
+    # USTM adds 200,000 B to the previous d01 resident pin.
     # The 1024-descriptor health capacity adds 24,576 B and the ring-guard
-    # saves 3,010,560 B to the pre-assembly pin, and the OLR publication
-    # buffer a further 200,000 B (itemization-pin derivation).
-    assert payload["domains"]["d01"]["resident_bytes"] == 1473842400
+    # saves 3,010,560 B to the pre-assembly pin, the OLR publication buffer
+    # a further 200,000 B, and the EOS base-thickness correction plus the
+    # coefficient drops 9,800,392 B (itemization-pin derivation).
+    assert payload["domains"]["d01"]["resident_bytes"] == 1483842792
 
 
 def test_check_cli_fails_closed_when_nothing_is_evaluable(capsys,
@@ -3506,14 +3630,21 @@ def test_alloc_oom_terminates_without_freeing(exp1, monkeypatch):
     assert not pool.freed  # never free_all_blocks-and-continue
 
 
+@pytest.mark.parametrize("retained_intervals", [None, 8])
 def test_alloc_preflight_materializes_and_injects_shared_workspaces(
-        exp4, monkeypatch):
+        monkeypatch, retained_intervals):
     """CPU/stubbed-CuPy proof that --alloc builds both shared workspaces."""
     import sys
     import types
 
     import gpuwm.core.state as state_mod
     import gpuwm.ingest.lateral_bc as lbc_mod
+
+    # This is an allocation geometry control; no forcing values are read.
+    raw = tomllib.loads(CONFIG_4DOM.read_text(encoding="utf-8"))
+    raw.pop("case_data", None)
+    raw.pop("fetch", None)
+    exp4 = build_experiment(raw, source=str(CONFIG_4DOM))
 
     # Keep the real four-domain geometry/registry but turn off physics so the
     # stub run has no unrelated CuPy allocation surface.
@@ -3523,7 +3654,7 @@ def test_alloc_preflight_materializes_and_injects_shared_workspaces(
             sf_surface_physics=0, bl_pbl_physics=0,
             ra_physics=0, cu_physics=0)) for dc in exp4.domains)
     cpu_exp = dataclasses.replace(exp4, domains=domains)
-    estimate = pf.estimate_experiment(cpu_exp)
+    estimate = pf.estimate_experiment(cpu_exp, forcing_intervals=retained_intervals)
     assert estimate.uses_shared_scratch_arena
 
     stub, pool = _stub_cupy(free_bytes=64 * GIB, total_bytes=64 * GIB)
@@ -3557,10 +3688,16 @@ def test_alloc_preflight_materializes_and_injects_shared_workspaces(
     monkeypatch.setattr(
         state_mod, "build_shared_dycore_state_workspace", build_dycore)
     monkeypatch.setattr(state_mod, "DomainState", _FakeState)
+    attached = []
     monkeypatch.setattr(lbc_mod, "attach_lateral_boundaries",
-                        lambda state, boundaries: None)
+                        lambda state, boundaries: attached.append(boundaries))
 
-    report = pf.run_alloc_preflight(cpu_exp, reserve=pf.ReservePolicy.flat(0))
+    report = pf.run_alloc_preflight(
+        cpu_exp, reserve=pf.ReservePolicy.flat(0),
+        forcing_intervals=retained_intervals)
+    expected_intervals = (retained_intervals if retained_intervals is not None
+                          else pf.lbc_intervals(cpu_exp.run_seconds, 21600))
+    assert [len(boundaries.intervals) for boundaries in attached] == [expected_intervals]
     assert scratch_built == [cpu_exp.domains]
     assert dycore_built == [cpu_exp.domains]
     assert injected == [

@@ -254,6 +254,7 @@ def publish_hrrr_prepared_bundle(
     """
 
     from gpuwm.experiment import load_experiment
+    from gpuwm.ingest.prepared_cache import SOIL_PREPARATION_RECEIPTS
     from gpuwm.prepared_single_domain_forecast import (
         _resolved_wrf_direct_contract_sha256,
         single_domain_physics_selection,
@@ -423,6 +424,21 @@ def publish_hrrr_prepared_bundle(
             "physics": physics,
         },
     }
+    # The cache owns these declared scientific settings. The forecast reader
+    # compares each present field to both this proof and the experiment; losing
+    # one at publication makes a valid native preparation impossible to run.
+    # Preserve absence for older producers, and never derive a replacement
+    # value from a default or a named profile here.
+    for key in ("ingest", "static_highres", "trace_gas_overrides"):
+        if key in source_identity:
+            proof[key] = source_identity[key]
+    # These are outcomes recorded by the actual preparation, including a
+    # texture treatment that was considered but did not apply at this spacing.
+    # Relay only the registered receipts present in the sealed cache.
+    user_metadata = header.get("metadata", {}).get("user", {})
+    for key in SOIL_PREPARATION_RECEIPTS:
+        if key in user_metadata:
+            proof[key] = user_metadata[key]
     if namelist_extension_invariant is not None:
         proof["namelist_extension_invariant"] = dict(
             namelist_extension_invariant)

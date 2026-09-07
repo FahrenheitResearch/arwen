@@ -1599,6 +1599,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustwx-cross-section"
+version = "0.1.0"
+dependencies = [
+ "rusttype",
+ "rustwx-contour",
+]
+
+[[package]]
 name = "rustwx-ensemble"
 version = "0.1.0"
 dependencies = [
@@ -1666,6 +1674,7 @@ dependencies = [
  "rustwx-contour",
  "rustwx-core",
  "serde",
+ "serde_json",
  "shapefile",
  "thiserror",
 ]
@@ -1851,10 +1860,12 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "grib-core",
+ "image",
  "netcdf-writer",
  "netcrust",
  "rayon",
  "rustwx-core",
+ "rustwx-cross-section",
  "rustwx-ensemble",
  "rustwx-models",
  "rustwx-products",

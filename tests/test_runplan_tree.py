@@ -59,47 +59,42 @@ def _seed_preparation(plan_root: Path) -> tuple[Path, Path]:
 
 
 # ---------------------------------------------------------------------------
-# The refusal, and the one caller allowed past it
+# Which runner a plan names, from the config's own domain count
 # ---------------------------------------------------------------------------
 
 
-def test_a_tree_config_still_refuses_on_gpuwm_go_itself(tmp_path):
-    """The interactive refusal a nested launch hit must not move.
+def test_a_tree_config_resolves_to_the_tree_runner_with_no_keyword(tmp_path):
+    """The one door, entered the one way, dispatches by domain count.
 
-    It protects a reader whose chain would die at the forecast stage.
-    run-plan dispatches to the tree runner instead, so it is not the
-    reader that refusal is for -- but everyone else still is.
+    `gpuwm go` used to refuse a multi-domain config and run-plan
+    reached past that refusal with ``allow_tree=True``.  The refusal
+    is gone and the keyword with it: both front doors now make the
+    same call, and the plan's ``runner`` key is what branches.
     """
 
     plan = load_plan(_tree_plan(tmp_path, tmp_path / "run"))
     config, _ = generate_intent_config(plan, destination=tmp_path / "gen")
 
-    with pytest.raises(go_cli.GoRefusal) as refusal:
-        go_cli.plan_from_config(config, outdir=tmp_path / "out")
-    text = str(refusal.value)
-    assert "declares 2 domains" in text
-    assert "gpuwm-prepared-tree-forecast" in text
-
-
-def test_allow_tree_lets_it_through_and_names_the_tree_runner(tmp_path):
-    plan = load_plan(_tree_plan(tmp_path, tmp_path / "run"))
-    config, _ = generate_intent_config(plan, destination=tmp_path / "gen")
-
-    resolved = go_cli.plan_from_config(
-        config, outdir=tmp_path / "out", allow_tree=True)
+    resolved = go_cli.plan_from_config(config, outdir=tmp_path / "out")
     assert resolved["domains"] == 2
     assert resolved["runner"] == go_cli.TREE_RUNNER_MODULE
+    # And the composed fifth stage is that module, binding ONE
+    # preparation receipt rather than the single-domain three.
+    command = go_cli.tree_forecast_command(resolved, digests={
+        "preparation_receipt": "a" * 64, "experiment_config": "b" * 64})
+    assert command[2] == go_cli.TREE_RUNNER_MODULE
+    assert "--preparation-receipt-sha256" in command
+    assert "--prepared-content-sha256" not in command
 
 
 def test_a_single_domain_config_still_names_the_single_domain_runner(
         tmp_path):
-    """allow_tree must not change what a one-domain plan runs."""
+    """Dropping the keyword must not change what a one-domain plan runs."""
 
     plan = load_plan(_tree_plan(tmp_path, tmp_path / "run", ladder="12"))
     config, _ = generate_intent_config(plan, destination=tmp_path / "gen")
 
-    resolved = go_cli.plan_from_config(
-        config, outdir=tmp_path / "out", allow_tree=True)
+    resolved = go_cli.plan_from_config(config, outdir=tmp_path / "out")
     assert resolved["domains"] == 1
     assert resolved["runner"] == go_cli.RUNNER_MODULE
 

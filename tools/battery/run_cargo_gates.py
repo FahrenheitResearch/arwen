@@ -55,7 +55,7 @@ MANIFEST = REPOSITORY_ROOT / "tools" / "battery" / "cargo_gates.txt"
 #: not carry.  A fixtures entry is LISTED and not run by default, which
 #: is the difference between coverage that is deferred and coverage that
 #: silently vanished.
-SHARDS = ("cpu", "gpu", "fixtures")
+SHARDS = ("cpu", "gpu", "fixtures", "qualification")
 
 #: The shard a release cut runs.  Named rather than spelled inline so the
 #: manifest gate and the runner cannot disagree about it.
@@ -218,7 +218,9 @@ def run_entry(entry: Entry, *, target_dir: Path, cargo: str) -> Outcome:
     environment["CARGO_TARGET_DIR"] = str(target_dir)
     for assignment in entry.env:
         key, _, value = assignment.partition("=")
-        environment[key] = value
+        # Worker integration tests need the same installed Python as this
+        # battery, including when its path contains spaces. No shell expansion.
+        environment[key] = sys.executable if value == "@python" else value
 
     argv = [cargo] + entry.invocation()[1:]
     # cwd is the WORKSPACE, never the repository root: cargo reads

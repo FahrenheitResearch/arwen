@@ -30,12 +30,12 @@ substitutions (see the end of this page).
 
 **A rung grades one OPTION, and most of the tree sits on the same
 rung.** `implemented-unverified` is not a mark against any particular
-scheme. It is carried by **23 of the registry's 40 component options**:
+scheme. It is carried by **24 of the registry's 41 component options**:
 YSU, MYJ, MYNN (PBL and surface layer both), Eta similarity, Shin-Hong,
 SASE, Milbrandt-Yau, Morrison, WDM6, P3 one-category, Thompson
-aerosol-aware, Noah, Noah-MP, RUC, Grell-Freitas, WRF RRTM longwave with
-Dudhia shortwave, the RTE+RRTMGP legacy-aggregate selector, and all five
-turbulence closures. It says
+aerosol-aware, Noah, Noah-MP, RUC, Grell-Freitas, New Tiedtke, WRF RRTM
+longwave with Dudhia shortwave, the RTE+RRTMGP legacy-aggregate
+selector, and all five turbulence closures. It says
 exactly one thing -- no matched ArWen-versus-WRF forecast trajectory
 has been run with this option yet -- and it says it about the option,
 not about how freely that option may be composed with others. Those are
@@ -77,24 +77,25 @@ So, plainly, and in the order the two routes actually work:
   and the composition they name was reachable before they were added.
 
 The composition space is measured rather than argued.
-`tools/report_physics_composition_walk.py` writes 9781 physics
-combinations into real experiment TOMLs, pushes every one through
+`tools/report_physics_composition_walk.py` makes 9831 physics admission
+attempts with real experiment TOMLs, pushes every one through
 `gpuwm.experiment.build_experiment` -- the single front door every
 runner reaches a per-domain `RunConfig` through -- and records the
 verdict. `docs/public/receipts/physics-composition-walk.json` is that
 record, and `tests/test_physics_composition_walk.py` regenerates it on
 every release cut and compares it byte for byte. As measured:
 
-- **990 of 9781 combinations are accepted**, against 18 registered
-  templates. The presets are a corner of the space, not the space.
+- **2895 of 9831 admission attempts are accepted**, covering **2887 distinct
+  accepted suites**, against 19 registered templates. The presets are a
+  corner of the space, not the space.
 - **Every accepted run keeps every switch the file set**, checked
   against the resolved per-domain `RunConfig`. Zero rewrites. An
   admission is never a silent substitution.
 - **Every admitted value of every axis reaches an accepted run**, with
   no exceptions left. `ra_lw_physics = 1` (WRF RRTM longwave) was the
-  last one; 1.9 ports it, and it now reaches 169 accepted combinations
-  as WRF's classic pair with Dudhia shortwave.
-- **8791 refusals fall into 19 distinct rules**, every one of which
+  last one; 1.9 ports it, and it now reaches 676 distinct accepted suites,
+  including 169 paired with Dudhia shortwave.
+- **6936 refusals fall into 17 distinct rules**, every one of which
   names the selector to change, and each of which has a
   demonstrated remedy -- the receipt carries a before/after pair per
   rule showing that doing what the message says reaches an accepted
@@ -134,7 +135,7 @@ In plain words -- and every one of these is a way IN, not a wall:
 | `template` | **a preset exists**: pick it by name and every later stage enforces it switch for switch |
 | `component-override` | **a preset exists** on the routes that declare the override, and everywhere else you **type it in your config** |
 | `expert-template` | a preset exists behind one gate: **add one acknowledgement line** and it runs |
-| `unreachable` | no preset names it. Either **type it in your config** -- three of the five below do run that way -- or it is **not ported yet**, and then it refuses by name |
+| `unreachable` | no preset names it. Either **type it in your config** -- three of the four below do run that way -- or it is **not ported yet**, and then it refuses by name |
 
 Every one of those four states is a statement about the **named**
 routes -- what a menu, a `--physics-profile` choice list or a route
@@ -149,9 +150,9 @@ receipt) crosses the MYNN PBL + MYNN surface-layer pair against all
 four land surfaces and all sixteen longwave/shortwave pairings: **the
 four land-surface columns are identical, cell for cell**, which is what
 arbitrary composition actually looks like -- the radiation verdict does
-not depend on the land-surface model. MYNN reaches every radiation
-pairing the loader admits at all (`0/0`, `0/1`, `4/4`, `90/90`), all
-seven microphysics schemes and all three cumulus schemes.
+not depend on the land-surface model. In this daylight composition walk,
+MYNN reaches all sixteen longwave/shortwave pairings drawn from `0`, `1`,
+`4` and `90`, nine microphysics options and four cumulus options.
 
 **`unreachable` does not mean the loader refuses.** It means no
 template and no route selects it, and the registry must publish a
@@ -161,16 +162,15 @@ prints both:
 
 | registry `unreachable` option | selectors | what a config naming it actually gets |
 |---|---|---|
-| land surface `off` | `sf_surface_physics = 0` | **type it in your config**: **255 accepted**. Off the menus by policy (its blocker says so), not by the loader |
-| surface layer `off` | `sf_sfclay_physics = 0` | **type it in your config**: **50 accepted**, same reason |
-| radiation `analytic-clear-sky` | `ra_lw_physics = ra_sw_physics = 90` | **type it in your config**: **200 accepted**, same reason |
-| radiation `wrf-rrtm-dudhia` | `ra_lw_physics = 1` | **not ported yet -- refuses by name** at load: 0 accepted of 1600 tried |
+| land surface `off` | `sf_surface_physics = 0` | **type it in your config**: **759 accepted**. Off the menus by policy (its blocker says so), not by the loader |
+| surface layer `off` | `sf_sfclay_physics = 0` | **type it in your config**: **103 accepted**, same reason |
+| radiation `analytic-clear-sky` | `ra_lw_physics = ra_sw_physics = 90` | **type it in your config**: **209 accepted**, same reason |
 | microphysics `sase` | none declared | **not ported yet**: publishes a porting target and declares no selector, so nothing can resolve to it |
 
-Counts are per-axis accepted totals from the same walk. Read a blocker
-before using any of the first three: each states why the option is kept
-off the named routes, and that reasoning applies to your config too
-even though the loader does not enforce it.
+Counts are distinct accepted suites naming every listed selector together.
+Read each option's blocker before using it: the reason it stays off the
+named routes applies to your config too, even though the loader does not
+enforce it. These are suite counts, not separate per-axis attempt totals.
 
 ## Microphysics (`mp_physics`)
 
@@ -966,12 +966,12 @@ why these pairings are refused:
 ```
 
 The MYNN *PBL* carries no such restriction: 5/91, 5/1 and 5/5 are all
-accepted -- **60, 60 and 90 distinct accepted combinations**
+accepted -- **192, 192 and 231 distinct accepted combinations**
 respectively, counted from the walk receipt's `accepted_combinations`.
 Which field is counted matters, so it is said rather than left to be
-inferred: `mynn_slice.accepted` in the same receipt reads **91** for
+inferred: `mynn_slice.accepted` in the same receipt reads **232** for
 the 5/5 pairing because that field counts ATTEMPTS, and the walk
-re-tries its 5/5 anchor suite in a second tier -- 91 attempts over 90
+re-tries its 5/5 anchor suite in a second tier -- 232 attempts over 231
 distinct configurations. Distinct configurations are what a reader
 asking "what may I compose?" wants, so that is what the three numbers
 above are. Earlier revisions of this page described the 5/5 pairing as
@@ -993,12 +993,12 @@ Naming a composition is not evidence, and none was claimed for it.
 | MM5 (classic) | 91 | supported | template | the certified-slice surface layer; pairs with YSU and all three LSMs |
 | Eta similarity (MYJ) | 2 | implemented-unverified | component-override | Janjic's viscous sublayer over water and the Zilitinkevich thermal roughness over land, transcribed from the byte-frozen `module_sf_myjsfc.F` including its `MYJSFCINIT` similarity tables; publishes `AKHS`/`AKMS`/`THZ0`/`QZ0`/`UZ0`/`VZ0` and NO `MOL`/`ZOL`/`PSIM`/`PSIH`, which is why it is admitted only as the 2/2 pair with the MYJ PBL. `isftcflx`/`iz0tlnd` are refused: WRF passes them in and never reads them (CZIL is hard-coded to 0.1). No oracle comparison against the WRF Fortran has been run |
 | MYNN | 5 | implemented-unverified | template | column solver oracle-matched over land and water (max rel. err 4.3e-7); `isftcflx` 0-3 ported; needs the PBL slot to be MYNN or off, which is WRF v4.6.1's own restriction ([MYNN scope note](#mynn-scope-note-what-composes-and-what-is-pinned)) |
-| MM5 (revised) | 1 | supported | component-override | no base template selects it (every verified run used the classic scheme); the prepared-domain-tree route offers it as a surface-layer component override, and a config that writes `sf_sfclay_physics = 1` directly is accepted by the loader and runs it -- measured, 360 accepted combinations in [receipts/physics-composition-walk.json](receipts/physics-composition-walk.json) |
+| MM5 (revised) | 1 | supported | component-override | no base template selects it (every verified run used the classic scheme); the prepared-domain-tree route offers it as a surface-layer component override, and a config that writes `sf_sfclay_physics = 1` directly is accepted by the loader and runs it -- measured, 1038 distinct accepted combinations in [receipts/physics-composition-walk.json](receipts/physics-composition-walk.json) |
 
 All four run. In plain words: `template` means **a preset exists**, and
 `component-override` means **a preset exists** on the routes that
 declare it and you **type it in your config** anywhere else -- which is
-how the revised MM5 row's 360 accepted combinations were measured.
+how the revised MM5 row's 1038 distinct accepted combinations were measured.
 Maturity and reachability are separate registry axes, quoted verbatim
 from the registry: `maturity` is the option's evidence tier and
 `reachability.state` is how a NAMED route can offer it. Neither column
@@ -1138,6 +1138,7 @@ time. Choosing this pair on a large domain remains a deliberate trade.
 |---|---|---|---|
 | Kain-Fritsch | 1 | supported | outer (>=10 km) domains; packaged lookup table; cudt 5 min in the certified templates |
 | Grell-Freitas (scale-aware) | 3 | implemented-unverified | whole GFDRV at the WRF v4.6.1 boundary, CPU and CUDA; no template selects it, so among the named routes it is a per-domain override -- a config writing `cu_physics = 3` is accepted directly; runs on the model step (cudt pinned 0) |
+| New Tiedtke | 16 | implemented-unverified | the WRF v4.6.1 `module_cu_ntiedtke` scheme; all 21 stages and the assembled pipeline reproduce the byte-frozen Fortran bitwise over an 18-case, 6-spacing oracle corpus, and `scientific_evidence` is `none`. Requires a PBL scheme (the closure reads the boundary-layer tendencies and the surface fluxes) and runs on the model step (cudt pinned 0); no template selects it, so it is a per-domain override -- a config writing `cu_physics = 16` is accepted directly. See [cumulus-new-tiedtke.md](../cumulus-new-tiedtke.md) |
 | off | 0 | supported | the convection-permitting nests run with cumulus off |
 
 What is certified for Grell-Freitas, and what is not. The certified
@@ -1149,13 +1150,17 @@ committed 216-column oracle (18 soundings x 6 grid spacings x 2
 `ishallow` arms) on the 208 columns where GFDRV's own decomposition is
 exact, with the 8 remainder bounded to the driver's own
 `module_gfs_physcons` mixed precision (max 34 ULP, 3.8e-6 relative, no
-branch flips). The CUDA path holds that boundary with the gamma
-COMPUTED on the device: its transcribed glibc-2.39 float32
-`tgammaf`/`lgammaf`/`expm1f`/`exp2f`/`powf` are bitwise against 130k
-live-glibc words, which matters because one ULP of the beta-shape
-normalisation moves the deep mass flux by up to 7.3 percent. The
-registry entry records three deviations: the shallow `k22` trigger
-ships with the section-offset indexing corrected (WRF's MAXLOC
+branch flips). The CUDA path holds that boundary with the beta-shape
+normalisation `fzu` PINNED from the capture, exactly as the CPU suite
+pins it: its transcribed glibc-2.39 float32 `logf`/`expf`/`powf` are
+bitwise against the live-glibc sweeps, but **gamma is a deliberate
+divergence since 2.6.6** and is graded against a 113-bit oracle
+instead. That matters because one ULP of `fzu` moves the deep mass
+flux by up to 7.3 percent, so it cannot be a tolerance question -- the
+pin puts it back to zero at that one seam. Read
+`docs/gf_gamma_known_delta.md` before quoting any GF parity number.
+The registry entry records four deviations: gamma (above); the
+shallow `k22` trigger ships with the section-offset indexing corrected (WRF's MAXLOC
 off-by-one lives behind a parity-suite flag; measured on the fixture,
 the correction moves 3 rejected cases and zero output words), the
 inversion-layer search clamps WRF's out-of-bounds `t_cup(kend+8)` read
@@ -1272,10 +1277,15 @@ refused, not warned about -- and the refusal states its own reason:
 |---|---|
 | `km_opt = 0` | SASE computes its own horizontal mixing from the closure's own diffusivities, so a `km_opt` mixing operator would double-count it. 0 is admitted for this scheme and no other |
 | `khdif = 0.0`, `kvdif = 0.0` | constant-K diffusion may not silently stack on the SASE mixing |
-| `bldt = 0.0` | the closure produces a w tendency rebuilt every step rather than carried across a PBL call interval, so it must run every step |
 | `sf_sfclay_physics != 0` | its lower boundary condition is the surface layer's friction velocity, heat and moisture fluxes and gust-corrected wind speed; with the slot off those four fields do not exist |
 | `moist = true` | it mixes water vapour, cloud water and cloud ice alongside potential temperature, and forms its stability from the saturated Brunt-Vaisala frequency |
 | `nz <= 128` | the implicit vertical solve carries its tridiagonal columns in per-thread local memory at that fixed depth |
+
+The shared `bldt` setting also applies to SASE: zero calls every model
+step, while a positive value selects the surface/PBL interval in minutes.
+Its coupled tendencies, including vertical momentum, are held between
+calls and serialized across restart. Larger intervals change the model
+time discretization; they are an explicit simulation choice.
 
 On real data the path is the ordinary one, with two edits. Emit an
 experiment config for your area as
@@ -1289,8 +1299,8 @@ gpuwm domain --point=39,-98 --card 32gb --ladder 12 \
 then in the `[shared]` table change `bl_pbl_physics` to `900` and
 `km_opt` to `0`, and run it with `gpuwm go configs/myarea.toml`. The
 emitted file already carries `khdif = 0.0`, `kvdif = 0.0`,
-`bldt = 0.0`, `moist = true` and a surface-layer scheme, so those five
-requirements are met as written; `nz` is the one to check against the
+`moist = true` and a surface-layer scheme, so those four requirements
+are met as written; `nz` is the one to check against the
 ceiling above. Everything else -- microphysics, radiation, cumulus,
 land surface, the domain, the cycle -- is untouched, so a run against
 the unedited file is the control for the one you just made.
@@ -1447,18 +1457,17 @@ carries; [Defaults](#defaults) lists what that default runs.
 
 What still refuses, on every route, is a switch value the engine
 genuinely does not implement (the refusal names the switch), the
-registry's land-surface route blockers (for example GFS+RUC, which
-dies at its first surface-temperature call), and -- since 1.7.1 -- an
+source-field and land-surface initialization requirements, and -- since 1.7.1 -- an
 undeclared asymmetric radiation pairing across a window that includes
 local night (next section).
 
 Which NAMED suites each route prepares is the narrower question, and
-the answer is route-dependent. State of play in v1.1.1:
+the answer is route-dependent. Current preparation behavior:
 
 | route | what it can prepare |
 |---|---|
 | ERA5 config door (`[case_data]` -> `gpuwm run`) | the registry-admitted combinations |
-| GFS single domain | WSM6, Thompson, Morrison, NSSL2, MYNN; Noah-MP with an expert acknowledgement. RUC is deliberately withdrawn on this route |
+| GFS single domain | WSM6, Thompson, Morrison, NSSL2, MYNN and RUC; Noah-MP with an expert acknowledgement; selected source fields and soil geometry must satisfy initialization |
 | ERA5 single domain | the same normal profiles, plus RUC |
 | HRRR single domain | the normal profiles, plus RUC and expert Noah-MP |
 | prepared domain trees (GFS, ERA5, HRRR, 20CRv3) | the normal profile family, plus expert Noah-MP; microphysics may be overridden per domain, which is the only way to reach Thompson aerosol-aware (28) |
@@ -1467,10 +1476,12 @@ v1.0.1 restricted the GFS/HRRR door to YSU + MM5 surface layer + Noah,
 because the front door unconditionally ran the stock-WRF exporter and
 that exporter hard-requires `bl_pbl_physics = 1`, `sf_sfclay_physics =
 91`, `sf_surface_physics = 2`. v1.1.0 removed that coupling and made
-MYNN, RUC and Noah-MP reachable; v1.1.1 withdrew exactly one
-combination, GFS + RUC, because the GFS route supplies none of the
-soil/surface fields RUC's initialization needs and the failure landed
-mid-forecast rather than at preparation.
+MYNN, RUC and Noah-MP reachable. An older GFS + RUC first-surface-step
+failure prompted a route withdrawal. Current preparation uses the common
+scheme-selected soil initializer; source-name membership is not an
+initialization rule. The shared land/soil reconciliation now has a finite
+first-step shoreline control and a failing unreconciled control. These
+checks do not claim that every historical input or weather case is verified.
 
 **This table is a summary of a machine-readable authority, not the
 authority itself.** The shipped registry decides, and it will answer for

@@ -274,10 +274,49 @@ def test_manual_provider_fires_each_row_exactly_once():
     assert provider.unconsumed() == ()
 
 
-def test_manual_provider_reports_unfired_rows():
+def test_manual_provider_retires_a_row_behind_the_clock_and_says_so():
+    """A row the clock is already past is INHERITED, not pending.
+
+    It used to stay at the head of the queue for ever, where -- because
+    the head is matched exactly -- it could never fire again and blocked
+    every later row with it.  Retiring it is the reading that was always
+    correct on the only route that reaches this state: a row behind a
+    checkpoint executed BEFORE that checkpoint was written, and its
+    result is already in the restored state.  The receipt still carries
+    it, because silently dropping a scripted move is the defect one layer
+    over from silently never making it.
+    """
     provider = ManualMoveProvider((ScheduledRelocationMove(60.0, 1, 0),))
     assert provider(None, None, 120.0) is None
-    assert len(provider.unconsumed()) == 1
+    assert provider.unconsumed() == ()
+    assert len(provider.behind_the_clock()) == 1
+
+
+def test_a_resumed_leg_still_fires_the_row_AHEAD_of_the_clock():
+    """The defect itself.
+
+    MEASURED on a 3 / 1 km tree with moves at 1200 s and 2400 s, resuming
+    from the 1800 s checkpoint: NEITHER move executed, the nest stayed at
+    its 1200 s footprint, and the two frames after the missed 2400 s move
+    differed from the uninterrupted run -- while the restore banner said
+    the resume reproduces that run bit for bit.
+    """
+    provider = ManualMoveProvider((
+        ScheduledRelocationMove(1200.0, 1, 0),
+        ScheduledRelocationMove(2400.0, 0, -1)))
+    assert provider(None, None, 1800.0) is None
+    assert provider(None, None, 2400.0) == (0, -1)
+    assert len(provider.behind_the_clock()) == 1
+    assert provider.unconsumed() == ()
+
+
+def test_a_run_that_starts_at_zero_retires_nothing():
+    """The control: retiring must not become a way to skip a live row."""
+    provider = ManualMoveProvider((
+        ScheduledRelocationMove(60.0, 1, 0),
+        ScheduledRelocationMove(120.0, 0, -1)))
+    assert provider(None, None, 60.0) == (1, 0)
+    assert provider.behind_the_clock() == ()
 
 
 # ---------------------------------------------------------------------------

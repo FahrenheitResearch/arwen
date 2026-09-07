@@ -269,7 +269,7 @@ def test_negative_coordinates_parse_in_both_forms(tmp_path, capsys):
     out = sydney / "area.toml"
     rc = cli_main(["domain", "--point", "-33.87,151.21", "--card", "24gb",
                    "--ladder", "12", "--source", "gfs",
-                   "--cycle", "2026-07-29T18", "--out", str(out)])
+                   "--cycle", "2026-07-29T18", "--out", str(out), "--explain"])
     assert rc == 0, capsys.readouterr()
     raw = tomllib.loads(out.read_text(encoding="utf-8"))
     assert raw["projection"]["ref_lat"] == pytest.approx(-33.87)
@@ -309,7 +309,7 @@ def test_cycle_latest_resolves_instead_of_contradicting_itself(
         return resolved
 
     monkeypatch.setattr(fetch_module, "resolve_latest_cycle", fake_resolve)
-    rc, out = _run_wizard(tmp_path, source="gfs", cycle="latest",
+    rc, out = _run_wizard(tmp_path, "--explain", source="gfs", cycle="latest",
                           ladder="12")
     printed = capsys.readouterr().out
     assert rc == 0, printed
@@ -602,8 +602,8 @@ def test_worldwide_points_emit_and_round_trip(tmp_path, point, source,
     raw = tomllib.loads(out.read_text(encoding="utf-8"))
     assert raw["projection"]["map_proj"] == map_proj
     assert raw["shared"]["map_proj"] == wrf_code
-    # Single-domain emission: portable-forecast contract.
-    assert raw["experiment"]["restart_interval_s"] == 0.0
+    # New single-domain preparations have a usable checkpoint cadence.
+    assert raw["experiment"]["restart_interval_s"] == 3600.0
     exp = load_experiment(out)
     grids = grids_from_projection_config(exp)
     assert len(grids) == 1
@@ -833,9 +833,7 @@ def test_no_ladder_flag_emits_the_single_domain_go_shape(tmp_path):
                                source=str(out))
     assert len(exp.domains) == 1
     assert exp.root.run.dx == 12000.0
-    # The single-domain prepared-forecast contract rides along: no
-    # checkpoints on this route.
-    assert exp.restart_interval_s == 0.0
+    assert exp.restart_interval_s == 3600.0
 
 
 # ---------------------------------------------------------------------------
@@ -908,7 +906,7 @@ def test_emitted_era5_config_round_trips(tmp_path, capsys):
     # stanza of its own -- it is step 2 of the next-steps block, with
     # the exact follow-up command and the note that it waits on step 1.
     assert "gpuwm check: deferred" not in printed
-    assert "gpuwm check" in printed and "--budget-gib" in printed
+    assert "gpuwm check" in printed and "--free-gib" in printed
     assert "after the fetch lands" in printed
 
     # --explain restores the inventory and the geog story, verbatim.
@@ -985,27 +983,107 @@ def test_native_sources_omit_case_data(tmp_path, capsys, source):
     rc, out = _run_wizard(tmp_path, source=source, cycle=cycle)
     assert rc == 0
     printed = capsys.readouterr().out
-    assert "rw-wps" in printed  # the honest front-door note
+    assert f"gpuwm go {_posix(out)}" in printed.split("next:")[-1]
+    assert "--data-dir" not in printed.split("next:")[-1]
     raw = tomllib.loads(out.read_text(encoding="utf-8"))
     assert "case_data" not in raw
     assert raw["fetch"]["source"] == source
-    # load_experiment (the native front doors' loader) accepts the file.
+    assert raw["fetch"]["cycle"] == cycle
+    # Validate the public syntax and its real shared planning seam before
+    # decoder/readiness checks. This configuration test needs no built bridge.
+    import hashlib
+    import json
+    from gpuwm import go_cli, runplan
+    from gpuwm.cli import build_parser
+
     exp = load_experiment(out)
     assert len(exp.domains) == 2
+    before = out.read_bytes()
+    run_dir, data_dir = tmp_path / "run", tmp_path / "data-preview"
+    args = build_parser().parse_args([
+        "go", str(out), "--dry-run", "--outdir", str(run_dir),
+        "--data-dir", str(data_dir)])
+    assert args.func is go_cli.go_main
+    assert args.dry_run
+    if runplan.prepared_chain_for_source(source) == "prepared:go":
+        plan = go_cli.plan_from_config(
+            args.config, outdir=args.outdir, data_dir=args.data_dir)
+        assert plan["config"] == out
+        assert plan["source"] == source
+        assert plan["cycle"] == cycle
+        assert plan["hours"] == raw["fetch"]["hours"]
+        assert plan["area"] == raw["fetch"]["area"]
+        assert plan["domains"] == 2
+        assert plan["runner"] == go_cli.TREE_RUNNER_MODULE
+    else:
+        declaration = {
+            "schema": runplan.PLAN_SCHEMA, "name": out.stem,
+            "route": "prepared", "config": {"path": str(args.config.resolve())},
+            "output_root": str(args.outdir.resolve()),
+            "run_options": {"data_dir": str(args.data_dir.resolve())}}
+        plan = runplan.build_plan(
+            declaration, source=f"gpuwm go {out}", base_dir=out.parent,
+            sha256=hashlib.sha256(
+                json.dumps(declaration, sort_keys=True).encode()).hexdigest())
+        view, resolved, data = runplan.resolve_plan(plan, require_inputs=False)
+        assert plan.config_bytes() == before
+        assert view["plan"]["config_sha256"] == hashlib.sha256(before).hexdigest()
+        assert data is None
+        assert [d.run for d in resolved.domains] == [d.run for d in exp.domains]
+    capsys.readouterr()
+    assert out.read_bytes() == before
+    assert not run_dir.exists()
+    assert not data_dir.exists()
+
+
+@pytest.mark.parametrize("source", ["gfs", "hrrr"])
+def test_explicit_download_directory_survives_printed_launch(tmp_path, capsys, source):
+    import shlex
+    from gpuwm.cli import build_parser
+
+    data = tmp_path / "Chosen forcing folder"
+    rc, out = _run_wizard(tmp_path, "--data-dir", str(data), source=source,
+                          cycle="2026-07-28T06")
+    assert rc == 0
+    printed = capsys.readouterr().out.split("next:")[-1]
+    command = next(line.strip() for line in printed.splitlines()
+                   if line.strip().startswith("gpuwm go "))
+    args = build_parser().parse_args(shlex.split(command)[1:])
+    assert args.config.resolve() == out.resolve()
+    assert args.data_dir.resolve() == data.resolve()
+
+
+@pytest.mark.parametrize("source", ["gfs", "hrrr"])
+def test_explained_manual_fetch_and_go_use_the_same_download_directory(tmp_path, capsys, source):
+    import shlex
+    from gpuwm.cli import build_parser
+
+    rc, out = _run_wizard(tmp_path, "--explain", source=source, cycle="2026-07-28T06")
+    assert rc == 0
+    printed = capsys.readouterr().out.split("next:")[-1]
+    commands = {}
+    for line in printed.splitlines():
+        if "gpuwm fetch " in line or "gpuwm go " in line:
+            argv = shlex.split(line[line.index("gpuwm "):])[1:]
+            commands[argv[0]] = build_parser().parse_args(argv)
+    assert commands["go"].config.resolve() == out.resolve()
+    assert commands["go"].data_dir.resolve() == commands["fetch"].out.resolve()
 
 
 def test_check_without_case_data_runs_memory_preflight(tmp_path, capsys):
-    """No [case_data] (GFS/HRRR emissions): `gpuwm check` says the
-    input preflight is not applicable, then certifies the memory
-    preflight -- rc 0 with the honest note, not a refusal."""
+    """A declared memory budget can be checked before forcing is fetched.
+
+    The preparation route still owns actual input validation; this result
+    neither verifies missing forcing nor certifies a working GPU.
+    """
     rc, out = _run_wizard(tmp_path, source="gfs", cycle="2026-07-28T06")
     assert rc == 0
     capsys.readouterr()
     rc = cli_main(["check", str(out), "--budget-gib", "20"])
     printed = capsys.readouterr().out
     assert rc == 0
-    assert "not applicable" in printed
-    assert "rw-wps" in printed
+    assert "not applicable -- no [case_data]" in printed
+    assert "preparation route validates its own inputs" in printed
     assert "memory preflight" in printed
 
 
@@ -1147,7 +1225,7 @@ def test_an_hrrr_emission_near_the_grids_north_edge_passes_its_own_fetch(
     # wsm6/no-longwave suite it replaced, and 12 GiB no longer fits the
     # minimum 12 km layout.  The seam under test is the emitted --area,
     # so it runs on a card the shipped default fits.
-    rc, out = _run_wizard(tmp_path, point="48.5,-98.0", card="24gb",
+    rc, out = _run_wizard(tmp_path, "--explain", point="48.5,-98.0", card="24gb",
                           ladder="12", source="hrrr",
                           cycle="2026-07-28T05")
     captured = capsys.readouterr()
@@ -1920,7 +1998,7 @@ def test_a_gfs_wizard_run_gets_no_era5_credential_line(tmp_path, capsys):
     printed = capsys.readouterr().out
     assert rc == 0
     assert "Copernicus CDS key" not in printed
-    assert "1. gpuwm fetch --source gfs" in printed
+    assert "gpuwm go " in printed.split("next:")[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -1978,48 +2056,15 @@ def test_an_era5_emission_still_points_at_gpuwm_run(tmp_path, capsys):
     assert f"gpuwm run {_posix(out)}" in printed.split("next:")[-1]
 
 
-def test_an_hrrr_emission_names_the_front_door_not_a_refusing_command(
-        tmp_path, capsys):
-    """HRRR reaches neither `gpuwm run` nor `gpuwm go`; name its own chain.
-
-    It used to name a documentation section instead of a command, which
-    left the reader to author four input files the wizard could have
-    written.  It writes them now, so it names them.
-
-    And it names the SHIPPED commands: `gpuwm prep --source hrrr` then
-    `gpuwm sim`, not the modules and ``tools/`` scripts those two spawn.
-    See tests/test_hrrr_wizard_door.py, which drives every printed prep
-    line back through the real front door.
-    """
-
-    # 24 GiB: see the north-edge test -- the 1.8 HRRR default does not
-    # fit 12 GiB, and the seam under test is the printed next block.
-    out, printed = _emit(tmp_path, capsys, "--ladder", "12",
-                         "--card", "24gb", source="hrrr",
-                         name="hrrr-area")
+def test_an_hrrr_emission_names_its_automatic_native_launch(tmp_path, capsys):
+    out, printed = _emit(tmp_path, capsys, "--ladder", "12", "--card", "24gb",
+                         source="hrrr", name="hrrr-area")
     block = printed.split("next:")[-1]
+    assert f"gpuwm go {_posix(out)}" in block
     assert "gpuwm run " not in block
-    assert "gpuwm go " not in block
-    # Not rw-wps either: that is the GFS front door.
-    assert "rw-wps \\" not in block
-    assert "gpuwm prep --source hrrr" in block
-    assert "gpuwm sim hrrr-root-prep" in block
-    # And it must name no module or script the two stages spawn for the
-    # reader.  `tools/` is not in a wheel at all, and the runner names
-    # are not a user interface.
-    assert "tools.prepare_hrrr_wrf" not in block
-    assert "hrrr_single_domain_benchmark.py" not in block
-    assert "prepared_single_domain_forecast" not in block
-    assert not [line for line in block.splitlines()
-                if "prepared_domain_tree_forecast" in line
-                and "#" not in line]
-    paths = route_input_paths(out)
-    assert all(path.exists() for path in paths.values())
-    # The root preparation takes the target-domain document, the native
-    # namelist, and -- since the forecast stage's manifest inventory
-    # requires a wps_namelist role -- namelist.wps too.
-    for key in ("target_domain", "namelist_input", "wps_namelist"):
-        assert _posix(paths[key]) in block
+    assert "sha256" not in block
+    assert all(path.exists() for path in route_input_paths(out).values())
+
 
 
 def test_a_nested_hrrr_emission_drives_the_route_with_no_hand_edits(
@@ -2109,50 +2154,15 @@ def test_a_nested_hrrr_emission_drives_the_route_with_no_hand_edits(
     assert vertical.p_top == exp.vertical.p_top
 
 
-def test_a_nested_hrrr_next_block_names_hrrr_commands_not_the_gfs_door(
-        tmp_path, capsys):
-    """The multi-domain branch used to answer first, and said rw-wps.
+def test_a_nested_hrrr_next_block_names_the_automatic_native_launch(tmp_path, capsys):
+    out, printed = _emit(tmp_path, capsys, "--root-dx", "3", "--chain", "4",
+                         "--card", "24gb", source="hrrr", name="hrrr-tree")
+    block = printed.split("next:")[-1]
+    assert f"gpuwm go {_posix(out)}" in block
+    assert "sha256" not in block
+    assert "--materialize-authorities" not in block
+    assert all(path.exists() for path in route_input_paths(out).values())
 
-    ``final_step_command`` tested ``domain_count > 1`` before it tested
-    the source, so a multi-domain HRRR emission -- the only shape the
-    nested route takes -- was told to prepare with the GFS front door.
-    """
-    out = tmp_path / "tree.toml"
-    assert cli_main([
-        "domain", "--point=46.4,-118.3", "--card", "24gb",
-        "--root-dx", "3", "--chain", "4", "--source", "hrrr",
-        "--cycle", "2026-07-29T18", "--hours", "3",
-        "--out", str(out)]) == 0
-    block = capsys.readouterr().out.split("next:")[-1]
-
-    # rw-wps may be NAMED (the block says it is the wrong door); it must
-    # not be the thing the reader is asked to run.
-    assert not [line for line in block.splitlines()
-                if "rw-wps" in line and "#" not in line]
-    assert "gpuwm run " not in block and "gpuwm go " not in block
-    # Three shipped commands: the root preparation, the hierarchy (the
-    # same door, told which root to extend) and the forecast.  The
-    # modules behind them are not printed at a reader any more.
-    assert block.count("gpuwm prep --source hrrr") == 2
-    assert "--root-preparation hrrr-root-prep" in block
-    assert "gpuwm sim hrrr-hierarchy" in block
-    assert "tools.prepare_hrrr_wrf" not in block
-    assert "gpuwm.hrrr_hierarchy_direct" not in block
-    assert "gpuwm.prepared_domain_tree_forecast" not in block
-    # Every file the chain names was written, and every value the
-    # wizard knows is bound rather than left as a placeholder.
-    for path in route_input_paths(out).values():
-        assert path.exists()
-        assert _posix(path) in block
-    # Both preparation stages get the CYCLE under one name -- the front
-    # door's name for it, which is `--valid-time` (it validates the
-    # string as an exact hourly HRRR cycle and hands each stage the
-    # spelling that stage takes).  They used to get one string that the
-    # preparer read as the cycle and the hierarchy read as model time
-    # zero -- the same instant only at lead zero.
-    assert block.count("--valid-time 2026-07-29_18:00:00") == 2
-    assert "--cycle 2026-07-29_18:00:00" not in block
-    assert "--run-seconds 10800" in block
 
 
 def test_a_nested_hrrr_chain_at_a_lead_hands_both_stages_the_same_two_values(
@@ -2169,9 +2179,15 @@ def test_a_nested_hrrr_chain_at_a_lead_hands_both_stages_the_same_two_values(
         "domain", "--point=46.4,-118.3", "--card", "24gb",
         "--root-dx", "3", "--chain", "4", "--source", "hrrr",
         "--cycle", "2026-07-29T18", "--hours", "3",
-        "--forecast-start-hour", "6", "--out", str(out)]) == 0
+        "--forecast-start-hour", "6", "--out", str(out), "--explain"]) == 0
     printed = capsys.readouterr().out
     block = printed.split("next:")[-1]
+
+    from gpuwm.domain_wizard import hrrr_route_commands
+    from gpuwm.experiment import load_experiment
+    block += "\n" + hrrr_route_commands(
+        out, load_experiment(out), profile=None, data_dir="data",
+        forecast_start_hour=6)
 
     # The fetch downloads f06..f09, not f00..f03, and both preparation
     # stages carry the same cycle and the same lead.
@@ -2433,39 +2449,48 @@ def test_a_point_hrrr_cannot_force_at_all_is_refused_by_the_fit_loop(
     assert not out.exists()
 
 
-def test_a_route_incompatible_profile_is_refused_at_emission(
+def test_hrrr_emission_preserves_an_explicit_profile_beyond_the_default(
         tmp_path, capsys):
-    """Named at emission, not after a fetch and a root preparation.
+    """Named-profile evidence does not limit implemented physics choices."""
+    from gpuwm.domain_wizard import resolved_physics_profile
+    from gpuwm.hrrr_route_inputs import verify_round_trip
 
-    The HRRR routes admit one physics slice.  A profile outside it used
-    to be emitted happily and refused three stages later, by a gate
-    naming a switch the wizard had already chosen.
-    """
-    out = tmp_path / "bad.toml"
+    out = tmp_path / "morrison.toml"
     rc = cli_main(["domain", "--point=46.4,-118.3", "--card", "24gb",
                    "--ladder", "12-3", "--source", "hrrr",
                    "--cycle", "2026-07-29T18", "--hours", "3",
                    "--physics-profile", MORRISON_PROFILE_ID,
                    "--out", str(out)])
-    captured = capsys.readouterr()
-    assert rc != 0
-    message = captured.err + captured.out
-    assert "cannot drive the nested HRRR route" in message
-    assert "cu_physics=1" in message
-    # The profile's resolved 4/4 RRTMG pair is ADMITTED since the B4
-    # route-qualification motion (admitted pairs {(0, 1), (4, 4)}), so
-    # cumulus is the profile's one remaining route incompatibility.
-    assert "ra_sw_physics" not in message
-    assert "--physics-profile" in message
-    # Watched firing: the wizard's own HRRR default is compatible, so
-    # the refusal above is about the profile, not about HRRR.
-    good = tmp_path / "good.toml"
+    printed = capsys.readouterr().out
+    assert rc == 0
+    assert f"gpuwm go {_posix(out)}" in printed.split("next:")[-1]
+    exp = load_experiment(out)
+    expected = single_domain_runtime_switches(MORRISON_PROFILE_ID)
+    for key, value in expected.items():
+        assert getattr(exp.root.run, key) == value, key
+    assert exp.root.run.cu_physics == 1
+    assert [domain.run.cu_physics for domain in exp.domains] == [1, 0]
+    assert all(domain.run.mp_physics == expected["mp_physics"]
+               for domain in exp.domains)
+    paths = route_input_paths(out)
+    verify_round_trip(exp, paths["wps_namelist"], paths["namelist_input"])
+    before = out.read_bytes()
+    assert cli_main(["go", str(out), "--dry-run"]) == 0
+    capsys.readouterr()
+    assert out.read_bytes() == before
+
+    # Removing the membership ban did not replace the source's recommendation.
+    good = tmp_path / "default.toml"
     assert cli_main([
         "domain", "--point=46.4,-118.3", "--card", "24gb",
         "--ladder", "12-3", "--source", "hrrr", "--cycle",
         "2026-07-29T18", "--hours", "3", "--out", str(good)]) == 0
     capsys.readouterr()
-    assert route_input_paths(good)["namelist_input"].exists()
+    default = load_experiment(good)
+    recommended = resolved_physics_profile("hrrr", None)
+    assert recommended != MORRISON_PROFILE_ID
+    for key, value in single_domain_runtime_switches(recommended).items():
+        assert getattr(default.root.run, key) == value, key
 
 
 def _advised_lighter_profiles(message: str) -> list[str]:
@@ -2642,59 +2667,24 @@ def test_the_emitted_namelists_are_refused_if_they_drift_from_the_config(
         verify_round_trip(exp, paths["wps_namelist"], namelist)
 
 
-def test_a_tree_emission_names_the_tree_runner(tmp_path, capsys):
-    """A ladder `gpuwm go` will not drive says so, with the runner.
-
-    B-03: the runner ships as a console script and no message named it,
-    so the only invocation offered was a `python -m` form carrying two
-    bare `...` placeholders, followed by a docs path a pip install does
-    not contain.  All three are pinned here.
-    """
-
-    _, printed = _emit(tmp_path, capsys, "--ladder", "12-3", "--name",
-                       "treecase")
+def test_a_tree_emission_names_the_automatic_native_launch(tmp_path, capsys):
+    out, printed = _emit(tmp_path, capsys, "--ladder", "12-3", "--name", "treecase")
     block = printed.split("next:")[-1]
+    assert f"gpuwm go {_posix(out)}" in block
     assert "gpuwm run " not in block
-    assert "gpuwm go " not in block
-    # the installed console script, and the module form as an alternative
-    assert "gpuwm-prepared-tree-forecast" in block
-    assert "prepared_domain_tree_forecast" in block
-    # no bare ellipsis standing in for a value the reader must supply
-    assert " ... " not in block and block.count("...") == 0
-    # every placeholder says what to put there
-    assert "<the directory rw-wps wrote>" in block
-    # and the pointer resolves without a checkout
-    assert "https://" in block
+    assert "--materialize-authorities" not in block
+    assert "sha256" not in block
 
 
-def test_a_tree_emission_prints_the_whole_chain_in_order(tmp_path, capsys):
-    """The tree closing block is followable without opening a doc.
 
-    Walked 2026-08-17 (2.4.1 wheel, the downscaling complaint): the
-    block said "prepare it with rw-wps" and gave NO command for the two
-    stages that come first -- materialize-authorities and the front-door
-    manifest -- so the only route to the ladder run every `gpuwm
-    downscale` needs (single-domain emissions disable restarts) was
-    reverse-engineering FIRST-LIGHT's single-domain sequence.  The block
-    now prints the chain: authority, manifest (which prints the complete
-    rw-wps line), then the tree runner rw-wps itself prints filled in.
-    """
+def test_a_tree_emissions_launch_command_selects_the_tree_runner(tmp_path, capsys):
+    from gpuwm.go_cli import TREE_RUNNER_MODULE, plan_from_config
+    out, printed = _emit(tmp_path, capsys, "--ladder", "12-3", "--name", "treecase")
+    assert "gpuwm go " in printed.split("next:")[-1]
+    plan = plan_from_config(out)
+    assert plan["domains"] == 2
+    assert plan["runner"] == TREE_RUNNER_MODULE
 
-    _, printed = _emit(tmp_path, capsys, "--ladder", "12-3", "--name",
-                       "treecase")
-    block = printed.split("next:")[-1]
-    assert "--materialize-authorities" in block
-    assert "--author-front-door-manifest" in block
-    # Real paths, not placeholders: the emitted config and its sibling
-    # namelist are named by their actual filenames.
-    assert "treecase.toml" in block or ".toml" in block
-    assert ".namelist.wps" in block
-    # Pipeline order: authority, manifest, rw-wps, tree runner.
-    order = [block.index("--materialize-authorities"),
-             block.index("--author-front-door-manifest"),
-             block.index("run the rw-wps line"),
-             block.index("gpuwm-prepared-tree-forecast")]
-    assert order == sorted(order)
 
 
 def test_the_manual_chain_pointer_is_reachable_without_a_checkout():
@@ -2981,7 +2971,7 @@ def test_the_reserve_the_loop_targets_is_the_one_the_verifier_uses(tmp_path):
     assert estimate.alloc_estimate_bytes <= verifier.budget_bytes(free_bytes)
 
 
-def test_the_wizard_prints_the_bare_check_as_the_next_step(tmp_path, capsys):
+def test_detailed_steps_keep_the_measured_check_and_declared_alternative(tmp_path, capsys):
     """Two documented commands, one file, one machine, opposite verdicts.
 
     `gpuwm check CONFIG` returned 4 while the wizard's own printed
@@ -2990,14 +2980,14 @@ def test_the_wizard_prints_the_bare_check_as_the_next_step(tmp_path, capsys):
     bare form is the next step now, and the declared form is printed
     beside it saying what it is for.
     """
-    rc, out = _run_wizard(tmp_path, card="16gb", ladder="12", source="gfs",
+    rc, out = _run_wizard(tmp_path, "--explain", card="16gb", ladder="12", source="gfs",
                           cycle="2026-07-28T00")
     assert rc == 0
     printed = capsys.readouterr().out
     assert f"2. gpuwm check {out}" in printed.replace("\\", "/") or (
         "2. gpuwm check" in printed)
     assert "that measures THIS machine's free VRAM" in printed
-    assert "--budget-gib" in printed, "the declared form is still offered"
+    assert "--free-gib" in printed, "the declared form is still offered"
 
 
 def test_the_minimum_layout_refusal_does_not_contradict_itself(
@@ -3051,55 +3041,43 @@ def test_non_finite_vram_is_refused_without_inventing_a_capacity(
     assert not out.exists()
 
 
-def test_help_names_the_profiles_a_route_cannot_prepare(capsys):
-    """Advertised-and-impossible is worse than not advertised.
-
-    `--help` listed eight `--physics-profile` values with no marker
-    while two were refused unconditionally on `--source gfs` -- the
-    DEFAULT source -- so a reader choosing from the list had a 1-in-4
-    chance of picking one that could never work, and found out from the
-    refusal.  Measured on the 1.4.1 build, RTX 4080: those two are rc 2
-    at every one of the four card tiers.
-
-    The refusal is not what is wrong with that and is not touched here.
-    """
-    from gpuwm.domain_wizard import (WIZARD_PHYSICS_PROFILES,
-                                     _profile_help_route_note,
-                                     planable_sources,
+def test_help_and_gfs_emission_preserve_available_ruc_profiles(tmp_path, capsys):
+    """Retired template membership must not withdraw the existing RUC owner."""
+    from gpuwm.domain_wizard import (_profile_help_route_note,
                                      profile_route_blocker,
                                      profiles_blocked_on_source)
 
-    blocked = profiles_blocked_on_source("gfs")
-    # Non-vacuous, and the reason is a real registry refusal rather than
-    # this test's opinion of it.
-    assert blocked, "nothing to advertise a caveat about"
-    for profile in blocked:
-        assert "ruc" in profile
-        assert "ruc-lsm" in profile_route_blocker(profile, "gfs")
+    ruc_profiles = tuple(
+        profile for profile in WIZARD_PHYSICS_PROFILES
+        if single_domain_runtime_switches(profile)["sf_surface_physics"] == 3)
+    assert ruc_profiles, "the menu must exercise an actual RUC selection"
+    assert not set(ruc_profiles).intersection(profiles_blocked_on_source("gfs"))
+    assert "--source gfs cannot prepare" not in _profile_help_route_note()
 
-    note = _profile_help_route_note()
-    for profile in blocked:
-        assert profile in note
-    # And nothing that runs on EVERY route is listed as if it did not.
-    # The caveat speaks for all planable sources -- hrrr's emission
-    # gate blocks suites too -- so the complement comes from the same
-    # pairing predicate, never an assumption that only gfs blocks.
-    blocked_anywhere = {
-        candidate for candidate in WIZARD_PHYSICS_PROFILES
-        if any(profile_route_blocker(candidate, src) is not None
-               for src in planable_sources())}
-    for profile in WIZARD_PHYSICS_PROFILES:
-        if profile not in blocked_anywhere:
-            assert profile not in note
-
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as help_exit:
         cli_main(["domain", "--help"])
+    assert help_exit.value.code == 0
     printed = capsys.readouterr().out
-    # argparse rewraps, so compare on the unwrapped text.
-    flat = " ".join(printed.split())
-    assert "NOT every profile runs on every route" in flat
-    for profile in blocked:
-        assert profile in flat
+    assert "--physics-profile" in printed
+    # argparse may wrap a long hyphenated profile id across lines.
+    compact_help = "".join(printed.split())
+    for profile in ruc_profiles:
+        assert profile in compact_help
+        assert profile_route_blocker(profile, "gfs") is None
+        out = tmp_path / f"{profile}.toml"
+        assert cli_main([
+            "domain", "--point=35.3,-97.5", "--card", "24gb",
+            "--ladder", "12", "--source", "gfs", "--cycle",
+            "2026-07-29T18", "--hours", "6",
+            "--physics-profile", profile, "--out", str(out)]) == 0
+        printed = capsys.readouterr().out
+        assert f"gpuwm go {_posix(out)}" in printed.split("next:")[-1]
+        exp = load_experiment(out)
+        expected = single_domain_runtime_switches(profile)
+        assert exp.root.run.sf_surface_physics == 3
+        assert exp.root.run.num_soil_layers == expected["num_soil_layers"]
+        for key, value in expected.items():
+            assert getattr(exp.root.run, key) == value, (profile, key)
 
 
 def test_the_help_caveat_is_derived_not_listed(monkeypatch):
@@ -3143,6 +3121,12 @@ def test_an_mp8_hrrr_chain_prints_the_two_exports_its_runners_demand(
         "--out", str(out)]) == 0
     block = capsys.readouterr().out.split("next:")[-1]
 
+    from gpuwm.domain_wizard import hrrr_route_commands
+    from gpuwm.experiment import load_experiment
+    block += "\n" + hrrr_route_commands(
+        out, load_experiment(out), profile=THOMPSON_PROFILE_ID, data_dir="data",
+        forecast_start_hour=0)
+
     for line in thompson_guard_exports():
         assert line in block
     # Both variables named, and the root is a VALUE, not a placeholder:
@@ -3168,7 +3152,7 @@ def test_a_chain_for_a_suite_with_no_launch_guard_prints_no_exports(
         "--cycle", "2026-07-29T18", "--hours", "1",
         "--out", str(out)]) == 0
     block = capsys.readouterr().out.split("next:")[-1]
-    assert "gpuwm prep --source hrrr" in block
+    assert "gpuwm go " in block
     assert EXPERIMENTAL_THOMPSON_ENV not in block
     assert THOMPSON_TABLE_ROOT_ENV not in block
 

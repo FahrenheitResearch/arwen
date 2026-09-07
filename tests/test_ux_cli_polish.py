@@ -411,6 +411,21 @@ def test_doctor_says_nothing_about_change_on_a_first_run(tmp_path):
     assert json.loads(state.read_text(encoding="utf-8"))["version"] == "2.5.0"
 
 
+def test_doctor_announces_2_7_changes_once_after_2_6_5(tmp_path):
+    """An upgrade from the prior public version must not produce an empty note."""
+    from gpuwm import doctor
+
+    state = tmp_path / "doctor-state.json"
+    state.write_text(json.dumps({"version": "2.6.5"}), encoding="utf-8")
+    message = doctor.upgrade_note("2.7.0", state)
+    assert message is not None
+    for fragment in ("2.6.5", "2.7.0", "gpuwm tui", "gpuwm domain-tiles",
+                     "gpuwm render --series", "gpuwm sim --restart"):
+        assert fragment in message
+    assert doctor.upgrade_note("2.7.0", state) is None
+    assert doctor.upgrade_note("2.6.5", state) is None
+
+
 def test_run_help_points_at_the_unbundled_stages_and_the_layouts():
     """`gpuwm run --help` was byte-identical to 2.4.1's, so the doors
     that changed named 2.4.1 and the doors that did not said nothing."""

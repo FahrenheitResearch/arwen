@@ -69,15 +69,17 @@ CARGO_BUILD_HINT = cargo_build_one_liner(RUSTWX_CRATE_RELATIVE)
 #: number, exactly as ``BRIDGE_ABI_MARKERS`` requires: the ``PRODUCT``
 #: /``CATALOG`` row grammar :func:`list_products` parses, the
 #: ``RENDERED``/``SKIPPED``/``FAILED`` events :func:`run_renderer`
-#: parses, and the generic ``var:`` vocabulary whose absence from a
-#: stale build is what #106 was reported as.  Changing any of those
-#: changes this string, and every binary predating the change answers
-#: ``unknown option --abi`` instead of the old grammar.
+#: parses, and the generic ``var:`` and vertical-section ``xsec:``
+#: vocabularies whose absence from a stale build is what #106 was
+#: reported as.  Changing any of those changes this string, and every
+#: binary predating the change answers ``unknown option --abi`` instead
+#: of the old grammar.
 RENDERER_ABI_MARKER = (
     "gpuwm-rw-wrfbatch-catalog-v1\tPRODUCT\tslug\tkind\tstatus\tdetail\t"
     "CATALOG\t"
     "gpuwm-rw-wrfbatch-events-v1\tRENDERED\tSKIPPED\tFAILED\t"
-    "gpuwm-rw-wrfbatch-vocabulary-v1\tgeneric\tvar:\tselectable_slugs")
+    "gpuwm-rw-wrfbatch-vocabulary-v1\tgeneric\tvar:\txsec:\tmesh:\t"
+    "meshdiff:\tselectable_slugs")
 
 _PROBE_TIMEOUT_S = 20
 
@@ -251,6 +253,14 @@ def resolve_basemap_dir(renderer: Path | None = None) -> Path | None:
     for candidate in basemap_candidates(renderer):
         if candidate.is_dir():
             return candidate
+    # A platform wheel resolves its bundled executable before the copy in
+    # ~/.gpuwm/bridges. Its ancestors therefore miss the map assets installed
+    # by fetch-bridges. renderer_env passes this staged root to that executable;
+    # diagnostics must report the same wrapper-level fallback.
+    if "RUSTWX_BASEMAP_DIR" not in os.environ and "RUSTWX_ASSETS_DIR" not in os.environ:
+        staged = default_bridge_dir() / "assets" / "basemap"
+        if staged.is_dir():
+            return staged
     return None
 
 
@@ -320,14 +330,16 @@ def renderer_env() -> dict[str, str]:
     """Subprocess environment for the renderer.
 
     An explicit ``RUSTWX_BASEMAP_DIR``/``RUSTWX_ASSETS_DIR`` is the
-    user's to keep; otherwise the vendored checkout assets are pinned so
-    a binary running from ``libexec`` or ``~/.gpuwm/bridges`` still
-    draws its basemaps.
+    user's to keep; otherwise the vendored checkout assets, or the assets
+    staged by fetch-bridges, are pinned so the platform wheel's preferred
+    ``libexec`` binary still draws its basemaps.
     """
 
     env = dict(os.environ)
     if "RUSTWX_BASEMAP_DIR" not in env and "RUSTWX_ASSETS_DIR" not in env:
         assets = basemap_dir()
+        if not assets.is_dir():
+            assets = default_bridge_dir() / "assets" / "basemap"
         if assets.is_dir():
             env["RUSTWX_BASEMAP_DIR"] = str(assets)
     return env
@@ -421,6 +433,17 @@ def list_products(renderer: Path, wrfout: Path, *, store_root: Path,
     against the stored fields, never guessed from filenames.
     """
 
+    return list_products_series(renderer, (wrfout,), store_root=store_root, heavy=heavy)
+
+
+def list_products_series(renderer: Path, wrfouts, *, store_root: Path,
+                         heavy: bool = False
+                         ) -> tuple[list[tuple[str, str, str, str]], str]:
+    """Ask native availability after importing the complete selected timeline."""
+    inputs = [Path(path) for path in wrfouts]
+    if not inputs:
+        raise ValueError("a product availability series needs history files")
+    wrfout = inputs[-1]
     command = [
         str(renderer),
         "--store-root", str(store_root),
@@ -430,7 +453,7 @@ def list_products(renderer: Path, wrfout: Path, *, store_root: Path,
     ]
     if heavy:
         command.append("--heavy")
-    command.append(str(wrfout))
+    command.extend(str(path) for path in inputs)
     try:
         result = subprocess.run(
             command, capture_output=True, text=True, errors="replace",
@@ -465,6 +488,11 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
                  overlays: Path | None = None,
                  annotate: Path | None = None,
                  streamlines: bool | None = None,
+                 theme: str | None = None,
+                 section: str | None = None,
+                 isotherms: str | None = None,
+                 section_across_km: float | None = None,
+                 section_size: tuple[int, int] | None = None,
                  ) -> tuple[list[Path], list[str],
                             list[tuple[str, str]]]:
     """Render one wrfout file into ``out_dir``; (written, failures, skipped).
@@ -489,7 +517,9 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
         renderer, (wrfout,), store_root=store_root, out_dir=out_dir,
         products=products, frames=frames, width=width, height=height,
         heavy=heavy, source_label=source_label, overlays=overlays,
-        annotate=annotate, streamlines=streamlines)
+        annotate=annotate, streamlines=streamlines, theme=theme,
+        section=section, isotherms=isotherms,
+        section_across_km=section_across_km, section_size=section_size)
 
 
 def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
@@ -499,6 +529,11 @@ def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
                         overlays: Path | None = None,
                         annotate: Path | None = None,
                         streamlines: bool | None = None,
+                        theme: str | None = None,
+                        section: str | None = None,
+                        isotherms: str | None = None,
+                        section_across_km: float | None = None,
+                        section_size: tuple[int, int] | None = None,
                         ) -> tuple[list[Path], list[str],
                                    list[tuple[str, str]]]:
     """One invocation over a whole wrfout SERIES, into ONE store.
@@ -560,6 +595,28 @@ def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
         command.extend(("--overlays", str(overlays)))
     if annotate is not None:
         command.extend(("--annotate", str(annotate)))
+    # The render theme: a built-in name (``default``, ``dark``) or a JSON
+    # theme file.  ``None`` adds no argument, so an invocation that never
+    # names a theme is byte-identical to every earlier release, and the
+    # engine's own default look is what it draws.
+    if theme is not None:
+        command.extend(("--theme", str(theme)))
+    # The vertical-section line for ``xsec:`` products, its isotherm set
+    # and the optional across-line frame; every one is engine grammar,
+    # forwarded verbatim so the engine's own refusals name the mistake.
+    if section is not None:
+        command.extend(("--section", str(section)))
+    if isotherms is not None:
+        command.extend(("--isotherms", str(isotherms)))
+    if section_across_km is not None:
+        command.extend(("--section-across", repr(float(section_across_km))))
+    # The size a SECTION is drawn at.  Absent, the engine draws a section
+    # landscape 2:1 at the map's width, so a caller that never mentions it
+    # is byte-identical to every earlier release for MAP products and gets
+    # a cut whose shape is not the map's.
+    if section_size is not None:
+        width, height = section_size
+        command.extend(("--section-size", f"{int(width)}x{int(height)}"))
     command.extend(str(path) for path in inputs)
     try:
         result = subprocess.run(
@@ -598,5 +655,5 @@ __all__ = [
     "basemap_candidates", "crate_dir", "find_renderer", "list_products",
     "probe_renderer", "renderer_candidates", "renderer_env",
     "renderer_remedy", "resolve_basemap_dir", "run_renderer",
-    "run_renderer_series",
+    "run_renderer_series", "list_products_series",
 ]

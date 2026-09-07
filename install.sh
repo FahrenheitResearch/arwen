@@ -10,8 +10,9 @@
 #
 # What it does, in order (every step is re-run safe):
 #   1. finds the checkout (or clones $GPUWM_REPO_URL into ./gpuwm);
-#   2. creates .venv if absent and installs -e '.[gpu-cuNN,render]' into
-#      it, where NN is the CUDA major this box's driver reports (CuPy
+#   2. creates .venv if absent, installs the checkout's gpuwm-data
+#      companion, then installs -e '.[gpu-cuNN,render]' into it,
+#      where NN is the CUDA major this box's driver reports (CuPy
 #      ships one wheel per major and the wrong one dies at its first
 #      cuBLAS load); --cuda overrides the detection, and an
 #      undetectable major is announced rather than defaulted quietly;
@@ -25,9 +26,9 @@
 #      tools/grib1_bridge;
 #   6. builds the vendored production render engine offline in
 #      tools/rustwx (skip with --no-render or
-#      GPUWM_INSTALL_NO_RENDER=1; `gpuwm render` falls back to
-#      matplotlib until it is built);
-#   7. finishes with `gpuwm doctor` and exits with doctor's status.
+#      GPUWM_INSTALL_NO_RENDER=1);
+#   7. builds the terminal workspace offline in tools/arwen-tui;
+#   8. finishes with `gpuwm doctor` and exits with doctor's status.
 #
 # Environment:
 #   GPUWM_REPO_URL     clone source when run outside a checkout
@@ -152,6 +153,8 @@ case "$CUDA_MAJOR" in
         say "the end of this script either way."
         ;;
 esac
+say "installing the matching gpuwm-data companion from this checkout (editable)"
+"$VENV_PY" -m pip install -e gpuwm-data
 say "installing gpuwm with the [$GPU_EXTRA,render] extras (editable)"
 "$VENV_PY" -m pip install -e ".[$GPU_EXTRA,render]"
 
@@ -204,12 +207,14 @@ say "building the vendored Rust GRIB bridges (offline, locked)"
 ( cd tools/grib1_bridge && cargo build --release --locked --offline )
 if [ "$NO_RENDER" = 1 ]; then
     say "skipping the tools/rustwx render engine (--no-render);"
-    say "gpuwm render uses the matplotlib fallback until it is built"
+    say "stage it with gpuwm fetch-bridges, or request --engine matplotlib"
 else
     say "building the vendored render engine in tools/rustwx (offline,"
     say "locked; the long pole of install -- skip with --no-render)"
     ( cd tools/rustwx && cargo build --release --locked --offline )
 fi
+say "building the terminal workspace in tools/arwen-tui (offline, locked)"
+( cd tools/arwen-tui && cargo build --release --locked --offline )
 
 # ------------------------------------------------------------------ doctor
 say "running gpuwm doctor"

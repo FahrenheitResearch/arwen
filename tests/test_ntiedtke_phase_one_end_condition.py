@@ -86,7 +86,7 @@ def _run(keys):
     import cupy as cp
 
     from gpuwm.core.ntiedtke import NtPipeline
-    from tests.test_ntiedtke_pipeline_boundaries import _WALK
+    from test_ntiedtke_pipeline_boundaries import _WALK
 
     p = NtPipeline(ncol=len(keys), nz=NT_NZ, dt=float(NT_DT),
                    stepcu=NT_STEPCU, itimestep=NT_ITIMESTEP)

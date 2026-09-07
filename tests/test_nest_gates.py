@@ -312,6 +312,12 @@ def test_named_threshold_constants():
         ("d03", 20.0): 0.8558,
         ("d04", 20.0): 0.8558,
     }
+    # The floor under a documented deficiency: the worst score F27 measured.
+    # Without it the deficiency branch and the "at or above the bar" branch
+    # partition the finite reals and the row cannot fail.
+    assert ng.F27_DOCUMENTED_DEFICIENCY_FLOOR == 0.7047
+    assert (ng.F27_DOCUMENTED_DEFICIENCY_FLOOR
+            < min(ng.F27_DOCUMENTED_DEFICIENCY_ROWS.values()))
     assert ng.FSS_DEGENERATE_EVENT_FLOOR == 1.0e-4
     assert ng.UPDRAFT_INTENSITY_PERCENTILES == (50, 90, 99)
     assert ng.UPDRAFT_INTENSITY_RATIO_MIN == 0.80
@@ -421,7 +427,10 @@ def test_statistical_family_at_n3_values(milestone, dom):
     else:
         for phrase in (
                 "F27", "DOCUMENTED-DEFICIENCY", "below 0.8558",
-                "self-revokes", "blocking at 0.8558"):
+                "self-revokes", "blocking at 0.8558",
+                # The registered contract has to state the floor, or the
+                # documented deficiency covers every score down to zero.
+                "measured floor 0.7047", "below 0.7047", "BLOCKS"):
             assert phrase in refl_fss.convention
     assert "interior convention" in t850.convention
     assert f"wrfout_{dom}_1974-04-03_13_15_00" in corr.convention

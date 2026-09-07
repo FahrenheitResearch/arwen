@@ -481,6 +481,48 @@ def test_a_renderer_with_no_basemaps_warns_before_it_draws(tmp_path,
     assert render.missing_basemap_notice(None) is None
 
 
+def test_platform_renderer_receives_separately_staged_basemaps(tmp_path, monkeypatch):
+    """A wheel's libexec binary must use assets fetched into the user's profile."""
+    from gpuwm import render
+
+    for name in ("RUSTWX_BASEMAP_DIR", "RUSTWX_ASSETS_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    home = tmp_path / "profile with spaces"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.chdir(home)
+    monkeypatch.setattr(rustwx, "basemap_dir", lambda: tmp_path / "no-checkout-assets")
+    staged = home / ".gpuwm" / "bridges" / "assets" / "basemap"
+    staged.mkdir(parents=True)
+    packaged = tmp_path / "venv" / "site-packages" / "gpuwm" / "libexec" / "bridges" / "rw_wrfbatch"
+    packaged.parent.mkdir(parents=True)
+    packaged.write_bytes(b"unexecuted-artifact-location")
+    assert staged not in rustwx.basemap_candidates(packaged)
+    assert rustwx.resolve_basemap_dir(packaged) == staged
+    assert render.missing_basemap_notice(packaged) is None
+    # Observe the environment in a real child process, including paths with
+    # spaces, rather than only asserting the dictionary constructed here.
+    child = subprocess.run([sys.executable, "-I", "-c",
+                            "import os; print(os.environ['RUSTWX_BASEMAP_DIR'])"],
+                           env=rustwx.renderer_env(), capture_output=True, text=True, check=True)
+    assert child.stdout.strip() == str(staged)
+
+
+@pytest.mark.parametrize("override", ["RUSTWX_BASEMAP_DIR", "RUSTWX_ASSETS_DIR"])
+def test_staged_basemaps_do_not_override_explicit_asset_configuration(tmp_path, monkeypatch, override):
+    for name in ("RUSTWX_BASEMAP_DIR", "RUSTWX_ASSETS_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    staged = tmp_path / "staged" / "assets" / "basemap"
+    staged.mkdir(parents=True)
+    monkeypatch.setattr(rustwx, "default_bridge_dir", lambda: tmp_path / "staged")
+    monkeypatch.setattr(rustwx, "basemap_dir", lambda: tmp_path / "no-checkout-assets")
+    monkeypatch.setenv(override, str(tmp_path / "explicit map assets"))
+    env = rustwx.renderer_env()
+    assert env[override] == str(tmp_path / "explicit map assets")
+    assert env.get("RUSTWX_BASEMAP_DIR") != str(staged)
+
+
 # ---------------------------------------------------------------------------
 # Discoverability: the catalog without a file
 # ---------------------------------------------------------------------------

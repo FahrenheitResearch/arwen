@@ -120,8 +120,12 @@ def test_legacy_rrtmg_engine_bounds_inside_and_outside():
     message = str(caught.value)
     assert "legacy RRTMG longwave" in message
     assert "64+65=129" in message
-    assert "legacy RRTMG shortwave" in message
-    assert "64+1=65" in message
+    assert "legacy RRTMG shortwave" not in message
+    # SW storage scales with the layer count; the independent LW128 bound remains.
+    receipt = validate_resolved_physics_vertical_levels(
+        _selection(79, **selector), p_top=5000.0)
+    sw = next(check for check in receipt['checks'] if check['component'] == 'legacy RRTMG shortwave')
+    assert sw['total_layers'] == 80 and sw['maximum'] is None
 
 
 def test_preflight_aggregates_more_than_one_resolved_component_failure():
@@ -156,3 +160,10 @@ def test_lightweight_layer_count_contract_matches_both_runtime_adapters(
         runtime_rrtmgp_counts(p_top))
     assert legacy_radiation_layer_counts(49, p_top) == (
         runtime_legacy_counts(49, p_top))
+
+
+@pytest.mark.parametrize('count',[0,-1,True,1.5,2**31])
+def test_legacy_sw_layer_index_validation(count):
+    from gpuwm.core.rrtmg_sw import _radiation_layer_count
+    with pytest.raises(ValueError,match='layer count'):
+        _radiation_layer_count(count)

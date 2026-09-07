@@ -428,11 +428,10 @@ def neutral_geography(cfg, *, latitude_deg: float = 35.0,
       ``run_tiled(impose_geography_flags=False)`` is a negative control that
       MUST fail, and it does.
 
-    ``terrain_height`` is still a full ``(ny, nx)`` field rather than
-    ``None``, because ``cfg.terrain_opt`` decides whether ``thb/pb/alb/phb``
-    are 1-D or 3-D (state.py:605-607) and whether ``load_base`` retires the
-    scalar ``mub`` (state.py:744-751).  A buffer built flat against a parent
-    with terrain has the wrong SHAPES.
+    Terrain-enabled buffers carry a full ``(ny, nx)`` placeholder. With
+    ``terrain_opt=0``, terrain is ``None`` so the base profiles remain 1-D,
+    matching the state allocation. Neutral geometry must honor the same
+    shape contract as the prepared domain before any gather can occur.
     """
     ny, nx = int(cfg.ny), int(cfg.nx)
     ones = np.ones((ny, nx), dtype=np.float64)
@@ -445,7 +444,8 @@ def neutral_geography(cfg, *, latitude_deg: float = 35.0,
         f=zeros.copy(), e=zeros.copy(), sina=zeros.copy(), cosa=ones.copy(),
         lat=np.full((ny, nx), float(latitude_deg)),
         lon=np.full((ny, nx), float(longitude_deg)),
-        terrain=np.full((ny, nx), float(terrain_height)))
+        terrain=(None if cfg.terrain_opt == 0 else
+                 np.full((ny, nx), float(terrain_height))))
 
 
 def install_geography(state, geo: Geography) -> None:
@@ -870,10 +870,14 @@ def setup_arrays(state) -> dict[str, Any]:
     """
     import cupy as cp
 
-    from gpuwm.state_serialization_contract import STATE_SETUP_ARRAYS
+    from gpuwm.state_serialization_contract import (
+        STATE_DERIVED_SETUP_ARRAYS, STATE_SETUP_ARRAYS)
 
     out: dict[str, Any] = {}
-    for name in STATE_SETUP_ARRAYS:
+    # Including the DERIVED entries: this feeds setup_window_mismatches,
+    # the gate that CHECKS the tile-equals-domain claim rather than
+    # assuming it, and a gate that cannot see an array cannot check it.
+    for name in STATE_SETUP_ARRAYS + STATE_DERIVED_SETUP_ARRAYS:
         value = getattr(state, name, None)
         if isinstance(value, cp.ndarray):
             out[name] = value

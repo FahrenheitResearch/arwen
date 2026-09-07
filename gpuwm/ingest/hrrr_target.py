@@ -16,6 +16,7 @@ import numpy as np
 
 from gpuwm.ingest.source_coverage import SourceCoverageRefusal
 from gpuwm.static.lambert import LambertGrid
+from gpuwm.grid_requirements import NATIVE_TARGET_INTERIOR_AXIS, boundary_axis
 
 
 TARGET_DOMAIN_SCHEMA = "gpuwm-hrrr-target-domain-v1"
@@ -166,7 +167,8 @@ class HrrrTargetDomain:
         if self.spec_bdy_width != self.spec_zone + self.relax_zone:
             raise ValueError(
                 "spec_bdy_width must equal spec_zone + relax_zone")
-        minimum_axis = 2 * self.spec_bdy_width + 3
+        minimum_axis = boundary_axis(
+            self.spec_bdy_width, interior_points=NATIVE_TARGET_INTERIOR_AXIS)
         if self.nx < minimum_axis or self.ny < minimum_axis:
             raise ValueError(
                 f"target nx and ny must each be at least {minimum_axis}")

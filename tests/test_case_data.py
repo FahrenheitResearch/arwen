@@ -310,7 +310,7 @@ def test_invalid_experiment_error_wins_over_missing_case_data(tmp_path):
 
 @pytest.mark.parametrize("mutation, message", [
     ("sfcp_to_sfcp = true", None),  # baseline sanity, no error expected
-    ("sfcp_to_sfcp = false", "false branch is not implemented"),
+    ("sfcp_to_sfcp = false", None),
     ("sfcp_to_sfcp = 1", "must be a boolean"),
     ("co2_vmr = 330.0e-6", None),
     ("co2_vmr = -1.0e-6", "positive mole fraction"),

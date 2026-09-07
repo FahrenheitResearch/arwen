@@ -52,8 +52,16 @@ def boundary_zone_blowup(boundary_w_max: float,
     larger of the free-interior maximum and 1 m/s.  N2(c) imports this
     function so its ``boundary_zone_blowup`` evidence cannot drift from the
     frozen real74 metric definition.
+
+    A non-finite *interior* maximum fires too.  The interior maximum is the
+    yardstick this relative bound is measured against, and ``max(nan, 1.0)``
+    is ``nan``, so without this leg an unmeasurable interior made
+    ``boundary_w_max > nan`` false and switched the detector off entirely --
+    a boundary maximum of 1e9 m/s beside a NaN interior passed.  An interior
+    that cannot be measured is not evidence that the boundary is quiet.
     """
     return bool(not np.isfinite(boundary_w_max)
+                or not np.isfinite(interior_w_max)
                 or boundary_w_max > 5.0 * max(interior_w_max, 1.0))
 
 

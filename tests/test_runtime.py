@@ -3,7 +3,9 @@
 Covers the plan's grep-able constant-absence gate, the resolved-config
 print (G2 completion), the coverage-derived run ceiling, the
 config-driven vertical grid (G4 completion), and the frozen-profile
-delegation surface.
+delegation surface. Format-specific metgrid input behavior is covered by
+test_metem_admission and test_metem_differential; a source-text ban on
+that supported input format is no longer part of the runtime contract.
 """
 
 from __future__ import annotations
@@ -42,13 +44,6 @@ requires_real74 = pytest.mark.skipif(
     or not (BUNDLE / "era5_grib/Vtable.ERA5_CDO").is_file(),
     reason="read-only 1974 reference bundle is absent",
 )
-
-
-def test_generic_ingest_and_runtime_have_no_met_em_reader():
-    sources = [REPO / "gpuwm/runtime.py"]
-    sources.extend((REPO / "gpuwm/ingest").glob("*.py"))
-    assert all("met_em" not in path.read_text(encoding="utf-8").lower()
-               for path in sources)
 
 
 def _fixture_pair(tmp_path):
@@ -197,6 +192,123 @@ def test_forcing_discovery_validates_start_interval_and_count(tmp_path):
     times = [start - timedelta(hours=6), start,
              start + timedelta(hours=6), start + timedelta(hours=12)]
     assert runtime.forcing_schedule(exp, data, times) == tuple(times[1:])
+
+
+def _sized_forcing_snapshots(start, count):
+    """``count`` real snapshots, each big enough to price in GiB."""
+    from gpuwm.ingest.grib import Era5Snapshot
+
+    levels = np.array([1000.0, 850.0], dtype=np.float64)
+    latitude = np.linspace(20.0, 40.0, 512)
+    longitude = np.linspace(250.0, 280.0, 512)
+    field = np.zeros((levels.size, latitude.size, longitude.size))
+    return {
+        start + timedelta(hours=6 * step): Era5Snapshot(
+            valid_time=start + timedelta(hours=6 * step),
+            levels_hpa=levels, latitude=latitude, longitude=longitude,
+            fields={"T": field})
+        for step in range(count)
+    }
+
+
+def test_the_decode_report_names_the_window_beyond_the_run(tmp_path):
+    """The decode is charged on the FILES; the run needs a prefix of it.
+
+    ``build_input_catalog`` takes ``case_data`` alone and selects the
+    longest contiguous run of valid times present in the forcing, so a
+    user who fetched a longer window than they integrate decodes the
+    whole window into host memory and no config edit shortens it.
+    Nothing in the product had ever said so -- every INGEST figure
+    ``gpuwm check`` prints is DEVICE memory -- so what is asserted here
+    is that the extra window is named, counted, and priced in the host
+    bytes actually held rather than in an estimate off a grid shape.
+    """
+    exp, _data = _fixture_pair(tmp_path)
+    snapshots = _sized_forcing_snapshots(exp.start_time, 8)
+    per_time = (2 * 512 * 512 + 2 + 512 + 512) * 8
+
+    day = runtime.forcing_decode_report(
+        replace(exp, run_seconds=86400.0), snapshots)
+    assert "8 valid times" in day
+    assert "needs 5 of them" in day
+    assert "3 lie beyond that end" in day
+    assert f"{8 * per_time / 1024 ** 3:.2f} GiB of host memory" in day
+    assert f"{3 * per_time / 1024 ** 3:.2f} GiB" in day
+
+    # The count is the run's, not a constant: a run that integrates the
+    # whole declared window has nothing beyond it and the line is not
+    # printed.
+    whole = runtime.forcing_decode_report(
+        replace(exp, run_seconds=42 * 3600.0), snapshots)
+    assert "needs 8 of them" in whole
+    assert "lie beyond" not in whole
+
+
+def test_the_times_beyond_the_end_are_not_called_unread(tmp_path):
+    """THE CLAIM THE LINE IS ALLOWED TO MAKE.
+
+    ``forcing_schedule`` returns EVERY decoded time at or after
+    ``start_time`` -- it truncates at nothing -- and
+    ``prepare_real_case`` loops over all of them: each is interpolated,
+    each becomes a state, each is added to the boundary frames, every
+    consecutive pair becomes an interval, and the last one is the
+    prepared case's final analysis.  So a report that called those times
+    unread would be contradicted by the next statement in the function
+    that prints it, and its remedy -- refetch a narrower window -- would
+    be sold as free when it changes ``forcing_times``, the lateral
+    boundary intervals and ``final_analysis``.
+
+    Held here against ``forcing_schedule`` itself rather than against a
+    hand-typed count, so the day it starts truncating this fails.
+    """
+    exp, data = _fixture_pair(tmp_path)
+    day = replace(exp, run_seconds=86400.0)
+    snapshots = _sized_forcing_snapshots(day.start_time, 8)
+    prepared = runtime.forcing_schedule(day, data, snapshots)
+    report = runtime.forcing_decode_report(day, snapshots)
+
+    # Every decoded time is prepared, including the three the report
+    # names as lying beyond the run's end.
+    assert prepared == tuple(sorted(snapshots))
+    assert f"{len(prepared) - 5} lie beyond that end" in report
+    assert "no part of this forecast reads" not in report
+    assert "still PREPARED" in report
+    assert "final analysis" in report
+    assert "drops them from the prepared case" in report
+
+
+def test_both_real_routes_release_the_decode_once_preparation_has_it():
+    """The release has to be REACHED, and neither route runs here.
+
+    Source-level for the reason the prepare-ordering gates are: driving
+    either arm needs a decoded GRIB chain, a geog root and a device.
+    What is pinned is that each route that decodes forcing drops BOTH
+    holders once preparation has consumed them, and does it AFTER
+    preparation rather than before -- the mapping it is still naming and
+    the decoder's process-lifetime caches, because clearing the caches
+    while a local still names the arrays frees nothing.
+    """
+    import inspect
+
+    from gpuwm.core.model import build_experiment
+
+    routes = (
+        ("gpuwm.runtime.run_experiment",
+         inspect.getsource(runtime.run_experiment),
+         "prepared = prepare_experiment_case("),
+        ("gpuwm.core.model.build_experiment",
+         inspect.getsource(build_experiment),
+         "prepared_root = runtime.prepare_root_experiment_case("),
+    )
+    for name, source, prepares in routes:
+        assert prepares in source, f"{name} no longer prepares here"
+        for token in ("del snapshots", "clear_forcing_caches()"):
+            assert token in source, (
+                f"{name} holds the forcing decode for the life of the "
+                f"process: no {token}")
+            assert source.index(token) > source.index(prepares), (
+                f"{name} releases the decode before preparation has "
+                "consumed it")
 
 
 # ---------------------------------------------------------------------------
@@ -505,8 +617,9 @@ def test_experiment_runtime_threads_catalog_providers_when_declarations_omitted(
     assert captured["trace_gas_overrides"] is None
 
 
+@pytest.mark.parametrize("land_scheme,soil_layers", [(2, 4), (3, 6), (3, 9)])
 def test_single_domain_implicit_trace_gases_keep_experiment_column_chunk(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, land_scheme, soil_layers):
     """The dated trace-gas policy must not drop the configured RRTMGP chunk."""
     import sys
     from types import SimpleNamespace
@@ -514,7 +627,8 @@ def test_single_domain_implicit_trace_gases_keep_experiment_column_chunk(
     from gpuwm.core import diagnostics, physics, rrtmgp
 
     exp, declared = _fixture_pair(tmp_path)
-    dc = replace(exp.root, run=replace(exp.root.run, ra_physics=4))
+    dc = replace(exp.root, run=replace(exp.root.run, ra_physics=4,
+        sf_surface_physics=land_scheme, num_soil_layers=soil_layers))
     exp = replace(exp, domains=(dc,), column_chunk=47)
     data = replace(declared, source_orography=None, co2_vmr=None)
     assert len(exp.domains) == 1
@@ -655,6 +769,7 @@ def test_single_domain_implicit_trace_gases_keep_experiment_column_chunk(
     assert soil_kwargs.get("lake_mask") is None
     assert soil_kwargs.get("lake_skin_temperature") is None
     assert "landmask" in soil_kwargs
+    assert soil_kwargs["num_soil_layers"] == runtime.soil_layer_count(dc.run)
 
     radiation = prepared.initial_result.state.physics.radiation_callable
     assert isinstance(radiation, rrtmgp.RRTMGPRadiation)
@@ -777,21 +892,30 @@ def test_run_experiment_threads_experiment_timing_authority(
             == authoritative.restart_interval_s)
 
 
-def test_prepare_real_case_rejects_trace_overrides_without_rrtmgp(
-        tmp_path):
+@pytest.mark.parametrize("longwave", [0, 1])
+def test_prepare_real_case_admits_inactive_and_supported_classic_gas(
+        tmp_path, monkeypatch, longwave):
     exp, data = _fixture_pair(tmp_path)
     dc = runtime.single_domain(exp)
-    assert dc.run.ra_physics == 0
+    cfg = replace(dc.run, ra_lw_physics=longwave, ra_sw_physics=0)
+
+    class StaticReached(Exception):
+        pass
+
+    def static_boundary(*args, **kwargs):
+        raise StaticReached("gas admission reached static initialization")
+
+    monkeypatch.setattr(runtime, "_cached_static_build", static_boundary)
 
     class _Grid:
-        e_we = dc.run.nx + 1
-        e_sn = dc.run.ny + 1
-        dx = dc.run.dx
-        dy = dc.run.dy
+        e_we = cfg.nx + 1
+        e_sn = cfg.ny + 1
+        dx = cfg.dx
+        dy = cfg.dy
 
-    with pytest.raises(ValueError, match="ra_physics = 4"):
+    with pytest.raises(StaticReached, match="gas admission"):
         runtime.prepare_real_case(
-            dc.run, grid=_Grid(), geog_root=data.geog_root,
+            cfg, grid=_Grid(), geog_root=data.geog_root,
             source_orography_path=data.source_orography.path,
             source_orography_variable=data.source_orography.variable,
             vertical=exp.vertical, sfcp_to_sfcp=data.sfcp_to_sfcp,
@@ -799,7 +923,7 @@ def test_prepare_real_case_rejects_trace_overrides_without_rrtmgp(
             forcing_times=(exp.start_time,
                            exp.start_time + timedelta(hours=6)),
             start_time=exp.start_time,
-            trace_gas_overrides={"co2": data.co2_vmr})
+            trace_gas_overrides={"co2": 0.00051})
 
 
 def test_cli_experiment_commands_route_through_runtime(

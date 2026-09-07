@@ -131,10 +131,9 @@ def route_note(config) -> str:
     """The route sentence to append when no checkpoint exists at all.
 
     Empty for a config whose route does write checkpoints -- there the
-    honest advice really is "that run must have written a restart".  On
-    the prepared single-domain route it is never true: the knob the old
-    message pointed at was inert, so pointing at it sent the user in a
-    circle.
+    honest advice really is "that run must have written a restart".
+    This includes the prepared single-domain route, whose checkpoint
+    transport is shared with the prepared tree.
     """
 
     from gpuwm.checkpoint_routes import (
@@ -158,9 +157,7 @@ def route_note(config) -> str:
             domain_count=domain_count,
             has_case_data=config_has_case_data(config)):
         return ""
-    return (f".  {config} is a single-domain config with no [case_data] "
-            "table, so it runs on the prepared single-domain forecaster, "
-            "which writes no checkpoints at any restart_interval_s.  "
+    return (f".  {config} does not declare a valid forecast domain.  "
             + CHECKPOINTLESS_ROUTE_REMEDY)
 
 

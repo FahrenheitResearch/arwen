@@ -1,0 +1,55 @@
+{
+  "schema": "gpuwm.kernel-frame-measurement.v1",
+  "measured_utc": "2026-09-05T10:24:35.830101+00:00",
+  "method": "tools/vram_reserve_probe.py::mode_frames production load_module plus every symbol driver attributes; no ignored compile/symbol failures",
+  "source_revision": "73fc2406f172e672c0012f02991e236bf053c041",
+  "source_file_sha256": "e98471547d79502806324b840eae701af51d3e6f7e21682d0d7602049513a8c2",
+  "assembled_source_sha256": "1d9040dabb757c4d7fef1bd76913fd1dc7fc495b1a409bb87093ff9aa16f104a",
+  "compile_options": [
+    "-std=c++17"
+  ],
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.13.7",
+  "cupy": "14.0.1",
+  "compile_platform": {
+    "nvrtc_build": "13.0.48",
+    "nvrtc_build_id": "CL-36260728",
+    "nvrtc_library_sha256": "37d2195bcdc5db37a838a8eb4f286f502ea94d82319bb7de68751ad672f4ad6d",
+    "cuda_driver_version": "13030",
+    "device_compute_capability": "86",
+    "cupy_version": "14.0.1",
+    "numpy_version": "2.2.6"
+  },
+  "device": "NVIDIA GeForce RTX 3080",
+  "multiprocessor_count": 68,
+  "max_threads_per_multiprocessor": 1536,
+  "fresh_default_stack_limit_bytes": 1024,
+  "attributes": {
+    "evaluate_linear_boundary": {
+      "max_threads_per_block": 1024,
+      "shared_size_bytes": 0,
+      "const_size_bytes": 0,
+      "local_size_bytes": 0,
+      "num_regs": 16,
+      "ptx_version": 86,
+      "binary_version": 86,
+      "cache_mode_ca": 0,
+      "max_dynamic_shared_size_bytes": 49152,
+      "preferred_shared_memory_carveout": -1
+    },
+    "evaluate_rational_boundary": {
+      "max_threads_per_block": 1024,
+      "shared_size_bytes": 0,
+      "const_size_bytes": 0,
+      "local_size_bytes": 0,
+      "num_regs": 36,
+      "ptx_version": 86,
+      "binary_version": 86,
+      "cache_mode_ca": 0,
+      "max_dynamic_shared_size_bytes": 49152,
+      "preferred_shared_memory_carveout": -1
+    }
+  },
+  "max_local_size_bytes": 0,
+  "note": "Compiler/driver metadata, not a measured forecast peak. No arrays or kernel launches."
+}

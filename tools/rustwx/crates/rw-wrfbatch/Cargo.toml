@@ -45,6 +45,8 @@ sha2 = "0.10"
 thiserror = { workspace = true }
 wrf-core = { git = "https://github.com/FahrenheitResearch/wrf-rust.git", rev = "93bd2ca670c13fec35bcfc27a58108e6fd71c627", package = "wrf-core", default-features = false, features = ["pure-rust-reader"] }
 rustwx-core = { path = "../rustwx-core" }
+rustwx-cross-section = { path = "../rustwx-cross-section" }
+image = { version = "0.25", default-features = false, features = ["png"] }
 rustwx-ensemble = { path = "../rustwx-ensemble" }
 rustwx-render = { path = "../rustwx-render" }
 rustwx-models = { path = "../rustwx-models" }

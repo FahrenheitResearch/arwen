@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -35,6 +36,15 @@ def test_load_base_installs_copy_owned_dz_min_cache(monkeypatch):
     for name in ("thb", "pb", "alb"):
         setattr(state, name, np.empty(3, dtype=np.float32))
     state.phb = np.empty(4, dtype=np.float32)
+    # The EOS-spelling lane added three float64-derived setup arrays that
+    # load_base fills beside the profiles: the base-thickness correction
+    # (one per LAYER, so nz = 3 against phb's nz + 1 = 4) and the two
+    # full-level coefficient drops.  Same contract as the c3h/c4h note
+    # above -- the stub carries what load_base writes, or it is testing a
+    # load_base the model does not have.
+    state.dphb_resid = np.empty(3, dtype=np.float32)
+    state.dc3f = np.empty(3, dtype=np.float32)
+    state.dc4f = np.empty(3, dtype=np.float32)
     state.mub2d = np.empty((1, 1), dtype=np.float32)
     state.ht = np.empty((1, 1), dtype=np.float32)
     state._phb_host = None
@@ -827,6 +837,112 @@ def test_co_located_cfl_passes_aloft_updraft_but_catches_surface_and_threshold(
     assert above["cfl"] > 10.0
     assert dycore.stability_gate_failed(
         above, max_cfl=10.0, max_w_ms=150.0)
+
+
+def test_bad_layer_geometry_reaches_the_cfl_the_safety_gate_reads():
+    """Mask bit 32 has ONE channel, and ``max()`` used to throw it away.
+
+    ``health.cu:86-91`` classifies a mass cell whose live layer thickness
+    is non-positive or non-finite -- a collapsed or folded geopotential
+    column, the classic precursor of an ARW vertical blow-up -- by setting
+    mask bit 32, and ``health_final`` spends that bit as
+    ``result[5] = nanf("")``.  That word is the vertical CFL rate, and this
+    decoder is its only expression.  ``max(horizontal, nan)`` returns
+    ``horizontal`` in CPython -- the comparison ``nan > x`` is False -- so
+    the signal was dropped in the one line that carried it: ``u``, ``w``
+    and ``thp`` are all still finite, ``nan`` is False, and
+    ``stability_gate_failed``, which tests exactly ``cfl``'s finiteness,
+    passed over a domain with an inverted layer.  ``result[5]`` is a
+    WHOLE-DOMAIN reduction, so one such cell also replaced the real
+    vertical maximum: the gate went blind precisely as the failure it
+    exists to catch developed.
+    """
+
+    from gpuwm.core import dycore
+
+    run = SimpleNamespace(dt=10.0, dx=1000.0)
+    # ``health_final``'s eight-word record: u_max, w_max, th_max, the
+    # boundary and free-interior w maxima, the vertical rate, and two
+    # index words.  Every field maximum finite and unremarkable; only the
+    # vertical rate carries the mask, which is the whole point.
+    host = np.array([5.0, 3.0, 1.0, 0.0, 0.0, np.nan, 0.0, 0.0],
+                    dtype=np.float32)
+    report = dycore.decode_stability_record(host, run)
+
+    assert report["nan"] is False, "no field maximum can see bad geometry"
+    assert not math.isfinite(report["cfl"])
+    assert dycore.stability_gate_failed(report, max_cfl=10.0, max_w_ms=150.0)
+
+    # A healthy record still reports the larger of the two terms, so the
+    # guard is a NaN guard and not a blanket refusal.
+    host[5] = 0.4
+    healthy = dycore.decode_stability_record(host, run)
+    assert healthy["horizontal_cfl"] == pytest.approx(0.05)
+    assert healthy["vertical_cfl"] == pytest.approx(4.0)
+    assert healthy["cfl"] == pytest.approx(4.0)
+    assert not dycore.stability_gate_failed(
+        healthy, max_cfl=10.0, max_w_ms=150.0)
+
+
+def test_the_streamed_decoder_keeps_the_nan_the_resident_one_keeps():
+    """The two paths are deliberately identical, so they failed together.
+
+    ``tilestream.health_fold.TileHealthFold._report`` reproduces
+    ``decode_stability_record``'s arithmetic rather than calling it, and
+    its own docstring says the duplication exists so the two paths cannot
+    drift.  Both therefore carried this defect, and under ``[tiles]`` with
+    a host store the fold is the ONLY armed observer -- ``require_healthy``
+    is skipped entirely there -- so the streamed decoder is the one that
+    most needs the signal.  Driven rather than read: ``_report`` needs
+    nothing off the instance but ``cfg``, ``width`` and the swdown flag,
+    so it runs on a stand-in with no device.
+    """
+
+    from gpuwm.core import dycore
+    from tilestream.health_fold import TileHealthFold
+
+    run = SimpleNamespace(dt=10.0, dx=1000.0)
+    fold = SimpleNamespace(cfg=run, width=0, _have_swdown=False)
+    host = np.array([5.0, 3.0, 1.0, 0.0, 0.0, np.nan, 0.0, 0.0],
+                    dtype=np.float32)
+
+    streamed = TileHealthFold._report(fold, host)
+    assert streamed["nan"] is False
+    assert not math.isfinite(streamed["cfl"])
+    assert dycore.stability_gate_failed(
+        streamed, max_cfl=10.0, max_w_ms=150.0)
+
+    host[5] = 0.4
+    healthy = TileHealthFold._report(fold, host)
+    assert healthy["cfl"] == pytest.approx(4.0)
+
+    # And the two decoders still agree word for word, which is the claim
+    # the duplication rests on.
+    assert healthy == dycore.decode_stability_record(host, run)
+
+
+def test_the_run_loop_refuses_a_non_finite_cfl_and_not_only_a_non_finite_field():
+    """The signal now has a channel AND an observer on the run route.
+
+    ``integrate_prepared_case`` used to read nothing off the stability
+    record but ``report["nan"]``, which is decided by ``u_max``,
+    ``w_max`` and ``th_max`` alone -- geopotential is not among them, so
+    a collapsed or folded layer passed every substep.  Pinned by
+    inspection for the same reason the no-cupy-reduction pin above is:
+    this loop needs a card and a prepared case to run, and the property
+    being asserted is which fields of the report it consults.
+    """
+
+    import inspect
+
+    from gpuwm import runtime
+
+    source = inspect.getsource(runtime.integrate_prepared_case)
+    monitored = source[source.index("report = stability_report"):]
+    assert 'report["cfl"]' in monitored
+    refusal = monitored[monitored.index('report["cfl"]'):]
+    assert "math.isfinite" in refusal
+    assert "raise RuntimeError" in refusal
 
 
 def test_health_kernel_keeps_first_index_tie_and_nan_bits():

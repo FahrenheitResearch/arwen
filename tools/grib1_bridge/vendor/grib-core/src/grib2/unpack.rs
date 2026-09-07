@@ -359,6 +359,38 @@ pub fn unpack_message_scan_normalized_row_window(
         )));
     }
 
+    // The window path decodes the same Section 7 `unpack_message` does, so it
+    // owes the same Section 5/7 preconditions.  Without them a short or
+    // over-declared payload renders as reference-value fill instead of
+    // refusing, and the renderer reports the tile as decoded.
+    let dr = &msg.data_rep;
+    let declared_values = dr.section5_num_data_points as usize;
+    if declared_values == 0 {
+        return Err(crate::GribError::Unpack(
+            "Section 5 declares 0 data points".to_string(),
+        ));
+    }
+    if dr.template == 0 {
+        let bpv = dr.bits_per_value as usize;
+        let expected_bytes = if bpv == 0 {
+            0
+        } else {
+            declared_values
+                .checked_mul(bpv)
+                .and_then(|bits| bits.checked_add(7))
+                .map(|bits| bits / 8)
+                .ok_or_else(|| {
+                    crate::GribError::Unpack("simple-packed bit count overflows usize".to_string())
+                })?
+        };
+        if msg.raw_data.len() != expected_bytes {
+            return Err(crate::GribError::Unpack(format!(
+                "simple-packed Section 7 has {} bytes; Section 5 requires {expected_bytes}",
+                msg.raw_data.len()
+            )));
+        }
+    }
+
     match msg.data_rep.template {
         0 => unpack_simple_scan_normalized_row_window(msg, nx, ny, y_start, y_end)
             .map_err(crate::GribError::Unpack),
@@ -411,9 +443,18 @@ fn unpack_simple_scan_normalized_row_window(
     }
 
     let bpv = dr.bits_per_value as usize;
+    if bpv > 63 {
+        return Err(format!(
+            "simple packing bits_per_value {bpv} exceeds the 63-bit decode width"
+        ));
+    }
     let mut reader = BitReader::new(&msg.raw_data);
     fill_scan_normalized_row_window_from_dense_values(msg, nx, ny, y_start, y_end, || {
-        Ok(Some(scale_raw_value(reader.read_bits(bpv) as i64, dr)))
+        Ok(Some(scale_raw_value(
+            i64::try_from(reader.read_bits_checked(bpv)?)
+                .map_err(|_| "simple-packed value exceeds i64".to_string())?,
+            dr,
+        )))
     })
 }
 
@@ -453,7 +494,7 @@ fn unpack_complex_spatial_scan_normalized_row_window(
             y_start,
             y_end,
             || {
-                Ok(groups.next_value().map(|value| match value {
+                Ok(groups.next_value()?.map(|value| match value {
                     GroupValue::Present(raw) => scale_raw_value(raw, dr),
                     GroupValue::Missing => f64::NAN,
                 }))
@@ -491,7 +532,7 @@ fn unpack_complex_spatial_scan_normalized_row_window(
     let mut previous = None::<i64>;
     let mut previous_previous = None::<i64>;
     fill_scan_normalized_row_window_from_dense_values(msg, nx, ny, y_start, y_end, || {
-        let raw = match groups.next_value() {
+        let raw = match groups.next_value()? {
             None => return Ok(None),
             Some(GroupValue::Missing) => return Ok(Some(f64::NAN)),
             Some(GroupValue::Present(raw)) => raw,
@@ -561,21 +602,21 @@ impl<'a> ComplexGroups<'a> {
         let bpv = dr.bits_per_value as usize;
         let mut group_refs = Vec::with_capacity(ng);
         for _ in 0..ng {
-            group_refs.push(reader.read_bits(bpv) as i64);
+            group_refs.push(reader.read_bits_checked(bpv)? as i64);
         }
         reader.align_to_byte();
 
         let gwb = dr.group_width_bits as usize;
         let mut group_widths = Vec::with_capacity(ng);
         for _ in 0..ng {
-            group_widths.push(reader.read_bits(gwb) as usize + dr.group_width_ref as usize);
+            group_widths.push(reader.read_bits_checked(gwb)? as usize + dr.group_width_ref as usize);
         }
         reader.align_to_byte();
 
         let glb = dr.group_length_bits as usize;
         let mut group_lengths = Vec::with_capacity(ng);
         for _ in 0..ng {
-            let stored = reader.read_bits(glb) as usize;
+            let stored = reader.read_bits_checked(glb)? as usize;
             group_lengths
                 .push(stored * dr.group_length_inc as usize + dr.group_length_ref as usize);
         }
@@ -584,6 +625,14 @@ impl<'a> ComplexGroups<'a> {
         }
         reader.align_to_byte();
         refuse_ambiguous_constant_group(bpv, mode, &group_widths)?;
+        // The same group-table/Section-5 agreement `unpack_complex` requires.
+        let total_values: usize = group_lengths.iter().sum();
+        if dr.section5_num_data_points != 0 && total_values != dr.section5_num_data_points as usize {
+            return Err(format!(
+                "complex group lengths declare {total_values} values, Section 5 declares {}",
+                dr.section5_num_data_points
+            ));
+        }
 
         Ok(Self {
             reader,
@@ -597,7 +646,11 @@ impl<'a> ComplexGroups<'a> {
         })
     }
 
-    fn next_value(&mut self) -> Option<GroupValue> {
+    /// `Ok(None)` means the group table is exhausted.  A bit stream that ends
+    /// before the group table does is an `Err`: the unchecked reader
+    /// synthesizes zero bits past the payload, which decodes a truncated
+    /// Section 7 as reference-value fill.
+    fn next_value(&mut self) -> Result<Option<GroupValue>, String> {
         while self.group_idx < self.group_lengths.len()
             && self.value_idx_in_group >= self.group_lengths[self.group_idx]
         {
@@ -605,27 +658,27 @@ impl<'a> ComplexGroups<'a> {
             self.value_idx_in_group = 0;
         }
         if self.group_idx >= self.group_lengths.len() {
-            return None;
+            return Ok(None);
         }
 
         let width = self.group_widths[self.group_idx];
         let gref = self.group_refs[self.group_idx];
         self.value_idx_in_group += 1;
         if width == 0 {
-            return Some(if self.constant_markers.marks(gref as u64) {
+            return Ok(Some(if self.constant_markers.marks(gref as u64) {
                 GroupValue::Missing
             } else {
                 GroupValue::Present(gref)
-            });
+            }));
         }
-        let stored = self.reader.read_bits(width);
-        Some(
+        let stored = self.reader.read_bits_checked(width)?;
+        Ok(Some(
             if MissingMarkers::for_width(width, self.mode).marks(stored) {
                 GroupValue::Missing
             } else {
                 GroupValue::Present(gref + stored as i64)
             },
-        )
+        ))
     }
 }
 
@@ -3255,6 +3308,114 @@ mod tests {
                 assert_eq!(*expected, *actual);
             }
         }
+    }
+
+    #[test]
+    fn test_row_window_simple_refuses_a_short_section7() {
+        use crate::grib2::parser::{GridDefinition, ProductDefinition};
+
+        // Negative control for the window path's Section 5/7 agreement.  The
+        // unchecked reader synthesizes zero bits past the payload, so before
+        // this gate the missing tail decoded as the reference value and the
+        // renderer reported a tile it never read.
+        let msg = Grib2Message {
+            discipline: 0,
+            identification: crate::grib2::parser::Identification::default(),
+            reference_time: chrono::NaiveDate::from_ymd_opt(2026, 4, 14)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+            grid: GridDefinition {
+                nx: 3,
+                ny: 2,
+                num_data_points: 6,
+                ..GridDefinition::default()
+            },
+            product: ProductDefinition::default(),
+            data_rep: DataRepresentation {
+                template: 0,
+                bits_per_value: 8,
+                section5_num_data_points: 6,
+                ..make_default_dr()
+            },
+            bitmap: None,
+            raw_data: vec![1, 2, 3, 4, 5],
+        };
+
+        let full = unpack_message(&msg).unwrap_err().to_string();
+        assert!(full.contains("Section 5 requires 6"), "{full}");
+        let window = unpack_message_scan_normalized_row_window(&msg, 0, 2)
+            .unwrap_err()
+            .to_string();
+        assert!(window.contains("Section 5 requires 6"), "{window}");
+    }
+
+    #[test]
+    fn test_row_window_simple_refuses_a_bitmap_that_outruns_section7() {
+        use crate::grib2::parser::{GridDefinition, ProductDefinition};
+
+        // The declared byte count is satisfied, so only the checked bit read
+        // can catch this: the bitmap marks six present cells while Section 5
+        // declares four values.
+        let msg = Grib2Message {
+            discipline: 0,
+            identification: crate::grib2::parser::Identification::default(),
+            reference_time: chrono::NaiveDate::from_ymd_opt(2026, 4, 14)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+            grid: GridDefinition {
+                nx: 3,
+                ny: 2,
+                num_data_points: 6,
+                ..GridDefinition::default()
+            },
+            product: ProductDefinition::default(),
+            data_rep: DataRepresentation {
+                template: 0,
+                bits_per_value: 8,
+                section5_num_data_points: 4,
+                ..make_default_dr()
+            },
+            bitmap: Some(vec![true; 6]),
+            raw_data: vec![10, 20, 30, 40],
+        };
+
+        assert!(unpack_message(&msg).is_err());
+        let window = unpack_message_scan_normalized_row_window(&msg, 0, 2)
+            .unwrap_err()
+            .to_string();
+        assert!(window.contains("truncated packed payload"), "{window}");
+    }
+
+    #[test]
+    fn test_row_window_complex_spatial_refuses_a_truncated_group_payload() {
+        use crate::grib2::parser::GridDefinition;
+
+        // Same message as test_row_window_complex_missing_matches_full_decode
+        // with the last packed byte removed: the group table still declares
+        // six 3-bit values but only 16 bits of payload remain.
+        let mut raw_data = vec![10, 12, 0];
+        let mut packed = pack_unsigned(&[0, 0, 7, 1, 6, 2], 3);
+        packed.pop();
+        raw_data.extend(packed);
+        let msg = message_with(
+            GridDefinition {
+                nx: 3,
+                ny: 2,
+                num_data_points: 6,
+                scan_mode: 0x40,
+                ..GridDefinition::default()
+            },
+            spatial_missing_dr(2, 6),
+            raw_data,
+        );
+
+        assert!(unpack_message(&msg).is_err());
+        let window = unpack_message_scan_normalized_row_window(&msg, 0, 2)
+            .unwrap_err()
+            .to_string();
+        assert!(window.contains("truncated packed payload"), "{window}");
     }
 
     #[test]

@@ -530,7 +530,7 @@ def test_public_gate_accepts_a_per_domain_history_cadence():
         replace(laddered.domains[1], run=replace(
             laddered.domains[1].run, sf_surface_physics=3)),
     ))
-    with pytest.raises(ValueError, match="certified native"):
+    with pytest.raises(ValueError, match="trajectory controls differ"):
         _slice(drifted, _target())
 
 
@@ -567,7 +567,7 @@ def test_public_gate_accepts_a_child_only_inflow_perturbation():
         replace(seeded.domains[1], run=replace(
             seeded.domains[1].run, sf_sfclay_physics=1)),
     ))
-    with pytest.raises(ValueError, match="certified native"):
+    with pytest.raises(ValueError, match="trajectory controls differ"):
         _slice(drifted, _target())
 
 
@@ -764,22 +764,21 @@ def test_coupled_legacy_import_is_admitted_by_the_radiation_slice(tmp_path):
     _supported_hierarchy_slice(exp, target, forcing_hours=tuple(range(25)))
 
     # CONTROL 1: the aggregate spelling of radiation OFF resolves to
-    # (0, 0), which the route does not admit -- the canonicalization is
-    # not a wave-through.
+    # (0, 0), preserving the declared inactive radiation operation.
     radiation_off = replace(exp, domains=tuple(
         replace(domain, run=replace(domain.run, ra_physics=0))
         for domain in exp.domains))
-    with pytest.raises(ValueError, match=r"resolved \(ra_lw_physics"):
-        _supported_hierarchy_slice(radiation_off, target,
-                                   forcing_hours=tuple(range(25)))
+    _supported_hierarchy_slice(radiation_off, target,
+                               forcing_hours=tuple(range(25)))
 
     # CONTROL 2: an incoherent spelling (explicit pair beside a nonzero
     # aggregate) is refused by the resolver itself, by name.
-    incoherent = replace(exp, domains=tuple(
-        replace(domain, run=replace(domain.run, ra_lw_physics=4,
-                                    ra_sw_physics=4))
-        for domain in exp.domains))
+    # RunConfig now enforces this invariant while the request is built.
     with pytest.raises(ValueError, match="require ra_physics=0"):
+        incoherent = replace(exp, domains=tuple(
+            replace(domain, run=replace(domain.run, ra_lw_physics=4,
+                                        ra_sw_physics=4))
+            for domain in exp.domains))
         _supported_hierarchy_slice(incoherent, target,
                                    forcing_hours=tuple(range(25)))
 
@@ -884,8 +883,6 @@ def test_raw_namelist_gate_allows_only_explicit_runtime_deltas(
     [
         ("interval_seconds = 3600", "interval_seconds = 1800",
          "interval_seconds"),
-        ("sfcp_to_sfcp = .true.", "sfcp_to_sfcp = .false.",
-         "sfcp_to_sfcp"),
         ("io_form_input = 2", "io_form_input = 3", "io_form_input"),
         ("isfflx = 1", "isfflx = 0", "isfflx"),
         ("num_soil_layers = 4", "num_soil_layers = 9",

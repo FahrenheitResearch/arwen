@@ -37,7 +37,7 @@ def _series_hours(path: Path) -> tuple[int, ...]:
         if not raw.strip():
             continue
         columns = raw.split("\t")
-        if len(columns) != 3:
+        if len(columns) < 3:
             raise ValueError(
                 f"{path}:{number}: expected hour, atmosphere, and soil columns")
         try:
@@ -45,6 +45,8 @@ def _series_hours(path: Path) -> tuple[int, ...]:
         except ValueError as error:
             raise ValueError(
                 f"{path}:{number}: invalid forecast hour {columns[0]!r}") from error
+        from gpuwm.ingest.native_supplements import supplement_bindings
+        supplement_bindings(columns[3:], base=path.parent)
         hours.append(hour)
     try:
         return validate_hrrr_source_forecast_hours(hours)
@@ -82,8 +84,27 @@ def main():
     for key, expected in required.items():
         if gate.get(key) != expected:
             raise ValueError(f"gate {key}={gate.get(key)!r}, expected {expected!r}")
+    from gpuwm.ingest.native_supplements import gate_supplement_fields, verify_supplement_receipt
+    from tools.hrrr_pipeline import _parse_series
+    fields = gate_supplement_fields(gate)
+    series_rows = _parse_series(args.series)
+    if any(bool(len(row) > 3) != bool(fields) for row in series_rows):
+        raise ValueError("native supplement publication differs from declared series inputs")
+    if fields:
+        controller = json.loads(args.time_evidence.read_text())
+        source_receipt = controller.get("source_hash_preflight", {})
+        expected_bindings = {(row[0], "PMSL", str(path))
+                             for row in series_rows for path in row[3:]}
+        observed_bindings = {(row["forecast_hour"], row["field"], str(Path(row["path"]).resolve()))
+                             for row in source_receipt.get("supplement_bindings", ())}
+        if (source_receipt.get("manifest_sha256") != args.source_manifest_sha256
+                or observed_bindings != expected_bindings):
+            raise ValueError("supplement source receipt does not bind this series and manifest")
+        verify_supplement_receipt(source_receipt)
+        if not (args.root / "supplement-inventory.tsv").is_file():
+            raise ValueError("native supplement publication lacks its GRIB selection receipt")
     for hour in hours:
-        for role, expected_files in (("atmosphere", 22), ("soil", 2)):
+        for role, expected_files in (("atmosphere", 22 + len(fields)), ("soil", 2)):
             directory = args.root / f"{role}-f{hour:02d}"
             files = sorted(directory.glob("*.f32le"))
             if len(files) != expected_files:

@@ -76,7 +76,13 @@ def test_offline_child_capabilities_are_warning_only_and_exact(capsys):
     # UNVALIDATED_MIXED_EDGE_SELECTORS.
     assert capability["same_scheme_mp_physics"] == [6, 8, 10, 18, 28, 50]
     assert capability["cross_scheme_transitions"] == []
-    assert capability["vertical_remapping"] is False
+    # Was pinned to False while the runner refused any child whose nz
+    # differed from its parent's.  A child may now carry its OWN eta ladder
+    # when it declares one, through the conservative host-side remap in
+    # gpuwm/vertical_remap.py, so the declaration says what it does instead
+    # of denying it exists.  A child that declares no ladder still inherits
+    # its parent's, bitwise.
+    assert capability["vertical_remapping"] == "conservative-offline-prepare"
     assert capability["output_ownership"] == "create-only"
 
 

@@ -328,10 +328,10 @@ def test_a_checkpoint_source_outside_this_builds_vocabulary_refuses():
                                  "last_update_model_time": None}})
 
 
-def test_the_source_vocabulary_is_exactly_the_six():
+def test_the_source_vocabulary_includes_the_shared_cam_producer():
     assert CARRIER_SOURCES == {
         "radiation_scheme", "declared_constant", "external_array",
-        "analytic_geometry", "wrf_compat_zero", "unwritten",
+        "analytic_geometry", "wrf_compat_zero", "unwritten", "cam_ozone",
     }
 
 

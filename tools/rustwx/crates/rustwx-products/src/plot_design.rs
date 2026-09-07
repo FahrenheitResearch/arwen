@@ -773,7 +773,10 @@ fn terrain_palette(n: usize) -> Vec<Color> {
         .collect()
 }
 
-fn smoke_scale_colors() -> Vec<Color> {
+/// The tracer ramp the map families paint a carried scalar with: cool blue
+/// through green and yellow into red and violet, with the alpha ramping up
+/// so a thin plume lets the map through underneath it.
+pub fn tracer_scale_colors() -> Vec<Color> {
     vec![
         Color::rgba(82, 185, 226, 42),
         Color::rgba(84, 210, 238, 78),
@@ -786,6 +789,24 @@ fn smoke_scale_colors() -> Vec<Color> {
         Color::rgba(78, 0, 138, 252),
         Color::rgba(48, 0, 112, 255),
     ]
+}
+
+/// The same ramp at FULL saturation: identical hues, every stop opaque.
+///
+/// A map overlays its tracer on basemap and fields and needs the alpha
+/// ramp; a cross-section's fill is the subject of the panel and has
+/// nothing underneath it worth showing through, so the same plume drawn
+/// with the map's alphas came out as a pale wash.  One ramp, two
+/// exposures.
+pub fn tracer_scale_colors_saturated() -> Vec<Color> {
+    tracer_scale_colors()
+        .into_iter()
+        .map(|color| Color::rgba(color.r, color.g, color.b, 255))
+        .collect()
+}
+
+fn smoke_scale_colors() -> Vec<Color> {
+    tracer_scale_colors()
 }
 
 fn range_step(start: f64, stop: f64, step: f64) -> Vec<f64> {

@@ -10,7 +10,7 @@ complete limited-area initial state.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 import hashlib
 from pathlib import Path
@@ -24,6 +24,8 @@ from gpuwm.source_authorities import (packaged_authority_sha256,
 from gpuwm.source_coverage import (COVERAGE_WINDOW_TYPES, CoverageWindow,
                                    LambertGridWindow, RegularLatLonWindow)
 from gpuwm.source_cycles import CycleGrid
+from gpuwm.source_availability import ArchiveWindow
+from gpuwm.grid_requirements import NATIVE_TARGET_INTERIOR_AXIS
 from gpuwm.source_credentials import (CredentialLocation, SourceCredential,
                                       credential_declaration)
 
@@ -96,6 +98,8 @@ class SourceAdapter:
     #: is the arbitrary-acceptance seam -- adding a model whose mapping can
     #: be written is three JSON documents plus this row.
     packaged_profile: str | None = None
+    # A recommendation only; runtime capability never depends on this name.
+    default_physics_profile: str | None = None
     composition_requirement: str | None = None
     #: The packaged ``rw-wps.members.v1`` document (shipped in the wheel
     #: and pinned by SHA-256 in :mod:`gpuwm.source_authorities`) this
@@ -160,6 +164,9 @@ class SourceAdapter:
     #: a keyed job API like the CDS, which publishes no object to probe
     #: and so has to write its publication delay down.
     cycle_grid: CycleGrid | None = None
+    #: Documented starts of the CURRENT acquisition layouts, per transport.
+    #: An omitted window means unknown, never unlimited historical coverage.
+    archive_windows: tuple[ArchiveWindow, ...] = ()
     #: What a PERSON calls this source.  A column, because every consumer
     #: that wanted a human name had to keep its own id-to-name lookup --
     #: a per-model table, and adding a model then meant editing a front
@@ -174,6 +181,11 @@ class SourceAdapter:
     #: other column: a source that needs an account key is one row, and
     #: no front end carries an exception for it.
     credentials: tuple[SourceCredential, ...] = ()
+    # Internal preparation capability: the root target constructor's required
+    # interior between specified edges. Not a public source identity or a
+    # requirement for children initialized by a different target operation.
+    root_target_interior_axis: int | None = field(
+        default=None, compare=False, repr=False, kw_only=True)
     notes: str = ""
 
     @property
@@ -202,6 +214,7 @@ class SourceAdapter:
 
     def to_dict(self) -> dict[str, object]:
         value = asdict(self)
+        value.pop("root_target_interior_axis")
         value["source_kind"] = self.source_kind.value
         value["status"] = self.status.value
         # The name a consumer shows, resolved: a row that declares none
@@ -245,12 +258,15 @@ def _adapter(
     runnable: bool = False,
     runner: str | None = None,
     packaged_profile: str | None = None,
+    default_physics_profile: str | None = None,
     composition: str | None = None,
     member_set: str | None = None,
     forcing_interval_seconds: float | None = None,
     certified_source_top_pa: float | None = None,
     coverage: CoverageWindow | None = None,
     cycles: CycleGrid | None = None,
+    archives: tuple[ArchiveWindow, ...] = (),
+    root_target_interior_axis: int | None = None,
     notes: str = "",
 ) -> SourceAdapter:
     return SourceAdapter(
@@ -278,12 +294,15 @@ def _adapter(
         runnable=runnable,
         runner=runner,
         packaged_profile=packaged_profile,
+        default_physics_profile=default_physics_profile,
         composition_requirement=composition,
         member_set=member_set,
         forcing_interval_seconds=forcing_interval_seconds,
         certified_source_top_pa=certified_source_top_pa,
         coverage_window=coverage,
         cycle_grid=cycles,
+        archive_windows=archives,
+        root_target_interior_axis=root_target_interior_axis,
         display_name=name,
         credentials=tuple(credentials),
         notes=notes,
@@ -345,6 +364,33 @@ _COPERNICUS_CDS_KEY = SourceCredential(
     obtain_url="https://cds.climate.copernicus.eu",
 )
 
+_ERA5_ARCHIVE = ArchiveWindow(
+    "cds", "1940-01-01T00",
+    "ERA5 record begins in 1940. Recent dates are preliminary ERA5T; "
+    "the approximately five-day publication delay is not guaranteed. "
+    "Model levels require the same-hour surface donor as well.",
+    ("https://cds.climate.copernicus.eu/datasets/reanalysis-era5-pressure-levels?tab=overview",
+     "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-complete?tab=overview",
+     "https://confluence.ecmwf.int/spaces/CKB/pages/76414402/ERA5+data+documentation"),
+    user_note="Recent dates are preliminary ERA5T; their publication time can vary.",
+)
+_GLOBAL_PGRB2_ARCHIVE = ArchiveWindow(
+    "s3", "2021-03-22T12",
+    "The current /atmos/ object layout starts at the 2021-03-22 12Z "
+    "implementation. Older archive objects use different paths; this is "
+    "a transport-layout boundary, not the start of the scientific record.",
+    ("https://www.emc.ncep.noaa.gov/emc/pages/numerical_forecast_systems/gfs/implementations.php",),
+)
+_HRRR_NATIVE_ARCHIVE = ArchiveWindow(
+    "s3", "2014-07-30T18",
+    "The archive's first day has the native and pressure companion f00 "
+    "objects at 18Z. Historical product versions still need the current "
+    "source compatibility checks; every cycle is not guaranteed.",
+    ("https://registry.opendata.aws/noaa-hrrr-pds/",
+     "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/?list-type=2&max-keys=2&prefix=hrrr.20140730/conus/hrrr.t18z.wrfnatf00",
+     "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/?list-type=2&max-keys=2&prefix=hrrr.20140730/conus/hrrr.t18z.wrfprsf00"),
+)
+
 
 # The order is canonical: the 23 rusty-weather ModelId values, the ERA5 GRIB1
 # source already decoded by gpuwm's native ingest path, the packaged 20CRv3
@@ -353,6 +399,7 @@ _COPERNICUS_CDS_KEY = SourceCredential(
 _ADAPTERS = (
     _adapter(
         "hrrr",
+        archives=(_HRRR_NATIVE_ARCHIVE,),
         name="HRRR (native hybrid levels)",
         default_product="sfc",
         required_products=("sfc", "nat"),
@@ -367,6 +414,8 @@ _ADAPTERS = (
         ),
         runnable=True,
         runner="hrrr_f00_f12_v1",
+        root_target_interior_axis=NATIVE_TARGET_INTERIOR_AXIS,
+        default_physics_profile="thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1",
         forcing_interval_seconds=3600.0,
         # Hourly, and the walk-back is short on purpose: the
         # operational directories turn over quickly, and a cycle half
@@ -396,6 +445,9 @@ _ADAPTERS = (
     ),
     _adapter(
         "hrrr-prs",
+        archives=(ArchiveWindow("aws", _HRRR_NATIVE_ARCHIVE.start,
+                                _HRRR_NATIVE_ARCHIVE.note,
+                                _HRRR_NATIVE_ARCHIVE.documentation),),
         name="HRRR (pressure levels)",
         aliases=("hrrr-pressure", "hrrr-wrfprs"),
         upstream_model_id="hrrr",
@@ -529,6 +581,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "gfs",
+        archives=(_GLOBAL_PGRB2_ARCHIVE,),
         name="GFS (global, 0.25 degree)", aliases=("gfs-0p25", "gfs-0.25"),
         default_product="pgrb2.0p25", max_hour=384,
         upstream_ingest="full",
@@ -571,6 +624,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "gdas",
+        archives=(_GLOBAL_PGRB2_ARCHIVE,),
         name="GDAS analysis (0.25 degree)", aliases=("gdas-0p25", "gdas-0.25"),
         file_family="GRIB2",
         decoder=(
@@ -1053,6 +1107,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "era5",
+        archives=(_ERA5_ARCHIVE,),
         name="ERA5 reanalysis (ECMWF)",
         credentials=(_COPERNICUS_CDS_KEY,),
         upstream_model_id=None,
@@ -1103,6 +1158,7 @@ _ADAPTERS = (
     ),
     _adapter(
         "era5-l137",
+        archives=(_ERA5_ARCHIVE,),
         name="ERA5 reanalysis (native 137 model levels)",
         aliases=("era5-model-level", "era5-ml"),
         credentials=(_COPERNICUS_CDS_KEY,),

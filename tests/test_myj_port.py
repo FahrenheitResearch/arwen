@@ -888,6 +888,31 @@ def test_the_documented_column_ceiling_matches_the_kernel_define():
     assert int(line.split()[-1]) == MYJ_MAX_COLUMN_LEVELS
 
 
+def test_the_surface_kernels_pblh_accumulator_is_column_local():
+    """``ZINT(I,K,J)=ZINT(I,K+1,J)+DZ(I,KFLIP,J)`` (:177-184) stays in ``I``.
+
+    Every ``dz`` the PBLH scan touches must carry this thread's column, and
+    the CPU authority cannot say so: ``np_myjsfc_column`` takes one ``(nz,)``
+    column and ``_interface_heights`` has no column index to get wrong.  The
+    device gate below is the numerical statement and it needs a card; this
+    is the same claim on the shipped bytes, and it runs everywhere.
+
+    ``dz_a[0]`` -- layer 0 of column 0 -- was the accumulator's seed for
+    every thread until 2.6.5, so ``PBLH`` was wrong by
+    ``dz[0][0] - dz[0][col]`` on every column but the first, and ``PBLH``
+    re-enters ``SFCDIF`` as ``BTGH`` (:431-435) rather than only being
+    published.
+    """
+    source = (_ROOT / "gpuwm" / "core" / "kernels" / "myjsfc.cu").read_text(
+        "utf-8")
+    code = [ln.split("//")[0].strip() for ln in source.splitlines()]
+    assert [ln for ln in code if "dz_a[" in ln] == [
+        "real zcum = dz_a[col];",
+        "zcum += dz_a[(size_t)iz * st + col];",
+        "real zsl = dz_a[col] * 0.5f;",
+    ]
+
+
 def test_physics_md_carries_the_pair_in_its_tables():
     text = (_ROOT / "docs" / "public" / "PHYSICS.md").read_text("utf-8")
     assert "| MYJ " in text and "Eta similarity" in text
@@ -969,6 +994,66 @@ def test_the_surface_kernel_agrees_with_the_cpu_authority(xland, tsk, tag):
         assert np.isfinite(device), f"{tag}: {name} non-finite on device"
         assert device == pytest.approx(host, rel=2.0e-4, abs=1.0e-6), (
             f"{tag}: {name} CPU {host!r} vs CUDA {device!r}")
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_the_surface_kernel_pblh_uses_each_columns_own_dz():
+    """Two columns, two different lowest-layer depths, one launch.
+
+    The conformance gate above runs at ``shape = (1, 1)``, so ``n == 1``,
+    every thread is ``col == 0`` and a column-0 index is indistinguishable
+    from a per-column one; ``_sounding()`` is uniform ``dz`` besides, so
+    even widening it would not separate them.  Two columns with DIFFERENT
+    ``dz[0]`` is the minimum fixture that does, and it is what a
+    terrain-following coordinate hands the kernel on any real domain -- the
+    lowest layer thins over high ground.
+
+    ``PBLH`` is not diagnostic-only: ``module_sf_myjsfc.F:431-435`` feeds it
+    back as ``BTGH = BTGX*PBLH`` above 1000 m, which sets ``WSTAR2`` and
+    therefore ``USTAR``, ``AKMS`` and ``AKHS``.
+    """
+    import cupy as cp
+
+    from gpuwm.core.myjsfc import (MYJ_SFCLAY_INOUT, MYJ_SFCLAY_OUTPUTS,
+                                   launch_myj_sfclay)
+
+    xland, tsk = 1.0, 305.0
+    thin = _sounding()
+    thin["dz"] = thin["dz"].copy()
+    thin["dz"][0] = F(60.0)                  # this column sits on a hill
+    thick = _sounding()                      # uniform 100 m
+    hosts = [_sfc_column(c, xland=xland, tsk=tsk) for c in (thick, thin)]
+
+    nz = thick["dz"].shape[0]
+    shape = (1, 2)
+    stacked = lambda name: _to_device(cp, np.stack(
+        [thick[name], thin[name]], axis=-1).reshape(nz, 1, 2))
+    columns = {"dz": stacked("dz"), "tke": stacked("tke")}
+    surface = {name: _to_device(cp, np.full(shape, value)) for name, value in
+               (("u1", thick["u"][0]), ("v1", thick["v"][0]),
+                ("t1", thick["t"][0]), ("th1", thick["th"][0]),
+                ("qv1", thick["qv"][0]), ("qc1", thick["qc"][0]),
+                ("p1", thick["p"][0]), ("psfc", 1.0e5), ("tsk", tsk),
+                ("xland", xland), ("mavail", 1.0), ("z0base", 0.1))}
+    seed = {"ust": 0.1, "znt": 0.1, "thz0": 300.0, "qz0": 0.012,
+            "uz0": 0.0, "vz0": 0.0, "qsfc": 0.012, "akhs": 0.01,
+            "akms": 0.01}
+    state = {name: _to_device(cp, np.full(shape, seed[name]))
+             for name in MYJ_SFCLAY_INOUT}
+    outputs = {name: cp.zeros(shape, dtype=np.float32)
+               for name in MYJ_SFCLAY_OUTPUTS}
+    launch_myj_sfclay(columns, surface, state, outputs, itimestep=1)
+
+    pblh = cp.asnumpy(outputs["pblh"]).ravel()
+    for col, host in enumerate(hosts):
+        assert pblh[col] == pytest.approx(float(host["pblh"]),
+                                          rel=2.0e-4, abs=1.0e-6), (
+            f"column {col}: CPU {float(host['pblh'])!r} vs CUDA "
+            f"{pblh[col]!r}")
+    # Stated explicitly so the gate cannot pass by both columns agreeing on
+    # column 0's answer: the two differ by exactly the lowest-layer spread.
+    assert float(pblh[0] - pblh[1]) == pytest.approx(40.0, abs=1.0e-3)
 
 
 @pytest.mark.gpu

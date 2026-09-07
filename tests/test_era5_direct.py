@@ -215,6 +215,10 @@ def test_era5_geometry_receipt_has_portable_cache_reference(tmp_path):
         dy=12000.0,
         cen_lat=39.0,
         cen_lon=-84.0,
+        known_x=2.0,
+        known_y=1.5,
+        moad_cen_lat=39.0,
+        moad_cen_lon=-84.0,
         latlon_mass=lambda: (plane * 39.0, plane * -84.0),
     )
     cfg = SimpleNamespace(ny=2, nx=3, nz=49, dx=12000.0, dy=12000.0)
@@ -223,6 +227,10 @@ def test_era5_geometry_receipt_has_portable_cache_reference(tmp_path):
     receipt = json.loads(receipt_path.read_text())
     assert receipt["cache"]["path"] == "native-static.npz"
     assert receipt["cache"]["sha256"] == _sha256(cache)
+    assert receipt["geometry"]["known_x"] == grid.known_x
+    assert receipt["geometry"]["known_y"] == grid.known_y
+    assert receipt["geometry"]["moad_cen_lat"] == grid.moad_cen_lat
+    assert receipt["geometry"]["moad_cen_lon"] == grid.moad_cen_lon
 
 
 # ---------------------------------------------------------------------------

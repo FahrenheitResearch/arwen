@@ -186,7 +186,11 @@ __device__ float nmpe_tanhf(float x)
         return (jx >= 0) ? AD(DV(one, x), one) : SU(DV(one, x), one);
     }
     if (ix < 0x41b00000) {                   // |x| < 22
-        if (ix == 0) return x;
+        // glibc guards zero here with `if (ix == 0) return x;`.  FDLIBM does
+        // not, and it is redundant: the |x| < 2**-55 branch below returns
+        // x*(1+x), which is x for both signed zeros.  Dropped at 2.6.6 -- the
+        // two forms were compared on all 4,294,967,296 float32 bit patterns
+        // and differ on none.
         if (ix < 0x24000000) return MU(x, AD(one, x));   // |x| < 2**-55
         float ax = fabsf(x);
         if (ix >= 0x3f800000) {              // |x| >= 1

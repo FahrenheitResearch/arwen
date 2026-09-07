@@ -143,6 +143,15 @@ def _drive_to_prepare(plan_path: Path, monkeypatch) -> dict[str, list[str]]:
     refuses without one, and that refusal is not what is under test.
     """
     captured: dict[str, list[str]] = {}
+    readiness_calls = []
+
+    def _ready():
+        # Command composition stops before every real stage. Isolate the
+        # launch's separate kernel-readiness check at its own boundary too;
+        # its actual failures remain covered by test_go_native_launch.
+        readiness_calls.append(True)
+
+    monkeypatch.setattr(go_cli, "_require_forecast_device", _ready)
 
     def _stage(label, command, **kwargs):
         captured[label] = list(command)
@@ -178,6 +187,7 @@ def _drive_to_prepare(plan_path: Path, monkeypatch) -> dict[str, list[str]]:
         runplan_module._execute_prepared_route(
             plan, exp=exp, data=data, config_path=plan.config_path,
             observer=_Observer())
+    assert readiness_calls == [True]
     return captured
 
 
@@ -531,6 +541,9 @@ def test_every_chain_declares_where_a_moving_nest_gets_its_statics():
         # completeness gate.
         for source in (None, *(a.source_id for a in source_adapters())):
             reachable.add(_chain_key(route, source))
+    # Explicit prepared_root bypasses source preparation and verifies an
+    # already sealed corridor through the same tree runner.
+    reachable.add("prepared:existing")
     assert reachable == set(_FOLLOW_STATICS_DELIVERY)
 
 
@@ -654,8 +667,7 @@ def test_one_predicate_feeds_go_the_printed_line_and_run_plan(gfs_tree):
 
     # go's plan and run-plan's decision, from that one predicate.
     plan = go_cli.plan_from_config(gfs_tree["follow"],
-                                   outdir=gfs_tree["follow"].parent / "go",
-                                   allow_tree=True)
+                                   outdir=gfs_tree["follow"].parent / "go")
     assert plan["statics_corridor"] is True
     decision = runplan_module.follow_statics_decision(
         following, chain="prepared:go")

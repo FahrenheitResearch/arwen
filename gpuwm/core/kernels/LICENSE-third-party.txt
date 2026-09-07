@@ -1,0 +1,222 @@
+Third-party licences for the code in this directory
+==================================================
+
+Some of the CUDA translation units here are hand transcriptions of
+third-party work.  ArWen distributes them under the Apache License 2.0; the
+notices below belong to the transcribed parts and are reproduced because the
+licences those parts carry require it.  The same notices, with the fuller
+provenance account, are in the repository's root NOTICE, and the complete
+licence texts are in the repository's licenses/ directory, which ships in
+the wheel under gpuwm-<version>.dist-info/licenses/.
+
+WHY THIS FILE EXISTS RATHER THAN A HEADER IN EACH .cu
+-----------------------------------------------------
+Every .cu in this directory is pinned by SHA-256 -- by
+tests/test_mp8_frozen.py::FROZEN_MODULE_DIGESTS, which pins the file AND the
+assembled compile string the loader hands nvrtc, and by
+tests/test_kernel_source_freeze_per_module.py::BASELINE_PINNED, which pins
+the rest.  A comment prepended to any of them would move a frozen digest and
+turn a numerics gate red for a reason that has nothing to do with numerics.
+So the notice sits beside the code instead of inside it, and it ships with
+the code: pyproject.toml's package-data glob for gpuwm.core.kernels names
+this file explicitly.  Two headers here are NOT digest-pinned and were
+checked against every _EXTRA_HEADERS consumer -- glibc_flt32.cuh and
+thompson_aerosol_common.cuh -- and those two do carry their notice inline.
+
+WHAT IS COVERED, AND WHERE
+--------------------------
+1. Arm optimized-routines (MIT)        -- logf, expf, exp2f, powf
+2. FDLIBM / Sun Microsystems           -- expm1f, tanhf, atanf, log10f
+3. AER RRTMG (BSD 3-Clause)            -- the legacy RRTMG radiation kernels
+4. RTE+RRTMGP (BSD 3-Clause)           -- the default radiation kernels
+5. Numerical Recipes Software          -- the GAMMLN log-gamma coefficients
+
+Sections 1 and 2 also state the scope of those two grants; section 6 states
+what none of the five covers.
+
+The FP32 libm transcriptions exist because ArWen grades several physics
+schemes bitwise against a gfortran/glibc reference, so it carries hand
+transcriptions of the standard single-precision libm routines rather than
+calling CUDA's, whose expf, powf and tgammaf are different functions.
+
+Scope in this directory: the logf / expf / exp2f / powf cores and their data
+tables (Arm, MIT) appear in glibc_flt32.cuh, mynn_dmp_sibling.cu, mynn_pbl.cu,
+noahmp_bareflux.cu, noahmp_fluxprep.cu, noahmp_leaves.cu, noahmp_radiation.cu,
+noahmp_snow.cu, noahmp_soilwater.cu, noahmp_vegeflux.cu, noahmp_vegprecip.cu,
+noahmp_water.cu, rrtmg_lw.cu and rrtmg_sw.cu.  The expm1f / tanhf / atanf /
+log10f reductions (FDLIBM, Sun Microsystems) appear in mynn_dmp_sibling.cu,
+mynn_pbl.cu, noahmp_bareflux.cu, noahmp_energy.cu, noahmp_fluxprep.cu,
+noahmp_glacier.cu, noahmp_leaves.cu, noahmp_vegeflux.cu and ruc.cu.
+glibc_flt32.cuh is NOT on that second list: it carried FDLIBM's expm1f and
+lgammaf through 2.6.5 and both were deleted at 2.6.6 with the gamma block
+that was their only caller.  lgammaf is not on the first list either --
+that deletion removed the only transcription of e_lgammaf_r.c anywhere in
+this repository.  Their Python counterparts are in
+gpuwm/core/noahmp_libm.py, gpuwm/core/mynn_pbl.py and gpuwm/core/ruc.py, each
+of which carries this notice in its own header.
+tests/test_cuda_libm_table_copies.py enumerates the table copies and keeps
+them in step, so this list is machine-checkable rather than prose.
+
+
+1. Arm optimized-routines -- logf, expf, exp2f, powf
+----------------------------------------------------
+
+Written by Szabolcs Nagy and published at
+https://github.com/ARM-software/optimized-routines (math/logf.c, math/expf.c,
+math/exp2f.c, math/powf.c and the corresponding math/*_data.c) in August 2017,
+and imported into glibc for 2.27/2.28 by their own author.  ArWen transcribed
+them from glibc's copy at sysdeps/ieee754/flt-32/, which reproduces Arm's text
+unchanged apart from symbol renaming, branch-hint and cast macro spellings and
+symbol-versioning declarations -- none of which ArWen reproduces.  ArWen takes
+this material under the MIT branch of Arm's grant.
+
+At the vintage glibc imported -- Arm 86067a740541, 2017-08-11, taken into
+glibc at 4ea49f4c08ee on 2017-09-04 -- those files read "Copyright (C) 2017,
+ARM Limited" under Apache-2.0.  Arm relicensed the same work to MIT fifteen
+months later, at 11253b0b9d6b on 2018-11-12, and each file has carried
+
+    Copyright (c) 2017-2018, Arm Limited.
+    SPDX-License-Identifier: MIT
+
+ever since.  A copyright holder may licence its own work on any terms it
+chooses; Arm's MIT offer is public, current and made by the retained
+copyright holder, and it is the offer ArWen takes.  The project LICENSE at
+that relicensing (identical at every tag through v21.02, md5
+c7e74e8165fadb7dd9ee169534fe99ef) reads:
+
+    MIT License
+
+    Copyright (c) 1999-2019, Arm Limited.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+
+2. FDLIBM -- expm1f, tanhf, atanf, log10f
+------------------------------------------
+
+These reductions descend from FDLIBM, developed at SunPro, a Sun Microsystems,
+Inc. business, and converted to single precision at Cygnus Support.  glibc
+carries them substantially unmodified and presents them, in its own LICENSES
+file, as Sun's code.  The notice below is the whole of the licence: its single
+condition is that the notice be preserved, and this is that preservation.
+
+    /*
+     * ====================================================
+     * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+     *
+     * Developed at SunPro, a Sun Microsystems, Inc. business.
+     * Permission to use, copy, modify, and distribute this
+     * software is freely granted, provided that this notice
+     * is preserved.
+     * ====================================================
+     */
+
+Where ArWen must match a glibc 2.39 reference bit for bit, these
+transcriptions follow glibc's versions of these files, which differ from other
+FDLIBM descendants at a small number of points.  Through 2.6.5 there were
+three: atanf's 2**25 large-argument threshold, the fabsf spelling in log10f's
+zero path, and a redundant zero guard in tanhf.  Two of the three are gone at
+2.6.6 because neither did any work -- tanhf's guard is unreachable behind the
+|x| < 2**-55 branch, and log10f's zero path divided -2**25 by |x| only to
+reach -inf -- and the two forms were compared on all 4,294,967,296 float32 bit
+patterns with zero differing.  noahmp_energy.cu and noahmp_leaves.cu carry the
+argument at the point of the edit.  lgammaf's 2**26 and 2**-30 thresholds were
+on that list until 2.6.6 too; the lgammaf transcription is deleted, so nothing
+here reproduces them any more.  atanf's threshold stays: it is a fact a
+black-box measurement recovers rather than a spelling read from a source, and
+the root NOTICE records that it was measured from the running library.
+
+
+3. AER RRTMG -- the legacy RRTMG radiation kernels
+--------------------------------------------------
+
+rrtmg_lw.cu, rrtmg_sw.cu, rrtmg_lw_chain.cu, rrtmg_lw_taugb02_10_11_12.cu,
+rrtmg_lw_taugb03_05.cu, rrtmg_lw_taugb06_09.cu, rrtmg_lw_taugb13_16.cu and
+rrtmg_mcica_wrf.cu transcribe WRF v4.6.1's phys/module_ra_rrtmg_lw.F and
+phys/module_ra_rrtmg_sw.F.  That code is the work of Atmospheric and
+Environmental Research, Inc., not of UCAR, and WRF says so by preserving
+AER's notice -- seven times in the longwave file, nine in the shortwave:
+
+    Copyright 2002-2008, Atmospheric & Environmental Research, Inc. (AER).
+    This software may be used, copied, or redistributed as long as it is
+    not sold and this copyright notice is reproduced on each copy made.
+    This model is provided as is without any express or implied warranties.
+                          (http://www.rtweb.aer.com/)
+
+All three copyright-year spans in which that notice appears are reproduced
+in licenses/NOTICE-AER-RRTMG-as-distributed-with-WRF.txt.
+
+ArWen takes this material under AER's own current grant instead: BSD
+3-Clause, "Copyright (c) 2020, Atmospheric and Environmental Research",
+published by AER at https://github.com/AER-RC/RRTMG_LW and .../RRTMG_SW.  A
+copyright holder may licence its own work on any terms it chooses, and that
+offer is public, current and unconditional.  The BSD-3-Clause text is in
+licenses/LICENSE-AER-RRTMG-BSD-3-Clause.txt and beside the packaged
+coefficients in gpuwm/data/wrf_radiation/.
+
+
+4. RTE+RRTMGP -- the default radiation kernels
+----------------------------------------------
+
+rrtmgp_gas.cu, rrtmgp_cloud.cu, rrtmgp_mcica.cu, rrtmgp_rte.cu,
+rrtmgp_validation.cu and rrtmgp_planck_common.cuh transcribe
+earth-system-radiation/rte-rrtmgp at commit
+fa107a16120051c4124305c6b3d4c87059119f58, which each file's own header
+cites.  That project is BSD 3-Clause:
+
+    Copyright (c) 2015-2025, Atmospheric and Environmental Research,
+      Regents of the University of Colorado,
+      Trustees of Columbia University in the City of New York.
+    All rights reserved.
+
+Clause 1 requires a source redistribution to retain that notice, the list of
+conditions and the disclaimer.  The full text is in
+licenses/LICENSE-RTE-RRTMGP-BSD-3-Clause.txt.  It is a DIFFERENT work from
+the rrtmgp-data k-distribution files, which carry their own, earlier
+copyright line and ship beside the data in the companion gpuwm-data
+distribution.
+
+
+5. Numerical Recipes Software -- the GAMMLN log-gamma coefficients
+------------------------------------------------------------------
+
+nssl2_fused_gs.cu's wrf_gamma_dp, and the THOMPSON_AA_CC* tables in
+thompson_aerosol_common.cuh that were produced with it, carry the Lanczos
+g=5, n=6 coefficient set and evaluation that WRF v4.6.1 takes from Numerical
+Recipes.  WRF preserves the notice immediately above and below REAL FUNCTION
+GAMMLN(XX) at phys/module_mp_thompson.F:5325-5347:
+
+    (C) Copr. 1986-92 Numerical Recipes Software 2.02
+
+It is preserved here for the same reason.  ArWen's position on this material
+-- taken from WRF, reproduced in order to match WRF bit for bit, and the
+standard published Lanczos coefficient set -- is set out in full, including
+the argument against it, in licenses/NOTICE-Numerical-Recipes.txt.
+
+
+6. The scope of the five grants above
+-------------------------------------
+
+Each is stated by routine or by file on purpose.  They cover what sections 1
+to 5 name and nothing else.  Other code in this directory -- including other
+transcriptions, and including gfk_tgamma in glibc_flt32.cuh, which is
+ArWen's own work -- takes nothing from Arm, Sun, AER, the RTE+RRTMGP
+copyright holders or Numerical Recipes, and is not offered to a reader on
+the strength of these notices.  Its provenance is recorded where it lives:
+in the repository NOTICE, in PROVENANCE.md, and in each file's own header.

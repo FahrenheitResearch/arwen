@@ -1,0 +1,28 @@
+# Path-normalized CLI fixture; numerical output is unchanged.
+gpuwm check: gpuwm 2.7.0 -- installed wheel at C:\ArWen\venv\Lib\site-packages\gpuwm
+input preflight: not applicable -- no [case_data] table. The preparation route validates its own inputs. Continuing to the memory preflight.
+gpuwm GPU readiness: PASS (cold compile and execution).
+gpuwm check: memory preflight for 'My forecast' (1 domain(s); column_chunk 3125)
+gpuwm memory preflight: FAIL (1 of 3 allocation gates evaluated)
+  PACE: resident road: expect roughly 0.28-1.1 s per model step (~51 s-3.3 min wall for this 3.0 h forecast) on this card; the resident road at <= 39,643 columns runs about 0.074-0.29 s/step.
+  d01: resident   4.24 GiB (state 1.620, physics 0.779, scratch 1.685, lbc 0.154); step transients 1.25 GiB
+  shared: k-tables 0.022 GiB; chunk workspace 0.34 GiB; scratch arena 0.00 GiB (saves 0.00 GiB); dycore state 0.00 GiB (saves 0.00 GiB)
+  TIER 1  resident:    4.26 GiB   subtotal (+workspace+transient peak):    5.85 GiB
+  ESTIMATE (x1.15 headroom):    6.72 GiB
+  TIER 2  pool-held projection:    9.45 GiB   TIER 3 device-footprint projection:   10.84 GiB
+  NON-POOL: CUDA context    0.37 GiB + local-memory backing store    0.40 GiB (33 kernel modules selected) + KF column workspace    0.17 GiB + YSU column workspace    0.12 GiB; RE-MEASURED device-footprint projection    7.98 GiB (the TIER 3 line above is the retired zero-step probe model)
+  NON-POOL BASIS: measured on this card (NVIDIA GeForce RTX 3080, 68 SMs x 1536 threads): CUDA context 0.37 GiB (bare 0.19 + 0.19 module-load growth) plus the local-memory backing store of its kernel set
+  FORECAST PEAK ENVELOPE (estimate 6.72 + non-pool 1.06 (CUDA context + local-memory backing store + GF, KF and YSU column workspaces) + 0.50 unmodelled = 8.28 GiB; measured, RTX 4080 16 GiB / Linux, whole forecasts machine-wide at 250 ms across a 6.6x span of itemized estimate, 1/2/4 domains):    8.28 GiB -- affine, calibrated on this card class: six whole bare-default forecasts on an RTX 3080 10 GiB Windows/WDDM desktop measured machine-wide peaks of estimate + itemized non-pool within -0.20..+0.95 GiB, so the envelope is that sum plus the measured WDDM pool-slack term -- the retired 1.75 multiplier predicted 3.8x the measured peak on the same card and is gone from every gate.
+  INGEST (preprocessing, --source gfs): root 2 forcing times x    1.69 GiB each (analysis    0.07 GiB + state    1.62 GiB); 1 resident at a time =    1.84 GiB resident
+    INGEST OBSERVED PEAK ENVELOPE (x1.15 headroom +    0.37 GiB CUDA context; measured, CONUS 12 km 414x330x49 x 9 GFS times, RTX 5090 / Linux: itemization + 0.65x one forcing time of transients, x1.15 headroom, + CUDA context):    5.14 GiB   [streaming; holding all 2 times would resident    3.53 GiB]
+    HOST FORCING NOT PRICED: the decode's host residency is set by the SOURCE grid, the number of valid times in the forcing files and how many copies the decoder retains -- --source gfs ingests through the native front door, whose host retention nothing here has measured (priced: era5).
+  BINDING PHASE: the forecast is the memory-binding phase at 8.28 GiB peak envelope (forecast 8.28 GiB, ingest 5.14 GiB); that EXCEEDS the 7.05 GiB budget by 1.23 GiB.
+  reserve 1.76 GiB (retention 0.20 + overhead 1.06 + external 0.50); measured machine-wide (the CUDA runtime reported more, counting memory the driver would have to evict from other processes) free    7.55 GiB; budget    5.80 GiB
+  alloc_fits_wddm_budget: not measured
+  alloc_measured_le_estimate: not measured
+  alloc_estimate_le_wddm_budget: FAIL
+  INCOMPLETE: 2 of 3 legs above were not measured (alloc_fits_wddm_budget, alloc_measured_le_estimate): no allocation was attempted in this command, so those legs have nothing to compare -- they are ABSENT, not passing, and a verdict over the rest is not the verdict these three describe.
+  to measure them: gpuwm check \\?\C:\ArWen\forecast.toml --alloc (constructs every persistent allocation on the real card, runs zero steps, reports measured vs estimate)
+  WARNING: observed peak envelope    8.28 GiB exceeds the WDDM budget    7.05 GiB -- free VRAM less the    0.50 GiB other-process margin, which is all the envelope does not already model -- by    1.23 GiB. The gates above compare the itemized estimate; the envelope is what the machine is measured to reach, so this configuration may run out of budget even though the estimate gate passes -- trim the configuration or free VRAM before trusting the pass.  (exit code 1: a gate above FAILED as well, and the harder verdict wins.)
+  OVER BUDGET, and the radiation column_chunk lever cannot close it: no chunk halving fits after the shared-scratch arena, so the grid itself is what has to come down.
+  remedy: re-size against this machine -- gpuwm domain ... (bare, it measures this card) -- or pick a lighter --physics-profile, or free VRAM and re-run

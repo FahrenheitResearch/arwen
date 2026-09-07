@@ -47,6 +47,27 @@ def _release_2_5_0() -> tuple[str, ...]:
     )
 
 
+def _release_2_7_0() -> tuple[str, ...]:
+    return (
+        "`gpuwm tui` opens the terminal workspace for configuration, "
+        "research workspaces, case catalogs, forecasts and plots. "
+        "Saved Linux node profiles are shared across working directories; "
+        "remote jobs retain their reconnectable job IDs.",
+        "`gpuwm go CONFIG --outdir OUTPUT` prepares, forecasts and renders "
+        "the requested products, and a failed render now fails the launch. "
+        "Prepared forecasts can continue with `gpuwm go --restart`, "
+        "`gpuwm sim --restart` or `gpuwm resume`.",
+        "Memory checks distinguish GPU capacity, available GPU memory and "
+        "system RAM. `gpuwm domain-tiles CONFIG --out NEW` reviews a "
+        "streaming plan; add `--write` to save a separate configuration. "
+        "The forecast checks the available memory again when it starts.",
+        "Repeated automatic downloads reuse matching inputs and choose "
+        "separate caches for changed source, cycle or area. "
+        "`gpuwm render --series` uses compatible saved history frames "
+        "for time-window products; insufficient windows are reported.",
+    )
+
+
 #: Release -> the lines that release added.  ONE row per release that
 #: changed something a user can see from outside the process; a release
 #: that changed nothing user-visible has no row and says nothing.
@@ -56,6 +77,7 @@ def _release_2_5_0() -> tuple[str, ...]:
 #: check must not drag the renderer's imports in behind it.
 RELEASE_NOTES: dict[str, Callable[[], tuple[str, ...]]] = {
     "2.5.0": _release_2_5_0,
+    "2.7.0": _release_2_7_0,
 }
 
 

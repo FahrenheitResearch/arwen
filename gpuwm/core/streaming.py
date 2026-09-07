@@ -164,6 +164,31 @@ UNSET = _Unset()
 
 
 @dataclass(frozen=True)
+class ResidentAdmissionContext:
+    """Tiles-free snapshot of the configured experiment, used only for pricing."""
+    experiment: Any
+
+
+@dataclass(frozen=True)
+class RadiationMemoryContext:
+    """Resolved experiment operands for shared radiation memory planning.
+
+    Internal data, not another [tiles] surface or restart trajectory input.
+    """
+    column_chunk: int
+    p_top: float
+    cam_ozone: bool = False
+    cam_ozone_domains: frozenset[int] = frozenset()
+
+
+@dataclass(frozen=True)
+class FollowerWindowMemoryContext:
+    """Declared tracker carriers, resolved per parent for memory planning only."""
+    by_domain: tuple[tuple[int, tuple[str, ...]], ...]
+    slots: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class StreamingOptions:
     """The user-facing surface: ``[tiles]`` in an experiment TOML.
 
@@ -221,6 +246,10 @@ class StreamingOptions:
     pipeline: str = "prefetch"
     vram_budget_bytes: int | None = None
     host_budget_bytes: int | None = None
+    radiation_context: RadiationMemoryContext | None = field(default=None, repr=False, compare=False)
+    follower_context: FollowerWindowMemoryContext | None = field(default=None, repr=False, compare=False)
+    acoustic_map_factor: float | None = field(default=None, repr=False, compare=False)
+    resident_context: ResidentAdmissionContext | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.mode not in STREAMING_MODES:
@@ -249,9 +278,9 @@ class StreamingOptions:
             if value is not None and int(value) <= 0:
                 raise ValueError(
                     f"[tiles] {name} = {value!r} must be positive")
-        if self.mode == "off" and any(
-                getattr(self, k) is not None
-                for k in ("tile_nx", "tile_ny", "nbuffers", "halo")):
+        pinned = [k for k in ("tile_nx", "tile_ny", "nbuffers", "halo")
+                  if getattr(self, k) is not None]
+        if self.mode == "off" and pinned:
             # The [relocation] discipline: a surface that is off must be
             # empty, so nothing can start streaming because a block was
             # inherited and a mode flipped somewhere else.
@@ -260,6 +289,58 @@ class StreamingOptions:
                 "absent.  A [tiles] surface that is off must be empty; "
                 "set mode = 'auto' or 'on' deliberately, or delete the "
                 "key(s).")
+        if self.mode == "auto" and pinned:
+            # THE SAME DISCIPLINE, ON THE MODE THAT ANSWERS FOR ITSELF.
+            # ``auto``'s documented product IS the planner's tiling ("it
+            # does not fit -> the domain streams with the tiling the
+            # planner chose"), so a key that pins one of the planner's own
+            # answers beside it is a request the mode cannot honour -- and
+            # it did not honour it, silently:
+            #
+            # * ``nbuffers`` reaches no callee at all.  ``decide`` reads it
+            #   only inside the pinned short-circuit and hands
+            #   ``autoplan.plan`` neither it nor ``max_nbuffers``, so the
+            #   planner's own count is what runs.  MEASURED: ``nbuffers =
+            #   1`` planned 2, and on the 4-domain tree this was found on
+            #   ``nbuffers = 2`` planned 3.  Nothing warned, and the
+            #   receipt then recorded the request beside the outcome and
+            #   reconciled neither.
+            # * ``tile_nx``/``tile_ny`` do not merely constrain the plan,
+            #   they override the VERDICT: the pinned short-circuit above
+            #   returns before the planner is consulted at all, so ``auto``
+            #   plus a tiling STREAMS A DOMAIN THAT FITS.  MEASURED on
+            #   256x192x49 against a 32 GiB card: ``auto`` alone answers
+            #   "the domain fits resident on this card", ``auto`` with a
+            #   32x32 tiling streams it.
+            # * ``halo`` is carried onto the decision while the planner
+            #   sizes its tile from the radius the config implies, so the
+            #   window is priced at one halo and the run attaches with
+            #   another.
+            #
+            # Refused rather than honoured, and refused HERE, where the fix
+            # is obvious rather than several domains downstream where it is
+            # not: ``[tiles]`` is a tree-wide default with a per-domain
+            # override, so one inherited ``nbuffers`` would quietly
+            # constrain the planner on every domain that said nothing.
+            # That is the ruling ``[[domain]] tiles`` already carries for
+            # the two budget keys, and the one ``write_mode`` carries after
+            # ``attach`` hardcoded "ring" and ignored "shadow".
+            keys = ", ".join(pinned)
+            raise ValueError(
+                f"[tiles] sets {keys} while mode = 'auto', and auto would "
+                f"SILENTLY IGNORE {'them' if len(pinned) > 1 else 'it'}: "
+                "auto's answer IS the planner's, so the planner's tiling "
+                "and buffer count are what would run -- a configured "
+                "nbuffers = 2 has been measured planning 3 -- and a "
+                "pinned tile_nx additionally makes auto stream a domain "
+                "that FITS, which is the one thing auto promises not to "
+                "do.  A knob that reads back as a plan nobody chose is "
+                "how a run gets a tiling its operator never saw.  Say "
+                "which you meant: mode = 'on' to pin the tiling (that is "
+                "the mode these keys belong to), [tiles] "
+                "vram_budget_bytes to cap what auto may spend, which is "
+                "the key that actually binds a smaller plan under auto, "
+                f"or delete {keys}.")
 
     @property
     def enabled(self) -> bool:
@@ -281,6 +362,14 @@ class StreamingOptions:
                 f"unknown key(s) {unknown} in [tiles] of {source}; "
                 f"known keys: {sorted(STREAMING_KEYS)}")
         return cls(**table)
+
+    def to_mapping(self) -> dict[str, object]:
+        """Public [tiles]/CLI transport keys, including explicit budgets.
+
+        Derived radiation planning context is restored from the experiment
+        after parsing; it is never another configurable [tiles] key.
+        """
+        return {name: getattr(self, name) for name in sorted(STREAMING_KEYS)}
 
     def to_json(self) -> dict[str, object]:
         """The receipt form.  OFF serializes as ``None`` -- see below."""
@@ -364,13 +453,75 @@ class StreamingDecision:
                 f"nbuffers={self.nbuffers}, halo={self.halo}")
 
 
-def _halo_for(cfg) -> int:
+def _halo_for(cfg, options=None) -> int:
+    from dataclasses import replace
+    from gpuwm.core.adaptive_clock import acoustic_step_ceiling
     from tilestream.harness import halo_radius
 
-    return int(halo_radius(cfg))
+    factor = getattr(options, "acoustic_map_factor", None)
+    ns = acoustic_step_ceiling(cfg, 1.0 if factor is None else factor)
+    return int(halo_radius(replace(cfg, time_step_sound=ns)))
 
 
-def decide(cfg, options: StreamingOptions | None = None, *, machine=None
+def _options_with_map_factor(options, state, cfg):
+    if state is None or not options.enabled or not cfg.use_adaptive_time_step:
+        return options
+    from dataclasses import replace
+    from gpuwm.core.adaptive_clock import maximum_map_factor
+    return replace(options, acoustic_map_factor=maximum_map_factor(state))
+
+
+def cold_planning_machine(exp):
+    """Capture the device once, before initialization, only for unpinned roads."""
+    options = getattr(exp, "tiles", None) or OFF
+    if not any((choice := options_for_domain(dc, options)).enabled
+               and choice.tile_nx is None for dc in exp.domains):
+        return None
+    from tilestream.autoplan import Machine
+    return Machine.detect(host_bytes=options.host_budget_bytes)
+
+
+def _plan_with_efficiency_advice(cfg, machine, *, mode, **kwargs):
+    """Try preferred tiles first; a throughput preference cannot forbid auto."""
+    from dataclasses import replace
+    from tilestream import autoplan
+    try:
+        return autoplan.plan(cfg, machine, **kwargs)
+    except autoplan.CannotPlan as error:
+        # This structured discriminator is emitted only after a tile passed
+        # memory and geometry checks but exceeded the halo-work preference.
+        if mode != "auto" or "redundancy" not in error.detail:
+            raise
+        plan = autoplan.plan(cfg, machine, max_redundancy=None, **kwargs)
+        return replace(plan, warnings=(*plan.warnings,
+            f"the fitting tile performs {plan.redundancy:.2f}x the necessary work "
+            "including halos; auto accepted the slower legal tiling"))
+
+
+def _resident_admission(options, machine, estimate=None):
+    """The configured resident envelope and its whole-process budget.
+
+    Radiation and process overhead already belong to the envelope. Its
+    budget therefore withholds only the external margin, never the tile
+    planner's radiation reservation a second time. An explicit budget is
+    already a budget, and is preserved as declared.
+    """
+    context = options.resident_context
+    if context is None or machine is None:
+        return None
+    from gpuwm.core import preflight
+    if estimate is None:
+        estimate = preflight.estimate_experiment(context.experiment)
+    budget = (int(options.vram_budget_bytes)
+              if options.vram_budget_bytes is not None else
+              max(0, int(machine.vram_bytes) - preflight.EXTERNAL_MARGIN_BYTES))
+    return {"envelope_bytes": int(estimate.peak_envelope_bytes),
+            "budget_bytes": budget, "scope": "configured experiment",
+            "basis": estimate.envelope_basis}
+
+
+def decide(cfg, options: StreamingOptions | None = None, *, machine=None,
+           resident_estimate=None, allow_resident=None
            ) -> StreamingDecision:
     """Resolve ``[tiles]`` against this domain and this machine.
 
@@ -381,8 +532,8 @@ def decide(cfg, options: StreamingOptions | None = None, *, machine=None
     if options.mode == "off":
         return StreamingDecision(False, "[tiles] mode = 'off'")
 
-    halo = options.halo if options.halo is not None else _halo_for(cfg)
-    need = _halo_for(cfg)
+    halo = options.halo if options.halo is not None else _halo_for(cfg, options)
+    need = _halo_for(cfg, options)
     if int(halo) < need:
         import warnings
 
@@ -394,6 +545,19 @@ def decide(cfg, options: StreamingOptions | None = None, *, machine=None
             "forecast may configure is none at all.",
             RuntimeWarning, stacklevel=2)
 
+    acoustic_detail = {}
+    if bool(getattr(cfg, "use_adaptive_time_step", False)):
+        from gpuwm.core.adaptive_clock import acoustic_step_ceiling
+        factor = options.acoustic_map_factor
+        acoustic_detail = {"acoustic_envelope": {
+            "maximum_sound_steps": acoustic_step_ceiling(
+                cfg, 1.0 if factor is None else factor),
+            "halo_cells": int(need),
+            "maximum_map_factor": factor,
+            "geometry_status": ("resolved" if factor is not None else
+                                "unit-map estimate; refined on live domain geometry"),
+        }}
+
     if options.tile_nx is not None:
         # A pinned tiling asks no question, so it consults no planner and
         # needs no card: the configuration IS the decision.  This is the
@@ -403,7 +567,7 @@ def decide(cfg, options: StreamingOptions | None = None, *, machine=None
             True, "[tiles] pins the tiling",
             int(options.tile_nx), int(options.tile_ny),
             int(options.nbuffers or 2), int(halo), options.store,
-            options.write_mode)
+            options.write_mode, detail=acoustic_detail)
 
     import dataclasses
 
@@ -469,9 +633,34 @@ def decide(cfg, options: StreamingOptions | None = None, *, machine=None
             machine, host_bytes=int(options.host_budget_bytes),
             pinned_fraction=1.0, host_source="explicit")
 
+    admission = None
+    if options.mode == "auto" and allow_resident is None:
+        admission = _resident_admission(options, machine, resident_estimate)
+        if admission is not None:
+            allow_resident = (admission["envelope_bytes"] <= admission["budget_bytes"])
+            # The tile search spends the same admission allowance. Its own
+            # measured radiation reserve remains solely in budget_for().
+            machine = dataclasses.replace(machine, vram_bytes=admission["budget_bytes"])
+    prefer_resident = options.mode == "auto" and allow_resident is not False
+    if admission is not None:
+        acoustic_detail = {**acoustic_detail, "resident_admission": admission}
+        if allow_resident:
+            # The configured whole-process estimate already includes the
+            # radiation peak. Rechecking its resident road against the tile
+            # footprint (whose budget reserves that peak separately) can
+            # tile an admitted small grid and consume more memory than the
+            # resident forecast. The tile model owns only the tiled choice.
+            return StreamingDecision(
+                False, "the configured resident envelope fits this budget",
+                resident_bytes=int(admission["envelope_bytes"]),
+                budget_bytes=int(admission["budget_bytes"]),
+                detail={"host_claim_bytes": 0, **acoustic_detail})
+
     try:
-        plan = autoplan.plan(cfg, machine,
-                             prefer_resident=(options.mode == "auto"),
+        plan = _plan_with_efficiency_advice(cfg, machine, mode=options.mode,
+                             footprint=radiation_footprint(cfg, options),
+                             minimum_halo=need,
+                             prefer_resident=prefer_resident,
                              write_mode=options.write_mode)
     except autoplan.CannotPlan as exc:
         if exc.resource == "vram" and measured_free_bytes is not None:
@@ -500,10 +689,12 @@ def decide(cfg, options: StreamingOptions | None = None, *, machine=None
             budget_bytes=int(plan.vram_budget_bytes),
             # A resident domain pins NO host store; recorded as zero rather
             # than absent so the tree walk's host ledger never has to guess.
-            detail={"plan": plan.explain(), "host_claim_bytes": 0})
+            detail={"plan": plan.explain(), "host_claim_bytes": 0, **acoustic_detail})
     return StreamingDecision(
         True,
-        ("the resident domain does not fit on this card"
+        ("the configured resident envelope exceeds the admission budget"
+         if admission is not None and allow_resident is False else
+         "the resident domain does not fit on this card"
          if options.mode == "auto" else "[tiles] mode = 'on'"),
         int(plan.tile_nx), int(plan.tile_ny), int(plan.nbuffers), int(halo),
         options.store, options.write_mode,
@@ -516,7 +707,7 @@ def decide(cfg, options: StreamingOptions | None = None, *, machine=None
         # is carried here, from the planner's own arithmetic, rather than
         # re-derived by the walk from a second model of the same thing.
         detail={"plan": plan.explain(),
-                "host_claim_bytes": int(plan.host_bytes)})
+                "host_claim_bytes": int(plan.host_bytes), **acoustic_detail})
 
 
 @dataclass(frozen=True)
@@ -610,8 +801,59 @@ class StreamedEnvelope:
                 f"whole domain; the forecast itself lives in {host}")
 
 
+def pinned_host_claim_bytes(cfg, decision: StreamingDecision) -> int:
+    """The pinned host RAM ``decision`` costs: the store plus its arena.
+
+    ONE implementation of this, because it is one box.  ``autoplan.plan``
+    reports it as :attr:`Plan.host_bytes` for a tiling it chose, and a
+    PINNED tiling never reaches the planner -- so before this existed the
+    two roads had two answers about the same bytes, and the pinned one was
+    "none at all".
+
+    Named breakage, MEASURED on a 4-domain ERA5 tree whose 1 km d04 pins a
+    256x256 tiling: the true claim is a 12.11 GiB store plus a 6.24 GiB
+    ring arena (the tile divides neither axis, so the ragged trailing tiles
+    are read right through and the arena runs 49% of the store), and the
+    walk recorded zero.  Two such domains would each have been priced
+    against the whole box -- both plans accepted, both stores pinned, the
+    second meeting ``cudaHostAlloc`` -- which is the failure the tree
+    walk's host ledger exists to prevent.
+
+    No machine and no card: ``footprint_for`` is a table lookup and
+    ``ring_arena_fraction`` is arithmetic over the tiling.  This is the
+    same expression :func:`autoplan.plan` evaluates at its own chosen tile.
+    """
+    store, arena = _store_and_arena_bytes(cfg, decision)
+    return int(store + arena)
+
+
+def _store_and_arena_bytes(cfg, decision: StreamingDecision):
+    """``(store, arena)`` in bytes, unrounded, for one streamed decision.
+
+    Kept as floats and rounded by each caller the way it already rounded,
+    so factoring this out of :func:`streamed_envelope` moves no shipped
+    figure: ``arena_bytes`` is still ``int`` of THIS arena and not of a
+    total with the store taken back off it, which can land a byte low.
+    """
+    from tilestream import autoplan
+
+    fp = autoplan.footprint_for(cfg)
+    nx, ny, nz = int(cfg.nx), int(cfg.ny), int(cfg.nz)
+    halo = int(decision.halo if decision.halo is not None else _halo_for(cfg))
+    tile_nx = int(decision.tile_nx or nx)
+    tile_ny = int(decision.tile_ny or ny)
+    store = fp.store_bytes(nx * ny * nz)
+    if decision.write_mode == "ring":
+        arena = store * autoplan.ring_arena_fraction(
+            nx, ny, tile_nx, tile_ny, halo) * 1.05
+    else:
+        arena = store
+    return store, arena
+
+
 def streamed_envelope(cfg, options: "StreamingOptions | None" = None, *,
-                      machine=None, decision: StreamingDecision | None = None
+                      machine=None, decision: StreamingDecision | None = None,
+                      resident_estimate=None
                       ) -> StreamedEnvelope | None:
     """Price ``cfg`` as the streamed run ``options`` would actually attach.
 
@@ -634,11 +876,11 @@ def streamed_envelope(cfg, options: "StreamingOptions | None" = None, *,
     from tilestream import autoplan
 
     if decision is None:
-        decision = decide(cfg, options, machine=machine)
+        decision = decide(cfg, options, machine=machine, resident_estimate=resident_estimate)
     if not decision.stream:
         return None
 
-    fp = autoplan.footprint_for(cfg)
+    fp = radiation_footprint(cfg, options)
     nx, ny, nz = int(cfg.nx), int(cfg.ny), int(cfg.nz)
     halo = int(decision.halo if decision.halo is not None else _halo_for(cfg))
     tile_nx = int(decision.tile_nx or nx)
@@ -650,12 +892,10 @@ def streamed_envelope(cfg, options: "StreamingOptions | None" = None, *,
     window_nx = tile_nx + 2 * halo
     window_ny = tile_ny + 2 * halo
     vram = fp.vram_bytes(window_nx * window_ny * nz, nbuffers)
-    store = fp.store_bytes(nx * ny * nz)
-    if decision.write_mode == "ring":
-        arena = store * autoplan.ring_arena_fraction(
-            nx, ny, tile_nx, tile_ny, halo) * 1.05
-    else:
-        arena = store
+    # The store and its arena through the shared helper, so the
+    # single-domain envelope and the tree walk's host ledger cannot drift
+    # apart -- and unrounded, so every figure below is the one it was.
+    store, arena = _store_and_arena_bytes(cfg, decision)
     host_total = _host_total_bytes()
     return StreamedEnvelope(
         vram_bytes=int(vram), store_bytes=int(store), arena_bytes=int(arena),
@@ -820,6 +1060,45 @@ class StreamedDomain:
         """The :class:`tilestream.driver.TiledRun` doing the sweeping."""
         return self._run
 
+    def rebind_after_reconstruction(self, replacement, *, state):
+        """Transfer a prepared replacement into this stable stepper identity.
+
+        The route must close the old tile owner before constructing the new
+        one, so their device allocations cannot overlap. All reconstruction,
+        continuation, and allocation checks precede this transfer. A failed
+        rebuild therefore cannot accidentally resume the closed old owner.
+        The replacement wrapper is consumed; only this wrapper owns its run.
+        """
+        if replacement is self or not isinstance(replacement, StreamedDomain):
+            raise StreamingRefused("reconstruction requires a distinct StreamedDomain replacement")
+        if self._run is None or not self._run.closed:
+            raise StreamingRefused("close the outgoing tile owner before reconstruction rebind")
+        if replacement._run is None or replacement._run.closed:
+            raise StreamingRefused("the replacement tile owner must be open and unconsumed")
+        if state is None:
+            raise StreamingRefused("reconstruction rebind requires the new domain state identity")
+        old_shape = tuple(int(getattr(self._run.cfg, n)) for n in ("nx", "ny", "nz"))
+        new_shape = tuple(int(getattr(replacement._run.cfg, n)) for n in ("nx", "ny", "nz"))
+        if old_shape != new_shape:
+            raise StreamingRefused("relocation rebind changes placement, never domain extent")
+        # Drain before ownership changes, including any replacement warmup.
+        replacement._run.drain()
+        old_state, old_steps = self._state, self.steps
+        self.__dict__.update(replacement.__dict__)
+        self._state = state
+        self.steps = old_steps
+        self._frame = self._setup = self._statics_setup = None
+        self.report = {}
+        replacement._run = None
+        replacement._state = None
+        if old_state is not None and old_state is not state:
+            if getattr(old_state, "_streamed_domain", None) is self:
+                delattr(old_state, "_streamed_domain")
+        state._streamed_domain = self
+        setattr(state, STREAMED_SCRATCH_ATTR,
+                {key.split("/", 1)[1]: value for key, value in self.store.items()
+                 if key.startswith("scratch/")})
+
     @property
     def store(self) -> dict:
         """``{name: array}`` of the whole domain, wherever it lives."""
@@ -846,6 +1125,17 @@ class StreamedDomain:
         it.
         """
         return self._template
+
+    def maximum_map_factor(self) -> float:
+        """Static whole-domain geometry, including a host-built store."""
+        from gpuwm.core.adaptive_clock import maximum_map_factor
+        return maximum_map_factor(self._state, self._geography)
+
+    def allocation_scope(self):
+        """Keep reconstruction-owned forecast temporaries inside its cap."""
+        from contextlib import nullcontext
+        reservation = getattr(self, "_reconstruction_reservation", None)
+        return nullcontext() if reservation is None else reservation.activate()
 
     def __call__(self, state, cfg, **step_kwargs) -> None:
         """``dycore.step``'s signature.  One model step of the DOMAIN.
@@ -898,7 +1188,13 @@ class StreamedDomain:
         self.report = {}
         if self.stability is not None:
             self.stability.begin_sweep()
-        self._run.sweep(1, step_kwargs=step_kwargs, report=self.report)
+        from gpuwm.core.physics_step_control import PhysicsStepControl
+
+        with self.allocation_scope():
+            self._run.sweep(
+                1, step_kwargs=step_kwargs, report=self.report, live_config=cfg,
+                physics_control=PhysicsStepControl.from_driver(
+                    getattr(state, "physics", None)))
         self.steps += 1
         if due:
             self._stash_domain_refl(state)
@@ -958,7 +1254,7 @@ class StreamedDomain:
         if self._frame is None:
             from tilestream import output as _output
 
-            if self._state is not None:
+            if self._state is not None and self._template is None:
                 plan = _output.frame_plan(
                     self._state, extra_available=self._run.store.keys())
             elif self._template is not None:
@@ -1062,13 +1358,18 @@ class StreamedDomain:
         against ~292 W/m2 resident, with the production StoreFrame route
         publishing the same store correctly the whole time.
         """
+        if not self.host_store:
+            # Device arrays alias the state, but the sweep's clock, call
+            # counters and producer ledger are separate scalar carriers.
+            # Drain before exposing that generation to an external reader.
+            self._run.drain()
+            target = self._state if state is None else state
+            if target is not None and self.scalars is not None:
+                from tilestream.physics_inventory import set_carrier_scalars
+                set_carrier_scalars(target, self.scalars)
+            return 0
         import cupy as cp
 
-        if not self.host_store:
-            # ``store = "device"`` makes the store the state's OWN arrays
-            # (attach does not copy), so the state is never stale and a
-            # refresh would be a self-copy of the whole manifest.
-            return 0
         target = self._state if state is None else state
         if target is None:
             raise StreamingRefused(
@@ -1247,12 +1548,17 @@ class StreamedDomain:
         from tilestream import restart_stream
 
         if self._setup is None:
-            if self._state is not None:
+            if self._state is not None and self._template is None:
                 self._setup = restart_stream.capture_domain_setup(self._state)
             elif self._geography is not None:
                 self._setup = restart_stream.domain_setup_from_stream(
                     self._geography, self.template_state,
-                    lateral_boundaries=self._boundaries)
+                    lateral_boundaries=self._boundaries,
+                    lateral_boundary_device=getattr(
+                        self.template_state, "_lateral_boundary_device", None),
+                    nest_classification=getattr(
+                        self._state if self._state is not None else self.template_state,
+                        "_nest_restart_classification", None))
             else:
                 raise StreamingRefused(
                     "this streamed domain was attached with neither a "
@@ -1300,7 +1606,7 @@ class StreamedDomain:
         from tilestream import checkpoint as _checkpoint
 
         if self._statics_setup is None:
-            if self._state is not None:
+            if self._state is not None and self._template is None:
                 self._statics_setup = _checkpoint.DomainSetup.capture(
                     self._state, self._run.cfg)
             else:
@@ -1322,7 +1628,8 @@ class StreamedDomain:
                          stream_setup.nest_classification})
         return self._statics_setup
 
-    def write_restart(self, path, cfg, *, run_trackers=None):
+    def write_restart(self, path, cfg, *, run_trackers=None, tree_header=None,
+                      extra_scratch_slots=()):
         """Write a gpuwm restart file from the store.  No device state.
 
         Byte-for-byte a ``gpuwm.io.restart`` v5 archive -- same header keys
@@ -1338,7 +1645,8 @@ class StreamedDomain:
         return restart_stream.write_streamed_restart(
             path, self.store, cfg, scalars=self.scalars,
             setup=self.restart_setup(), template_state=self.template_state,
-            run_trackers=run_trackers,
+            run_trackers=run_trackers, tree_header=tree_header,
+            extra_scratch_slots=extra_scratch_slots,
             # A device store was never page-locked and never needed to be;
             # the pinned check exists to catch a HOST store that was built
             # with plain numpy and would have streamed at a fraction of the
@@ -1361,9 +1669,18 @@ class StreamedDomain:
         """
         from tilestream import restart_stream
 
-        info = restart_stream.read_streamed_restart(
+        return self.apply_restart(self.validate_restart(path, cfg))
+
+    def validate_restart(self, path, cfg, *, extra_scratch_slots=()):
+        """Stage a store payload before any domain in a tree is mutated."""
+        from tilestream import restart_stream
+        return restart_stream.validate_streamed_restart(
             path, self.store, cfg, setup=self.restart_setup(),
-            template_state=self.template_state, scalars=self.scalars)
+            template_state=self.template_state, scalars=self.scalars,
+            extra_scratch_slots=extra_scratch_slots)
+
+    def apply_restart(self, validated):
+        info = validated.apply()
         if self.scalars is not None:
             self._run.reseed_clock(self.scalars)
         return info
@@ -1661,8 +1978,9 @@ def make_stepper(state, cfg, options: StreamingOptions | None = None, *,
     """
     from gpuwm.core.dycore import step
 
-    decision = decide(cfg, options, machine=machine) if decision is None \
-        else decision
+    if decision is None:
+        options = _options_with_map_factor(OFF if options is None else options, state, cfg)
+        decision = decide(cfg, options, machine=machine)
     if not decision.stream:
         return step
     if build is None:
@@ -1885,6 +2203,28 @@ class StreamedStability:
                 "tile is on the card; it cannot be re-cut from the folded "
                 "record.")
         if self.sweeps_begun == 0:
+            from gpuwm.core.streamed_state import CanonicalStoreState
+            if isinstance(state, CanonicalStoreState):
+                from tilestream import gather
+                from tilestream.driver import geography_inventory
+                import cupy as cp
+                owner = state._streamed_domain
+                initial_cfg = self.cfg if cfg is None else cfg
+                with owner.allocation_scope():
+                    self.begin_sweep()
+                    try:
+                        tile = self._run.tiles[0]
+                        for index, window in enumerate(self._run.specs):
+                            gather.gather_tile(owner.store, tile, window,
+                                inventory_fn=streamed_store_inventory(), nz=initial_cfg.nz)
+                            gather.gather_tile(owner._geography, tile, window,
+                                inventory_fn=geography_inventory, nz=initial_cfg.nz)
+                            self.observe(tile, window, index, cp.cuda.Stream.null)
+                        return self(state, cfg, boundary_width=boundary_width)
+                    finally:
+                        self.sweeps_begun = 0
+                        self._seen.clear()
+                        self._report = None
             # (imports deliberately below this branch: answering the analysis
             # frame needs no kernel and no device)
             # THE ANALYSIS FRAME.  A route that publishes a t = 0 history
@@ -2120,7 +2460,7 @@ def window_interval(interval, spec, *, width: int, seam: str = "zeros",
     import numpy as np
 
     from gpuwm.ingest.lateral_bc import (BoundaryInterval, FieldBoundary,
-                                         SideBoundary)
+                                         SideBoundary, RationalTimeLaw)
 
     if seam not in ("zeros", "self", "poison"):
         raise ValueError(f"unknown seam mode {seam!r}")
@@ -2179,7 +2519,18 @@ def window_interval(interval, spec, *, width: int, seam: str = "zeros",
                 raise ValueError(
                     f"tile {spec.index} {name}/{side_name} windowed to "
                     f"{value.shape}, expected {want}")
-            sides[side_name] = SideBoundary(value, tend)
+            if owns[side_name]:
+                index = ((slice(None), slice(y0, y1), slice(None))
+                         if tangential_y else
+                         (slice(None), slice(None), slice(x0, x1)))
+                sides[side_name] = side.window(index)
+            else:
+                # Buffers change tiles while retaining one forcing layout.
+                # An inert seam retains the law's coefficient slots, filled
+                # with zero, so a later real edge can reload into those slots.
+                law = (None if side.time_law is None else RationalTimeLaw(
+                    np.zeros(want), np.zeros(want)))
+                sides[side_name] = SideBoundary(value, tend, law)
         fields_out[name] = FieldBoundary(**sides)
     return BoundaryInterval(interval.start_seconds, interval.end_seconds,
                             fields_out)
@@ -2830,6 +3181,13 @@ def attach(state, cfg, decision: StreamingDecision, *, tile_state_factory,
         # that only the model's history cadence can answer, and getting it
         # wrong stops the forecast at the first history frame.
         post_step_hook=refl_handoff_hook())
+    # A store-built root has no resident mirror. Bind its declared clock
+    # before even the t=0 history/restart setup is captured, not only when the
+    # first tile steps. The same hook verifies this identity on every bind.
+    if state is None and boundary_tables is not None:
+        from gpuwm.ingest.lateral_bc import bind_lateral_boundary_clock
+        for tile in run.tiles:
+            bind_lateral_boundary_clock(tile, external_clock)
     # The domain's scratch arrays are now the STORE's, not the state's.  An
     # external whole-domain write -- the three nwp_diagnostics running-max
     # resets, and anything that follows them -- has to be able to find them;
@@ -2930,7 +3288,7 @@ def _domain_start_time(driver):
     """
     from datetime import datetime
 
-    for attr in ("radiation_callable", "noahmp_geometry"):
+    for attr in ("radiation_callable", "noahmp_geometry", "cam_ozone"):
         scheme = getattr(driver, attr, None)
         start = getattr(scheme, "start_time", None)
         if isinstance(start, datetime):
@@ -2961,7 +3319,29 @@ def _twin_rrtmg_legacy(scheme, cls, lat, lon):
                p_top=scheme.p_top,
                column_chunk=scheme.column_chunk,
                o3input=scheme.o3input,
-               ozone_parent=scheme._ozone_provider)
+               ozone_parent=scheme._ozone_provider,
+               longwave=scheme.longwave, shortwave=scheme.shortwave,
+               trace_gas_overrides=getattr(scheme, "trace_gas_overrides", None))
+
+
+def _tile_geography_like(value, original):
+    """Preserve the domain input's byte representation for exact gathering."""
+    import cupy as cp
+    import numpy as np
+    if isinstance(original, cp.ndarray):
+        return cp.ascontiguousarray(cp.asarray(value, dtype=original.dtype))
+    host = cp.asnumpy(value) if isinstance(value, cp.ndarray) else value
+    return np.ascontiguousarray(host, dtype=original.dtype)
+
+
+def _twin_composed_radiation(scheme, cls, lat, lon):
+    # Neutral builder geography may be FP64. The gather is an exact byte
+    # transport, so the wrapper must retain its domain dtype/residency too.
+    tile_lat = _tile_geography_like(lat, scheme.latitude_deg)
+    tile_lon = _tile_geography_like(lon, scheme.longitude_deg)
+    return cls(scheme.start_time, tile_lat, tile_lon,
+               longwave_adapter=_tile_scheme(scheme.longwave_adapter, tile_lat, tile_lon),
+               shortwave_adapter=_tile_scheme(scheme.shortwave_adapter, tile_lat, tile_lon))
 
 
 @dataclass(frozen=True)
@@ -3001,11 +3381,16 @@ class _TwinRecipe:
 #: rather than a special case because the next such adapter should cost a
 #: recipe, not another rewrite of the dispatch.
 _TWIN_RECIPES = {
+    "gpuwm.core.radiation_composition:ComposedRadiation": _TwinRecipe(
+        build=_twin_composed_radiation,
+        reproduces=frozenset({"start_time", "latitude_deg", "longitude_deg",
+                              "longwave_adapter", "shortwave_adapter"}),
+    ),
     "gpuwm.core.rrtmg_legacy:RRTMGLegacyRadiation": _TwinRecipe(
         build=_twin_rrtmg_legacy,
         reproduces=frozenset({"start_time", "latitude_deg", "longitude_deg",
                               "p_top", "column_chunk", "ozone_parent",
-                              "o3input"}),
+                              "o3input", "longwave", "shortwave", "trace_gas_overrides"}),
         # WRF's radiation call counter; the domain's adapter has stepped
         # when a buffer is built mid-run, a fresh twin has not, and that
         # difference is not dropped policy.
@@ -3126,8 +3511,9 @@ def _tile_scheme(scheme, lat, lon):
     if dataclasses.is_dataclass(scheme):
         names = {f.name for f in dataclasses.fields(scheme) if f.init}
         if {"latitude_deg", "longitude_deg"} <= names:
-            return dataclasses.replace(scheme, latitude_deg=lat,
-                                       longitude_deg=lon)
+            return dataclasses.replace(
+                scheme, latitude_deg=_tile_geography_like(lat, scheme.latitude_deg),
+                longitude_deg=_tile_geography_like(lon, scheme.longitude_deg))
         return dataclasses.replace(scheme)
 
     cls = type(scheme)
@@ -3252,10 +3638,18 @@ def _impose_domain_setup(tile, state) -> int:
     """
     import numpy as np
 
-    from gpuwm.state_serialization_contract import STATE_SETUP_ARRAYS
+    from gpuwm.state_serialization_contract import (
+        STATE_DERIVED_SETUP_ARRAYS, STATE_SETUP_ARRAYS)
 
     changed = 0
-    for name in STATE_SETUP_ARRAYS:
+    # STATE_DERIVED_SETUP_ARRAYS is deliberately outside STATE_SETUP_ARRAYS
+    # so the restart setup digest's byte stream stays stable, but the
+    # imposition is not a digest: a tile buffer is built on neutral
+    # geography, so load_base fills dphb_resid/dc3f/dc4f for ITS OWN base
+    # and the domain's is what it must end up holding.  Measured with them
+    # left out, nz=64: tile vs resident p differed on 1838/2048 elements at
+    # 6.13e-06 relative.
+    for name in STATE_SETUP_ARRAYS + STATE_DERIVED_SETUP_ARRAYS:
         src = getattr(state, name, None)
         dst = getattr(tile, name, None)
         if src is None or dst is None:
@@ -3354,6 +3748,8 @@ def prepared_tile_state_factory(state, cfg, *, tables0=None, seed: int = 4242,
     # rebuilding it is where a buffer stops being a model of the domain.  See
     # :func:`domain_vertical_coord`.
     coord = domain_vertical_coord(state, cfg)
+    from gpuwm.io.restart import lifecycle_window_slots
+    tracker_slots = lifecycle_window_slots(state)
 
     def make(tile_cfg):
         import numpy as np
@@ -3374,6 +3770,13 @@ def prepared_tile_state_factory(state, cfg, *, tables0=None, seed: int = 4242,
         tile, _drv = _harness.make_physics_state(
             tile_cfg, seed, geography=geo, start_time=start_time,
             coord=coord, **extra)
+        if driver is not None and getattr(driver, "cam_ozone", None) is not None:
+            from gpuwm.core.cam_ozone import CamOzoneState, attach_cam_ozone
+            owner = driver.cam_ozone
+            attach_cam_ozone(tile, tile_cfg, CamOzoneState(
+                owner.start_time, lat, lon, owner.mode, owner.column_chunk))
+        for slot in tracker_slots:
+            tile.scratch((int(tile_cfg.ny), int(tile_cfg.nx)), slot)
         make.setup_entries_imposed = _impose_domain_setup(tile, state)
         # The buffer's own lazily-allocated carriers, so its inventory matches
         # the store's WITHOUT integrating anything.  See prime_lazy_carriers:
@@ -3505,33 +3908,9 @@ def prepared_domain_builder(node, *, seam: str = "zeros",
                           check_geography=check_geography,
                           tile_hook=nest_hook,
                           inventory_fn=streamed_store_inventory())
-        if decision.store == "host":
-            import warnings
-
-            # Warned in the same register as the short halo, and for the
-            # same reason: what follows is silent, plausible and wrong.
-            # MEASURED through execute_experiment at 192x144x49, 120 steps,
-            # 155 carriers: 0 of 155 carriers on the DomainState moved,
-            # against 118 of 155 for the identical resident run.  The
-            # forecast is correct and it is in the STORE; the state object
-            # every route reads for history frames, the stability gate, the
-            # health validators and canonical_state_digest still holds the
-            # initial condition.  A route that publishes output from a
-            # streamed domain must call
-            # ``StreamedDomain.refresh_state(node.state)`` on the history
-            # cadence and once more before its final read -- which no route
-            # does yet.
-            warnings.warn(
-                "[tiles] store='host' puts the forecast in a pinned "
-                "host store; the DomainState this route holds is the "
-                "snapshot that filled it and will NOT advance.  Output, the "
-                "stability gate, the health validators and the final "
-                "canonical digest all read that state, so they will report "
-                "the INITIAL CONDITION for the whole run unless the route "
-                "calls StreamedDomain.refresh_state(node.state) before "
-                "reading it.  The integration itself is unaffected and is "
-                "bit-exact against a resident run.",
-                RuntimeWarning, stacklevel=2)
+        # The shared runtimes read history/digests from the live store or
+        # refresh the retained state at their read boundary. Health checks
+        # report their own availability in the route that installs them.
         return streamed
 
     return build
@@ -3580,7 +3959,7 @@ def standalone_domain_builder(*, grid_id: int, **kwargs):
         **kwargs)
 
 
-def store_domain_builder(bundle, *, clock=DERIVE_CLOCK, seam: str = "zeros",
+def store_domain_builder(bundle, *, clock=DERIVE_CLOCK, node=None, seam: str = "zeros",
                          tile_seed: int = 4242, warmup: int = 0,
                          check_geography: bool = True):
     """The ``build`` :func:`make_stepper` needs, for a STORE-DIRECT domain.
@@ -3636,16 +4015,19 @@ def store_domain_builder(bundle, *, clock=DERIVE_CLOCK, seam: str = "zeros",
     def build(state, cfg, decision):
         from gpuwm.ingest.lateral_bc import LateralBoundaries
 
-        if getattr(cfg, "grid_id", 1) and state is not None \
-                and getattr(state, "parent", None) is not None:
+        nested = node is not None and getattr(node, "parent", None) is not None
+        if node is None and state is not None and getattr(state, "parent", None) is not None:
             raise StreamingRefused(
-                "a store-direct domain cannot be a NEST: a nested domain's "
-                "lateral forcing is rebuilt from its parent every parent "
-                "step rather than tabulated, so there is nothing for "
-                "tile_boundary_tables to window")
+                "a store-direct nest requires node= to bind its live parent forcing")
         boundaries = bundle.boundaries
         tables = None
-        if boundaries is not None:
+        nest_hook = None
+        if nested:
+            if boundaries is not None:
+                raise StreamingRefused("a store-direct nest cannot also carry tabulated lateral forcing")
+            from gpuwm.core.nest_stream import make_nest_tile_hook
+            nest_hook = make_nest_tile_hook(node)
+        elif boundaries is not None:
             if not isinstance(boundaries, LateralBoundaries):
                 raise StreamingRefused(
                     "the prepared store carries lateral forcing of type "
@@ -3691,11 +4073,22 @@ def store_domain_builder(bundle, *, clock=DERIVE_CLOCK, seam: str = "zeros",
                       geography=bundle.geography, boundary_tables=tables,
                       boundaries=boundaries, template=bundle.template,
                       check_geography=check_geography,
+                      tile_hook=nest_hook,
                       external_clock=(None if clock is DERIVE_CLOCK
                                       else clock),
                       inventory_fn=streamed_store_inventory())
 
     return build
+
+
+def radiation_footprint(cfg, options=None):
+    """The existing footprint with this experiment's classic execution cap."""
+    from tilestream import autoplan
+    context = getattr(options, "radiation_context", None)
+    follower_context = getattr(options, "follower_context", None)
+    extra = {} if follower_context is None else {"follower_slots": follower_context.slots}
+    return (autoplan.footprint_for(cfg, **extra) if context is None else
+            autoplan.footprint_for(cfg, radiation_context=context, **extra))
 
 
 def options_for_domain(domain_cfg, tree_options: "StreamingOptions | None"
@@ -3715,9 +4108,21 @@ def options_for_domain(domain_cfg, tree_options: "StreamingOptions | None"
     vocabulary.
     """
     own = getattr(domain_cfg, "tiles", None)
-    if own is not None:
-        return own
-    return OFF if tree_options is None else tree_options
+    options = own if own is not None else OFF if tree_options is None else tree_options
+    context = options.radiation_context
+    if context is not None and context.cam_ozone_domains:
+        from dataclasses import replace
+        required = domain_cfg.grid_id in context.cam_ozone_domains
+        if required != context.cam_ozone:
+            options = replace(options, radiation_context=replace(
+                context, cam_ozone=required))
+    follower = options.follower_context
+    if follower is not None:
+        from dataclasses import replace
+        slots = dict(follower.by_domain).get(int(domain_cfg.grid_id), ())
+        if slots != follower.slots:
+            options = replace(options, follower_context=replace(follower, slots=slots))
+    return options
 
 
 def tree_streams_anywhere(model, options: "StreamingOptions | None") -> bool:
@@ -3885,129 +4290,27 @@ def refuse_unrouted_streaming(exp, route: str, *,
 
 
 def refuse_streamed_nests(exp, *, source: str = "<config>") -> None:
-    """``[tiles] mode = "on"`` over a config that declares a NEST: refused.
-
-    THE PLACEMENT IS THE POINT, and it is the same argument
-    :func:`refuse_unrouted_streaming` makes one function up.  ``mode =
-    "on"`` streams EVERY grid unconditionally, so on a tree every
-    parent-child coupling edge would have BOTH ends streamed -- and that
-    is the one concurrent-nesting shape the coupler refuses
-    (``gpuwm.core.nest.NestCoupler.force``): it would compose the
-    streamed-parent footprint corridor with the streamed-child frame
-    corridor and the per-tile table windows in one FORCE, and no gate has
-    driven that composition.  Ungated is refused, not run.  Without this
-    check the fact is discovered mid-run, at the first FORCE -- after the
-    fetch, after the preparation, after the whole tree is built -- so the
-    same fact is asked here, at ``build_experiment``, the one load every
-    front door shares (``run``/``go``/``check``, both prepared runners,
-    the DA drivers, the wizard's candidate loop).  The coupler's refusal
-    stays exactly where it is, as the backstop for a caller that
-    assembles an :class:`~gpuwm.experiment.ExperimentConfig` without
-    going through the loader.
-
-    WHAT THIS DOES NOT SAY -- because it stopped being true when the
-    per-domain roads landed -- is that a nested domain cannot stream.  A
-    resident parent can drive a tile-streamed child
-    (``tilestream/test_streamed_child.py``), a streamed parent can drive
-    a resident child (``tilestream/test_nest_executor.py``), and
-    :func:`steppers_for_tree` prices both roads against one budget.  Only
-    an EDGE with both ends streamed is unsupported, which is exactly the
-    shape ``mode = "on"`` forces on every edge of a tree.
-
-    ``mode = "auto"`` IS NOT REFUSED HERE, and that is load-bearing
-    rather than an omission: ``auto`` is a request to stream only what
-    does not fit, the planner prices each domain against the budget its
-    predecessors left, and any mixed shape it produces is legal.  The
-    walk itself refuses the one shape that is not, at decision time,
-    before anything is built.
-    """
-    from gpuwm.explain import layered
-
+    """Moving stores use the host reconstruction ownership contract."""
+    relocation = getattr(exp, "relocation", None)
+    if relocation is None or not getattr(relocation, "enabled", False):
+        return
+    if (not getattr(relocation, "moves", ())
+            and getattr(relocation, "follow", None) is None):
+        return
+    moving = int(relocation.grid_id)
     options = getattr(exp, "tiles", None) or OFF
     domains = tuple(getattr(exp, "domains", ()) or ())
-    # THE EDGE, NOT THE TABLE.  This used to refuse on the tree-wide mode
-    # alone, which was exact while ``[tiles]`` was tree-wide and one
-    # ``mode = "on"`` really did put both ends of every edge on the
-    # streamed road.  With the per-domain surface it is no longer exact:
-    # `mode = "on"` over the tree with `tiles = { mode = "off" }` on the
-    # nest is "stream the parent, keep the child resident", which is a
-    # legal shape and now a reachable one.  So the question asked here is
-    # the one the coupler actually answers -- does any single EDGE have
-    # both ends unconditionally streamed -- and a tree that says something
-    # per domain is judged on what it said.
-    mode_by_gid = {int(dc.grid_id): options_for_domain(dc, options).mode
-                   for dc in domains}
-    both_on = tuple(
-        (int(getattr(dc, "parent_id", 0)), int(dc.grid_id))
-        for dc in domains
-        if int(getattr(dc, "parent_id", 0)) != 0
-        and mode_by_gid.get(int(dc.grid_id)) == "on"
-        and mode_by_gid.get(int(getattr(dc, "parent_id", 0))) == "on")
-    if not both_on:
+    target = next((dc for dc in domains if int(dc.grid_id) == moving), None)
+    if target is None:
         return
-    nests = tuple(gid for _parent, gid in both_on)
-    roots = tuple(int(dc.grid_id) for dc in domains
-                  if int(getattr(dc, "parent_id", 0)) == 0)
-    root = roots[0] if roots else 1
-    # A domain that MOVES is a nest by construction, and it is worth
-    # naming separately: a reader who configured [relocation] is thinking
-    # about the follow domain, not about the parent_id that makes it a
-    # nest, and would otherwise read this refusal as being about some
-    # other grid.
-    relocation = getattr(exp, "relocation", None)
-    moving = (None if relocation is None
-              or not getattr(relocation, "enabled", False)
-              else int(relocation.grid_id))
-    named = ", ".join(f"d{gid:02d}" for gid in nests)
-    edges = ", ".join(f"d{p:02d} -> d{c:02d}" for p, c in both_on)
-    first_child = int(both_on[0][1])
-    first_parent = int(both_on[0][0])
-    moving_note = (
-        "" if moving is None or moving not in nests else
-        f"  d{moving:02d} is also this config's [relocation] follow "
-        "domain, which carries a SECOND reason it cannot be the streamed "
-        "end: relocating a streamed child would rebuild its store, its "
-        "tile plan, its geography gathers and its packed nest-table "
-        "windows on a new footprint mid-run, and none of that is built "
-        "or gated -- gpuwm.core.model refuses it at the first move.  Run "
-        "the moving child RESIDENT and stream its parent instead.")
-    raise StreamingRefused(layered(
-        f"[tiles] mode = 'on' leaves {len(both_on)} coupling edge(s) of "
-        f"{source} with BOTH ends streamed ({edges}; the streamed nest(s) "
-        f"are {named}) -- the one concurrent-nesting shape that is "
-        "refused (gpuwm.core.nest.NestCoupler.force), because it composes "
-        "the streamed-parent footprint corridor with the streamed-child "
-        "frame corridor and the per-tile table windows in one FORCE, and "
-        "no gate has driven that composition.  Refused here, at config "
-        "validation, rather than at the first FORCE -- which is a fetch, "
-        "the preparations and a whole tree construction into a run that "
-        f"was never going to finish.{moving_note}\n\n"
-        "  remedy, and there are three.  SAY WHICH END STREAMS, which is "
-        "the direct answer and the one most configs want: [tiles] is "
-        "per-domain, so put `tiles = { mode = \"off\" }` on [[domain]] "
-        f"grid_id = {first_child} to run it resident under a streamed "
-        f"d{first_parent:02d} -- or the inverse, `tiles = {{ mode = "
-        f"\"off\" }}` on the parent and leave the nest streaming.  Or set "
-        "mode = 'auto', which prices each domain against one budget, "
-        "reserves what the domains below it need before a streamed domain "
-        "picks its tile, and streams only what does not fit.  Or delete "
-        "the [tiles] table and run RESIDENT, which is what this tree did "
-        f"before the mode existed.  If it is d{root:02d}, the root, you "
-        "need to stream unconditionally -- a benchmark, or a "
-        "bit-exactness proof -- run it alone: one [[domain]] table.",
-        "Each single-streamed shape is gated alone "
-        "(tilestream/test_nest_executor.py streams the parent, "
-        "tilestream/test_streamed_child.py streams the child); an edge "
-        "with both ends streamed is ungated, and ungated is refused, not "
-        "run.\n\n"
-        "A STREAMED PARENT OVER RESIDENT NESTS IS REACHABLE, and it is "
-        "reachable two ways: name it per domain as above, or let mode = "
-        "'auto' find it -- the tree decision reserves every undecided "
-        "domain's claim before a streamed parent chooses its tile, so the "
-        "parent takes a smaller tile instead of the largest one that fits "
-        "and its children keep the card they need.  What remains refused "
-        "is only the EDGE with both ends streamed, never the tree that "
-        "contains a streamed domain."))
+    choice = options_for_domain(target, options)
+    if choice.mode != "on" or choice.store == "host":
+        return
+    raise StreamingRefused(
+        f"{source}: [relocation] follow domain d{moving:02d} is configured "
+        "with a device store; moving a streamed child requires the canonical "
+        "host store and its reconstruction reservation. remedy: set "
+        f"tiles.store = 'host' on [[domain]] grid_id = {moving}.")
 
 
 def _CannotPlan():
@@ -4083,7 +4386,7 @@ def _tree_process_overhead_bytes(nodes) -> int:
     return max((_process_overhead_bytes(node) for node in nodes), default=0)
 
 
-def _minimum_claim_bytes(node, claim_budget: int) -> int:
+def _minimum_claim_bytes(node, claim_budget: int, options=None, *, force_stream=False) -> int:
     """The LEAST VRAM ``node`` adds to a process already running, for a
     reservation.
 
@@ -4096,17 +4399,10 @@ def _minimum_claim_bytes(node, claim_budget: int) -> int:
     that would have run.  So each undecided domain is priced at the
     cheapest road actually open to it.
 
-    A domain whose resident price fits what is left of the card will be
-    RESIDENT -- under a streamed ancestor it has no choice, because the
-    both-ends law below refuses the alternative -- and a resident domain's
-    floor is its resident price exactly: it does not shrink.  A domain too
-    big to sit resident must stream, and a streamed domain's floor is one
-    buffer of the smallest legal compute window, the same number
-    ``autoplan.plan`` reports when it says no tile fits.  Reserving that
-    instead of an unaffordable resident price is what lets the walk reach
-    the both-ends refusal -- which names the shape -- rather than dying at
-    the planner's "no tile fits in 0.02 GiB", which names an arithmetic
-    nobody wrote.
+    A domain whose resident price fits the available claim budget reserves
+    that price. Otherwise its floor is one buffer of the smallest legal
+    compute window. The final decision still prices the chosen road and
+    coupling corridor against the remaining shared budget.
 
     ``claim_budget`` is the card MINUS the tree's process overhead, i.e.
     what is actually available to domain claims, because that is the
@@ -4115,17 +4411,17 @@ def _minimum_claim_bytes(node, claim_budget: int) -> int:
     from tilestream import autoplan
 
     cfg = node.cfg.run
-    fp = autoplan.footprint_for(cfg)
+    fp = radiation_footprint(cfg, options)
     nz = int(cfg.nz)
     cells = int(cfg.nx) * int(cfg.ny) * nz
     resident = int(fp.marginal_resident_bytes(cells))
-    if resident <= int(claim_budget):
+    if not force_stream and resident <= int(claim_budget):
         return resident
-    halo = _halo_for(cfg)
+    halo = _halo_for(cfg, options)
     return int(fp.marginal_bytes((2 * halo + 1) ** 2 * nz, 1))
 
 
-def _decision_claim_bytes(node, decision, claim_budget: int) -> int:
+def _decision_claim_bytes(node, decision, options=None) -> int:
     """What the road this domain DECIDED on actually claims on the card.
 
     MARGINAL -- the domain's own bytes, without the per-process fixed cost
@@ -4140,24 +4436,40 @@ def _decision_claim_bytes(node, decision, claim_budget: int) -> int:
     * a domain whose ``[tiles]`` is OFF, which is now reachable inside a
       configured tree because the surface is per-domain, is priced
       resident, which is what it is.
+
+    NO BUDGET IS CONSULTED, and that is the property that matters rather
+    than an implementation detail.  This used to hand the OFF case to
+    :func:`_minimum_claim_bytes`, whose "does the resident price fit what
+    is left of the card" test exists to pick a floor for an UNDECIDED
+    domain and is meaningless for a decided one: an OFF domain cannot
+    stream, so its floor is its resident price whatever the card holds.
+    Against the zero budget a card-free walk carries, that test failed for
+    every domain and each resident sibling priced at the one-buffer
+    STREAMED floor instead -- 0.07 GiB against a true 0.86/1.30/4.85 GiB
+    on the tree this was measured on.  A claim that is a function of the
+    config and the tiling alone is also what lets the whole walk be priced
+    with no card, which is what a pinned tree needs.
     """
+    if decision.stream and getattr(node, "_streamed_reconstruction_required", False):
+        from gpuwm.core.streamed_relocation import reconstruction_claim
+        return reconstruction_claim(node, decision, options)
     if decision.resident_bytes is not None:
         return max(0, int(decision.resident_bytes)
                    - _process_overhead_bytes(node))
     from tilestream import autoplan
 
     cfg = node.cfg.run
-    fp = autoplan.footprint_for(cfg)
+    fp = radiation_footprint(cfg, options)
     nz = int(cfg.nz)
     if decision.stream and decision.tile_nx:
         halo = int(decision.halo or 0)
         window = ((int(decision.tile_nx) + 2 * halo)
                   * (int(decision.tile_ny) + 2 * halo) * nz)
         return int(fp.marginal_bytes(window, int(decision.nbuffers or 1)))
-    return _minimum_claim_bytes(node, claim_budget)
+    return int(fp.marginal_resident_bytes(int(cfg.nx) * int(cfg.ny) * nz))
 
 
-def _tree_reservations(nodes, claim_budget: int) -> list:
+def _tree_reservations(nodes, claim_budget: int, per_domain=None, *, forced_stream=()) -> list:
     """``[(reserved_bytes, [grid_id, ...]), ...]``, aligned with ``nodes``.
 
     Entry ``i`` is what the domains still UNDECIDED after ``nodes[i]`` need
@@ -4169,10 +4481,16 @@ def _tree_reservations(nodes, claim_budget: int) -> list:
     from gpuwm.core.nest_stream import corridor_claim_bytes
 
     floors = []
-    for node in nodes:
-        claim = _minimum_claim_bytes(node, claim_budget)
+    for index, node in enumerate(nodes):
+        options = None if per_domain is None else per_domain[index]
+        claim = _minimum_claim_bytes(node, claim_budget, options,
+                                     force_stream=int(node.cfg.grid_id) in forced_stream)
         if getattr(node, "parent", None) is not None:
-            claim += int(corridor_claim_bytes(node))
+            forced = int(node.cfg.grid_id) in forced_stream
+            minimum = (StreamingDecision(
+                True, "minimum streamed corridor", 1, 1, 1,
+                _halo_for(node.cfg.run, options)) if forced else None)
+            claim += int(corridor_claim_bytes(node, decision=minimum))
         floors.append(int(claim))
     out = []
     for index, node in enumerate(nodes):
@@ -4183,7 +4501,8 @@ def _tree_reservations(nodes, claim_budget: int) -> list:
 
 
 def steppers_for_tree(model, options: StreamingOptions | None = None, *,
-                      builders=None, machine=None, decisions=None) -> dict:
+                      builders=None, machine=None, decisions=None,
+                      resident_estimate=None) -> dict:
     """``{grid_id: stepper}`` for a whole domain tree.
 
     The route-facing entry point, and the reason the mode is configurable at
@@ -4204,15 +4523,9 @@ def steppers_for_tree(model, options: StreamingOptions | None = None, *,
     the allocation the mode existed to avoid, with nothing in the log to say
     the mode never engaged.
 
-    A NEST streams through its own road (``gpuwm.core.nest_stream``), and
-    the walk prices it like any domain -- what a tree may NOT contain is a
-    coupling edge with BOTH ends streamed, the composition no gate has
-    driven.  The walk refuses that shape at DECISION time, before any
-    builder runs, so a tree that cannot run is a refusal with names
-    instead of a root store filled and a coupler error at the first
-    FORCE.  ``mode = "on"`` over a tree is the guaranteed form of it and
-    is refused from the config text itself by
-    :func:`refuse_streamed_nests`, long before a model exists to walk.
+    A nest uses the shared child table road. Parent and child may both
+    stream; each domain and coupling corridor is charged to the same device
+    and host ledgers before any builder runs.
 
     ``decisions`` IS NOT OPTIONAL DECORATION -- IT IS THE OTHER FAILURE
     ------------------------------------------------------------------
@@ -4256,13 +4569,29 @@ def steppers_for_tree(model, options: StreamingOptions | None = None, *,
         return {}
     builders = dict(builders or {})
     out = {}
-    decided = decide_tree(list(model.walk_parent_first()), options,
-                          machine=machine, decisions=decisions).decided
+    nodes = list(model.walk_parent_first())
+    from gpuwm.core.streamed_relocation import mark_reconstruction_nodes
+    mark_reconstruction_nodes(nodes, getattr(model, "_declared_experiment", None))
+    decided = decide_tree(nodes, options,
+                          machine=machine, decisions=decisions,
+                          resident_estimate=resident_estimate).decided
     for node, cfg, node_options, node_machine, decision in decided:
         gid = int(node.cfg.grid_id)
-        stepper = make_stepper(node.state, cfg, node_options,
-                               decision=decision, machine=node_machine,
-                               build=builders.get(gid))
+        reserve_bytes = decision.detail.get("reconstruction_default_allocator_bytes")
+        if decision.stream and reserve_bytes is not None:
+            from gpuwm.ingest.reconstruction_store import ReconstructionReservation
+            corridor = int(decision.detail.get("corridor_claim_bytes", 0))
+            cap = (int(reserve_bytes)+corridor+511)//512*512
+            reservation = ReconstructionReservation(cap)
+            with reservation.activate():
+                stepper = make_stepper(node.state, cfg, node_options,
+                    decision=decision, machine=node_machine, build=builders.get(gid))
+            stepper._reconstruction_reservation = reservation
+            stepper._reconstruction_host_budget_bytes = int(decision.detail["host_claim_bytes"])
+        else:
+            stepper = make_stepper(node.state, cfg, node_options,
+                                   decision=decision, machine=node_machine,
+                                   build=builders.get(gid))
         if is_streaming(stepper):
             out[gid] = stepper
     return out
@@ -4282,9 +4611,12 @@ class TreeDecision:
     the dearest rung, so the card holds
     ``process_overhead_bytes + vram_spent_bytes`` between radiation calls
     and that plus ``radiation_transient_bytes`` at the instant one fires.
-    ``priced`` is False for a tree that never consulted the planner
-    (every enabled domain pinned its tiling), where roads are recorded
-    and no budget arithmetic exists.
+    ``priced`` says the walk produced these claims.  It does NOT say a
+    card was consulted: a tree that pins every tiling probes no card and
+    is priced all the same, because every term above is a read off the
+    rung's footprint and the tiling.  ``total_budget_bytes`` is the field
+    that is zero when no card was seen -- the BUDGET needs a machine, the
+    CLAIMS do not.
     """
 
     decided: list
@@ -4300,10 +4632,216 @@ class TreeDecision:
     #: Carried so an admission gate can weigh ``host_spent_bytes`` against
     #: the same ceiling the walk used rather than deriving a second one.
     host_budget_bytes: int | None = None
+    resident_subset_envelope_bytes: int = 0
+    configured_mixed_envelope_bytes: int = 0
 
 
-def decide_tree(nodes, options=None, *, machine=None,
-                decisions=None) -> TreeDecision:
+def _resident_subset_envelope(estimate, nodes, resident_ids):
+    """A necessary configured bound for the domains kept resident.
+
+    Reuse the existing itemization and affine envelope. Global radiation
+    storage remains loaded; this bound is never added to the empirical mixed
+    price (that would charge the shared workspace/intercept twice).
+    """
+    from dataclasses import replace
+    selected = tuple(d for d in estimate.domains if d.grid_id in resident_ids)
+    legacy = tuple(peak for domain, peak in zip(
+        estimate.domains, estimate.legacy_call_peak_by_domain)
+        if domain.grid_id in resident_ids)
+    # The tree allocates these shared arenas/workspaces for its full declared
+    # inventory. Keep that persistent storage even when only a subset is
+    # resident; recomputing it on detached children also loses parent geometry.
+    subset = replace(estimate, domains=selected,
+                     legacy_call_peak_by_domain=legacy)
+    return int(subset.peak_envelope_bytes)
+
+
+def decide_tree(nodes, options=None, *, machine=None, decisions=None,
+                resident_estimate=None) -> TreeDecision:
+    """Keep the ordered road when admitted; revise only auto preferences."""
+    from dataclasses import replace
+    from itertools import combinations
+    options = OFF if options is None else options
+    nodes = list(nodes)
+    per_domain = [options_for_domain(node.cfg, options) for node in nodes]
+    auto_ids = [int(node.cfg.grid_id) for node, choice in zip(nodes, per_domain)
+                if choice.mode == "auto"]
+    context_options = next((choice for choice in per_domain
+                            if choice.mode == "auto" and choice.resident_context is not None), None)
+    if not auto_ids or context_options is None:
+        return _decide_tree(nodes, options, machine=machine, decisions=decisions)
+    if machine is None:
+        from tilestream.autoplan import Machine
+        machine = Machine.detect(host_bytes=options.host_budget_bytes)
+    context_options = replace(context_options, vram_budget_bytes=options.vram_budget_bytes)
+    if resident_estimate is None:
+        from gpuwm.core import preflight
+        resident_estimate = preflight.estimate_experiment(
+            context_options.resident_context.experiment)
+    admission = _resident_admission(context_options, machine, resident_estimate)
+    budget = admission["budget_bytes"]
+    # Fold the declared allowance once. A later reduction reserves configured
+    # resident obligations and must not be overwritten by the original key.
+    walk_options = replace(options, vram_budget_bytes=None)
+    if options.vram_budget_bytes is not None:
+        machine = replace(machine, vram_bytes=budget, vram_headroom=0.0)
+    attempts = 0
+    last_error = None
+    last_rows = {}
+
+    def attempt(working_machine, forced, permitted_streams=None):
+        nonlocal attempts, last_error, last_rows
+        attempts += 1
+        rows = {}
+        try:
+            result = _decide_tree(nodes, walk_options, machine=working_machine,
+                                  decisions=rows, forced_stream=frozenset(forced))
+        except (StreamingRefused, _CannotPlan()) as exc:
+            last_error = exc
+            last_rows = rows
+            return None
+        last_rows = rows
+        selected_auto = {gid for gid in auto_ids if rows[gid].stream}
+        if permitted_streams is None:
+            permitted_streams = set(forced) if forced else selected_auto
+        if not selected_auto <= permitted_streams:
+            # Try the other one-domain alternatives before accepting a road
+            # that silently changed two preferences during tile reduction.
+            return None
+        streams = any(entry[-1].stream for entry in result.decided)
+        resident_ids = {int(entry[0].cfg.grid_id) for entry in result.decided
+                        if not entry[-1].stream}
+        resident_bound = _resident_subset_envelope(resident_estimate, nodes, resident_ids)
+        peak = (result.process_overhead_bytes + result.vram_spent_bytes
+                + result.radiation_transient_bytes if streams else
+                admission["envelope_bytes"])
+        # Resident child itemizations already include their coupling slots.
+        # Streamed children lost that itemization and add their live corridor
+        # plus tile marginal claim; neither global process nor radiation is
+        # charged again. Marginal claims include any selected call excess.
+        streamed_claims = sum(int(rows[int(entry[0].cfg.grid_id)].detail.get(key, 0))
+            for entry in result.decided if entry[-1].stream
+            for key in ("claim_bytes", "corridor_claim_bytes"))
+        configured_mixed = resident_bound + streamed_claims
+        peak = max(peak, configured_mixed)
+        result.resident_subset_envelope_bytes = resident_bound
+        result.configured_mixed_envelope_bytes = configured_mixed
+        host_fits = (result.host_budget_bytes is None
+                     or result.host_spent_bytes <= result.host_budget_bytes)
+        if peak > budget or not host_fits:
+            # The empirical walk maximizes tiles against its resident price.
+            # Reserve the exact additional configured obligation before asking
+            # it for smaller tiles on this SAME preference set. This gap does
+            # not include streamed claims: they occur in both totals.
+            empirical_peak = (result.process_overhead_bytes + result.vram_spent_bytes
+                              + result.radiation_transient_bytes)
+            resident_reservation = max(0, configured_mixed - empirical_peak)
+            reduced_allowance = budget - resident_reservation
+            if (streams and host_fits and resident_reservation > 0
+                    and 0 < reduced_allowance < int(working_machine.vram_bytes)):
+                return attempt(replace(working_machine, vram_bytes=reduced_allowance),
+                               forced, permitted_streams)
+            return None
+        for gid in auto_ids:
+            rows[gid].detail["resident_admission"] = dict(
+                admission, selected_streamed=rows[gid].stream,
+                preference_changed=gid in forced, planning_attempts=attempts,
+                resident_subset_envelope_bytes=resident_bound,
+                configured_mixed_envelope_bytes=configured_mixed)
+        return result
+
+    def publish(result):
+        if decisions is not None:
+            decisions.update({int(entry[0].cfg.grid_id): entry[-1]
+                              for entry in result.decided})
+        return result
+
+    # No allocation or second device observation occurs in these arithmetic
+    # attempts. The first admitted result keeps all existing preferences.
+    candidate = attempt(machine, ())
+    if candidate is not None:
+        return publish(candidate)
+    # These immutable per-process costs are paid on every candidate. A card
+    # below this floor cannot be rescued by enumerating 2**N road preferences.
+    fixed_floor = (_tree_process_overhead_bytes(nodes)
+                   + _tree_radiation_transient_bytes(nodes))
+    if fixed_floor > budget:
+        raise StreamingRefused(
+            f"the shared process/radiation floor {fixed_floor} bytes exceeds "
+            f"the {budget} byte admission budget before domain claims")
+    # A domain whose full store already exceeds the whole host allowance
+    # cannot stream on ANY tile. Exclude that impossible choice before the
+    # subset search; the ordinary walk still validates every actual candidate.
+    # The store is the same lower bound autoplan.plan checks before tile search.
+    host_budget = (int(options.host_budget_bytes)
+                   if options.host_budget_bytes is not None else
+                   int(machine.host_budget_bytes))
+    host_blocked = {}
+    for node, choice in zip(nodes, per_domain):
+        if choice.mode != "auto" or choice.store != "host":
+            continue
+        cfg = node.cfg.run
+        store = radiation_footprint(cfg, choice).store_bytes(
+            int(cfg.nx) * int(cfg.ny) * int(cfg.nz))
+        minimum = 2.0 * store if choice.write_mode == "shadow" else store
+        if minimum > host_budget:
+            host_blocked[int(node.cfg.grid_id)] = minimum
+    searchable_auto_ids = [gid for gid in auto_ids if gid not in host_blocked]
+    if host_blocked:
+        required_resident = set(host_blocked) | {
+            int(node.cfg.grid_id) for node, choice in zip(nodes, per_domain)
+            if choice.mode == "off"}
+        required_envelope = _resident_subset_envelope(
+            resident_estimate, nodes, required_resident)
+        if required_envelope > budget:
+            names = ", ".join(f"d{gid:02d}" for gid in sorted(host_blocked))
+            minimum = min(host_blocked.values())
+            raise StreamingRefused(
+                f"{names} must remain resident: each needs streamed storage of "
+                f"at least {minimum / (1024 ** 3):.2f} GiB, above the "
+                f"{host_budget / (1024 ** 3):.2f} GiB host allowance even "
+                "before tile-dependent storage. Their required resident "
+                f"envelope is {required_envelope / (1024 ** 3):.2f} GiB, "
+                f"above the {budget / (1024 ** 3):.2f} GiB admission budget.")
+    tile_machine = replace(machine, vram_bytes=budget)
+    candidate = attempt(tile_machine, ())
+    if candidate is not None:
+        return publish(candidate)
+    # A fitting automatic road is enough: do not enumerate 2**N subsets to
+    # prove a minimum streamed-domain count. Try single changes first, then
+    # cumulative changes from the last domain back toward the root. This
+    # reaches the all-auto-streamed alternative in at most 2*N-1 candidates.
+    # Every attempt still pays the same configured, host and coupling bounds.
+    ordered = tuple(reversed(searchable_auto_ids))
+    tried = set()
+    for count in range(1, len(ordered) + 1):
+        choices = ((gid,) for gid in ordered) if count == 1 else (ordered[:count],)
+        for forced in choices:
+            tried.add(frozenset(forced))
+            candidate = attempt(tile_machine, forced)
+            if candidate is not None:
+                return publish(candidate)
+    # Greedy preferences are not a proof of impossibility. Retain the complete
+    # mixed-road search if none of the fast candidates fits, without repeating
+    # those candidates and without a domain/count cutoff that could reject a
+    # legal alternative.
+    for count in range(2, len(ordered) + 1):
+        for forced in combinations(ordered, count):
+            if frozenset(forced) in tried:
+                continue
+            candidate = attempt(tile_machine, forced)
+            if candidate is not None:
+                return publish(candidate)
+    if decisions is not None:
+        decisions.update(last_rows)
+    detail = "" if last_error is None else f" ({last_error})"
+    raise StreamingRefused(
+        "no auto resident/streamed road found by the shared planner fits "
+        f"the {budget / (1024 ** 3):.2f} GiB admission budget and host/coupling obligations{detail}")
+
+
+def _decide_tree(nodes, options=None, *, machine=None,
+                 decisions=None, forced_stream=frozenset()) -> TreeDecision:
     """Decide every domain's road against one budget; build nothing.
 
     The DECIDE pass of :func:`steppers_for_tree`, split out so a surface
@@ -4311,9 +4849,9 @@ def decide_tree(nodes, options=None, *, machine=None,
     tree the run door would take without owning the card it is sizing --
     walks the SAME arithmetic instead of growing a second model of it.
     ``nodes`` is the parent-first node list; each node needs only ``cfg``
-    (``grid_id``, ``run``) and ``parent`` -- ``state`` is the build
-    pass's business, which is what makes this callable from a bare
-    config tree with no model behind it.
+    (``grid_id``, ``run``) and ``parent``. When live states are available,
+    their static map factors resolve the adaptive acoustic halo envelope.
+    A bare config tree records its unit-map estimate as provisional.
     """
     options = OFF if options is None else options
     import dataclasses
@@ -4330,15 +4868,34 @@ def decide_tree(nodes, options=None, *, machine=None,
     # records the road and the arithmetic -- the receipt an operator reads
     # to see which claims consumed the card.
     #
-    # Only when the planner is consulted: a PINNED tiling asks no question
-    # and probes no card (the bit-exactness gates depend on that), so it
-    # gets roads recorded and no budget arithmetic.  Per domain now, so a
-    # tree pinned end to end still probes nothing, and a tree with one
-    # planner-driven domain in it does the arithmetic for all of them --
-    # a pinned domain occupies the card whether or not it asked a
-    # question, and leaving it out of the budget would hand its bytes to
-    # the next domain twice.
-    per_domain = [options_for_domain(node.cfg, options) for node in nodes]
+    # WHAT THIS GATES IS THE CARD, NOT THE PRICE.  A PINNED tiling asks no
+    # question, so it consults no planner and probes no card -- the law
+    # every bit-exactness gate rests on -- and everything below that needs
+    # a machine is gated on it: the probe, the configured budget folds, the
+    # tree budget and the successors' reservation.
+    #
+    # It used to gate the CLAIMS as well, and that was a defect.  Every
+    # term of a domain's price is a read off the rung's footprint
+    # (``autoplan.footprint_for``, a table lookup) and the tiling: the
+    # once-per-process floor, the radiation reservation, the marginal
+    # claims, the corridors and the pinned host store all take a config and
+    # no machine.  Gating them here zeroed the whole ledger for a tree
+    # whose only streamed domain pinned its tiling, so ``TreeDecision.priced``
+    # came back False, ``TreeRoadPlan.usable`` with it, and
+    # ``gpuwm check`` priced the forecast at the RESIDENT envelope and
+    # refused it -- three lines below printing the streamed road that fits.
+    # MEASURED on a 4-domain ERA5 tree: the same d04, pinned, was refused
+    # at 62.36 GiB against a 30.40 GiB budget while its own plan row said
+    # 6.95 GiB.  Worse, the verdict was not even a property of the pinned
+    # domain: adding ``tiles = { mode = "auto" }`` to d01 flipped this flag
+    # and the byte-identical d04 row then fit with room to spare.
+    #
+    # The card was only ever needed to answer "does it FIT", and preflight
+    # asks that separately against its own budget.
+    per_domain = [
+        _options_with_map_factor(options_for_domain(node.cfg, options),
+                                 getattr(node, "state", None), node.cfg.run)
+        for node in nodes]
     consults_planner = any(o.enabled and o.tile_nx is None
                            for o in per_domain)
     machine0 = machine
@@ -4404,7 +4961,6 @@ def decide_tree(nodes, options=None, *, machine=None,
     spent = 0
     host_spent = 0
     decided: list = []
-    decided_by_gid: dict[int, object] = {}
 
     def reduced(by: int, host_by: int = 0, transient: int = 0):
         """``machine0`` with ``by`` VRAM and ``host_by`` host bytes spent.
@@ -4484,14 +5040,14 @@ def decide_tree(nodes, options=None, *, machine=None,
     # own budget is the same number every ``decide`` in it is planning
     # against, and added back per domain in ``reduced`` so no domain pays it
     # a second time.
-    tree_overhead = (_tree_process_overhead_bytes(nodes) if consults_planner
-                     else 0)
-    tree_transient = (_tree_radiation_transient_bytes(nodes)
-                      if consults_planner else 0)
+    # Both of these take ``nodes`` and no machine, so they are computed for
+    # every walk; only the BUDGET they are weighed against needs a card.
+    tree_overhead = _tree_process_overhead_bytes(nodes)
+    tree_transient = _tree_radiation_transient_bytes(nodes)
     total_budget = (_tree_budget_bytes(machine0, tree_transient)
                     if consults_planner else 0)
     claim_budget = max(0, total_budget - tree_overhead)
-    reservations = (_tree_reservations(nodes, claim_budget)
+    reservations = (_tree_reservations(nodes, claim_budget, per_domain, forced_stream=forced_stream)
                     if consults_planner else [(0, [])] * len(nodes))
     for node, node_options, (reserve, reserved_for) in zip(
             nodes, per_domain, reservations):
@@ -4517,13 +5073,15 @@ def decide_tree(nodes, options=None, *, machine=None,
         # second consultation on a card whose free VRAM moved in between
         # could answer differently from the one that got recorded.  The
         # receipt would then describe a run that did not happen.
-        decision = decide(cfg, node_options, machine=node_machine)
+        decision = decide(cfg, node_options, machine=node_machine,
+                          allow_resident=gid not in forced_stream)
         if decision.stream and reserve:
             budget_before = int(decision.budget_bytes or 0)
             tile_machine = reduced(spent + overhead_offset + int(reserve),
                                    host_spent, own_transient)
             try:
-                decision = decide(cfg, node_options, machine=tile_machine)
+                decision = decide(cfg, node_options, machine=tile_machine,
+                                  allow_resident=gid not in forced_stream)
             except _CannotPlan() as exc:
                 raise StreamingRefused(
                     f"d{gid:02d} streams, and the domains still undecided "
@@ -4543,13 +5101,55 @@ def decide_tree(nodes, options=None, *, machine=None,
             decision.detail.update(
                 reserved_bytes=int(reserve), reserved_for=list(reserved_for),
                 budget_before_reserve_bytes=budget_before)
-        claim = _decision_claim_bytes(node, decision, claim_budget)
+        claim = _decision_claim_bytes(node, decision, node_options)
         corridor = 0
         if getattr(node, "parent", None) is not None:
             from gpuwm.core.nest_stream import corridor_claim_bytes
 
             corridor = corridor_claim_bytes(node, decision=decision)
+            if (decision.stream and node_options.mode == "auto"
+                    and node_options.tile_nx is None and consults_planner
+                    and tree_overhead + spent + claim + corridor + reserve > total_budget):
+                # Packed per-buffer coupling belongs beside this child's tile,
+                # not only in the receipt after the tile spent the whole budget.
+                # Reserve the actual selected corridor; if changing the buffer
+                # shape enlarges it, reserve that larger amount before retrying.
+                def additional_reservation():
+                    if not getattr(node, "_streamed_reconstruction_required", False):
+                        return corridor
+                    fp = radiation_footprint(cfg, node_options)
+                    cells = ((int(decision.tile_nx)+2*int(decision.halo))
+                             * (int(decision.tile_ny)+2*int(decision.halo))*int(cfg.nz))
+                    ordinary = int(fp.marginal_bytes(cells, int(decision.nbuffers)))
+                    return corridor + max(0, claim-ordinary)
+                held_corridor = 0
+                while additional_reservation() > held_corridor:
+                    held_corridor = additional_reservation()
+                    tile_machine = reduced(
+                        spent + overhead_offset + int(reserve) + held_corridor,
+                        host_spent, own_transient)
+                    decision = decide(cfg, node_options, machine=tile_machine,
+                                      allow_resident=False)
+                    claim = _decision_claim_bytes(node, decision, node_options)
+                    corridor = corridor_claim_bytes(node, decision=decision)
+                decision.detail.update(
+                    reserved_bytes=int(reserve), reserved_for=list(reserved_for),
+                    own_corridor_reserved_bytes=held_corridor)
         host_claim = int(decision.detail.get("host_claim_bytes") or 0)
+        if decision.stream and "host_claim_bytes" not in decision.detail:
+            # A PINNED tiling reached neither place ``decide`` records the
+            # host claim, so nothing on its path had the store's price at
+            # all.  It is the same ``store + arena`` the planner reports
+            # for the tiling IT chose, read off this tiling instead.
+            host_claim = pinned_host_claim_bytes(cfg, decision)
+            decision.detail["host_claim_bytes"] = host_claim
+        if decision.stream and getattr(node, "_streamed_reconstruction_required", False):
+            # Outgoing and incoming stores coexist until the common mover
+            # commits. The old tile owner and its halo arena are closed first.
+            # Charging two complete host claims also covers the retained
+            # geography and the global land-continuation staging arrays.
+            host_claim *= 2
+            decision.detail["host_claim_bytes"] = host_claim
         decision.detail.update(
             road=("streamed" if decision.stream else "resident"),
             claim_bytes=claim, corridor_claim_bytes=corridor,
@@ -4562,42 +5162,17 @@ def decide_tree(nodes, options=None, *, machine=None,
             # ``tree_process_overhead + sum(claim + corridor)``.
             tree_process_overhead_bytes=int(tree_overhead),
             configured_mode=node_options.mode)
-        if consults_planner:
-            spent += claim + corridor
-            host_spent += host_claim
+        # BOTH LEDGERS, ON EVERY ROAD.  A pinned domain occupies the card
+        # and page-locks its store whether or not it asked the planner a
+        # question, so leaving it unspent would hand its bytes to the next
+        # domain a second time.
+        spent += claim + corridor
+        host_spent += host_claim
         if decisions is not None:
             decisions[gid] = decision
-        # A coupling edge with BOTH ends streamed is refused at DECISION
-        # time -- the same law gpuwm.core.nest.NestCoupler.force enforces
-        # at every FORCE, asked here where it costs a sentence instead of
-        # a run.  Each single-streamed shape is gated alone
-        # (tilestream/test_nest_executor.py streams the parent,
-        # tilestream/test_streamed_child.py streams the child); the
-        # composition is ungated, and ungated is refused, not run.
-        parent = getattr(node, "parent", None)
-        if parent is not None and decision.stream:
-            pgid = int(parent.cfg.grid_id)
-            pdecision = decided_by_gid.get(pgid)
-            if pdecision is not None and pdecision.stream:
-                raise StreamingRefused(
-                    f"the coupling edge d{pgid:02d} -> d{gid:02d} has BOTH "
-                    "ends streamed: it would compose the streamed-parent "
-                    "footprint corridor with the streamed-child frame "
-                    "corridor and the per-tile table windows in one FORCE, "
-                    "and no gate has driven that composition.  Ungated is "
-                    "refused, not run -- and refused here, at decision "
-                    "time, rather than by NestCoupler.force after the "
-                    "whole tree is built.  Leave one end resident: say so "
-                    f"explicitly with a per-domain table (tiles = {{ mode = "
-                    f"\"off\" }} on [[domain]] grid_id = {gid}, which runs "
-                    f"d{gid:02d} resident under a streamed d{pgid:02d}), or "
-                    "raise [tiles] vram_budget_bytes or free VRAM so one of "
-                    "the two fits resident, or pin the whole run resident "
-                    "by deleting the [tiles] table.")
         decided.append((node, cfg, node_options, node_machine, decision))
-        decided_by_gid[gid] = decision
     return TreeDecision(
-        decided=decided, priced=bool(consults_planner),
+        decided=decided, priced=True,
         process_overhead_bytes=int(tree_overhead),
         radiation_transient_bytes=int(tree_transient),
         total_budget_bytes=int(total_budget),
@@ -4626,9 +5201,15 @@ class TreeRoadPlan:
     :attr:`peak_vram_bytes` adds the tree's radiation reservation, the
     figure every admission question is asked of (the same pairing
     :class:`StreamedEnvelope` documents).  ``refusal`` carries the walk's
-    own sentence when no road runs this tree; ``priced`` is False when
-    every enabled domain pinned its tiling and no budget arithmetic
-    exists.
+    own sentence when no road runs this tree; ``priced`` is False only
+    when the walk did not complete, and so produced no claims to read.
+
+    ``priced`` used to mean "some domain consulted the PLANNER", which is
+    a different question and the wrong one: every term of this pricing is
+    a read off the rung's footprint and the tiling, so a tree that pins
+    every tiling probes no card AND still has a number.  Conflating the
+    two refused a fitting run at its resident price -- see
+    :func:`decide_tree`.
     """
 
     rows: tuple
@@ -4656,10 +5237,13 @@ class TreeRoadPlan:
     #: have had the pace line say "streamed road" about a domain that is
     #: never tiled, and quote a bus floor for bytes that never cross it.
     root_envelope: object | None = None
+    resident_subset_envelope_bytes: int = 0
+    configured_mixed_envelope_bytes: int = 0
 
     @property
     def peak_vram_bytes(self) -> int:
-        return int(self.vram_hold_bytes) + int(self.radiation_transient_bytes)
+        return max(int(self.vram_hold_bytes) + int(self.radiation_transient_bytes),
+                   int(self.configured_mixed_envelope_bytes))
 
     #: Alias so surfaces written against :class:`StreamedEnvelope` read
     #: the hold under the same name.
@@ -4671,10 +5255,17 @@ class TreeRoadPlan:
     def usable(self) -> bool:
         """Whether this plan may REPLACE the resident forecast term.
 
-        Only a priced walk that actually streams somewhere and was not
-        refused: an all-resident decision is the resident road, whose
-        calibrated envelope the report already carries, and a refused or
-        unpriced walk has no figure to stand in its place.
+        Only a completed walk that actually streams somewhere and was
+        not refused: an all-resident decision is the resident road, whose
+        calibrated envelope the report already carries, and a refused
+        walk has no figure to stand in its place.
+
+        It does NOT ask whether a card was probed.  What this guards is
+        "may this plan replace the resident forecast TERM", and that term
+        -- process floor, marginal claims, corridors, radiation
+        reservation -- is a function of the config and the tiling alone.
+        The card only ever answered "does it FIT", which preflight asks
+        separately against its own budget.
         """
         return (self.refusal is None and self.priced and self.streams_any)
 
@@ -4706,6 +5297,12 @@ class TreeRoadPlan:
             f"d{int(row['grid_id']):02d} "
             + ("streams" if row["road"] == "streamed" else "resident")
             for row in self.rows)
+        if self.configured_mixed_envelope_bytes > (self.vram_hold_bytes
+                                                  + self.radiation_transient_bytes):
+            return (f"the mixed road prices {roads}; the configured resident domains and tile claims "
+                    f"set the admission envelope at {self.peak_vram_bytes / (1024 ** 3):.2f} GiB "
+                    f"(the tile/coupling ledger is "
+                    f"{(self.vram_hold_bytes + self.radiation_transient_bytes) / (1024 ** 3):.2f} GiB)")
         return (f"the mixed road prices {roads}; the card holds "
                 f"{self.vram_hold_bytes / (1024 ** 3):.2f} GiB between "
                 f"radiation calls and {self.peak_vram_bytes / (1024 ** 3):.2f} "
@@ -4731,6 +5328,8 @@ class TreeRoadPlan:
             "host_budget_bytes": self.host_budget_bytes,
             "total_budget_bytes": int(self.total_budget_bytes),
             "process_overhead_bytes": int(self.process_overhead_bytes),
+            "resident_subset_envelope_bytes": int(self.resident_subset_envelope_bytes),
+            "configured_mixed_envelope_bytes": int(self.configured_mixed_envelope_bytes),
         }
 
 
@@ -4786,14 +5385,14 @@ def _plan_rows(decisions: dict) -> tuple:
     return tuple(rows)
 
 
-def tree_road_plan(exp, *, machine=None) -> TreeRoadPlan | None:
+def tree_road_plan(exp, *, machine=None, resident_estimate=None) -> TreeRoadPlan | None:
     """Price the road :func:`steppers_for_tree` would take, for a report.
 
     ``None`` when the question does not arise: a single-domain config
     (the single-domain streamed envelope already answers it), or a tree
     with no ``[tiles]`` configured anywhere.  Never raises -- this runs
     inside pricing surfaces whose job is to answer before the user spends
-    anything, so the walk's own refusal (a both-streamed edge, "no tile
+    anything, so the walk's own refusal ("no tile
     fits") comes back as :attr:`TreeRoadPlan.refusal` for the report to
     print, with the resident figures left standing as the verdict's
     basis.
@@ -4807,12 +5406,14 @@ def tree_road_plan(exp, *, machine=None) -> TreeRoadPlan | None:
                    for dc in domains)):
         return None
     nodes = _config_tree_nodes(domains)
+    from gpuwm.core.streamed_relocation import mark_reconstruction_nodes
+    mark_reconstruction_nodes(nodes, exp)
     decisions: dict = {}
     refusal = None
     outcome = None
     try:
         outcome = decide_tree(nodes, options, machine=machine,
-                              decisions=decisions)
+                              decisions=decisions, resident_estimate=resident_estimate)
     except StreamingRefused as error:
         refusal = str(error)
     except Exception as error:              # a report never dies on its estimate
@@ -4852,7 +5453,9 @@ def tree_road_plan(exp, *, machine=None) -> TreeRoadPlan | None:
         total_budget_bytes=int(outcome.total_budget_bytes),
         process_overhead_bytes=int(outcome.process_overhead_bytes),
         host_budget_bytes=outcome.host_budget_bytes,
-        root_envelope=root_envelope)
+        root_envelope=root_envelope,
+        resident_subset_envelope_bytes=outcome.resident_subset_envelope_bytes,
+        configured_mixed_envelope_bytes=outcome.configured_mixed_envelope_bytes)
 
 
 def streaming_receipt(options: StreamingOptions | None,
@@ -5120,6 +5723,34 @@ def domain_store(state):
     return getattr(state, _STORE_ATTR, None)
 
 
+def domain_field(state, name: str, *, setup: bool = False):
+    """Borrow an authoritative carrier after pending streamed work lands.
+
+    Missing live carriers never fall back to the frozen attachment state.
+    CanonicalStoreState resolves its own inventory without resident methods.
+    Immutable one-dimensional setup is safe to borrow from the template.
+    """
+    from gpuwm.core.streamed_state import CanonicalStoreState
+    if isinstance(state, CanonicalStoreState):
+        return getattr(state, name, None)
+    _drain_streamed(state)
+    endpoint = getattr(state, "_streamed_domain", None)
+    store = domain_store(state)
+    if store is None and endpoint is not None:
+        store = getattr(endpoint, "store", None)
+    if store is None:
+        return getattr(state, name, None)
+    if not setup:
+        return store.get(_carrier_key(name))
+    geography = getattr(endpoint, "_geography", None)
+    if geography is not None and "setup/" + name in geography:
+        return geography["setup/" + name]
+    value = getattr(state, name, None)
+    if value is not None and getattr(value, "ndim", 0) < 2:
+        return value
+    raise StreamingRefused(f"live streamed setup/{name} is missing from domain geography")
+
+
 def window_slices(shape, window) -> tuple:
     """``window`` = ``(j0, j1, i0, i1)`` in MASS cells, on any staggering.
 
@@ -5181,7 +5812,14 @@ def _carrier_key(attr: str) -> str:
     field by the same string.  A ``DomainState`` attribute is the ``state/``
     family of that namespace.
     """
-    return f"state/{attr}"
+    return attr if "/" in attr else f"state/{attr}"
+
+
+def _carrier_array(state, attr):
+    if "/" not in attr:
+        return getattr(state, attr, None)
+    from tilestream.physics_inventory import carrier_manifest
+    return carrier_manifest(state).get(attr)
 
 
 def refresh_from_store(state, attrs, *, window=None) -> int:
@@ -5222,7 +5860,7 @@ def refresh_from_store(state, attrs, *, window=None) -> int:
         src = store.get(_carrier_key(attr))
         if src is None:
             continue
-        dst = getattr(state, attr, None)
+        dst = _carrier_array(state, attr)
         if dst is None:
             raise StreamingRefused(
                 f"the store carries {attr!r} but the state does not; the "
@@ -5285,7 +5923,7 @@ def commit_to_store(state, attrs, *, window=None) -> int:
         dst = store.get(key)
         if dst is None:
             continue
-        src = getattr(state, attr, None)
+        src = _carrier_array(state, attr)
         if src is None:
             raise StreamingRefused(
                 f"the store carries {attr!r} but the state does not")

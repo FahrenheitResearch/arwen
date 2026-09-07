@@ -383,3 +383,22 @@ def test_an_external_target_directory_is_accepted(tmp_path) -> None:
     runner = _runner()
     resolved = runner.resolve_target_dir(str(tmp_path / "cargo-target"))
     assert resolved == (tmp_path / "cargo-target").resolve()
+
+
+def test_worker_gate_uses_the_battery_python_without_shell_expansion(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    runner = _runner()
+    entry = next(e for e in _entries() if e.package == "arwen-tui")
+    seen = {}
+    def invoke(argv, **kwargs):
+        seen.update(argv=argv, **kwargs)
+        return SimpleNamespace(returncode=0, stdout=(
+            "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n"))
+    monkeypatch.setattr(runner.subprocess, "run", invoke)
+    python = str(tmp_path / "engine environment" / "python.exe")
+    monkeypatch.setattr(runner.sys, "executable", python)
+    result = runner.run_entry(entry, target_dir=tmp_path / "target", cargo="cargo")
+    assert seen["env"]["GPUWM_TUI_TEST_PYTHON"] == python
+    assert not seen.get("shell", False)
+    assert seen["cwd"] == REPOSITORY_ROOT / entry.workspace
+    assert result.verdict == "PASSED"

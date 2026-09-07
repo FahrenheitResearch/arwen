@@ -1,0 +1,169 @@
+{
+  "source_file_sha256": "b4199371567369fa93471f66eef60cb63a55407718b828d724e43587bc4dc82e",
+  "routine_sha256": "ffb75a57722e7aa19905cd80843907a5e0168032b3dd24670b5d94910dc2715e",
+  "compiler": "GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "scope": "Unmodified WRF sfcprs3 body; halo skip disabled for owned interior columns; fatal helper exits nonzero.",
+  "cases": [
+    {
+      "name": "sea_level",
+      "terrain": 0.0,
+      "slp": 101100.0,
+      "pressure": [
+        100000.0,
+        92500.0,
+        85000.0,
+        70000.0,
+        50000.0,
+        30000.0
+      ],
+      "height": [
+        120.0,
+        780.0,
+        1450.0,
+        3050.0,
+        5600.0,
+        9400.0
+      ],
+      "expected_fp32_bits": 1204123136
+    },
+    {
+      "name": "near_sea_level",
+      "terrain": 49.0,
+      "slp": 101100.0,
+      "pressure": [
+        100000.0,
+        92500.0,
+        85000.0,
+        70000.0,
+        50000.0,
+        30000.0
+      ],
+      "height": [
+        120.0,
+        780.0,
+        1450.0,
+        3050.0,
+        5600.0,
+        9400.0
+      ],
+      "expected_fp32_bits": 1204051863
+    },
+    {
+      "name": "sea_level_fallback_threshold",
+      "terrain": 50.0,
+      "slp": 101100.0,
+      "pressure": [
+        100000.0,
+        92500.0,
+        85000.0,
+        70000.0,
+        50000.0,
+        30000.0
+      ],
+      "height": [
+        120.0,
+        780.0,
+        1450.0,
+        3050.0,
+        5600.0,
+        9400.0
+      ],
+      "expected_fp32_bits": 1204049598
+    },
+    {
+      "name": "exact_isobaric_height",
+      "terrain": 780.0,
+      "slp": 101100.0,
+      "pressure": [
+        100000.0,
+        92500.0,
+        85000.0,
+        70000.0,
+        50000.0,
+        30000.0
+      ],
+      "height": [
+        120.0,
+        780.0,
+        1450.0,
+        3050.0,
+        5600.0,
+        9400.0
+      ],
+      "expected_fp32_bits": 1203022339
+    },
+    {
+      "name": "normal_bracket",
+      "terrain": 2000.0,
+      "slp": 101100.0,
+      "pressure": [
+        100000.0,
+        92500.0,
+        85000.0,
+        70000.0,
+        50000.0,
+        30000.0
+      ],
+      "height": [
+        120.0,
+        780.0,
+        1450.0,
+        3050.0,
+        5600.0,
+        9400.0
+      ],
+      "expected_fp32_bits": 1201359897
+    },
+    {
+      "name": "excluded_top_pair",
+      "terrain": 8000.0,
+      "slp": 101100.0,
+      "pressure": [
+        100000.0,
+        92500.0,
+        85000.0,
+        70000.0,
+        50000.0,
+        30000.0
+      ],
+      "height": [
+        120.0,
+        780.0,
+        1450.0,
+        3050.0,
+        5600.0,
+        9400.0
+      ],
+      "expected_fp32_bits": 1193192794
+    },
+    {
+      "name": "lower_slp_bracket",
+      "terrain": 50.0,
+      "slp": 90000.0,
+      "pressure": [
+        100000.0,
+        92500.0,
+        85000.0,
+        70000.0,
+        50000.0,
+        30000.0
+      ],
+      "height": [
+        1000.0,
+        2000.0,
+        3000.0,
+        4000.0,
+        5000.0,
+        6000.0
+      ],
+      "expected_fp32_bits": 1202691368
+    }
+  ],
+  "reference": "WRF dyn_em/module_initialize_real.F, sfcprs3; 2026-09-04 retained CPU build source",
+  "compiler_flags": [
+    "-O0",
+    "-ffp-contract=off",
+    "-fno-unsafe-math-optimizations",
+    "-ffree-line-length-none"
+  ]
+}

@@ -200,3 +200,32 @@ def test_bridge_answers_its_declared_abi_contract():
     assert completed.returncode == 0
     assert netcdf_bridge.INVENTORY_SCHEMA in completed.stdout
     assert netcdf_bridge.DUMP_SCHEMA in completed.stdout
+
+
+@pytest.mark.parametrize("container", ["NETCDF3_CLASSIC", "NETCDF3_64BIT_OFFSET", "NETCDF3_64BIT_DATA", "NETCDF4"])
+def test_fixed_character_records_preserve_exact_shape_and_bytes(tmp_path, container):
+    bridge = _bridge()
+    path = tmp_path / "times.nc"
+    values = np.frombuffer(b"2021-12-30_17:00:00" + b"2021-12-30_18:00:00" + b"a b\x00c" + b"\x00" * 14, dtype="S1").reshape(3, 19)
+    with netCDF4.Dataset(path, "w", format=container) as ds:
+        ds.createDimension("Time", None)
+        ds.createDimension("DateStrLen", 19)
+        var = ds.createVariable("Times", "S1", ("Time", "DateStrLen"), zlib=container == "NETCDF4")
+        var[:] = values
+    with netcdf_bridge.open_dataset(path, executable=bridge) as ds:
+        got = ds.variables["Times"][:]
+        assert got.shape == (3, 19)
+        assert got.dtype == np.dtype("S1")
+        assert got.tobytes() == values.tobytes()
+        assert ds.variables["Times"][1].tobytes() == values[1].tobytes()
+
+
+def test_variable_length_text_is_not_truncated_to_characters(tmp_path):
+    bridge = _bridge()
+    path = tmp_path / "text.nc"
+    with netCDF4.Dataset(path, "w") as ds:
+        ds.createDimension("record", 2)
+        ds.createVariable("labels", str, ("record",))[:] = np.array(["long text", "more text"], dtype=object)
+    with netcdf_bridge.open_dataset(path, executable=bridge) as ds:
+        with pytest.raises(netcdf_bridge.NetcdfDecodeError, match="fixed-width ASCII"):
+            ds.variables["labels"][:]

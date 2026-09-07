@@ -251,13 +251,19 @@ def _parse_manifest(path: Path) -> dict[str, str]:
     return entries
 
 
-def _parse_series(path: Path) -> list[tuple[int, Path, Path]]:
+def _parse_series(path: Path) -> list[tuple]:
     rows = []
     for raw in path.read_text().splitlines():
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
-        hour_text, atmosphere, soil = raw.split("\t")
-        rows.append((int(hour_text), Path(atmosphere), Path(soil)))
+        fields = raw.split("\t")
+        if len(fields) < 3:
+            raise ValueError("native series requires HOUR, atmosphere and soil paths")
+        from gpuwm.ingest.native_supplements import supplement_bindings
+        donors = supplement_bindings(fields[3:], base=path.parent)
+        resolve = lambda value: (path.parent / value).resolve()
+        rows.append((int(fields[0]), resolve(fields[1]), resolve(fields[2]),
+                     *(donor for _, donor in donors)))
     observed = [row[0] for row in rows]
     try:
         validate_hrrr_source_forecast_hours(observed)
@@ -296,8 +302,8 @@ def verify_source_tree(*, source_root: Path, manifest: Path,
         sizes = list(pool.map(verify, paths))
     series_rows = _parse_series(series)
     declared = {str((source_root / relative).resolve()) for relative in entries}
-    for _, atmosphere, soil in series_rows:
-        for path in (atmosphere, soil):
+    for row in series_rows:
+        for path in row[1:]:
             if str(path.resolve()) not in declared:
                 raise ValueError(f"series input is not bound by source manifest: {path}")
     return {
@@ -307,6 +313,12 @@ def verify_source_tree(*, source_root: Path, manifest: Path,
         "payload_file_count": len(paths),
         "payload_bytes": int(sum(sizes)),
         "series_sha256": _sha256(series),
+        **({"supplement_bindings": [
+            {"forecast_hour": row[0], "field": "PMSL", "path": str(path),
+             "sha256": next(digest for relative, digest in entries.items()
+                            if (source_root / relative).resolve() == path.resolve())}
+            for row in series_rows for path in row[3:]]}
+           if any(len(row) > 3 for row in series_rows) else {}),
         "forecast_hours": [row[0] for row in series_rows],
         "source_forecast_hours": [row[0] for row in series_rows],
         "model_forcing_hours": list(range(len(series_rows))),
@@ -481,7 +493,10 @@ class HrrrPipelineProducer:
                  workers: str, log: Path):
         self.decoder = decoder
         self.series = series
-        self.series_hours = tuple(row[0] for row in _parse_series(series))
+        series_rows = _parse_series(series)
+        self.series_hours = tuple(row[0] for row in series_rows)
+        self.hour_payload_files = {
+            row[0]: 24 + int(len(row) > 3) for row in series_rows}
         parsed_cycle = datetime.strptime(
             cycle.replace("T", " ").removesuffix("Z"),
             "%Y-%m-%d %H:%M:%S")
@@ -742,7 +757,7 @@ class HrrrPipelineProducer:
         values = _read_tsv(ready)
         if (values.get("status") != "PASS"
                 or int(values.get("forecast_hour", -1)) != hour
-                or values.get("payload_files") != "24"):
+                or values.get("payload_files") != str(self.hour_payload_files[hour])):
             raise ValueError(f"invalid pipeline f{hour:02d} receipt: {values}")
         producer_seconds = float(values.get("producer_elapsed_seconds", "nan"))
         if not math.isfinite(producer_seconds) or producer_seconds < 0.0:

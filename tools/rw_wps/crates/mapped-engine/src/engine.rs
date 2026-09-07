@@ -34,13 +34,15 @@ pub struct Invocation {
     pub contributing_mappings: Vec<(String, String)>,
     pub input_manifest: Option<String>,
     pub input_manifest_sha256: Option<String>,
+    pub atmospheric_window: bool,
 }
 
 pub const USAGE: &str = "usage: gpuwm_mapped_engine {decode|compose|inspect} \
 --mapping MAPPING.json --input-list FILES.txt --output DIR \
 [--composition COMPOSITION.json] [--supplement ROLE=PATH]... \
 [--provenance ROLE=PATH]... [--contributing-mapping ROLE=PATH]... \
-[--input-manifest MANIFEST.json --input-manifest-sha256 HEX]\n\
+[--input-manifest MANIFEST.json --input-manifest-sha256 HEX] \
+[--atmospheric-window stdio]\n\
    or: gpuwm_mapped_engine inventory --input-list FILES.txt\n\
    or: gpuwm_mapped_engine capabilities";
 
@@ -58,6 +60,7 @@ pub fn run_capabilities() -> Value {
         "schema": crate::CAPABILITIES_SCHEMA,
         "engine": {"name": crate::ENGINE_NAME, "version": crate::ENGINE_VERSION},
         "frameset_schema": crate::FRAMESET_SCHEMA,
+        "features": {"atmospheric_window": crate::window::SCHEMA},
         // Per subcommand, the mapped source formats it decodes in
         // process.  An empty list means the subcommand is declared by
         // the contract and refuses `not_implemented` in this build.
@@ -140,6 +143,12 @@ impl Invocation {
                 "--mapping" => invocation.mapping = value()?,
                 "--input-list" => invocation.input_list = value()?,
                 "--output" => invocation.output = Some(value()?),
+                "--atmospheric-window" => {
+                    if value()? != "stdio" {
+                        return Err(usage("--atmospheric-window requires stdio"));
+                    }
+                    invocation.atmospheric_window = true;
+                }
                 "--composition" => invocation.composition = Some(value()?),
                 "--input-manifest" => invocation.input_manifest = Some(value()?),
                 "--input-manifest-sha256" => invocation.input_manifest_sha256 = Some(value()?),
@@ -1365,9 +1374,10 @@ pub fn run_decode(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> R
     // once -- about 9 GiB per time on a 3 km CONUS source.
     let summary = stream.summary().clone();
     let grid_fingerprint = summary.grid_fingerprint.clone();
-    let document = crate::frames::write_frameset(&output, &mapping, &summary, &digests, |key| {
-        stream.slice(key)
-    })?;
+    let document = crate::frames::write_frameset_with_window(
+        &output, &mapping, &summary, &digests, invocation.atmospheric_window,
+        |key| stream.slice(key),
+    )?;
     let frame_count = document
         .get("frames")
         .and_then(Value::as_array)
@@ -1375,7 +1385,7 @@ pub fn run_decode(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> R
     Ok(json!({
         "event": "receipt",
         "subcommand": "decode",
-        "schema": crate::FRAMESET_SCHEMA,
+        "schema": document["schema"],
         "frames": frame_count,
         "output": output.display().to_string(),
         "grid_fingerprint": grid_fingerprint,

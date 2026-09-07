@@ -1,70 +1,74 @@
 //! Minimal GRIB1-to-raw/JSON bridge for gpuwm ERA5 ingest.
 
-use grib_core::grib1::{Grib1File, GridType};
+use grib_core::grib1::{Grib1File, Grib1Message, GridType};
 use std::env;
 use std::error::Error;
 use std::fs::{self, File};
-use std::io::{BufWriter, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
-fn validate_grib1_envelopes(input: &Path) -> Result<(), Box<dyn Error>> {
-    let bytes = fs::read(input)?;
-    if bytes.is_empty() {
-        return Err("GRIB1 input is empty".into());
-    }
-
+fn visit_grib1_envelopes(
+    input: &Path,
+    mut visit: impl FnMut(usize, &[u8]) -> Result<(), Box<dyn Error>>,
+) -> Result<usize, Box<dyn Error>> {
+    let mut reader = BufReader::new(File::open(input)?);
     let mut offset = 0usize;
     let mut index = 0usize;
-    while offset < bytes.len() {
-        if bytes.len() - offset < 8 {
-            return Err(format!(
+    loop {
+        let mut header = [0u8; 8];
+        if reader.read(&mut header[..1])? == 0 {
+            break;
+        }
+        reader.read_exact(&mut header[1..]).map_err(|_| {
+            format!(
                 "truncated GRIB1 message {index} at byte {offset}: fewer than 8 indicator bytes"
             )
-            .into());
-        }
-        if &bytes[offset..offset + 4] != b"GRIB" {
+        })?;
+        if &header[..4] != b"GRIB" {
             return Err(format!(
                 "invalid GRIB1 message {index} at byte {offset}: missing GRIB marker"
             )
             .into());
         }
-        if bytes[offset + 7] != 1 {
+        if header[7] != 1 {
             return Err(format!(
                 "message {index} at byte {offset} is GRIB edition {}, expected edition 1",
-                bytes[offset + 7]
+                header[7]
             )
             .into());
         }
-        let declared = ((bytes[offset + 4] as usize) << 16)
-            | ((bytes[offset + 5] as usize) << 8)
-            | bytes[offset + 6] as usize;
+        let declared =
+            ((header[4] as usize) << 16) | ((header[5] as usize) << 8) | header[6] as usize;
         if declared < 12 {
+            return Err(format!("invalid GRIB1 message {index} at byte {offset}: declared length {declared} is too short").into());
+        }
+        // A GRIB1 envelope is at most 2^24-1 bytes. Metadata queries retain
+        // only this one message, independent of the whole file's length.
+        let mut bytes = vec![0u8; declared];
+        bytes[..8].copy_from_slice(&header);
+        reader.read_exact(&mut bytes[8..]).map_err(|_| {
+            format!("truncated GRIB1 message {index} at byte {offset}: declared length {declared} exceeds remaining file")
+        })?;
+        if &bytes[declared - 4..] != b"7777" {
             return Err(format!(
-                "invalid GRIB1 message {index} at byte {offset}: declared length {declared} is too short"
+                "invalid GRIB1 message {index} at byte {offset}: missing 7777 terminator"
             )
             .into());
         }
-        let end = offset
+        visit(index, &bytes)?;
+        offset = offset
             .checked_add(declared)
-            .ok_or_else(|| format!("GRIB1 message {index} length overflows at byte {offset}"))?;
-        if end > bytes.len() {
-            return Err(format!(
-                "truncated GRIB1 message {index} at byte {offset}: declared end {end}, file has {} bytes",
-                bytes.len()
-            )
-            .into());
-        }
-        if &bytes[end - 4..end] != b"7777" {
-            return Err(format!(
-                "invalid GRIB1 message {index} at byte {offset}: missing 7777 terminator at byte {}",
-                end - 4
-            )
-            .into());
-        }
-        offset = end;
+            .ok_or("GRIB1 file offset overflows")?;
         index += 1;
     }
-    Ok(())
+    if index == 0 {
+        return Err("GRIB1 input is empty".into());
+    }
+    Ok(index)
+}
+
+fn validate_grib1_envelopes(input: &Path) -> Result<usize, Box<dyn Error>> {
+    visit_grib1_envelopes(input, |_, _| Ok(()))
 }
 
 fn grid_shape_and_scan(grid: &GridType) -> Result<(usize, usize, u8), Box<dyn Error>> {
@@ -95,16 +99,101 @@ fn write_json_number_array<W: Write>(
     write!(writer, "]")
 }
 
-fn run(input: &Path, output: &Path) -> Result<(), Box<dyn Error>> {
+fn open_complete(input: &Path) -> Result<Grib1File, Box<dyn Error>> {
     // Reject corrupt concatenated inputs before grib-core can return a
     // superficially useful prefix.  The vendored July hardening validates
     // every section internally; this outer walk validates every message
     // envelope and exact EOF coverage.
-    validate_grib1_envelopes(input)?;
+    let envelopes = validate_grib1_envelopes(input)?;
     let file = Grib1File::open(input)?;
     if file.messages.is_empty() {
         return Err("GRIB1 input contains no messages".into());
     }
+    // `Grib1File::from_bytes` skips a message whose sections do not parse and
+    // still returns Ok, so an envelope-valid file can decode to N-1 messages
+    // with only a stderr warning nothing reads.  The envelope walk above is
+    // the independent count; a shortfall is a dropped field, not a smaller
+    // file, and it must not reach a dump that looks complete.
+    if file.messages.len() != envelopes {
+        return Err(format!(
+            "GRIB1 input has {envelopes} message envelopes but the decoder \
+             returned {}; a message failed to parse and was skipped",
+            file.messages.len()
+        )
+        .into());
+    }
+    Ok(file)
+}
+
+fn write_message_metadata<W: Write>(
+    metadata: &mut W,
+    message: &Grib1Message,
+    offset_values: usize,
+    count: usize,
+) -> Result<(), Box<dyn Error>> {
+    let pds = &message.pds;
+    let gds = message.gds.as_ref().ok_or("GRIB1 message has no GDS")?;
+    let (message_nx, message_ny, message_scan) = grid_shape_and_scan(&gds.grid_type)?;
+    write!(
+        metadata,
+        concat!(
+            "{{\"offset_values\":{},\"count\":{},",
+            "\"parameter\":{},\"level_type\":{},\"level\":{},",
+            "\"table_version\":{},\"center\":{},",
+            "\"nx\":{},\"ny\":{},\"scan_mode\":{},",
+            "\"year\":{},\"month\":{},",
+            "\"day\":{},\"hour\":{},\"minute\":{},",
+            "\"time_unit\":{},\"p1\":{},\"p2\":{},",
+            "\"time_range_indicator\":{},\"has_bitmap\":{}}}"
+        ),
+        offset_values,
+        count,
+        pds.parameter,
+        pds.level_type,
+        pds.level_value,
+        pds.table_version,
+        pds.center_id,
+        message_nx,
+        message_ny,
+        message_scan,
+        pds.year(),
+        pds.month,
+        pds.day,
+        pds.hour,
+        pds.minute,
+        pds.time_unit,
+        pds.p1,
+        pds.p2,
+        pds.time_range_indicator,
+        message.bms.is_some(),
+    )?;
+    Ok(())
+}
+
+fn inventory<W: Write>(input: &Path, metadata: &mut W) -> Result<(), Box<dyn Error>> {
+    // The same strict native envelope and section parsers as normal decode,
+    // one message at a time. No field values or coordinate arrays are unpacked.
+    writeln!(
+        metadata,
+        "{{\"format_version\":1,\"edition\":1,\"metadata_only\":true,\"messages\":["
+    )?;
+    visit_grib1_envelopes(input, |index, bytes| {
+        let file = Grib1File::from_bytes(bytes)?;
+        if file.messages.len() != 1 {
+            return Err(format!("GRIB1 message {index} failed to parse and was skipped").into());
+        }
+        if index != 0 {
+            writeln!(metadata, ",")?;
+        }
+        let message = &file.messages[0];
+        write_message_metadata(metadata, message, 0, message.num_data_points())
+    })?;
+    writeln!(metadata, "]}}")?;
+    Ok(())
+}
+
+fn run(input: &Path, output: &Path) -> Result<(), Box<dyn Error>> {
+    let file = open_complete(input)?;
     fs::create_dir_all(output)?;
 
     // CDO adds a one-point ``utc_date`` control record between pressure
@@ -179,43 +268,10 @@ fn run(input: &Path, output: &Path) -> Result<(), Box<dyn Error>> {
         for value in &values {
             raw.write_all(&value.to_le_bytes())?;
         }
-        let pds = &message.pds;
         if index != 0 {
             writeln!(metadata, ",")?;
         }
-        write!(
-            metadata,
-            concat!(
-                "{{\"offset_values\":{},\"count\":{},",
-                "\"parameter\":{},\"level_type\":{},\"level\":{},",
-                "\"table_version\":{},\"center\":{},",
-                "\"nx\":{},\"ny\":{},\"scan_mode\":{},",
-                "\"year\":{},\"month\":{},",
-                "\"day\":{},\"hour\":{},\"minute\":{},",
-                "\"time_unit\":{},\"p1\":{},\"p2\":{},",
-                "\"time_range_indicator\":{},\"has_bitmap\":{}}}"
-            ),
-            offset_values,
-            values.len(),
-            pds.parameter,
-            pds.level_type,
-            pds.level_value,
-            pds.table_version,
-            pds.center_id,
-            message_nx,
-            message_ny,
-            message_scan,
-            pds.year(),
-            pds.month,
-            pds.day,
-            pds.hour,
-            pds.minute,
-            pds.time_unit,
-            pds.p1,
-            pds.p2,
-            pds.time_range_indicator,
-            message.bms.is_some(),
-        )?;
+        write_message_metadata(&mut metadata, message, offset_values, values.len())?;
         offset_values += values.len();
     }
     writeln!(metadata)?;
@@ -232,11 +288,44 @@ fn main() {
     let _ = std::hint::black_box(gpuwm_preprocess_cpu::SOURCE_REV_STAMP);
     let arguments = env::args_os().collect::<Vec<_>>();
     if arguments.len() != 3 {
-        eprintln!("usage: grib1_bridge INPUT.grb OUTPUT_DIR");
+        eprintln!("usage: grib1_bridge INPUT.grb OUTPUT_DIR | --inventory INPUT.grb");
         std::process::exit(2);
     }
-    if let Err(error) = run(Path::new(&arguments[1]), Path::new(&arguments[2])) {
+    let result = if arguments[1] == "--inventory" {
+        let mut output = BufWriter::new(std::io::stdout().lock());
+        inventory(Path::new(&arguments[2]), &mut output)
+            .and_then(|()| output.flush().map_err(Into::into))
+    } else {
+        run(Path::new(&arguments[1]), Path::new(&arguments[2]))
+    };
+    if let Err(error) = result {
         eprintln!("grib1_bridge: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_grib1_envelopes;
+
+    #[test]
+    fn the_envelope_walk_returns_the_count_the_decoder_must_match() {
+        // `run()` compares this count against `Grib1File::open`'s message
+        // list, so an off-by-one here would either refuse every good file or
+        // accept one the decoder silently shortened.
+        let mut bytes = Vec::new();
+        for _ in 0..3 {
+            bytes.extend_from_slice(b"GRIB");
+            bytes.extend_from_slice(&[0, 0, 12, 1]);
+            bytes.extend_from_slice(b"7777");
+        }
+        let path = std::env::temp_dir().join(format!(
+            "grib1_bridge_envelope_count_{}.grb",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let count = validate_grib1_envelopes(&path);
+        std::fs::remove_file(&path).ok();
+        assert_eq!(count.expect("three valid envelopes"), 3);
     }
 }

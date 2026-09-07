@@ -227,7 +227,7 @@ def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
     assert payload["supported_sources"] == [
         "20crv3", "20crv3-cf", "aifs", "aigefs", "aigfs",
         "ecmwf-open-data", "era5", "era5-l137", "gdas", "gefs",
-        "gem-gdps", "gfs", "hrrr", "hrrr-prs", "icon-eu", "rap", "rrfs"]
+        "gem-gdps", "gfs", "hrrr", "hrrr-prs", "icon-eu", "mapped", "rap", "rrfs"]
     assert payload["physics_profile_ids"] == list(runner.PHYSICS_PROFILES)
     assert payload["report_schema"] == runner.REPORT_SCHEMA
     assert payload["window"]["limit_policy"] \
@@ -651,6 +651,84 @@ def test_a_config_that_already_is_the_profile_materializes_silently(
             source="gfs", profile=profile)
 
 
+@pytest.mark.parametrize("spelling", [
+    "fit-output", "literal", "escaped", "bare-headers", "bare-keys",
+])
+def test_fitted_quoted_toml_materializes_without_duplicate_physics(
+        tmp_path, spelling):
+    """The actual Fit writer's output must pass preparation's first stage."""
+    import tomllib
+    from gpuwm.starter_template import render_tables
+
+    raw = tomllib.loads(_asking_for_no_physics(
+        (ROOT / "configs/gfs_wrf_direct_proof.toml").read_text(encoding="utf-8")))
+    profile = runner.MORRISON_PHYSICS_PROFILE
+    switches = runner._profile_runtime_switches("gfs", profile)
+    raw["shared"].update(switches)
+    # Exercise quoted keys both in shared and in an array-of-tables domain.
+    raw["domain"][0]["mp_physics"] = switches["mp_physics"]
+    text = render_tables(raw)
+    if spelling in {"literal", "bare-headers"}:
+        text = re.sub(
+            r'(?m)^(\[\[?)"([A-Za-z0-9_-]+)"(\]\]?)$',
+            (lambda m: m[1] + ("'" + m[2] + "'" if spelling == "literal"
+                               else m[2]) + m[3] + " # retained header comment"),
+            text)
+    if spelling in {"literal", "bare-keys"}:
+        text = re.sub(
+            r'(?m)^"([A-Za-z0-9_-]+)"(\s*=)',
+            lambda m: ("'" + m[1] + "'" if spelling == "literal"
+                       else m[1]) + m[2], text)
+    if spelling == "escaped":
+        text = text.replace('["shared"]', r'["sh\u0061red"]')
+        text = text.replace('"mp_physics"', r'"mp\u005fphysics"')
+    assert tomllib.loads(text) == raw
+    base = tmp_path / "fitted.toml"
+    base.write_text(text, encoding="utf-8")
+    before = base.read_bytes()
+    original = load_experiment(base)
+    output = tmp_path / "authority"
+    wps = ROOT / "configs/gfs_wrf_direct_proof.namelist.wps"
+    receipt = runner.materialize_named_source_authorities(
+        source="gfs", base_experiment_config=base,
+        base_wps_namelist=wps, physics_profile=profile,
+        output_directory=output)
+    generated = load_experiment(output / "experiment.toml")
+    published = tomllib.loads((output / "experiment.toml").read_text(encoding="utf-8"))
+    assert base.read_bytes() == before
+    assert receipt["status"] == "PASS"
+    assert receipt["non_physics_descriptor"]["status"] == "EXACT_UNCHANGED"
+    assert generated.start_time == original.start_time
+    assert generated.vertical == original.vertical
+    assert generated.projection == original.projection
+    assert {key: published["shared"][key] for key in switches} == switches
+    assert int(generated.root.run.mp_physics) == switches["mp_physics"]
+    assert (output / "namelist.wps").read_bytes() == wps.read_bytes()
+    if spelling in {"literal", "bare-headers"}:
+        assert "# retained header comment" in (output / "experiment.toml").read_text()
+
+
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029"])
+def test_materialization_preserves_multiline_values_and_unicode_separators(separator):
+    import tomllib
+    from gpuwm.starter_template import render_tables
+    from gpuwm.toml_document import iter_toml_statements
+
+    raw = tomllib.loads(_asking_for_no_physics(
+        (ROOT / "configs/gfs_wrf_direct_proof.toml").read_text(encoding="utf-8")))
+    raw["experiment"]["name"] = "placeholder"
+    text = render_tables(raw).replace(
+        '"name" = "placeholder"',
+        '"name" = """first' + separator + 'second\n[shared]\nmp_physics = 999\n"""')
+    before = tomllib.loads(text)
+    statements = list(iter_toml_statements(text))
+    assert "\n".join(line for _kind, _path, lines in statements for line in lines) + "\n" == text
+    rendered, _exp, receipt = runner._render_materialized_experiment(
+        text, source="gfs", profile=runner.MORRISON_PHYSICS_PROFILE)
+    assert tomllib.loads(rendered)["experiment"]["name"] == before["experiment"]["name"]
+    assert receipt["base_non_physics_descriptor_sha256"] == receipt["generated_non_physics_descriptor_sha256"]
+
+
 def test_the_aggregate_radiation_spelling_is_agreement_not_drift():
     """ONE case where refusing would be wrong, handled explicitly.
 
@@ -899,15 +977,7 @@ def test_a_declared_rrtmg_variant_is_governed_by_the_profile_resolution(
 
 def test_materializer_is_create_only_and_keeps_only_genuine_refusals(
         tmp_path):
-    """Converted from the per-source profile whitelist (removed 2026-07-31).
-
-    The owner ruled the suite choice is the user's: a registered shipped
-    profile materializes for any prepared source now, so the old
-    "not available for source" list refusal is gone.  What must remain
-    fail-closed is the genuine blocker -- the registry's land-surface
-    route declaration, which carries the GFS+RUC `mavail must be
-    finite` field finding -- and the create-only output contract.
-    """
+    """Source evidence membership is advisory; existing outputs stay protected."""
 
     experiment = _no_physics_copy(
         tmp_path, ROOT / "configs" / "gfs_wrf_direct_proof.toml")
@@ -932,15 +1002,13 @@ def test_materializer_is_create_only_and_keeps_only_genuine_refusals(
         output_directory=tmp_path / "cross")
     assert cross["status"] == "PASS"
     assert cross["readiness"] == "IMPLEMENTED_UNVERIFIED"
-    # The genuine per-source blocker refuses on the resolved selector,
-    # names the registry declaration, and creates nothing.
-    with pytest.raises(ValueError, match="does not offer the ruc-lsm"):
-        runner.materialize_named_source_authorities(
-            source="gfs", base_experiment_config=experiment,
-            base_wps_namelist=wps,
-            physics_profile=runner.RUC_PHYSICS_PROFILE,
-            output_directory=tmp_path / "wrong")
-    assert not (tmp_path / "wrong").exists()
+    # Membership in a source's verification table is advisory. Shared
+    # land-surface initialization validates actual soil/provider fields.
+    ruc = runner.materialize_named_source_authorities(
+        source="gfs", base_experiment_config=experiment,
+        base_wps_namelist=wps, physics_profile=runner.RUC_PHYSICS_PROFILE,
+        output_directory=tmp_path / "ruc")
+    assert ruc["status"] == "PASS"
     # A name the shipped tables genuinely do not define still fails
     # closed, naming the value.
     with pytest.raises(ValueError, match="not a shipped runner profile"):
@@ -1026,6 +1094,7 @@ def _prepared_fixture(
         tmp_path: Path, source: str, *, adapter=None, hierarchy=False,
         physics_profile=runner.PHYSICS_PROFILE,
         twentycr_decoder_roles=frozenset({"gpuwm_mapped_engine"}),
+        highres=None, bind_highres=True,
 ):
     if hierarchy and source not in {"gfs", "20crv3"}:
         raise ValueError("synthetic hierarchy fixture uses GFS-shaped configs")
@@ -1040,6 +1109,9 @@ def _prepared_fixture(
     shutil.copy2(ROOT / "configs" / config_name, experiment_config)
     shutil.copy2(ROOT / "configs" / wps_name, wps_namelist)
     config_text = experiment_config.read_text(encoding="utf-8")
+    if highres is not None:
+        from gpuwm.branch import emit_experiment_toml
+        config_text += "\n" + emit_experiment_toml({"static": {"highres": highres}})
     if physics_profile is not None:
         # The base asks for no physics, so the named profile SUPPLIES the
         # suite instead of overwriting a declared one; see
@@ -1332,6 +1404,9 @@ def _prepared_fixture(
         })
     if hierarchy:
         source_identity["grid_id"] = 1
+    if highres is not None and bind_highres:
+        from gpuwm.static.highres_production import load_static_highres, static_highres_identity
+        source_identity["static_highres"] = static_highres_identity(load_static_highres(experiment_config))
     identity = prepared_cache_identity(
         bridge_manifest_sha256=manifest_digest,
         source_manifest_sha256=manifest_digest,
@@ -1900,6 +1975,27 @@ def test_preflight_accepts_exact_portable_single_domain_authorities(
     assert inputs.forcing_hours == ((0, 3) if source == "gfs" else (0, 6, 12))
 
 
+@pytest.mark.parametrize("source", ["gfs", "era5", "20crv3"])
+@pytest.mark.parametrize("binding", ["missing", "matching", "changed"])
+def test_prepared_highres_request_must_be_bound_to_source_identity(tmp_path, monkeypatch, source, binding):
+    if binding == "changed":
+        original = prepared_cache_identity
+        def changed_identity(**kwargs):
+            result = original(**kwargs)
+            result["source_identity"]["static_highres"]["fields"] = "all"
+            return result
+        monkeypatch.setitem(globals(), "prepared_cache_identity", changed_identity)
+    fixture = _prepared_fixture(tmp_path, source, highres={
+        "enabled": True, "cache_root": "highres-cache", "fields": "terrain"}, bind_highres=binding != "missing")
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+    if binding != "matching":
+        with pytest.raises(ValueError, match="high-resolution settings differ"):
+            _preflight_fixture(fixture)
+    else:
+        inputs = _preflight_fixture(fixture)
+        assert inputs.cache_identity["source_identity"]["static_highres"]["enabled"] is True
+
+
 def _bind_synthetic_preflight_geometry(monkeypatch, *, hierarchy: bool):
     grid = SimpleNamespace(source="20crv3")
     if hierarchy:
@@ -2237,7 +2333,7 @@ def test_unnamed_forecast_main_reaches_execution_and_states_the_status(
     def fake_run(inputs, *, output_directory, observer=None,
                  first_products=None, stream_init="auto",
                  progress_options=None, preflight_seconds=None,
-                 kernel_cache_census=None):
+                 kernel_cache_census=None, restart=None, health_debug=False):
         observed["inputs"] = inputs
         observed["observer"] = observer
         observed["first_products"] = first_products
@@ -2245,6 +2341,7 @@ def test_unnamed_forecast_main_reaches_execution_and_states_the_status(
         observed["progress_options"] = progress_options
         observed["preflight_seconds"] = preflight_seconds
         observed["kernel_cache_census"] = kernel_cache_census
+        assert restart is None and not health_debug
         return {
             "schema": runner.REPORT_SCHEMA,
             "status": "PASS",
@@ -2760,19 +2857,13 @@ def test_materialized_wsm6_physics_receipt_is_canonical():
     }
 
 
-# RUC is absent from this GFS parametrization on purpose.  It used to be
-# here, and it passed: a GFS-initialised RUC bundle really does reach the
-# v3 preflight.  What it cannot do is complete the first step of the
-# forecast that preflight clears it for -- `mavail must be finite`, at
-# model_elapsed_seconds 0.0 -- so v1.1.1 withdrew the pairing at the
-# front door rather than keep clearing a run that ends in a guard.  RUC
-# on ERA5 is exercised by test_era5_ruc_family_reaches_prepared_v3_preflight
-# below; the two together are the whole of what is claimed for it.
+# Shared initialization owns field validity for every selected soil scheme.
 @pytest.mark.parametrize(
     ("profile", "sfclay", "surface", "pbl", "soil_layers"),
     (
         (runner.MYNN_PHYSICS_PROFILE, 5, 2, 5, 4),
         (runner.NOAHMP_PHYSICS_PROFILE, 91, 4, 1, 4),
+        (runner.RUC_PHYSICS_PROFILE, 91, 3, 1, 9),
     ),
 )
 def test_gfs_new_front_door_families_reach_prepared_v3_preflight(
@@ -4517,3 +4608,173 @@ def test_the_shared_mapped_refusals_name_no_single_source():
     assert not offenders, (
         "these refusals name one source inside a shared validator: "
         f"{offenders}")
+
+
+def test_a_bundle_prepared_before_a_tolerant_run_field_still_loads(tmp_path):
+    """THE V-12 HOLE, on the route the tolerant table did not cover.
+
+    Measured: a bundle prepared one commit before the adaptive-timestep
+    block joined RunConfig was refused by the single-domain runner in both
+    directions, on nothing but twelve fields that had not existed when it
+    was written.  The tree route tolerates exactly that through
+    ingest.prepared_cache.DEFAULT_TOLERANT_IDENTITY_FIELDS; this route ran
+    a bare equality with one hand-written allowance.
+    """
+    from gpuwm.ingest.prepared_cache import DEFAULT_TOLERANT_IDENTITY_FIELDS
+
+    fixture = _prepared_fixture(tmp_path, "20crv3")
+    header = json.loads(
+        (fixture.domain_bundle / "prepared-cache" / "header.json").read_text(
+            encoding="utf-8"))
+    expected = header["identity"]
+    observed = json.loads(_canonical(expected))
+    run = observed["domain_config"]["run"]
+    dropped = sorted(
+        path[len("run."):] for path in DEFAULT_TOLERANT_IDENTITY_FIELDS
+        if path.startswith("run.") and path[len("run."):] in run)
+    assert "use_adaptive_time_step" in dropped, (
+        "instrument blind: the fixture header does not carry the field "
+        "this test exists to tolerate the absence of")
+    for name in dropped:
+        run.pop(name)
+
+    selected, receipt = runner._resolve_cache_identity_compatibility(
+        source="20crv3", observed=observed, expected=expected)
+
+    assert selected == observed
+    assert receipt["status"] == "COMPATIBLE_LEGACY_DEFAULT"
+    assert {entry["field"] for entry in receipt["compatibility_overrides"]} \
+        == {f"domain_config.run.{name}" for name in dropped}
+
+
+def test_a_bundle_that_really_used_the_feature_is_still_refused(tmp_path):
+    """Absence is tolerated; a DIFFERENT value is not."""
+    fixture = _prepared_fixture(tmp_path, "20crv3")
+    header = json.loads(
+        (fixture.domain_bundle / "prepared-cache" / "header.json").read_text(
+            encoding="utf-8"))
+    expected = header["identity"]
+    observed = json.loads(_canonical(expected))
+    observed["domain_config"]["run"]["use_adaptive_time_step"] = True
+
+    with pytest.raises(ValueError, match="use_adaptive_time_step"):
+        runner._resolve_cache_identity_compatibility(
+            source="20crv3", observed=observed, expected=expected)
+
+
+def test_the_identity_refusal_names_what_differs(tmp_path):
+    """The sentence stood alone and named nothing.
+
+    A user could not tell an upgrade from a changed configuration, which
+    is the whole diagnostic question at that moment.
+    """
+    fixture = _prepared_fixture(tmp_path, "20crv3")
+    header = json.loads(
+        (fixture.domain_bundle / "prepared-cache" / "header.json").read_text(
+            encoding="utf-8"))
+    expected = header["identity"]
+    observed = json.loads(_canonical(expected))
+    observed["domain_config"]["run"]["mp_physics"] = 10
+
+    with pytest.raises(ValueError, match=r"mp_physics \(prepared 10"):
+        runner._resolve_cache_identity_compatibility(
+            source="20crv3", observed=observed, expected=expected)
+
+
+@pytest.mark.parametrize("tamper", [False, True])
+def test_mapped_config_suite_export_reaches_bound_forecast_preflight(
+        tmp_path, monkeypatch, tamper):
+    fixture = _prepared_fixture(tmp_path, "20crv3", physics_profile=runner.MYNN_PHYSICS_PROFILE)
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+    exp = load_experiment(fixture.experiment)
+    selection = runner.single_domain_physics_selection(exp.root.run)
+    proof = json.loads(fixture.proof.read_text(encoding="utf-8"))
+    proof["export"]["schema"] = "gpuwm-native-direct-wrf-export-v3"
+    proof["export"]["physics"] = selection
+    if tamper:
+        proof["export"]["physics"]["domains"]["1"]["selectors"]["bl_pbl_physics"] = 1
+    proof.pop("proof_content_sha256")
+    proof["proof_content_sha256"] = hashlib.sha256(_canonical(proof).encode()).hexdigest()
+    _write_json(fixture.proof, proof)
+    if tamper:
+        with pytest.raises(ValueError, match="physics selection differs"):
+            _preflight_fixture(fixture, physics_profile=runner.MYNN_PHYSICS_PROFILE)
+    else:
+        inputs = _preflight_fixture(fixture, physics_profile=runner.MYNN_PHYSICS_PROFILE)
+        assert inputs.proof["export"]["physics"] == selection
+
+
+
+def test_portable_texture_receipt_stays_proof_only():
+    receipt = {"applied": False, "reason": "target not finer than source"}
+    runner._validate_cache_metadata(**_cache_metadata_case(
+        proof_extra={"soil_texture_downscale": receipt}))
+    # This layout never wrote texture receipts in cache user metadata. The
+    # native contract must not silently broaden the portable exact key set.
+    with pytest.raises(ValueError, match="user metadata differs"):
+        runner._validate_cache_metadata(**_cache_metadata_case(
+            user_extra={"soil_texture_downscale": receipt},
+            proof_extra={"soil_texture_downscale": receipt}))
+
+
+
+@pytest.mark.parametrize("source,hierarchy", [("gfs", False), ("era5", False), ("gfs", True)])
+@pytest.mark.parametrize("roles", [("experiment_config",), ("wps_namelist",),
+                                   ("experiment_config", "wps_namelist")])
+def test_exact_portable_authorities_can_have_new_caller_names(
+        tmp_path, monkeypatch, source, hierarchy, roles):
+    fixture = _prepared_fixture(tmp_path, source, hierarchy=hierarchy)
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=hierarchy)
+    canonical = _preflight_fixture(fixture)
+    manifest_bytes = fixture.source_manifest.read_bytes()
+    proof_bytes = fixture.proof.read_bytes()
+    caller = tmp_path / "caller copies"
+    caller.mkdir()
+    for role in roles:
+        attr = "experiment" if role == "experiment_config" else "wps"
+        original = getattr(fixture, attr)
+        copied = caller / ("chosen.toml" if role == "experiment_config" else "chosen.wps")
+        shutil.copy2(original, copied)
+        assert _sha256(copied) == _sha256(original)
+        setattr(fixture, attr, copied)
+    admitted = _preflight_fixture(fixture)
+    assert admitted.cache_identity == canonical.cache_identity
+    assert dict(admitted.file_sha256) == dict(canonical.file_sha256)
+    assert fixture.source_manifest.read_bytes() == manifest_bytes
+    assert fixture.proof.read_bytes() == proof_bytes
+    for role in roles:
+        attr = "experiment" if role == "experiment_config" else "wps"
+        assert admitted.authority_paths[role] == getattr(fixture, attr).resolve()
+        assert admitted.source_manifest["files"][role]["name"] == canonical.source_manifest["files"][role]["name"]
+    runner._verify_inputs_unchanged(admitted)
+    # Revalidation must follow the accepted caller file, not its old name.
+    changed = admitted.authority_paths[roles[-1]]
+    changed.write_bytes(changed.read_bytes() + b"\n")
+    with pytest.raises(RuntimeError, match="inputs changed during execution"):
+        runner._verify_inputs_unchanged(admitted)
+
+
+@pytest.mark.parametrize("source,hierarchy", [("gfs", False), ("era5", False), ("gfs", True)])
+@pytest.mark.parametrize("role", ["experiment_config", "wps_namelist"])
+def test_renamed_portable_authority_still_requires_exact_bytes(
+        tmp_path, monkeypatch, source, hierarchy, role):
+    fixture = _prepared_fixture(tmp_path, source, hierarchy=hierarchy)
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=hierarchy)
+    attr = "experiment" if role == "experiment_config" else "wps"
+    original = getattr(fixture, attr)
+    copied = tmp_path / ("changed.toml" if role == "experiment_config" else "changed.wps")
+    copied.write_bytes(original.read_bytes() + b"\n")
+    setattr(fixture, attr, copied)
+    with pytest.raises(ValueError, match=f"supplied {role} differs from the portable source manifest"):
+        _preflight_fixture(fixture)
+
+
+@pytest.mark.parametrize("role", ["experiment_config", "wps_namelist"])
+@pytest.mark.parametrize("unsafe", ["../escape", "/absolute/authority", r"..\escape"])
+def test_explicit_locator_does_not_relax_sealed_manifest_name_safety(tmp_path, role, unsafe):
+    fixture = _prepared_fixture(tmp_path, "era5")
+    manifest = json.loads(fixture.source_manifest.read_text(encoding="utf-8"))
+    proof = json.loads(fixture.proof.read_text(encoding="utf-8"))
+    manifest["files"][role]["name"] = unsafe
+    with pytest.raises(ValueError, match="has an unsafe name"):
+        runner._manifest_file_specs("era5", manifest, load_experiment(fixture.experiment), proof)

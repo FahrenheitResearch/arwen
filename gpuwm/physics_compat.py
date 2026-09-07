@@ -1658,6 +1658,28 @@ def _resolve_physics_component_options(
                     and all(selected[key] == selectors[key]
                             for key in selector_keys)):
                 candidates.append((option_id, option))
+        if not candidates and component_id == "radiation":
+            # The runtime composes independently implemented spectra. A
+            # paired preset is one spelling of that capability, not a gate.
+            spectra = {}
+            requirements = {}
+            for key, value in selected.items():
+                matches = [(name, item) for name, item in component["options"].items()
+                           if item.get("implemented") is True
+                           and item.get("selectors", {}).get(key) == value
+                           and isinstance(value, int) and value >= 0]
+                if not matches:
+                    break
+                name, item = matches[0]
+                spectra[key] = {"selector": value, "component_option": name}
+                requirements.update(item.get("constraints", {}).get("required_settings", {}))
+            if len(spectra) == len(selector_keys):
+                option_id = "independent-" + "-".join(str(selected[key]) for key in selector_keys)
+                candidates.append((option_id, {
+                    "implemented": True, "selectors": selected,
+                    "spectra": spectra, "constraints": {"required_settings": requirements},
+                    "execution": "gpuwm.core.radiation_composition.make_radiation",
+                }))
         if len(candidates) != 1:
             raise PhysicsCapabilityError(
                 f"{_registry_pointer(component_id)} has no implemented "
@@ -1876,56 +1898,37 @@ def validate_resolved_physics_vertical_levels(
     elif microphysics == "nssl2-mp18":
         bounded("NSSL-2 microphysics", NSSL2_VERTICAL_LEVEL_BOUNDS)
 
-    if resolved.get("radiation") in {
-            "rte-rrtmgp", "rte-rrtmgp-legacy-aggregate"}:
+    from types import SimpleNamespace
+    from gpuwm.config import radiation_scheme_ids
+    radiation_settings = (SimpleNamespace(**settings) if isinstance(settings, Mapping) else settings)
+    pair = radiation_scheme_ids(radiation_settings)
+    if 4 in pair:
         top_pressure = 0.0 if p_top is None else float(p_top)
         if rrtmg_variant(settings) == RRTMG_VARIANT_LEGACY:
-            lw_layers, sw_layers = legacy_radiation_layer_counts(
-                nz, top_pressure)
-            checks.extend((
-                {
-                    "component": "legacy RRTMG longwave",
-                    "model_levels": nz,
-                    "above_model_layers": lw_layers - nz,
-                    "total_layers": lw_layers,
-                    "maximum": MAX_LEGACY_LONGWAVE_LAYERS,
-                },
-                {
-                    "component": "legacy RRTMG shortwave",
-                    "model_levels": nz,
-                    "above_model_layers": sw_layers - nz,
-                    "total_layers": sw_layers,
-                    "maximum": MAX_LEGACY_SHORTWAVE_LAYERS,
-                },
-            ))
-            if lw_layers > MAX_LEGACY_LONGWAVE_LAYERS:
-                violations.append(
-                    "legacy RRTMG longwave requires model plus cap layers "
-                    f"<= {MAX_LEGACY_LONGWAVE_LAYERS}, got {nz}+"
-                    f"{lw_layers - nz}={lw_layers}")
-            if sw_layers > MAX_LEGACY_SHORTWAVE_LAYERS:
-                violations.append(
-                    "legacy RRTMG shortwave requires model plus wrapper "
-                    f"layers <= {MAX_LEGACY_SHORTWAVE_LAYERS}, got {nz}+"
-                    f"{sw_layers - nz}={sw_layers}")
+            lw_layers, sw_layers = legacy_radiation_layer_counts(nz, top_pressure)
+            for index, kind, total, maximum in (
+                    (0, "longwave", lw_layers, MAX_LEGACY_LONGWAVE_LAYERS),
+                    (1, "shortwave", sw_layers, MAX_LEGACY_SHORTWAVE_LAYERS)):
+                if pair[index] != 4:
+                    continue
+                checks.append({"component": f"legacy RRTMG {kind}",
+                    "model_levels": nz, "above_model_layers": total - nz,
+                    "total_layers": total, "maximum": maximum})
+                if maximum is not None and total > maximum:
+                    violations.append(f"legacy RRTMG {kind} requires model plus cap layers "
+                        f"<= {maximum}, got {nz}+{total - nz}={total}")
         else:
-            lw_upper, sw_upper = rrtmgp_above_model_layer_counts(
-                top_pressure)
-            for kind, upper in (("longwave", lw_upper),
-                                ("shortwave", sw_upper)):
+            lw_upper, sw_upper = rrtmgp_above_model_layer_counts(top_pressure)
+            for index, kind, upper in ((0, "longwave", lw_upper), (1, "shortwave", sw_upper)):
+                if pair[index] != 4:
+                    continue
                 total = nz + upper
-                checks.append({
-                    "component": f"RTE+RRTMGP {kind}",
-                    "model_levels": nz,
-                    "above_model_layers": upper,
-                    "total_layers": total,
-                    "maximum": MAX_RRTMGP_LAYERS,
-                })
+                checks.append({"component": f"RTE+RRTMGP {kind}",
+                    "model_levels": nz, "above_model_layers": upper,
+                    "total_layers": total, "maximum": MAX_RRTMGP_LAYERS})
                 if total > MAX_RRTMGP_LAYERS:
-                    violations.append(
-                        f"RTE+RRTMGP {kind} requires model plus cap layers "
-                        f"<= {MAX_RRTMGP_LAYERS}, got "
-                        f"{nz}+{upper}={total}")
+                    violations.append(f"RTE+RRTMGP {kind} requires model plus cap layers "
+                        f"<= {MAX_RRTMGP_LAYERS}, got {nz}+{upper}={total}")
 
     if violations:
         raise PhysicsVerticalPreflightError(
@@ -2006,11 +2009,15 @@ def validate_single_domain_physics_profile(
         }
         tuple_text = ", ".join(
             f"{key}={selectors[key]!r}" for key in sorted(selectors))
-        acknowledgement = missing[0]
-        raise PhysicsCapabilityError(
-            f"d01 resolved physics tuple ({tuple_text}) selects expert "
-            f"profile {profile!r}; add "
-            f"{_ack_instruction(acknowledgement)} to proceed")
+        for acknowledgement in missing:
+            warn(
+                f"d01 resolved physics tuple ({tuple_text}) selects expert "
+                f"profile {profile!r}; running with its evidence advisory "
+                f"unacknowledged; add {_ack_instruction(acknowledgement)} "
+                "to silence this warning",
+                why="The selected physics passes the runtime capability "
+                    "checks. Profile evidence and throughput advisories "
+                    "do not change which physics can execute.")
 
     selectors = {
         key: _selection_value(selected_settings, key)
@@ -2029,6 +2036,12 @@ def validate_single_domain_physics_profile(
         "resolved": expected,
         "acknowledgements": used,
         "acknowledgement_provenance": provenance,
+        "governance": {
+            "state": ("registry-expert-template" if required_acknowledgements
+                      else "registry-template"),
+            "required_acknowledgements": sorted(required_acknowledgements),
+            "acknowledged": not missing,
+        },
         "maturity": template.get("maturity"),
     }
 
@@ -2355,39 +2368,6 @@ def land_surface_component_for_selector(value) -> str | None:
                 and selectors.get("sf_surface_physics") == selector):
             return option_id
     return None
-
-
-def land_surface_route_blocker(component: str, *, source: str) -> str | None:
-    """Why ``source`` does not offer ``component``, or ``None``.
-
-    Cites the registry declaration it enforces, says what was observed
-    rather than what is suspected, and names the sources this refusal is
-    NOT speaking for -- an unexercised route is not a broken one, and
-    withdrawing it on inference would be the same error as the
-    front-door regression this release fixes, pointing the other way.
-    """
-
-    offered = offered_land_surfaces(source)
-    if offered is None or component in offered:
-        return None
-    detail = ""
-    if component == "ruc-lsm":
-        detail = (
-            "  A GFS-initialised RUC forecast prepares cleanly and then "
-            "dies on its first surface-temperature call with `mavail must "
-            "be finite`, having advanced no model time, so preparing one "
-            "spends the run to reach a refusal.  Completing the GFS "
-            "route's RUC land/soil initialisation is tracked for v1.2.  "
-            "This says nothing about RUC on the ERA5 or HRRR routes, "
-            "which still offer it and were not exercised by the run that "
-            "found this.")
-    return (
-        f"the {source.upper()} route does not offer the {component} "
-        f"land-surface component: "
-        f"gpuwm/physics_registry_v2.json#/runner_routes/"
-        f"{_ROUTE_FOR_SOURCE[source]}/source_template_ids/{source} "
-        f"declares the templates it does offer, and none of them selects "
-        f"it.{detail}")
 
 
 #: The domain-tree route's front-door physics receipt.  A DISTINCT
@@ -3060,7 +3040,6 @@ __all__ = [
     "MP28_REGISTRY_OPTION_ID",
     "MULTI_DOMAIN_SELECTION_SCHEMA",
     "land_surface_component_for_selector",
-    "land_surface_route_blocker",
     "multi_domain_physics_selection",
     "offered_land_surfaces",
     "noahmp_expert_column_budget",

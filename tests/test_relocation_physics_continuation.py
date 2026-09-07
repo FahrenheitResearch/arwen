@@ -262,18 +262,41 @@ def _preparer_fixture(monkeypatch):
                                   _history_time=60.0)
     out_state.physics = SimpleNamespace(
         fields={"tsk": np.arange(ny * nx, dtype=F32).reshape(ny, nx)},
-        cumulus_callable=out_adapter)
+        cumulus_callable=out_adapter, call_counts={"microphysics": 9},
+        ysu_nan_guard_fires=2, microphysics_updates=9)
+    out_state.elapsed_seconds = 60.
     node = SimpleNamespace(cfg=child_dc, state=out_state)
 
     new_dc = SimpleNamespace(**{**vars(child_dc), "i_parent_start": 6,
                                 "j_parent_start": 4})
     new_state = _ScratchState()
+    new_state.elapsed_seconds = 0.
     new_state.physics = SimpleNamespace(
-        fields={}, cumulus_callable=SimpleNamespace(
+        fields={}, call_counts={}, ysu_nan_guard_fires=0, microphysics_updates=0,
+        cumulus_callable=SimpleNamespace(
             w0avg=None, _history_state=None, _history_time=None))
     initialized = SimpleNamespace(static_fields=statics_for(new_dc),
                                   grid="new-grid", state=new_state)
     return preparer, node, new_dc, initialized, out_state, new_state
+
+
+def test_relocation_preserves_scalar_restart_identity_with_omission_control(monkeypatch):
+    from tilestream.physics_inventory import carrier_scalars
+    preparer, node, new_dc, initialized, outgoing, incoming = _preparer_fixture(monkeypatch)
+    expected = carrier_scalars(outgoing)
+    preparer.capture_outgoing(node)
+    preparer(initialized, new_dc, None)
+    assert carrier_scalars(incoming) == expected
+    assert incoming.physics.microphysics_updates == 9
+
+    # The retired omission resets the NSSL first-call authority to zero and
+    # changes the same scalar header used by streamed/restart continuation.
+    preparer, node, new_dc, initialized, outgoing, incoming = _preparer_fixture(monkeypatch)
+    preparer.capture_outgoing(node)
+    preparer._captured.pop("scalar_carriers")
+    preparer(initialized, new_dc, None)
+    assert incoming.physics.microphysics_updates == 0
+    assert carrier_scalars(incoming) != expected
 
 
 def test_preparer_moves_physics_continuation_and_reports_it(monkeypatch):
@@ -303,3 +326,37 @@ def test_preparer_still_honest_when_the_rebuilt_child_has_no_driver(
     preparer(initialized, new_dc, SimpleNamespace())
     receipt = preparer.last_receipt["physics_continuation"]
     assert receipt["restored"] is False
+
+
+@pytest.mark.parametrize("di,dj", [(2, 1), (-1, -2), (0, 0), (10, 10)])
+def test_raw_pbl_forcing_moves_from_the_restart_registry_in_place(di, dj):
+    from gpuwm.core.physics_continuation import (
+        capture_continuation, restore_continuation, shift_continuation)
+    from gpuwm.io.restart import DRIVER_HELD_FORCING_ATTRS
+
+    state = _ScratchState()
+    outgoing = SimpleNamespace(**{
+        name: _distinct((NZ, NY, NX), index)
+        for index, name in enumerate(sorted(DRIVER_HELD_FORCING_ATTRS), 21)})
+    captured = capture_continuation(state, outgoing)
+    assert set(captured) == {f"held/{name}" for name in DRIVER_HELD_FORCING_ATTRS}
+    plan = _plan(di=di, dj=dj)
+    shifted = shift_continuation(captured, plan)
+    targets = {name: np.full((NZ, NY, NX), np.nan, F32)
+               for name in DRIVER_HELD_FORCING_ATTRS}
+    incoming = SimpleNamespace(**targets)
+    receipt = restore_continuation(_ScratchState(), incoming, shifted)
+    assert set(receipt["slots_moved"]) == set(captured)
+    for name, target in targets.items():
+        old = getattr(outgoing, name)
+        assert target is getattr(incoming, name)
+        expected = np.zeros_like(old)
+        window = plan.window(old.shape)
+        if window is not None:
+            (dst_j, src_j), (dst_i, src_i) = window
+            expected[..., dst_j, dst_i] = old[..., src_j, src_i]
+        np.testing.assert_array_equal(target, expected)
+        if di or dj:
+            assert not np.array_equal(target, old), "unshifted control is vacuous"
+        else:
+            np.testing.assert_array_equal(target, old)

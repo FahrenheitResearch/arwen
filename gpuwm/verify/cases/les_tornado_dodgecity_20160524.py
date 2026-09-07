@@ -124,8 +124,23 @@ MIN_RUN_SECONDS = 21600.0
 #: Non-zero, unlike the demonstration's, and a whole number of root steps.
 RESTART_INTERVAL_S = 3600.0
 
-#: P3 inflow seeding, on both LES domains, pilot amplitude, fixed seed.
-INFLOW_DOMAINS = (3, 4)
+#: P3 inflow seeding, pilot amplitude, fixed seed.
+#:
+#: d03 ONLY, ruled 2026-08-06 (G4 in :data:`RATIFICATION`).  The
+#: generator takes its vertical extent from the parent-diagnosed PBLH,
+#: so it needs a parent that PARAMETERIZES turbulence: d02 (YSU) -> d03
+#: qualifies, d03 -> d04 does not, because d03 is itself LES and its
+#: RESOLVED eddies are already d04's inflow turbulence.  Seeding d04
+#: would double-count them, and the model refuses the pairing outright.
+#:
+#: This case was PARKED (d531fb521) before G4's sweep and carried
+#: ``(3, 4)`` until 2026-09-03 -- so ``audit()`` returned ``[]`` for a
+#: config the model kills twelve seconds after admission, and this gate
+#: would have gone RED the moment the config was corrected.  The
+#: shipped file now says false on d04 and this says (3,); the two agree
+#: again, and tests/test_les_tornado_attempt1_config.py holds them to
+#: the ratification rather than to each other.
+INFLOW_DOMAINS = (3,)
 INFLOW_SEED = 20160524
 INFLOW_AMPLITUDE_SCALE = 1.0
 

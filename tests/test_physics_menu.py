@@ -130,7 +130,7 @@ def test_every_cell_is_the_pairing_predicate_the_wizard_refuses_by(capsys):
             assert cell["why_not"] == blocker
 
 
-def test_the_hrrr_route_refuses_kain_fritsch_and_the_menu_says_which(capsys):
+def test_the_native_source_offers_implemented_kain_fritsch_combinations(capsys):
     """The contrasting pair Drew hit, both directions.
 
     ERA5 admits every shipped suite; the native HRRR route pins
@@ -150,11 +150,10 @@ def test_the_hrrr_route_refuses_kain_fritsch_and_the_menu_says_which(capsys):
     assert kf, "the shipped list must still carry a Kain-Fritsch suite"
     for profile in kf:
         assert era5[profile]["admissible"] is True, profile
-        assert hrrr[profile]["admissible"] is False, profile
-        assert "cu_physics=1 (the route requires 0)" in hrrr[profile][
-            "why_not"]
+        assert hrrr[profile]["admissible"] is True, profile
+        assert hrrr[profile]["why_not"] is None
     assert era5[DEFAULT_PHYSICS_PROFILE]["admissible"] is True
-    assert hrrr[DEFAULT_PHYSICS_PROFILE]["admissible"] is False
+    assert hrrr[DEFAULT_PHYSICS_PROFILE]["admissible"] is True
     # And the menu is not empty for the route that refuses those: a
     # source with no runnable suite would be the real defect.
     assert any(cell["admissible"] for cell in hrrr.values())
@@ -408,9 +407,8 @@ def test_a_grafted_source_row_and_a_grafted_profile_both_appear(
     # the route whose grid resolves its own convection -- with no branch
     # anywhere that knows either id.
     _hrrr_row, hrrr = _cells(document, "hrrr")
-    assert hrrr["probe-arbitrary-suite-v1"]["admissible"] is False
-    assert "cu_physics=1 (the route requires 0)" in hrrr[
-        "probe-arbitrary-suite-v1"]["why_not"]
+    assert hrrr["probe-arbitrary-suite-v1"]["admissible"] is True
+    assert hrrr["probe-arbitrary-suite-v1"]["why_not"] is None
     # And the new model still gets a working, nocturnally valid default.
     assert cells[row["default_profile_id"]]["admissible"] is True
     assert cells[row["default_profile_id"]]["day_only"] is False
@@ -429,7 +427,8 @@ def test_a_source_whose_route_refuses_the_listed_head_still_gets_a_default(
     from gpuwm.hrrr_route_inputs import route_physics_blocker
 
     grafted = {**physics_menu._route_emission_physics_gates(),
-               "era5": route_physics_blocker}
+               "era5": lambda switches: ("fixture: required input unavailable"
+                    if switches["cu_physics"] == 1 else None)}
     monkeypatch.setattr(physics_menu, "_route_emission_physics_gates",
                         lambda: grafted)
 

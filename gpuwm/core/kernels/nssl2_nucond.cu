@@ -220,10 +220,13 @@ extern "C" __global__ void nssl2_nucond_default(
         if (!predicted_ccn) {
             diagnostic_cnuc = ccn_number;
             if (temperature < 265.0f) {
-                const float cnuc_mass_level_w = 0.5f * (
-                    w_interface[idx] + w_interface[idx + horizontal_size]);
-                if (cloud > 10.0f * qxmin_cloud
-                        && cnuc_mass_level_w > 2.0f) {
+                // :10122 reads the RAW staggered element
+                // w(igs(mgs),jgs,kgs(mgs)) -- the cell's own bottom face --
+                // not a mass-level average.  That is not an oversight to
+                // correct: wvel is not assigned until :10381, well after
+                // this block, so the routine has no averaged w to read yet.
+                const float cnuc_w = w_interface[idx];
+                if (cloud > 10.0f * qxmin_cloud && cnuc_w > 2.0f) {
                     diagnostic_cnuc = 0.0f;
                 } else {
                     diagnostic_cnuc = 0.1f * diagnostic_cnuc;

@@ -29,7 +29,7 @@ from collections.abc import Sequence as _ABCSequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 import time
@@ -192,6 +192,9 @@ class NestedInputCatalog:
     #: WRF-comparison direction -- would seam at the nest boundary in
     #: every field soil moisture drives.  Default True: silence means ON.
     soil_texture_downscale: bool = True
+    #: Same validated overlay owner used by root, child and moving footprints.
+    static_highres: object | None = None
+    water_temperature_policy: str | None = None
 
     def __post_init__(self) -> None:
         # A sequence is kept AS the sequence, exactly as
@@ -232,12 +235,12 @@ class NestedInputCatalog:
         if len(valid_times) > 1 and not increasing:
             raise ValueError(
                 "nested source snapshots must have unique increasing valid times")
-        # One adapter type across the series, checked WITHOUT retaining a
-        # snapshot: the set holds types, and each snapshot is released as
-        # the next is read.
-        source_types = set()
-        for index in range(len(snapshots)):
-            source_types.add(type(snapshots[index]))
+        # Header-backed lazy sources declare the same type without rereading
+        # and copying each valid time's atmospheric fields during validation.
+        from gpuwm.ingest.source_metadata import snapshot_metadata
+
+        source_types = {snapshot_metadata(snapshots, index).snapshot_type
+                        for index in range(len(snapshots))}
         if len(source_types) != 1:
             raise TypeError("nested source snapshots must use one adapter type")
         object.__setattr__(self, "snapshots", snapshots)
@@ -445,6 +448,12 @@ def _child_grid(child_dc: DomainConfig, parent_node: DomainNode) -> LambertGrid:
         child_dc, parent_node.cfg.grid_id, parent_node.grid)
 
 
+#: See gpuwm/experiment.py::_OFFLINE_LADDER_DOOR.
+_OFFLINE_LADDER_DOOR = (
+    '  A per-domain vertical ladder IS available on the OFFLINE downscale route: `gpuwm downscale --child-levels N,STRETCH` prepares the child once on the host through a conservative vertical remap (gpuwm/vertical_remap.py) and runs it standalone.'
+)
+
+
 @lru_cache(maxsize=None)
 def _shared_vertical_coord(vertical: VerticalConfig, nz: int) -> VerticalCoord:
     """Materialize the experiment's one shared vertical coordinate once."""
@@ -455,7 +464,9 @@ def _shared_vertical_coord(vertical: VerticalConfig, nz: int) -> VerticalCoord:
     if eta.shape != (int(nz) + 1,):
         raise ValueError(
             f"shared eta_levels has shape {eta.shape}, expected "
-            f"({int(nz) + 1},) for every domain")
+            f"({int(nz) + 1},) for every domain: a live nest tree "
+            "interpolates lateral boundaries every parent step and shares "
+            "one ladder across all of its domains." + _OFFLINE_LADDER_DOOR)
     return make_vertical_coord(
         int(nz), hybrid_opt=vertical.hybrid_opt, etac=vertical.etac,
         eta_levels=eta)
@@ -604,8 +615,20 @@ def _registration(child_dc: DomainConfig, parent_node: DomainNode,
         stagger=stagger, wrapper="interp")
 
 
+def _reconstruction_sint(source, reg, *, window=None, device_windows=False):
+    """Upload only exact host donors when reconstructing a device window."""
+    if window is not None and device_windows and isinstance(source, np.ndarray):
+        import cupy as cp
+        from gpuwm.core.nest_interp import window_registration
+        cropped, donor = window_registration(reg, window)
+        payload = cp.asarray(np.ascontiguousarray(source[(...,)+donor]))
+        return sint(payload, cropped)
+    return sint(source, reg, **({} if window is None else {"window": window}))
+
+
 def _capture_parent_blend_fields(child_dc: DomainConfig,
-                                 parent_node: DomainNode):
+                                 parent_node: DomainNode, *, window=None,
+                                 device_windows=False):
     """SINT only the three fields that survive real-input overwrite."""
     reg = _mass_registration(child_dc, parent_node)
     parent = parent_node.state
@@ -613,8 +636,10 @@ def _capture_parent_blend_fields(child_dc: DomainConfig,
         raise ValueError(
             "real child initialization requires a terrain parent with "
             "three-dimensional phb")
-    return (sint(parent.ht, reg), sint(parent.mub2d, reg),
-            sint(parent.phb, reg))
+    sint_args = dict(window=window, device_windows=device_windows)
+    return (_reconstruction_sint(parent.ht, reg, **sint_args),
+            _reconstruction_sint(parent.mub2d, reg, **sint_args),
+            _reconstruction_sint(parent.phb, reg, **sint_args))
 
 
 def _base_from_blended(state: DomainState, cfg, coord: VerticalCoord,
@@ -854,6 +879,13 @@ def _prepare_child_input_on_grid(
             target_name=f"domain {child_dc.grid_id}")
         skin = _host(horizontal.fields["SKINTEMP"])
         lake_skin_temperature = np.where(lake_mask, skin, np.nan)
+        if water_statics is not None:
+            from dataclasses import replace
+            from gpuwm.ingest.water_temperature import assemble_horizontal_water_temperature
+            # This soil invocation applies a lake-skin override, which also
+            # marks those lake-category cells as water inside its router.
+            water_statics = replace(water_statics, land=water_statics.land & ~lake_mask)
+            horizontal = assemble_horizontal_water_temperature(horizontal, water_statics)
         mapping_receipt.update({
             "source_adapter": "hrrr-native-state-v1",
             "surface_fallback_radius_cells": surface_fallback_radius,
@@ -1079,8 +1111,11 @@ def finalize_prepared_child(
             isice=int(child_attrs["ISICE"]),
             soil_temperature=reconciler_soil_temperature(horizontal.fields),
             sst=reconciler_sst(horizontal.fields))
+    from gpuwm.config import soil_layer_count
+
     soil = preprocess_land_surface_soil(
         horizontal.fields, sf_surface_physics=int(cfg.sf_surface_physics),
+        num_soil_layers=soil_layer_count(cfg),
         soil_type=child_soil_type,
         deep_soil_temperature=static_fields["TMN"],
         lake_mask=(prepared.lake_mask
@@ -1344,7 +1379,8 @@ def seed_rk_time_t_copies(state) -> tuple[str, ...]:
     return tuple(written)
 
 
-def _parent_only_base(parent, reg, terrain: bool) -> BaseState:
+def _parent_only_base(parent, reg, terrain: bool, *, window=None,
+                      device_windows=False) -> BaseState:
     if not terrain:
         return BaseState(
             mub=float(parent.mub), p_top=float(parent.p_top),
@@ -1352,13 +1388,14 @@ def _parent_only_base(parent, reg, terrain: bool) -> BaseState:
             alb=np.array(_host(parent.alb), copy=True),
             thb=np.array(_host(parent.thb), copy=True),
             phb=np.array(_host(parent.phb), copy=True), terrain_z=None)
+    sint_args = dict(window=window, device_windows=device_windows)
     return BaseState(
-        mub=_host(sint(parent.mub2d, reg)), p_top=float(parent.p_top),
-        pb=_host(sint(parent.pb, reg)),
-        alb=_host(sint(parent.alb, reg)),
-        thb=_host(sint(parent.thb, reg)),
-        phb=_host(sint(parent.phb, reg)),
-        terrain_z=_host(sint(parent.ht, reg)))
+        mub=_host(_reconstruction_sint(parent.mub2d, reg, **sint_args)), p_top=float(parent.p_top),
+        pb=_host(_reconstruction_sint(parent.pb, reg, **sint_args)),
+        alb=_host(_reconstruction_sint(parent.alb, reg, **sint_args)),
+        thb=_host(_reconstruction_sint(parent.thb, reg, **sint_args)),
+        phb=_host(_reconstruction_sint(parent.phb, reg, **sint_args)),
+        terrain_z=_host(_reconstruction_sint(parent.ht, reg, **sint_args)))
 
 
 #: The parent-SINT fields this module fixes up after interpolation: the
@@ -1496,7 +1533,9 @@ def parent_only_init(child_dc: DomainConfig,
                      scratch_arena=None,
                      dycore_state_workspace=None,
                      array_module=None,
-                     grid: LambertGrid | None = None) -> ChildInitResult:
+                     grid: LambertGrid | None = None,
+                     window=None,
+                     clamp_undershoot: bool = True) -> ChildInitResult:
     """Initialize an idealized ``input_from_file=F`` nest from its parent.
 
     Unlike the real-input scope trim, this branch retains the full-parent
@@ -1513,11 +1552,24 @@ def parent_only_init(child_dc: DomainConfig,
     passes its placement-translated grid so the map-factor/Coriolis fields
     are bitwise stable across placements on shared ground); omitted, the
     grid is resolved from the parent exactly as before.
+
+    ``window`` is a rectangle of the original child's mass cells, expressed
+    as bounded unit-step slices. It changes temporary allocation extents, not
+    the child's placement, selected physics, spacing or SINT subcell phases.
+    Staggered closing faces are included. ``clamp_undershoot=False`` defers the
+    peak-dependent moment clamp for an assembling caller: a slab-local peak
+    is not the original whole-field rounding threshold. Real relocation uses
+    its existing unconditional nonnegative-field floor after terrain rebuild.
     """
     cfg = child_dc.run
     parent = parent_node.state
     if cfg.nz != parent_node.cfg.run.nz:
-        raise ValueError("parent-only initialization forbids vertical nesting")
+        raise ValueError(
+            f"parent-only initialization forbids vertical nesting: child "
+            f"nz={cfg.nz} differs from parent nz={parent_node.cfg.run.nz}. "
+            "This idealized branch builds the child's state from the "
+            "parent's arrays in place, with no vertical operator."
+            + _OFFLINE_LADDER_DOOR)
     for name in ("hybrid_opt", "etac"):
         child_value = getattr(cfg, name, None)
         parent_value = getattr(parent_node.cfg.run, name, child_value)
@@ -1535,6 +1587,15 @@ def parent_only_init(child_dc: DomainConfig,
                 f"supplied child grid geometry {actual} differs from the "
                 f"config's (e_we, e_sn, dx, dy) = {expected}")
     mass_reg = _mass_registration(child_dc, parent_node)
+    if window is not None:
+        from gpuwm.core.nest_interp import window_registration
+        # Validate against the ORIGINAL domain before changing allocation
+        # shapes. The parent placement and interpolation phases stay original.
+        window_registration(mass_reg, window)
+        sy, sx = window
+        cfg = replace(cfg, nx=sx.stop-sx.start, ny=sy.stop-sy.start)
+        grid = grid.translated(sx.start, sy.start,
+                               e_we=cfg.nx+1, e_sn=cfg.ny+1)
     coord = _coord_from_parent(parent, parent_node.cfg.run)
     state_kwargs = {}
     if scratch_arena is not None:
@@ -1545,7 +1606,8 @@ def parent_only_init(child_dc: DomainConfig,
         state_kwargs["array_module"] = array_module
     child = DomainState(cfg, **state_kwargs)
     child.load_base(
-        coord, _parent_only_base(parent, mass_reg, bool(cfg.terrain_opt)))
+        coord, _parent_only_base(parent, mass_reg, bool(cfg.terrain_opt),
+                                 window=window, device_windows=not isinstance(child.thp, np.ndarray)))
 
     registrations = {
         "": mass_reg,
@@ -1554,10 +1616,19 @@ def parent_only_init(child_dc: DomainConfig,
     }
     transition = resolve_microphysics_transition(parent_node.cfg.run, cfg)
     transition_backing = None
+    transition_parent = parent
+    transition_reg = mass_reg
     if transition.mixed:
+        if window is not None:
+            from gpuwm.core.nest_interp import window_registration
+            from gpuwm.core.microphysics_transition import transition_parent_window
+            transition_reg, donor = window_registration(mass_reg, window)
+            transition_parent = transition_parent_window(parent, donor)
         parent_run = parent_node.cfg.run
         pnz, pny, pnx = (
             int(parent_run.nz), int(parent_run.ny), int(parent_run.nx))
+        if window is not None:
+            pny, pnx = transition_reg.nyp, transition_reg.nxp
         # Exact F16 full-field capacity without importing the forecast-only
         # preflight module into the standalone RW-WPS preparation wheel.
         slot_shape = (max(
@@ -1629,7 +1700,7 @@ def parent_only_init(child_dc: DomainConfig,
         if target is None:
             continue
         if transition_handles_field(transition, name):
-            parent_shape = transition_parent_field_shape(parent, name)
+            parent_shape = transition_parent_field_shape(transition_parent, name)
             count = int(np.prod(parent_shape))
             if transition_backing is None or count > transition_backing.size:
                 raise RuntimeError(
@@ -1637,11 +1708,16 @@ def parent_only_init(child_dc: DomainConfig,
             backing = transition_backing.reshape(-1)[:count].reshape(
                 parent_shape)
             launch_microphysics_edge_parent_field(
-                transition, parent, name, out=backing, coupled=False)
-            sint(backing, registrations[stagger], out=target)
+                transition, transition_parent, name, out=backing, coupled=False)
+            sint(backing, transition_reg, out=target)
         elif source is not None and not (
                 transition.mixed and name == "h_diabatic"):
-            target[...] = sint(source, registrations[stagger])
+            field_window = (None if window is None else (
+                slice(window[0].start, window[0].stop + (stagger == "y")),
+                slice(window[1].start, window[1].stop + (stagger == "x"))))
+            target[...] = _reconstruction_sint(
+                source, registrations[stagger], window=field_window,
+                device_windows=not isinstance(target, np.ndarray))
 
     # A scheme boundary is a reconstructed child cold start.  NSSL-only
     # moments above are canonicalized from parent mass, while retained latent
@@ -1655,7 +1731,7 @@ def parent_only_init(child_dc: DomainConfig,
     # seeded copies are what the first step reads, so a negative left
     # here would be duplicated into them and then refused by the
     # full-state gate at the newborn's first leg.
-    clamped = clamp_parent_sint_undershoot(child)
+    clamped = clamp_parent_sint_undershoot(child) if clamp_undershoot else None
 
     seed_rk_time_t_copies(child)
     _set_map_fields(child, grid)

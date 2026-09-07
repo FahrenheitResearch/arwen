@@ -87,6 +87,7 @@ from gpuwm.mpas_mesh import register_cli as mesh_register_cli
 from gpuwm.multi_run import register_cli as multi_run_register_cli
 from gpuwm.obs.cli import register_cli as obs_register_cli
 from gpuwm.render import register_cli as render_register_cli
+from gpuwm.remote_cli import register_cli as remote_register_cli
 from gpuwm.report_bundle import register_cli as report_register_cli
 from gpuwm.runplan import register_cli as run_plan_register_cli
 from gpuwm.setup_cli import register_cli as setup_register_cli
@@ -95,6 +96,7 @@ from gpuwm.spectral_ops.cli import register_cli as spectral_op_register_cli
 from gpuwm.stage_cli import register_cli as stage_register_cli
 from gpuwm.stream import register_cli as stream_register_cli
 from gpuwm.table_assets import register_cli as table_assets_register_cli
+from gpuwm.tui_cli import register_cli as tui_register_cli
 from gpuwm.update_cli import register_cli as update_register_cli
 from gpuwm.version_cli import register_cli as version_register_cli
 from gpuwm.verify import cases
@@ -291,13 +293,33 @@ def _run_description() -> str:
     door still behaves exactly as it did; the paragraph says what else
     exists now, composed from the modules that own those layouts so it
     cannot drift from them.
+
+    It also said "in this process", which for an experiment TOML -- the
+    wizard's own emission, and every multi-domain config -- has not been
+    true since Task 15: the forecast runs in a supervised WORKER whose
+    output is redirected to files in --outdir.  A user whose run died
+    read their terminal for a traceback that was, by design, on disk,
+    and reported that gpuwm printed nothing.  The worker log names come
+    from :mod:`gpuwm.supervisor`, which writes them, for the same
+    no-drift reason as the two layouts above.
     """
 
     from gpuwm import render_layout, run_stamp
+    from gpuwm.supervisor import (HEARTBEAT_NAME, WORKER_STDERR_NAME,
+                                  WORKER_STDOUT_NAME)
 
     return (
-        "Integrate a config-driven real case in this process, writing "
-        "straight into --outdir.  The same forecast is also reachable as "
+        "Integrate a config-driven real case, writing straight into "
+        "--outdir.  An experiment TOML is SUPERVISED: this process "
+        "watches, and the forecast itself runs in a fresh worker whose "
+        "stdout and stderr go to --outdir/"
+        + WORKER_STDOUT_NAME.format(attempt=1) + " and --outdir/"
+        + WORKER_STDERR_NAME.format(attempt=1) + " (the number "
+        "increments once per recovery attempt).  A failed run's "
+        "traceback is in those files rather than in this terminal, and "
+        "--outdir/" + HEARTBEAT_NAME + " names the phase it reached; "
+        "--no-supervise integrates in this process instead.  The same "
+        "forecast is also reachable as "
         "two stages that stand alone: `gpuwm prep` builds the prepared "
         "tree and `gpuwm sim` runs it (`gpuwm go` drives both).  `gpuwm "
         "sim` gives every forecast its own timestamped run folder -- "
@@ -322,10 +344,14 @@ def build_parser() -> argparse.ArgumentParser:
     than transcribe a list that goes stale the next time one is added.
     """
 
-    parser = argparse.ArgumentParser(
-        prog="gpuwm", description="GPU-native WRF-ARW-like weather model.",
+    from gpuwm.cli_help import AllCommandsHelp, ForecastParser
+    parser = ForecastParser(
+        prog="gpuwm", usage="%(prog)s COMMAND [OPTIONS]",
+        description="GPU-native WRF-ARW-like weather model.",
         epilog="`gpuwm --version` is an alias for `gpuwm version`.")
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument("--help-all", nargs=0, action=AllCommandsHelp,
+                        help="show every command")
+    sub = parser.add_subparsers(prog=parser.prog, dest="command", metavar="COMMAND", required=True)
     preflight_register_cli(sub)
     ingest_register_cli(sub)
     # Combined check policy (T3 handoff): the cheap CPU input/static/table
@@ -338,6 +364,10 @@ def build_parser() -> argparse.ArgumentParser:
     stream_register_cli(sub)
     geog_register_cli(sub)
     domain_register_cli(sub)
+    from gpuwm.research_workspaces import register_cli as research_register_cli
+    research_register_cli(sub)
+    from gpuwm.case_catalog import register_cli as case_catalog_register_cli
+    case_catalog_register_cli(sub)
     render_register_cli(sub)
     enprod_register_cli(sub)
     downscale_register_cli(sub)
@@ -346,6 +376,8 @@ def build_parser() -> argparse.ArgumentParser:
     table_assets_register_cli(sub)
     bridge_assets_register_cli(sub)
     setup_register_cli(sub)
+    tui_register_cli(sub)
+    remote_register_cli(sub)
     # The three unbundled stages.  `render` is registered above and has
     # always stood alone; `prep` and `sim` are what `go` used to be the
     # only way to reach.  Registered BEFORE `go` so the help listing
@@ -405,8 +437,19 @@ def build_parser() -> argparse.ArgumentParser:
                         help="initialized-state NPZ output")
     run = sub.add_parser("run", help="integrate a config-driven real case",
                          description=_run_description())
-    run.add_argument("config", type=Path, metavar="CONFIG",
+    run.add_argument("config", type=Path, metavar="CONFIG", nargs="?",
                      help=_CONFIG_HELP)
+    run.add_argument("--wrfinput", type=Path, metavar="DIR",
+                     help="WRF real.exe directory containing wrfinput_d0*, "
+                          "wrfbdy_d01 and producing namelist.input (instead of CONFIG)")
+    run.add_argument("--met-em", type=Path, metavar="DIR",
+                     help="WPS metgrid directory with met_em.d0*.nc and producing namelist.input; native ArWen initialization")
+    run.add_argument("--rrtmg-variant", choices=("rrtmg_legacy", "rte-rrtmgp"), default=None,
+                     help="WRF inputs: preserve legacy RRTMG by default; choose rte-rrtmgp to change radiation")
+    run.add_argument("--vertical-grid", choices=("native",), default=None,
+                     help="met_em: explicitly use ArWen eta initialization when namelist eta_levels is absent")
+    run.add_argument("--run-seconds", type=float, default=None,
+                     help="shorten a --wrfinput or --met-em run inside its forcing coverage")
     run.add_argument("--outdir", type=Path, default=Path("out/run"),
                      metavar="OUT", help="wrfout output directory")
     run.add_argument("--restart", type=Path, default=None, metavar="RST",
@@ -525,6 +568,9 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
     parser = build_parser()
     tokens = _rewrite_version_alias(
         list(sys.argv[1:] if argv is None else argv))
+    if not tokens:
+        parser.print_help()
+        return 0
 
     # Bare `gpuwm domain` at a terminal asks its four questions instead
     # of printing a usage dump.  The session hands back the argv a
@@ -550,6 +596,15 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
     args = parser.parse_args(_join_negative_coordinates(tokens))
     # Provenance: the emitted TOML records which front door authored it.
     args.interactive = interactive
+    if args.command == "run":
+        if sum(value is not None for value in (args.config, args.wrfinput, args.met_em)) != 1:
+            parser.error("run requires exactly one of CONFIG, --wrfinput DIR or --met-em DIR")
+        if args.run_seconds is not None and args.config is not None:
+            parser.error("--run-seconds is for --wrfinput or --met-em; set run_seconds in CONFIG")
+        if args.rrtmg_variant is not None and args.config is not None:
+            parser.error("--rrtmg-variant is for WRF inputs; set radiation in CONFIG")
+        if args.vertical_grid is not None and args.met_em is None:
+            parser.error("--vertical-grid is for --met-em inputs")
     # Library code emits one-line warnings through gpuwm.explain.warn;
     # stamping the flag once here is what lets --explain add their
     # mechanism prose without threading args through every call chain.
@@ -568,6 +623,7 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
     # version` must not pay for that.  The name is needed at except-clause
     # time below, so it cannot be deferred into the handler itself.
     from gpuwm.static.highres_refusal import HighresRefusal
+    from gpuwm.ingest.memory_refusal import InitializationMemoryRefused
 
     try:
         # WHICH TREE IS EXECUTING, said out loud before anything runs,
@@ -683,6 +739,12 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
         # now no exception.
         print(f"gpuwm {args.command}: " + str(error), file=sys.stderr)
         return 2
+    except InitializationMemoryRefused as error:
+        print(f"gpuwm {args.command}: " + _layer(error, args), file=sys.stderr)
+        if explain_enabled(args):
+            import traceback
+            traceback.print_exception(error, file=sys.stderr)
+        return 2
     except RuntimeError as error:
         # StreamingRefused subclasses RuntimeError, so it lands in this
         # clause -- and used to fall through to the bare ``raise`` below:
@@ -697,6 +759,18 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
         # resident run never pays for -- this import only runs once a
         # RuntimeError has already been raised.
         from gpuwm.core.streaming import StreamingRefused
+
+        from tilestream.hoststore import BudgetExceeded, HostMemoryExhausted
+
+        if isinstance(error, (BudgetExceeded, HostMemoryExhausted)):
+            print(f"gpuwm {args.command}: host-store memory refused: {error}. "
+                  "Reduce the prepared grid or use enough available host memory; "
+                  "raise a configured host budget only if the machine can fit it.",
+                  file=sys.stderr)
+            if explain_enabled(args):
+                import traceback
+                traceback.print_exception(error, file=sys.stderr)
+            return 2
 
         if isinstance(error, StreamingRefused):
             print(f"gpuwm {args.command}: "
@@ -744,6 +818,13 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
                   f"a dependency is missing.\n  {error}\n" + remedy,
                   file=sys.stderr)
             return 2
+        from gpuwm.supervisor import SupervisorError
+        if isinstance(error, SupervisorError):
+            print(f"gpuwm {args.command}: " + _layer(error, args), file=sys.stderr)
+            if explain_enabled(args):
+                import traceback
+                traceback.print_exception(error, file=sys.stderr)
+            return 1
         raise
 
 
@@ -888,6 +969,26 @@ def _dispatch(args) -> int:
         args.config = plan.config_path
         args.restart = plan.checkpoint
         # Fall through to the run dispatch below.
+
+    if args.command == "run" and (args.wrfinput is not None or args.met_em is not None):
+        from gpuwm.wrfinput_forecast import run_wrf_forecast
+        from gpuwm.metem_forecast import run_metem_forecast
+        launch = run_metem_forecast if args.met_em is not None else run_wrf_forecast
+        directory = args.met_em if args.met_em is not None else args.wrfinput
+        unsupported = [flag for flag, value in (
+            ("--prep-timeout", args.prep_timeout),
+            ("--allow-shared-gpu", args.allow_shared_gpu),
+            ("--directory-input-hash", args.directory_input_hash),
+            ("--supervisor-max-restarts", args.supervisor_max_restarts != 3)) if value]
+        if unsupported:
+            raise ValueError("WRF input execution does not consume " + ", ".join(unsupported)
+                             + "; remove these CONFIG supervision options")
+        return launch(directory, args.outdir,
+                               run_seconds=args.run_seconds, restart=args.restart,
+                               health_debug=args.health_debug, gpu_uuid=args.gpu_uuid,
+                               exclusive_gpu=not args.no_supervise,
+                               rrtmg_variant=args.rrtmg_variant,
+                               **({"vertical_grid":args.vertical_grid} if args.met_em is not None else {}))
 
     # [[domain]]/[experiment] tables route to the experiment path; the
     # legacy [grid]/[dynamics]/[run] shape stays on the frozen case path.

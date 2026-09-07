@@ -10,6 +10,26 @@ The emitted status is `VALIDATED_NOT_STOCK_WRF_CERTIFIED`. A new descriptor
 does not inherit the retained ERA5/GFS stock-WRF gates merely because it uses
 the same decoder.
 
+## Native preparation and WRF files
+
+Mapped preparation uses the experiment's configured physics. The companion
+WRF file export is `optional` by default, for both a single domain and a tree.
+A configuration the native runtime accepts can therefore produce its prepared
+forecast even when the WRF exporter cannot represent it. The proof records
+`REFUSED` with the exporter's reason, and the command prints that outcome.
+
+Use `--stock-wrf-export required` when `wrfinput`/`wrfbdy` are required products.
+The same exporter-owned configuration checks run before source decoding or
+initialization; prepared arrays still receive their full validation at export.
+The hierarchy export retains its existing supported physics slice. Use
+`--stock-wrf-export off` (or `--no-stock-wrf-export`) to skip WRF files entirely.
+These controls apply to the mapped runner, including packaged source profiles.
+
+Only an explicit unsupported-export result is optional. Failed writes,
+corrupt caches, and mismatched physics remain preparation failures. Export
+mode does not change the native meteorological arrays or requested physics.
+The low-level WRF export API keeps its existing required behavior.
+
 ## Authority boundary
 
 `rw-wps.descriptor.v1` has the same coordinate, field, derivation, and target

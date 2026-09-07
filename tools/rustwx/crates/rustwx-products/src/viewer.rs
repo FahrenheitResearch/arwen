@@ -182,6 +182,17 @@ pub fn generic_style_for_store_variable(
         density: LevelDensity::default(),
         mode: LegendMode::SmoothRamp,
     };
+    // The one ramp this lane invents itself, so the one ramp a theme may
+    // replace wholesale: the theme's sequential colours stepped onto the
+    // same band count.  No theme, the viridis anchors above.
+    let colors: Vec<Color> = rustwx_render::active_theme()
+        .sequential_colors(COLORS.len())
+        .unwrap_or_else(|| {
+            COLORS
+                .iter()
+                .map(|[r, g, b, a]| Color::rgba(*r, *g, *b, *a))
+                .collect()
+        });
 
     StoreVariableStyle {
         // The clean headline other rows get: the variable's name (its
@@ -198,10 +209,7 @@ pub fn generic_style_for_store_variable(
         convert: UnitConvert::None,
         scale: ColorScale::Discrete(DiscreteColorScale {
             levels,
-            colors: COLORS
-                .into_iter()
-                .map(|[r, g, b, a]| Color::rgba(r, g, b, a))
-                .collect(),
+            colors,
             extend: ExtendMode::Neither,
             mask_below: None,
         }),

@@ -109,6 +109,152 @@ def test_the_order_of_the_chain_binds():
 
 
 # ---------------------------------------------------------------------------
+# 2b. replaying the chain from the checkpoint's own base is not a bypass
+# ---------------------------------------------------------------------------
+#
+# The widening it exists for: the chain is anchored to the base the WRITING
+# run computed, so a build that widened an exemption computes a different
+# base and every relocation checkpoint on disk becomes unresumable, blaming
+# the move history rather than the base.  Replaying from the header's own
+# stored components recovers it.
+#
+# The hole that was in the widening: the replayed value IS the stored
+# fingerprint, so adopting it on the strength of the replay alone handed the
+# restart gate the header to compare against itself -- and that gate is the
+# only place a tree's preparation receipt, cache content, execution plan and
+# runtime source identity are ever compared.  A checkpoint from a DIFFERENT
+# prepared tree would have resumed silently, its chain being self-consistent
+# too.  These pin both directions.
+
+def _chain_case(stored_components, live_components, records=("a" * 64,)):
+    """A header/model pair around one stored base and one live one."""
+    import hashlib
+    from gpuwm.prepared_domain_tree_forecast import (
+        _canonical, _strict_json, fingerprint_across_stored_chain)
+
+    def digest(components):
+        return hashlib.sha256(
+            _canonical(_strict_json(components)).encode("utf-8")).hexdigest()
+
+    stored_fp = digest(stored_components)
+    for record in records:
+        stored_fp = mark_fingerprint_across_move(stored_fp, record)
+    header = {
+        "experiment_fingerprint": stored_fp,
+        "experiment_fingerprint_components": {
+            **stored_components, "relocation": {"records": list(records)}},
+        "relocation": {"moves": len(records),
+                       "record_sha256": list(records)},
+    }
+
+    class _Model:
+        pass
+
+    model = _Model()
+    model._experiment_fingerprint_components = live_components
+    resolved = fingerprint_across_stored_chain(
+        header, digest(live_components), model)
+    return header, resolved
+
+
+def test_a_widened_exemption_still_resumes_its_own_checkpoints():
+    """The case the replay exists for: same run, moved base."""
+    stored = {"experiment_identity": {"domains": [
+        {"grid_id": 1, "run": {"use_adaptive_time_step": True,
+                               "nz": 49, "target_cfl": 1.2}}]},
+        "preparation_receipt_sha256": "r1"}
+    # the live build no longer binds target_cfl under an adaptive clock
+    live = {"experiment_identity": {"domains": [
+        {"grid_id": 1, "run": {"use_adaptive_time_step": True,
+                               "nz": 49}}]},
+        "preparation_receipt_sha256": "r1"}
+    header, resolved = _chain_case(stored, live)
+    assert resolved == header["experiment_fingerprint"]
+
+
+def test_a_different_prepared_tree_is_not_adopted():
+    """Self-consistency is not identity.
+
+    The foreign checkpoint's chain replays perfectly from its own stored
+    base -- that is what made the hole invisible.  What it cannot do is
+    agree with the live components once both are normalised.
+    """
+    stored = {"experiment_identity": {"domains": [
+        {"grid_id": 1, "run": {"use_adaptive_time_step": True, "nz": 49}}]},
+        "preparation_receipt_sha256": "SOMEONE ELSE'S TREE"}
+    live = {"experiment_identity": {"domains": [
+        {"grid_id": 1, "run": {"use_adaptive_time_step": True, "nz": 49}}]},
+        "preparation_receipt_sha256": "THIS TREE"}
+    header, resolved = _chain_case(stored, live)
+    assert resolved != header["experiment_fingerprint"], (
+        "a checkpoint from a different prepared tree was adopted")
+
+
+def test_a_truncated_chain_is_not_adopted():
+    """The records fold one-way, so a short chain reaches a different value."""
+    import hashlib
+    from gpuwm.prepared_domain_tree_forecast import (
+        _canonical, _strict_json, fingerprint_across_stored_chain)
+
+    components = {"experiment_identity": {"domains": []},
+                  "preparation_receipt_sha256": "r1"}
+    base = hashlib.sha256(
+        _canonical(_strict_json(components)).encode("utf-8")).hexdigest()
+    records = [f"{n:064x}" for n in range(1, 4)]
+    full = base
+    for record in records:
+        full = mark_fingerprint_across_move(full, record)
+    header = {
+        "experiment_fingerprint": full,
+        "experiment_fingerprint_components": {
+            **components, "relocation": {"records": records}},
+        # the chain the reader is handed drops the last record
+        "relocation": {"moves": 2, "record_sha256": records[:2]},
+    }
+
+    class _Model:
+        pass
+
+    model = _Model()
+    model._experiment_fingerprint_components = components
+    resolved = fingerprint_across_stored_chain(header, base, model)
+    assert resolved != full, "a truncated chain reconstructed the value"
+
+
+def test_a_checkpoint_with_no_moves_is_untouched():
+    """The ordinary case stays the as-built value, not a replayed one."""
+    from gpuwm.prepared_domain_tree_forecast import (
+        fingerprint_across_stored_chain)
+
+    class _Model:
+        pass
+
+    assert fingerprint_across_stored_chain(
+        {"experiment_fingerprint": "x" * 64}, "0" * 64, _Model()) == "0" * 64
+
+
+def test_the_normalised_comparison_is_only_ever_a_widening():
+    """The instrument the adoption leans on, in both directions."""
+    from gpuwm.io.restart import _identity_matches_under_current_rules
+
+    class _Model:
+        pass
+
+    def check(stored, live):
+        model = _Model()
+        model._experiment_fingerprint_components = live
+        return _identity_matches_under_current_rules(
+            {"experiment_fingerprint_components": stored}, model)
+
+    adaptive = {"use_adaptive_time_step": True, "nz": 49, "target_cfl": 1.2}
+    live_run = {"use_adaptive_time_step": True, "nz": 49}
+    ident = lambda run: {"experiment_identity": {                # noqa: E731
+        "domains": [{"grid_id": 1, "run": run}]}}
+    assert check(ident(adaptive), ident(live_run)), "policy must normalise out"
+    assert not check(ident({**adaptive, "nz": 61}), ident(live_run)), (
+        "a field that DOES describe the tree must still refuse")
+
+# ---------------------------------------------------------------------------
 # 3. the posture is a fixed string, quoted the same way everywhere
 # ---------------------------------------------------------------------------
 
@@ -226,12 +372,10 @@ def test_ww_pp_is_carried_by_a_checkpoint_but_not_by_the_state_identity():
     a resume that re-zeroed it integrated a measurably different
     forecast.  So a checkpoint must hold it.
 
-    It is also a VIEW INTO THE SHARED DYCORE WORKSPACE, which a child
-    rebuild legitimately reuses.  ``STATE_SERIALIZED_ATTRS`` is what
-    ``live_state_sha256`` hashes, and therefore what ``relocate_child``
-    compares to assert a parent is never written across a move -- so
-    putting it there made that assertion fire on workspace churn.  The
-    first attempt at this fix did exactly that and broke the moving nest.
+    The acoustic namespace remains outside the physical-state digest for
+    checkpoint and relocation identity compatibility. The field now owns
+    per-domain storage: sharing its retained boundary column was unsafe,
+    independently of its serialization namespace.
     """
     from gpuwm.io.restart import classify_state_attr
     from gpuwm.state_serialization_contract import (CHECKPOINT_ONLY_STATE,
@@ -249,3 +393,59 @@ def test_the_state_identity_never_sees_a_checkpoint_only_carrier():
     from gpuwm.state_serialization_contract import CHECKPOINT_ONLY_STATE
 
     assert not (set(CHECKPOINT_ONLY_STATE) & set(serialized_state_attrs()))
+
+
+@pytest.mark.parametrize("historical_base", [False, True])
+def test_prepared_restore_keeps_the_complete_named_move_history(historical_base):
+    import hashlib
+    from gpuwm.prepared_domain_tree_forecast import (
+        _canonical, _strict_json, fingerprint_across_stored_chain)
+    stored = {"experiment_identity": {"domains": [
+        {"grid_id": 1, "run": {"use_adaptive_time_step": True, "nz": 49,
+                                "target_cfl": 1.2}}]}, "preparation_receipt_sha256": "same-tree"}
+    live = {"experiment_identity": {"domains": [
+        {"grid_id": 1, "run": {"use_adaptive_time_step": True, "nz": 49,
+                                **({} if historical_base else {"target_cfl": 1.2})}}]},
+        "preparation_receipt_sha256": "same-tree"}
+    def digest(value):
+        return hashlib.sha256(_canonical(_strict_json(value)).encode()).hexdigest()
+    records = [f"{n:064x}" for n in range(1, 6)]
+    # Repeated restoration replaces, rather than appends to, the carried chain.
+    for end in (2, 5):
+        expected = digest(stored)
+        for record in records[:end]:
+            expected = mark_fingerprint_across_move(expected, record)
+        header = {"experiment_fingerprint": expected,
+                  "experiment_fingerprint_components": {**stored, "relocation": {"records": records[:end]}},
+                  "relocation": {"record_sha256": records[:end]}}
+        model = SimpleNamespace(_experiment_fingerprint_components={
+            **live, **({} if historical_base else
+                       {"relocation": {"records": ["placement-rebuild-only"]}})})
+        result = fingerprint_across_stored_chain(header, digest(live), model)
+        assert result == expected
+        assert model._experiment_fingerprint_components == {
+            **live, "relocation": {"records": records[:end]}}
+        assert header["relocation"]["record_sha256"] == records[:end]
+        assert live.get("relocation") is None
+
+
+@pytest.mark.parametrize("damage", ["foreign", "truncated", "reordered"])
+def test_failed_prepared_reconstruction_cannot_replace_named_move_history(damage):
+    import hashlib
+    from gpuwm.prepared_domain_tree_forecast import (
+        _canonical, _strict_json, fingerprint_across_stored_chain)
+    original = {"preparation_receipt_sha256": "owned-tree"}
+    foreign = {"preparation_receipt_sha256": "foreign-tree"} if damage == "foreign" else original
+    digest = lambda value: hashlib.sha256(_canonical(_strict_json(value)).encode()).hexdigest()
+    records = ["a" * 64, "b" * 64]
+    expected = digest(foreign)
+    for record in records:
+        expected = mark_fingerprint_across_move(expected, record)
+    supplied = records[:1] if damage == "truncated" else list(reversed(records)) if damage == "reordered" else records
+    header = {"experiment_fingerprint": expected,
+              "experiment_fingerprint_components": {**foreign, "relocation": {"records": records}},
+              "relocation": {"record_sha256": supplied}}
+    model = SimpleNamespace(_experiment_fingerprint_components=original)
+    assert fingerprint_across_stored_chain(header, digest(original), model) != expected
+    assert model._experiment_fingerprint_components is original
+    assert original == {"preparation_receipt_sha256": "owned-tree"}

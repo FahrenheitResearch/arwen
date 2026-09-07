@@ -287,6 +287,7 @@ def test_pin_accepts_a_bundle_stamped_with_the_released_revision(tmp_path):
 #: entry whose file stops referencing the stamp -- fails below, so a new
 #: bridge cannot ship un-provable.
 _STAMP_SOURCES = {
+    "arwen-tui": "src/main.rs",
     "grib1_bridge": "src/main.rs",
     "gfs_grib2_bridge": "src/bin/gfs_grib2_bridge.rs",
     "hrrr_grib2_bridge": "src/bin/hrrr_grib2_bridge.rs",
@@ -323,6 +324,7 @@ _STAMP_SOURCES = {
 
 #: The build script that injects the revision for each artifact.
 _STAMP_BUILDS = {
+    "tools/arwen-tui": ("build.rs",),
     bridges.CRATE_RELATIVE: ("build.rs",),
     bridges.RUSTWX_CRATE_RELATIVE: ("crates/rw-fetch/build.rs",
                                     "crates/rw-wrfbatch/build.rs",

@@ -226,6 +226,67 @@ def test_captured_wddm_compute_apps_fixture_parses_desktop_rows():
                for process in processes)
 
 
+@pytest.mark.parametrize("result, expected", [
+    (subprocess.CompletedProcess([], -11, "partial inventory", ""),
+     (("SIGSEGV", "signal 11", "return code -11") if os.name == "posix"
+      else ("status -11",)) + ("stdout: partial inventory",)),
+    (subprocess.CompletedProcess([], 9, "Failed to initialize NVML", ""),
+     ("status 9", "stdout: Failed to initialize NVML")),
+    (subprocess.CompletedProcess([], -1073741819, "", "access violation"),
+     ("status -1073741819", "stderr: access violation")),
+    (FileNotFoundError("missing executable"), ("not found on PATH",)),
+    (PermissionError("execution denied"),
+     ("could not be started", "execution denied", "Check executable access")),
+    (subprocess.TimeoutExpired(
+        ["nvidia-smi"], 20, output=b"partial\xff", stderr=b"NVML stalled"),
+     ("timed out after 20 seconds", "stdout: partial\ufffd", "stderr: NVML stalled")),
+])
+def test_nvidia_smi_failure_preserves_diagnostics_without_retry(
+        monkeypatch, result, expected):
+    arguments = ["--query-gpu=index,uuid,driver_version,name",
+                 "--format=csv,noheader,nounits"]
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert kwargs["timeout"] == 20
+        assert kwargs["check"] is False
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(supervisor.subprocess, "run", run)
+    with pytest.raises(GPUPreflightError) as caught:
+        supervisor.query_gpus()
+    assert calls == [["nvidia-smi", *arguments]]
+    message = str(caught.value)
+    assert "failed closed" in message
+    assert "GPU state checks did not complete" in message
+    assert "nvidia-smi in the same shell" in message
+    assert repr(arguments) in message
+    for text in expected:
+        assert text in message
+    if os.name == "nt":
+        assert "SIGSEGV" not in message
+
+
+def test_nvidia_smi_success_still_requires_an_actual_gpu_identity(monkeypatch):
+    monkeypatch.setattr(supervisor.subprocess, "run", lambda *args, **kwargs:
+                        subprocess.CompletedProcess(
+                            args, 0, "0, GPU-test, 610.74, RTX 5090\n", ""))
+    assert supervisor.query_gpus() == (
+        GPUIdentity("GPU-test", "610.74", "RTX 5090", 0),)
+
+
+@pytest.mark.parametrize("output", ["", "Failed to initialize NVML\n"])
+def test_nvidia_smi_zero_exit_with_no_inventory_is_not_success(
+        monkeypatch, output):
+    monkeypatch.setattr(supervisor.subprocess, "run", lambda *args, **kwargs:
+                        subprocess.CompletedProcess(args, 0, output, ""))
+    with pytest.raises(GPUPreflightError):
+        supervisor.query_gpus()
+
+
 def test_captured_wddm_pmon_fixture_parses_exact_twelve_columns():
     fixture = (Path(__file__).with_name("data") /
                "nvidia_smi_wddm_pmon_61074.txt")

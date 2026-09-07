@@ -169,6 +169,24 @@ unported, asking for `--mapped-engine rust` on it still goes to the
 engine and returns its own `not_implemented` refusal -- a run that asked
 for Rust never silently gets Python.
 
+### Where the engine's scratch goes
+
+The engine stages a frame stream on disk before gpuwm reads it back:
+`compose` writes the whole composed stream (tens of GB for the largest
+registered sources) and `decode` writes the decoded frameset (a few GB
+for a 0.25-degree analysis). `gpuwm prep` places the compose scratch
+beside its output directory, on the same disk-backed filesystem the
+output lands on. `GPUWM_COMPOSE_SCRATCH=<directory>` overrides that
+placement, and it also covers `decode` and `inspect`, which have no
+output directory of their own and otherwise stage in the system temp.
+Set it on a box whose `/tmp` is a quota-limited tmpfs, where a bare
+decode of a 0.25-degree set dies with `cannot write the frame stream:
+Disk quota exceeded (os error 122)`. The directory must exist: falling
+back silently would put the stream on exactly the filesystem the
+variable was set to avoid, so a missing one refuses by name. The engine
+itself reads no `TMPDIR`; every temporary on the route, the input list
+included, lands under that one directory.
+
 ## Source spellings
 
 `--source` takes the id in the tables above or any other spelling in
@@ -260,6 +278,33 @@ regional model that cannot reach the domain have opposite remedies. This is
 the same refusal for every source -- the mapped route, a packaged profile
 and the native route all raise it -- so a regional model added as table data
 gets it with no new code.
+
+A source whose grid declaration states a projection -- its coordinate
+arrays are then that projection's own axes rather than degrees, which is
+what a declared `lambert_conformal` grid such as HRRR, RAP or NAM carries
+-- is paired by projecting the domain into that plane, on the nested
+route exactly as on the single-domain one. A refusal from such a source
+names the plane its numbers are in, and prints the domain's own lat/lon
+beside them, because the plane coordinates appear in no namelist:
+
+```text
+prep: REFUSED: target points fall outside the source grid: target point
+(0, 0) at lambert_conformal plane in 100 km units (y, x) = (61.8114,
+102.4885), lat/lon (35.9984, 7.9755) maps to source index x=3416.282
+y=2060.379, and the source covers x=0..1798 (lambert_conformal plane in
+100 km units x 0..53.94) y=0..1058 (lambert_conformal plane in 100 km
+units y 0..31.74)
+remedy: if the window above is a CROP of a wider grid, re-fetch the
+source with a margin that contains the whole domain -- the interpolation
+stencil reaches one cell beyond every corner.  If the window IS the
+source's whole extent, no crop reaches this domain: move the domain
+inside the window, or prepare it from a source whose grid covers it
+(--list-sources names every source this install runs).
+```
+
+A declared family this install does not pair against is refused by name
+at the first look rather than read as degrees by whichever route looked
+second.
 
 ## Native HRRR subset download
 

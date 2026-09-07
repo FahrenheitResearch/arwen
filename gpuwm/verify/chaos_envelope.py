@@ -122,6 +122,40 @@ def require_spectral_agreement(reflectivity_field: str) -> None:
             f"{reflectivity_field!r} cannot carry the spectral class")
 
 
+def _registration_hash(registration: Mapping[str, object]) -> str:
+    """Digest every registered field, not only ``parameters``.
+
+    ``start_time`` is a sibling of ``parameters``, and it is not
+    decorative: :func:`score_pair` reads it and hands it to
+    :func:`discover_frames`, which keys every frame by
+    ``int((valid - start).total_seconds())``.  Moving it re-points every
+    registered lead at a DIFFERENT history frame, for the member pairs and
+    the candidate alike -- shift it back an hour and lead 10800 scores the
+    14Z frame instead of the 15Z one, before convective initiation, where
+    the runs still agree.  While the hash covered ``parameters`` alone,
+    that edit revalidated cleanly and the receipt went on quoting the
+    original digest.  ``evaluator_commit`` -- the "who measured this" the
+    receipt reproduces -- was editable the same way.
+
+    ``schema`` is included for the same reason: it is what
+    :func:`validate_registration` matches before anything else.
+
+    The digest therefore covers the whole registration EXCEPT the digest
+    field itself, so a reader binding a receipt to a committed
+    registration binds all of it.
+
+    NOTE: this changes the value of the digest.  No chaos-envelope
+    registration is committed anywhere in this tree (grep
+    ``chaos-envelope-registration``), so nothing on disk is invalidated;
+    the obs battery's separate ``registration_sha256``
+    (``gpuwm.obs-battery-registration/v1``) is a different function and is
+    untouched.
+    """
+    payload = {key: value for key, value in registration.items()
+               if key != "registration_sha256"}
+    return canonical_hash(payload)
+
+
 def make_registration(*, start_time: str, domain_dx_m: Mapping[str, float],
                       state_fields: Sequence[str], leads_seconds: Sequence[int],
                       cadence_seconds: int, reflectivity_field: str,
@@ -185,7 +219,7 @@ def make_registration(*, start_time: str, domain_dx_m: Mapping[str, float],
         "evaluator_commit": evaluator_commit.lower(),
         "parameters": parameters,
     }
-    registration["registration_sha256"] = canonical_hash(parameters)
+    registration["registration_sha256"] = _registration_hash(registration)
     return registration
 
 
@@ -202,7 +236,7 @@ def validate_registration(registration: Mapping[str, object]
     parameters = reg["parameters"]
     if not isinstance(parameters, dict):
         raise ValueError("envelope registration parameters must be an object")
-    if canonical_hash(parameters) != reg["registration_sha256"]:
+    if _registration_hash(reg) != reg["registration_sha256"]:
         raise ValueError("envelope registration hash does not match its pins")
     commit = str(reg["evaluator_commit"])
     if (len(commit) != 40

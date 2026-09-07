@@ -16,6 +16,7 @@ from gpuwm.core.grid import BaseState
 from gpuwm.experiment import VerticalConfig
 from gpuwm.ingest.grib import Era5Snapshot
 from gpuwm.ingest.hrrr import HrrrNativeSnapshot
+from gpuwm.ingest.horiz import HorizontalSnapshot
 from gpuwm.static.lambert import LambertGrid
 from gpuwm.verify.cases.wk82 import wk82_sounding, wk82_theta
 from gpuwm.verify.npref import np_sint
@@ -419,8 +420,9 @@ def test_prepare_child_input_dispatches_hrrr_on_own_static_landmask(
         "LANDMASK": landmask,
         "LU_INDEX": np.asarray([[21, 1], [16, 21]]),
     }
-    horizontal = SimpleNamespace(fields={
-        "SKINTEMP": np.asarray([[281.0, 282.0], [283.0, 284.0]])})
+    horizontal = HorizontalSnapshot(
+        valid_time=valid_time, levels_hpa=np.asarray([1000.0]), fields={
+            "SKINTEMP": np.asarray([[281.0, 282.0], [283.0, 284.0]])})
 
     class Backend:
         @staticmethod
@@ -493,11 +495,15 @@ def test_pending_child_inputs_rejects_unbounded_or_invalid_workers(workers):
         ni.PendingChildInputs((), {}, object(), None, workers=workers)
 
 
-@pytest.mark.parametrize("child_id", (2, 3, 4))
-def test_initialize_child_binding_order_and_soil_never_readjusted(
-        monkeypatch, child_id):
+def _child_binding_case(monkeypatch, child_id, soil_case=None):
     """Review anchor: REAL -> SINT -> blend all 3 -> adjust -> rederive."""
     events = []
+    # These ordering/soil tests replace interpolation; constructing its CUDA
+    # backend must not make this CPU contract depend on an installed CuPy.
+    backend = SimpleNamespace(receipt=lambda: {"backend": "test-ordering"})
+    monkeypatch.setattr(
+        "gpuwm.ingest.preprocess_backend.resolve_preprocess_backend",
+        lambda *_args, **_kwargs: backend)
 
     class State:
         def __init__(self):
@@ -523,7 +529,13 @@ def test_initialize_child_binding_order_and_soil_never_readjusted(
         # it no longer reaches an ingest at all, which is the point of the
         # seam: the geometry a run initialises on is a decision, not a
         # default.
-        sf_surface_physics=2)
+        sf_surface_physics=2, num_soil_layers=4)
+    if soil_case is not None:
+        from test_ruc_soil_wiring import _SOURCES
+        source, cfg.sf_surface_physics, cfg.num_soil_layers = soil_case
+        horizontal.fields = _SOURCES[source](4, 5)
+        static["SCT_DOM"][:] = 6.0
+        static["LU_INDEX"][:] = 1.0
     # A parsed [[domain]] always carries a start_time -- it defaults to
     # [experiment].start_time rather than to None -- and the snapshot the
     # child initialises on is now chosen by it, so the stub carries one too.
@@ -533,7 +545,8 @@ def test_initialize_child_binding_order_and_soil_never_readjusted(
         j_parent_start=3, parent_grid_ratio=3, start_time=child_start)
     parent_node = SimpleNamespace(cfg=SimpleNamespace(grid_id=child_id - 1))
     catalog = SimpleNamespace(inventory=("SOILGEO",), valid_times=(object(),),
-                              snapshots=(object(),), files=())
+                              snapshots=(object(),), files=(),
+                              water_temperature_policy="wrf_compat")
     vertical = VerticalConfig(eta_levels=(1.0, 0.5, 0.0), p_top=10000.0,
                               hybrid_opt=2, etac=0.2)
 
@@ -564,6 +577,7 @@ def test_initialize_child_binding_order_and_soil_never_readjusted(
     monkeypatch.setattr(ni, "interpolate_lake_skin_temperature", lake_skin)
     def interpolate(*_args, **kwargs):
         assert kwargs["source_orography_catalog"] is catalog
+        assert kwargs["backend"] is backend
         events.append("era5-own-grid")
         return horizontal
 
@@ -581,11 +595,16 @@ def test_initialize_child_binding_order_and_soil_never_readjusted(
         ni, "_set_map_fields", lambda *_: events.append("map"))
     monkeypatch.setattr(
         ni, "update_diagnostics", lambda *_: events.append("preblend-eos"))
-    def preprocess(*_args, **kwargs):
+    def preprocess(*args, **kwargs):
+        nonlocal soil
         assert kwargs["lake_mask"] is None
         assert kwargs["lake_skin_temperature"] is None
-        assert kwargs["soil_layer_contract"] == "soil-contract"
+        assert kwargs["soil_layer_contract"] == (
+            "soil-contract" if soil_case is None else None)
         events.append("soil-fine")
+        if soil_case is not None:
+            from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
+            soil = preprocess_land_surface_soil(*args, **kwargs)
         return soil
 
     monkeypatch.setattr(ni, "preprocess_land_surface_soil", preprocess)
@@ -614,7 +633,7 @@ def test_initialize_child_binding_order_and_soil_never_readjusted(
 
     result = ni.initialize_child(
         child_dc, parent_node, catalog, vertical,
-        soil_layer_contract="soil-contract")
+        soil_layer_contract="soil-contract" if soil_case is None else None)
 
     assert events == [
         "snapshot", "era5-own-grid", "real-unblended", "map",
@@ -625,6 +644,38 @@ def test_initialize_child_binding_order_and_soil_never_readjusted(
     assert result.static_fields is static
     assert result.real is updated
     assert result.coord is shared_coord
+    return result, horizontal.fields, static
+
+
+@pytest.mark.parametrize("child_id", (2, 3, 4))
+def test_initialize_child_binding_order_and_soil_never_readjusted(monkeypatch, child_id):
+    _child_binding_case(monkeypatch, child_id)
+
+
+@pytest.mark.parametrize("source", ("era5", "hrrr"))
+@pytest.mark.parametrize("scheme,layers", ((2, 4), (3, 6), (3, 9)))
+def test_child_soil_uses_configured_geometry_and_matches_direct_provider(
+        monkeypatch, source, scheme, layers):
+    """Six-layer children used to get nine layers and fail forecast loading."""
+    from gpuwm.ingest.ruc_soil import preprocess_ruc_soil
+    from gpuwm.ingest.soil import preprocess_noah_soil
+
+    result, fields, static = _child_binding_case(
+        monkeypatch, 2, soil_case=(source, scheme, layers))
+    provider = preprocess_ruc_soil if scheme == 3 else preprocess_noah_soil
+    expected = provider(
+        fields, soil_type=static["SCT_DOM"], deep_soil_temperature=static["TMN"],
+        water_temperature_policy="wrf_compat",
+        **({"num_soil_layers": layers} if scheme == 3 else {}))
+    for name in ("soil_temperature", "soil_moisture", "liquid_moisture"):
+        actual = getattr(result.soil, name)
+        assert actual.shape == (layers, 4, 5), (name, actual.shape)
+        np.testing.assert_array_equal(actual, getattr(expected, name))
+
+
+def test_child_soil_rejects_unrepresentable_configured_geometry(monkeypatch):
+    with pytest.raises(ValueError, match="num_soil_layers"):
+        _child_binding_case(monkeypatch, 2, soil_case=("era5", 3, 4))
 
 
 def test_as_like_moves_cuda_style_parent_operand_to_cpu_child():
@@ -694,6 +745,10 @@ def test_d01_only_declaration_fails_at_d02_initialization_with_domain_named(
     monkeypatch.setattr(ni, "_child_grid", lambda *_: object())
     monkeypatch.setattr(ni, "build_static_for_domain", lambda *_: {})
     monkeypatch.setattr(ni, "_initial_snapshot", lambda *_: object())
+    # This refusal precedes interpolation and needs no device/backend setup.
+    monkeypatch.setattr(
+        "gpuwm.ingest.preprocess_backend.resolve_preprocess_backend",
+        lambda *_args, **_kwargs: object())
 
     with pytest.raises(ValueError, match=r"d02"):
         ni.initialize_child(

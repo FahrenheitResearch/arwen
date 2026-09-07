@@ -112,7 +112,8 @@ __device__ __forceinline__ void morr_bound_one(
 }
 
 __device__ __forceinline__ MorrMoments morr_bound(
-        real qc, real qr, real qi, real qs, real qg, real rhoa, real temp,
+        real qc, real qr, real qi, real qs, real qg, real rhoa,
+        real pres, real temp,
         real* nc, real* nr, real* ni, real* ns, real* ng,
         bool reset_cloud_number, real morr_rhog)
 {
@@ -121,8 +122,13 @@ __device__ __forceinline__ MorrMoments morr_bound(
     m.pg = 2.0f;
     if (reset_cloud_number) *nc = 250.0e6f / rhoa;
     if (qc >= MQSMALL) {
-        // PGAM uses WRF's separate hard-coded 287.15 reference density.
-        real rho_cloud = rhoa * RD / 287.15f;
+        // PGAM uses WRF's separate hard-coded 287.15 reference density,
+        // rebuilt from the CURRENT T3D: :1558 reads it after the small
+        // snow/graupel melt of :1504-1511, and :3920 after the tendency
+        // apply (:3710), sedimentation evaporation (:3735-3758) and the
+        // ice melt / homogeneous freezings (:3805-3843).  rhoa is
+        // PRES/(R*T3D) frozen once at :1325, before any of that.
+        real rho_cloud = pres / (287.15f * temp);
         real pp = 0.0005714f * ((*nc) / 1.0e6f * rho_cloud) + 0.2714f;
         m.pg = fminf(fmaxf(1.0f / (pp * pp) - 1.0f, 2.0f), 10.0f);
         real raw = cbrtf((MPI / 6.0f * MRHOW * (*nc)
@@ -250,7 +256,8 @@ __device__ __forceinline__ void morr_process_level(
             *qg = 0.0f; *ng = 0.0f;
         }
     }
-    MorrMoments m = morr_bound(*qc, *qr, *qi, *qs, *qg, rhoa, *temp,
+    MorrMoments m = morr_bound(*qc, *qr, *qi, *qs, *qg, rhoa,
+                                pressure, *temp,
                                 nc, nr, ni, ns, ng, true, morr_rhog);
     *stale_lami = warm ? 0.0f : m.li;
     // INUM=1: DUMFNC=NC3D, without NC3DTEN, at WRF 3367-3374.
@@ -1194,7 +1201,8 @@ void morrison_finalize_levels(real* __restrict__ theta,
     // Final PSD reconstruction rebounds LAMC from the transient updated
     // NC3D (WRF 3918-3947).  Fixed 250 cm-3 is restored only after EFFC.
     MorrMoments m = morr_bound(qc[idx], qr[idx], qi[idx], qs[idx], qg[idx],
-                                rhoa, temp, &nc[idx], &nr[idx], &ni[idx],
+                                rhoa, pressure[idx], temp,
+                                &nc[idx], &nr[idx], &ni[idx],
                                 &ns[idx], &ng[idx], false, morr_rhog);
     effc[idx] = qc[idx] >= MQSMALL
               ? (m.pg + 3.0f) / (2.0f * m.lc) * 1.0e6f : 25.0f;

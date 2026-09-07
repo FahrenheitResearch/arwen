@@ -61,7 +61,8 @@ from gpuwm.core.nest_lifecycle import (admit_restart_with_lifecycle,
                                        output_episode)
 from gpuwm.core.noah import noah_initial_snow_albedo
 from gpuwm.experiment import ExperimentConfig, VerticalConfig
-from gpuwm.ingest.grib import cached_era5_forcing
+from gpuwm.ingest.grib import (cached_era5_forcing,
+                               clear_forcing_caches)
 from gpuwm.ingest.horiz import interpolate_era5_to_lambert
 from gpuwm.ingest.soil_downscale import (
     declared_soil_texture_downscale, soil_mesh_plan_from_case)
@@ -136,6 +137,9 @@ class PreparedRealCase:
     initial_snow_water_kgm2: np.ndarray
     forcing_times: tuple[datetime, ...]
     geog_selection: GeogSelection | None = None
+    store_input: object | None = None
+    streamed_store: object | None = None
+    initialization_receipt: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -434,6 +438,14 @@ def _write_microphysics_transition_receipt(
                      and int(first) == start + interval
                      and int(last) == final
                      and int(last) - int(first) == (count - 1) * interval)))
+        # EITHER form proves the invariant.  The tick arithmetic above is
+        # exact while every parent step is the same size; the step-count
+        # identity is exact always, and is the only one that holds under
+        # an adaptive clock.  Under a fixed clock both are true, so the
+        # existing path is unchanged and nothing already-green moves.
+        if not valid_observation:
+            valid_observation = bool(
+                edge.get("force_count_matches_parent_steps"))
         if not valid_observation:
             raise RuntimeError(
                 "microphysics transition force coverage is incomplete or "
@@ -668,6 +680,103 @@ def forcing_schedule(exp: ExperimentConfig, data: CaseDataConfig,
     return usable
 
 
+def _snapshot_host_bytes(snapshot) -> int:
+    """Host bytes one decoded forcing snapshot holds, over its own arrays."""
+
+    total = sum(int(getattr(value, "nbytes", 0))
+                for value in getattr(snapshot, "fields", {}).values())
+    for name in ("levels_hpa", "latitude", "longitude"):
+        total += int(getattr(getattr(snapshot, name, None), "nbytes", 0))
+    return total
+
+
+def forcing_decode_report(exp: ExperimentConfig, snapshots) -> str:
+    """What the forcing decode cost, in valid times and host bytes.
+
+    THE COUNT IS NOT THE FORECAST'S.  Which valid times get decoded is
+    decided by the input catalog, and
+    :func:`gpuwm.ingest.preflight.build_input_catalog` takes ``case_data``
+    ALONE: it selects the longest contiguous run of times present in the
+    forcing FILES and never sees ``run_seconds``.  So a user who fetched
+    a longer window than they integrate decodes the whole window into
+    host memory, shortening the run does not shorten the decode, and no
+    preflight says so -- ``gpuwm check``'s ingest itemization prices
+    DEVICE memory by its own definition
+    (:class:`gpuwm.core.preflight.IngestMemoryEstimate`).  This line is
+    where that window is named.
+
+    "BEYOND THE END", NOT "UNREAD".  A time past the run's end is NOT
+    surplus to the prepared case, and saying so would be false in the
+    same breath that says it: :func:`forcing_schedule` returns EVERY
+    decoded time at or after ``start_time`` -- it truncates at nothing --
+    and :func:`prepare_real_case` loops over all of them, interpolating
+    each, building a state for each, adding each to the boundary frames,
+    making an interval of every consecutive pair, and keeping the LAST as
+    the case's final analysis.  So the remedy is real but it is not free:
+    a narrower forcing window changes ``forcing_times``, the lateral
+    boundary intervals and ``final_analysis``, and this says so where the
+    reader will act on it.
+
+    ``exp.run_seconds`` is the CONFIG's run length, which is what the
+    sentence calls it: :mod:`gpuwm.ensemble.member` overrides the leg
+    length with its own argument after loading the pair, and the
+    experiment this is handed is still the config's.
+
+    ``snapshots`` is the ``{valid_time: Era5Snapshot}`` mapping
+    :func:`forcing_snapshots` returned, so the byte figures are the
+    arrays this run is actually holding, summed -- not an estimate from
+    a grid shape.
+    """
+
+    times = sorted(snapshots)
+    if not times:
+        return "forcing decode: no valid times decoded"
+    held = {value: _snapshot_host_bytes(snapshots[value]) for value in times}
+    end = exp.start_time + timedelta(seconds=float(exp.run_seconds))
+    needed: list[datetime] = []
+    for value in times:
+        if value < exp.start_time:
+            continue
+        needed.append(value)
+        if value >= end:
+            break
+    covered = set(needed)
+    # The two kinds of extra, which have different consequences and so
+    # are not one number: a time BEFORE start_time never enters the
+    # preparation schedule at all, and a time beyond the run's end does.
+    early = tuple(value for value in times if value < exp.start_time)
+    beyond = tuple(value for value in times
+                   if value >= exp.start_time and value not in covered)
+    gib = 1024 ** 3
+    lines = [
+        f"forcing decode: {len(times)} valid times, "
+        f"{sum(held.values()) / gib:.2f} GiB of host memory (float64, on "
+        f"the source grid); this config's {exp.run_seconds:g} s run "
+        f"integrates to {end.isoformat()} and needs {len(needed)} of them."
+    ]
+    if early:
+        lines.append(
+            f"  {len(early)} lie before start_time "
+            f"{exp.start_time.isoformat()} and hold "
+            f"{sum(held[value] for value in early) / gib:.2f} GiB nothing "
+            "reads: the preparation schedule begins at start_time.")
+    if beyond:
+        lines.append(
+            f"  {len(beyond)} lie beyond that end and hold "
+            f"{sum(held[value] for value in beyond) / gib:.2f} GiB.  They "
+            "are still PREPARED -- every decoded time at or after "
+            "start_time is interpolated, initialized, kept as a boundary "
+            "frame, and the last one is this case's final analysis -- so "
+            "refetching a narrower window drops them from the prepared "
+            "case as well as from memory.")
+    if early or beyond:
+        lines.append(
+            "  The decoded window comes from the forcing FILES, not from "
+            "run_seconds: build_input_catalog never sees it, so a shorter "
+            "run does not shorten the decode.")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Prepare: static -> ingest -> initialize (the extracted case machinery)
 # ---------------------------------------------------------------------------
@@ -698,6 +807,97 @@ def declared_constant_glw(exp: ExperimentConfig) -> float | None:
     return None
 
 
+def _initialize_real_case_physics(
+        initial_result, cfg, initial_met, soil, soil_fields, static,
+        landuse_attrs, grid, start_time, *, vertical, reconciled_soil_type,
+        trace_gas_overrides=None, radiation_column_chunk=DEFAULT_COLUMN_CHUNK,
+        constant_glw_wm2=None, center_lat=None, cam_ozone=None):
+    """Initialize a whole case or a row window with the same operands.
+
+    The caller owns soil reconciliation and the surface solution. A row
+    loader must pass their exact windows and the whole domain's center
+    latitude, so storage geometry cannot change the land-use season,
+    radiation composition, or configured column chunk.
+    """
+    from gpuwm.core.diagnostics import update_diagnostics
+    from gpuwm.core.landuse import initialize_landuse
+    from gpuwm.core.physics import initialize_physics
+
+    # WRF interpolates GREENFRAC/LAI to the run date
+    # (module_initialize_real.F:1322-1335, mid-month anchors); shdmin/
+    # shdmax stay the monthly extrema (:1348-1351).  With the supported
+    # usemonalb=false path, landuse_init overwrites ALBEDO12M from the table.
+    vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"], start_time)
+    lai = monthly_interp_to_date(static["LAI12M"], start_time)
+    state = initial_result.state
+    # initialize_real loads prognostics but does not launch the EOS kernel.
+    # Diagnose the time-zero atmosphere before the first RRTMGP call.
+    update_diagnostics(state, cfg.hypsometric_opt)
+    lat, lon = grid.latlon_mass()
+    from gpuwm.core.radiation_composition import make_radiation
+    radiation = make_radiation(
+        cfg, start_time, lat, lon, p_top=vertical.p_top,
+        trace_gas_overrides=trace_gas_overrides,
+        column_chunk=radiation_column_chunk)
+    landuse = initialize_landuse(
+        static["LU_INDEX"], soil_type=reconciled_soil_type,
+        landmask=static["LANDMASK"], snow=soil.snow_water, xice=soil.xice,
+        valid_time=start_time,
+        cen_lat=(float(getattr(grid, "cen_lat", np.mean(lat)))
+                  if center_lat is None else float(center_lat)),
+        mminlu=str(landuse_attrs["MMINLU"]),
+        iswater=int(landuse_attrs["ISWATER"]),
+        islake=int(landuse_attrs["ISLAKE"]),
+        isice=int(landuse_attrs["ISICE"]),
+        # real.exe's landmask/soil-category reconciliation decides a
+        # disagreeing column from its soil temperature, then its SST.
+        soil_temperature=soil.soil_temperature)
+    driver = initialize_physics(
+        state, cfg, landuse=landuse, tsk=soil.tsk,
+        soil_temperature=soil.soil_temperature,
+        soil_moisture=soil.soil_moisture,
+        liquid_moisture=soil.liquid_moisture,
+        ivgtyp=static["LU_INDEX"], isltyp=static["SCT_DOM"],
+        vegfra=vegfra, tmn=soil.deep_soil_temperature,
+        xice=soil.xice, snow=soil.snow_water, snow_depth=soil.snow_depth,
+        sst=soil_fields.get("SST", soil.tsk),
+        glw=constant_glw_wm2,
+        radiation=radiation,
+        radiation_start_time=start_time, radiation_latitude=lat,
+        radiation_longitude=lon,
+        **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
+    import cupy as cp
+    driver.fields["snoalb"][...] = cp.asarray(
+        noah_initial_snow_albedo(
+            static["SNOALB"], static["LU_INDEX"], driver.noah_params,
+            rdmaxalb=cfg.rdmaxalb),
+        dtype=cp.float32)
+    driver.fields["lai"][...] = cp.asarray(lai, dtype=cp.float32)
+    driver.fields["shdmin"][...] = cp.asarray(
+        100.0 * static["GREENFRAC"].min(axis=0), dtype=cp.float32)
+    driver.fields["shdmax"][...] = cp.asarray(
+        100.0 * static["GREENFRAC"].max(axis=0), dtype=cp.float32)
+
+    # Seed time-zero surface diagnostics from the source analysis.  The
+    # first model step replaces them through SFCLAY/Noah/YSU in WRF
+    # ordering.
+    from gpuwm.ingest.real import surface_fields_to_device
+    met0 = surface_fields_to_device(initial_met, cp)
+    driver.fields["psfc"][...] = cp.asarray(
+        initial_result.surface_pressure, dtype=cp.float32)
+    driver.fields["t2"][...] = met0["T2"]
+    driver.fields["q2"][...] = cp.asarray(
+        initial_result.surface_qv, dtype=cp.float32)
+    driver.fields["th2"][...] = (driver.fields["t2"]
+                                  * (cp.float32(100000.0)
+                                     / driver.fields["psfc"])
+                                  ** cp.float32(287.0 / 1004.0))
+    driver.fields["u10"][...] = 0.5 * (met0["U10"][:, :-1]
+                                        + met0["U10"][:, 1:])
+    driver.fields["v10"][...] = 0.5 * (met0["V10"][:-1]
+                                        + met0["V10"][1:])
+
+
 def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
                       source_orography_path=None,
                       source_orography_variable=None,
@@ -715,6 +915,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
                       constant_glw_wm2: float | None = None,
                       water_temperature_policy=None,
                       soil_texture_downscale: bool = True,
+                      store_request=None, cam_ozone=None,
                       ) -> PreparedRealCase:
     """Run the real-case setup pipeline for one domain.
 
@@ -734,10 +935,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     bubbles leave every boundary strip byte-identical).  This is the
     coarse/single domain, so a bubble center outside the grid refuses.
     """
-    from gpuwm.core.diagnostics import update_diagnostics
-    from gpuwm.core.landuse import (initialize_landuse,
-                                    reconciled_soil_category)
-    from gpuwm.core.physics import initialize_physics
+    from gpuwm.core.landuse import reconciled_soil_category
     from gpuwm.ingest.soil import (reconciler_soil_temperature,
                                    reconciler_sst, soil_source_orography)
 
@@ -752,12 +950,8 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
             "RunConfig grid does not match the supplied Lambert grid: "
             f"got {(cfg.nx, cfg.ny, cfg.dx, cfg.dy)}, expected "
             f"{(grid.e_we - 1, grid.e_sn - 1, grid.dx, grid.dy)}")
-    if (trace_gas_overrides is not None
-            and radiation_scheme_ids(cfg) != (4, 4)):
-        raise ValueError(
-            "trace-gas overrides require ra_physics = 4 (effective "
-            "LW/SW radiation = 4/4) "
-            f"(RTE+RRTMGP), got {radiation_scheme_ids(cfg)}")
+    from gpuwm.core.radiation_composition import trace_gas_override_status
+    trace_gas_override_status(cfg, trace_gas_overrides)
 
     if (source_orography_path is None) != (source_orography_variable is None):
         raise ValueError(
@@ -819,9 +1013,18 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         spec_bdy_width=cfg.spec_bdy_width, spec_zone=cfg.spec_zone,
         relax_zone=cfg.relax_zone)
     release_backend = CudaPreprocessBackend()
+    order = range(len(times))
+    if store_request is not None:
+        from gpuwm.ingest.lateral_bc import start_last_forcing_order
+        from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
+        release_backend = resolve_preprocess_backend(store_request.backend)
+        order = start_last_forcing_order(len(times))
+        print(f"  initialization: {store_request.backend} transforms, "
+              "host state, row-slab GPU physics")
     met = result = None
-    for index, valid_time in enumerate(times):
-        if index:
+    for position, index in enumerate(order):
+        valid_time = times[index]
+        if position:
             del met, result
             release_backend_memory(release_backend)
         source = snapshot_for(valid_time)
@@ -830,14 +1033,23 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         # usable-point decision stays with the source LANDSEA inside the
         # masked operators.  Passing the static LANDMASK reproduces WPS and
         # keeps soil, skin, and physics on one land/water surface.
+        horizontal_kwargs = ({} if store_request is None
+                             else {"backend": release_backend})
         met = interpolate_era5_to_lambert(
             source, grid, source_orography_catalog=forcing_catalog,
             target_landmask=np.asarray(static["LANDMASK"]) >= 0.5,
-            water_temperature_statics=water_statics)
+            water_temperature_statics=water_statics,
+            **horizontal_kwargs)
+        if store_request is not None:
+            from gpuwm.ingest.case_store import admit_case_initialization
+            admit_case_initialization(store_request, cfg, met, times)
         coord = vertical_coord_for(vertical, cfg.nz)
         init_kwargs = dict(
             source_orography=source_orography, p_top=vertical.p_top,
             sfcp_to_sfcp=sfcp_to_sfcp)
+        if store_request is not None:
+            init_kwargs.update(preprocess_backend=release_backend,
+                               state_backend="cpu")
         if scratch_arena is not None:
             init_kwargs["scratch_arena"] = scratch_arena
         if dycore_state_workspace is not None:
@@ -856,14 +1068,17 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         result.state.set_map_coriolis(
             grid.mapfac_m(), grid.mapfac_u(), grid.mapfac_v(), f, e,
             sina=sina, cosa=cosa)
-        forcing.add_state(result.state)
+        if store_request is None:
+            forcing.add_state(result.state)
+        else:
+            forcing.add_state(result.state, index=index)
         if index == 0:
             initial_met = met
             initial_result = result
             initial_source = source
     # ``met``/``result`` now name the LAST forcing time; the first are held
     # separately above.  Nothing between them is still resident.
-    final_met = met
+    final_met = met if store_request is None else None
     boundaries = forcing.build(times)
     attach_lateral_boundaries(initial_result.state, boundaries)
 
@@ -899,6 +1114,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         sst=reconciler_sst(soil_fields))
     soil = preprocess_land_surface_soil(
         soil_fields, sf_surface_physics=int(cfg.sf_surface_physics),
+        num_soil_layers=soil_layer_count(cfg),
         soil_type=reconciled_soil_type,
         deep_soil_temperature=static["TMN"],
         landmask=static["LANDMASK"],
@@ -927,105 +1143,40 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         soil_mesh=soil_mesh_plan_from_case(
             initial_source, grid, enabled=bool(soil_texture_downscale)),
         route=_WATER_ROUTE)
-    # WRF interpolates GREENFRAC/LAI to the run date
-    # (module_initialize_real.F:1322-1335, mid-month anchors); shdmin/
-    # shdmax stay the monthly extrema (:1348-1351).  With the supported
-    # usemonalb=false path, landuse_init overwrites ALBEDO12M from the table.
-    vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"], start_time)
-    lai = monthly_interp_to_date(static["LAI12M"], start_time)
-    state = initial_result.state
-    # initialize_real loads prognostics but does not launch the EOS kernel.
-    # Diagnose the time-zero atmosphere before the first RRTMGP call.
-    update_diagnostics(state, cfg.hypsometric_opt)
-    lat, lon = grid.latlon_mass()
-    radiation = None
-    if radiation_scheme_ids(cfg) == (4, 4):
-        from gpuwm.physics_compat import (
-            RRTMG_VARIANT_LEGACY, rrtmg_variant)
-        if rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY:
-            # Legacy RRTMG selected: construct the exact WRF v4.6.1 port
-            # (root ozone routing; its constructor fails closed if the
-            # assets/kernels are unavailable).  Never substitute
-            # RTE+RRTMGP.  ghg_input=0 evaluates WRF's analytic
-            # year-formula trace gases, so an explicit co2_vmr override
-            # cannot be honored and must not be dropped silently.
-            if trace_gas_overrides:
-                raise ValueError(
-                    "ra_rrtmg_variant='rrtmg_legacy' runs WRF's "
-                    "ghg_input=0 analytic year-formula trace gases; the "
-                    f"explicit trace-gas override {trace_gas_overrides!r} "
-                    "(case co2_vmr) cannot be honored by the legacy port "
-                    "-- remove it or select ra_rrtmg_variant="
-                    "'rte-rrtmgp'")
-            from gpuwm.core.rrtmg_legacy import RRTMGLegacyRadiation
-            radiation = RRTMGLegacyRadiation(
-                start_time, lat, lon, p_top=vertical.p_top,
-                o3input=cfg.o3input)
-        else:
-            # Construct the experiment-configured adapter for both
-            # trace-gas policies: an explicit override and the dated
-            # default selected by None.  Otherwise initialize_physics
-            # would construct its own adapter with the class-default
-            # column chunk.
-            from gpuwm.core.rrtmgp import RRTMGPRadiation
-            radiation = RRTMGPRadiation(
-                start_time, lat, lon,
-                trace_gas_overrides=trace_gas_overrides,
-                column_chunk=radiation_column_chunk)
-    landuse = initialize_landuse(
-        static["LU_INDEX"], soil_type=reconciled_soil_type,
-        landmask=static["LANDMASK"], snow=soil.snow_water, xice=soil.xice,
-        valid_time=start_time,
-        cen_lat=float(getattr(grid, "cen_lat", np.mean(lat))),
-        mminlu=str(landuse_attrs["MMINLU"]),
-        iswater=int(landuse_attrs["ISWATER"]),
-        islake=int(landuse_attrs["ISLAKE"]),
-        isice=int(landuse_attrs["ISICE"]),
-        # real.exe's landmask/soil-category reconciliation decides a
-        # disagreeing column from its soil temperature, then its SST.
-        soil_temperature=soil.soil_temperature)
-    driver = initialize_physics(
-        state, cfg, landuse=landuse, tsk=soil.tsk,
-        soil_temperature=soil.soil_temperature,
-        soil_moisture=soil.soil_moisture,
-        liquid_moisture=soil.liquid_moisture,
-        ivgtyp=static["LU_INDEX"], isltyp=static["SCT_DOM"],
-        vegfra=vegfra, tmn=soil.deep_soil_temperature,
-        xice=soil.xice, snow=soil.snow_water, snow_depth=soil.snow_depth,
-        sst=soil_fields.get("SST", soil.tsk),
-        glw=constant_glw_wm2,
-        radiation=radiation,
-        radiation_start_time=start_time, radiation_latitude=lat,
-        radiation_longitude=lon)
-    import cupy as cp
-    driver.fields["snoalb"][...] = cp.asarray(
-        noah_initial_snow_albedo(
-            static["SNOALB"], static["LU_INDEX"], driver.noah_params,
-            rdmaxalb=cfg.rdmaxalb),
-        dtype=cp.float32)
-    driver.fields["lai"][...] = cp.asarray(lai, dtype=cp.float32)
-    driver.fields["shdmin"][...] = cp.asarray(
-        100.0 * static["GREENFRAC"].min(axis=0), dtype=cp.float32)
-    driver.fields["shdmax"][...] = cp.asarray(
-        100.0 * static["GREENFRAC"].max(axis=0), dtype=cp.float32)
+    if store_request is not None:
+        from types import SimpleNamespace
+        from gpuwm.ingest.case_store import write_case_store_input
 
-    # Seed time-zero surface diagnostics from the source analysis.  The
-    # first model step replaces them through SFCLAY/Noah/YSU in WRF
-    # ordering.
-    met0 = initial_met.fields
-    driver.fields["psfc"][...] = cp.asarray(
-        initial_result.surface_pressure, dtype=cp.float32)
-    driver.fields["t2"][...] = met0["T2"]
-    driver.fields["q2"][...] = cp.asarray(
-        initial_result.surface_qv, dtype=cp.float32)
-    driver.fields["th2"][...] = (driver.fields["t2"]
-                                  * (cp.float32(100000.0)
-                                     / driver.fields["psfc"])
-                                  ** cp.float32(287.0 / 1004.0))
-    driver.fields["u10"][...] = 0.5 * (met0["U10"][:, :-1]
-                                        + met0["U10"][:, 1:])
-    driver.fields["v10"][...] = 0.5 * (met0["V10"][:-1]
-                                        + met0["V10"][1:])
+        inputs = write_case_store_input(
+            store_request, cfg=cfg, vertical=vertical, times=times,
+            initial_result=initial_result, met=initial_met, soil=soil,
+            soil_fields=soil_fields, reconciled_soil_type=reconciled_soil_type,
+            boundaries=boundaries, landuse_attrs=landuse_attrs,
+            trace_gas_overrides=trace_gas_overrides,
+            radiation_column_chunk=radiation_column_chunk,
+            constant_glw_wm2=constant_glw_wm2,
+            **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
+        # No state or met array escapes this frame. The caller drops decoded
+        # forcing before allocating the pinned store; only setup metadata and
+        # the two small resolved surface planes survive beside the cache.
+        metadata = SimpleNamespace(**{
+            name: getattr(initial_result, name, None) for name in (
+                "initial_perturbation", "hydrometeor_initialization",
+                "aerosol_initialization")})
+        return PreparedRealCase(
+            cfg=cfg, grid=grid, static_fields=static, initial_result=metadata,
+            final_analysis=None, initial_snow_water_kgm2=np.array(
+                soil.snow_water, dtype=np.float64, copy=True),
+            forcing_times=times, geog_selection=geog_selection,
+            store_input=inputs)
+    _initialize_real_case_physics(
+        initial_result, cfg, initial_met, soil, soil_fields, static,
+        landuse_attrs, grid, start_time, vertical=vertical,
+        reconciled_soil_type=reconciled_soil_type,
+        trace_gas_overrides=trace_gas_overrides,
+        radiation_column_chunk=radiation_column_chunk,
+        constant_glw_wm2=constant_glw_wm2,
+        **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
     return PreparedRealCase(
         cfg=cfg, grid=grid, static_fields=static,
         initial_result=initial_result, final_analysis=final_met,
@@ -1039,7 +1190,8 @@ def prepare_root_experiment_case(exp: ExperimentConfig,
                                  input_catalog=None,
                                  forcing_by_time=None,
                                  scratch_arena=None,
-                                 dycore_state_workspace=None
+                                 dycore_state_workspace=None,
+                                 store_request=None
                                  ) -> PreparedRealCase:
     """Prepare the root domain of a single- or multi-domain experiment."""
     dc = exp.root
@@ -1065,6 +1217,12 @@ def prepare_root_experiment_case(exp: ExperimentConfig,
             f"got {decoded_times}; catalog exclusions: "
             f"{catalog.excluded_valid_times}")
     times = forcing_schedule(exp, data, snapshots)
+    # Every route that prepares a real root reaches this line exactly
+    # once, and it is the last point before the expensive work at which
+    # both the decode and the run length are in one scope.  The count is
+    # the CATALOG's, taken from the forcing files; the run length is the
+    # experiment's, and nothing had ever compared them out loud.
+    print(forcing_decode_report(exp, snapshots))
 
     def snapshot_for(valid_time):
         try:
@@ -1074,6 +1232,8 @@ def prepare_root_experiment_case(exp: ExperimentConfig,
                 f"forcing has no snapshot at {valid_time!s}") from exc
 
     declared_orography = data.source_orography
+    from gpuwm.core.cam_ozone import cam_ozone_setup
+    cam = cam_ozone_setup(exp=exp, dc=dc, grid=grid)
     return prepare_real_case(
         cfg, grid=grid, geog_root=data.geog_root,
         source_orography_path=(declared_orography.path
@@ -1094,17 +1254,21 @@ def prepare_root_experiment_case(exp: ExperimentConfig,
         static_highres=getattr(data, "static_highres", None),
         static_domain_id=dc.grid_id,
         initial_perturbation=exp.perturbation,
-        constant_glw_wm2=declared_constant_glw(exp))
+        **({"store_request": store_request} if store_request is not None else {}),
+        constant_glw_wm2=declared_constant_glw(exp),
+        **({"cam_ozone": cam} if cam is not None else {}))
 
 
 def prepare_experiment_case(exp: ExperimentConfig,
                             data: CaseDataConfig, *, input_catalog=None,
-                            forcing_by_time=None) -> PreparedRealCase:
+                            forcing_by_time=None,
+                            store_request=None) -> PreparedRealCase:
     """Assemble :func:`prepare_real_case` inputs from the config pair."""
     single_domain(exp)  # Preserve Task-2's fail-loud single-domain surface.
     return prepare_root_experiment_case(
         exp, data, input_catalog=input_catalog,
-        forcing_by_time=forcing_by_time)
+        forcing_by_time=forcing_by_time,
+        **({"store_request": store_request} if store_request is not None else {}))
 
 
 def _child_radiation_adapter(exp: ExperimentConfig, data: CaseDataConfig,
@@ -1114,33 +1278,24 @@ def _child_radiation_adapter(exp: ExperimentConfig, data: CaseDataConfig,
     """Construct one child domain's radiation adapter (shared by the
     t=0 preparer and the relocation preparer, so a relocated child's
     radiation is wired by exactly the code that wired it at start)."""
+    from gpuwm.core.radiation_composition import make_radiation, attach_modern_workspace
+    from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY, rrtmg_variant
     cfg = dc.run
-    radiation = None
-    if radiation_scheme_ids(cfg) == (4, 4):
-        from gpuwm.physics_compat import (
-            RRTMG_VARIANT_LEGACY, rrtmg_variant)
-        if rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY:
-            # Legacy RRTMG child: the exact WRF v4.6.1 port with WRF's
-            # root-compute + parent->child ozone routing.  The parent
-            # adapter is mandatory -- a per-nest climatology evaluation
-            # would diverge from WRF on d02+ (never fall back silently).
-            if radiation_parent is None and cfg.o3input == 2:
+    ozone_parent = None
+    if (4 in radiation_scheme_ids(cfg)
+            and rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY
+            and cfg.o3input == 2):
+        if radiation_parent is None:
+            from gpuwm.core.cam_ozone import cam_ozone_domain_ids, DriverOzoneProvider
+            if exp is None or dc.grid_id not in cam_ozone_domain_ids(exp):
                 raise ValueError(
                     "ra_rrtmg_variant='rrtmg_legacy' on child domain "
                     f"grid_id={dc.grid_id} requires radiation_parent= "
-                    "(the parent domain's RRTMGLegacyRadiation): WRF "
-                    "computes o3rad on the root domain only and hands "
-                    "nests the parent-interpolated field")
-            if data.co2_vmr is not None:
-                raise ValueError(
-                    "ra_rrtmg_variant='rrtmg_legacy' runs WRF's "
-                    "ghg_input=0 analytic year-formula trace gases; the "
-                    f"explicit case co2_vmr={data.co2_vmr!r} cannot be "
-                    "honored by the legacy port -- remove it or select "
-                    "ra_rrtmg_variant='rte-rrtmgp'")
+                    "or the experiment's shared CAM ozone carrier")
+            ozone_parent = DriverOzoneProvider()
+        if radiation_parent is not None:
             from gpuwm.core.nest_interp import register_nest
-            from gpuwm.core.rrtmg_legacy import (ParentOzoneProvider,
-                                                 RRTMGLegacyRadiation)
+            from gpuwm.core.rrtmg_legacy import ParentOzoneProvider
             parent_dc = exp.domain(dc.parent_id)
             registration = register_nest(
                 nri=dc.parent_grid_ratio, nrj=dc.parent_grid_ratio,
@@ -1149,23 +1304,13 @@ def _child_radiation_adapter(exp: ExperimentConfig, data: CaseDataConfig,
                 child_nx=cfg.nx, child_ny=cfg.ny,
                 parent_nx=parent_dc.run.nx, parent_ny=parent_dc.run.ny,
                 stagger="", wrapper="interp")
-            radiation = RRTMGLegacyRadiation(
-                exp.start_time, lat, lon,
-                p_top=float(state.p_top),
-                ozone_parent=(
-                    ParentOzoneProvider(radiation_parent, registration)
-                    if cfg.o3input == 2 else None),
-                o3input=cfg.o3input)
-        else:
-            from gpuwm.core.rrtmgp import RRTMGPRadiation
-            overrides = ({"co2": data.co2_vmr}
-                         if data.co2_vmr is not None else None)
-            radiation = RRTMGPRadiation(
-                exp.start_time, lat, lon, trace_gas_overrides=overrides,
-                column_chunk=exp.column_chunk)
-            if radiation_workspace is not None:
-                radiation.column_chunk = radiation_workspace.column_chunk
-                radiation.chunk_workspace = radiation_workspace
+            ozone_parent = ParentOzoneProvider(radiation_parent, registration)
+    radiation = make_radiation(
+        cfg, exp.start_time, lat, lon, p_top=float(state.p_top),
+        trace_gas_overrides=({"co2": data.co2_vmr}
+                             if data.co2_vmr is not None else None),
+        column_chunk=exp.column_chunk, ozone_parent=ozone_parent)
+    attach_modern_workspace(radiation, radiation_workspace)
     return radiation
 
 
@@ -1182,13 +1327,10 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
     distinct RRTMGP adapter for the child; Task 14 attaches the one allocated
     common chunk workspace after all drivers exist.
 
-    ``radiation_parent`` is required when ``ra_rrtmg_variant =
-    "rrtmg_legacy"`` is selected: the parent domain's
-    ``RRTMGLegacyRadiation``, whose retained o33d field this child
-    interpolates (WRF computes o3rad on the root only and hands nests the
-    parent-interpolated field; a per-nest climatology evaluation would
-    diverge from WRF).  Constructing a legacy child without it fails
-    closed.
+    A nested legacy CAM consumer uses the experiment's shared retained
+    ozone field. ``radiation_parent`` remains available for independent
+    callers supplying the original parent adapter; either way, the child
+    consumes parent-interpolated ozone rather than local climatology.
     """
     import cupy as cp
 
@@ -1235,8 +1377,10 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
         # real.exe's landmask/soil-category reconciliation decides a
         # disagreeing column from its soil temperature, then its SST.
         soil_temperature=soil.soil_temperature)
+    from gpuwm.core.cam_ozone import cam_ozone_setup
+    cam = cam_ozone_setup(exp=exp, dc=dc, grid=initialized.grid)
     driver = initialize_physics(
-        state, cfg, landuse=landuse, tsk=soil.tsk,
+        state, cfg, cam_ozone=cam, landuse=landuse, tsk=soil.tsk,
         soil_temperature=soil.soil_temperature,
         soil_moisture=soil.soil_moisture,
         liquid_moisture=soil.liquid_moisture,
@@ -1268,6 +1412,8 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
                                          + met0["U10"][:, 1:])
     driver.fields["v10"][...] = 0.5 * (met0["V10"][:-1]
                                          + met0["V10"][1:])
+    from gpuwm.core.cam_ozone import configure_cam_ozone
+    configure_cam_ozone(state, cfg, exp=exp, dc=dc, grid=initialized.grid)
     return PreparedRealCase(
         cfg=cfg, grid=initialized.grid, static_fields=dict(static),
         initial_result=real, final_analysis=initialized.horizontal,
@@ -1291,7 +1437,7 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
                                          data: CaseDataConfig, model,
                                          initialized, child_dc, parent_node,
                                          land, landuse_attrs=None,
-                                         radiation_factory=None) -> float:
+                                         radiation_factory=None, center_lat=None) -> float:
     """Rebuild one child's physics driver over a supplied land state.
 
     The operation both mid-run child events need, and the reason they can
@@ -1363,12 +1509,15 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
         landmask=static["LANDMASK"],
         snow=land.get("snow", 0.0), xice=land.get("xice", 0.0),
         valid_time=now,
-        cen_lat=float(getattr(grid, "cen_lat", np.mean(lat))),
+        cen_lat=(float(getattr(grid, "cen_lat", np.mean(lat)))
+                 if center_lat is None else float(center_lat)),
         mminlu=str(attrs["MMINLU"]),
         iswater=int(attrs["ISWATER"]),
         islake=int(attrs["ISLAKE"]),
         isice=int(attrs["ISICE"]),
         soil_temperature=land.get("tslb"))
+    from gpuwm.core.cam_ozone import cam_ozone_setup
+    cam = cam_ozone_setup(exp=exp, dc=child_dc, grid=grid)
     driver = initialize_physics(
         state, cfg, landuse=landuse,
         tsk=land.get("tsk", 300.0),
@@ -1381,8 +1530,10 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
         snow_depth=land.get("snowh", 0.0),
         sst=land.get("tsk"),
         glw=declared_constant_glw(exp),
-        radiation=radiation, radiation_start_time=exp.start_time,
+        cam_ozone=cam, radiation=radiation, radiation_start_time=exp.start_time,
         radiation_latitude=lat, radiation_longitude=lon)
+    from gpuwm.core.cam_ozone import configure_cam_ozone
+    configure_cam_ozone(state, cfg, exp=exp, dc=child_dc, grid=grid)
     driver.fields["snoalb"][...] = cp.asarray(
         noah_initial_snow_albedo(
             static["SNOALB"], static["LU_INDEX"], driver.noah_params,
@@ -1459,17 +1610,28 @@ class RealRelocationChildPreparer:
         self.writers = writers
 
     def capture_outgoing(self, node) -> None:
+        from copy import deepcopy
+        from tilestream.physics_inventory import carrier_scalars
         from gpuwm.core.physics_continuation import (capture_carriers,
                                                      capture_continuation)
         from gpuwm.ingest.relocation_init import (
             LAND_SURFACE_CONTINUATION_FIELDS)
 
-        driver = getattr(node.state, "physics", None)
+        stream = getattr(node.state, "_streamed_domain", None)
+        store = None if stream is None else stream.store
+        source_state = (node.state if stream is None or stream.template is None
+                        else stream.template)
+        driver = getattr(source_state, "physics", None)
         fields: dict[str, np.ndarray] = {}
         if driver is not None:
             for name in LAND_SURFACE_CONTINUATION_FIELDS:
                 value = driver.fields.get(name)
                 if value is not None:
+                    if store is not None:
+                        key = "fields/" + name
+                        if key not in store:
+                            raise ValueError(f"streamed land state is missing canonical carrier {key}")
+                        value = store[key]
                     fields[name] = _relocation_host(value)
         # THE CUMULUS TRIGGER MEMORY, which a move was throwing away.
         # Kain-Fritsch triggers off `w0avg`, a running mean of vertical
@@ -1491,7 +1653,8 @@ class RealRelocationChildPreparer:
         cumulus = getattr(driver, "cumulus_callable", None)
         w0avg = getattr(cumulus, "w0avg", None)
         if w0avg is not None:
-            trigger = _relocation_host(w0avg)
+            trigger = _relocation_host(
+                w0avg if store is None else store["cumulus/w0avg"])
         case = self.model._prepared_by_grid_id.get(int(node.cfg.grid_id))
         self._captured = {
             "grid_id": int(node.cfg.grid_id),
@@ -1499,12 +1662,14 @@ class RealRelocationChildPreparer:
             "i_parent_start": int(node.cfg.i_parent_start),
             "j_parent_start": int(node.cfg.j_parent_start),
             "fields": fields,
+            "scalar_carriers": deepcopy(carrier_scalars(source_state)
+                                        if stream is None else stream.scalars),
             # Driver-held per-column physics continuation (KF timers and
             # held rates, precipitation accumulators, W0AVG), captured by
             # the restart registry so it shifts with the move instead of
             # cold-restarting on the whole child (the 2026-08-16 moving-
             # nest KF artifact report).
-            "continuation": capture_continuation(node.state, driver),
+            "continuation": capture_continuation(source_state, driver, store=store),
             # THE SURFACE-RADIATION CARRIERS and their ledger.  A carrier
             # is consumed on every surface step but produced only on the
             # radiation cadence, so a child rebuilt from cold between two
@@ -1513,7 +1678,8 @@ class RealRelocationChildPreparer:
             # refuses, correctly, at the first move (the 2026-08-24
             # node-2 campaign's GLW refusal).  See
             # gpuwm/core/physics_continuation.py.
-            "carriers": capture_carriers(driver),
+            "carriers": capture_carriers(driver, store=store,
+                                          scalars=None if stream is None else stream.scalars),
             "static_fields": (None if case is None
                               else case.static_fields),
         }
@@ -1521,101 +1687,18 @@ class RealRelocationChildPreparer:
     def __call__(self, initialized, new_dc, parent_node) -> None:
         import time as _time
 
-        from gpuwm.core.nest_relocation import (Placement,
-                                                RelocationRefusal,
-                                                plan_relocation)
-        from gpuwm.ingest.relocation_init import (
-            LAND_SURFACE_CONTINUATION_FIELDS, donor_fill_plan,
-            overlap_mask_for_plan, overlap_statics_mismatches)
+        from gpuwm.ingest.relocation_init import LAND_SURFACE_CONTINUATION_FIELDS
 
         started = _time.perf_counter()
+        from gpuwm.ingest.relocation_continuation import stage_relocation_continuation
         captured = self._captured
         self._captured = None
-        if captured is None or captured["grid_id"] != int(new_dc.grid_id):
-            raise RelocationRefusal(
-                "RealRelocationChildPreparer.__call__ without a matching "
-                "capture_outgoing: the runner drives both seams, and a "
-                "rebuild that never saw the outgoing child has no land "
-                "state to move")
-        cfg = new_dc.run
-        static = initialized.static_fields
-        if static is None:
-            raise RelocationRefusal(
-                "the relocation initializer produced no static fields; "
-                "the real-data route requires footprint-rebuilt statics")
-        # A DESCENDANT'S DISPLACEMENT IS NOT IN ITS PLACEMENT.  The mover
-        # derives its plan from the placement pair, and that is right for
-        # it: its `i_parent_start` changed, so `(to - from) * ratio` IS
-        # the ground it travelled.  A domain that rode along under a
-        # moving ancestor never changes its own placement -- it sits at
-        # the same offset inside a parent that moved -- so the same
-        # subtraction yields ZERO while its statics, cropped from a
-        # root-anchored corridor at `origin_in_frame_cells`, moved by the
-        # ancestor's displacement times the ratio product.
-        #
-        # The regrounder already holds the honest plan (built by
-        # `plan_descendant_reground` from the ground displacement, and
-        # already used for the donor-alignment check and the overlap
-        # transplant); it hands it over here rather than let this
-        # recompute a zero.
-        #
-        # MEASURED before this: the d03 statics-equality check compared
-        # two corridor crops 9 cells apart through a zero-shift window.
-        # Over open ocean every compared field is constant, so it passed;
-        # the first footprint to touch the Hawaiian coast refused with
-        # {'HGT_M': 22, 'LANDMASK': 4, 'LU_INDEX': 4, ...}, reproduced
-        # exactly by differencing crop_at(1854, 900) against
-        # crop_at(1845, 900) with no offset.  The same zero also staged
-        # every land-surface continuation field (smois, tslb, tsk, snow,
-        # ...) without moving it, leaving d03's soil column displaced
-        # from its own terrain by the full travel of each move.
         plan = self._plan_override
         self._plan_override = None
-        if plan is None:
-            plan = plan_relocation(
-                placement_from=Placement(
-                    grid_id=captured["grid_id"],
-                    i_parent_start=captured["i_parent_start"],
-                    j_parent_start=captured["j_parent_start"]),
-                placement_to=Placement(
-                    grid_id=int(new_dc.grid_id),
-                    i_parent_start=int(new_dc.i_parent_start),
-                    j_parent_start=int(new_dc.j_parent_start),
-                    generation=1),
-                parent_grid_ratio=int(new_dc.parent_grid_ratio),
-                child_nx=int(cfg.nx), child_ny=int(cfg.ny))
-
-        # THE LOAD-BEARING ASSERTION (Drew's design ruling): statics
-        # rebuilt from the same source over the same cells must equal the
-        # outgoing child's bitwise on shared ground, or the bitwise
-        # overlap transplant sits on ground that changed under it.
-        if captured["static_fields"] is None:
-            raise RelocationRefusal(
-                "the outgoing child's statics are not on record, so the "
-                "overlap-statics equality cannot be asserted; a move "
-                "whose load-bearing claim cannot be checked is refused")
-        statics_verdict = overlap_statics_mismatches(
-            captured["static_fields"], static, plan)
-        if not statics_verdict["pass"]:
-            raise RelocationRefusal(
-                "footprint-rebuilt statics differ from the outgoing "
-                "child's on shared ground (identical source + identical "
-                "cells must give identical bytes); this is a statics-"
-                "build defect, not an input error: "
-                f"{statics_verdict['mismatched_fields'] or statics_verdict}")
-
-        overlap = overlap_mask_for_plan(plan, (cfg.ny, cfg.nx))
-        fill = donor_fill_plan(overlap_mask=overlap,
-                               landmask=np.asarray(static["LANDMASK"]))
-        moved: dict[str, np.ndarray] = {}
-        for name, old in captured["fields"].items():
-            window = plan.window(old.shape)
-            if window is None:
-                continue
-            (dst_j, src_j), (dst_i, src_i) = window
-            staged = np.zeros_like(old)
-            staged[..., dst_j, dst_i] = old[..., src_j, src_i]
-            moved[name] = fill.apply(staged)
+        static = initialized.static_fields
+        staged = stage_relocation_continuation(captured, new_dc, static, plan=plan)
+        plan, statics_verdict, fill, moved = (
+            staged.plan, staged.statics_verdict, staged.fill, staged.land)
 
         driver_seconds = self._rebuild_driver(
             initialized, new_dc, parent_node, moved)
@@ -1666,6 +1749,9 @@ class RealRelocationChildPreparer:
                 "reason": "the rebuilt child carries no physics driver, "
                           "so it holds no radiative carriers to keep",
             }
+        if new_state is not None and captured.get("scalar_carriers") is not None:
+            from tilestream.physics_inventory import set_carrier_scalars
+            set_carrier_scalars(new_state, captured["scalar_carriers"])
         self._pending_refresh = (int(new_dc.grid_id), initialized.grid,
                                  static)
         self.last_receipt = {
@@ -1689,23 +1775,92 @@ class RealRelocationChildPreparer:
         }
 
 
+    def prepare_windows(self, new_dc, parent_node, footprint):
+        """Stage one global move, then prepare only requested device windows.
+
+        Full-domain statics and donor choices are made before slicing. The
+        returned callback is consumed by store reconstruction; it does not
+        publish a node or re-enable streamed relocation admission.
+        """
+        from gpuwm.core.nest_relocation import RelocationRefusal
+        from gpuwm.core.physics_continuation import (
+            restore_carriers, restore_continuation, shift_carriers, shift_continuation)
+        from gpuwm.ingest.relocation_continuation import stage_relocation_continuation
+        from tilestream.physics_inventory import set_carrier_scalars
+
+        captured, self._captured = self._captured, None
+        override, self._plan_override = self._plan_override, None
+        staged = stage_relocation_continuation(
+            captured, new_dc, footprint.static_fields, plan=override)
+        scalars = captured.get("scalar_carriers")
+        if scalars is None:
+            raise RelocationRefusal("window reconstruction requires canonical streamed scalar carriers")
+        shifted = shift_continuation(captured.get("continuation") or {}, staged.plan)
+        radiation = captured.get("carriers") or {}
+        radiative_fields = shift_carriers(radiation.get("fields") or {}, staged.plan, staged.fill)
+        lat, _ = footprint.grid.latlon_mass()
+        center_lat = float(getattr(footprint.grid, "cen_lat", np.mean(lat)))
+        cfg = new_dc.run
+
+        def crop(values, window):
+            sy, sx = window
+            result = {}
+            for name, value in values.items():
+                ny, nx = value.shape[-2:]
+                if ny not in (cfg.ny, cfg.ny+1) or nx not in (cfg.nx, cfg.nx+1):
+                    raise RelocationRefusal(f"continuation {name} has unsupported window shape {value.shape}")
+                result[name] = np.ascontiguousarray(
+                    value[..., sy.start:sy.stop+(ny-cfg.ny), sx.start:sx.stop+(nx-cfg.nx)])
+            return result
+
+        driver_seconds = 0.
+        def prepare(initialized, slab_domain, window):
+            nonlocal driver_seconds
+            driver_seconds += self._rebuild_driver(
+                initialized, slab_domain, parent_node, crop(staged.land, window),
+                center_lat=center_lat)
+            state, driver = initialized.state, initialized.state.physics
+            continuation = restore_continuation(state, driver, crop(shifted, window))
+            carriers = restore_carriers(driver, crop(radiative_fields, window), radiation.get("contract"))
+            set_carrier_scalars(state, scalars)
+            self.last_receipt = {
+                "overlap_statics": staged.statics_verdict,
+                "donor_fill": dict(staged.fill.counts),
+                "fields_moved": sorted(staged.land),
+                "accumulators_reinitialized": False,
+                "physics_continuation": continuation,
+                "radiation_carriers": carriers,
+                "driver_rebuild_seconds": driver_seconds,
+                "preparation": "global host donors followed by bounded device windows",
+            }
+
+        prepare.staged = staged
+        self._pending_refresh = (int(new_dc.grid_id), footprint.grid, footprint.static_fields)
+        return prepare
+
     def _rebuild_driver(self, initialized, new_dc, parent_node,
-                        moved) -> float:
+                        moved, *, center_lat=None) -> float:
         return rebuild_child_driver_from_land_state(
             exp=self.exp, data=self.data, model=self.model,
             initialized=initialized, child_dc=new_dc,
-            parent_node=parent_node, land=moved)
+            parent_node=parent_node, land=moved, center_lat=center_lat)
 
     @staticmethod
     def _recouple_moved_cumulus(node) -> None:
-        """The held COUPLED cumulus tendencies are derived state: rebuild
-        them from the restored raw rates against the post-transplant
-        child (the transplanted mu), so held columns keep applying their
-        convective heating from the very first post-move step instead of
-        waiting for the next due cumulus call.  Called by BOTH routes'
-        ``after_move``."""
+        """Recouple held PBL, radiation and cumulus on the new footprint.
+
+        Both real-data routes call this after the perturbation transplant.
+        Producer cadence stays unchanged; the existing physical rates are
+        coupled against the relocated mass and map factors.
+        """
+        if getattr(node.state, "_relocation_held_physics_recoupled", False):
+            return
         driver = getattr(node.state, "physics", None)
-        recouple = getattr(driver, "recouple_cumulus_tendencies", None)
+        recouple = getattr(driver, "recouple_after_relocation", None)
+        if recouple is None:
+            # Compatibility with caller-supplied drivers predating the
+            # common PBL/radiation continuation hook.
+            recouple = getattr(driver, "recouple_cumulus_tendencies", None)
         if callable(recouple):
             recouple(node.state, node.cfg.run)
 
@@ -1786,6 +1941,7 @@ def build_real_relocation_runner(exp: ExperimentConfig,
                                     or relocation.moves)):
         return None
     from gpuwm.core.relocation_runner import RelocationRunner
+    from gpuwm.core.streamed_relocation import wire_reconstruction_runner
     from gpuwm.ingest.relocation_init import (
         REAL_DATA_FOOTPRINT_REBUILT_STATICS, real_relocation_initializer)
 
@@ -1807,18 +1963,18 @@ def build_real_relocation_runner(exp: ExperimentConfig,
         reference_j_parent_start=child_config.j_parent_start)
     preparer = RealRelocationChildPreparer(exp=exp, data=data, model=model)
     if provider is None:
-        return RelocationRunner.from_experiment(
+        return wire_reconstruction_runner(RelocationRunner.from_experiment(
             exp, schedule=model.schedule, on_child_built=preparer,
             initializer=initializer,
             static_provenance=REAL_DATA_FOOTPRINT_REBUILT_STATICS,
             track_writer=build_track_writer(exp, outdir),
-            receipts_path=Path(outdir) / receipts_name)
-    return RelocationRunner(
+            receipts_path=Path(outdir) / receipts_name))
+    return wire_reconstruction_runner(RelocationRunner(
         config=relocation, schedule=model.schedule,
         on_child_built=preparer, provider=provider, initializer=initializer,
         static_provenance=REAL_DATA_FOOTPRINT_REBUILT_STATICS,
         track_writer=build_track_writer(exp, outdir),
-        receipts_path=Path(outdir) / receipts_name)
+        receipts_path=Path(outdir) / receipts_name))
 
 
 def build_real_relocation_runners(exp: ExperimentConfig,
@@ -1830,6 +1986,10 @@ def build_real_relocation_runners(exp: ExperimentConfig,
     from gpuwm.core.relocation_runner import RelocationRunnerCollection
     from gpuwm.core.storm_tracking import StormTracker
 
+    # Allocate every declared consumer on its live parent before streaming
+    # freezes the carrier inventory, including children that start later.
+    # Adding the child's runner later must not add a new store field.
+    uh_diag.allocate_declared_follower_windows(exp, model)
     runners = []
     legacy = build_real_relocation_runner(exp, data, model, outdir)
     if legacy is not None:
@@ -1860,8 +2020,6 @@ def build_real_relocation_runners(exp: ExperimentConfig,
                 "its own cadence, but its reflectivity fallback is stashed "
                 "only on history boundaries and would otherwise be stale")
         slot = uh_diag.follow_window_slot(gid)
-        parent.state.scratch(
-            (int(parent.cfg.run.ny), int(parent.cfg.run.nx)), slot)
         provider = StormTracker(follow.tracker, uh_slot=slot)
         relocation = _replace(
             exp.relocation, enabled=True, grid_id=gid,
@@ -1915,23 +2073,24 @@ class PreparedTreeRelocationChildPreparer(RealRelocationChildPreparer):
         self._captured = None
         self._pending_refresh = None
         self._radiation_workspace = radiation_workspace
+        self._plan_override = None
 
     def _rebuild_driver(self, initialized, new_dc, parent_node,
-                        moved) -> float:
+                        moved, *, center_lat=None) -> float:
         from gpuwm.native_wrf_contract import NATIVE_LANDUSE_IDENTITY
 
         seconds = rebuild_child_driver_from_land_state(
             exp=self.exp, data=None, model=self.model,
             initialized=initialized, child_dc=new_dc,
             parent_node=parent_node, land=moved,
+            center_lat=center_lat,
             landuse_attrs=dict(NATIVE_LANDUSE_IDENTITY),
             radiation_factory=lambda _dc, _state, _lat, _lon: None)
         driver = getattr(initialized.state, "physics", None)
         radiation = (None if driver is None
                      else driver.radiation_callable)
-        if radiation is not None and self._radiation_workspace is not None:
-            radiation.column_chunk = self._radiation_workspace.column_chunk
-            radiation.chunk_workspace = self._radiation_workspace
+        from gpuwm.core.radiation_composition import attach_modern_workspace
+        attach_modern_workspace(radiation, self._radiation_workspace)
         return seconds
 
     def after_move(self, node) -> None:
@@ -1955,7 +2114,9 @@ class PreparedTreeRelocationChildPreparer(RealRelocationChildPreparer):
 
 def build_prepared_tree_relocation_runner(exp: ExperimentConfig, *,
                                           statics_corridor, model, outdir,
-                                          radiation_workspace=None):
+                                          radiation_workspace=None,
+                                          follow_window_slot=None,
+                                          receipts_name="relocation_receipts.json"):
     """Wire the prepared tree route's RelocationRunner, or ``None``.
 
     The prepared-route counterpart of
@@ -2067,15 +2228,30 @@ def build_prepared_tree_relocation_runner(exp: ExperimentConfig, *,
             int(relocation.grid_id)))
     preparer = PreparedTreeRelocationChildPreparer(
         exp=exp, model=model, radiation_workspace=radiation_workspace)
-    runner = RelocationRunner.from_experiment(
-        exp, schedule=model.schedule, on_child_built=preparer,
+    owner_roots = {int(relocation.grid_id)}
+    if relocation.containment is not None:
+        owner_roots.add(int(relocation.containment.grid_id))
+    kwargs = dict(
+        schedule=model.schedule, on_child_built=preparer,
         initializer=initializer,
         static_provenance=CORRIDOR_REBUILT_STATICS,
         reground_descendant=build_prepared_tree_descendant_regrounder(
             exp, model=model, corridors=corridors,
-            radiation_workspace=radiation_workspace),
+            radiation_workspace=radiation_workspace, moving_roots=owner_roots),
         track_writer=build_track_writer(exp, outdir),
-        receipts_path=Path(outdir) / "relocation_receipts.json")
+        receipts_path=Path(outdir) / receipts_name)
+    if follow_window_slot is None:
+        runner = RelocationRunner.from_experiment(exp, **kwargs)
+    else:
+        # Same declared tracker, with this consumer's generated window.
+        # No programmatic provider may replace the user's follow source.
+        from gpuwm.core.storm_tracking import StormTracker
+        if relocation.follow is None or relocation.moves:
+            raise ValueError("a follower window requires a declared tracker")
+        runner = RelocationRunner(
+            config=relocation,
+            provider=StormTracker(relocation.follow, uh_slot=follow_window_slot),
+            **kwargs)
     containment = getattr(relocation, "containment", None)
     if containment is not None:
         parent_node = model.node(int(containment.grid_id))
@@ -2091,11 +2267,57 @@ def build_prepared_tree_relocation_runner(exp: ExperimentConfig, *,
                 exp=exp, model=model,
                 radiation_workspace=radiation_workspace),
             static_provenance=CORRIDOR_REBUILT_STATICS)
-    return runner
+    from gpuwm.core.streamed_relocation import wire_reconstruction_runner
+    return wire_reconstruction_runner(runner)
+
+
+def build_prepared_tree_relocation_runners(exp, *, statics_corridor, model,
+                                           outdir, radiation_workspace=None):
+    """Bind every live declared follower to its verified static corridor."""
+    from dataclasses import replace
+    from gpuwm.core import uh_diag
+    from gpuwm.core.relocation_runner import RelocationRunnerCollection
+    from gpuwm.experiment import RelocationConfig, _refuse_unservable_follow_cadence
+
+    legacy = build_prepared_tree_relocation_runner(
+        exp, statics_corridor=statics_corridor, model=model, outdir=outdir,
+        radiation_workspace=radiation_workspace)
+    followers = [dc for dc in exp.domains
+                 if getattr(dc, "follow", None) is not None]
+    if not followers:
+        return legacy
+    uh_diag.allocate_declared_follower_windows(exp, model)
+    runners = [] if legacy is None else [legacy]
+    for dc in followers:
+        gid = int(dc.grid_id)
+        if legacy is not None and gid == int(legacy.config.grid_id):
+            raise ValueError(f"d{gid:02d} has two placement authorities: "
+                             "per-domain follow and legacy [relocation]")
+        if gid not in model.nodes_by_grid_id:
+            continue
+        follow = dc.follow
+        relocation = RelocationConfig(
+            enabled=True, grid_id=gid, follow=follow.tracker,
+            cadence_seconds=follow.cadence_seconds,
+            max_move_parent_cells=follow.max_move_parent_cells,
+            min_overlap_fraction=follow.min_overlap_fraction)
+        _refuse_unservable_follow_cadence(
+            relocation, exp.domains, f"d{gid:02d} follow",
+            root_dt=exp.root.run.dt)
+        # Keep ALL declarations in this view: an ancestor's independent
+        # follower determines the descendant corridor's coordinate frame.
+        view = replace(exp, relocation=relocation)
+        runners.append(build_prepared_tree_relocation_runner(
+            view, statics_corridor=statics_corridor, model=model, outdir=outdir,
+            radiation_workspace=radiation_workspace,
+            follow_window_slot=uh_diag.follow_window_slot(gid),
+            receipts_name=f"relocation_receipts.d{gid:02d}.json"))
+    return RelocationRunnerCollection(runners)
 
 
 def build_prepared_tree_descendant_regrounder(exp, *, model, corridors,
-                                              radiation_workspace=None):
+                                              radiation_workspace=None,
+                                              moving_roots=None):
     """The mid-tree seam: re-ground one descendant of a moved domain.
 
     ``relocate_child`` hands this every descendant of the mover, with the
@@ -2127,7 +2349,7 @@ def build_prepared_tree_descendant_regrounder(exp, *, model, corridors,
                                        origin_in_frame_cells,
                                        relocating_subtree_grid_ids)
 
-    subtree = relocating_subtree_grid_ids(exp)
+    subtree = relocating_subtree_grid_ids(exp, moving_roots=moving_roots)
     if len(subtree) < 2:
         return None
     # ONE PREPARER PER DESCENDANT, never the mover's.
@@ -2213,15 +2435,24 @@ def build_prepared_tree_descendant_regrounder(exp, *, model, corridors,
         # ground moved; `plan` does.  See the plan-override comment in
         # RealRelocationChildPreparer.__call__.
         preparer._plan_override = plan
-        source_state = snapshot_state_to_host(
-            node.state, tuple(relocatable_attrs()) + _DONOR_ALIGNMENT_FIELDS)
-        release_state_arrays(node.state)
-        initialized = initializer(
-            node.cfg, node.parent,
-            scratch_arena=getattr(model, "_scratch_arena", None),
-            dycore_state_workspace=getattr(
-                model, "_dycore_state_workspace", None))
-        preparer(initialized, node.cfg, node.parent)
+        factory = getattr(reground, "streamed_reconstruction_factory", None)
+        reconstruction = (factory(node, initializer=initializer, preparer=preparer)
+                          if callable(factory) and getattr(node.state, "_streamed_domain", None) is not None
+                          else None)
+        if reconstruction is None:
+            source_state = snapshot_state_to_host(
+                node.state, tuple(relocatable_attrs()) + _DONOR_ALIGNMENT_FIELDS)
+            release_state_arrays(node.state)
+            initialized = initializer(
+                node.cfg, node.parent,
+                scratch_arena=getattr(model, "_scratch_arena", None),
+                dycore_state_workspace=getattr(
+                    model, "_dycore_state_workspace", None))
+            preparer(initialized, node.cfg, node.parent)
+        else:
+            source_state = reconstruction.capture_source(node)
+            reconstruction.release_outgoing(node)
+            initialized = reconstruction.initialize(node.cfg, node.parent)
 
         frame_width = int(
             getattr(initializer, "donor_alignment_frame_width", 0) or 0)
@@ -2247,7 +2478,8 @@ def build_prepared_tree_descendant_regrounder(exp, *, model, corridors,
         if relocation_probe_enabled():
             probe = {"after_transplant": overlap_prognostic_mismatches(
                 source_state, initialized.state, plan)}
-        post_transplant = getattr(initializer, "post_transplant", None)
+        post_transplant = getattr(reconstruction if reconstruction is not None else initializer,
+                                  "post_transplant", None)
         post_receipt = (
             None if post_transplant is None else post_transplant(
                 source_state=source_state, target_state=initialized.state,
@@ -2273,10 +2505,13 @@ def build_prepared_tree_descendant_regrounder(exp, *, model, corridors,
         # same place in the sequence: after post_transplant, before the
         # node adopts the new state.
         from gpuwm.ingest.nest_init import seed_rk_time_t_copies
-        rk_seeds = seed_rk_time_t_copies(initialized.state)
+        rk_seeds = (seed_rk_time_t_copies(initialized.state) if reconstruction is None
+                    else reconstruction.rk_seeds)
 
         node.grid = getattr(initialized, "grid", node.grid)
         node.state = initialized.state
+        if reconstruction is not None:
+            reconstruction.commit(node)
         # THE POST-MOVE SEAM, which a descendant needs exactly as much as
         # the mover does.  RelocationRunner calls these two for the domain
         # it moved; nothing was calling them for the domains that moved
@@ -2592,6 +2827,15 @@ def _attach_spawned_children(model, active_exp, record, writers,
                                    active_exp.domain(gid), episode))
         attached.append(gid)
     model.nodes_by_grid_id = MappingProxyType(nodes)
+    from gpuwm.core import uh_diag
+    declared = getattr(model, "_declared_experiment", None) or active_exp
+    uh_diag.allocate_declared_follower_windows(declared, model)
+    for gid in attached:
+        node = model.node(gid)
+        if node.cfg.follow is not None:
+            # A reserved slot accumulated before birth. The newly live
+            # consumer starts its own episode, never inherits that history.
+            uh_diag.reset_tracker_window(node.parent.state, uh_diag.follow_window_slot(gid))
     return attached
 
 
@@ -2694,12 +2938,22 @@ def remark_relocation_fingerprint(model, peek) -> str:
     for record_sha in records:
         marked = mark_fingerprint_across_move(marked, record_sha)
     model.experiment_fingerprint = marked
+    restore_relocation_fingerprint_components(model, records)
+    return marked
+
+
+def restore_relocation_fingerprint_components(model, records) -> None:
+    """Carry an already validated move chain into the named audit components.
+
+    This does not change the scalar fingerprint or validate a checkpoint.
+    Callers restore the canonical ordered chain after reconstructing identity;
+    later moves append to that history instead of starting another list.
+    """
     components = getattr(model, "_experiment_fingerprint_components", None)
     if components is not None:
         updated = dict(components)
         updated["relocation"] = {"records": list(records)}
         model._experiment_fingerprint_components = updated
-    return marked
 
 
 def _relocate_restored_child(model, node, runner, placement) -> None:
@@ -3344,7 +3598,9 @@ def _global_wrf_attrs(
         grid, start_time: datetime,
         geog_selection: GeogSelection | None = None, *, domain=None,
         coord=None, feedback=None, initial_condition=None,
-        source: str | None = None) -> dict[str, object]:
+        configured_dt: float | None = None,
+        source: str | None = None,
+        simulation_start_time: datetime | None = None) -> dict[str, object]:
     """Assemble one domain's wrfout global attributes.
 
     ``initial_condition`` is the preparation receipt's provenance block
@@ -3353,6 +3609,13 @@ def _global_wrf_attrs(
     model clock began, and at a nonzero forecast lead those are two
     different facts about two different times.  ``None`` writes no
     provenance attribute at all rather than asserting an analysis.
+
+    ``start_time`` is THIS domain's start (``START_DATE``);
+    ``simulation_start_time`` is the run's (``SIMULATION_START_DATE``),
+    which WRF holds identical on every domain -- see
+    :func:`gpuwm.io.wrfout.wrf_global_attrs`.  They differ only for a
+    delayed-start nest, and ``None`` keeps the previous single-date
+    behaviour.
     """
     from gpuwm.io.wrfout import (
         initial_condition_global_attrs, wrf_global_attrs)
@@ -3369,7 +3632,27 @@ def _global_wrf_attrs(
             j_parent_start=int(getattr(domain, "j_parent_start", 1)),
             parent_grid_ratio=int(
                 getattr(domain, "parent_grid_ratio", 1)),
-            dt=float(run.dt))
+            # wrfout's DT is ONE number per FILE, and ITIMESTEP is derived
+            # from it (io/wrfout.py:1205).  Under an adaptive clock
+            # ``run.dt`` is a snapshot of a value that changes every step,
+            # captured whenever these attributes are built -- at setup,
+            # and again at a relocation -- so two runs that build them at
+            # different instants stamp different numbers forever.
+            # MEASURED: a continuous run and its own resume disagreed on
+            # DT for the relocating nest while all 79 of that frame's
+            # variables were byte-identical.
+            #
+            # The CONFIGURED step is stable for the life of the run, is
+            # what the namelist asked for, and is the same in a run and in
+            # its resume.  A DELIBERATE DIVERGENCE from WRF, which stamps
+            # grid%dt and so carries the same ambiguity: a file-level
+            # attribute cannot describe a per-frame quantity, so it should
+            # describe the thing that does not vary.
+            dt=float(run.dt
+                     if configured_dt is None
+                     or not bool(getattr(run, "use_adaptive_time_step",
+                                         False))
+                     else configured_dt))
     if coord is not None:
         identity.update(hybrid_opt=int(coord.hybrid_opt),
                         etac=float(coord.etac))
@@ -3379,6 +3662,7 @@ def _global_wrf_attrs(
     attrs = wrf_global_attrs(
         grid, start_time, landuse_attrs=landuse_attrs,
         run=(None if domain is None else getattr(domain, "run", domain)),
+        simulation_start_time=simulation_start_time,
         **identity)
     if feedback is not None:
         attrs.update(
@@ -3412,42 +3696,23 @@ def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
                       start_time: datetime, title: str, domain_id: int = 1,
                       expect_refl_10cm: bool = True,
                       feedback=None) -> Path:
-    import cupy as cp
     from gpuwm.io.wrfout import (WrfoutWriter, state_frame,
                                  wrfout_filename)
 
     state = prepared.initial_result.state
-    if getattr(state, "_streamed_domain", None) is not None:
-        # REFUSED, not served.  This is the frozen reference integration
-        # loop and its frame is a DIFFERENT frame from the async writer's --
-        # `state_frame` order, the grid metadata block, an explicit RAINNC
-        # row -- so serving it off the store would mean maintaining a second
-        # store-side frame assembly whose only proof of correctness is that
-        # somebody kept the two in step.  The production history path
-        # (PerDomainWrfoutWriters.submit, which `gpuwm go` and the tree
-        # runner both use) publishes streamed domains correctly; this one
-        # says so instead of writing t = 0 into every frame, which is what
-        # it did before this check existed.
-        #
-        # "[tiles] host store", not "streaming host store": the product has a
-        # second door called `gpuwm stream`, and a refusal is the one place a
-        # reader cannot afford to be told about the wrong feature.
-        raise RuntimeError(
-            "write_case_output was handed a domain whose arrays live in a "
-            "[tiles] host store, not on this state.  Every frame after "
-            "the cold-start one would be the initial condition with a later "
-            "timestamp -- correct inventory, correct Times, no forecast.  "
-            "Integrate this case through the experiment route "
-            "(PerDomainWrfoutWriters), or publish the frame with "
-            "gpuwm.core.streaming.StreamedDomain.history_fields().")
-    # initialize_real and every completed dycore step leave p/al/alt current.
-    # Re-diagnosing here would make an observational output operation mutate
-    # the next step's initial state, so case output is deliberately read-only.
-    frame = state_frame(state, include_diagnostic_pressure=True)
+    streamed = getattr(state, "_streamed_domain", None)
+    if streamed is None:
+        # Output observes the completed state without re-diagnosing it.
+        frame = state_frame(state, include_diagnostic_pressure=True)
+    else:
+        # The same StoreFrame used by the tree writer. Its arrays remain
+        # valid until the next sweep; this writer closes synchronously.
+        frame = streamed.history_fields()
     frame.update(_metadata_frame(prepared.grid, prepared.static_fields))
-    rainnc = state.physics.microphysics.rainnc
-    frame["RAINNC"] = cp.asnumpy(rainnc)
-    if (expect_refl_10cm
+    if streamed is None:
+        import cupy as cp
+        frame["RAINNC"] = cp.asnumpy(state.physics.microphysics.rainnc)
+    if (streamed is None and expect_refl_10cm
             and prepared.cfg.mp_physics in REFL_10CM_MICROPHYSICS
             and state.qv is not None):
         # WRF do_radar_ref=1 equivalent: consume the field computed inside
@@ -3695,8 +3960,9 @@ def integrate_prepared_case(
     # store = "device" ``attach`` makes the store the DomainState's own
     # arrays, so the sweep writes the very memory the validator reads and it
     # is armed exactly as it always was.
-    health_armed = not (is_streaming(stepper)
-                        and getattr(stepper, "host_store", False))
+    store_bundle = getattr(prepared, "streamed_store", None)
+    health_armed = (store_bundle is not None or not (
+        is_streaming(stepper) and getattr(stepper, "host_store", False)))
     health_validations_unarmed = 0
     if health_debug and not health_armed:
         # "armed under [tiles]", not "under streaming", for the reason
@@ -3743,8 +4009,12 @@ def integrate_prepared_case(
     integration_cfg = cfg if integration_cfg is None else integration_cfg
     state = prepared.initial_result.state
     _preparation_progress(progress_callback, "initialize-health-validator")
-    health = StateHealthValidator(state)
-    if is_streaming(stepper) and stepper.host_store:
+    if store_bundle is None:
+        health = StateHealthValidator(state)
+    else:
+        from gpuwm.core.health import StoreHealthValidator
+        health = StoreHealthValidator(store_bundle, cfg)
+    if not health_armed:
         # SAID, not discovered.  The stability record is folded per tile and
         # is correct under streaming; this validator is not, and the failure
         # mode of a disarmed gate is that everything looks fine.  An operator
@@ -3841,12 +4111,20 @@ def integrate_prepared_case(
             swdown_peak = float(trackers["swdown_peak_wm2"])
             swdown_peak_time = datetime.fromisoformat(
                 trackers["swdown_peak_time"])
-        surface_forcing_updates = state.physics.call_counts["radiation"]
+        surface_forcing_updates = domain_call_counts(stepper, state)["radiation"]
     _preparation_progress(progress_callback, "initial-health-gate")
-    health.require_healthy(phase="initialized-or-restored")
+    if health_armed or restart_path is None:
+        health.require_healthy(phase="initialized-or-restored")
+    else:
+        # The restored host store has its own validated checkpoint; the
+        # untouched preparation state cannot certify those restored arrays.
+        health_validations_unarmed += 1
+    if store_bundle is not None:
+        from gpuwm.ingest.case_store import write_initialization_receipt
+        write_initialization_receipt(output_dir, prepared, health.coverage)
     if progress_callback is not None:
         progress_callback(
-            model_elapsed_seconds=float(state.elapsed_seconds),
+            model_elapsed_seconds=float(stepper.scalars["elapsed_seconds"] if streamed else state.elapsed_seconds),
             outer_step=start_outer_step,
             last_durable_wrfout=(outputs[-1] if outputs else None),
             last_checkpoint=last_checkpoint, phase="initialized-or-restored",
@@ -3921,7 +4199,7 @@ def integrate_prepared_case(
             step_w_max = float(report["w_max"])
             if step_w_max > w_max:
                 max_index = np.unravel_index(
-                    report["w_argmax"], state.w.shape)
+                    report["w_argmax"], (cfg.nz + 1, cfg.ny, cfg.nx))
                 _k, j, i = (int(index) for index in max_index)
                 distance = min(j, cfg.ny - 1 - j, i, cfg.nx - 1 - i)
                 # WRF/kernel boundary distance: d=0 is specified; d=1,2,3
@@ -3937,6 +4215,27 @@ def integrate_prepared_case(
                     "real-case integration produced a non-finite state at "
                     f"dynamics substep "
                     f"{dynamics_substeps * outer_step + substep + 1}")
+            # ``report["nan"]`` is decided by u_max/w_max/th_max alone, so
+            # it cannot see a collapsed or folded model layer: geopotential
+            # is not one of those three fields, and a mass cell whose live
+            # thickness went non-positive reaches this report ONLY as a
+            # non-finite vertical Courant number (``health.cu`` mask bit 32
+            # -> ``result[5] = nanf("")``).  Reading nothing but ``nan``
+            # here left that signal with no observer on this route -- and
+            # because the vertical term is a whole-domain reduction, one
+            # inverted layer also replaces the real vertical maximum, so
+            # the gate went blind exactly as the failure it exists to catch
+            # developed.  Not folded into ``nan_free``: the state is finite,
+            # the GEOMETRY is not, and the two want different sentences.
+            step_cfl = report["cfl"]
+            if step_cfl is not None and not math.isfinite(float(step_cfl)):
+                raise RuntimeError(
+                    "real-case integration produced a non-finite vertical "
+                    "Courant number at dynamics substep "
+                    f"{dynamics_substeps * outer_step + substep + 1}: a "
+                    "model layer's live thickness is non-positive or "
+                    "non-finite (a collapsed or folded geopotential "
+                    "column), which no field maximum can report")
         # Both of these are the DOMAIN's, and under a host store the domain
         # is not on ``state``: its call counts live on the sweep's carried
         # clock and its swdown maximum is in the store.
@@ -3995,7 +4294,7 @@ def integrate_prepared_case(
         # heartbeat can never advertise unguarded or unpublished work.
         if progress_callback is not None:
             progress_callback(
-                model_elapsed_seconds=float(state.elapsed_seconds),
+                model_elapsed_seconds=float(stepper.scalars["elapsed_seconds"] if streamed else state.elapsed_seconds),
                 outer_step=outer_step + 1,
                 last_durable_wrfout=(outputs[-1] if outputs else None),
                 last_checkpoint=last_checkpoint, phase="post-d01-sync",
@@ -4011,8 +4310,10 @@ def integrate_prepared_case(
         from gpuwm.state_digest import canonical_state_digest
 
         trajectory_digest = {
-            f"d{domain_id:02d}": canonical_state_digest(
-                state, _SingleDomainDigestClock(), scope="trajectory"),
+            f"d{domain_id:02d}": (
+                stepper.canonical_digest(_SingleDomainDigestClock(), scope="trajectory")
+                if streamed else canonical_state_digest(
+                    state, _SingleDomainDigestClock(), scope="trajectory")),
             "boundary_clock_provenance": _SingleDomainDigestClock.provenance,
         }
 
@@ -4021,7 +4322,8 @@ def integrate_prepared_case(
     rainc_lat = None
     rainc_lon = None
     if state.physics.rainc is not None:
-        rainc_host = cp.asnumpy(state.physics.rainc)
+        rainc_host = (np.asarray(stepper.store["scratch/cu_rainc"])
+                      if streamed else cp.asnumpy(state.physics.rainc))
         j, i = np.unravel_index(int(np.argmax(rainc_host)),
                                 rainc_host.shape)
         rainc_max = float(rainc_host[j, i])
@@ -4043,14 +4345,21 @@ def integrate_prepared_case(
         w_max_ms=w_max, boundary_w_max_ms=boundary_w_max,
         interior_w_max_ms=interior_w_max,
         w_max_boundary_row=w_max_boundary_row,
+        # Same predicate as gpuwm.verify.metrics.boundary_zone_blowup,
+        # restated because the standalone preprocessing distribution omits
+        # the verification tree.  The interior leg matters: max(nan, 1.0) is
+        # nan, so an unmeasurable interior would otherwise switch the
+        # boundary-reflection detector off instead of firing it.
         boundary_zone_blowup=(not np.isfinite(boundary_w_max)
+                              or not np.isfinite(interior_w_max)
                               or boundary_w_max
                               > 5.0 * max(interior_w_max, 1.0)),
         dynamics_substeps=dynamics_substeps,
-        ysu_nan_guard_fires=state.physics.ysu_nan_guard_fires,
+        ysu_nan_guard_fires=(int(stepper.scalars["ysu_nan_guard_fires"])
+                             if streamed else state.physics.ysu_nan_guard_fires),
         surface_forcing_updates=surface_forcing_updates,
         swdown_peak_wm2=swdown_peak, swdown_peak_time=swdown_peak_time,
-        completed_seconds=float(state.elapsed_seconds),
+        completed_seconds=float(stepper.scalars["elapsed_seconds"] if streamed else state.elapsed_seconds),
         rainc_max_mm=rainc_max, rainc_max_ji=rainc_ji,
         rainc_max_lat=rainc_lat, rainc_max_lon=rainc_lon,
     )
@@ -4357,14 +4666,78 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         dc = single_domain(exp)
         from gpuwm.ingest.preflight import build_input_catalog
 
+        from gpuwm.core import streaming as _streaming
+        from gpuwm.experiment import refuse_unrouted_spectral_numerics
+
+        if not dc.run.use_adaptive_time_step:
+            refuse_unrouted_spectral_numerics(
+                exp, "runtime.run_experiment:single-domain (frozen loop)")
+        single_tiles = _streaming.options_for_domain(dc, exp.tiles)
+        # Resolve once on the cold device. Allocation during preparation
+        # must not turn a domain that fits into a different plan afterwards.
+        planning_machine = _streaming.cold_planning_machine(exp)
+        resident_estimate = None
+        if single_tiles.mode != "auto":
+            single_decision = (_streaming.decide(dc.run, single_tiles)
+                if planning_machine is None else _streaming.decide(
+                    dc.run, single_tiles, machine=planning_machine))
         catalog = build_input_catalog(data)
         snapshots = forcing_snapshots(data, catalog)
         times = forcing_schedule(exp, data, snapshots)
+        if single_tiles.mode == "auto":
+            from gpuwm.core.preflight import estimate_experiment
+            resident_estimate = estimate_experiment(
+                exp, forcing_intervals=max(0, len(times) - 1))
+            single_decision = _streaming.decide(
+                dc.run, single_tiles, machine=planning_machine,
+                resident_estimate=resident_estimate)
+        store_direct = single_decision.stream and single_decision.store == "host"
+        adaptive_clock = None
+        adaptive_fingerprint = None
+        if dc.run.use_adaptive_time_step:
+            from gpuwm.core.clock import resolve_clock
+            from gpuwm.core.model import experiment_fingerprint
+            adaptive_clock = resolve_clock(
+                exp, lbc_interval_s=_tree_forcing_cadence_seconds(catalog))
+            adaptive_fingerprint = experiment_fingerprint(exp, catalog)
         print(resolved_config_report(
             exp, data, forcing_times=times, input_catalog=catalog))
         _preparation_progress(progress_callback, "prepare-case")
-        prepared = prepare_experiment_case(
-            exp, data, input_catalog=catalog, forcing_by_time=snapshots)
+        if store_direct:
+            from tempfile import TemporaryDirectory
+            from gpuwm.ingest.case_store import (
+                CaseStoreRequest, build_case_store, initialization_resources)
+
+            # This cache is internal and create-only. The context removes only
+            # its own temporary files after the loader has closed every map.
+            with TemporaryDirectory(prefix="initialization-", dir=outdir) as staging:
+                prepared = prepare_experiment_case(
+                    exp, data, input_catalog=catalog, forcing_by_time=snapshots,
+                    store_request=CaseStoreRequest(
+                        Path(staging) / "prepared",
+                        resources=initialization_resources(single_tiles)))
+                del snapshots, catalog
+                clear_forcing_caches()
+                release_backend_memory(CudaPreprocessBackend())
+                single_tiles, single_decision = _refine_single_streaming_plan(
+                    prepared, single_tiles, single_decision, planning_machine, resident_estimate)
+                prepared, store_bundle = build_case_store(
+                    prepared, valid_time=exp.start_time,
+                    decision=single_decision, options=single_tiles)
+        else:
+            prepared = prepare_experiment_case(
+                exp, data, input_catalog=catalog, forcing_by_time=snapshots)
+        # The raw decode is spent here: the initial state and every
+        # boundary frame are built, and this arm has no nest to re-ingest
+        # for.  Both are dropped, not just the caches -- a cleared cache
+        # frees nothing while a local still names the arrays.  Byte-inert:
+        # these caches memoize a pure function of immutable input bytes,
+        # so the only thing a later decode of the same key loses is time.
+        if not store_direct:
+            del snapshots, catalog
+            clear_forcing_caches()
+            single_tiles, single_decision = _refine_single_streaming_plan(
+                prepared, single_tiles, single_decision, planning_machine, resident_estimate)
         _write_initial_perturbation_receipt(
             outdir, exp,
             ([prepared.initial_result.initial_perturbation]
@@ -4379,24 +4752,30 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         # branch of prepared_domain_builder gpuwm go's d01 takes.
         # Unconfigured, make_stepper returns gpuwm.core.dycore.step ITSELF
         # and this run is byte-for-byte the run it always was.
-        from gpuwm.core import streaming as _streaming
-
-        # The frozen single-domain loop commits its slow steps outside
-        # the execute_experiment seam the Level-2 hook is wired into, so
-        # an active [spectral_numerics] refuses here instead of running
-        # the forecast with the operator silently absent.
-        from gpuwm.experiment import refuse_unrouted_spectral_numerics
-        refuse_unrouted_spectral_numerics(
-            exp, "runtime.run_experiment:single-domain (frozen loop)")
-        single_tiles = _streaming.options_for_domain(dc, exp.tiles)
-        single_decision = _streaming.decide(prepared.cfg, single_tiles)
+        adaptive_model = None
+        if adaptive_clock is not None:
+            adaptive_model = _model_from_prepared_single(
+                exp, prepared, adaptive_clock, adaptive_fingerprint)
+        builder = (_streaming.store_domain_builder(
+                       store_bundle, clock=(None if adaptive_model is None
+                                            else adaptive_model.root.clock))
+                   if store_direct else _streaming.standalone_domain_builder(
+                       grid_id=int(dc.grid_id)))
         single_stepper = _streaming.make_stepper(
             prepared.initial_result.state, prepared.cfg, single_tiles,
-            decision=single_decision,
-            build=_streaming.standalone_domain_builder(
-                grid_id=int(dc.grid_id)))
+            decision=single_decision, build=builder)
+        if store_direct:
+            prepared.initial_result.state._streamed_domain = single_stepper
         if single_tiles.enabled:
             print(single_decision.explain())
+        if adaptive_model is not None:
+            # Initialization above is the same resident or bounded host-store
+            # route. Only the configured adaptive calendar selects this executor.
+            return _run_built_experiment(
+                exp, data, outdir, adaptive_model, restart=restart,
+                progress_callback=progress_callback, health_debug=health_debug,
+                prepared_steppers={int(dc.grid_id): single_stepper},
+                prepared_decisions={int(dc.grid_id): single_decision})
         summary = integrate_prepared_case(
             outdir, prepared, start_time=exp.start_time,
             output_title=data.output_title, domain_id=data.output_domain,
@@ -4424,15 +4803,90 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
             summary, frame_records=tuple(frame_records))
 
     _preparation_progress(progress_callback, "build-domain-tree")
-    from gpuwm.core.model import build_experiment, execute_experiment
+    from gpuwm.core.model import build_experiment
+
+    from gpuwm.core import streaming as _streaming
+    planning_machine = _streaming.cold_planning_machine(exp)
+    model = build_experiment(exp, data)
+    print(resolved_tree_config_report(exp, data, model._input_catalog))
+    return _run_built_experiment(
+        exp, data, outdir, model, restart=restart,
+        progress_callback=progress_callback, health_debug=health_debug,
+        planning_machine=planning_machine)
+
+
+def _refine_single_streaming_plan(prepared, options, decision, machine,
+                                  resident_estimate=None):
+    """Resolve adaptive acoustic reach on real geometry against the cold budget."""
+    if not options.enabled or not prepared.cfg.use_adaptive_time_step:
+        return options, decision
+    from gpuwm.core.adaptive_clock import maximum_map_factor
+    from gpuwm.core.streaming import decide
+
+    # These are the exact FP32 map factors loaded into DomainState. A host
+    # initialization has no full GPU state, so use its already resolved grid.
+    factor = maximum_map_factor(geography={
+        'msfu': np.asarray(prepared.grid.mapfac_u(), dtype=np.float32),
+        'msfv': np.asarray(prepared.grid.mapfac_v(), dtype=np.float32),
+    })
+    resolved = dataclass_replace(options, acoustic_map_factor=factor)
+    pricing = {} if resident_estimate is None else {"resident_estimate": resident_estimate}
+    return resolved, decide(prepared.cfg, resolved, machine=machine, **pricing)
+
+
+def _model_from_prepared_single(exp, prepared, tick_clock, fingerprint):
+    """Bind one already initialized domain to the existing scheduled executor."""
+    from types import MappingProxyType
+    from gpuwm.core.clock import build_schedule
+    from gpuwm.core.model import (DomainNode, ExperimentState,
+                                  ModelRuntimeStatus, publish_declared_experiment)
+    from gpuwm.ingest.lateral_bc import bind_lateral_boundary_clock
+
+    dc = exp.root
+    node = DomainNode(
+        cfg=dc, grid=prepared.grid, state=prepared.initial_result.state,
+        clock=tick_clock.clocks()[dc.grid_id], parent=None,
+        children=[], coupler=None)
+    node._started = True
+    if prepared.streamed_store is None:
+        bind_lateral_boundary_clock(node.state, node.clock)
+    model = ExperimentState(
+        root=node, nodes_by_grid_id=MappingProxyType({dc.grid_id: node}),
+        schedule=build_schedule(exp, tick_clock), memory_ledger=None,
+        experiment_fingerprint=fingerprint)
+    model._scratch_arena = None
+    model._dycore_state_workspace = None
+    if prepared.initialization_receipt is not None:
+        prepared = dataclass_replace(prepared, initialization_receipt={
+            **prepared.initialization_receipt,
+            'forcing_clock': 'DomainClock',
+        })
+    model._prepared_by_grid_id = {dc.grid_id: prepared}
+    model._initial_perturbation_receipts = (
+        (prepared.initial_result.initial_perturbation,)
+        if exp.perturbation is not None else ())
+    model._input_catalog = None
+    model._runtime_status = ModelRuntimeStatus()
+    model._feedback_provenance = feedback_provenance(exp)
+    model._resumed = False
+    model._resume_committed_history_grid_ids = frozenset()
+    model._io_manager = None
+    model._last_checkpoint = None
+    publish_declared_experiment(model, exp)
+    return model
+
+
+def _run_built_experiment(exp, data, outdir, model, *, restart=None,
+                          progress_callback=None, health_debug=False,
+                          prepared_steppers=None, prepared_decisions=None,
+                          planning_machine=None):
+    """The shared scheduled runtime, independent of initialization storage."""
+    from gpuwm.core.model import execute_experiment
     from gpuwm.io.restart import (read_tree_lifecycle_header,
-                                  restore_tree_restart,
-                                  write_tree_restart)
+                                  restore_tree_restart, write_tree_restart)
     from gpuwm.io.wrfout import PerDomainWrfoutWriters
     from gpuwm.supervisor import validate_manifest_checkpoint
 
-    model = build_experiment(exp, data)
-    print(resolved_tree_config_report(exp, data, model._input_catalog))
     # The refusal this used to be is lifted HERE and only here: this
     # route holds the input catalog (and with it the static source), so
     # the real-data relocation initializer and physics preparer exist.
@@ -4504,6 +4958,15 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     # at the end of the schedule, so this decides here, once.
     already_complete = _restart_is_complete(restart_info)
 
+    for node in model.walk_parent_first():
+        prepared = model._prepared_by_grid_id[node.cfg.grid_id]
+        if getattr(prepared, 'streamed_store', None) is not None:
+            from gpuwm.core.health import health_validator_for_domain
+            from gpuwm.ingest.case_store import write_initialization_receipt
+            health = health_validator_for_domain(model, node)
+            health.require_healthy(phase="initialized-or-restored")
+            write_initialization_receipt(outdir, prepared, health.coverage)
+
     _preparation_progress(progress_callback, "initialize-domain-writers")
     with PerDomainWrfoutWriters(
             model, outdir, start_time=exp.start_time,
@@ -4542,8 +5005,10 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
             # correct Times, no forecast.  The history cadence is where
             # StreamedDomain.refresh_state says the copy belongs, and it is
             # a getattr and a zero for every resident domain.
-            _streaming.refresh_streamed_state(
-                steppers.get(int(node.cfg.grid_id)), node.state)
+            case = model._prepared_by_grid_id[node.cfg.grid_id]
+            if getattr(case, "streamed_store", None) is None:
+                _streaming.refresh_streamed_state(
+                    steppers.get(int(node.cfg.grid_id)), node.state)
             _submit_tree_history_frame(writers, node, ticks)
 
         def restart_handler(tree, ticks):
@@ -4565,10 +5030,15 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         from gpuwm.core import streaming as _streaming
 
         streaming_decisions: dict = {}
-        steppers = _streaming.steppers_for_tree(
-            model, exp.tiles,
-            builders=_streaming.builders_for_tree(model, exp.tiles),
-            decisions=streaming_decisions)
+        if prepared_steppers is None:
+            steppers = _streaming.steppers_for_tree(
+                model, exp.tiles,
+                builders=_streaming.builders_for_tree(model, exp.tiles),
+                decisions=streaming_decisions, machine=planning_machine,
+                resident_estimate=getattr(model.memory_ledger, "estimate", None))
+        else:
+            steppers = dict(prepared_steppers)
+            streaming_decisions.update(prepared_decisions or {})
         streaming_report = _streaming.streaming_receipt(
             exp.tiles, streaming_decisions)
         if streaming_report:
@@ -4625,6 +5095,15 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     cp.cuda.runtime.deviceSynchronize()
     # After the writer drain above and after the final device synchronization,
     # so the digest observes the trajectory and cannot participate in it.
+    # A completed summary reports an observed final state, including a resume
+    # already at its stop tick, which executes no new model steps. The health
+    # validator follows each domain's canonical resident or streamed storage.
+    from gpuwm.core.health import health_validator_for_domain
+
+    final_health = [health_validator_for_domain(model, node).require_healthy(
+        phase=f"final-state.d{node.cfg.grid_id:02d}")
+        for node in model.walk_parent_first()]
+    nan_free = bool(final_health) and all(report.ok for report in final_health)
     trajectory_digest = None
     if trajectory_digest_enabled():
         _finalizing_progress(progress_callback, "trajectory-digest")
@@ -4635,14 +5114,15 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         # unrefreshed DomainState is the hash of the ANALYSIS -- the digest
         # would compare equal across runs that diverged, which is the one
         # thing a digest exists to catch.  Zero and a getattr when resident.
+        trajectory_digest = {}
         for grid_id, node in sorted(model.nodes_by_grid_id.items()):
-            _streaming.refresh_streamed_state(
-                steppers.get(int(grid_id)), node.state)
-        trajectory_digest = {
-            f"d{grid_id:02d}": canonical_state_digest(
-                node.state, node.clock, scope="trajectory")
-            for grid_id, node in sorted(model.nodes_by_grid_id.items())
-        }
+            stepper = steppers.get(int(grid_id))
+            if _streaming.is_streaming(stepper):
+                digest = stepper.canonical_digest(node.clock, scope="trajectory")
+            else:
+                digest = canonical_state_digest(
+                    node.state, node.clock, scope="trajectory")
+            trajectory_digest[f"d{grid_id:02d}"] = digest
     _finalizing_progress(progress_callback, "provenance-receipts")
     transition_path, transition_sha, transitions = \
         _write_microphysics_transition_receipt(
@@ -4659,7 +5139,9 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     # with missing step receipts refuses a clean capsule here.
     from gpuwm.spectral_seam import seam_capsule_receipts
     _emit_front_door_capsule(
-        outdir, emission_site="runtime.run_experiment:domain-tree",
+        outdir, emission_site=("runtime.run_experiment:single-domain"
+                              if prepared_steppers is not None else
+                              "runtime.run_experiment:domain-tree"),
         exp=exp, data=data, wrfout_paths=paths,
         trajectory_digest=trajectory_digest, io_mode="history",
         frame_records=frame_records,
@@ -4667,7 +5149,7 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     return ExperimentRunSummary(
         wrfout_paths=paths,
         completed_seconds=model.root.clock.elapsed_seconds,
-        nan_free=True,
+        nan_free=nan_free,
         last_checkpoint=getattr(model, "_last_checkpoint", None),
         microphysics_transitions=transitions,
         microphysics_transition_receipt=transition_path,
@@ -4762,7 +5244,7 @@ __all__ = [
     "PreparedRealCase", "RealCaseRunSummary",
     "configured_run_schedule",
     "experiment_grid", "feedback_provenance",
-    "forcing_schedule", "forcing_snapshots",
+    "forcing_decode_report", "forcing_schedule", "forcing_snapshots",
     "integrate_prepared_case", "load_source_orography",
     "prepare_child_case", "prepare_experiment_case",
     "declared_constant_glw", "downward_longwave_source",

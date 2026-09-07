@@ -57,6 +57,8 @@ SANCTIONED_BINDER_MODULES = (
     Path("core") / "model.py",
     Path("core") / "streaming.py",
     Path("prepared_domain_tree_forecast.py"),
+    Path("prepared_single_domain_forecast.py"),
+    Path("runtime.py"),
     Path("verify") / "cases" / "real74_n5s.py",
     Path("offline_child_run.py"),
 )
@@ -140,6 +142,30 @@ def test_prepared_tree_runner_binds_root_external_boundary_clock():
     assert _function_calls_binder(runner_py, "run_prepared_tree"), (
         "prepared_domain_tree_forecast.run_prepared_tree manually constructs "
         "the production root but does not bind its external Davies clock")
+
+
+def test_prepared_case_model_binds_root_external_boundary_clock():
+    """The scheduled case-data adapter preserves the same root clock owner."""
+    assert _function_calls_binder(
+        REPO_ROOT / "gpuwm" / "runtime.py", "_model_from_prepared_single")
+
+
+def test_single_prepared_runner_constructs_bound_root_before_streaming_or_restore():
+    path = REPO_ROOT / "gpuwm" / "prepared_single_domain_forecast.py"
+    assert _function_calls_binder(path, "_single_prepared_root")
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    run = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+               and n.name == "run_prepared_forecast")
+    calls = {}
+    for node in ast.walk(run):
+        if isinstance(node, ast.Call):
+            name = (node.func.id if isinstance(node.func, ast.Name) else
+                    node.func.attr if isinstance(node.func, ast.Attribute) else None)
+            if name in {"_single_prepared_root", "steppers_for_tree", "_restore_single_checkpoint"}:
+                calls.setdefault(name, []).append(node.lineno)
+    assert set(calls) == {"_single_prepared_root", "steppers_for_tree", "_restore_single_checkpoint"}
+    assert all(len(lines) == 1 for lines in calls.values())
+    assert calls["_single_prepared_root"][0] < calls["steppers_for_tree"][0] < calls["_restore_single_checkpoint"][0]
 
 
 def test_binder_references_are_exactly_the_sanctioned_callers():

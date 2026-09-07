@@ -721,16 +721,18 @@ def _cupy_check() -> Check:
                  severity=SEVERITY_BROKEN)
 
 
-#: Compiles two kernels and reports which one built.  The pair is the whole
-#: point, because the two failures it separates need OPPOSITE remedies:
+#: Compiles and executes two kernels, keeping execution failures separate
+#: from the named compiler-library and toolkit-header failures:
 #:
 #: 1. a SELF-CONTAINED kernel with no ``#include`` at all -- how every gpuwm
 #:    kernel is written.  It exercises NVRTC itself, which ships INSIDE the
-#:    CuPy wheel.  If this fails, the wheel is the problem.
+#:    CuPy wheel. Compile failures are recorded separately from allocation,
+#:    launch, synchronization and readback failures.
 #: 2. a CuPy reduction, which compiles through CuPy's own cub/jitify
 #:    preamble.  That preamble ``#include``s the CUDA runtime headers, and
-#:    those come from a TOOLKIT, found through ``CUDA_PATH``.  If this fails
-#:    while (1) passes, the headers are the problem and no wheel supplies them.
+#:    those come from a TOOLKIT, found through ``CUDA_PATH``. A failure naming
+#:    missing headers selects that remedy; runtime failures and wrong answers
+#:    remain execution failures even when (1) passed.
 #:
 #: THE COLD CACHE IS LOAD-BEARING.  ``CUPY_CACHE_DIR`` is redirected to an
 #: empty directory because a warm kernel cache is exactly what hides this
@@ -753,19 +755,36 @@ try:
 except Exception as error:
     sys.stdout.write(json.dumps({"devices": 0, "device_error": repr(error)}))
     raise SystemExit(0)
+stage = "compile"
+out["self_contained_compiled"] = False
 try:
     module = cupy.RawModule(code=(
         'extern "C" __global__ '
         'void gpuwm_probe(float* out) { out[0] = 1.0f; }'))
-    module.get_function("gpuwm_probe")
-    out["self_contained"] = "ok"
+    kernel = module.get_function("gpuwm_probe")
+    out["self_contained_compiled"] = True
+    stage = "allocation"
+    result = cupy.empty(1, dtype=cupy.float32)
+    stage = "launch"
+    kernel((1,), (1,), (result,))
+    stage = "synchronize"
+    cupy.cuda.get_current_stream().synchronize()
+    stage = "readback"
+    value = float(cupy.asnumpy(result)[0])
+    out["self_contained"] = "ok" if value == 1.0 else f"wrong value {value}"
+    if value != 1.0:
+        out["self_contained_stage"] = "validation"
 except Exception as error:
     out["self_contained"] = f"{type(error).__name__}: {error}"
+    out["self_contained_stage"] = stage
 try:
     total = int(cupy.arange(64, dtype=cupy.int64).sum())
     out["toolkit_headers"] = "ok" if total == 2016 else f"wrong sum {total}"
+    if total != 2016:
+        out["toolkit_headers_stage"] = "validation"
 except Exception as error:
     out["toolkit_headers"] = f"{type(error).__name__}: {error}"
+    out["toolkit_headers_stage"] = "reduction"
 import os
 out["cuda_path"] = os.environ.get("CUDA_PATH") or ""
 sys.stdout.write(json.dumps(out))
@@ -793,7 +812,10 @@ def _nvrtc_header_probe() -> dict:
         except OSError as error:
             return {"probe": f"did not run: {error}"}
     try:
-        return json.loads(probe.stdout or "{}")
+        result = json.loads(probe.stdout or "{}")
+        if not isinstance(result, dict) or not result or probe.returncode != 0:
+            raise ValueError("the probe produced no successful structured result")
+        return result
     except ValueError:
         tail = [line for line in (probe.stderr or "").strip().splitlines()
                 if line.strip()]
@@ -986,7 +1008,7 @@ def _cupy_import_failure_remedy(evidence: str,
 
 
 def _cuda_headers_check() -> Check:
-    """Can CuPy COMPILE on this box, and if not, is it the wheel or headers?
+    """Can CuPy compile and run here, and which measured stage failed?
 
     A check rather than a footnote because the gap is silent by
     construction: cupy imports, cuBLAS loads, a matmul returns the right
@@ -994,14 +1016,9 @@ def _cuda_headers_check() -> Check:
     reduction of a real run died on a missing header.  Everything cheaper
     than a cold compile passes on a box that cannot compile.
 
-    Never blocking.  Most of gpuwm's own kernels are self-contained
-    source strings compiled without jitify, and fetch, import-namelist
-    and render do not touch CUDA at all.  "Never read the toolkit tree"
-    is what this docstring used to say, and it is too strong: two
-    microphysics kernels carry a ``#include <cmath>``.  What the probe
-    below separates is still the right pair -- NVRTC itself, which ships
-    inside the wheel, against the toolkit include tree CuPy's own cub
-    preamble needs -- and the finding is reported either way.
+    A proven failure blocks forecast readiness and setup's final verdict.
+    Preprocessing remains usable. An unavailable or timed-out probe is
+    explicitly unjudged; ordinary measured ``check`` requires verification.
     """
 
     name = "CUDA kernel headers"
@@ -1034,8 +1051,9 @@ def _cuda_headers_check() -> Check:
         return Check(
             name, "missing",
             f"the compile probe could not be run: {result['probe']}",
-            *_cuda_headers_remedy(_driver_cuda_major()),
-            brief=_short(result["probe"]), blocking=False)
+            "gpuwm doctor --explain\n# Read the probe process error above before choosing a repair.",
+            action="gpuwm doctor --explain",
+            brief="CUDA probe unavailable", blocking=True)
 
     self_contained = result.get("self_contained", "did not report")
     headers = result.get("toolkit_headers", "did not report")
@@ -1043,9 +1061,12 @@ def _cuda_headers_check() -> Check:
     if self_contained == "ok" and headers == "ok":
         return Check(
             name, "verified",
-            f"a self-contained kernel and a cupy reduction both compiled "
+            f"a self-contained kernel and a cupy reduction compiled and ran "
             f"from a COLD cache (CUDA_PATH {cuda_path})",
-            brief="kernels compile", blocking=False)
+            brief="kernels compile and run", blocking=False)
+    stage = result.get("self_contained_stage")
+    if stage in {"allocation", "launch", "synchronize", "readback", "validation"}:
+        return _cuda_probe_failure(name, str(stage), self_contained, compiled=True)
     if self_contained != "ok" and _names_missing_cuda_headers(self_contained):
         # CuPy 14 raises the headers error BEFORE it compiles anything,
         # so a kernel with no ``#include`` at all fails too and the
@@ -1063,8 +1084,8 @@ def _cuda_headers_check() -> Check:
             f"names the toolkit HEADER tree, which no cupy wheel ships and "
             f"no wheel reinstall supplies (CUDA_PATH {cuda_path})",
             remedy, action=action, brief="toolkit headers missing",
-            blocking=False)
-    if self_contained == "ok":
+            blocking=True)
+    if self_contained == "ok" and _names_missing_cuda_headers(headers):
         # THE DISTINCTION THIS CHECK EXISTS FOR.  NVRTC works, so the
         # wheel is fine and reinstalling it is wasted advice; what is
         # missing is the header tree NVRTC was asked to read.
@@ -1077,9 +1098,15 @@ def _cuda_headers_check() -> Check:
             f"toolkit HEADER tree, which no cupy wheel ships and no wheel "
             f"reinstall supplies (CUDA_PATH {cuda_path})",
             remedy, action=action, brief="toolkit headers missing",
-            blocking=False)
-    # NVRTC itself did not build the simplest kernel there is, so this is
-    # the wheel, and the wheel remedy is the honest one.
+            blocking=True)
+    if self_contained == "ok":
+        return _cuda_probe_failure(name, str(result.get("toolkit_headers_stage", "reduction")),
+                                   headers, compiled=True)
+    if not any(marker in str(self_contained).lower() for marker in _WHEEL_IMPORT_MARKERS):
+        return _cuda_probe_failure(name, str(stage or "compile"), self_contained,
+                                   compiled=bool(result.get("self_contained_compiled")))
+    # The compiler's library/module loader actually names a missing wheel
+    # component. Execution failures never reach this installer branch.
     box_major = _driver_cuda_major()
     remedy, action = _gpu_extra_hint(box_major)
     return Check(
@@ -1087,7 +1114,15 @@ def _cuda_headers_check() -> Check:
         f"cupy could not compile even a self-contained kernel: "
         f"{_short(str(self_contained), 120)}.  NVRTC ships inside the cupy "
         f"wheel, so this is the wheel rather than the toolkit headers",
-        remedy, action=action, brief="nvrtc unusable", blocking=False)
+        remedy, action=action, brief="nvrtc unusable", blocking=True)
+
+
+def _cuda_probe_failure(name: str, stage: str, evidence: object, *, compiled: bool) -> Check:
+    progress = "The self-contained kernel compiled; " if compiled else ""
+    return Check(
+        name, "missing", f"{progress}CUDA {stage} failed: {_short(str(evidence), 160)}",
+        "nvidia-smi\n# Inspect the reported CUDA driver/device error, then rerun gpuwm doctor.",
+        action="nvidia-smi", brief=f"CUDA {stage} failed", blocking=True)
 
 
 #: The CUDA libraries cuSOLVER needs present TOGETHER.  Every one is a
@@ -2538,6 +2573,7 @@ _CHECKED_ARTIFACTS = {
     "rw_mpas_init": "the `MPAS binary` lines",
     "rw_mpas_convert": "the `MPAS binary` lines",
     "rw_mpas_lbc": "the `MPAS binary` lines",
+    "arwen-tui": "the `terminal workspace` line",
 }
 
 
@@ -2983,6 +3019,64 @@ def _obs_front_door_checks() -> list[Check]:
         checks.append(Check(name, "verified", f"{found} -- {evidence}",
                             brief=_short(evidence), group=_GROUP_ENGINES))
     return checks
+
+
+def _tui_check() -> Check:
+    """Resolve the launcher's terminal, check its pins, and probe --version.
+
+    Inspection must never refresh a stale bundle or open an interactive
+    terminal. The launcher owns resolution and the static CLI contract;
+    the pin judgment remains read-only, as in the staged-estate check.
+    """
+    name = "terminal workspace arwen-tui (gpuwm tui)"
+    try:
+        from gpuwm import bridge_assets, tui_cli
+    except ImportError as error:
+        return Check(
+            name, "missing", f"terminal launcher is not importable ({error})",
+            "# reinstall so the terminal launcher imports:\n" + REINSTALL_HINT,
+            action="reinstall gpuwm", brief="terminal launcher not importable",
+            group=_GROUP_ENGINES, severity=SEVERITY_BROKEN)
+    remedy = bridges.artifact_remedy(
+        env_var=tui_cli.TUI_ENV,
+        filename=bridges.executable_name(tui_cli.TUI_NAME),
+        subject="the Rust terminal workspace",
+        crate_relative=tui_cli.TUI_CRATE_RELATIVE,
+        artifact=tui_cli.TUI_NAME)
+    try:
+        with bridges.inspection_only():
+            found = tui_cli.require_tui()
+        pin = bridge_assets.staged_pin_status(found)
+        if pin is not None and not pin.matches:
+            raise bridges.StaleBridgeError(pin.describe())
+    except FileNotFoundError as error:
+        override = os.environ.get(tui_cli.TUI_ENV)
+        present = (Path(override).is_file() if override else
+                   any(path.is_file() for path in tui_cli.tui_candidates()))
+        return Check(
+            name, "missing", f"{error} -- gpuwm tui cannot run", remedy,
+            action=(f"unset {tui_cli.TUI_ENV}, or point it at a real build"
+                    if override and not present else
+                    _build_action(tui_cli.TUI_CRATE_RELATIVE)),
+            brief="terminal contract refused" if present else "terminal not found",
+            group=_GROUP_ENGINES,
+            severity=SEVERITY_BROKEN if present else SEVERITY_UNREACHABLE)
+    except (OSError, bridges.StaleBridgeError) as error:
+        return Check(
+            name, "missing", f"{error} -- gpuwm tui cannot run", remedy,
+            action=_build_action(tui_cli.TUI_CRATE_RELATIVE),
+            brief=_short(str(error)), group=_GROUP_ENGINES,
+            severity=SEVERITY_BROKEN)
+    ok, evidence = _exec_probe(found)
+    if not ok:
+        return Check(
+            name, "missing", f"{found} -- {evidence}", remedy,
+            action=_build_action(tui_cli.TUI_CRATE_RELATIVE),
+            brief=_short(evidence), group=_GROUP_ENGINES,
+            severity=SEVERITY_BROKEN)
+    return Check(
+        name, "verified", f"{found} -- terminal CLI contract matches; {evidence}",
+        brief="terminal contract and --version verified", group=_GROUP_ENGINES)
 
 
 def _fetch_backbone_check() -> Check:
@@ -5384,6 +5478,7 @@ def _collect_checks(sources: tuple[str, ...] | None = None,
     checks.append(_rust_renderer_check())
     checks.append(_renderer_tree_check())
     checks.append(_fetch_backbone_check())
+    checks.append(_tui_check())
     checks.append(_nexrad_front_door_check())
     # The three front doors no bundle carries.  Absent from this report
     # through 2.3.3, which is how a box with every radar-adjacent

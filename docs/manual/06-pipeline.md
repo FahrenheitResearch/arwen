@@ -169,9 +169,13 @@ correlation 0.80 at F+3), and the convective scale decorrelates at initiation
 reflectivity max crosses 0 dBZ; CSI near zero; both runs make storms, in
 different places). Write parent history at 15-minute or denser cadence when you
 plan to downscale; the CLI warns whenever the archive is coarser
-[docs/public/DOWNSCALE.md]. Known limits: no vertical remapping (the child keeps
-the parent's eta levels, terrain SINT-inherited), one child per invocation, and a
-point-mode child of a WRF parent needs `--child-config`.
+[docs/public/DOWNSCALE.md]. The child can take its OWN eta ladder:
+`--child-levels N,STRETCH` remaps the initial state and every lateral-boundary
+frame onto it once, on the host, in FP64 (conservative in dry mass and water
+substance; a matched ladder is bitwise unchanged). Known limits: terrain is
+still SINT-inherited, one child per invocation, and a point-mode child of a WRF
+parent needs `--child-config` (which carries its ladder as `eta_levels`, not
+`--child-levels`).
 
 ## 6.5 Tile streaming (`[tiles]`)
 

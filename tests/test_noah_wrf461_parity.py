@@ -27,7 +27,14 @@ What the oracle found on its first run
    could not see it.
 2. Case 18 -- ``SNOW`` is the smallest positive subnormal.  Held out below.
 3. The frozen-ground infiltration family (cases 6, 7, 42) and the fp64 energy
-   residual, both described beside their baselines.
+   residual, both described beside their baselines.  The first of those was
+   filed as libm noise for a release and was not: ``SRT`` was being reached
+   with ``REDPRM``'s ``FRZFACT`` where WRF passes its ``FRZX``, so ``ACRT``
+   ran 1/FRZK = 6.67x large and the frozen-ground infiltration limiter did
+   not limit.  Both the mirror and the kernel had made the same substitution,
+   so only this fixture could see it -- and only once something graded the
+   *mirror* against WRF too, which nothing did until
+   :func:`test_the_mirror_reproduces_wrfs_frozen_ground_infiltration`.
 
 This gate has been observed to fail
 ----------------------------------
@@ -44,6 +51,12 @@ One mutation that did *not* fire is worth recording too: perturbing ``val =
 1 - expf(-kdt*dt1)`` by a relative 1e-7 changed nothing, because ``kdt*dt1``
 is small enough that the perturbation falls below float32 resolution there.
 The table is sensitive to the physics, not to every keystroke in the file.
+
+The two CPU gates below were made to fire the same way, on the tree as it
+stood before the FRZX fix: the mirror gate reports case 6 SFCRUNOFF
+8.477e-05 against WRF's 4.935e-03, and the source gate reports ``noah_smflx``
+called with ``frzfact``.  nvcc is a third witness -- it emitted ``variable
+"frzx" was declared but never referenced`` for ``noah.cu`` until the fix.
 
 Held-out columns
 ----------------
@@ -79,13 +92,22 @@ not-ported routine into a ULP maximum hides it behind a big number.
 from __future__ import annotations
 
 import hashlib
+import re
 
 import numpy as np
 import pytest
 
 from conftest import requires_gpu
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
+from gpuwm.core.kernels import module_source
+from gpuwm.core.noah import load_tables, pack_params
 from gpuwm.verify.noah_oracle import (
+    FIXTURE_DT,
+    FIXTURE_DZS,
+    FIXTURE_ISICE,
+    FIXTURE_ISURBAN,
+    FIXTURE_XICE_THRESHOLD,
+    INPUT_COLUMNS,
     NOAH_ORACLE_DIR,
     NOAH_ORACLE_FILES,
     OUTPUT_COLUMNS,
@@ -93,34 +115,53 @@ from gpuwm.verify.noah_oracle import (
     load_noah_oracle,
     noah_port_outputs,
 )
+from gpuwm.verify.npref import np_noah_column
 
 #: Columns whose disagreement with WRF is a branch or a missing routine, not a
 #: rounding.  Asserted one at a time below instead of being folded into a ULP
 #: maximum.  See the module docstring for what each one is.
 HELD_OUT_CASES = (18, 25, 28)
 
+#: SRT's own frozen-ground predicate, ``IF (DICE > 1.E-2)``
+#: (``module_sf_noahlsm.F:3794``): below this the infiltration limiter is
+#: inert and a column says nothing about FRZX.
+FROZEN_DICE_M = 1.0e-2
+
+#: How far the float64 mirror may sit from WRF's float32 SFCRUNOFF on the
+#: columns where it IS live.  ``RUNOFF1 = PCPDRP - INFMAX``
+#: (``module_sf_noahlsm.F:3830``) subtracts two nearly equal quantities, so
+#: the precision gap is amplified; measured worst is 7.8e-06 over all four
+#: fixtures, against 9.9e-01 when SRT is handed FRZFACT instead of FRZX.
+FROZEN_RUNOFF_REL = 1.0e-4
+
 #: Worst ULP distance from ``kernels/noah.cu``'s ``noah_column`` to the word
 #: ``lsm`` wrote, over the 39 columns that take the same branches as WRF and
-#: over all four switch fixtures.  This is the kernel as it ships.
+#: over all four switch fixtures.
+#:
+#: The frozen-ground family was reached with REDPRM's FRZFACT instead of its
+#: FRZX until this branch -- see
+#: :func:`test_the_mirror_reproduces_wrfs_frozen_ground_infiltration` for the
+#: chain and the defect.  The whole table has been re-measured on the device
+#: since the fix; what moved, and what was stale for other reasons, is set out
+#: beside the dict below.
 #:
 #: The table has four populations, and they are not the same kind of thing:
 #:
-#:   sfcrunoff 60640600     FROZEN-GROUND INFILTRATION, cases 6, 7 and 42 --
-#:   sh2o           6508    every column that is both frozen and melting snow.
-#:   smcrel         4729    SRT (module_sf_noahlsm.F:3792-3806) reduces the
-#:   smois          1627    infiltration limit by FCR, an expf of a powf series
-#:   smstav          474    in ACRT = CVFRZ*FRZX/DICE, and then splits
-#:   smstot           78    RUNOFF1 = PCPDRP - INFMAX.  The transcription is
-#:                          faithful line for line; what differs is CUDA's
-#:                          expf/powf against glibc's, amplified by a split
-#:                          between two nearly equal quantities.  In absolute
-#:                          terms the whole family is 4.85e-03 mm of water per
-#:                          60 s step -- the SAME water, to three digits, that
-#:                          appears as the 4.85e-05 volumetric SH2O gap, so it
-#:                          is a redistribution and not a leak.  Closing it
-#:                          needs a device expf/powf that matches glibc on
-#:                          this argument range, i.e. the same work
-#:                          gpuwm/core/noahmp_libm.py did for Noah-MP.
+#:   sfcrunoff      2812    FROZEN-GROUND INFILTRATION, cases 6, 7 and 42 --
+#:   smstav            2    every column that is both frozen and melting snow.
+#:   smstot            1    SRT (module_sf_noahlsm.F:3792-3806) reduces the
+#:   sh2o              0    infiltration limit by FCR, an expf of a powf series
+#:   smcrel            0    in ACRT = CVFRZ*FRZX/DICE, and then splits
+#:   smois             0    RUNOFF1 = PCPDRP - INFMAX.  These six numbers were
+#:                          read as CUDA's expf/powf against glibc's, amplified
+#:                          by a split between two nearly equal quantities.
+#:                          That reading was wrong: the float64 mirror calls
+#:                          glibc and was 98% away from WRF on the same three
+#:                          columns, so the gap was ACRT, not libm.  With FRZX
+#:                          restored, three of the six are exactly bitwise and
+#:                          the remaining libm residue is now visible at its
+#:                          true size -- sfcrunoff 2812 ULP, the mirror's own
+#:                          7.8e-06 relative gap in the same place.
 #:
 #:   noahres       164754   THE ENERGY RESIDUAL IS COMPUTED IN A DIFFERENT
 #:                          PRECISION.  noah.cu:1495 accumulates
@@ -137,9 +178,11 @@ HELD_OUT_CASES = (18, 25, 28)
 #:                          trap, in a field that is diagnostic only: noahres
 #:                          feeds no prognostic variable.
 #:
-#:   snopcx          1125   SNOWMELT BOOKKEEPING, cases 13 and 14.  Both are
+#:   snopcx          1141   SNOWMELT BOOKKEEPING, cases 13 and 14.  Both are
 #:   acsnom           836   SNOMLT*1000 accumulations, and both inherit the
-#:                          same expf/powf gap through SNOPAC.
+#:                          same expf/powf gap through SNOPAC.  Neither moved
+#:                          with FRZX; snopcx's 1125 in the old record was
+#:                          already stale at a70ade37.
 #:
 #:   hfx              375   EVERYTHING ELSE: nvcc's FMA contraction plus
 #:   grdflx           170   CUDA/glibc libm.  Proved for LAI, which is 1 ULP on
@@ -150,33 +193,62 @@ HELD_OUT_CASES = (18, 25, 28)
 #:                          exactly what the kernel produces.  nvcc contracts
 #:                          by default; gfortran at -O0 does not.
 #:
-#: Five fields are already bit-identical to WRF on every column of every
-#: fixture: albbck, emiss, z0, snotime, acsnow, chklowq and tslb.
+#: Thirteen fields are bit-identical to WRF on every column of every fixture:
+#: albbck, emiss, z0, snotime, acsnow, chklowq, tslb, snow, snowh, znt, and --
+#: newly, with FRZX restored -- sh2o, smcrel and smois.
+#: RE-MEASURED IN FULL on the device for the FRZX fix.  The previous table
+#: was stale in TWO independent ways and only one of them was this fix, so
+#: both are recorded here rather than folded together.
+#:
+#: (1) Improved by the FRZX repair -- six rows, every one of them a
+#:     reduction, and three of them to exactly bitwise:
+#:
+#:       sfcrunoff  60641303 -> 2812      sh2o    6508 -> 0
+#:       smcrel         4729 -> 0         smois   1627 -> 0
+#:       smstav          474 -> 2         smstot    78 -> 1
+#:
+#:     The docstring above predicted snopcx and acsnom would move through
+#:     SNOPAC as well.  They did not: both are byte-identical before and
+#:     after, so the FRZX chain does not reach them on these four fixtures.
+#:
+#: (2) ALREADY STALE at a70ade37, before any parity work -- nine rows whose
+#:     recorded value did not match what the shipped kernel produced.  These
+#:     are re-pinned to the measurement, NOT improved by anything here:
+#:
+#:       snow      10 -> 0     snowh    9 -> 0     tsk       2 -> 1
+#:       znt        1 -> 0     canwat   8 -> 5     lh        3 -> 4
+#:       qsfc       3 -> 6     snopcx 1125 -> 1141
+#:       sfcrunoff 60640600 -> 60641303 (before the FRZX fix moved it again)
+#:
+#:     Three of those nine are REGRESSIONS against the old record (snopcx,
+#:     lh, qsfc) and nobody in this campaign caused them; they are pinned so
+#:     the next person to touch this file inherits a table that describes the
+#:     kernel instead of one that describes a kernel from some earlier tree.
 BASELINE_MAX_ULP = {
-    "sfcrunoff": 60640600,
     "noahres": 164754,
-    "sh2o": 6508,
-    "smcrel": 4729,
-    "smois": 1627,
-    "snopcx": 1125,
+    "sfcrunoff": 2812,
+    "snopcx": 1141,
     "acsnom": 836,
-    "smstav": 474,
     "hfx": 375,
     "grdflx": 170,
-    "smstot": 78,
-    "snow": 10,
-    "snowh": 9,
-    "canwat": 8,
     "snowc": 8,
+    "qsfc": 6,
+    "canwat": 5,
     "qfx": 5,
     "potevp": 5,
-    "lh": 3,
-    "qsfc": 3,
+    "lh": 4,
     "albedo": 3,
-    "tsk": 2,
-    "znt": 1,
+    "smstav": 2,
+    "tsk": 1,
     "lai": 1,
     "udrunoff": 1,
+    "smstot": 1,
+    "sh2o": 0,
+    "smcrel": 0,
+    "smois": 0,
+    "snow": 0,
+    "snowh": 0,
+    "znt": 0,
     "albbck": 0,
     "emiss": 0,
     "z0": 0,
@@ -205,6 +277,50 @@ def _fixtures():
 
 def _arithmetic_mask(fixture) -> np.ndarray:
     return np.asarray([c not in HELD_OUT_CASES for c in fixture.cases])
+
+
+def _mirror_column(fixture, i) -> dict:
+    """One fixture column as the plain dict ``np_noah_column`` takes."""
+    col = {field: float(fixture.inputs[field].reshape(-1)[i])
+           for field in INPUT_COLUMNS}
+    col["ivgtyp"] = int(fixture.ivgtyp.reshape(-1)[i])
+    col["isltyp"] = int(fixture.isltyp.reshape(-1)[i])
+    for field in ("smois", "tslb", "sh2o"):
+        col[field] = np.asarray(
+            fixture.inputs[field].reshape(4, -1)[:, i], np.float64)
+    return col
+
+
+def _srt_dice(fixture, i) -> float:
+    """SRT's ``DICE`` for one column, in m: total column soil-ice depth.
+
+    ``module_sf_noahlsm.F:3754`` seeds it with ``-ZSOIL(1)*SICE(1)`` and
+    ``:3765`` accumulates ``(ZSOIL(KS-1)-ZSOIL(KS))*SICE(KS)``.
+    """
+    smois = fixture.inputs["smois"].reshape(4, -1)[:, i]
+    sh2o = fixture.inputs["sh2o"].reshape(4, -1)[:, i]
+    sice = np.asarray(smois - sh2o, np.float64)
+    zsoil = -np.cumsum(np.asarray(FIXTURE_DZS, np.float64))
+    dice = -zsoil[0] * sice[0]
+    for k in range(1, len(sice)):
+        dice += (zsoil[k - 1] - zsoil[k]) * sice[k]
+    return float(dice)
+
+
+def _call_argument_lists(source: str, callee: str) -> list[list[str]]:
+    """Every parenthesised argument list ``callee`` appears with, in order.
+
+    The first is the definition, whose parameter list names the positions;
+    the rest are the call sites.
+    """
+    out: list[list[str]] = []
+    for match in re.finditer(rf"\b{callee}\s*\(", source):
+        depth, j = 1, match.end()
+        while depth:
+            depth += {"(": 1, ")": -1}.get(source[j], 0)
+            j += 1
+        out.append([a.strip() for a in source[match.end():j - 1].split(",")])
+    return out
 
 
 def _measure(fixture, port, mask) -> dict[str, int]:
@@ -317,6 +433,71 @@ def test_the_baseline_table_names_every_measured_field():
     gated.  The table and the oracle's field list must be the same set."""
     assert set(BASELINE_MAX_ULP) == set(OUTPUT_COLUMNS) | set(
         SOIL_OUTPUT_COLUMNS)
+
+
+def test_the_mirror_reproduces_wrfs_frozen_ground_infiltration():
+    """SRT must spend REDPRM's ``FRZX``, and only WRF can say whether it does.
+
+    ``REDPRM`` builds ``FRZFACT = (SMCMAX/SMCREF)*(0.412/0.468)`` and
+    ``FRZX = FRZK*FRZFACT`` (``module_sf_noahlsm.F:2477-2478``), and ``SFLX``
+    passes *FRZX* down (``:769``, ``:784``).  The receiving dummy is merely
+    *named* ``FRZFACT`` in NOPAC (``:1909``), SNOPAC (``:3015``) and SMFLX
+    (``:2670``), and is renamed back to ``FRZX`` in SRT (``:3655``), which
+    spends it as ``ACRT = CVFRZ*FRZX/DICE`` (``:3795``).  Handing that chain
+    the REDPRM local ``FRZFACT`` instead scales ACRT by ``1/FRZK`` = 6.67,
+    ``FCR`` saturates at 1 and the frozen-ground infiltration limiter stops
+    limiting.  No self-consistency gate in this tree can see that, because
+    ``npref`` and ``noah.cu`` made the same substitution -- which is why this
+    is measured against WRF's own word and nothing else.
+    """
+    params = pack_params(load_tables())
+    measured = []
+    for name in NOAH_ORACLE_FILES:
+        fixture = load_noah_oracle(name)
+        for i, case in enumerate(fixture.cases):
+            want = float(fixture.reference["sfcrunoff"].reshape(-1)[i])
+            if case in HELD_OUT_CASES or want <= 0.0:
+                continue
+            if _srt_dice(fixture, i) <= FROZEN_DICE_M:
+                continue
+            out = np_noah_column(_mirror_column(fixture, i), params,
+                                 FIXTURE_DT, FIXTURE_DZS,
+                                 isurban=FIXTURE_ISURBAN,
+                                 isice=FIXTURE_ISICE,
+                                 xice_threshold=FIXTURE_XICE_THRESHOLD,
+                                 **fixture.switches)
+            measured.append((name, case, out["sfcrunoff"], want))
+    assert len(measured) == 3 * len(NOAH_ORACLE_FILES), (
+        "the fixture no longer carries three frozen columns that run off, so"
+        " this test cannot see the frozen-ground limiter at all")
+    for name, case, got, want in measured:
+        assert got == pytest.approx(want, rel=FROZEN_RUNOFF_REL), (
+            f"{name} case {case}: mirror SFCRUNOFF {got!r} against WRF's"
+            f" {want!r}.  SRT's ACRT is not being formed from REDPRM's FRZX.")
+
+
+def test_the_kernel_hands_smflx_the_same_word_the_mirror_does():
+    """``noah.cu`` inlines NOPAC and SNOPAC, so its ``noah_smflx`` call sites
+    ARE ``SFLX``'s ``:769``/``:784``, and the word they pass must be ``frzx``.
+
+    The mirror is graded against WRF above; the kernel cannot be, without a
+    device.  This is the part of that claim a source can carry: the argument
+    standing in ``noah_smflx``'s ``frzfact`` slot -- named after the Fortran
+    dummy, as in WRF -- is the ``frzx`` REDPRM built, at every call site.
+    nvcc says the same thing more bluntly: before this was true it reported
+    ``variable "frzx" was declared but never referenced``.
+    """
+    lists = _call_argument_lists(module_source("noah"), "noah_smflx")
+    signature, calls = lists[0], lists[1:]
+    slot = [p.split()[-1].lstrip("*&") for p in signature].index("frzfact")
+    assert len(calls) == 3, (
+        f"noah.cu calls noah_smflx {len(calls)} times, not 3 (WRF: NOPAC"
+        " :2048 and :2111, SNOPAC :3367); read the new one before repinning")
+    for args in calls:
+        assert len(args) == len(signature)
+        assert args[slot] == "frzx", (
+            f"noah_smflx is called with {args[slot]!r} where WRF's SFLX"
+            " passes FRZX (module_sf_noahlsm.F:769, :784)")
 
 
 # --------------------------------------------------------------------------

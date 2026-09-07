@@ -53,6 +53,9 @@ def _a_card_whose_free_vram_this_file_decides(monkeypatch):
     """
 
     from gpuwm.core import preflight
+    from types import SimpleNamespace
+    from gpuwm import doctor
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: SimpleNamespace(status="verified"))
 
     monkeypatch.setattr(
         preflight, "device_memory_probe_subprocess",
@@ -135,7 +138,7 @@ def _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog, *,
 
     def fake_run(command, **kwargs):
         if "--author-front-door-manifest" in command:
-            data = root / "data"
+            data = Path(command[command.index("--out") + 1])
             data.mkdir(parents=True, exist_ok=True)
             (data / "gfs-input-manifest.json").write_text(
                 "{}", encoding="utf-8")
@@ -143,7 +146,7 @@ def _run_a_chain(tmp_path, monkeypatch, gfs_config, staged_geog, *,
             # The fetch manifest is where bytes and seconds live; the
             # chain reads bandwidth back out of it rather than timing
             # the download itself.
-            data = root / "data"
+            data = Path(command[command.index("--out") + 1])
             data.mkdir(parents=True, exist_ok=True)
             (data / "fetch-manifest.json").write_text(json.dumps({
                 "schema": "gpuwm-fetch-manifest-v1",

@@ -175,7 +175,7 @@ def synthetic_case(tmp_path, monkeypatch):
 
     def install(times, *, levels=(100.0, 1000.0), bad=None,
                 sst_bitmap_holes=None, landsea=None, seaice=None, snow=None,
-                soilgeo=None):
+                soilgeo=None, rh_warnings=None, sst_bitmap_provenance=True):
         times = tuple(times)
         level_array = np.asarray(levels, dtype=np.float64)
         shape = ((2, 2) if landsea is None else np.asarray(landsea).shape)
@@ -199,7 +199,10 @@ def synthetic_case(tmp_path, monkeypatch):
                 mask = np.zeros(fields["SST"].shape, dtype=bool)
                 mask[hole] = True
                 fields["SST"][mask] = np.nan
-                bitmap_missing[(value, "SST")] = mask
+                if sst_bitmap_provenance:
+                    bitmap_missing[(value, "SST")] = mask
+            if rh_warnings and value in rh_warnings:
+                fields["RH"][0, 0, 0] = rh_warnings[value]
             snapshots.append(Era5Snapshot(
                 valid_time=value,
                 levels_hpa=level_array,
@@ -286,6 +289,8 @@ def test_time_varying_native_sst_bitmap_hole_is_rejected(synthetic_case):
     ]
     assert failures
     assert {issue.index for issue in failures} == {(0, 0), (0, 1)}
+    assert all("bitmap changes between valid times" in issue.message
+               for issue in failures)
 
 
 def test_stable_native_sst_bitmap_hole_far_from_coast_is_rejected(
@@ -307,6 +312,42 @@ def test_stable_native_sst_bitmap_hole_far_from_coast_is_rejected(
     ]
     assert failures
     assert {issue.index for issue in failures} == {(15, 15)}
+    assert all("outside land/coastal support" in issue.message
+               for issue in failures)
+
+
+@pytest.mark.parametrize("support", ["land", "coastal", "unproven"])
+def test_repeated_era5_sst_holes_require_source_mask_support(
+        synthetic_case, support):
+    """Twelve repeated SST holes and two RH warnings match the reported pattern.
+
+    The user's source file is not this synthetic fixture: these controls
+    distinguish the accepted native land/coast case from an unproven NaN.
+    """
+    case = synthetic_case
+    start = datetime(2016, 6, 22, 3)
+    times = tuple(start + timedelta(hours=6 * index) for index in range(12))
+    landsea = np.zeros((20, 20), dtype=np.float64)
+    hole = (8, 8)
+    landsea[8, 8 if support != "coastal" else 7] = 1.0
+    case.install(times, sst_bitmap_holes=(hole,) * len(times), landsea=landsea,
+                 rh_warnings={times[4]: 151.319, times[9]: 150.401},
+                 sst_bitmap_provenance=support != "unproven")
+    exp = replace(_retime(case.exp, 66 * 3600), start_time=start)
+    data = replace(case.data, forcing_interval_s=6 * 3600.0)
+    report = preflight_report(exp, data)
+    assert report.catalog.valid_times == times
+    assert report.run_ceiling_seconds == 237600
+    warnings = [issue for issue in report.warnings
+                if issue.code == "meteorological-bounds" and issue.variable == "RH"]
+    assert len(warnings) == 2
+    if support == "unproven":
+        assert len(report.errors) == 12
+        assert all(issue.variable == "SST" and issue.index == hole
+                   and "no native GRIB missing-value bitmap" in issue.message
+                   for issue in report.errors)
+    else:
+        assert report.ok, report.format()
 
 
 def test_truncated_grib_fails_before_decoder_and_names_file(synthetic_case,

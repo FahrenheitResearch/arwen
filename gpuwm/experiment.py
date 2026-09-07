@@ -221,6 +221,11 @@ _DOMAIN_RUN_OVERRIDES = (
     # that does not select cu_physics = 3.
     "cu_physics", "cudt_minutes", "clos_choice", "ishallow",
     "radt", "radt_minutes", "bldt",
+    # Every domain owns its radiation driver. Spectrum composition, CAM
+    # parent transport and shared workspace sizing resolve these choices
+    # per domain; requiring them to match has no remaining runtime basis.
+    "ra_physics", "ra_lw_physics", "ra_sw_physics", "ra_rrtmg_variant",
+    "wrf_rrtmg_compatibility", "o3input", "use_mp_re", "swrad_scat",
     "diff_6th_factor", "epssm", "spec_exp", "mp_physics", "moist",
     "moist_cq", "nest_microphysics_transition",
     "km_opt", "bl_pbl_physics", "sf_sfclay_physics", "c_s", "c_k",
@@ -229,6 +234,30 @@ _DOMAIN_RUN_OVERRIDES = (
     "moist_mix6_off",
     "diff_6th_opt", "mix_isotropic", "mix_upper_bound", "isfflx",
     "tke_heat_flux", "tke_drag_coefficient", "tke_upper_bound",
+    # The rest of the numerics WRF declares `max_domains`, added because
+    # the split was arbitrary rather than principled: `diff_6th_opt` and
+    # `diff_6th_factor` were per domain while `diff_6th_slopeopt` and
+    # `diff_6th_thresh` -- the same knob -- were not, and `epssm` was
+    # while `emdiv`/`smdiv` were not.  A tree cannot tune damping or
+    # diffusion on the nest that needs it without moving the parent too,
+    # and on a 10/2/0.667 km tree those want different values: the
+    # relaxation sponge alone is 40 km on the root and 2.7 km on the
+    # inner nest at the same cell count.
+    #
+    # Additive and backward compatible: a domain that names none of these
+    # still takes the `[shared]` value, so no existing experiment moves.
+    #
+    # DELIBERATELY ABSENT.  Geometry (`dx`, `dy`, `ztop`, `grid_id`,
+    # `nested`, `specified`) is authored by the domain tree, not chosen.
+    # The scheme SELECTORS WRF also scopes `max_domains` --
+    # `sf_surface_physics` and the `bl_mynn_*` block remain outside this
+    # table. Radiation selectors are resolved independently above.
+    "diff_6th_slopeopt", "diff_6th_thresh",
+    "dampcoef", "zdamp",
+    "emdiv", "smdiv",
+    "khdif", "kvdif",
+    "h_sca_adv_order", "moist_adv_opt",
+    "tke_budget",
     # Output-only, and per domain because its cost scales with the grid:
     # four extra (nz+1, ny, nx) planes per frame, so the finest domains
     # of a tree can be left off while the domains whose subgrid fluxes
@@ -249,6 +278,21 @@ _DOMAIN_RUN_OVERRIDES = (
     # column; PROVENANCE.md D10).
     "inflow_perturbation", "inflow_perturbation_seed",
     "inflow_perturbation_amplitude_scale", "inflow_perturbation_faces",
+    # The adaptive-timestep keys WRF declares `max_domains`
+    # (Registry.EM_COMMON:2269-2277).  Per domain because the constraint
+    # is: a 10 km parent and a 2 km nest reach target_cfl at different
+    # timesteps, and upstream's own guidance runs max_step_increase_pct
+    # at 5 on a parent and 51 on a nest.
+    #
+    # `use_adaptive_time_step`, `step_to_output_time` and
+    # `adaptation_domain` are DELIBERATELY ABSENT: WRF declares those
+    # scope `1`, one scalar for the whole run, so leaving them out of
+    # this tuple is what makes "[shared] only" enforced by the loader
+    # rather than merely documented.
+    "target_cfl", "target_hcfl", "max_step_increase_pct",
+    "starting_time_step", "starting_time_step_den",
+    "max_time_step", "max_time_step_den",
+    "min_time_step", "min_time_step_den",
 )
 
 #: Per-domain vertical keys are REJECTED outright (F1 amendment: the
@@ -1130,6 +1174,45 @@ class ExperimentConfig:
                 "acknowledgements must be a tuple of non-empty ids, got "
                 f"{self.acknowledgements!r}.")
 
+        from dataclasses import replace
+        from gpuwm.config import radiation_scheme_ids
+        from gpuwm.core.ozone_contract import cam_ozone_domain_ids
+        ozone_domains = cam_ozone_domain_ids(self)
+        if ozone_domains or any(radiation_scheme_ids(dc.run)[0] == 1 for dc in self.domains):
+            context = streaming_module.RadiationMemoryContext(
+                self.column_chunk, self.vertical.p_top,
+                self.root.grid_id in ozone_domains, ozone_domains)
+            object.__setattr__(self, "tiles", replace(self.tiles, radiation_context=context))
+            object.__setattr__(self, "domains", tuple(
+                replace(dc, tiles=replace(dc.tiles, radiation_context=context))
+                if dc.tiles is not None else dc for dc in self.domains))
+
+        from gpuwm.core.uh_diag import declared_follower_slots
+        follower_slots = declared_follower_slots(self.domains)
+        context = (streaming_module.FollowerWindowMemoryContext(
+            tuple(sorted(follower_slots.items())),
+            follower_slots.get(int(self.root.grid_id), ())) if follower_slots else None)
+        if context is not None or self.tiles.follower_context is not None:
+            object.__setattr__(self, "tiles", replace(self.tiles, follower_context=context))
+        object.__setattr__(self, "domains", tuple(
+            replace(dc, tiles=replace(dc.tiles, follower_context=context))
+            if dc.tiles is not None and (context is not None or dc.tiles.follower_context is not None)
+            else dc for dc in self.domains))
+
+        if (self.tiles.mode == "auto"
+                or any(dc.tiles is not None and dc.tiles.mode == "auto"
+                       for dc in self.domains)):
+            # Retain the actual scientific/forcing configuration, without a
+            # reference back through its tiles options. Pricing stays lazy.
+            snapshot = replace(self, tiles=streaming_module.OFF,
+                               domains=tuple(replace(dc, tiles=None)
+                                             for dc in self.domains))
+            context = streaming_module.ResidentAdmissionContext(snapshot)
+            object.__setattr__(self, "tiles", replace(self.tiles, resident_context=context))
+            object.__setattr__(self, "domains", tuple(
+                replace(dc, tiles=replace(dc.tiles, resident_context=context))
+                if dc.tiles is not None else dc for dc in self.domains))
+
     @property
     def root(self) -> DomainConfig:
         return self.domains[0]
@@ -1283,6 +1366,19 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
     raw = tomllib.load(io.BytesIO(authority.payload))
     source = str(authority.source)
     base_dir = Path(authority.source).parent
+    return build_experiment_from_config_tables(raw, source=source, base_dir=base_dir)
+
+
+def build_experiment_from_config_tables(raw: dict, *, source: str,
+                                       base_dir: Path) -> ExperimentConfig:
+    """Validate companion owners and build the experiment from parsed authority.
+
+    Consume a private table copy, leaving the caller's publication authority
+    intact. This is the same schema boundary used for file-backed loading.
+    """
+    import copy
+
+    raw = copy.deepcopy(raw)
     fetch_table = raw.pop("fetch", None)
     if fetch_table is not None:
         from gpuwm.fetch import validate_fetch_hints
@@ -2051,6 +2147,18 @@ def _reject_misplaced_run_keys(dom: dict, grid_id, source: str) -> None:
             f"keys are {sorted(_DOMAIN_RUN_OVERRIDES)}.")
 
 
+#: Named by every inline vertical refusal.  The refusals below guard the
+#: INLINE nest corridor, which still shares one ladder across the tree; a
+#: per-domain ladder IS shipped, on the offline route, and a refusal that
+#: did not say so would describe the product as less capable than it is.
+_OFFLINE_LADDER_DOOR = (
+    "A per-domain vertical ladder IS available on the OFFLINE downscale "
+    "route: `gpuwm downscale --child-levels N,STRETCH` prepares the child "
+    "once on the host through a conservative vertical remap "
+    "(gpuwm/vertical_remap.py, mass- and water-conserving) and runs it as a "
+    "standalone specified=True domain.")
+
+
 def _reject_domain_vertical_keys(dom: dict, grid_id, source: str) -> None:
     """ANY per-domain vertical key is rejected (F1 amendment, §A).
 
@@ -2066,9 +2174,13 @@ def _reject_domain_vertical_keys(dom: dict, grid_id, source: str) -> None:
             f"vertical key(s) {present} on [[domain]] grid_id={grid_id} "
             f"of {source} are rejected: the vertical grid is "
             "single-sourced from [shared] (ExperimentConfig.vertical) -- "
-            "vertical nesting is rejected by construction (WRF only "
-            "calls init_domain_vert_nesting when a nest refines the "
-            "vertical grid, share/mediation_integrate.F:666).")
+            "vertical nesting is rejected by construction for an INLINE "
+            "nest tree (WRF only calls init_domain_vert_nesting when a "
+            "nest refines the vertical grid, "
+            "share/mediation_integrate.F:666), because the inline "
+            "corridor interpolates boundaries every parent step on the "
+            "GPU and has no vertical operator there.  "
+            + _OFFLINE_LADDER_DOOR)
 
 
 def _bad_mix_isotropic_sentinel(value, where: str, source: str) -> str:
@@ -3205,6 +3317,8 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         run = validate_run_config(RunConfig(**kw))
 
         # --- cadence divisibility (integer domain steps) ----------------
+        # TOML decimal minutes use the same decimal clock as run_seconds;
+        # a binary float Fraction would make 2.4 minutes fail on 72 s steps.
         _check_cadence("history_interval_s", Fraction(history_interval_s),
                        dt_ex, grid_id, source)
         _check_whole_second_cadence(
@@ -3212,14 +3326,14 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             source)
         if radiation_enabled(run):
             radt_min = run.radt if run.radt > 0.0 else run.radt_minutes
-            _check_cadence("radt", Fraction(radt_min) * 60, dt_ex,
+            _check_cadence("radt", Fraction(str(radt_min)) * 60, dt_ex,
                            grid_id, source)
         if run.cu_physics == 1:
-            _check_cadence("cudt_minutes", Fraction(run.cudt_minutes) * 60,
+            _check_cadence("cudt_minutes", Fraction(str(run.cudt_minutes)) * 60,
                            dt_ex, grid_id, source)
         if (run.bl_pbl_physics != 0 or run.sf_sfclay_physics != 0
                 or run.sf_surface_physics != 0):
-            _check_cadence("bldt", Fraction(run.bldt) * 60, dt_ex,
+            _check_cadence("bldt", Fraction(str(run.bldt)) * 60, dt_ex,
                            grid_id, source)
         if is_root:
             _check_cadence("restart_interval_s",
@@ -3357,6 +3471,8 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                 "or make the parent an ordinary domain.")
 
     relocation = _build_relocation(raw, source, domains, run_seconds)
+    from gpuwm.core.attribute_tracking import validate_attribute_domains
+    validate_attribute_domains(domains, relocation)
     experiment = ExperimentConfig(
         name=name, start_time=start_time, run_seconds=run_seconds,
         vertical=vertical, projection=projection,
@@ -3495,6 +3611,9 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             acknowledgements=experiment.acknowledgements)
         if refusal is not None:
             raise ValueError(f"experiment config {source}: {refusal}")
+    # Outside the projection gate above: inflow seeding is a nest
+    # mechanism, and an idealized nested tree can declare it too.
+    _refuse_inflow_seeding_under_a_pbl_off_parent(experiment, source)
     _advise_anisotropic_w_mixing(experiment, source)
     _assert_derived_copies(experiment, source)
     return experiment
@@ -3721,6 +3840,75 @@ def auto_selected_isotropic_mixing(experiment: ExperimentConfig
                 and ratio > EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT):
             out.append((dc.grid_id, float(ratio)))
     return tuple(out), ladder
+
+
+def _refuse_inflow_seeding_under_a_pbl_off_parent(
+        experiment: ExperimentConfig, source: str) -> None:
+    """A seeded child needs a parent that DIAGNOSES a boundary layer.
+
+    ``inflow_perturbation`` sets its vertical extent from the parent's
+    ``pblh`` diagnostic, so a parent running ``bl_pbl_physics = 0`` has
+    nothing to define it with and
+    :func:`gpuwm.core.inflow_perturbation.build_inflow_perturbation`
+    refuses.  That refusal is correct, it is ratified as G4 in
+    ``docs/superpowers/specs/P6-LES-DECISIONS-RATIFIED-2026-08-05.md``,
+    and it STAYS where it is -- a spawned or relocated nest is built
+    outside the config path and must still hit it.
+
+    What it could not do is arrive in time.  It lives at ``NestCoupler``
+    construction, downstream of a fetch, two preparations and a whole
+    prepared tree, so G4's own record is a four-domain LES tree admitted
+    to the card and killed twelve seconds later on a fact that was
+    legible in the TOML.  And ``configs/`` shipped a file in exactly
+    that state, because the case it belongs to was parked before G4's
+    sweep reached it.  Refused HERE, at the one load every front door
+    shares (run/go/check, both prepared runners, the LES route in
+    ``hrrr_hierarchy_direct``, ``core.preflight``, the domain wizard,
+    the namelist importer), so a door nobody remembered to wire still
+    inherits it -- the same seam and the same voice as the nocturnal,
+    radiation-absence and follow-cadence refusals above.
+
+    One copy of the predicate: the sentence comes from
+    :func:`gpuwm.core.inflow_perturbation.parent_pbl_refusal`, which the
+    construction-time guard reads too.
+    """
+
+    from gpuwm.core.inflow_perturbation import parent_pbl_refusal
+
+    by_id = {int(dc.grid_id): dc for dc in experiment.domains}
+    for dc in experiment.domains:
+        if not getattr(dc.run, "inflow_perturbation", False):
+            continue
+        # The root carries parent_id == 0, which is not a grid id, so a
+        # rootless lookup answers None -- the same "no PBLH to read"
+        # case, and parent_pbl_refusal says so in the same words.
+        parent = by_id.get(int(dc.parent_id))
+        refusal = parent_pbl_refusal(
+            None if parent is None else parent.run.bl_pbl_physics)
+        if refusal is None:
+            continue
+        parent_named = (
+            f"its parent ([[domain]] grid_id = {int(parent.grid_id)}) runs "
+            f"bl_pbl_physics = {int(parent.run.bl_pbl_physics)}"
+            if parent is not None else
+            "it declares no parent in this tree (parent_id = "
+            f"{int(dc.parent_id)})")
+        raise ValueError(layered(
+            f"experiment config {source}: [[domain]] grid_id = "
+            f"{int(dc.grid_id)} sets inflow_perturbation = true, but "
+            f"{parent_named}.  {refusal}.  REMEDY: "
+            f"inflow_perturbation = false on grid_id = {int(dc.grid_id)}.",
+            "A PBL-off parent is itself an LES domain, and its RESOLVED "
+            "eddies already ARE this child's inflow turbulence -- "
+            "seeding here would double-count them.  The seeding belongs "
+            "on the FIRST domain whose parent parameterizes turbulence "
+            "(bl_pbl_physics != 0), which is where G4 rules it ON "
+            "(docs/superpowers/specs/"
+            "P6-LES-DECISIONS-RATIFIED-2026-08-05.md).  Refused at the "
+            "config load rather than at the first nest bind because the "
+            "same pairing used to be admitted, prepared and placed on "
+            "the card, and then killed the run twelve seconds in at "
+            "NestCoupler construction -- which is G4's own record."))
 
 
 def _advise_anisotropic_w_mixing(experiment: ExperimentConfig,
@@ -3990,3 +4178,36 @@ def refuse_unrouted_spawn(exp: ExperimentConfig, route: str) -> None:
         "leg-boundary spawn runner activates through "
         "gpuwm.experiment.active_experiment and "
         "gpuwm.ingest.nest_spawn_init)."))
+
+
+def _public_config_value(value):
+    """Like asdict, without traversing derived execution contexts."""
+    from copy import deepcopy
+    from dataclasses import fields, is_dataclass
+    from gpuwm.core.streaming import StreamingOptions
+    from gpuwm.core.storm_tracking import FollowConfig, ATTRIBUTE_KEYS
+    if isinstance(value, StreamingOptions):
+        return value.to_mapping()
+    if is_dataclass(value):
+        return {item.name: _public_config_value(getattr(value, item.name))
+                for item in fields(value)
+                if not (isinstance(value, FollowConfig)
+                        and value.field != "attribute" and item.name in ATTRIBUTE_KEYS)}
+    if isinstance(value, tuple) and hasattr(value, "_fields"):
+        return type(value)(*(_public_config_value(item) for item in value))
+    if isinstance(value, (list, tuple)):
+        return type(value)(_public_config_value(item) for item in value)
+    if isinstance(value, dict):
+        return type(value)((_public_config_value(key), _public_config_value(item))
+                           for key, item in value.items())
+    return deepcopy(value)
+
+
+def domain_config_document(domain: DomainConfig) -> dict[str, object]:
+    """Resolved domain fields with public execution controls only."""
+    return _public_config_value(domain)
+
+
+def experiment_config_document(exp: ExperimentConfig) -> dict[str, object]:
+    """Resolved experiment fields, preserving the domain document contract."""
+    return _public_config_value(exp)

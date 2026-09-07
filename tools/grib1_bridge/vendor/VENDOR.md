@@ -93,9 +93,17 @@ auditable local deltas required by the native GFS bridge:
   expanded a zero-group complex field to the Section-5 count as the constant
   field GRIB2 spells that way, and made the row-window filler refuse when
   the packed data ends early instead of leaving the window tail at its NaN
-  fill.  Patched-file SHA-256 values are respectively
+  fill.  Local patch `4450837cff8d1fd1382082568eed6126bd85cdd6`, committed
+  2026-09-04, also applies Section-5/7 preconditions to the row-window entry
+  point, checks simple and complex-group bit reads, and requires complex-group
+  lengths to match the declared point count.  Truncated payloads now refuse
+  instead of synthesizing reference-value fill.  Three regression tests cover
+  a short simple payload, a bitmap that outlasts its payload, and a truncated
+  complex-group payload.  This is a local delta to the upstream tree pinned
+  above; the patched-file pins were rechecked on 2026-09-06.
+  Patched-file SHA-256 values are respectively
   `22254047da83fafcc06816170b7687127cb9f64bc7e82e4de2d239861c149547`
-  and `510af2fe0b263e7e0b47f1172507f72cc9426af17990393ae2f6f410b1950933`.
+  and `e285cb7971959a844c74216e9bd65ca443586c771d33ea6f99274141f644fad5`.
 - `src/grib2/grid.rs` fails closed on a grid-definition template it has no
   point placement for: `grid_latlon` returns `crate::Result` and refuses
   naming the template number (and that supporting it needs the template's

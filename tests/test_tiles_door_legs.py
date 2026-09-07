@@ -128,7 +128,7 @@ def test_leg_a_is_a_streamed_parent_over_a_resident_child() -> None:
     child = config["domain"][1]
     assert child["grid_id"] == 2 and child["parent_id"] == 1
     assert child["tiles"] == {"mode": "off"}, \
-        "d02 must opt OUT, or the edge has both ends streamed and is refused"
+        "this control intentionally keeps d02 resident while d01 streams"
 
 
 def test_leg_b_is_a_resident_parent_over_a_streamed_child() -> None:

@@ -39,8 +39,13 @@ A paired secondary-ice slab covers contact and homogeneous freezing,
 type-II Hallett--Mossop splintering, riming-driven ice/snow-to-graupel
 conversion, and the initialized-default graupel-to-hail conversion.
 
-The official file must have SHA-256
+The official file must match one of the two exact byte forms of that Git blob:
+LF SHA-256 `1eb1b138b75ff3b0cfe33c23779f4ec9b72e57a5455a53ef11c9e55ae0f42722`,
+or Windows CRLF SHA-256
 `5aaae368289694c929d38365d77d445e4f22291a30a48555df7a21d470b72ae3`.
+Converting only each LF to CRLF transforms the first hash into the second.
+The original input bytes and their actual hash remain in the build receipt;
+only the disposable compilation copy is normalized to LF.
 The build copies it and applies `visibility.patch`, which adds one PUBLIC
 declaration and changes no executable statement.  This is necessary because
 WRF calls these routines only from inside its public NSSL driver.  The

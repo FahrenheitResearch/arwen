@@ -701,6 +701,9 @@ def test_every_soil_router_caller_in_the_tree_is_accounted_for():
         # SST to the HRRR inventory and it refuses until they assemble.
         "gpuwm/hrrr_hierarchy_direct.py",
         "gpuwm/ingest/hrrr_physics.py",
+        # Native met_em already carries the initialized surface, including
+        # its water temperatures; this call reconstructs the declared soil.
+        "gpuwm/metem_forecast.py",
         # The router's own internal dispatch.
         "gpuwm/ingest/ruc_soil.py",
     }, sorted(callers)

@@ -272,9 +272,19 @@ def _write(path: Path, contents: bytes = b"test") -> Path:
 def _install_prepare_fakes(
         monkeypatch, tmp_path, *, domain_count: int, backend: str,
         cadence: int = 3600, run_seconds: int | None = None,
-        mapping_updates=None, nz: int = 49, eta: bool = True):
+        mapping_updates=None, nz: int = 49, eta: bool = True,
+        water_policy="era5_class_coherent"):
     run_seconds = cadence if run_seconds is None else run_seconds
     exp = _experiment(domain_count, nz=nz, run_seconds=run_seconds, eta=eta)
+    # Preparation validates actual configured physics before decoding.
+    from dataclasses import asdict
+    from gpuwm.config import RunConfig
+
+    defaults = asdict(RunConfig(
+        nx=2, ny=2, nz=nz, dx=3000, dy=3000, ztop=20000,
+        dt=60, run_seconds=run_seconds))
+    for domain in exp.domains:
+        domain.run = SimpleNamespace(**(defaults | vars(domain.run)))
     mapping = _target_mapping(**(mapping_updates or {}))
     grids = tuple(_Grid(index + 1) for index in range(domain_count))
     snapshots = tuple(
@@ -347,6 +357,9 @@ def _install_prepare_fakes(
         )
     }
     files["mapping.json"].write_text(json.dumps(mapping), encoding="utf-8")
+    files["composition.json"].write_text(json.dumps({
+        "supplements": {"terrain_height": {"provenance_role": "terrain"}},
+    }), encoding="utf-8")
     bundle.mapping_sha256 = hashlib.sha256(
         files["mapping.json"].read_bytes()
     ).hexdigest()
@@ -385,6 +398,7 @@ def _install_prepare_fakes(
         "load_mapping",
         lambda _path, **_kwargs: mapping,
     )
+    files["experiment.toml"].write_text("[experiment]\n", encoding="utf-8")
     monkeypatch.setattr(mapped_direct, "load_experiment", lambda _path: exp)
     monkeypatch.setattr(
         mapped_direct, "validate_native_lambert_contracts",
@@ -461,6 +475,7 @@ def _install_prepare_fakes(
 
     def initialize(met, *_args, **_kwargs):
         calls["initialize"] += 1
+        calls.setdefault("initialize_operands", []).append(_kwargs)
         return results[mets.index(met)]
 
     monkeypatch.setattr(
@@ -522,8 +537,7 @@ def _install_prepare_fakes(
         # has to be that assembly and not the per-cell fuse behind it.
         assert kwargs["water_temperature"] is mets[0].water_temperature
         assert kwargs["route"] == mapped_direct._WATER_ROUTE
-        assert kwargs["water_temperature_policy"] == (
-            "era5_class_coherent")
+        assert kwargs["water_temperature_policy"] == water_policy
         return soil
 
     monkeypatch.setattr(
@@ -562,7 +576,13 @@ def _install_prepare_fakes(
 
     def single_export(*args, **kwargs):
         calls["single_export"].append((args, kwargs))
-        return {"schema": "gpuwm-native-direct-wrf-export-v2"}
+        from gpuwm.physics_compat import single_domain_physics_selection
+
+        return {"schema": "gpuwm-native-direct-wrf-export-v3",
+                "physics": single_domain_physics_selection(
+                    exp.root.run,
+                    expert_acknowledgements=kwargs["expert_acknowledgements"],
+                    acknowledgement_provenance=kwargs["acknowledgement_provenance"])}
 
     monkeypatch.setattr(mapped_direct, "export_prepared_wrf", single_export)
 
@@ -620,7 +640,7 @@ def _install_prepare_fakes(
     return args, calls, expected
 
 
-def test_single_domain_preserves_legacy_direct_export(monkeypatch, tmp_path):
+def test_single_domain_preserves_configured_physics_in_direct_export(monkeypatch, tmp_path):
     args, calls, expected = _install_prepare_fakes(
         monkeypatch, tmp_path, domain_count=1, backend="cpu",
     )
@@ -706,6 +726,9 @@ def test_long_provenance_role_publishes_short_hash_named_evidence(
     args["provenance_files"] = {
         role: expected.bundle.terrain_provenance_path,
     }
+    _bind_test_composition(args, expected, {
+        "supplements": {"terrain_height": {"provenance_role": role}},
+    })
 
     mapped_direct.prepare_mapped_wrf(**args)
 
@@ -714,6 +737,145 @@ def test_long_provenance_role_publishes_short_hash_named_evidence(
     )
     assert evidence.read_bytes() == b"test"
     assert role not in evidence.name
+
+
+def _bind_test_composition(args, expected, composition):
+    args["composition"].write_text(json.dumps(composition), encoding="utf-8")
+    expected.bundle.composition_sha256 = hashlib.sha256(
+        args["composition"].read_bytes()).hexdigest()
+
+
+def _install_donor_publication_fakes(
+    monkeypatch, tmp_path, *, domain_count=1, terrain_donor=False,
+):
+    """Fake heavy weather work; exercise actual sealed evidence publication."""
+    args, calls, expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=domain_count, backend="cpu",
+    )
+    composition = {
+        "supplements": {"terrain_height": {"provenance_role": "terrain"}},
+        "field_sources": {},
+    }
+    records = []
+    for name, fields in (
+        ("surface", ["land_fraction"]),
+        ("soil", ["soil_temperature", "volumetric_soil_moisture"]),
+    ):
+        role = f"{name}_authority"
+        # Same basename, distinct paths and bytes: neither basename nor the
+        # terrain file can stand in for a donor's declared identity.
+        path = tmp_path / name / "provenance.md"
+        path.parent.mkdir()
+        path.write_text(f"sealed {name} donor evidence\n", encoding="utf-8")
+        args["provenance_files"][role] = path
+        composition["field_sources"][name] = {
+            "provenance_role": role, "fields": fields,
+        }
+        records.append({
+            "binding": name,
+            "provenance": {
+                "path": str(path.resolve()),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            },
+        })
+    if terrain_donor:
+        composition["supplements"] = {}
+        composition["field_sources"]["surface"]["fields"].append("terrain_height")
+        del args["provenance_files"]["terrain"]
+        terrain = records[0]["provenance"]
+        expected.bundle.terrain_provenance_path = Path(terrain["path"])
+        expected.bundle.terrain_provenance_sha256 = terrain["sha256"]
+    expected.bundle.contributing_sources = tuple(records)
+    _bind_test_composition(args, expected, composition)
+    return args, calls, expected
+
+
+@pytest.mark.parametrize("domain_count", [1, 2])
+@pytest.mark.parametrize("terrain_donor", [False, True])
+def test_distinct_donor_provenance_publishes_for_single_and_nested_domains(
+    monkeypatch, tmp_path, domain_count, terrain_donor,
+):
+    args, calls, _expected = _install_donor_publication_fakes(
+        monkeypatch, tmp_path, domain_count=domain_count,
+        terrain_donor=terrain_donor,
+    )
+    expected_bytes = {
+        role: path.read_bytes() for role, path in args["provenance_files"].items()
+    }
+
+    mapped_direct.prepare_mapped_wrf(**args)
+
+    evidence = args["output_root"] / "source-evidence"
+    actual = {
+        role: (evidence / mapped_direct._provenance_evidence_name(
+            role, ".md")).read_bytes()
+        for role in expected_bytes
+    }
+    assert actual == expected_bytes
+    assert len(list(evidence.glob("provenance-*"))) == len(expected_bytes)
+    assert bool(calls["hierarchy"]) == (domain_count == 2)
+
+
+@pytest.mark.parametrize("when", ["after_decode", "during_copy"])
+def test_donor_provenance_tamper_never_publishes_output(
+    monkeypatch, tmp_path, when,
+):
+    args, _calls, _expected = _install_donor_publication_fakes(monkeypatch, tmp_path)
+    donor = args["provenance_files"]["soil_authority"]
+    if when == "after_decode":
+        donor.write_bytes(b"changed donor evidence")
+    else:
+        original_copy = mapped_direct.shutil.copy2
+
+        def corrupt_copy(source, destination, *copy_args, **copy_kwargs):
+            result = original_copy(source, destination, *copy_args, **copy_kwargs)
+            if Path(source).resolve() == donor.resolve():
+                Path(destination).write_bytes(b"changed during evidence copy")
+            return result
+
+        monkeypatch.setattr(mapped_direct.shutil, "copy2", corrupt_copy)
+
+    with pytest.raises(ValueError, match="mapped evidence changed before publication"):
+        mapped_direct.prepare_mapped_wrf(**args)
+    assert not args["output_root"].exists()
+
+
+def test_donor_provenance_path_swap_is_not_hidden_by_equal_contents(monkeypatch, tmp_path):
+    args, _calls, _expected = _install_donor_publication_fakes(monkeypatch, tmp_path)
+    original = args["provenance_files"]["soil_authority"]
+    replacement = tmp_path / "replacement.md"
+    replacement.write_bytes(original.read_bytes())
+    args["provenance_files"]["soil_authority"] = replacement
+
+    with pytest.raises(ValueError, match="decoded provenance path differs.*soil_authority"):
+        mapped_direct.prepare_mapped_wrf(**args)
+    assert not args["output_root"].exists()
+
+
+@pytest.mark.parametrize("change", ["missing", "duplicate", "undeclared"])
+def test_inconsistent_decoded_donor_bindings_do_not_publish(monkeypatch, tmp_path, change):
+    args, _calls, expected = _install_donor_publication_fakes(monkeypatch, tmp_path)
+    records = list(expected.bundle.contributing_sources)
+    if change == "missing":
+        records.pop()
+    elif change == "duplicate":
+        records[1] = records[0]
+    else:
+        records[1] = dict(records[1], binding="not_declared")
+    expected.bundle.contributing_sources = tuple(records)
+
+    with pytest.raises(ValueError, match="decoded contributing source inventory"):
+        mapped_direct.prepare_mapped_wrf(**args)
+    assert not args["output_root"].exists()
+
+
+def test_declared_provenance_roles_cannot_be_relabelled_after_decode(monkeypatch, tmp_path):
+    args, _calls, _expected = _install_donor_publication_fakes(monkeypatch, tmp_path)
+    args["provenance_files"]["unbound_role"] = args["provenance_files"].pop("soil_authority")
+
+    with pytest.raises(ValueError, match="decoded provenance role inventory"):
+        mapped_direct.prepare_mapped_wrf(**args)
+    assert not args["output_root"].exists()
 
 
 def test_source_manifest_override_publishes_the_routes_own_authority(
@@ -1274,6 +1436,7 @@ def test_mapped_cli_forwards_exact_composed_hierarchy_arguments(
         "preprocess_workers": 7,
         "cpu_preprocess_bridge": Path("/bin/libgpuwm_preprocess_cpu.so"),
         "hierarchy_workers": 6,
+        "stock_wrf_export": "optional",
         # This argv names no --statics-corridor, and the absence is
         # forwarded as itself: None is "seal nothing", which is what
         # every preparation that does not move a nest wants.
@@ -1707,3 +1870,141 @@ def test_an_unnamed_prepared_source_still_says_the_preparation_is_done(
     captured = capsys.readouterr()
     assert "preparation complete" in captured.err
     assert "--prepared-forecast-source" in captured.err
+
+
+def test_mapped_preparation_exports_mynn_from_its_own_config(monkeypatch, tmp_path):
+    args, calls, expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu")
+    expected.exp.root.run.bl_pbl_physics = 5
+    expected.exp.root.run.sf_sfclay_physics = 5
+    proof = mapped_direct.prepare_mapped_wrf(**args)
+    assert calls["single_export"][0][1]["experiment_config_suite"] is True
+    selectors = proof["export"]["physics"]["domains"]["1"]["selectors"]
+    assert selectors["bl_pbl_physics"] == 5
+    assert selectors["sf_sfclay_physics"] == 5
+
+
+def test_mapped_preparation_refuses_export_physics_drift(monkeypatch, tmp_path):
+    args, _calls, _expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu")
+    monkeypatch.setattr(mapped_direct, "export_prepared_wrf",
+                        lambda *a, **k: {"schema": "gpuwm-native-direct-wrf-export-v3",
+                                          "physics": {}})
+    with pytest.raises(RuntimeError, match="export physics differs"):
+        mapped_direct.prepare_mapped_wrf(**args)
+    assert not args["output_root"].exists()
+
+
+@pytest.mark.parametrize("mode", ["optional", "required", "off"])
+@pytest.mark.parametrize("surface", [1, 5])
+def test_mapped_export_intent_preserves_requested_native_physics(
+        monkeypatch, tmp_path, mode, surface):
+    from gpuwm.config import RunConfig
+
+    args, calls, expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu")
+    changes = {"hybrid_opt": 2, "hypsometric_opt": 2, "specified": True,
+               "nested": False, "mp_physics": 6, "sf_sfclay_physics": surface,
+               "bl_pbl_physics": 1 if surface == 1 else 5,
+               "sf_surface_physics": 2 if surface == 1 else 3,
+               "num_soil_layers": 4 if surface == 1 else 6}
+    expected.exp.root.run = RunConfig(**(vars(expected.exp.root.run) | changes))
+    proof = mapped_direct.prepare_mapped_wrf(**args, stock_wrf_export=mode)
+    assert proof["stock_wrf_export"] == mode
+    assert calls["initialize"] == 2
+    assert len(calls["single_export"]) == (0 if mode == "off" else 1)
+    assert args["output_root"].is_dir()
+    if mode == "off":
+        assert proof["export"]["status"] == "NOT_REQUESTED"
+    else:
+        selectors = proof["export"]["physics"]["domains"]["1"]["selectors"]
+        for name in ("sf_sfclay_physics", "bl_pbl_physics", "sf_surface_physics"):
+            assert selectors[name] == changes[name]
+
+
+@pytest.mark.parametrize("surface", [1, 5])
+def test_required_hierarchy_export_refuses_before_decode_or_output(
+        monkeypatch, tmp_path, surface):
+    from gpuwm.config import RunConfig
+    from gpuwm.wrf_direct import StockWrfExportUnsupported
+
+    args, calls, expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=2, backend="cpu")
+    for domain in expected.exp.domains:
+        domain.run = RunConfig(**(vars(domain.run) | {
+            "mp_physics": 6, "hybrid_opt": 2, "hypsometric_opt": 2,
+            "specified": domain.grid_id == 1, "nested": domain.grid_id != 1,
+            "sf_sfclay_physics": surface,
+            "bl_pbl_physics": 1 if surface == 1 else 5,
+            "sf_surface_physics": 2 if surface == 1 else 3,
+            "num_soil_layers": 4 if surface == 1 else 6}))
+    def forbidden(*args, **kwargs):
+        raise AssertionError("required export must refuse before decode")
+    monkeypatch.setattr(mapped_direct, "decode_composed_source", forbidden)
+    with pytest.raises(StockWrfExportUnsupported) as caught:
+        mapped_direct.prepare_mapped_wrf(**args, stock_wrf_export="required")
+    assert caught.value.unsupported["sf_sfclay_physics"] == (surface, 91)
+    assert calls["build_static"] == calls["initialize"] == 0
+    assert not args["output_root"].exists()
+
+
+@pytest.mark.parametrize("mode", ["optional", "off"])
+def test_native_hierarchy_receives_export_intent(monkeypatch, tmp_path, mode):
+    args, calls, _ = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=2, backend="cpu")
+    proof = mapped_direct.prepare_mapped_wrf(**args, stock_wrf_export=mode)
+    assert calls["hierarchy"][0]["stock_wrf_export"] == mode
+    assert proof["stock_wrf_export"] == mode
+
+
+def test_optional_export_refusal_keeps_prepared_artifacts(monkeypatch, tmp_path):
+    from gpuwm.wrf_direct import StockWrfExportUnsupported
+
+    args, calls, _ = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu")
+    def unsupported(*args, **kwargs):
+        raise StockWrfExportUnsupported("frozen soil cannot be represented")
+    monkeypatch.setattr(mapped_direct, "export_prepared_wrf", unsupported)
+    proof = mapped_direct.prepare_mapped_wrf(**args)
+    assert proof["export"]["status"] == "REFUSED"
+    assert proof["export"]["schema"] == "gpuwm-native-direct-wrf-export-v3"
+    assert "frozen soil" in proof["export"]["reason"]
+    assert (args["output_root"] / "prepared-cache").is_dir()
+    assert (args["output_root"] / "proof.json").is_file()
+    assert calls["initialize"] == 2
+
+
+@pytest.mark.parametrize("error", [OSError("write failed"), ValueError("corrupt cache")])
+def test_optional_export_does_not_hide_io_or_corruption(monkeypatch, tmp_path, error):
+    args, _, _ = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu")
+    def failed(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(mapped_direct, "export_prepared_wrf", failed)
+    with pytest.raises(type(error), match=str(error)):
+        mapped_direct.prepare_mapped_wrf(**args)
+    assert not args["output_root"].exists()
+    assert not list(tmp_path.glob("output.tmp-*"))
+
+
+@pytest.mark.parametrize("domains", [1, 2])
+@pytest.mark.parametrize("pressure", [True, False])
+def test_declared_preparation_policy_reaches_root_and_children(monkeypatch, tmp_path, domains, pressure):
+    args, calls, expected = _install_prepare_fakes(monkeypatch, tmp_path,
+        domain_count=domains, backend="cpu", water_policy="wrf_compat")
+    # The normal entry reads actual caller-authored bytes through CaseData.
+    args["experiment_config"].write_text(
+        '[experiment]\n[case_data]\nforcing="not-fetched.grib"\nvtable="Vtable"\n'
+        'wps_namelist="namelist.wps"\ngeog_root="geog"\noutput_title="caller"\n'
+        'water_temperature_policy="wrf_compat"\nsfcp_to_sfcp=' + str(pressure).lower() + '\n',
+        encoding="utf-8")
+    proof = mapped_direct.prepare_mapped_wrf(**args)
+    assert all(row["sfcp_to_sfcp"] is pressure for row in calls["initialize_operands"])
+    assert all(row.policy == "wrf_compat" for row in calls["water_statics"])
+    if domains == 2:
+        routed = calls["hierarchy"][0]
+        assert routed["sfcp_to_sfcp"] is pressure
+        assert routed["water_temperature_policy"] == "wrf_compat"
+        policy = routed["source_identity"]["preparation_case_policy"]
+        assert policy["sfcp_to_sfcp"] is pressure
+        assert policy["water_temperature_policy"] == "wrf_compat"

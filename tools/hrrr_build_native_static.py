@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import hashlib
 import json
 import os
@@ -128,7 +129,11 @@ def validate_static(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--geog-root", type=Path, required=True)
+    parser.add_argument("--geog-root", type=Path)
+    parser.add_argument("--static-cache", type=Path)
+    parser.add_argument("--static-receipt", type=Path)
+    parser.add_argument("--experiment-config", type=Path)
+    parser.add_argument("--case-date", type=date.fromisoformat)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument(
@@ -144,12 +149,35 @@ def main() -> None:
     target = load_hrrr_target_domain(args.domain_spec)
     grid = benchmark_grid(target)
     source_window = required_hrrr_source_window(target)
-    selection = GeogSelection.fallback(args.geog_root)
-    geog_source_coverage: dict[str, object] = {}
+    from gpuwm.static.highres_production import load_static_highres, apply_prepared_highres
+    highres = load_static_highres(args.experiment_config)
+    if highres is not None and highres.enabled and args.case_date is None:
+        raise ValueError("high-resolution static preparation needs --case-date YYYY-MM-DD")
+    if (args.static_cache is None) != (args.static_receipt is None):
+        raise ValueError("static-cache and static-receipt must be supplied together")
+    prior = None
     build_started = time.perf_counter()
-    fields = build_static(
-        grid, args.geog_root, selection=selection,
-        source_coverage_report=geog_source_coverage)
+    if args.static_cache is not None:
+        from gpuwm.hrrr_native_static import verify_hrrr_native_static
+        fields, prior = verify_hrrr_native_static(
+            args.static_cache, args.static_receipt, target)
+        selection = GeogSelection(
+            root=Path(prior["geog_root"]), resolution_tokens=(),
+            **prior["geog_selection"])
+        geog_source_coverage = prior["geog_source_coverage"]
+    else:
+        if args.geog_root is None:
+            raise ValueError("provide geog-root or a verified static-cache/static-receipt pair")
+        selection = GeogSelection.fallback(args.geog_root)
+        geog_source_coverage: dict[str, object] = {}
+        fields = build_static(
+            grid, args.geog_root, selection=selection,
+            source_coverage_report=geog_source_coverage)
+    fields, overlay_binding = apply_prepared_highres(
+        fields, grid, config=highres, domain_id=1, case_date=args.case_date,
+        landuse_attrs=(selection.landuse_global_attrs()
+                       if highres is not None and highres.enabled else None),
+        baseline_receipt=prior)
     build_seconds = time.perf_counter() - build_started
     fields.update({
         "MAPFAC_M": grid.mapfac_m(),
@@ -206,7 +234,7 @@ def main() -> None:
         "target_domain": target.to_payload(),
         "target_domain_sha256": target.identity_sha256(),
         "hrrr_source_coverage": source_window.to_dict(),
-        "geog_root": str(args.geog_root.resolve()),
+        "geog_root": str(selection.root.resolve()),
         "geog_selection": {
             name: str(selection.path(name).resolve()) for name in (
                 "terrain", "landuse", "soil_top", "soil_bottom",
@@ -228,6 +256,8 @@ def main() -> None:
             "cold_build_validate_and_cache": time.perf_counter() - total_started,
         },
     }
+    if highres is not None and highres.enabled:
+        receipt["highres"] = overlay_binding["highres"]
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
     temporary_receipt = args.receipt.with_suffix(args.receipt.suffix + ".tmp")
     temporary_receipt.write_text(

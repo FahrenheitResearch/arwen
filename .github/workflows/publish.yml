@@ -121,6 +121,7 @@ jobs:
             tests/test_doctor.py \
             tests/test_doctor_nexrad.py \
             tests/test_cli.py \
+            tests/test_tui_cli.py \
             tests/test_source_adapters.py \
             tests/test_namelist_compat.py \
             tests/test_native_wrf_distribution.py \
@@ -386,8 +387,8 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "commit=$tag_commit" >> "$GITHUB_OUTPUT"
 
-  # One bundle per target platform.  Each target runner executes all seven
-  # executables and loads the CPU preprocessing library before packing bytes.
+  # One bundle per target platform. All 27 declared artifacts are probed;
+  # Linux is built and qualified inside the pinned glibc 2.28 baseline.
   bridges:
     if: github.event_name != 'pull_request'
     needs: cut
@@ -417,15 +418,18 @@ jobs:
           rustc --version
           cargo --version
       - name: build the GRIB decoders and the CPU preprocessing library
+        if: matrix.platform == 'win-x86_64'
         working-directory: tools/grib1_bridge
         run: cargo build --release --locked
       - name: build the fetch backbone, the batch renderer and the NetCDF decoder
+        if: matrix.platform == 'win-x86_64'
         working-directory: tools/rustwx
         run: cargo build --release --locked
       # The vendored dealiasing crate is its own tree, not a member of
       # either workspace, so it is built on its own line.  It ships
       # because --dealias runs it by default.
       - name: build the region-global dealiasing library
+        if: matrix.platform == 'win-x86_64'
         working-directory: tools/region_global_dealias
         run: cargo build --release --locked
       # The mapped decode engine is its own workspace (the vendored
@@ -435,10 +439,46 @@ jobs:
       # in the bundle a wheel user has no mapped decode at all, which is
       # the DEFAULT decode path.
       - name: build the mapped decode engine
+        if: matrix.platform == 'win-x86_64'
         working-directory: tools/rw_wps
         run: cargo build --release --locked
+      - name: build the Rust terminal workspace
+        if: matrix.platform == 'win-x86_64'
+        working-directory: tools/arwen-tui
+        run: cargo build --release --locked --offline
+      - name: build and qualify Linux artifacts on glibc 2.28
+        if: matrix.platform == 'linux-x86_64'
+        shell: bash
+        env:
+          BUNDLE_SOURCE_REV: ${{ needs.cut.outputs.commit }}
+          MANYLINUX_IMAGE: quay.io/pypa/manylinux_2_28_x86_64@sha256:53390351aeb4688114b02c36a23b3e6ce1166ee9b7afc5df1a4f776354fc764c
+        run: |
+          set -euo pipefail
+          toolchain="$(dirname "$(dirname "$(rustup which --toolchain 1.94.0 rustc)")")"
+          build_root="$RUNNER_TEMP/arwen-manylinux"
+          mkdir "$build_root"
+          docker run --rm --platform linux/amd64 \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/src,readonly" \
+            --mount "type=bind,source=$toolchain,target=/work/rust-toolchain,readonly" \
+            --mount "type=bind,source=$build_root,target=/work/build" \
+            --workdir /src "$MANYLINUX_IMAGE" \
+            /opt/python/cp311-cp311/bin/python -B /src/tools/build_linux_release_bridges.py \
+            --source /src --revision "$BUNDLE_SOURCE_REV" \
+            --rust-toolchain /work/rust-toolchain --cargo-home /work/build/cargo-home \
+            --target-dir /work/build/cargo-target --output /work/build/artifacts \
+            --report /work/build/compatibility-report.json --image "$MANYLINUX_IMAGE"
+      - name: retain Linux compatibility evidence
+        if: always() && matrix.platform == 'linux-x86_64'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: manylinux-compatibility
+          path: |
+            ${{ runner.temp }}/arwen-manylinux/compatibility-report.json
+            ${{ runner.temp }}/arwen-manylinux/compatibility-report.logs/**
+          if-no-files-found: error
       - name: probe every native artifact on its target runner
         shell: bash
+        if: matrix.platform == 'win-x86_64'
         env:
           BUNDLE_PLATFORM: ${{ matrix.platform }}
           BUNDLE_SOURCE_REV: ${{ needs.cut.outputs.commit }}
@@ -457,6 +497,7 @@ jobs:
               Path("tools/rustwx/target/release"),
               Path("tools/region_global_dealias/target/release"),
               Path("tools/rw_wps/target/release"),
+              Path("tools/arwen-tui/target/release"),
           )
           # Each library's ABI entry point comes from the one table that
           # declares it, gpuwm.bridge_assets.LIBRARY_ABI, so this probe
@@ -499,14 +540,21 @@ jobs:
           PY
       - name: pack the bundle
         shell: bash
+        env:
+          BUNDLE_PLATFORM: ${{ matrix.platform }}
         run: |
+          search=(--search tools/grib1_bridge/target/release
+                  --search tools/rustwx/target/release
+                  --search tools/region_global_dealias/target/release
+                  --search tools/rw_wps/target/release
+                  --search tools/arwen-tui/target/release)
+          if [ "$BUNDLE_PLATFORM" = "linux-x86_64" ]; then
+            search=(--search "$RUNNER_TEMP/arwen-manylinux/artifacts")
+          fi
           python tools/build_bridge_bundle.py pack \
             --release '${{ needs.cut.outputs.tag }}' \
             --platform '${{ matrix.platform }}' \
-            --search tools/grib1_bridge/target/release \
-            --search tools/rustwx/target/release \
-            --search tools/region_global_dealias/target/release \
-            --search tools/rw_wps/target/release \
+            "${search[@]}" \
             --out dist-bridges
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

@@ -76,7 +76,7 @@ wrote.
 | `output_domain` | which domain's history the run publishes. |
 | `source_orography` | a NetCDF file supplying source orography; without it the forcing catalog's invariant geopotential is used. |
 | `source_orography_variable` | the variable to read out of `source_orography`. |
-| `co2_vmr` | trace-gas volume mixing ratio handed to the radiation driver. |
+| `co2_vmr` | Positive CO₂ mole fraction consumed by the selected classic RRTM, legacy RRTMG or RRTMGP absorption; e.g. `0.000420` for 420 ppm. Off, analytic and Dudhia-only radiation retain it as inactive input authority. |
 | `water_temperature_overlay` | a water-temperature overlay file ([water-temperature-overlay](../water-temperature-overlay.md)). |
 | `water_temperature_policy` | how that overlay is applied. |
 
@@ -135,7 +135,7 @@ copied.
 | TOML key | WRF equivalent | default | allowed | note |
 |---|---|---|---|---|
 | `e_vert` / `nz` | `e_vert` | required (one of) | nz >= 4 | `nz = e_vert - 1` mass levels |
-| `eta_levels` | `eta_levels` | () | 1.0 -> 0.0 strictly decreasing | required for real runs; **automatic level generation (`auto_levels_opt`, `max_dz`, `dzbot`, `dzstretch_s/u`) is not implemented** -- with explicit `eta_levels` those keys are inert in WRF too and import as dropped |
+| `eta_levels` | `eta_levels` | () | 1.0 -> 0.0 strictly decreasing | explicit coordinates are required by config-driven native preparation; the `run --met-em` door generates omitted levels with WRF `auto_levels_opt` 1/2 and records the resolved controls; explicit `eta_levels` bypass generation |
 | `p_top` | `p_top_requested` | 0.0 | >= 0, Pa | Registry default 5000 Pa applies on import when omitted |
 | `hybrid_opt` | `hybrid_opt` | 0 (legacy) | 0/1 (sigma), 2 (WRF cubic-B) | importer default 2 (Registry) |
 | `etac` | `etac` | 0.2 | [0, 1] | |
@@ -182,7 +182,7 @@ consumed `RunConfig` field -- the knob-parity battery
 consuming kernel/module rather than being decorative -- and every one
 is importable from a WRF namelist.
 
-**Which keys a `[[domain]]` table may override.** Exactly these 33,
+**Which keys a `[[domain]]` table may override.** Exactly these 53,
 and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
 
     cu_physics  cudt_minutes  clos_choice  ishallow
@@ -193,15 +193,45 @@ and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
     mix_isotropic  mix_upper_bound  tke_heat_flux
     tke_drag_coefficient  tke_upper_bound
     moist_mix6_off
+    diff_6th_slopeopt  diff_6th_thresh  dampcoef  zdamp
+    emdiv  smdiv  khdif  kvdif  h_sca_adv_order  moist_adv_opt
+    tke_budget
     sase_flux_diag  hmix_k_diag
     inflow_perturbation  inflow_perturbation_seed
     inflow_perturbation_amplitude_scale  inflow_perturbation_faces
+    target_cfl  target_hcfl  max_step_increase_pct
+    starting_time_step  starting_time_step_den
+    max_time_step  max_time_step_den  min_time_step  min_time_step_den
 
 `clos_choice` and `ishallow` configure the Grell-Freitas cumulus scheme
 (`cu_physics = 3`): which closure members vote in the ensemble, and
 whether the shallow scheme runs. They are per domain because the scheme
 they configure is, and they are validated inert on any domain that does
 not select `cu_physics = 3`.
+
+The eleven numerics from `diff_6th_slopeopt` through `tke_budget` are
+per domain because WRF declares every one of them `max_domains` and the
+split here had drifted from that: `diff_6th_opt` and `diff_6th_factor`
+were per domain while `diff_6th_slopeopt` and `diff_6th_thresh` -- the
+same filter -- were not, and `epssm` was while `emdiv` and `smdiv` were
+not. A tree can now damp or filter the nest that needs it without
+moving its parent, which a refinement tree needs: the relaxation sponge
+is 40 km wide on a 10 km root and 2.7 km on a 667 m nest at the same
+cell count. Geometry (`dx`, `dy`, `ztop`, `grid_id`, `nested`,
+`specified`) stays tree-wide because the domain tree authors it, and so
+do the scheme selectors WRF also scopes `max_domains`
+(`ra_lw_physics`, `ra_sw_physics`, `sf_surface_physics`, the
+`bl_mynn_*` block): a tree whose domains ran different schemes cannot
+be compared across its own boundary, and two-way feedback already
+requires one microphysics tree-wide.
+
+The nine adaptive-time-step keys from `target_cfl` to
+`min_time_step_den` are per domain because each domain runs its own
+controller (see `docs/ADAPTIVE-TIMESTEP.md`). Note that a clamp is an
+absolute number of seconds while a nest's step is a fraction of the
+root's, so a `min_time_step` written once in `[shared]` reaches every
+domain unchanged and can sit ABOVE the step it was meant to protect on
+an inner nest. Set the clamps per domain on a refinement tree.
 
 `sase_flux_diag` and `hmix_k_diag` are output-only diagnostics, and
 they are per domain for the same reason: their cost scales with the
@@ -216,7 +246,12 @@ byte-identical to a build without the mechanism when off); they are
 per domain because the mechanism is per nest edge — it perturbs one
 child's parent-forced boundary tables — and, like per-domain
 `isfflx`, they have no WRF namelist spelling, so a config using them
-cannot round-trip to a namelist.
+cannot round-trip to a namelist.  `inflow_perturbation = true` needs a
+parent that runs a PBL scheme: the perturbation's depth is the parent's
+diagnosed PBLH, so a child under a `bl_pbl_physics = 0` parent is
+refused at load, by name, with the domain to change.  That is the
+mesoscale-to-LES edge and only that edge — a PBL-off parent is itself
+LES, and its resolved eddies already are the child's inflow turbulence.
 
 Only `gpuwm domain`'s own emission and hand-written TOML reach some of
 them, so the list is stated here rather than left to be discovered. A
@@ -267,7 +302,7 @@ per-domain VALUE is also refused by name: `bl_pbl_physics = 900`
 | `radt` / `radt_minutes` | `radt` | 0.0 / 12.0 | minutes; 0 = every step | per-domain; WRF `radt = 0` imports as `radt_minutes = 0.0` |
 | `bldt` | `bldt` | 0.0 | minutes; 0 = every step | surface layer + LSM + PBL interval |
 | `cudt_minutes` | `cudt` | 5.0 | minutes | consumed where `cu_physics = 1` |
-| `icloud` | `icloud` | 1 | 0, 1 (Dudhia); fixed 1 under 4/4 radiation | |
+| `icloud` | `icloud` | 1 | 0, 1 (Dudhia); fixed 1 with any RRTMG spectrum | |
 | `swrad_scat` | `swrad_scat` | 1.0 | >= 0 | Dudhia scattering |
 | `no_mp_heating` | `no_mp_heating` | 0 | 0, 1 | disables microphysics latent heating |
 | `mp_tend_lim` | `mp_tend_lim` | 10.0 | > 0, K/s | microphysics theta-tendency clamp |
@@ -524,14 +559,14 @@ pins differ from what WRF assumes for an omitted key.
 | `diff_opt` | 2 | the only mixing form behind `km_opt` |
 | `mix_full_fields` | .true. | full-field mixing only (must be explicit: WRF's omitted default is false) |
 | `non_hydrostatic` | .true. | nonhydrostatic-only |
-| `use_theta_m` | 0 | dry-theta branch only (WRF's omitted default 1 is refused, not silently flipped) |
+| `use_theta_m` | 0 | the engine evolves dry theta; `run --wrfinput` converts validated moist WRF boundary forcing at evaluation time, while standalone namelist import still requires 0 |
 | `scalar_adv_opt` | 1 | must match `moist_adv_opt` |
 | `w_crit_cfl` | 1.0 | `#define` in `gpuwm/core/kernels/openbc.cu` (Registry default) |
 | `isfflx` | 1 | surface fluxes on |
 | `sf_urban_physics`, `sf_lake_physics`, `sf_surface_mosaic`, `mosaic_lu/soil` | 0 | not implemented |
 | `swint_opt` | 0 | no SW interpolation between radt calls |
 | `use_mp_re` | 1 | microphysics effective radii reach radiation per WRF's scheme table |
-| `o3input` | 2 | CAM climatological ozone (4/4 radiation) |
+| `o3input` | 2 | CAM climatological ozone (RRTMG spectra) |
 | `ghg_input` | 0 | analytic year-formula trace gases (no CAMtr reader) |
 | `aer_opt` | 0 | no radiation aerosol input |
 | `cldovrlp` / `idcor` | 2 / 0 | McICA maximum-random overlap, constant decorrelation |
@@ -567,7 +602,7 @@ fail-loud unimplemented).
 ## Not implemented (refused or dropped with a reason)
 
 Moving nests, adaptive time step,
-vertical nest refinement, automatic eta generation, FDDA nudging
+vertical nest refinement, FDDA nudging
 (active `grid_fdda`/`grid_sfdda`/`obs_nudge_opt` refuse; inert keys
 drop), stochastic physics (SPP/SPPT/SKEBS), `mp_zero_out` (documented
 absent -- ArWen relies on PD transport), urban/lake/seaice physics,

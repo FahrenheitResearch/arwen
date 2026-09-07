@@ -1052,3 +1052,244 @@ def test_a_cache_written_now_stamps_the_release_that_wrote_it():
     assert cache_writer_version({}) != __version__
     assert cache_writer_version(
         {CACHE_WRITER_KEY: {"gpuwm_version": __version__}}) == __version__
+
+
+# ---------------------------------------------------------------------------
+# The identity-table guard.  Four RunConfig fields in a row
+# (mp28_aerosol_source, wif_climatology_path, p3_backend,
+# ntiedtke_tiedtke_closure) joined RunConfig without joining
+# DEFAULT_TOLERANT_IDENTITY_FIELDS, and each time every prepared tree
+# written before the field was refused with "these identity fields differ:
+# run.<name>".  The table's docstring asked the field's author to add the
+# entry; four misses say the instruction is not where the enforcement
+# belongs.  These tests pin today's RunConfig against the field set at the
+# identity header's introduction, so a new field fails the suite until its
+# author classifies it.
+
+#: RunConfig's 70 fields at 1c6290410 (2026-07-19), the commit that
+#: introduced the prepared-cache identity header binding
+#: asdict(DomainConfig) -- and with it every run.* field -- into every
+#: cache.  Every prepared tree ever written carries these, so they need no
+#: classification.  Taken with ``git show 1c6290410:gpuwm/config.py``.
+_RUN_FIELDS_AT_IDENTITY_HEADER_INTRODUCTION = frozenset({
+    "nx", "ny", "nz", "dx", "dy", "ztop", "dt", "run_seconds", "clock_dt",
+    "p_surf", "time_step_sound", "epssm", "smdiv", "khdif", "kvdif",
+    "damp_opt", "zdamp", "dampcoef", "output_interval_s", "case",
+    "hybrid_opt", "etac", "moist", "mp_physics", "moist_adv_opt",
+    "no_mp_heating", "mp_tend_lim", "diff_6th_opt", "diff_6th_factor",
+    "diff_6th_slopeopt", "diff_6th_thresh", "km_opt", "c_s", "w_damping",
+    "open_x", "open_y", "base_temp", "specified", "spec_bdy_width",
+    "spec_zone", "relax_zone", "spec_exp", "emdiv", "h_sca_adv_order",
+    "terrain_opt", "hill_height", "hill_halfwidth", "map_proj",
+    "sf_sfclay_physics", "sf_surface_physics", "bl_pbl_physics",
+    "ysu_topdown_pblmix", "ra_physics", "cu_physics", "radt_minutes",
+    "cudt_minutes", "radt", "bldt", "hypsometric_opt", "restart_interval_s",
+    "nested", "grid_id", "top_lid", "moist_cq", "morr_rimed_ice",
+    "wsm6_hail_opt", "ra_lw_physics", "ra_sw_physics", "icloud",
+    "swrad_scat",
+})
+_IDENTITY_HEADER_INTRODUCTION = "1c6290410"
+
+
+def _run_config_field_names() -> frozenset[str]:
+    from dataclasses import fields
+
+    from gpuwm.config import RunConfig
+
+    return frozenset(field.name for field in fields(RunConfig))
+
+
+def _run_paths(table) -> frozenset[str]:
+    return frozenset(path for path in table if path.startswith("run."))
+
+
+def _identity_tables():
+    """Every table the comparison consults, as ``{name: run.* paths}``."""
+
+    from gpuwm.ingest import prepared_cache as module
+
+    return {
+        "DEFAULT_TOLERANT_IDENTITY_FIELDS":
+            _run_paths(module.DEFAULT_TOLERANT_IDENTITY_FIELDS),
+        "NON_TRAJECTORY_IDENTITY_FIELDS":
+            _run_paths(module.NON_TRAJECTORY_IDENTITY_FIELDS),
+        "INERT_DIAGNOSTIC_IDENTITY_FIELDS":
+            _run_paths(module.INERT_DIAGNOSTIC_IDENTITY_FIELDS),
+        "PREPARATION_INERT_RUN_FIELDS":
+            _run_paths(module.PREPARATION_INERT_RUN_FIELDS),
+        "STRICT_IDENTITY_FIELDS":
+            _run_paths(module.STRICT_IDENTITY_FIELDS),
+    }
+
+
+def test_every_run_field_added_since_the_identity_header_is_classified():
+    """A new RunConfig field fails here until its author rules on it."""
+
+    from gpuwm.ingest.prepared_cache import STRICT_IDENTITY_FIELDS
+
+    current = _run_config_field_names()
+    baseline = _RUN_FIELDS_AT_IDENTITY_HEADER_INTRODUCTION
+    tables = _identity_tables()
+    strict = tables["STRICT_IDENTITY_FIELDS"]
+    # A dropped field (the three partitions the comparison never looks
+    # at) tolerates absence a fortiori; a default-tolerant field
+    # tolerates it at the default.  Either is a ruling.
+    tolerant = frozenset().union(*(
+        paths for name, paths in tables.items()
+        if name != "STRICT_IDENTITY_FIELDS"))
+
+    removed = sorted(baseline - current)
+    assert not removed, (
+        f"RunConfig lost {removed}, which every prepared tree ever written "
+        f"carries in its header: the comparison will now refuse ALL of them "
+        f"as 'a field the cache carries and this build does not'.  Removing "
+        f"a header-era field needs its own ruling on older trees, not a "
+        f"baseline edit.")
+
+    for name in sorted(current - baseline):
+        path = f"run.{name}"
+        assert path in tolerant or path in strict, (
+            f"RunConfig.{name} joined RunConfig after the prepared-cache "
+            f"identity baseline ({_IDENTITY_HEADER_INTRODUCTION}) and is in "
+            f"neither DEFAULT_TOLERANT_IDENTITY_FIELDS nor "
+            f"STRICT_IDENTITY_FIELDS in gpuwm/ingest/prepared_cache.py, so "
+            f"every prepared tree written before it will be refused with "
+            f"'these identity fields differ: {path}'.  Add {path!r} to "
+            f"DEFAULT_TOLERANT_IDENTITY_FIELDS with the scoping argument "
+            f"(its not-in-use default reproduces the pre-field prepared "
+            f"state), or to STRICT_IDENTITY_FIELDS with the reason an older "
+            f"tree really must be refused for it (it changes the prepared "
+            f"initial state or the boundary tables).")
+
+    # One ruling per field: a path in two tables has two contradictory
+    # reasons, and the walk would honour whichever it consulted first.
+    names = list(tables)
+    for i, first in enumerate(names):
+        for second in names[i + 1:]:
+            both = sorted(tables[first] & tables[second])
+            assert not both, f"{both} listed in both {first} and {second}"
+
+    # A strict entry is a written reason, or it is nothing.
+    for path, reason in STRICT_IDENTITY_FIELDS.items():
+        assert path.startswith("run."), path
+        assert isinstance(reason, str) and reason.strip(), (
+            f"STRICT_IDENTITY_FIELDS[{path!r}] must say what the field "
+            f"changes about the prepared state")
+
+    # A table entry naming a field RunConfig no longer has is a stale
+    # ruling: the field was renamed or removed and the table was not.
+    for table, paths in tables.items():
+        stale = sorted(path for path in paths if path[4:] not in current)
+        assert not stale, (
+            f"{table} names {stale}, but RunConfig has no such field: "
+            f"renamed or removed, and the table was not updated with it.")
+
+
+def test_tolerant_run_entries_carry_their_defaults_into_the_not_in_use_map():
+    """An entry in the table that the not-in-use map lacks is dead.
+
+    The walk tolerates a path only when it is BOTH in the table and in
+    the caller's ``not_in_use`` map, so a run.* entry added to the table
+    alone would refuse exactly as if it were absent.  Every run.* entry
+    must therefore reach ``undelayed_identity_defaults`` with the
+    dataclass default in the identity document's own JSON spelling.
+    """
+
+    from dataclasses import fields
+
+    from gpuwm.config import RunConfig
+    from gpuwm.ingest.prepared_cache import (
+        DEFAULT_TOLERANT_IDENTITY_FIELDS, _json_copy,
+    )
+
+    defaults = {field.name: field.default for field in fields(RunConfig)}
+    not_in_use = _undelayed()
+    for path in sorted(_run_paths(DEFAULT_TOLERANT_IDENTITY_FIELDS)):
+        name = path[4:]
+        assert path in not_in_use, (
+            f"{path} is in DEFAULT_TOLERANT_IDENTITY_FIELDS but not in "
+            f"undelayed_identity_defaults(), so the walk never tolerates it")
+        assert not_in_use[path] == _json_copy(defaults[name]), path
+
+
+def _live_tolerant_run_paths_at_default(live) -> list[str]:
+    """The run.* tolerant paths the shipped two-domain config leaves at
+    their not-in-use value; stripping these from a header is exactly a
+    tree prepared before they existed."""
+
+    from gpuwm.ingest.prepared_cache import DEFAULT_TOLERANT_IDENTITY_FIELDS
+
+    not_in_use = _undelayed()
+    return sorted(
+        path for path in _run_paths(DEFAULT_TOLERANT_IDENTITY_FIELDS)
+        if live["run"].get(path[4:]) == not_in_use[path])
+
+
+def test_the_walk_tolerates_every_nested_run_entry_absent_from_a_header():
+    """The table says its walk reaches run.*; this is the measurement.
+
+    A header with NONE of the tolerant run.* fields is what a tree
+    prepared at the identity header's introduction looks like, and it
+    must bind against today's document with zero differing paths.
+    """
+
+    from gpuwm.ingest.prepared_cache import compare_prepared_domain_config
+
+    live = _live_domain_identity()
+    stripped = _live_tolerant_run_paths_at_default(live)
+    # The shipped config leaves the overwhelming majority at default;
+    # a config that set most of them would make this test vacuous.
+    assert len(stripped) >= 80, stripped
+    cached = {**live, "run": {
+        key: value for key, value in live["run"].items()
+        if f"run.{key}" not in stripped}}
+
+    tolerated, differing = compare_prepared_domain_config(
+        cached, live, not_in_use=_undelayed())
+    assert differing == []
+    assert sorted(tolerated) == stripped
+
+
+def test_a_nested_run_field_absent_from_the_header_but_IN_USE_still_refuses():
+    """Narrowness, at the nested level: a non-default value is a change."""
+
+    from gpuwm.ingest.prepared_cache import compare_prepared_domain_config
+
+    live = _live_domain_identity()
+    # Not in the shipped config's non-default set, and its default is
+    # 1; 0 is a real selection the older tree was not prepared under.
+    assert live["run"]["bl_mynn_edmf"] == 1
+    live["run"] = {**live["run"], "bl_mynn_edmf": 0}
+    cached = {**live, "run": {
+        key: value for key, value in live["run"].items()
+        if key != "bl_mynn_edmf"}}
+
+    tolerated, differing = compare_prepared_domain_config(
+        cached, live, not_in_use=_undelayed())
+    assert tolerated == []
+    assert differing == ["run.bl_mynn_edmf"]
+
+
+def test_rational_forcing_cache_preserves_time_law_and_setup_identity(tmp_path):
+    from dataclasses import replace
+    from gpuwm.ingest.lateral_bc import RationalTimeLaw, evaluate_boundary_side
+    initial, met, old = _fixture()
+    source = old.intervals[0].fields['u'].west
+    nonlinear = replace(source, time_law=RationalTimeLaw(
+        np.full(source.value.shape, 0.001), np.full(source.value.shape, 0.0001)))
+    fields = {'u':FieldBoundary(nonlinear, nonlinear, nonlinear, nonlinear)}
+    boundaries = replace(old, intervals=(replace(old.intervals[0], fields=fields),))
+    initial.state.lateral_boundaries = boundaries
+    path = tmp_path/'rational'
+    write_prepared_cache(path, identity={'source':'generic-time-law-test'},
+        initial_result=initial, met=met, boundaries=boundaries)
+    reader = PreparedCacheReader(path, expected_identity={'source':'generic-time-law-test'})
+    reader.verify_all()
+    restored = prepared_cache_module._reader_boundaries(reader)
+    assert prepared_cache_module._forcing_prefix(restored) == prepared_cache_module._forcing_prefix(boundaries)
+    actual = restored.intervals[0].fields['u'].west
+    for t in (0., 900., 1800., 3600.):
+        expected = evaluate_boundary_side(nonlinear, t)
+        observed = evaluate_boundary_side(actual, t)
+        np.testing.assert_array_equal(observed[0], expected[0])
+        np.testing.assert_array_equal(observed[1], expected[1])

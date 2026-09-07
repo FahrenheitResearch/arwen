@@ -90,13 +90,11 @@ def test_legacy_variant_is_accepted_on_the_44_pair():
     assert rrtmg_variant(split) == RRTMG_VARIANT_LEGACY
 
 
-def test_legacy_variant_requires_the_44_pair():
-    with pytest.raises(ValueError, match="requires the.*4/4"):
-        validate_run_config(_cfg(ra_rrtmg_variant=RRTMG_VARIANT_LEGACY))
-    with pytest.raises(ValueError, match="requires the.*4/4"):
-        validate_run_config(_cfg(
-            ra_lw_physics=0, ra_sw_physics=1,
+def test_inactive_legacy_variant_remains_declared():
+    for lw,sw in ((0,0),(0,1),(1,1)):
+        cfg = validate_run_config(_cfg(ra_lw_physics=lw,ra_sw_physics=sw,
             ra_rrtmg_variant=RRTMG_VARIANT_LEGACY))
+        assert cfg.ra_rrtmg_variant == RRTMG_VARIANT_LEGACY
 
 
 def test_variant_value_is_validated():
@@ -193,22 +191,19 @@ def test_readiness_helper_passes_here_and_receipts_when_broken(
     assert "no silent fallback" in message
 
 
-def test_every_rrtmgp_construction_site_has_a_legacy_peer():
-    """Every module that constructs RRTMGPRadiation for a (4,4) request
-    must construct RRTMGLegacyRadiation under the legacy variant."""
+def test_every_runtime_radiation_construction_uses_the_shared_variant_factory():
     import inspect
-
     import gpuwm.core.physics as physics
     import gpuwm.runtime as runtime
-
+    from gpuwm.core import radiation_composition
     for module in (physics, runtime):
         source = inspect.getsource(module)
-        rrtmgp_sites = source.count("RRTMGPRadiation(")
-        legacy_sites = source.count("RRTMGLegacyRadiation(")
-        assert rrtmgp_sites > 0 and legacy_sites == rrtmgp_sites, (
-            f"{module.__name__}: {rrtmgp_sites} RRTMGP construction(s) "
-            f"vs {legacy_sites} legacy construction(s); every 4/4 site "
-            "must serve both variants")
+        assert "make_radiation(" in source
+        assert "RRTMGPRadiation(" not in source
+        assert "RRTMGLegacyRadiation(" not in source
+    source = inspect.getsource(radiation_composition.make_radiation)
+    assert source.count("RRTMGPRadiation(") == 1
+    assert source.count("RRTMGLegacyRadiation(") == 1
 
 
 # ---------------------------------------------------------------------

@@ -282,6 +282,13 @@ def _require_lambert(grid) -> None:
 
 
 def _require_modis21(landuse_attrs) -> None:
+    if (landuse_attrs is None or "ISWATER" not in landuse_attrs
+            or "ISLAKE" not in landuse_attrs):
+        raise HighresRefusal(
+            "missing-landuse-metadata",
+            "the full high-resolution overlay needs the baseline land-use "
+            "ISWATER and ISLAKE attributes; provide its geography metadata "
+            "or request fields = \"terrain\" to replace terrain alone")
     iswater = int(landuse_attrs["ISWATER"])
     islake = landuse_attrs["ISLAKE"]
     islake = None if islake in (None, "") else int(islake)
@@ -567,6 +574,10 @@ def _grid_identity(grid, domain_id: int) -> dict[str, object]:
         "stand_lon": float(grid.stand_lon),
         "dx": float(grid.dx), "dy": float(grid.dy),
         "e_we": int(grid.e_we), "e_sn": int(grid.e_sn),
+        "known_x": None if grid.known_x is None else float(grid.known_x),
+        "known_y": None if grid.known_y is None else float(grid.known_y),
+        "moad_cen_lat": float(grid.moad_cen_lat),
+        "moad_cen_lon": float(grid.moad_cen_lon),
     }
 
 
@@ -825,51 +836,70 @@ def _apply(baseline, grid, *, config: HighresStaticConfig,
     return merged, detail
 
 
-def refuse_inert_highres(config_path, *, lane: str) -> None:
-    """Refuse an enabled ``[static.highres]`` block on a lane that ignores it.
-
-    Only the experiment route (``gpuwm.runtime``) builds high-resolution
-    statics.  The direct adapters and the native-HRRR static path build
-    their GEOG fields through their own seams and load their config with
-    :func:`gpuwm.experiment.load_experiment`, which never reads the
-    ``[static]`` table at all -- so before this refusal existed, a user
-    who enabled the block and ran one of those routes got the 30 arc
-    second baseline with no indication that the thing they asked for had
-    not happened.  A silently inert setting is the failure mode this
-    project refuses on principle: it reads, afterwards, as a setting that
-    took effect.
-
-    Absent or ``enabled = false`` blocks pass, because they ask for
-    nothing.  ``lane`` names the route in the refusal, so the message
-    says which path could not honor it rather than that something,
-    somewhere, was wrong.
-    """
-    import io
+def load_static_highres(config_path) -> HighresStaticConfig | None:
+    """Resolve the declared overlay against its captured source authority."""
+    if config_path is None:
+        return None
     import tomllib
+    from gpuwm.config_authority import read_config_authority
 
-    path = Path(config_path)
-    try:
-        raw = tomllib.load(io.BytesIO(path.read_bytes()))
-    except (OSError, tomllib.TOMLDecodeError):
-        # Not this function's error to report: the lane's own loader
-        # reads the same file and says it better.
+    authority = read_config_authority(config_path)
+    raw = tomllib.loads(authority.payload.decode("utf-8"))
+    return parse_static_table(
+        raw.get("static"), source=str(authority.source),
+        base_dir=authority.base_dir)
+
+
+def static_highres_identity(config):
+    """Portable declared settings; the owner validates this same table on read."""
+    if config is None:
+        return None
+    return {**config.echo(), "enabled": config.enabled}
+
+
+def require_prepared_highres(receipt, grid, *, config, domain_id, case_date):
+    """Reject a declared overlay that was not bound into the prepared statics."""
+    if config is None or not config.enabled:
         return
-    highres = parse_static_table(
-        raw.get("static"), source=str(path), base_dir=path.parent)
-    if highres is None or not getattr(highres, "enabled", False):
-        return
-    raise ValueError(
-        f"{path} enables [static.highres], and the {lane} cannot honor "
-        "it: that route builds its static geography through its own seam "
-        "and never consults the block, so the run would silently use the "
-        "30 arc second baseline under the name of your setting. Either "
-        "run this case on the experiment route (`gpuwm run`), which "
-        "applies high-resolution statics, or set enabled = false to ask "
-        "for the baseline deliberately.")
+    overlay = receipt.get("highres") if isinstance(receipt, dict) else None
+    allowed = {"APPLIED"}
+    if config.on_refuse == "fallback-30s":
+        allowed.add("REFUSED")
+    if (not isinstance(overlay, dict) or overlay.get("status") not in allowed
+            or overlay.get("config") != config.echo()
+            or overlay.get("case_date") != case_date.isoformat()
+            or overlay.get("grid") != _grid_identity(grid, domain_id)):
+        raise ValueError("prepared statics do not bind the requested high-resolution "
+                         "settings, date and grid; rebuild the static preparation "
+                         "with the declared experiment configuration")
+
+
+def apply_prepared_highres(baseline, grid, *, config, domain_id, case_date,
+                           landuse_attrs, baseline_receipt=None):
+    """Apply the shared overlay before preparation, retaining both receipts.
+
+    A previously sealed overlay can be reused only when its request, date,
+    and complete grid identity match. The caller verifies the input static
+    payload against its containing receipt before handing it here.
+    """
+    if config is None or not config.enabled:
+        return baseline, baseline_receipt
+    previous = (baseline_receipt.get("highres")
+                if isinstance(baseline_receipt, dict) else None)
+    if (isinstance(previous, dict) and previous.get("status") == "APPLIED"
+            and previous.get("config") == config.echo()
+            and previous.get("case_date") == case_date.isoformat()
+            and previous.get("grid") == _grid_identity(grid, domain_id)):
+        return baseline, baseline_receipt
+    fields, receipt = apply_highres_statics(
+        baseline, grid, config=config, domain_id=domain_id,
+        case_date=case_date, landuse_attrs=landuse_attrs)
+    return fields, {"baseline": baseline_receipt, "highres": receipt}
 
 
 __all__ = [
     "HighresRefusal", "HighresStaticConfig", "RECEIPT_SCHEMA",
     "US_COVERAGE_ENVELOPE", "apply_highres_statics", "parse_static_table",
-    "refuse_inert_highres",
+    "load_static_highres", "static_highres_identity",
+    "apply_prepared_highres", "require_prepared_highres",
 ]

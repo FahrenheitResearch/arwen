@@ -95,25 +95,93 @@ impl CanonicalField {
     /// The `__post_init__` invariants: rank agrees with the axes, no
     /// infinities survive, and the recorded missing count is the array's.
     pub fn validated(self) -> Result<Self> {
-        if self.values.ndim() != self.axes.len() {
-            return Err(frame_invalid(format!(
-                "{} rank {} differs from axes {:?}",
-                self.name,
-                self.values.ndim(),
-                self.axes
-            )));
-        }
-        if self.values.iter().any(|value| value.is_infinite()) {
-            return Err(frame_invalid(format!("{} contains infinity", self.name)));
-        }
-        if array::count_nan(&self.values) != self.missing_count {
-            return Err(frame_invalid(format!(
-                "{} missing count does not match its data",
-                self.name
-            )));
-        }
+        Self::validate_values(&self.name, &self.axes, &self.values, self.missing_count)?;
         Ok(self)
     }
+
+    /// Check an owned decoder field without copying its array merely to
+    /// construct the canonical wrapper. The streaming writer moves that
+    /// array only when its first consumer asks for it.
+    pub fn validate_values(
+        name: &str,
+        axes: &[String],
+        values: &ArrayD<f64>,
+        missing_count: usize,
+    ) -> Result<()> {
+        if values.ndim() != axes.len() {
+            return Err(frame_invalid(format!(
+                "{} rank {} differs from axes {:?}",
+                name,
+                values.ndim(),
+                axes
+            )));
+        }
+        if values.iter().any(|value| value.is_infinite()) {
+            return Err(frame_invalid(format!("{} contains infinity", name)));
+        }
+        if array::count_nan(values) != missing_count {
+            return Err(frame_invalid(format!(
+                "{} missing count does not match its data",
+                name
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Derivations read their operands. A writer can lend the exact cached
+/// operands without making new arrays to satisfy an owning map's type.
+pub trait CanonicalFields {
+    fn get_field(&self, name: &str) -> Option<&CanonicalField>;
+}
+
+impl CanonicalFields for std::collections::BTreeMap<String, CanonicalField> {
+    fn get_field(&self, name: &str) -> Option<&CanonicalField> {
+        self.get(name)
+    }
+}
+
+impl CanonicalFields for std::collections::BTreeMap<String, &CanonicalField> {
+    fn get_field(&self, name: &str) -> Option<&CanonicalField> {
+        self.get(name).copied()
+    }
+}
+
+/// The closed catalog's field operands, in the same terms as evaluation.
+/// Missing operand declarations remain an unresolved dependency, just as
+/// `evaluate_derivation` returns `None`. Coordinate-only pressure has no
+/// field dependency; hybrid pressure also consumes the declared surface.
+pub fn derivation_dependencies(operation: &Node, vertical: &Node, name: &str) -> Result<Option<Vec<String>>> {
+    let kind = operation.get("operation").and_then(Node::as_str)
+        .ok_or_else(|| mapping_invalid(format!("derivation for {name} has no operation")))?;
+    let labels: &[&str] = match kind {
+        "copy" | "soil_surface_node_from_shallowest" => &["source"],
+        "wind_speed" => &["u", "v"],
+        "geopotential_height" => &["geopotential"],
+        "pressure_from_vertical_coordinate" => &[],
+        "geopotential_height_hydrostatic" =>
+            &["temperature", "specific_humidity", "surface_geopotential_height"],
+        "relative_humidity_from_dewpoint" => &["dewpoint", "temperature"],
+        "specific_humidity_from_rh" => &["temperature", "pressure", "relative_humidity"],
+        "specific_humidity_from_dewpoint" => &["temperature", "pressure", "dewpoint"],
+        "volumetric_soil_moisture_from_layer_mass" => &["layer_mass"],
+        other => return Err(mapping_invalid(format!("unsupported derivation operation '{other}'"))),
+    };
+    let mut dependencies = Vec::with_capacity(labels.len() + 1);
+    for label in labels {
+        let Some(name) = operation.get(label).and_then(Node::as_str) else { return Ok(None); };
+        dependencies.push(name.to_owned());
+    }
+    if kind == "geopotential_height_hydrostatic" || (kind == "pressure_from_vertical_coordinate"
+        && vertical.get("kind").and_then(Node::as_str) == Some("hybrid_sigma_pressure")) {
+        let pressure = vertical.get("surface_pressure_field").and_then(Node::as_str)
+            .ok_or_else(|| mapping_invalid(format!(
+                "{name} requires vertical.surface_pressure_field on a hybrid_sigma_pressure coordinate")))?;
+        dependencies.push(pressure.to_owned());
+    }
+    dependencies.sort();
+    dependencies.dedup();
+    Ok(Some(dependencies))
 }
 
 /// `gpuwm.ingest.real._surface_relative_humidity` — ungrib's 2 m RH from
@@ -168,10 +236,10 @@ fn specific_humidity_from_rh(
 fn dependency<'a>(
     operation: &Node,
     label: &str,
-    available: &'a std::collections::BTreeMap<String, CanonicalField>,
+    available: &'a impl CanonicalFields,
 ) -> Option<&'a CanonicalField> {
     let name = operation.get(label)?.as_str()?;
-    available.get(name)
+    available.get_field(name)
 }
 
 /// `mapped_source._evaluate_derivation`.
@@ -180,7 +248,7 @@ fn dependency<'a>(
 /// dependency this pass has not derived yet, which the caller retries.
 pub fn evaluate_derivation(
     operation: &Node,
-    available: &std::collections::BTreeMap<String, CanonicalField>,
+    available: &impl CanonicalFields,
     collection: &DecodedCollection,
     field: &FieldSpec<'_>,
     name: &str,
@@ -210,7 +278,7 @@ pub fn evaluate_derivation(
                      hybrid_sigma_pressure coordinate"
                 ))
             })?;
-        let Some(resolved) = available.get(pressure_name) else {
+        let Some(resolved) = available.get_field(pressure_name) else {
             return Ok(None);
         };
         if resolved.axes != ["y", "x"] {

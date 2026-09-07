@@ -133,6 +133,21 @@ const TYPE_SIZES: [usize; 19] = [
     0, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8, 4, 0, 0, 8, 8, 8,
 ];
 
+/// Bytes per value of an IFD field type.
+///
+/// `field_type` is a raw `u16` read straight off disk, so the lookup is
+/// bounds-checked: a type outside TIFF 6.0 (1-12) and BigTIFF (13, 16-18) is
+/// a malformed IFD, not an index into this table.  Types the table records as
+/// zero-width (14, 15) get one byte here so the IFD scan and the tag reader
+/// agree on every payload length; the per-type match in the reader is what
+/// refuses them.
+fn type_size(field_type: u16) -> usize {
+    *TYPE_SIZES
+        .get(field_type as usize)
+        .filter(|size| **size > 0)
+        .unwrap_or(&1)
+}
+
 // ---------------------------------------------------------------------------
 // The reader
 // ---------------------------------------------------------------------------
@@ -166,6 +181,32 @@ impl TiffReader {
                 "high-resolution raster missing: {path:?} ({err})"
             ))
         })?;
+        // Every byte length below this point is computed from a field read
+        // off the disk.  `read_at` allocates `vec![0u8; len]` before it
+        // reads, and Rust's allocation-failure path is `abort`, not an
+        // error, so a hostile or truncated file's count has to be refused
+        // BEFORE the allocation rather than after the read fails.  A
+        // BigTIFF entry count is a full u64; `entry_size * count` overflows
+        // usize outright at 2^60-ish, which is a debug panic and a silent
+        // wrap in release.  The file's own length is the exact ceiling --
+        // it cannot hold more IFD table or more tag payload than it has
+        // bytes -- so a well-formed file is never refused by this bound.
+        // Same shape as MAX_GRIB1_GRID_CELLS in
+        // rw-wrfbatch/src/grib_import.rs.
+        let file_len = file.metadata()?.len();
+        let bounded_len = |what: &str, count: u64, unit: usize| -> Result<usize> {
+            count
+                .checked_mul(unit as u64)
+                .filter(|total| *total <= file_len)
+                .and_then(|total| usize::try_from(total).ok())
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "{path:?}: TIFF {what} declares {count} values of \
+                         {unit} bytes, which the {file_len}-byte file \
+                         cannot hold"
+                    ))
+                })
+        };
         let mut bytes = ByteReader { file, little_endian: true };
         let header = bytes.read_at(0, 8)?;
         let little_endian = match &header[0..2] {
@@ -210,7 +251,7 @@ impl TiffReader {
         };
         let table = bytes.read_at(
             first_ifd + count_len as u64,
-            entry_size * entry_count as usize,
+            bounded_len("IFD entry table", entry_count, entry_size)?,
         )?;
         for index in 0..entry_count as usize {
             let raw = &table[index * entry_size..(index + 1) * entry_size];
@@ -223,11 +264,8 @@ impl TiffReader {
             };
             let value_raw =
                 if big { &raw[12..20] } else { &raw[8..12] };
-            let type_size = *TYPE_SIZES
-                .get(field_type as usize)
-                .filter(|size| **size > 0)
-                .unwrap_or(&1);
-            let total = type_size * count as usize;
+            let type_size = type_size(field_type);
+            let total = bounded_len("tag payload", count, type_size)?;
             let inline_cap = if big { 8 } else { 4 };
             let entry = if total <= inline_cap {
                 TagEntry {
@@ -252,7 +290,7 @@ impl TiffReader {
 
         let get_ints = |tag: u16| -> Option<Vec<u64>> {
             let entry = tags.get(&tag)?;
-            let size = TYPE_SIZES[entry.field_type as usize];
+            let size = type_size(entry.field_type);
             let mut out = Vec::with_capacity(entry.count as usize);
             for index in 0..entry.count as usize {
                 let raw = &entry.payload[index * size..(index + 1) * size];
@@ -299,6 +337,12 @@ impl TiffReader {
         let height = first_int(257).ok_or_else(|| {
             invalid(format!("{path:?}: TIFF has no ImageLength"))
         })? as usize;
+        if width == 0 || height == 0 {
+            return Err(invalid(format!(
+                "{path:?}: TIFF declares a {width}x{height} image; the \
+                 substrate reads rasters with at least one pixel"
+            )));
+        }
         let samples_per_pixel = first_int(277).unwrap_or(1);
         if samples_per_pixel != 1 {
             return Err(invalid(format!(
@@ -355,6 +399,19 @@ impl TiffReader {
                     get_ints(279).unwrap_or_default(),
                 )
             };
+        if block_w == 0 || block_h == 0 {
+            // TileWidth/TileLength (322/323) and RowsPerStrip (278) come
+            // straight off disk with no floor of their own.  A zero reaches
+            // `read_window_raw`'s `row_off / self.block_h` as an integer
+            // divide by zero -- a process abort, not a refusal -- and a
+            // truncated download leaving a `00 00` RowsPerStrip word is how
+            // it gets there.
+            return Err(invalid(format!(
+                "{path:?}: TIFF declares a {block_w}x{block_h} \
+                 {} block; both extents must be positive",
+                if tiled { "tile" } else { "strip" }
+            )));
+        }
         if offsets.is_empty() || offsets.len() != byte_counts.len() {
             return Err(invalid(format!(
                 "{path:?}: TIFF block offsets/counts are inconsistent \
@@ -521,6 +578,13 @@ impl TiffReader {
         match self.predictor {
             1 => {}
             2 => {
+                // Horizontal differencing is between SAMPLES, so the
+                // accumulation has to read and write them in the file's
+                // declared byte order -- the same `little_endian` predictor 3
+                // and `sample_to_f64` consult.  Undone on byte-swapped words
+                // the carries cross the wrong byte lanes, so the result is
+                // arithmetic garbage rather than a byte-swapped answer.
+                let le = self.bytes.little_endian;
                 for row in 0..rows {
                     let start = row * row_bytes;
                     match self.sample {
@@ -531,34 +595,47 @@ impl TiffReader {
                             }
                         }
                         SampleType::U16 | SampleType::I16 => {
-                            let mut prev = u16::from_le_bytes([
-                                raw[start],
-                                raw[start + 1],
-                            ]);
+                            let load = |raw: &[u8], at: usize| {
+                                let pair = [raw[at], raw[at + 1]];
+                                if le {
+                                    u16::from_le_bytes(pair)
+                                } else {
+                                    u16::from_be_bytes(pair)
+                                }
+                            };
+                            let mut prev = load(raw, start);
                             for i in 1..row_samples {
                                 let at = start + i * 2;
-                                let cur = u16::from_le_bytes([
-                                    raw[at],
-                                    raw[at + 1],
-                                ])
-                                .wrapping_add(prev);
-                                raw[at..at + 2]
-                                    .copy_from_slice(&cur.to_le_bytes());
+                                let cur = load(raw, at).wrapping_add(prev);
+                                let stored = if le {
+                                    cur.to_le_bytes()
+                                } else {
+                                    cur.to_be_bytes()
+                                };
+                                raw[at..at + 2].copy_from_slice(&stored);
                                 prev = cur;
                             }
                         }
                         SampleType::I32 => {
-                            let mut prev = u32::from_le_bytes(
-                                raw[start..start + 4].try_into().unwrap(),
-                            );
+                            let load = |raw: &[u8], at: usize| {
+                                let word: [u8; 4] =
+                                    raw[at..at + 4].try_into().unwrap();
+                                if le {
+                                    u32::from_le_bytes(word)
+                                } else {
+                                    u32::from_be_bytes(word)
+                                }
+                            };
+                            let mut prev = load(raw, start);
                             for i in 1..row_samples {
                                 let at = start + i * 4;
-                                let cur = u32::from_le_bytes(
-                                    raw[at..at + 4].try_into().unwrap(),
-                                )
-                                .wrapping_add(prev);
-                                raw[at..at + 4]
-                                    .copy_from_slice(&cur.to_le_bytes());
+                                let cur = load(raw, at).wrapping_add(prev);
+                                let stored = if le {
+                                    cur.to_le_bytes()
+                                } else {
+                                    cur.to_be_bytes()
+                                };
+                                raw[at..at + 4].copy_from_slice(&stored);
                                 prev = cur;
                             }
                         }
@@ -652,6 +729,14 @@ impl TiffReader {
             )));
         }
         let mut out = vec![f64::NAN; win_w * win_h];
+        if win_w == 0 || win_h == 0 {
+            // The block bounds below are inclusive and spell the last
+            // covered row/column as `off + win - 1`, which underflows usize
+            // for an empty window -- a debug panic, and in release a
+            // `0..=usize::MAX` block loop.  An empty window is a legal
+            // request with an empty answer, so answer it here.
+            return Ok(out);
+        }
         let blocks_across = if self.tiled {
             self.width.div_ceil(self.block_w)
         } else {

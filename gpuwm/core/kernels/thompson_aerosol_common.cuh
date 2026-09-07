@@ -1,3 +1,18 @@
+// ======================================================================
+// THIRD-PARTY NOTICE.  This file carries values derived from third-party
+// work.  ArWen distributes it under the Apache License 2.0; the notice
+// below belongs to that upstream and is kept here because the upstream
+// kept it.  Full text in the licenses/ directory.
+//
+//   The THOMPSON_AA_CC* tables below are values produced by WRF's REAL(4)
+//   WGAMMA/GAMMLN pair, whose Lanczos coefficients come from Numerical
+//   Recipes via WRF v4.6.1 phys/module_mp_thompson.F, which preserves the
+//   notice:
+//
+//       (C) Copr. 1986-92 Numerical Recipes Software 2.02
+//
+//   See licenses/NOTICE-Numerical-Recipes.txt.
+// ======================================================================
 // gpuwm/core/kernels/thompson_aerosol_common.cuh
 //
 // Shared __device__ helpers for WRF v4.6.1 aerosol-aware Thompson

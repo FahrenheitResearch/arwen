@@ -52,6 +52,36 @@ pub(crate) fn clear_error() {
     LAST_ERROR.with(|slot| slot.borrow_mut().clear());
 }
 
+/// Turn a panic below this seam into the ABI's own refusal.
+///
+/// An unwind that reaches an `extern "C"` boundary aborts the process on the
+/// edition this workspace pins, so a panic in a decoder would take the host
+/// Python interpreter with it instead of returning the negative code and
+/// last-error string this ABI documents.  Every entry point runs its body
+/// through here, the same discipline `tools/grib1_bridge/src/lib.rs` applies
+/// to its own exports.
+pub(crate) fn guard<T>(on_panic: T, body: impl FnOnce() -> T) -> T {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        Ok(value) => value,
+        Err(payload) => {
+            let detail = payload
+                .downcast_ref::<&str>()
+                .map(|text| (*text).to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic payload".to_string());
+            // `try_borrow_mut`, not `borrow_mut`: the panic may have come from
+            // inside the last-error accessor itself, and a second panic here
+            // would abort exactly what this guard exists to prevent.
+            LAST_ERROR.with(|slot| {
+                if let Ok(mut message) = slot.try_borrow_mut() {
+                    *message = format!("panic in the static-fields seam: {detail}");
+                }
+            });
+            on_panic
+        }
+    }
+}
+
 fn next_handle(counter: &AtomicU64) -> u64 {
     counter.fetch_add(1, Ordering::Relaxed) + 1
 }
@@ -128,7 +158,9 @@ pub(crate) unsafe fn utf8<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn gpuwm_static_abi_version() -> u32 {
-    STATIC_ABI_VERSION
+    guard(0, || {
+        STATIC_ABI_VERSION
+    })
 }
 
 /// The source-revision stamp, same contract as
@@ -136,12 +168,14 @@ pub extern "C" fn gpuwm_static_abi_version() -> u32 {
 /// binary as bytes by the release cut, never executed.
 #[unsafe(no_mangle)]
 pub extern "C" fn gpuwm_static_source_rev() -> *const std::os::raw::c_char {
-    static SOURCE_REV_STAMP: &str = concat!(
-        "GPUWM_BRIDGE_SOURCE_REV=",
-        env!("GPUWM_BRIDGE_SOURCE_REV"),
-        "\0"
-    );
-    SOURCE_REV_STAMP.as_ptr().cast()
+    guard(std::ptr::null(), || {
+        static SOURCE_REV_STAMP: &str = concat!(
+            "GPUWM_BRIDGE_SOURCE_REV=",
+            env!("GPUWM_BRIDGE_SOURCE_REV"),
+            "\0"
+        );
+        SOURCE_REV_STAMP.as_ptr().cast()
+    })
 }
 
 /// Copy the thread-local last error into `buf` (UTF-8, no NUL);
@@ -154,15 +188,87 @@ pub unsafe extern "C" fn gpuwm_static_last_error(
     buf: *mut u8,
     cap: usize,
 ) -> usize {
-    LAST_ERROR.with(|slot| {
-        let message = slot.borrow();
-        let raw = message.as_bytes();
-        if !buf.is_null() && cap > 0 {
-            let n = raw.len().min(cap);
-            unsafe {
-                std::ptr::copy_nonoverlapping(raw.as_ptr(), buf, n);
+    guard(0, || {
+        LAST_ERROR.with(|slot| {
+            let message = slot.borrow();
+            let raw = message.as_bytes();
+            if !buf.is_null() && cap > 0 {
+                let n = raw.len().min(cap);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(raw.as_ptr(), buf, n);
+                }
             }
-        }
-        raw.len()
+            raw.len()
+        })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::grid::gpuwm_static_grid_free;
+    use super::*;
+
+    const CHILD_ENV: &str = "GPUWM_STATIC_SEAM_PANIC_CHILD";
+    const MARKER: &str = "SEAM-LAST-ERROR:";
+
+    /// Negative control for the FFI boundary: feed the seam a panic and
+    /// require the ABI's own refusal instead of an abort.
+    ///
+    /// The child re-runs this one test with `CHILD_ENV` set, poisons the grid
+    /// registry the way a panic in any `rlib` consumer does, and then calls an
+    /// `extern "C"` entry point whose body hits `.expect("grid registry
+    /// poisoned")`.  Without the guard that unwind reaches the `extern "C"`
+    /// frame and the child dies on SIGABRT -- which is what a panicking
+    /// decoder did to the host Python interpreter, with no traceback and no
+    /// `gpuwm_static_last_error` for the operator to read.
+    #[test]
+    fn a_panic_below_the_seam_is_a_refusal_not_a_process_abort() {
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let poisoned = std::panic::catch_unwind(|| {
+                let _held = GRIDS.lock().unwrap();
+                panic!("a consumer panicked while holding the registry");
+            });
+            assert!(poisoned.is_err(), "the registry must end up poisoned");
+
+            gpuwm_static_grid_free(1);
+
+            let mut buffer = [0u8; 256];
+            let length = unsafe {
+                gpuwm_static_last_error(buffer.as_mut_ptr(), buffer.len())
+            };
+            let message =
+                std::str::from_utf8(&buffer[..length.min(buffer.len())]).unwrap();
+            println!("{MARKER}{message}");
+            return;
+        }
+
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "capi::tests::a_panic_below_the_seam_is_a_refusal_not_a_process_abort",
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("re-running this test binary");
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        assert!(
+            child.status.success(),
+            "the seam aborted the process instead of refusing: {:?}\n{stdout}",
+            child.status
+        );
+        assert!(
+            stdout.contains(&format!(
+                "{MARKER}panic in the static-fields seam: grid registry poisoned"
+            )),
+            "the refusal must reach the last-error slot: {stdout}"
+        );
+    }
+
+    #[test]
+    fn the_guard_is_transparent_when_nothing_panics() {
+        assert_eq!(guard(ERR, || OK), OK);
+    }
 }

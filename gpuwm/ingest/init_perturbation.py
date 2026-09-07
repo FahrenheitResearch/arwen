@@ -121,7 +121,7 @@ class InitialStatePerturbation:
                 inside=inside, horizontal_km=horizontal_km))
         self._placed = tuple(placed)
 
-    def apply(self, *, theta, qv, pressure, z_half_agl) -> dict:
+    def apply(self, *, theta, qv, pressure, z_half_agl, allow_empty=False) -> dict:
         """Add every contained bubble to ``theta`` (and qv) in place.
 
         ``theta``/``qv``/``pressure`` are the final host FP64
@@ -150,7 +150,7 @@ class InitialStatePerturbation:
                     - spec.center_height_m) / spec.depth_m) ** 2)
             mask = radial < 1.0
             cells = int(np.count_nonzero(mask))
-            if cells == 0:
+            if cells == 0 and not allow_empty:
                 raise ValueError(
                     f"perturbation.bubbles #{placed.index} is enabled and "
                     f"centered inside domain d{self.grid_id:02d} "
@@ -169,10 +169,10 @@ class InitialStatePerturbation:
                 "applied": True,
                 "center_xy": [placed.center_x, placed.center_y],
                 "cells_touched": cells,
-                "max_theta_added_k": float(delta.max()),
+                "max_theta_added_k": float(delta.max()) if cells else 0.0,
                 "rh_preserve": bool(spec.rh_preserve),
             }
-            if spec.rh_preserve:
+            if spec.rh_preserve and cells:
                 row["max_qv_delta_kg_kg"] = self._preserve_rh(
                     theta, qv, pressure, mask, delta)
             theta[mask] += delta
@@ -223,7 +223,7 @@ class InitialStatePerturbation:
         return max_delta
 
 
-    def apply_to_state(self, state) -> dict:
+    def apply_to_state(self, state, *, allow_empty=False) -> dict:
         """Add the bubbles to an already-initialized :class:`DomainState`.
 
         The prepared-cache route (``gpuwm.prepared_domain_tree_forecast``)
@@ -257,7 +257,7 @@ class InitialStatePerturbation:
         z_half_agl = (0.5 * (full_phi[:-1] + full_phi[1:])
                       - full_phi[:1]) / c.G
         receipt = self.apply(theta=theta, qv=qv, pressure=pressure,
-                             z_half_agl=z_half_agl)
+                             z_half_agl=z_half_agl, allow_empty=allow_empty)
         receipt["application_point"] = "restored-prepared-state"
         changed = theta != theta_before
         if changed.any():

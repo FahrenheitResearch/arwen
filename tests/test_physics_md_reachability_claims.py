@@ -232,9 +232,8 @@ def test_the_page_quotes_the_registry_s_own_definition_of_reachability():
 def test_every_registry_unreachable_option_is_published_with_what_it_does():
     """`unreachable` is a menu verdict, so the page must print both halves.
 
-    Three of the five registry-``unreachable`` options are accepted by
-    ``build_experiment`` when a config names them directly, and two are
-    genuinely refused.  Publishing only the registry state is what
+    Some registry-``unreachable`` options are accepted by
+    ``build_experiment`` when a config names them directly. Publishing only the registry state is what
     produced "so no config can reach it", which was false.  The page must
     carry a row for every unreachable option and, where the loader
     accepts it, the walk's accepted count.
@@ -253,24 +252,23 @@ def test_every_registry_unreachable_option_is_published_with_what_it_does():
 
     problems = []
     for key, option in unreachable.items():
+        group, name = key.split("/", 1)
+        label = f"| {group.replace('_', ' ')} `{name}` |"
+        rows = [line for line in page.splitlines() if line.startswith(label)]
+        if len(rows) != 1:
+            problems.append(f"{key}: expected one published row, found {len(rows)}")
+            continue
         selectors = option["selectors"]
         if not selectors:
             # Nothing can resolve to it; there is no count to publish.
             continue
-        # An option is only as reachable as its LEAST admitted selector:
-        # reaching it means setting all of them at once, so a selector
-        # that never appears in an accepted run makes the whole option
-        # unreachable however popular its siblings are.  wrf-rrtm-dudhia
-        # is exactly that case -- ra_sw_physics=1 is accepted 157 times
-        # (Dudhia shortwave), ra_lw_physics=1 never, and taking the max
-        # here would have published the pair as reachable.
-        accepted = min(
-            walk["per_axis"][name][str(value)]["accepted"]
-            for name, value in selectors.items()
-        )
+        # Marginal counts do not measure a joint option. In particular,
+        # independently composable LW/SW choices can each occur in many
+        # suites while their intersection is much smaller.
+        accepted = _distinct_accepted_matching(walk, selectors)
         if accepted == 0:
             continue
-        if f"**{accepted} accepted**" not in page:
+        if f"**{accepted} accepted**" not in rows[0]:
             problems.append(
                 f"{key}: the loader accepts {accepted} combinations naming "
                 f"{selectors}, and the page does not say so")
@@ -278,6 +276,41 @@ def test_every_registry_unreachable_option_is_published_with_what_it_does():
         "docs/public/PHYSICS.md publishes a registry 'unreachable' state "
         "without the measured loader verdict beside it: "
         + "; ".join(problems))
+
+
+def _distinct_accepted_matching(walk: dict, selectors: dict[str, int]) -> int:
+    """Count unique receipt labels explicitly satisfying every selector."""
+    from tools.report_physics_composition_walk import _TAG
+
+    tags = {_TAG[name]: value for name, value in selectors.items()}
+    return sum(all(_key_fields(key).get(tag) == value for tag, value in tags.items())
+               for key in set(walk["accepted_combinations"]))
+
+
+def test_joint_option_count_is_not_the_minimum_of_overlapping_marginals():
+    joint = "mp8.pbl1.sl91.lsm2.lw90.sw90.cu1.km1.ack"
+    walk = {"accepted_combinations": [
+        joint, joint,
+        "mp6.pbl1.sl91.lsm2.lw90.sw90.cu1.km1.noack",
+        "mp8.pbl1.sl91.lsm2.lw90.sw4.cu1.km1",
+        "mp8.pbl1.sl91.lsm2.lw4.sw90.cu1.km1",
+        "mp8.pbl1.sl91.lsm2.cu1.km1.raagg90"]}
+    lw = _distinct_accepted_matching(walk, {"ra_lw_physics": 90})
+    sw = _distinct_accepted_matching(walk, {"ra_sw_physics": 90})
+    both = _distinct_accepted_matching(walk, {"ra_lw_physics": 90, "ra_sw_physics": 90})
+    assert lw == sw == 3
+    assert both == 2 < min(lw, sw)
+
+
+def test_composition_overview_and_revised_mm5_counts_match_the_receipt():
+    walk, page = _walk(), _squash(_page())
+    totals = walk["totals"]
+    assert f"**{totals['accepted']} of {totals['tried']} admission attempts are accepted**" in page
+    assert f"**{totals['distinct_accepted_suites']} distinct accepted suites**" in page
+    assert f"against {len(_registry()['templates'])} registered templates" in page
+    assert f"**{totals['refused']} refusals fall into {walk['distinct_refusal_rules']} distinct rules**" in page
+    revised = _distinct_accepted_matching(walk, {"sf_sfclay_physics": 1})
+    assert f"revised MM5 row's {revised} distinct accepted combinations" in page
 
 
 def test_the_page_does_not_carry_the_retired_template_only_readings():
@@ -491,6 +524,70 @@ def test_the_implemented_unverified_census_on_the_page_is_the_registry_s():
     assert claim in _page(), (
         "docs/public/PHYSICS.md no longer states the implemented-unverified "
         f"census correctly; measured {len(at_rung)} of {len(options)}")
+
+
+def _census_enumeration() -> str:
+    """The list of names the census sentence prints after its number.
+
+    The paragraph runs from the ``component options**:`` the count guard
+    above pins, to the sentence that follows the list.  Read as a span
+    rather than by line number so a reflow does not move it.
+    """
+    prose = _prose(_page())
+    start = prose.index("component options**:")
+    end = prose.index("It says", start)
+    return prose[start:end]
+
+
+def _cumulus_table_ids() -> set[int]:
+    """The ``WRF id`` column of the page's ``## Cumulus`` table."""
+    section = _page().split("## Cumulus (`cu_physics`)", 1)[1]
+    ids: set[int] = set()
+    for line in section.splitlines():
+        if not line.startswith("|"):
+            if ids:
+                break
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) > 1 and cells[1].isdigit():
+            ids.add(int(cells[1]))
+    return ids
+
+
+def test_every_cumulus_option_in_the_registry_is_on_the_page():
+    """The census counts; nothing named what it counted.
+
+    New Tiedtke landed in the registry at 2.6.4 and this page was last
+    edited at 2.6.2, so ``cu_physics = 16`` existed, was selectable, and
+    was absent from BOTH the cumulus table and the
+    ``implemented-unverified`` enumeration -- while the count guard above
+    stayed green, because it compares two integers and the page had both
+    of them stale in the same direction.  A reader checking what they were
+    taking on read a list that did not contain the scheme they had
+    selected.
+
+    Scoped to cumulus because cumulus is the one component whose registry
+    ``label`` is also the page's name for the option; elsewhere the page
+    writes prose names ("Noah", "P3 one-category") that no string equality
+    can derive from the registry.  Widening this guard means aligning
+    those names first, not weakening this assertion.
+    """
+    options = _registry()["components"]["cumulus"]["options"]
+
+    declared = {option["selectors"]["cu_physics"]
+                for option in options.values() if option["implemented"]}
+    assert _cumulus_table_ids() == declared, (
+        "docs/public/PHYSICS.md's cumulus table and the registry's cumulus "
+        "selectors disagree")
+
+    enumeration = _census_enumeration()
+    at_rung = sorted(option["label"] for option in options.values()
+                     if option["maturity"] == "implemented-unverified")
+    assert at_rung, "no cumulus option is at implemented-unverified any more"
+    for label in at_rung:
+        assert label in enumeration, (
+            f"the implemented-unverified census does not name {label!r}; "
+            f"it reads: {enumeration}")
 
 
 def test_mynn_is_still_implemented_unverified_in_the_registry():

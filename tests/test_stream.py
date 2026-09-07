@@ -8,12 +8,14 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import os
 import subprocess
 import sys
 import textwrap
 import threading
+import tomllib
 
 import numpy as np
 import pytest
@@ -209,6 +211,80 @@ def test_omitted_target_defaults_to_one_retained_generation(tmp_path):
     plan = _make_plan(tmp_path, cycle_count=1, target_lead=None)
 
     assert plan.target_lead == 1
+
+
+@pytest.mark.parametrize("syntax", [
+    "basic-quoted", "literal-quoted", "escaped", "header-comments",
+    "multiline",
+])
+def test_materialized_quoted_experiment_advances_every_declared_clock(
+        tmp_path, syntax):
+    plan = _make_plan(tmp_path)
+    text = plan.experiment_config.read_text(encoding="utf-8")
+    for parent_id in (0, 1):
+        text = text.replace(
+            f"parent_id = {parent_id}\n",
+            f"parent_id = {parent_id}\n"
+            "start_time = 2026-07-23T00:00:00 # domain clock\n")
+    text = text.replace(
+        "start_time = 2026-07-23T00:00:00\n",
+        "start_time = 2026-07-23T00:00:00 # cycle clock\n")
+    text = text.replace(
+        "run_seconds = 3600.0\n",
+        "run_seconds = 3600.0 # forecast duration\n")
+    if syntax in ("basic-quoted", "literal-quoted", "escaped"):
+        def quote(name):
+            if syntax == "literal-quoted":
+                return f"'{name}'"
+            if syntax == "escaped":
+                name = f"\\u{ord(name[0]):04x}{name[1:]}"
+            return f'"{name}"'
+
+        text = re.sub(
+            r"(?m)^(\s*)(\[\[?)([A-Za-z_]+)(\]\]?)",
+            lambda match: (match[1] + match[2] + quote(match[3])
+                           + match[4]), text)
+        text = re.sub(
+            r"(?m)^(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*=)",
+            lambda match: match[1] + quote(match[2]) + match[3], text)
+    elif syntax == "header-comments":
+        text = re.sub(
+            r"(?m)^(\s*\[\[?[A-Za-z_]+\]\]?)$",
+            r"\1 # retained table comment", text)
+    else:
+        text = text.replace(
+            'name = "stream-tree"',
+            'name = """stream-tree\n[experiment]\n'
+            'start_time = 1900-01-01T00:00:00\n[[domain]]\n"""')
+        text = text.replace(
+            "eta_levels = [1.0,", "eta_levels = [\n# ] is only a comment\n1.0,")
+        text = text.replace(
+            "run_seconds = 3600.0 # forecast duration",
+            'run_seconds = """\n3600\n""" # forecast duration')
+    plan.experiment_config.write_text(text, encoding="utf-8")
+    plan = stream.load_stream_plan(plan.path)
+    before = tomllib.loads(text)
+    cycle = datetime(2026, 7, 23, 2)
+    destination = tmp_path / "materialized" / "experiment.toml"
+
+    stream._materialize_experiment(plan, destination, cycle=cycle, lead=2)
+
+    rendered = destination.read_text(encoding="utf-8")
+    expected = before
+    expected["experiment"]["start_time"] = cycle
+    expected["experiment"]["run_seconds"] = 7200
+    for domain in expected["domain"]:
+        domain["start_time"] = cycle
+    assert tomllib.loads(rendered) == expected
+    loaded = load_experiment(destination)
+    assert loaded.start_time == cycle
+    assert loaded.run_seconds == 7200
+    assert [loaded.domain_start_time(domain.grid_id)
+            for domain in loaded.domains] == [cycle, cycle]
+    assert rendered.count("# domain clock") == 2
+    assert "# cycle clock" in rendered
+    assert "# forecast duration" in rendered
+    assert plan.experiment_config.read_text(encoding="utf-8") == text
 
 
 def test_stream_controller_refuses_ambient_child_registry_override(

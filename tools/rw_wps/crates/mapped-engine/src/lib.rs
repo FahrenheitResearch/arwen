@@ -34,6 +34,7 @@ pub mod node;
 pub mod portable;
 pub mod refusal;
 pub mod threads;
+pub mod window;
 
 /// The ABI marker: the OUTPUT SCHEMA name, so it changes exactly when the
 /// frameset contract changes and a stale staged binary fails the static

@@ -202,6 +202,47 @@ def test_vege_flux_max_ulp_zero(tag):
     _check(got, case, "vegeflux", tag)
 
 
+def test_snow_reset_threshold_is_the_float32_literal():
+    """WRF's ``SNOWH > 0.05`` is a REAL(4) comparison, not a binary64 one.
+
+    ``module_sf_noahmplsm.F:4126`` compares ``SNOWH`` -- REAL(4) in this
+    ``RWORDSIZE=4`` checkout -- against the default-kind literal ``0.05``,
+    which the front end folds to ``0x3D4CCCCD = 0.05000000074505806``.
+    ``R4`` declares no comparison dunder, so a bare Python ``0.05`` compares
+    against the binary64 ``0.05``, and that one is SMALLER: the single
+    float32 word ``0x3D4CCCCD`` sits above the binary64 threshold and ON the
+    Fortran one, where ``>`` is False.  No float32 value lies strictly
+    between the two, so that word is the entire divergence -- and it is not
+    among the fixture's SNOWH values (``00000000`` x6, ``3EB33333``,
+    ``3CA3D70A``, ``3F1EB852``, ``3F866666``), which is why every graded
+    case passes with either spelling.
+
+    ``vegeflux05`` is the base because it differs from ``vegeflux04`` only in
+    SNOWH, and 04 (0.35 m) is a fixture case whose loop-2 TG ends above TFRZ
+    -- so the reset demonstrably fires once the depth clears the threshold,
+    and this test is measuring a live branch rather than an inert one.
+    """
+    base = TABLE["vegeflux"]["vegeflux05"]
+
+    def reset_for(word):
+        case = {"in": dict(base["in"]), "out": {}, "opt": base["opt"]}
+        case["in"]["SNOWH"] = word
+        st = call_vege_flux(case)
+        return bool(st.branches["tg_reset"]), _bits(st.TG)
+
+    at, tg_at = reset_for("3D4CCCCD")          # exactly f32(0.05)
+    above, tg_above = reset_for("3D4CCCCE")    # one float32 ULP above it
+
+    assert at is False, (
+        "SNOWH == 0x3D4CCCCD reset TG, but gfortran's `SNOWH > 0.05` is "
+        "False there -- the literal folds to that same word")
+    assert above is True, "one ULP above f32(0.05) must still reset"
+    assert tg_above == _bits(R4(273.16)), "the reset writes TG = TFRZ"
+    assert tg_at != tg_above, (
+        "the two thresholds left no trace in TG; the fixture case no longer "
+        "ends loop 2 above TFRZ and this test can no longer fail")
+
+
 def test_dead_branches_are_refused_not_guessed():
     """The pinned option identity kills SFCDIF2, CANRES, gecros and opt_stc=3.
 

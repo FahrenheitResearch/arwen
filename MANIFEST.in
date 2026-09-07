@@ -21,7 +21,7 @@
 # tests/test_package_data_coverage.py pins this file against the wheel
 # exclusion lists in both pyprojects.
 
-# The ONE rule left, and it is about the OTHER distribution rather than
+# The companion exclusion is about the OTHER distribution rather than
 # about any file's size or license.  `gpuwm-data/` belongs to the
 # companion distribution built from `gpuwm-data/pyproject.toml`, and a
 # fragment of it inside gpuwm's own artifacts is worse than either whole
@@ -60,3 +60,8 @@ prune gpuwm-data
 # operator was staging for a platform one.
 # tests/test_sdist_excludes_staged_bridges.py measures both halves.
 prune gpuwm/libexec/bridges
+
+# Keep the user manuals and their directly linked workflow references
+# available to readers of the source distribution.
+include docs/public/*-USER-MANUAL.md
+include docs/public/TILES.md docs/install.md docs/run-plan.md

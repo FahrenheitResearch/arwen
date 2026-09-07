@@ -31,6 +31,7 @@ from gpuwm.ingest.soil_contract import (
 from gpuwm.ingest.grib import Era5Snapshot
 from gpuwm.ingest.source_coverage import (
     SourceCoverageRefusal,
+    SourceProjectionRefusal,
     outside_source_grid_message as _outside_source_grid_message,
 )
 from gpuwm.static.lambert import LambertGrid
@@ -86,8 +87,16 @@ class HorizontalSnapshot:
         object.__setattr__(self, "fields", MappingProxyType(dict(self.fields)))
 
 
-def _regular_coordinates(latitude, longitude, target_lat, target_lon):
-    """Validate axes and return zero-based target coordinates in float64."""
+def _regular_coordinates(latitude, longitude, target_lat, target_lon, *,
+                         axis_space=None, target_geographic=None):
+    """Validate axes and return zero-based target coordinates in float64.
+
+    ``axis_space`` is passed straight to the refusal message and names
+    the plane the caller paired in when the source is projected;
+    ``target_geographic`` is the same target points in degrees, so the
+    refusal can print the namelist's own coordinates beside the plane
+    ones.  Neither changes any arithmetic.
+    """
     latitude = np.asarray(latitude, dtype=np.float64)
     longitude = np.asarray(longitude, dtype=np.float64)
     target_lat = np.asarray(target_lat, dtype=np.float64)
@@ -126,7 +135,8 @@ def _regular_coordinates(latitude, longitude, target_lat, target_lon):
         # do that if a genuine defect in the same call is distinguishable
         # from a domain the source does not reach.
         raise SourceCoverageRefusal(_outside_source_grid_message(
-            latitude, longitude, target_lat, target_lon, y, x, outside))
+            latitude, longitude, target_lat, target_lon, y, x, outside,
+            axis_space=axis_space, target_geographic=target_geographic))
     return np.clip(y, 0.0, latitude.size - 1.0), np.clip(
         x, 0.0, longitude.size - 1.0)
 
@@ -167,6 +177,36 @@ def global_longitude_period_columns(longitude, *, tolerance=1.0e-9):
     return period
 
 
+#: The one projection family this install's pairing transform
+#: evaluates.  A declared family is a promise about what the source's
+#: coordinate arrays MEAN, so an unevaluated one has no safe reading --
+#: hence a named refusal here rather than degrees somewhere they are not.
+SUPPORTED_SOURCE_PROJECTIONS = ("lambert_conformal",)
+
+
+def declared_source_projection(snapshot):
+    """The snapshot's projection descriptor, or ``None`` for geographic.
+
+    Every consumer of the descriptor comes through here, so the family
+    gate is stated once instead of once per reader: a source declaring a
+    family this install cannot pair against is refused by name at the
+    first look, not read as degrees by whichever reader looked second.
+    """
+
+    projection = getattr(snapshot, "projection", None)
+    if projection is None:
+        return None
+    family = str(projection["family"])
+    if family not in SUPPORTED_SOURCE_PROJECTIONS:
+        raise SourceProjectionRefusal(
+            f"the source declares projection family {family!r}, and this "
+            "install pairs a target only against "
+            + ", ".join(SUPPORTED_SOURCE_PROJECTIONS)
+            + "; its coordinate arrays are that projection's own axes, so "
+            "there is no reading of them as degrees")
+    return projection
+
+
 def source_coordinate_transform(snapshot):
     """Map target ``(lat, lon)`` into the snapshot's own axis plane.
 
@@ -186,19 +226,12 @@ def source_coordinate_transform(snapshot):
     yields ``(y_like, x_like)`` in the snapshot's axis space.
     """
 
-    projection = getattr(snapshot, "projection", None)
+    projection = declared_source_projection(snapshot)
     if projection is None:
         def identity(lat, lon):
             return lat, lon
 
         return identity, False
-    family = str(projection["family"])
-    if family != "lambert_conformal":
-        raise ValueError(
-            f"unsupported source projection family {family!r}; the "
-            "projected-source transform currently evaluates "
-            "lambert_conformal only"
-        )
     from gpuwm.mapped_source import declared_lambert_source_grid
 
     parameters = projection["parameters"]
@@ -217,6 +250,43 @@ def source_coordinate_transform(snapshot):
                 (np.asarray(x, dtype=np.float64) - 1.0) * dx / unit)
 
     return transform, True
+
+
+def source_axis_space(snapshot):
+    """Name the plane a snapshot's coordinate arrays live in, or ``None``.
+
+    ``None`` is the geographic case, where the arrays ARE degrees.  A
+    projected source's arrays are its projection axes, and any refusal
+    that quotes them has to say so or it reads as a degree window
+    somewhere it is not.  Pairs with :func:`source_coordinate_transform`:
+    one says how to get into the plane, this one says what the plane is
+    called.
+    """
+
+    projection = declared_source_projection(snapshot)
+    if projection is None:
+        return None
+    unit_km = float(projection["parameters"]["axis_unit_m"]) / 1000.0
+    return f"{projection['family']} plane in {unit_km:g} km units"
+
+
+def _refuse_uncovered_in_source_plane(snapshot, pairings):
+    """Re-raise a projected source's coverage refusal where it is named.
+
+    ``pairings`` are ``(lat, lon, y_like, x_like)`` for each staggering:
+    the target in degrees and the same target in the source's plane.  A
+    geographic source returns at once, so its arithmetic, its timings and
+    its refusal are exactly what they were.
+    """
+
+    axis_space = source_axis_space(snapshot)
+    if axis_space is None:
+        return
+    for target_lat, target_lon, y_like, x_like in pairings:
+        _regular_coordinates(
+            snapshot.latitude, snapshot.longitude, y_like, x_like,
+            axis_space=axis_space,
+            target_geographic=(target_lat, target_lon))
 
 
 def orient_global_source_longitudes(snapshot, *target_longitudes):
@@ -290,6 +360,9 @@ def orient_global_source_longitudes(snapshot, *target_longitudes):
     start %= period
     if start == 0:
         return snapshot
+    from gpuwm.ingest.atmospheric_window import WindowedAtmosphericSnapshot
+    if isinstance(snapshot, WindowedAtmosphericSnapshot):
+        snapshot = snapshot.full_snapshot()
     columns = np.arange(longitude.size, dtype=np.int64)
     take = (start + columns) % period
     rotated = float(longitude[0]) + (start + columns) * increment
@@ -391,7 +464,9 @@ def interpolate_lake_skin_temperature(
     lake_transform, _ = source_coordinate_transform(snapshot)
     target_ty, target_tx = lake_transform(target_lat, target_lon)
     y, x = _regular_coordinates(
-        snapshot.latitude, snapshot.longitude, target_ty, target_tx)
+        snapshot.latitude, snapshot.longitude, target_ty, target_tx,
+        axis_space=source_axis_space(snapshot),
+        target_geographic=(target_lat, target_lon))
     for j, i in np.argwhere(lakes):
         result[j, i] = _nearest_finite_source_water(
             skin, water, float(y[j, i]), float(x[j, i]))
@@ -439,25 +514,35 @@ class _RegularGpuPlan:
         self.target_shape = y.shape
         self.y = cp.asarray(y, dtype=cp.float32)
         self.x = cp.asarray(x, dtype=cp.float32)
+        from gpuwm.ingest.interpolation_support import regular_source_support
+        self._source_support = regular_source_support(self.source_shape, y, x)
+        self._support_coordinates = (
+            None if self._source_support is None else
+            (cp.asarray(self._source_support.y), cp.asarray(self._source_support.x)))
 
-    def apply(self, field, method="parabolic"):
+    def apply(self, field, method="parabolic", *, source_support=False):
         cp = _cupy()
+        shape, y, x = self.source_shape, self.y, self.x
+        if source_support and method != "nearest" and self._source_support is not None:
+            field = self._source_support.crop(field, self.source_shape)
+            shape = self._source_support.shape
+            y, x = self._support_coordinates
         field = cp.asarray(field, dtype=cp.float32)
-        if field.ndim < 2 or field.shape[-2:] != self.source_shape:
+        if field.ndim < 2 or field.shape[-2:] != shape:
             raise ValueError("field trailing dimensions do not match source axes")
         lead = (slice(None),) * (field.ndim - 2)
         expand = (None,) * (field.ndim - 2)
-        ny, nx = self.source_shape
+        ny, nx = shape
         if method == "nearest":
-            iy = cp.rint(self.y).astype(cp.int32)
-            ix = cp.rint(self.x).astype(cp.int32)
+            iy = cp.rint(y).astype(cp.int32)
+            ix = cp.rint(x).astype(cp.int32)
             return field[lead + (iy, ix)]
         if method == "bilinear":
             one = cp.float32(1.0)
-            iy = cp.minimum(cp.floor(self.y).astype(cp.int32), ny - 2)
-            ix = cp.minimum(cp.floor(self.x).astype(cp.int32), nx - 2)
-            fy = (self.y - iy)[expand]
-            fx = (self.x - ix)[expand]
+            iy = cp.minimum(cp.floor(y).astype(cp.int32), ny - 2)
+            ix = cp.minimum(cp.floor(x).astype(cp.int32), nx - 2)
+            fy = (y - iy)[expand]
+            fx = (x - ix)[expand]
             lower = ((one - fx) * field[lead + (iy, ix)]
                      + fx * field[lead + (iy, ix + 1)])
             upper = ((one - fx) * field[lead + (iy + 1, ix)]
@@ -467,10 +552,10 @@ class _RegularGpuPlan:
         if method != "parabolic":
             raise ValueError("method must be 'nearest', 'bilinear', or 'parabolic'")
 
-        iy = cp.floor(self.y).astype(cp.int32)
-        ix = cp.floor(self.x).astype(cp.int32)
-        fy = (self.y - iy)[expand]
-        fx = (self.x - ix)[expand]
+        iy = cp.floor(y).astype(cp.int32)
+        ix = cp.floor(x).astype(cp.int32)
+        fy = (y - iy)[expand]
+        fx = (x - ix)[expand]
         xindices = [cp.clip(ix + offset, 0, nx - 1)
                     for offset in (-1, 0, 1, 2)]
         yindices = [cp.clip(iy + offset, 0, ny - 1)
@@ -1262,12 +1347,44 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
     mass_ty, mass_tx = transform(mass_lat, mass_lon)
     u_ty, u_tx = transform(u_lat, u_lon)
     v_ty, v_tx = transform(v_lat, v_lon)
+    # The coverage refusal itself fires several frames down, inside
+    # whichever backend builds the plan, where neither the plane's name
+    # nor the domain's own degrees are in scope -- and a backend takes
+    # bare axes by design, since it interpolates for the mapped route,
+    # the packaged profiles and the native one alike.  The plane is known
+    # HERE, at the one pairing boundary, so the same check runs here
+    # first and the user reads the refusal in the plane it happened in.
+    # Geographic sources take no extra pass: there is nothing to name.
+    _refuse_uncovered_in_source_plane(
+        snapshot,
+        ((mass_lat, mass_lon, mass_ty, mass_tx),
+         (u_lat, u_lon, u_ty, u_tx),
+         (v_lat, v_lon, v_ty, v_tx)))
     mass_plan = engine.regular_plan(
         snapshot.latitude, snapshot.longitude, mass_ty, mass_tx)
     u_plan = engine.regular_plan(
         snapshot.latitude, snapshot.longitude, u_ty, u_tx)
     v_plan = engine.regular_plan(
         snapshot.latitude, snapshot.longitude, v_ty, v_tx)
+
+    from gpuwm.ingest.atmospheric_window import WindowedAtmosphericSnapshot
+    if isinstance(snapshot, WindowedAtmosphericSnapshot):
+        from gpuwm.ingest.interpolation_support import regular_source_support
+        supported = all(snapshot.window.contains(regular_source_support(
+            snapshot.window.source_shape, *_regular_coordinates(
+                snapshot.latitude, snapshot.longitude, ty, tx)))
+            for ty, tx in ((mass_ty, mass_tx), (u_ty, u_tx), (v_ty, v_tx)))
+        if not supported:
+            return interpolate_era5_to_lambert(
+                snapshot.full_snapshot(), grid, target_landmask=target_landmask,
+                water_temperature_statics=water_temperature_statics,
+                source_orography_catalog=source_orography_catalog,
+                relative_humidity_convention=relative_humidity_convention,
+                backend=backend, workers=workers, cpu_bridge=cpu_bridge)
+
+    def operand(name, values):
+        return (snapshot.operand(name, values)
+                if isinstance(snapshot, WindowedAtmosphericSnapshot) else values)
 
     source_fields = snapshot.fields
     masked_names = _MATCH_SURFACE_FIELDS | _WATER_FIELDS | _LAND_FIELDS
@@ -1306,12 +1423,12 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
         if u_name not in source_fields or v_name not in source_fields:
             missing = u_name if u_name not in source_fields else v_name
             raise ValueError(f"{missing} is required for vector wind interpolation")
-        u_source = engine.float32(source_fields[u_name])
-        v_source = engine.float32(source_fields[v_name])
-        ue_u = u_plan.apply(u_source, method="parabolic")
-        ve_u = u_plan.apply(v_source, method="parabolic")
-        ue_v = v_plan.apply(u_source, method="parabolic")
-        ve_v = v_plan.apply(v_source, method="parabolic")
+        u_source = operand(u_name, source_fields[u_name])
+        v_source = operand(v_name, source_fields[v_name])
+        ue_u = u_plan.apply(u_source, method="parabolic", source_support=True)
+        ve_u = u_plan.apply(v_source, method="parabolic", source_support=True)
+        ue_v = v_plan.apply(u_source, method="parabolic", source_support=True)
+        ve_v = v_plan.apply(v_source, method="parabolic", source_support=True)
         sina_u, cosa_u = lambert_rotation(grid, "u")
         sina_v, cosa_v = lambert_rotation(grid, "v")
         out[u_output] = engine.rotate_earth_to_grid(
@@ -1363,7 +1480,9 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
             handled.add(name)
             continue
 
-        field = engine.float32(raw)
+        # Global masked selection and RH conversion retain their existing
+        # full-source path. Other fields reach the plan before FP32 conversion.
+        field = engine.float32(raw) if name in masked_names or name == "RH" else raw
         output_name = _RENAMES.get(name, name)
         if name in masked_names:
             if name == "SST":
@@ -1487,7 +1606,8 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                     field = engine.era5_rh_to_water(
                         field, source_fields["T"])
             method = "parabolic" if name in _PARABOLIC_SCALARS or field.ndim == 3 else "bilinear"
-            out[output_name] = mass_plan.apply(field, method=method)
+            out[output_name] = mass_plan.apply(
+                operand(name, field), method=method, source_support=True)
             if name == "Z":
                 out[output_name] = out[output_name] / xp.float32(9.81)
         handled.add(name)
@@ -1562,6 +1682,8 @@ __all__ = [
     "lambert_rotation",
     "masked_nearest_gpu",
     "rotate_earth_to_grid_gpu",
+    "declared_source_projection",
+    "source_axis_space",
     "source_coordinate_transform",
     "rotate_grid_to_earth_gpu",
     "source_orography_from_catalog",

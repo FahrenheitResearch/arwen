@@ -1120,7 +1120,8 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
                    on_before_release=None,
                    static_provenance: str | None = None,
                    reground_descendant=None,
-                   earth_fixed_descendants=frozenset()
+                   earth_fixed_descendants=frozenset(),
+                   reconstruction=None
                    ) -> dict[str, object]:
     """Move a live child domain to a new placement, in place on the node.
 
@@ -1201,11 +1202,14 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
             static_provenance = PARENT_INTERPOLATED_STATICS_FALLBACK
     if state_digest is None:
         from gpuwm.ensemble.state_sha import live_state_sha256
-        state_digest = live_state_sha256
+        state_digest = (live_state_sha256 if reconstruction is None
+                        else reconstruction.state_digest)
 
     if staging not in ("device", "host"):
         raise RelocationRefusal(
             f"staging must be 'device' or 'host', got {staging!r}")
+    if reconstruction is not None and staging != "host":
+        raise RelocationRefusal("bounded streamed reconstruction requires host staging")
     parent_node = child_node.parent
     if parent_node is None:
         raise RelocationRefusal(
@@ -1292,12 +1296,14 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
         # The off-parent refusal, evaluated while the outgoing child is
         # still whole; everything after the release is committed.
         _prevalidate_placement(new_dc, parent_node)
-        source_state = snapshot_state_to_host(
+        source_state = (snapshot_state_to_host(
             child_node.state,
             tuple(relocatable_attrs()) + _DONOR_ALIGNMENT_FIELDS)
+            if reconstruction is None else reconstruction.capture_source(child_node))
         if on_before_release is not None:
             on_before_release()
-        released = release_state_arrays(child_node.state)
+        released = (release_state_arrays(child_node.state) if reconstruction is None
+                    else reconstruction.release_outgoing(child_node))
         used_after_release = _device_used_bytes()
     else:
         source_state = child_node.state
@@ -1308,12 +1314,13 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
     # parent's +-2 SINT stencil, so on the in-device path an off-grid move
     # fails HERE, before the outgoing child has been touched (the host
     # path asked the same rule above, before the release).
-    initialized = initializer(new_dc, parent_node, **extra)
+    initialized = (initializer(new_dc, parent_node, **extra) if reconstruction is None
+                   else reconstruction.initialize(new_dc, parent_node))
     # The caller's per-domain seam: map policy, and the physics driver the
     # cold-start path does not attach.  It fires BEFORE the transplant, so
     # a driver is initialised from the parent-interpolated fields and the
     # transplant's stamped diagnostics are the last write to survive.
-    if on_child_built is not None:
+    if on_child_built is not None and reconstruction is None:
         on_child_built(initialized, new_dc, parent_node)
 
     # An initializer whose base fields are blended toward the parent at
@@ -1349,7 +1356,10 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
     # seeds copy the corrected fields.
     post_transplant = getattr(initializer, "post_transplant", None)
     post_receipt = None
-    if post_transplant is not None:
+    if reconstruction is not None:
+        post_receipt = reconstruction.post_transplant(
+            source_state=source_state, target_state=initialized.state, plan=plan)
+    elif post_transplant is not None:
         post_receipt = post_transplant(
             source_state=source_state, target_state=initialized.state,
             plan=plan)
@@ -1383,7 +1393,8 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
     # state; after the stamp the current fields have changed, so the seeds
     # must be taken again or the first substep would read the cold-start
     # values over ground the transplant just corrected.
-    seeded = seed_rk_time_t_copies(initialized.state)
+    seeded = (seed_rk_time_t_copies(initialized.state) if reconstruction is None
+              else reconstruction.rk_seeds)
 
     # Everything that reads the parent has now run.  Check the parent
     # BEFORE the node is touched, so a violation leaves the live tree
@@ -1401,6 +1412,8 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
     child_node.state = initialized.state
     child_node.state._nest_restart_classification = "REBUILT"
     coupler_receipt = child_node.coupler.relocate()
+    if reconstruction is not None:
+        reconstruction.commit(child_node)
 
     # ---- the subtree: the ground moved under every descendant ----------
     # Ordered parent-first (descendant_regroundings appends before it

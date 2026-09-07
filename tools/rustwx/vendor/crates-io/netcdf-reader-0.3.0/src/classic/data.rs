@@ -288,21 +288,24 @@ pub fn read_record_variable<T: NcReadType>(
 ///
 /// Each record variable's per-record contribution is its `record_size` (already stored
 /// as vsize from the header), padded to 4-byte boundary.
-pub fn compute_record_stride(variables: &[NcVariable]) -> u64 {
-    variables
-        .iter()
-        .filter(|v| v.is_record_var)
-        .map(|v| {
-            let size = v.record_size;
-            // Pad each variable's per-record size to 4-byte boundary.
-            let rem = size % 4;
-            if rem == 0 {
-                size
-            } else {
-                size + (4 - rem)
-            }
-        })
-        .sum()
+pub fn compute_record_stride(variables: &[NcVariable]) -> Result<u64> {
+    let records: Vec<_> = variables.iter().filter(|v| v.is_record_var).collect();
+    // NetCDF classic's single-record-variable exception: records contain
+    // no inter-record alignment padding, even though header vsize is padded.
+    // A lone Times(Time,19) therefore strides 19 bytes, not 20.
+    if records.len() == 1 {
+        let variable = records[0];
+        return variable.dimensions.iter().skip(1).try_fold(
+            variable.dtype.size() as u64,
+            |bytes, dimension| bytes.checked_mul(dimension.size).ok_or_else(||
+                Error::InvalidData("record stride overflows u64".to_string())));
+    }
+    records.iter().try_fold(0u64, |total, variable| {
+        let size = variable.record_size;
+        let padding = (4 - size % 4) % 4;
+        size.checked_add(padding).and_then(|stride| total.checked_add(stride))
+            .ok_or_else(|| Error::InvalidData("record stride overflows u64".to_string()))
+    })
 }
 
 #[cfg(test)]
@@ -416,7 +419,7 @@ mod tests {
             },
         ];
         // a: 20 (already 4-aligned), b: 6 -> 8 = total 28
-        assert_eq!(compute_record_stride(&vars), 28);
+        assert_eq!(compute_record_stride(&vars).unwrap(), 28);
     }
 
     #[test]

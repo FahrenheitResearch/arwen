@@ -27,8 +27,11 @@ from gpuwm.case_data import (
     resolve_source_orography,
 )
 from gpuwm.hrrr_native_static import verified_static_catalog
-from gpuwm.ingest.horiz import _regular_coordinates
+from gpuwm.ingest.horiz import (_regular_coordinates, source_axis_space,
+                                source_coordinate_transform)
 from gpuwm.ingest.nest_init import NestedInputCatalog, ParentInitView
+from gpuwm.ingest.source_metadata import snapshot_metadata
+from gpuwm.progress import prep_stage
 from gpuwm.native_hierarchy import (
     NativeHierarchyExportResult,
     initialize_and_export_native_hierarchy,
@@ -46,7 +49,11 @@ _IMPLEMENTATION_PATHS = (
     "gpuwm/native_domain_artifacts.py",
     "gpuwm/hrrr_native_static.py",
     "gpuwm/ingest/nest_init.py",
+    "gpuwm/ingest/source_metadata.py",
     "gpuwm/static/build.py",
+    "gpuwm/static/highres_production.py",
+    "gpuwm/static/highres.py",
+    "gpuwm/static/highres_fetch.py",
     "gpuwm/wrf_direct.py",
 )
 
@@ -263,12 +270,11 @@ def _validated_forcing_series(
                 f"nested source snapshot times differ from {coordinate_name}")
     if offsets[-1] < exp.run_seconds:
         raise ValueError("nested source forcing does not cover the run")
-    # One adapter type across the series, checked WITHOUT retaining a
-    # snapshot: the set holds types, and each snapshot is released as
-    # the next is read.
-    kinds = set()
-    for index in range(len(snapshots)):
-        kinds.add(type(snapshots[index]))
+    # Lazy sources declare their fixed snapshot ABI from validated headers.
+    # Reading whole weather fields just to ask for their Python type repacked
+    # every forcing time before the actual initialization could consume it.
+    kinds = {snapshot_metadata(snapshots, index).snapshot_type
+             for index in range(len(snapshots))}
     if len(kinds) != 1:
         raise TypeError("nested source snapshots must use one adapter type")
     return snapshots, offsets, times, interval_seconds
@@ -333,16 +339,29 @@ def _validate_source_orography(
     return {"provider": "per-domain-artifacts", "domains": bound}
 
 
+def _projection_identity(snapshot) -> object:
+    """A comparable form of a snapshot's source-grid declaration.
+
+    ``None`` for a geographic source.  Only used to check that the whole
+    forcing series declares ONE source grid, alongside the axis-array
+    equality beside it.
+    """
+
+    projection = getattr(snapshot, "projection", None)
+    if projection is None:
+        return None
+    return (str(projection["family"]), dict(projection["parameters"]))
+
+
 def _spatial_coverage_receipt(
         snapshots: tuple[object, ...], grids: tuple[object, ...], exp,
         source_name: str,
 ) -> dict[str, object]:
     """Prove every child staggering has complete source donor halos."""
 
-    first_latitude = np.asarray(
-        getattr(snapshots[0], "latitude", ()), dtype=np.float64)
-    first_longitude = np.asarray(
-        getattr(snapshots[0], "longitude", ()), dtype=np.float64)
+    first = snapshot_metadata(snapshots, 0)
+    first_latitude = np.asarray(first.latitude, dtype=np.float64)
+    first_longitude = np.asarray(first.longitude, dtype=np.float64)
     if (first_latitude.ndim != 1 or first_longitude.ndim != 1
             or first_latitude.size < 4 or first_longitude.size < 4
             or not np.isfinite(first_latitude).all()
@@ -350,16 +369,36 @@ def _spatial_coverage_receipt(
         raise ValueError(
             f"{source_name} hierarchy source axes are not finite 1-D donor "
             "coordinates")
-    for snapshot in snapshots[1:]:
+    first_projection = _projection_identity(first)
+    for index in range(1, len(snapshots)):
+        snapshot = snapshot_metadata(snapshots, index)
         latitude = np.asarray(
             getattr(snapshot, "latitude", ()), dtype=np.float64)
         longitude = np.asarray(
             getattr(snapshot, "longitude", ()), dtype=np.float64)
         if (not np.array_equal(latitude, first_latitude)
-                or not np.array_equal(longitude, first_longitude)):
+                or not np.array_equal(longitude, first_longitude)
+                or _projection_identity(snapshot) != first_projection):
             raise ValueError(
                 f"{source_name} hierarchy source grid changes between "
                 "forcing times")
+
+    # ONE pairing rule, taken from the source descriptor and shared with
+    # the interpolation this receipt certifies
+    # (:func:`gpuwm.ingest.horiz.source_coordinate_transform`): a
+    # geographic source pairs with the target's degrees unchanged, and a
+    # source that is regular in its own PROJECTION plane pairs with the
+    # target projected into that plane.  Until 2.6.6 this receipt read
+    # the target's geographic degrees against whatever the source's
+    # coordinate arrays held, which is the identity only for a
+    # geographic source; against a declared Lambert source it compared
+    # degrees with projection-plane axes and refused every nested tree
+    # as uncovered, while the single-domain route -- which always went
+    # through the transform -- prepared the same case.  Nothing here is
+    # per-source: the descriptor carries the projection, and a source
+    # without one still takes the identity.
+    transform, projected_source = source_coordinate_transform(first)
+    axis_space = source_axis_space(first)
 
     ny = int(first_latitude.size)
     nx = int(first_longitude.size)
@@ -373,7 +412,9 @@ def _spatial_coverage_receipt(
             target_latitude, target_longitude = coordinates
             y, x = _regular_coordinates(
                 first_latitude, first_longitude,
-                target_latitude, target_longitude)
+                *transform(target_latitude, target_longitude),
+                axis_space=axis_space,
+                target_geographic=(target_latitude, target_longitude))
             floor_y = np.floor(y).astype(np.int64)
             floor_x = np.floor(x).astype(np.int64)
             parabolic = {
@@ -405,7 +446,9 @@ def _spatial_coverage_receipt(
         mass_latitude, mass_longitude = grid.latlon_mass()
         mass_y, mass_x = _regular_coordinates(
             first_latitude, first_longitude,
-            mass_latitude, mass_longitude)
+            *transform(mass_latitude, mass_longitude),
+            axis_space=axis_space,
+            target_geographic=(mass_latitude, mass_longitude))
         floor_my = np.floor(mass_y).astype(np.int64)
         floor_mx = np.floor(mass_x).astype(np.int64)
         masked = {
@@ -434,7 +477,7 @@ def _spatial_coverage_receipt(
             "land": int(np.sum(landsea >= 0.5)),
             "water": int(np.sum(landsea < 0.5)),
         }
-    return {
+    receipt = {
         "schema": "gpuwm-regular-source-hierarchy-coverage-v2",
         "status": "PASS",
         "source": source_name,
@@ -445,6 +488,11 @@ def _spatial_coverage_receipt(
         "masked_class_support": class_support,
         "domains": domains,
     }
+    if projected_source:
+        # Recorded only when there IS a plane, so a geographic source's
+        # receipt -- and every artifact hashed from it -- is unchanged.
+        receipt["source_axis_plane"] = axis_space
+    return receipt
 
 
 def initialize_and_export_regular_source_hierarchy(
@@ -462,13 +510,14 @@ def initialize_and_export_regular_source_hierarchy(
         source_units: Mapping[str, str] | None = None,
         workers: int = 8, preprocess_backend: str = "cpu",
         cpu_bridge=None, sfcp_to_sfcp: bool = True,
+        water_temperature_policy=None,
         soil_layer_contract=None,
         root_metadata: Mapping[str, object] | None = None,
         input_provenance: Mapping[str, object] | None = None,
         artifact_manifest_reference: str | None = None,
         stock_wrf_export: str = "required",
         statics_corridor=None,
-        soil_texture_downscale: bool = True,
+        soil_texture_downscale: bool = True, static_highres=None,
 ) -> RegularSourceHierarchyResult:
     """Feed a prepared GFS/ERA5 root and verified child inputs to the join.
 
@@ -510,52 +559,56 @@ def initialize_and_export_regular_source_hierarchy(
             "CUDA hierarchy preprocessing is deterministic only with "
             "workers=1")
 
-    snapshots, offsets, times, interval = _validated_forcing_series(
-        exp, snapshots, forcing_hours, forcing_offsets_seconds)
-    # Production ExperimentConfig carries the exact rational domain clocks.
-    # Lightweight source-adapter unit fixtures intentionally do not.
-    if hasattr(exp, "dt_exact") and hasattr(exp, "domain_start_offset_exact"):
-        from gpuwm.experiment import validate_boundary_timing
-        validate_boundary_timing(
-            exp, interval, source=f"{source_name} hierarchy forcing")
-    inventory = tuple(source_inventory)
-    units = dict(source_units or {})
-    if "SOILGEO" in inventory and str(
-            units.get("SOILGEO", "")).replace(" ", "") not in {
-                "m2s-2", "m^2s^-2", "m**2s**-2"}:
-        raise ValueError(
-            "SOILGEO hierarchy forcing requires geopotential units "
-            "m2 s-2")
-    orography_receipt = _validate_source_orography(
-        exp, snapshots, source_orography, inventory)
-    source_coverage_receipt = _spatial_coverage_receipt(
-        snapshots, grids, exp, source_name)
+    with prep_stage("hierarchy_metadata", label="Validate hierarchy source metadata"):
+        snapshots, offsets, times, interval = _validated_forcing_series(
+            exp, snapshots, forcing_hours, forcing_offsets_seconds)
+        # Production ExperimentConfig carries the exact rational domain clocks.
+        # Lightweight source-adapter unit fixtures intentionally do not.
+        if hasattr(exp, "dt_exact") and hasattr(exp, "domain_start_offset_exact"):
+            from gpuwm.experiment import validate_boundary_timing
+            validate_boundary_timing(
+                exp, interval, source=f"{source_name} hierarchy forcing")
+        inventory = tuple(source_inventory)
+        units = dict(source_units or {})
+        if "SOILGEO" in inventory and str(
+                units.get("SOILGEO", "")).replace(" ", "") not in {
+                    "m2s-2", "m^2s^-2", "m**2s**-2"}:
+            raise ValueError(
+                "SOILGEO hierarchy forcing requires geopotential units "
+                "m2 s-2")
+        orography_receipt = _validate_source_orography(
+            exp, snapshots, source_orography, inventory)
+        source_coverage_receipt = _spatial_coverage_receipt(
+            snapshots, grids, exp, source_name)
 
     state = root_initial_result.state
     if getattr(state, "lateral_boundaries", None) is not root_boundaries:
         raise ValueError(
             "prepared root state does not carry its complete external LBC "
             "sequence")
-    static_catalog, static_receipt = verified_static_catalog(
-        Path(wps_namelist), Path(geog_root),
-        [domain.grid_id for domain in exp.domains],
-    )
-    catalog_provenance = {
-        "adapter": f"{source_name.lower()}-regular-grid-hierarchy-v1",
-        "source_manifest_sha256": source_manifest_sha256,
-        "static_catalog_receipt": static_receipt,
-        "source_orography": orography_receipt,
-        "source_coverage": source_coverage_receipt,
-    }
-    catalog = NestedInputCatalog(
-        snapshots=snapshots,
-        static_catalog=static_catalog,
-        inventory=inventory,
-        files=tuple(static_catalog.files),
-        units=units,
-        provenance=catalog_provenance,
-        soil_texture_downscale=bool(soil_texture_downscale),
-    )
+    with prep_stage("hierarchy_static", label="Verify hierarchy static fields"):
+        static_catalog, static_receipt = verified_static_catalog(
+            Path(wps_namelist), Path(geog_root),
+            [domain.grid_id for domain in exp.domains],
+        )
+        catalog_provenance = {
+            "adapter": f"{source_name.lower()}-regular-grid-hierarchy-v1",
+            "source_manifest_sha256": source_manifest_sha256,
+            "static_catalog_receipt": static_receipt,
+            "source_orography": orography_receipt,
+            "source_coverage": source_coverage_receipt,
+        }
+        catalog = NestedInputCatalog(
+            snapshots=snapshots,
+            static_catalog=static_catalog,
+            inventory=inventory,
+            files=tuple(static_catalog.files),
+            units=units,
+            provenance=catalog_provenance,
+            soil_texture_downscale=bool(soil_texture_downscale),
+            water_temperature_policy=water_temperature_policy,
+            static_highres=static_highres,
+        )
     root = ParentInitView(
         cfg=exp.root, grid=grids[0], state=state)
     provenance = dict(input_provenance or {})
@@ -623,7 +676,7 @@ def initialize_and_export_regular_source_hierarchy(
     corridor_receipt = emit_statics_corridor_set(
         exp=exp, grids=grids, static_catalog=static_catalog,
         directory=Path(artifact_output) / STATICS_CORRIDOR_DIRNAME,
-        statics_corridor=statics_corridor)
+        statics_corridor=statics_corridor, static_highres=static_highres)
     return RegularSourceHierarchyResult(
         hierarchy=hierarchy,
         static_catalog_receipt=static_receipt,

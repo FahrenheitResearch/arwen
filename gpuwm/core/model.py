@@ -406,6 +406,34 @@ SCHEME_SCOPED_RUN_FIELDS: dict[int, tuple[str, ...]] = {
     50: ("p3_backend",),
 }
 
+#: The adaptive-timestep surface, scoped OFF the restart identity whenever
+#: ``use_adaptive_time_step`` is false -- see ``restart_identity_payload``.
+#: The flag itself is in the tuple because "off" is the state every
+#: checkpoint written before this block existed describes, so it must drop
+#: out entirely rather than appear as an added false.
+ADAPTIVE_TIMESTEP_RUN_FIELDS: tuple[str, ...] = (
+    "use_adaptive_time_step", "step_to_output_time", "adaptation_domain",
+    "target_cfl", "target_hcfl", "max_step_increase_pct",
+    "starting_time_step", "starting_time_step_den",
+    "max_time_step", "max_time_step_den",
+    "min_time_step", "min_time_step_den",
+)
+
+#: The same surface MINUS the feature flag: controller POLICY.
+#:
+#: These govern how the clock behaves from the resume point onward; they
+#: are not model state, and the checkpoint does not depend on them.  A
+#: restart may therefore change them -- see ``gpuwm.io.restart``, which
+#: allows it and reports the change rather than refusing, because a
+#: checkpoint whose controller setting cannot be altered is useless for
+#: recovering the run that setting killed.
+#:
+#: ``use_adaptive_time_step`` is excluded deliberately.  Flipping it
+#: leaves the carried controller state describing a clock that no longer
+#: runs, so that stays a refusal.
+ADAPTIVE_POLICY_RUN_FIELDS: frozenset[str] = frozenset(
+    ADAPTIVE_TIMESTEP_RUN_FIELDS) - {"use_adaptive_time_step"}
+
 
 def restart_identity_payload(exp) -> dict:
     """The experiment, minus everything a restart may legally change.
@@ -418,9 +446,21 @@ def restart_identity_payload(exp) -> dict:
     the run, which is the reason people configure checkpoints at all.
     """
 
-    experiment = _jsonable(exp)
+    from gpuwm.experiment import experiment_config_document
+    experiment = _jsonable(experiment_config_document(exp))
+    # The new attribute follower is an explicitly selected trajectory policy.
+    # Bind its source, reduction, direction and movement controls while keeping
+    # the pre-existing relocation exemption byte-identical for legacy signals.
+    attribute_policy = experiment.get("relocation", {})
+    if (attribute_policy.get("follow") or {}).get("field") == "attribute":
+        attribute_policy = {key: value for key, value in attribute_policy.items()
+                            if key != "track"}
+    else:
+        attribute_policy = None
     for name in RESTART_TOLERATED_EXPERIMENT_FIELDS:
         experiment.pop(name, None)
+    if attribute_policy is not None:
+        experiment["relocation"] = attribute_policy
     # ABSENT [perturbation] stays absent from the identity payload, not
     # present-as-null: every experiment written before the field existed
     # keeps its exact fingerprint and restart identity (the mixed_edges
@@ -522,6 +562,46 @@ def restart_identity_payload(exp) -> dict:
         if run.get("surface_radiation_policy") == (
                 SURFACE_RADIATION_POLICY_REQUIRED):
             run.pop("surface_radiation_policy", None)
+        # THE ADAPTIVE-TIMESTEP BLOCK, on that same convention and for the
+        # same reason.  Twelve fields joined RunConfig at once, and an
+        # unscoped RunConfig field moves EVERY experiment fingerprint
+        # whether or not it changes a number -- which would have refused
+        # every checkpoint already written, for a controller that is off.
+        #
+        # OFF is the whole argument, and it is stronger here than
+        # "the default value": with use_adaptive_time_step false the
+        # controller never runs, so the other eleven are read by nothing
+        # at all and cannot have influenced a single byte of the
+        # trajectory.  Dropping them discards no information.
+        #
+        # ON, the flag and the CONFIGURED step still bind value for value.
+        #
+        # The POLICY does not, and this paragraph used to say it did: "a
+        # resume that changed target_cfl, a clamp, or the growth bound
+        # would be integrating on a different clock from the leg that
+        # wrote the checkpoint, and that is not the same experiment."
+        # True, and the conclusion drawn from it was wrong -- integrating
+        # on a different clock from here on is precisely what a recovery
+        # resume is for, and binding it made restart_interval_s useless
+        # for the one case that most wants it: a run that died because of
+        # the setting you now need to change.
+        #
+        # `gpuwm.io.restart` allows such a resume and REPORTS the change,
+        # naming each field and its old -> new value.  This fingerprint
+        # has to agree with that, or it refuses what the walk beside it
+        # just permitted -- which is what happened, and it surfaced as a
+        # relocation-lineage refusal because a moved tree picks that
+        # message for ANY fingerprint mismatch.
+        #
+        # `dt` stays bound: the identity carries the CONFIGURED step, not
+        # the adapted one, so it is stable across a run and changing it
+        # really is a different experiment.
+        if not run.get("use_adaptive_time_step", False):
+            for name in ADAPTIVE_TIMESTEP_RUN_FIELDS:
+                run.pop(name, None)
+        else:
+            for name in ADAPTIVE_POLICY_RUN_FIELDS:
+                run.pop(name, None)
     return experiment
 
 
@@ -578,12 +658,12 @@ def uses_modern_rrtmgp_workspace(exp) -> bool:
     (``workspace_bytes`` under ``uses_legacy``), never a held workspace
     -- constructing (and cross-checking) the modern workspace for it
     both wastes the allocation and trips the memory-ledger drift guard.
-    Mixed 4/4 variants are already rejected by the estimator.
+    Mixed variants retain this modern workspace while legacy engines run.
     """
     from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY, rrtmg_variant
 
     variants_44 = {rrtmg_variant(dc.run) for dc in exp.domains
-                   if radiation_scheme_ids(dc.run) == (4, 4)}
+                   if 4 in radiation_scheme_ids(dc.run)}
     return bool(variants_44) and variants_44 != {RRTMG_VARIANT_LEGACY}
 
 
@@ -633,6 +713,7 @@ def build_experiment(exp, case_data) -> ExperimentState:
     from gpuwm.core.preflight import estimate_experiment
     from gpuwm.core.state import (build_shared_dycore_state_workspace,
                                   build_shared_scratch_arena)
+    from gpuwm.ingest.grib import clear_forcing_caches
     from gpuwm.ingest.lateral_bc import bind_lateral_boundary_clock
     from gpuwm.ingest.nest_init import initialize_child
     from gpuwm.ingest.preflight import build_input_catalog
@@ -700,6 +781,22 @@ def build_experiment(exp, case_data) -> ExperimentState:
         exp, case_data, input_catalog=catalog,
         forcing_by_time=snapshots, scratch_arena=arena,
         dycore_state_workspace=dycore_state_workspace)
+    # The raw decode is spent: the root's initial state and every
+    # boundary frame are built from it above, and nothing below reads it.
+    # The children about to be initialized -- and the mid-run delayed
+    # start, spawn and relocation initializers that reach the same door
+    # later -- take their source snapshot from the CATALOG
+    # (gpuwm.ingest.nest_init._initial_snapshot), which holds its own
+    # frozen copies and is untouched here.  Held to the end of the run
+    # this made the ERA5 decode, not the forecast, the host-memory
+    # binding phase: the catalog's copies, a SECOND frozen set under the
+    # runtime's own cache key, and the partials both were copied from.
+    # The mapping is dropped as well as the caches -- a cleared cache
+    # frees nothing while a local still names the arrays.  Byte-inert:
+    # these caches memoize a pure function of immutable input bytes, so
+    # the only thing a later decode of the same key loses is time.
+    del snapshots
+    clear_forcing_caches()
     root_dc = exp.root
     root = DomainNode(
         cfg=root_dc, grid=prepared_root.grid,
@@ -723,10 +820,12 @@ def build_experiment(exp, case_data) -> ExperimentState:
     nodes: dict[int, DomainNode] = {root_dc.grid_id: root}
     prepared_by_id = {root_dc.grid_id: prepared_root}
 
-    root_radiation = root.state.physics.radiation_callable
-    if root_radiation is not None and radiation_workspace is not None:
-        root_radiation.column_chunk = radiation_workspace.column_chunk
-        root_radiation.chunk_workspace = radiation_workspace
+    from gpuwm.core.cam_ozone import configure_cam_ozone
+    configure_cam_ozone(root.state, root_dc.run, exp=exp, dc=root_dc, grid=root.grid)
+    root_radiation = (root.state.physics.radiation_callable
+                      if root.state.physics is not None else None)
+    from gpuwm.core.radiation_composition import attach_modern_workspace
+    attach_modern_workspace(root_radiation, radiation_workspace)
 
     initial_perturbation_receipts = []
     if exp.perturbation is not None:
@@ -848,7 +947,7 @@ def execute_experiment(
         skip_feedback_path: bool = False,
         pool_trim_per_period: bool = True,
         relocation_runner=None, steppers=None, step_observer=None,
-        experiment=None):
+        experiment=None, delayed_child_initializer=None):
     """Wire one :class:`ExperimentState` into ``execute_schedule``.
 
     STEP calls the domain's existing dycore, FORCE calls its node-facing
@@ -891,6 +990,13 @@ def execute_experiment(
     unchanged: the same clock refresh either side, the same health
     validators, the same ``refl_10cm_due`` handshake, the same history
     and restart ops on the same cadences.
+
+    ``delayed_child_initializer`` optionally supplies a route's dated
+    child analysis at activation. It receives the child node and exact
+    clock and returns ``(initialized, prepared)`` with the same grid/state
+    and prepared-case attributes as the ordinary case-data initializer.
+    The executor still owns the clock refresh, coupler, initial feedback,
+    health validation and activation marker. Omission uses the input catalog.
 
     ``step_observer`` is called once per DOMAIN per model time step,
     immediately after that domain's STEP op commits, with
@@ -984,21 +1090,11 @@ def execute_experiment(
 
     validators = {}
     if validate_state:
-        # BOUND TO node.state, WHICH A STREAMED DOMAIN DOES NOT LIVE IN.
-        # ``[tiles] store = "host"`` moves the domain into a pinned host
-        # store (``gpuwm.core.streaming.attach``, via ``pinned_copy``, which
-        # COPIES) and the sweep never writes ``node.state`` again, so under
-        # streaming this validator inspects a snapshot of t = 0 and passes
-        # forever.  Refreshing the state is not an option -- the premise of
-        # the mode is that the domain does not fit on the card -- so the fix
-        # is a per-tile fold, which ``stability_report`` has had since
-        # ``gpuwm.core.streaming.StreamedStability`` and this descriptor
-        # kernel has not: it runs one block per whole field and cannot be
-        # windowed onto a tile's interior.  See the same note in
-        # ``gpuwm.runtime.integrate_prepared_case``.  It is armed for a
-        # resident tree, which is every tree that configures no [tiles].
-        from gpuwm.core.health import StateHealthValidator
-        validators = {node.cfg.grid_id: StateHealthValidator(node.state)
+        # A streamed domain lives in its canonical store, even when preparation
+        # began resident. Bind the existing health rules to that store;
+        # unstreamed domains keep the existing resident validator.
+        from gpuwm.core.health import health_validator_for_domain
+        validators = {node.cfg.grid_id: health_validator_for_domain(model, node)
                       for node in model.walk_parent_first()}
         for validator in validators.values():
             validator.require_healthy(phase="initialized-or-restored")
@@ -1023,6 +1119,10 @@ def execute_experiment(
         stepper = steppers.get(int(grid_id))
         return stepper if is_streaming(stepper) else None
 
+    def allocation_scope(grid_id):
+        stream = _streamed(grid_id)
+        return nullcontext() if stream is None else stream.allocation_scope()
+
     def on_period_begin(period, clocks) -> None:
         status.schedule_cursor = PERIOD_BEGIN
         status.prior_feedback_committed = True
@@ -1041,54 +1141,54 @@ def execute_experiment(
         # why it is done here (once per cadence) and not per step.
         from gpuwm.core.streaming import TRACKER_PLANE_CARRIERS
 
-        parent_stream = None
-        # Attribute access in a try, never reflection -- the same idiom
-        # the dormant-target test above uses, for the same reason: this
-        # module is AST-audited against getattr/setattr
-        # (tests/test_clock.py::test_no_float_elapsed_accumulation_audit),
-        # and the only callers without the attribute are the bare runner
-        # stubs in the refusal tests.
+        parent_streams = {}
+        # Bare runner stubs in the refusal controls predate collections.
         try:
             collection = bool(relocation_runner.is_collection)
         except AttributeError:
             collection = False
-        if collection and relocation_runner.is_due(model, clocks):
-            for target_gid in relocation_runner.target_grid_ids:
-                if target_gid not in model.nodes_by_grid_id:
-                    continue
-                target_node = model.node(target_gid)
-                if target_node.parent is not None and _streamed(target_node.parent.cfg.grid_id) is not None:
-                    raise RuntimeError(
-                        f"per-domain [follow] target d{target_gid:02d} has a "
-                        "STREAMED parent. Independent follower windows are "
-                        "resident scratch slots and are not in the fixed "
-                        "streaming manifest; reading them from node.state "
-                        "would steer the nest on an attach-time plane. Keep "
-                        "that parent resident or use legacy [relocation].")
-        if (not collection) and relocation_runner.is_due(model, clocks):
-            target = model.node(int(relocation_runner.config.grid_id))
-            if _streamed(target.cfg.grid_id) is not None:
+        due_targets = ()
+        if collection:
+            due_targets = tuple(
+                gid for gid in relocation_runner.target_grid_ids
+                if gid in model.nodes_by_grid_id
+                and relocation_runner.runners[gid].is_due(model, clocks))
+        elif relocation_runner.is_due(model, clocks):
+            due_targets = (int(relocation_runner.config.grid_id),)
+        for gid in due_targets:
+            target = model.node(gid)
+            runner = relocation_runner.runners[gid] if collection else relocation_runner
+            try:
+                reconstruction_factory = runner.streamed_reconstruction_factory
+            except AttributeError:
+                reconstruction_factory = None
+            store_rebuild = (_streamed(gid) is not None
+                             and callable(reconstruction_factory))
+            if _streamed(gid) is not None and not store_rebuild:
                 raise RuntimeError(
-                    f"[relocation] targets grid {int(target.cfg.grid_id)}, "
-                    "which is STREAMED.  Relocating a streamed child means "
-                    "rebuilding its store, its tile plan, its geography "
-                    "gathers and its packed nest-table windows on a new "
-                    "footprint mid-run, and none of that is built or "
-                    "gated; a relocation that replaced node.state under a "
-                    "live TiledRun would integrate a domain that no longer "
-                    "exists.  Run the moving child resident (stream the "
-                    "parent instead), or turn [relocation] off.")
-            if target.parent is not None:
-                parent_stream = _streamed(target.parent.cfg.grid_id)
-            if parent_stream is not None:
-                parent_stream.sync_to_state()
+                    f"[relocation] targets grid {gid}, which is STREAMED. "
+                    "Relocation must rebuild its store, tile plan, geography "
+                    "gathers and packed nest-table windows before replacing "
+                    "the live stepper; that reconstruction is not implemented. "
+                    "Run the moving child resident (the parent may stream).")
+            if target.parent is not None and not store_rebuild:
+                parent_gid = int(target.parent.cfg.grid_id)
+                parent_stream = _streamed(parent_gid)
+                if parent_stream is not None and parent_gid not in parent_streams:
+                    # The tracker reads its canonical plane directly; an
+                    # accepted move also needs the existing full-state donor.
+                    parent_stream.sync_to_state()
+                    parent_streams[parent_gid] = parent_stream
         outcome = relocation_runner.on_period_begin(
             model, clocks, period=period,
             # The executor's validator holds live references into the
             # outgoing child; dropping it here is what lets the
             # host-staged release actually free the device bytes.
             before_rebuild=lambda gid: validators.pop(gid, None))
-        if parent_stream is not None:
+        for parent_stream in parent_streams.values():
+            # reset_tracker_window already zeroes every live copy, including
+            # generated follower carriers. Preserve the legacy fixed-plane
+            # synchronization for providers that write those planes directly.
             parent_stream.sync_from_state(TRACKER_PLANE_CARRIERS)
         rows = [] if outcome is None else (
             outcome.get("outcomes", []) if outcome.get("event") == "batch"
@@ -1098,8 +1198,8 @@ def execute_experiment(
                 continue
             gid = int(row["grid_id"])
             if validate_state:
-                from gpuwm.core.health import StateHealthValidator
-                validators[gid] = StateHealthValidator(model.node(gid).state)
+                from gpuwm.core.health import health_validator_for_domain
+                validators[gid] = health_validator_for_domain(model, model.node(gid))
                 validators[gid].require_healthy(
                     phase=f"post-relocation.d{gid:02d}")
 
@@ -1116,23 +1216,26 @@ def execute_experiment(
             return
         context = model._activation_context
         exp = context["experiment"]
-        data = context["case_data"]
         # Deliberately no initial_perturbation here: a delayed-start
         # child initializes from the analysis at its ACTIVATION time,
         # after the perturbation instant, and the receipts already say
         # so (build_experiment's delayed-start row).
-        initialized = initialize_child(
-            node.cfg, node.parent, model._input_catalog, exp.vertical,
-            source_orography=data.source_orography,
-            scratch_arena=arena,
-            dycore_state_workspace=dycore_state_workspace,
-            sfcp_to_sfcp=data.sfcp_to_sfcp)
-        prepared = prepare_child_case(
-            initialized, node.cfg, exp=exp, data=data,
-            forcing_times=context["forcing_times"],
-            radiation_workspace=context["radiation_workspace"],
-            radiation_parent=(
-                node.parent.state.physics.radiation_callable))
+        if delayed_child_initializer is None:
+            data = context["case_data"]
+            initialized = initialize_child(
+                node.cfg, node.parent, model._input_catalog, exp.vertical,
+                source_orography=data.source_orography,
+                scratch_arena=arena,
+                dycore_state_workspace=dycore_state_workspace,
+                sfcp_to_sfcp=data.sfcp_to_sfcp)
+            prepared = prepare_child_case(
+                initialized, node.cfg, exp=exp, data=data,
+                forcing_times=context["forcing_times"],
+                radiation_workspace=context["radiation_workspace"],
+                radiation_parent=(
+                    node.parent.state.physics.radiation_callable))
+        else:
+            initialized, prepared = delayed_child_initializer(node, clock)
         node.grid = initialized.grid
         node.state = initialized.state
         node.coupler = ConcreteNestCoupler(
@@ -1148,8 +1251,8 @@ def execute_experiment(
             node.coupler.feedback_commit(node)
             node.coupler.feedback_finalize(node)
         if validate_state:
-            from gpuwm.core.health import StateHealthValidator
-            validators[grid_id] = StateHealthValidator(node.state)
+            from gpuwm.core.health import health_validator_for_domain
+            validators[grid_id] = health_validator_for_domain(model, node)
             validators[grid_id].require_healthy(
                 phase=f"delayed-start.d{grid_id:02d}")
 
@@ -1166,6 +1269,9 @@ def execute_experiment(
         started_wall = time.perf_counter()
         with domain_turn(("STEP", grid_id)):
             node = model.node(grid_id)
+            if adaptive_driver is not None:
+                # After any relocation rebuild, before the solve.
+                adaptive_driver.before_step(grid_id)
             if node.clock is not clock:
                 raise RuntimeError(
                     "DomainNode clock identity drifted from executor")
@@ -1213,9 +1319,30 @@ def execute_experiment(
                 spectral_seam.after_step(
                     node.state, grid_id, node.cfg.run,
                     step_count=clock.step_count + 1,
-                    model_seconds=((clock.ticks + clock.spec.step_ticks)
+                    model_seconds=((clock.ticks + clock.step_ticks)
                                    / clock.tick_den),
                     streamed=streamed_here is not None)
+            if validate_state:
+                # Adaptive single-domain runs use this executor too. Keep the
+                # existing per-step NaN and live-layer CFL gate before output,
+                # feedback or checkpoint consumers can observe this state.
+                # Streamed reports come from the canonical sweep, not its
+                # unchanged resident initialization snapshot.
+                from gpuwm.core.streaming import step_health
+
+                report = step_health(steppers.get(grid_id), node.state,
+                                     node.cfg.run,
+                                     boundary_width=node.cfg.run.spec_bdy_width)
+                if report["nan"]:
+                    raise RuntimeError(
+                        f"d{grid_id:02d} integration produced a non-finite state "
+                        f"at model step {clock.step_count + 1}")
+                cfl = report["cfl"]
+                if cfl is not None and not math.isfinite(float(cfl)):
+                    raise RuntimeError(
+                        f"d{grid_id:02d} integration produced a non-finite "
+                        f"vertical Courant number at model step {clock.step_count + 1}: "
+                        "a model layer's live thickness is non-positive or non-finite")
             poison()
             if validators and health_debug:
                 validators[grid_id].require_healthy(
@@ -1245,14 +1372,22 @@ def execute_experiment(
             try:
                 step_observer(
                     grid_id=grid_id, step_count=clock.step_count + 1,
-                    model_seconds=((clock.ticks + clock.spec.step_ticks)
+                    model_seconds=((clock.ticks + clock.step_ticks)
                                    / clock.tick_den),
-                    step_wall_seconds=time.perf_counter() - started_wall)
+                    step_wall_seconds=time.perf_counter() - started_wall,
+                    # The step JUST TAKEN, from the same integer-tick
+                    # lattice as model_seconds above -- not the step the
+                    # clock is about to adopt.  Under an adaptive dt the
+                    # two differ on most steps, and reporting the next
+                    # one would label every line with a step that has
+                    # not happened yet.  Whether this is emitted at all
+                    # is the log's decision, not this seam's.
+                    dt=clock.step_ticks / clock.tick_den)
             except Exception:  # noqa: BLE001 - telemetry never fails a run
                 pass
 
     def on_force(child_id, parent_id, child_clock, parent_clock) -> None:
-        with domain_turn(("FORCE", child_id, parent_id)):
+        with domain_turn(("FORCE", child_id, parent_id)), allocation_scope(child_id):
             node = model.node(child_id)
             if node.parent is None or node.parent.cfg.grid_id != parent_id:
                 raise RuntimeError(
@@ -1312,7 +1447,8 @@ def execute_experiment(
         # BOTH ends streamed in ``force``).
         status.mutation_in_progress = True
         try:
-            node.coupler.feedback_commit(node)
+            with allocation_scope(child_id):
+                node.coupler.feedback_commit(node)
         finally:
             status.mutation_in_progress = False
 
@@ -1321,7 +1457,8 @@ def execute_experiment(
         node = model.node(child_id)
         status.mutation_in_progress = True
         try:
-            node.coupler.feedback_finalize(node)
+            with allocation_scope(child_id):
+                node.coupler.feedback_finalize(node)
         finally:
             status.mutation_in_progress = False
             status.pending_feedback = status.pending_feedback - 1
@@ -1329,6 +1466,9 @@ def execute_experiment(
 
     def on_history(grid_id, ticks) -> None:
         if history_handler is not None:
+            if validators:
+                validators[grid_id].require_healthy(
+                    phase=f"pre-history.d{grid_id:02d}")
             history_handler(model, model.node(grid_id), ticks)
         if io_manager is not None:
             status.pending_d2h = int(io_manager.pending)
@@ -1438,23 +1578,59 @@ def execute_experiment(
     # the first outer step's wall time is the step's and not the
     # transition heartbeat's.
     period_wall[0] = time.perf_counter()
-    execution = execute_schedule(
-        model.schedule, on_step=on_step, on_force=on_force,
-        on_feedback_prepare=on_feedback_prepare,
-        on_feedback_commit=on_feedback_commit,
-        on_feedback_finalize=on_feedback_finalize,
-        on_history=on_history, on_restart=on_restart,
-        on_domain_start=on_domain_start,
-        on_period_begin=on_period_begin, on_period_end=on_period_end,
-        on_period_commit=on_period_commit,
-        skip_feedback_path=skip_feedback_path, clocks=clocks,
-        start_period=start_period,
-        started_grid_ids=(
-            node.cfg.grid_id for node in model.walk_parent_first()
-            if bool(node._started)),
-        committed_initial_history_grid_ids=(
-            model._resume_committed_history_grid_ids
-            if bool(model._resumed) else ()))
+    # ADAPTIVE TIME STEP.  Off, this is None and execute_schedule takes
+    # its precomputed periodic walk exactly as before -- the whole feature
+    # is one argument that stays None.  On, the driver owns every float:
+    # clock.py's walk is AST-audited integer-only, so what reaches it is a
+    # step_ticks and nothing else.
+    adaptive_driver = None
+    if bool(model.root.cfg.run.use_adaptive_time_step):
+        from gpuwm.core.adaptive_clock import AdaptiveClockDriver
+        from gpuwm.core.dycore import (enable_wrf_cfl_recording,
+                                       take_wrf_cfl)
+        # The controller reads the same reduction the probe does rather
+        # than carrying a second copy of the kernel.
+        enable_wrf_cfl_recording()
+        adaptive_driver = AdaptiveClockDriver(
+            model, cfl_source=take_wrf_cfl,
+            tick_den=model.schedule.clock.tick_den,
+            carrier_source=lambda gid: (
+                None if _streamed(gid) is None
+                else _streamed(gid).carrier_provenance()),
+            map_factor_source=lambda gid: (
+                None if _streamed(gid) is None
+                else _streamed(gid).maximum_map_factor()))
+
+    try:
+        execution = execute_schedule(
+            model.schedule, on_step=on_step, on_force=on_force,
+            on_period_steps=adaptive_driver,
+            on_feedback_prepare=on_feedback_prepare,
+            on_feedback_commit=on_feedback_commit,
+            on_feedback_finalize=on_feedback_finalize,
+            on_history=on_history, on_restart=on_restart,
+            on_domain_start=on_domain_start,
+            on_period_begin=on_period_begin, on_period_end=on_period_end,
+            on_period_commit=on_period_commit,
+            skip_feedback_path=skip_feedback_path, clocks=clocks,
+            start_period=start_period,
+            started_grid_ids=(
+                node.cfg.grid_id for node in model.walk_parent_first()
+                if bool(node._started)),
+            committed_initial_history_grid_ids=(
+                model._resume_committed_history_grid_ids
+                if bool(model._resumed) else ()))
+    finally:
+        if adaptive_driver is not None:
+            # THE FOLD IS A MODULE GLOBAL, so it outlives this run.  A
+            # second experiment in the same process -- a chained `gpuwm
+            # go`, a test module -- would otherwise keep launching
+            # w_cfl_stat every RK stage for a run that never asked for
+            # it, hold 4.72 MB per domain, and read this run's row for a
+            # grid_id it reuses.  In a finally so a refused run releases
+            # it too.
+            from gpuwm.core.dycore import reset_wrf_cfl_recording
+            reset_wrf_cfl_recording()
     if relocation_runner is not None:
         relocation_runner.close_receipt(model)
     return execution

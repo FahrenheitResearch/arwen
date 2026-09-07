@@ -93,6 +93,72 @@ def test_the_device_constants_are_the_cpu_authority_bit_for_bit():
     assert not wrong, wrong
 
 
+def test_the_integer_powers_are_expanded_on_both_sides_not_powf():
+    """An INTEGER Fortran exponent is a multiplication chain, not ``powf``.
+
+    ``module_mp_p3.F:6681`` and ``:6684`` are
+    ``nc = 6.*lamc**3*qc/(pi*rhow*(mu_c+3.)*(mu_c+2.)*(mu_c+1.))`` and
+    ``:2988`` is ``dum = (1./lamc(i,k))**3`` -- unsuffixed integer
+    exponents.  gfortran never calls ``powf`` for those: MEASURED on
+    gfortran 15.2.0 over 200,000 float32 arguments, ``x**3`` is bit-equal
+    to ``(x*x)*x`` at -O0, -O1, -O2 and -O3, with zero differing.  glibc
+    ``powf(x, 3.0f)`` is a DIFFERENT function: it disagrees with that chain
+    on 77,273 of 300,000 log-uniform arguments over [1e-6, 1e8].
+
+    ``p3.cu`` has always expanded these -- ``:457``, ``:462`` write
+    ``6.0f * ((lamc * lamc) * lamc) * qc``, ``:1066`` writes
+    ``(d * d) * d`` -- and ``p3.py`` did not, so the two arms of one scheme
+    computed different functions at the same statement.
+
+    Named breakage, and it is reachable through a shipped seam: at
+    ``qc = 7.389125e-06``, ``nc = 14634.35``, ``rho = 0.50076896``,
+    ``get_cloud_dsd2`` takes the ``lamc < lammin`` limiter and rebuilds
+    ``nc``.  The chain gives ``0x482ecf02``; ``powf`` gives ``0x482ecf01``.
+
+    ``:2988`` sits inside ``p3_main``'s loop and cannot be driven from
+    outside, so it is held by the source half of this gate: no ``**
+    f32(3.0)`` may survive on a VARIABLE base.  The three that remain are
+    module-scope ``CONS`` folds over literals, which the p3 verify pass
+    recomputed both ways and found bit-identical.
+    """
+    from gpuwm.core import p3 as P
+
+    qc, nc, rho = np.float32(7.389125e-06), np.float32(14634.35), \
+        np.float32(0.50076896)
+    nc_grd, mu_c, _nu, lamc, _cdist, _cdist1 = P.get_cloud_dsd2(
+        qc, nc, rho, np.float32(1.0))
+
+    assert lamc == (mu_c + np.float32(1.0)) * np.float32(2.5e4), (
+        "this input no longer takes the lamc < lammin limiter, so the gate "
+        "would pass on a p3.py that still calls powf there")
+    denom = (P.PI * P.RHOW * (mu_c + np.float32(3.0))
+             * (mu_c + np.float32(2.0)) * (mu_c + np.float32(1.0)))
+    chain = np.float32(6.0) * ((lamc * lamc) * lamc) * qc / denom
+    powf = np.float32(6.0) * (lamc ** np.float32(3.0)) * qc / denom
+    assert chain.tobytes() != powf.tobytes(), (
+        "powf and the multiplication chain agree on this input, so the "
+        "gate cannot tell the two apart any more")
+    assert np.float32(nc_grd).tobytes() == chain.tobytes(), (
+        f"get_cloud_dsd2 returned nc_grd={nc_grd!r}; the Fortran's integer "
+        f"exponent gives {chain!r}, glibc powf gives {powf!r}")
+
+    source = (ROOT / "gpuwm" / "core" / "p3.py").read_text(encoding="utf-8")
+    live = [
+        f"{n}: {line.strip()}"
+        for n, line in enumerate(source.splitlines(), 1)
+        if "** f32(3.0)" in line and not line.startswith("CONS")
+    ]
+    assert live == [], (
+        "p3.py still raises a variable to an integer Fortran exponent with "
+        "powf; gfortran expands these to multiplications: " + "; ".join(live))
+
+    kernel = P3_CU.read_text(encoding="utf-8")
+    assert kernel.count("((lamc * lamc) * lamc)") == 2, (
+        "p3.cu stopped expanding :6681/:6684, so the two arms would agree "
+        "on the WRONG function")
+    assert "dum = (d * d) * d;" in kernel, "p3.cu stopped expanding :2988"
+
+
 def test_no_decimal_literal_in_the_kernel_escapes_float32():
     """``1.0`` is a DOUBLE in CUDA C, and ``x * 1.0`` promotes the whole
     expression to double.

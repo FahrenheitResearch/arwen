@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm"
-version = "2.6.5"
+version = "2.7.0"
 description = "Native WRF preprocessing and GPU-native limited-area weather modeling"
 readme = "README.md"
 # The SPDX expression (PEP 639), not `{ file = "LICENSE" }`: the file
@@ -17,7 +17,14 @@ readme = "README.md"
 # field, which is what `pip show gpuwm` prints.  The license text
 # itself still ships in the wheel via `license-files` below.
 license = "Apache-2.0"
-license-files = ["LICENSE", "NOTICE"]
+# `licenses/*` is not decoration: MIT (Arm), the FDLIBM/SunPro notice,
+# BSD-3-Clause (AER RRTMG, RTE+RRTMGP, Py-ART/Argonne) and SIL OFL 1.1
+# each condition redistribution on their text travelling with the copy,
+# and a wheel that shipped only LICENSE + NOTICE performed none of them.
+# PEP 639 puts these under gpuwm-<version>.dist-info/licenses/ in the
+# wheel and carries them into the sdist, which is the only route by
+# which a `pip install gpuwm` user receives them.
+license-files = ["LICENSE", "NOTICE", "licenses/*"]
 requires-python = ">=3.11"
 # numpy>=2 is load-bearing: the legacy-RRTMG FP32 max_ulp-0 discipline
 # relies on NEP-50 weak promotion (float32 op python-scalar stays
@@ -137,7 +144,7 @@ requires-python = ">=3.11"
 # tests/test_companion_distribution.py fails if the two ever disagree.
 dependencies = ["numpy>=2.0", "netCDF4>=1.6", "matplotlib>=3.8",
                 "jsonschema>=4.0",
-                "scipy>=1.11", "pyshp>=2.3", "gpuwm-data==2.6.5"]
+                "scipy>=1.11", "pyshp>=2.3", "gpuwm-data==2.7.0"]
 keywords = ["WRF", "WPS", "GRIB", "NetCDF", "weather", "CUDA"]
 # No `License ::` classifier: PEP 639 deprecates them outright and
 # setuptools >=77 refuses to combine one with the SPDX expression above.
@@ -548,7 +555,14 @@ gpuwm = [
     # install.
     "libexec/bridges/*",
 ]
-"gpuwm.core.kernels" = ["*.cu", "*.cuh"]
+# LICENSE-third-party.txt is not documentation, it is the notice the Arm
+# (MIT) and Sun (FDLIBM) grants require to travel with the code, and it is
+# how the twenty-eight .cu files carry it: every one of them is pinned by
+# SHA-256 in tests/test_mp8_frozen.py or
+# tests/test_kernel_source_freeze_per_module.py, so an in-file comment
+# header would move a frozen digest.  The notice sits beside them instead,
+# and this glob is what puts it in the wheel.
+"gpuwm.core.kernels" = ["*.cu", "*.cuh", "LICENSE-third-party.txt"]
 # The frozen surface-observation network table. It is the thing that turns a
 # domain anywhere on Earth into the network ids the surface front door is
 # asked for, so a wheel without it can fetch nothing outside whatever the
@@ -637,7 +651,8 @@ gpuwm = []
 markers = ["gpu: requires a CUDA GPU + cupy",
            "slow: an exhaustive sweep, minutes rather than seconds",
            "network: live-internet smoke, additionally gated on GPUWM_NETWORK_TESTS=1",
-           "static_rust_parity: RED until the static-fields Rust port lanes land (lane/static-rust-port); run with -m static_rust_parity"]
+           "static_rust_parity: static-fields bridge, builder and parity coverage; run with -m static_rust_parity",
+           "static_platform_qualification: exact Python/Rust WPS comparisons reported by the dedicated platform qualification job"]
 # Both test trees.  tilestream/ carries 13 pytest suites (312 tests) beside
 # its `python -m` script gates; with only "tests" here, a bare `pytest` --
 # which is what CI and the battery's full-suite legs run -- collected none

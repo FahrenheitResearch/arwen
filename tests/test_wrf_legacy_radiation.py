@@ -34,28 +34,17 @@ def test_split_radiation_config_preserves_legacy_and_validates_pairs():
     split = _cfg(ra_lw_physics=1, ra_sw_physics=1, icloud=1, swrad_scat=0.7)
     assert radiation_scheme_ids(split) == (1, 1)
     assert radiation_enabled(split)
-    # ...and validate_run_config now ACCEPTS it.  This arm asserted a
-    # NotImplementedError while radiation.wrf-rrtm-dudhia was registered
-    # implemented=false; the 16-band/140-g-point port landed
-    # (gpuwm/core/rrtm_lw.py) and the refusal in gpuwm/config.py went with
-    # it.  What survives is the narrower refusal: RRTM longwave is
-    # implemented only as WRF's classic pair, so any other shortwave
-    # selector beside ra_lw_physics=1 is still rejected rather than
-    # resolved to an adjacent scheme.
-    validate_run_config(_cfg(
-        ra_lw_physics=1, ra_sw_physics=1, icloud=1, swrad_scat=0.7))
-    for shortwave in (0, 90):
-        with pytest.raises(ValueError, match="ra_sw_physics=1"):
-            validate_run_config(_cfg(
-                ra_lw_physics=1, ra_sw_physics=shortwave))
+    # Every independently implemented SW spectrum can retain RRTM LW.
+    for shortwave in (0, 1, 4, 90):
+        validated = validate_run_config(_cfg(ra_lw_physics=1, ra_sw_physics=shortwave))
+        assert radiation_scheme_ids(validated) == (1, shortwave)
     with pytest.raises(ValueError, match="both be explicit"):
         validate_run_config(_cfg(ra_lw_physics=1))
     with pytest.raises(ValueError, match="do not mix"):
         validate_run_config(_cfg(
             ra_physics=4, ra_lw_physics=1, ra_sw_physics=1))
-    with pytest.raises(ValueError, match="coupled LW/SW"):
-        validate_run_config(_cfg(
-            ra_lw_physics=4, ra_sw_physics=1))
+    assert radiation_scheme_ids(validate_run_config(_cfg(
+        ra_lw_physics=4, ra_sw_physics=1))) == (4, 1)
 
 
 def test_rrtm_data_exact_record_inventory_and_known_coefficients():

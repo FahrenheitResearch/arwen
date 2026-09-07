@@ -565,9 +565,12 @@ def git_identity(root: Path) -> dict | None:
     code is executing, and reporting a checkout as dirty because someone
     left a ``.log`` beside it would train readers to ignore the flag.
 
-    Returns ``None`` -- never raises -- when git is absent, hung,
-    broken, or when ``root`` is not the top level of its own repository.
-    That last refusal is :func:`gpuwm.runtime_manifest.git_checkout_root`
+    If git cannot run, or its status scan fails to complete after the
+    checkout root was verified, read the commit from ``.git`` with an
+    explicitly unverified worktree. Returns ``None`` -- never raises --
+    when no commit is readable, git refuses the repository, or ``root``
+    is not the top level of its own repository. That last refusal is
+    :func:`gpuwm.runtime_manifest.git_checkout_root`
     and it is reused deliberately: a venv created inside somebody else's
     repository must report no git identity rather than bind a stranger's
     commit to this run.
@@ -595,7 +598,17 @@ def git_identity(root: Path) -> dict | None:
              "--branch"],
             capture_output=True, text=True, timeout=GIT_TIMEOUT_S,
             check=False)
-    except (OSError, subprocess.SubprocessError):
+    except subprocess.TimeoutExpired as error:
+        return git_dir_identity(root, reason=(
+            f"git status timed out after {error.timeout:g} seconds, so the "
+            "working tree was not verified; the commit was read directly "
+            "from .git"))
+    except OSError as error:
+        return git_dir_identity(root, reason=(
+            f"git status could not be executed ({type(error).__name__}: "
+            f"{error}), so the working tree was not verified; the commit "
+            "was read directly from .git"))
+    except subprocess.SubprocessError:
         return None
     if completed.returncode != 0:
         return None

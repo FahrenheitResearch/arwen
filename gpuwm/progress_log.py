@@ -100,11 +100,30 @@ from typing import Any
 #: and refusing on the schema is how it does that.
 STEP_LOG_SCHEMA = "gpuwm.step-log/v3"
 
+#: What an ADAPTIVE-timestep run emits instead.  v4 adds one field,
+#: ``dt``, to the ``step`` record and changes nothing else.
+#:
+#: Why a run picks its schema instead of the tree picking one: under a
+#: fixed step the timestep is a constant sitting in the experiment
+#: config, so a ``dt`` on every step record would be noise, and emitting
+#: it would move EVERY run to v4 and make a v3-only consumer refuse
+#: streams whose shape it actually understands perfectly.  Under an
+#: adaptive step the timestep is the run's most diagnostic quantity and
+#: it is otherwise UNRECOVERABLE: differencing ``model_seconds`` is the
+#: only other route, and :meth:`StepLog.domain_step` already documents
+#: why that derivation is wrong for a delayed-start nest.
+#:
+#: So a fixed run's stream stays byte-for-byte what it was and every
+#: existing consumer keeps working; an adaptive run declares v4, and a
+#: v3-only consumer refuses it loudly, which is exactly the contract the
+#: paragraph above describes.
+STEP_LOG_SCHEMA_ADAPTIVE = "gpuwm.step-log/v4"
+
 #: Every schema :func:`read_step_log` will replay.  A published wheel's
 #: progress.jsonl outlives the version that wrote it, and this tree must
 #: not lose the ability to read the streams it has already shipped.
-STEP_LOG_SCHEMAS = ("gpuwm.step-log/v3", "gpuwm.step-log/v2",
-                    "gpuwm.step-log/v1")
+STEP_LOG_SCHEMAS = ("gpuwm.step-log/v4", "gpuwm.step-log/v3",
+                    "gpuwm.step-log/v2", "gpuwm.step-log/v1")
 
 #: One JSON document per durable output frame.
 FRAME_MARKER_SCHEMA = "gpuwm.frame-ready/v1"
@@ -218,17 +237,25 @@ def format_model_time(value) -> str:
 
 
 def format_step_line(*, domain: int, step: int, valid_time,
-                     wall_seconds: float) -> str:
+                     wall_seconds: float, dt=None) -> str:
     """One model time step, in WRF's ``Timing for main:`` grammar.
 
     WRF's own write is ``'Timing for main: time ', time, ' on domain ',
     id, ':  ', seconds, ' elapsed seconds'`` with ``I3`` and ``F10.5``
-    (``share/mediation_integrate.F``).  The trailing ``step N`` is ours.
+    (``share/mediation_integrate.F``).  The trailing ``step N`` is ours,
+    and so is ``dt``.
+
+    ``dt`` is appended only when it was passed, which is only on an
+    adaptive run.  Under a fixed step it would print the same constant on
+    every line for the life of the run, and this line is read by humans.
     """
 
-    return (f"Timing for main: time {format_model_time(valid_time)} "
+    line = (f"Timing for main: time {format_model_time(valid_time)} "
             f"on domain {int(domain):3d}:  {float(wall_seconds):10.5f} "
             f"elapsed seconds  step {int(step)}")
+    if dt is not None:
+        line += f"  dt {float(dt):.4g}"
+    return line
 
 
 def format_output_line(*, domain: int, path, wall_seconds: float) -> str:
@@ -517,11 +544,20 @@ class StepLog:
 
     def __init__(self, *, start_time: datetime, run_seconds: float,
                  text_stream=None, jsonl_path=None, frame_marker_dir=None,
-                 every: int = 1):
+                 every: int = 1, adaptive_dt: bool = False):
         self._start_time = start_time
         self._run_seconds = float(run_seconds) if run_seconds else 0.0
         self._text = text_stream
         self._every = max(1, int(every))
+        #: Fixed by the run's configuration and never reconsidered: the
+        #: schema string must be the same on the FIRST record as on the
+        #: last, or a consumer that switched on it mid-stream would have
+        #: to re-decide what it is reading.  A caller that leaves this
+        #: False emits exactly the v3 stream this class emitted before
+        #: ``dt`` existed, byte for byte.
+        self._adaptive_dt = bool(adaptive_dt)
+        self._schema = (STEP_LOG_SCHEMA_ADAPTIVE if self._adaptive_dt
+                        else STEP_LOG_SCHEMA)
         self._marker_dir = (None if frame_marker_dir is None
                             else Path(frame_marker_dir))
         self._lock = threading.Lock()
@@ -595,7 +631,8 @@ class StepLog:
     # -- the per-step hook the executor calls ------------------------
 
     def domain_step(self, *, grid_id: int, step_count: int,
-                    model_seconds: float, step_wall_seconds: float) -> None:
+                    model_seconds: float, step_wall_seconds: float,
+                    dt=None) -> None:
         """One model time step of one domain has completed.
 
         This is the signature :func:`gpuwm.core.model.execute_experiment`
@@ -635,17 +672,25 @@ class StepLog:
             return
         state[2] = step_count
         valid = self._valid(model_seconds)
+        # The caller always passes dt; whether it is REPORTED is decided
+        # here, by the run's configuration, so that a fixed-step run
+        # emits the identical v3 record it always did.  Gating at the
+        # call site instead would put the schema decision in two places.
+        shown_dt = float(dt) if (self._adaptive_dt and dt is not None) else None
+        fields = {
+            "domain": grid_id,
+            "step": step_count,
+            "valid_time": valid,
+            "model_seconds": model_seconds,
+            "step_wall_seconds": float(step_wall_seconds),
+            "fraction": (round(model_seconds / self._run_seconds, 6)
+                         if self._run_seconds > 0.0 else None),
+        }
+        if shown_dt is not None:
+            fields["dt"] = shown_dt
         self._emit("step", format_step_line(
             domain=grid_id, step=step_count, valid_time=valid,
-            wall_seconds=step_wall_seconds), {
-                "domain": grid_id,
-                "step": step_count,
-                "valid_time": valid,
-                "model_seconds": model_seconds,
-                "step_wall_seconds": float(step_wall_seconds),
-                "fraction": (round(model_seconds / self._run_seconds, 6)
-                             if self._run_seconds > 0.0 else None),
-            })
+            wall_seconds=step_wall_seconds, dt=shown_dt), fields)
 
     #: The name :class:`gpuwm.core.model` binds.  Kept as an alias so a
     #: caller can hand the BOUND METHOD straight to ``step_observer``
@@ -1102,7 +1147,7 @@ class StepLog:
             elif event == "restart_written":
                 self._restarts += 1
             record = {
-                "schema": STEP_LOG_SCHEMA,
+                "schema": self._schema,
                 "sequence": self._sequence,
                 "emitted_unix_ms": int(time.time() * 1000),
                 "event": event,
@@ -1225,7 +1270,8 @@ def model_step_log(model):
 def open_step_log(*, outdir, start_time, run_seconds,
                   progress_format: str = "text",
                   progress_output=None, progress_every: int = 1,
-                  frame_markers: bool = True, text_stream=None):
+                  frame_markers: bool = True, text_stream=None,
+                  adaptive_dt: bool = False):
     """Build the log a simulation front door runs with.
 
     DEFAULT-ON, and that is the point.  ``progress_format="text"``
@@ -1273,7 +1319,7 @@ def open_step_log(*, outdir, start_time, run_seconds,
         jsonl_path=jsonl_path,
         frame_marker_dir=(outdir / FRAME_MARKER_DIRNAME
                           if frame_markers else None),
-        every=progress_every)
+        every=progress_every, adaptive_dt=adaptive_dt)
 
 
 class LandingFanout:
@@ -1335,13 +1381,15 @@ class ProgressOptions:
             progress_every=getattr(args, "progress_every", 1),
             frame_markers=getattr(args, "frame_markers", True))
 
-    def open(self, *, outdir, start_time, run_seconds, text_stream=None):
+    def open(self, *, outdir, start_time, run_seconds, text_stream=None,
+             adaptive_dt: bool = False):
         return open_step_log(
             outdir=outdir, start_time=start_time, run_seconds=run_seconds,
             progress_format=self.progress_format,
             progress_output=self.progress_output,
             progress_every=self.progress_every,
-            frame_markers=self.frame_markers, text_stream=text_stream)
+            frame_markers=self.frame_markers, text_stream=text_stream,
+            adaptive_dt=adaptive_dt)
 
 
 def _positive_cadence(value: str) -> int:
@@ -1386,7 +1434,9 @@ def add_progress_arguments(parser) -> None:
         "--progress-output", default=None, metavar="PATH",
         help=("where the machine stream is written; defaults to "
               "OUTDIR/" + STEP_LOG_FILENAME + ".  Append-only JSONL at "
-              + STEP_LOG_SCHEMA + ", one record per printed line, with a "
+              + STEP_LOG_SCHEMA + " (" + STEP_LOG_SCHEMA_ADAPTIVE + " when "
+              "the run carries an adaptive time step, which adds `dt` to "
+              "every step record), one record per printed line, with a "
               "dense `sequence` so a consumer can detect a lost line.  "
               "`-` sends the records to stdout instead of to a file, "
               "which with --progress-format jsonl is a pure record pipe"))

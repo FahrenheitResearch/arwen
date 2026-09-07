@@ -2578,3 +2578,43 @@ def test_an_unnamed_mp28_tree_is_registry_reachable_without_an_acknowledgement()
             for domain in receipt["domains"].values()} == {
         "registry-reachable"}
     assert receipt["acknowledgements"] == []
+
+
+@pytest.mark.parametrize("profile", [NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID,
+                                     MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID])
+def test_named_profile_advisory_does_not_change_executable_selectors(
+        profile, capsys):
+    from gpuwm.physics_compat import (single_domain_physics_selection,
+                                     validate_single_domain_physics_profile)
+
+    settings = single_domain_runtime_switches(profile)
+    named = validate_single_domain_physics_profile(profile, config=settings)
+    assert "unacknowledged" in capsys.readouterr().err
+    assert named["governance"]["acknowledged"] is False
+    assert named["acknowledgements"] == []
+    unnamed = single_domain_physics_selection(config=settings)
+    assert named["selectors"] == unnamed["domains"]["1"]["selectors"]
+    capsys.readouterr()
+    acknowledged = validate_single_domain_physics_profile(
+        profile, config=settings,
+        expert_acknowledgements=("noahmp-host-column-throughput-v1",))
+    assert acknowledged["governance"]["acknowledged"] is True
+    assert not capsys.readouterr().err
+    assert acknowledged["selectors"] == named["selectors"]
+
+    # An explicit profile is still an assertion of its actual settings.
+    with pytest.raises(ValueError, match="differs from profile"):
+        validate_single_domain_physics_profile(
+            profile, config=dict(settings, epssm=float(settings["epssm"]) + 0.01))
+
+
+@pytest.mark.parametrize("profile", [NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID,
+                                     MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID])
+def test_registry_plan_can_run_without_expert_advisory_acknowledgement(profile):
+    plan = _single_plan(profile)
+    plan.pop("acknowledgements")
+    report = validate_physics_plan(plan)
+    assert report["launchable"] is True, report["errors"]
+    assert not report["errors"]
+    assert "expert-acknowledgement-advisory" in {
+        warning["code"] for warning in report["warnings"]}

@@ -508,6 +508,10 @@ def test_force_uses_node_parent_clock_and_preserves_parent(monkeypatch):
         "current_process_coverage_complete": True,
         "first_parent_ticks": 3,
         "last_parent_ticks": 3,
+        "first_parent_step": 1,
+        "last_parent_step": 1,
+        "parent_step_count": 1,
+        "force_count_matches_parent_steps": True,
     }
 
 
@@ -725,23 +729,62 @@ def _publish(state, arrays):
             {f"state/{name}": value for name, value in arrays.items()})
 
 
-def test_force_refuses_an_edge_with_both_ends_streamed():
-    """BOTH-streamed composes two gated corridors no gate has driven.
+def test_force_composes_both_store_corridors(monkeypatch):
+    """The coupler reads both live stores without an edge-shape policy."""
+    import gpuwm.core.nest as nest_mod
 
-    A streamed CHILD alone is the mirrored corridor and proceeds
-    (tests/test_streamed_child.py holds its units, tilestream/
-    test_streamed_child.py its gate); a streamed PARENT alone is the
-    inverse lane's gated corridor.  One edge with both ends streamed
-    would compose the footprint window, the frame window and the per-tile
-    table windows in a single FORCE, and ungated is refused, not run.
-    """
     parent, child = _nodes()
     coupler = NestCoupler(child)
-    _publish(child.state, {"mup": child.state.mup.copy()})
-    _publish(parent.state, {"mup": parent.state.mup.copy()})
-    with pytest.raises(RuntimeError, match="BOTH ends streamed"):
-        coupler.force(child)
-    assert coupler.force_count == 0
+    for node in (parent, child):
+        _publish(node.state, {name: value.copy() for name, value in
+                             vars(node.state).items() if isinstance(value, np.ndarray)})
+    monkeypatch.setattr(coupler, "_bind_geometry", lambda: None)
+    monkeypatch.setattr(nest_mod, "bdy_interp1", lambda *a, **k: k["out"])
+    monkeypatch.setattr(nest_mod, "attach_nest_boundaries", lambda *a, **k: None)
+    monkeypatch.setattr(nest_mod, "couple_nest_field", lambda state, kind, out: out)
+    seen = []
+    original = nest_mod._sync_in
+    def record(state, attrs, window=None):
+        seen.append((state, window))
+        return original(state, attrs, window)
+    monkeypatch.setattr(nest_mod, "_sync_in", record)
+    coupler.force(child)
+    assert coupler.force_count == 1
+    assert any(state is parent.state and window is not None for state, window in seen)
+    assert any(state is child.state and window is not None for state, window in seen)
+
+
+@pytest.mark.parametrize("smooth_option", [0, 1, 2])
+def test_feedback_finalize_commits_only_recomputed_diagnostics(monkeypatch, smooth_option):
+    """A windowed diagnosis must never overwrite live off-window store cells."""
+    import gpuwm.core.diagnostics as diagnostics
+    from gpuwm.core import streaming
+
+    parent, child = _nodes()
+    coupler = NestCoupler(child, feedback=1, smooth_option=smooth_option)
+    coupler._prepared_feedback = {}
+    live = {}
+    for index, name in enumerate(("p", "al", "alt")):
+        setattr(parent.state, name, np.full_like(parent.state.thp, -99.))
+        live[name] = np.arange(parent.state.thp.size, dtype=np.float32).reshape(
+            parent.state.thp.shape) + index
+    _publish(parent.state, live)
+    expected = {name: value.copy() for name, value in live.items()}
+    seen = []
+    def diagnose(state, option, *, window):
+        seen.append(window)
+        j0, i0, nj, ni = window
+        sl = (Ellipsis, slice(j0, j0 + nj), slice(i0, i0 + ni))
+        for name in expected:
+            getattr(state, name)[sl] = 42.
+            expected[name][sl] = 42.
+    monkeypatch.setattr(diagnostics, "update_diagnostics", diagnose)
+    coupler.feedback_finalize(child)
+    assert len(seen) == 1
+    assert seen[0][2] < parent.cfg.run.ny and seen[0][3] < parent.cfg.run.nx
+    for name in expected:
+        np.testing.assert_array_equal(live[name], expected[name])
+    assert coupler._prepared_feedback is None
 
 
 def test_force_reads_the_parent_STORE_and_not_the_frozen_state(monkeypatch):

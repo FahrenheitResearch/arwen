@@ -179,44 +179,19 @@ def _forcing_hours(run_seconds: float) -> tuple[int, ...]:
 
 
 def _profile_admission(exp) -> Gate:
-    """Which shipped HRRR profile, if any, this config IS.
-
-    The HRRR root preparation is the single-domain benchmark runner in
-    ``--prepare-only`` mode (``tools/prepare_hrrr_wrf.py``), and that
-    runner's ``--physics-profile`` is a closed choice list with a WSM6
-    default.  Naming a profile asserts the config IS that shipped suite
-    and the validator refuses on any switch drift, so "no profile
-    matches" means the root cannot be prepared for this suite at all --
-    which is a fact worth learning before the fetch, not after it.
-    """
-
-    from gpuwm.physics_compat import (
-        SINGLE_DOMAIN_PHYSICS_PROFILES,
-        validate_single_domain_physics_profile,
-    )
-
-    run = exp.domains[0].run
-    admitted: list[str] = []
-    drift: dict[str, str] = {}
-    for profile in SINGLE_DOMAIN_PHYSICS_PROFILES:
-        try:
-            validate_single_domain_physics_profile(profile, config=run)
-        except Exception as error:  # noqa: BLE001
-            drift[profile] = str(error)
-            continue
-        admitted.append(profile)
-    authority = "gpuwm.physics_compat.validate_single_domain_physics_profile"
-    if admitted:
-        return Gate("hrrr.root_preparation.profile", authority, "ADMITS",
-                    "prepare with --physics-profile "
-                    + ", ".join(admitted))
-    closest = min(drift, key=lambda name: len(drift[name])) if drift else ""
-    return Gate(
-        "hrrr.root_preparation.profile", authority, "REFUSES",
-        "no shipped HRRR physics profile matches this suite, so "
-        "tools/prepare_hrrr_wrf.py cannot prepare a root for it "
-        f"({len(SINGLE_DOMAIN_PHYSICS_PROFILES)} profiles checked; closest "
-        f"is {closest}: {drift.get(closest, '')})")
+    """The preparation consumes actual d01 settings; presets are optional."""
+    from gpuwm.physics_compat import single_domain_physics_selection, identify_single_domain_profile
+    from gpuwm.ingest.microphysics_cold_start import source_absent_microphysics
+    authority = "gpuwm.physics_compat.single_domain_physics_selection"
+    try:
+        single_domain_physics_selection(exp.root.run)
+        source_absent_microphysics(exp.root.run)
+    except ValueError as error:
+        return Gate("hrrr.root_preparation.profile", authority, "REFUSES", str(error))
+    matched = identify_single_domain_profile(exp.root.run)
+    return Gate("hrrr.root_preparation.profile", authority, "ADMITS",
+                "prepare with the experiment configuration; no named profile required"
+                + (f"; settings match {matched}" if matched else ""))
 
 
 def _memory_estimate(exp) -> dict[str, object]:

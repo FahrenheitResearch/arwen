@@ -263,13 +263,31 @@ class _TerrainCpuState:
                      "fnm", "c1f", "c2f", "c3f", "c4f", "c1h", "c2h",
                      "c3h", "c4h"):
             setattr(self, name, np.array(getattr(coord, name), copy=True))
-        for name in ("pb", "alb", "thb", "phb"):
+        for name in ("pb", "alb", "thb"):
             setattr(self, name, np.asarray(getattr(base, name), F32).copy())
+        c3f64 = np.asarray(coord.c3f, dtype=np.float64)
+        c4f64 = np.asarray(coord.c4f, dtype=np.float64)
+        self.dc3f = np.asarray(c3f64[:-1] - c3f64[1:], F32)
+        self.dc4f = np.asarray(c4f64[:-1] - c4f64[1:], F32)
+        self.set_base_geopotential(base.phb)
         self.mub2d = np.asarray(base.mub, F32).copy()
         self.mub = None
         if base.terrain_z is not None:
             self.ht = np.asarray(base.terrain_z, F32).copy()
         self.p_top = float(base.p_top)
+
+    def set_base_geopotential(self, phb):
+        """The twin carries DomainState's phb contract, or it is not one.
+
+        A double that lets ``state.phb[...] = ...`` through where the real
+        state routes the write would test a call the model never makes.
+        """
+        host = np.asarray(phb, dtype=np.float64)
+        stored = np.asarray(host, F32)
+        self.phb = stored.copy()
+        self.dphb_resid = np.asarray(
+            np.diff(host, axis=0) - np.diff(stored, axis=0).astype(np.float64),
+            F32)
 
     def total_theta(self):
         return self.thb + self.thp
@@ -678,12 +696,13 @@ def _preparer_fixture(monkeypatch, *, corrupt_statics=False):
         exp=SimpleNamespace(), data=SimpleNamespace(), model=model)
     monkeypatch.setattr(preparer, "_rebuild_driver",
                         lambda *args: 0.125)
-    driver = SimpleNamespace(fields={
+    driver = SimpleNamespace(call_counts={"microphysics": 9}, ysu_nan_guard_fires=0,
+                             microphysics_updates=9, fields={
         "tsk": np.arange(ny * nx, dtype=F32).reshape(ny, nx),
         "tslb": np.arange(2 * ny * nx, dtype=F32).reshape(2, ny, nx),
     })
     node = SimpleNamespace(cfg=child_dc,
-                           state=SimpleNamespace(physics=driver))
+                           state=SimpleNamespace(physics=driver, elapsed_seconds=60.))
     new_dc = replace_placement(child_dc, 6, 4)
     new_statics = statics_for(new_dc)
     if corrupt_statics:

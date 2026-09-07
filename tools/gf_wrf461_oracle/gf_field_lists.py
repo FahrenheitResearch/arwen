@@ -122,7 +122,87 @@ DRV_ISCA_FIELDS = [
 
 DRV_IN_LEV = ["u", "v", "w", "t", "qv", "p", "pi", "rho", "dz8w", "p8w",
               "rthften", "rqvften", "rthraten", "rthblten", "rqvblten"]
-DRV_IN_SCA = ["ht", "hfx", "qfx", "xland", "dt", "dx"]
+#: gf.cu's DINS_ order.  The last three are the per-column ``fzu`` override
+#: ("<= 0 means compute"), added at 2.6.6 when gamma stopped reproducing
+#: glibc's tgammaf (docs/gf_gamma_known_delta.md).  The shipped forecast path
+#: leaves them 0; a run graded against a WRF capture pins them from it, which
+#: is what ``drv_scalar_inputs(fixture, pin_fzu=True)`` below builds.
+DRV_IN_SCA = ["ht", "hfx", "qfx", "xland", "dt", "dx",
+              "fzu_up", "fzu_dn", "fzu_sh"]
+
+#: The three DRV_IN_SCA slots that are NOT read from gf-surface.csv.
+DRV_FZU_SLOTS = ("fzu_up", "fzu_dn", "fzu_sh")
+
+
+def captured_fzu(fixture):
+    """WRF's own ``fzu`` words for every GFDRV column, as float32 arrays.
+
+    Returns ``(up, dn, sh)``, each shaped ``(ncol,)`` in ``fixture.key``
+    order.  The deep pair comes from ``gf-deep-surface.csv`` (keyed by the
+    same ``(case, idx, arm)`` triple the fixture is ordered by) and the
+    shallow one from ``gf-shallow-surface.csv``, which is keyed by CASE
+    alone because CUP_gf_sh takes no dx.
+
+    WHY THIS EXISTS.  ArWen's gamma is correctly rounded and glibc's is not,
+    so the kernel's computed ``fzu`` is deliberately not WRF's
+    (docs/gf_gamma_known_delta.md).  Feeding these words back through the
+    ``fzu_override`` slots is what lets the parity suites keep grading the
+    other ~4,000 transcribed lines of GFDRV bitwise -- exactly what the CPU
+    reference has done since the port landed
+    (tests/test_gf_driver_parity.py).
+    """
+    import csv
+
+    import numpy as np
+
+    from gpuwm.verify.gf_oracle import GF_ORACLE_DIR
+
+    deep = {}
+    with (GF_ORACLE_DIR / "gf-deep-surface.csv").open(
+            newline="", encoding="ascii") as fh:
+        for r in csv.DictReader(fh):
+            deep[(int(r["case"]), int(r["idx"]), int(r["arm"]))] = (
+                np.float32(r["up_fzu"]), np.float32(r["dn_fzu"]))
+    shal = {}
+    with (GF_ORACLE_DIR / "gf-shallow-surface.csv").open(
+            newline="", encoding="ascii") as fh:
+        for r in csv.DictReader(fh):
+            shal[int(r["case"])] = np.float32(r["sh_fzu"])
+
+    n = fixture.ncol
+    up = np.zeros(n, dtype=np.float32)
+    dn = np.zeros(n, dtype=np.float32)
+    sh = np.zeros(n, dtype=np.float32)
+    for i, row in enumerate(fixture.key):
+        trip = tuple(int(v) for v in row)
+        up[i], dn[i] = deep[trip]
+        sh[i] = shal[trip[0]]
+    return up, dn, sh
+
+
+def drv_scalar_inputs(fixture, pin_fzu: bool):
+    """``scin`` for ``gf_gfdrv_stage``, shaped ``(ncol, len(DRV_IN_SCA))``.
+
+    ``pin_fzu=False`` reproduces the SHIPPED forecast path: the three
+    override slots are 0 and the kernel computes ``fzu`` from ArWen's own
+    correctly rounded gamma.  ``pin_fzu=True`` fills them with WRF's captured
+    words, which is the only way a GFDRV-boundary comparison against the WRF
+    capture can be bitwise.
+    """
+    import numpy as np
+
+    gs = fixture.surface
+    out = np.zeros((fixture.ncol, len(DRV_IN_SCA)), dtype=np.float32)
+    for j, name in enumerate(DRV_IN_SCA):
+        if name in DRV_FZU_SLOTS:
+            continue
+        out[:, j] = gs[name].astype(np.float32)
+    if pin_fzu:
+        up, dn, sh = captured_fzu(fixture)
+        out[:, DRV_IN_SCA.index("fzu_up")] = up
+        out[:, DRV_IN_SCA.index("fzu_dn")] = dn
+        out[:, DRV_IN_SCA.index("fzu_sh")] = sh
+    return np.ascontiguousarray(out)
 
 
 def reference_constant_words():

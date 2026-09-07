@@ -1473,19 +1473,27 @@ fn unpack_message_normalized_cropped(
     crop: GridCrop,
     longitude_row_wraps: &[usize],
 ) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
-    if source_nx == message.grid.nx as usize {
-        if let Ok(mut rows) =
-            unpack_message_scan_normalized_row_window(message, crop.y_start, crop.y_end)
-        {
-            rotate_window_values_to_normalized_longitude_rows(
-                &mut rows,
-                source_nx,
-                crop.y_start,
-                crop.y_end,
-                longitude_row_wraps,
-            );
-            return Ok(crop_window_x_values(&rows, source_nx, crop));
-        }
+    // The window decoder covers simple (5.0) and complex-spatial (5.3)
+    // packing on full grids; anything else is a capability limit and the full
+    // decoder below is the right answer.  Ask first, because once the window
+    // path is entered its refusal is about the MESSAGE -- a short Section 7,
+    // a group table that disagrees with Section 5 -- and re-decoding the same
+    // bytes through a second path would mask it.  Swallowing that `Err` is
+    // how a fail-closed decoder becomes fail-open.
+    if source_nx == message.grid.nx as usize
+        && !message.grid.is_reduced
+        && matches!(message.data_rep.template, 0 | 3)
+    {
+        let mut rows =
+            unpack_message_scan_normalized_row_window(message, crop.y_start, crop.y_end)?;
+        rotate_window_values_to_normalized_longitude_rows(
+            &mut rows,
+            source_nx,
+            crop.y_start,
+            crop.y_end,
+            longitude_row_wraps,
+        );
+        return Ok(crop_window_x_values(&rows, source_nx, crop));
     }
 
     let values = unpack_message_normalized(message)?;

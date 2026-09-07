@@ -311,6 +311,128 @@ def test_a_rebuild_moves_the_old_bundle_aside_and_deletes_nothing(tmp_path):
     assert (root / "native" / "prepared-cache" / "header.json").is_file()
 
 
+#: What a REAL preparation publishes as ``source_identity``: a
+#: DATA-source block.  Trimmed from ``gpuwm/gfs_direct.py:1497-1518``,
+#: which is the only shipped adapter that records a git state at all --
+#: and it nests it under ``git_source_identity``, so not one member of
+#: ``SOURCE_IDENTITY_KEYS`` appears at the top level here.  ERA5 and the
+#: mapped route carry no git block whatsoever.
+GFS_SOURCE_IDENTITY = {
+    "adapter": "gfs-pgrb2-0p25-direct-v1",
+    "input_manifest_schema": "gpuwm-portable-input-manifest-v1",
+    "input_manifest_sha256": "a" * 64,
+    "initial_condition": {"cycle": "2024-05-03T12:00:00Z", "lead_hours": 0},
+    "decoder": {"name": "gfs_grib2_bridge", "sha256": "b" * 64,
+                "implementation": "gpuwm-all-rust-gfs-grib2-bridge"},
+    "implementation_sha256": "c" * 64,
+    "git_source_identity": {"available": True, "commit": "0" * 40,
+                            "tree": "1" * 40},
+    "preprocessing": {"backend": "cuda"},
+}
+
+
+def _binding(root: Path, arguments: list, *, engine) -> Path:
+    """A ``stage-binding.json`` recording ``engine``, written by hand.
+
+    By hand because the point of two of the tests below is a binding this
+    engine did NOT write: one from a release that recorded no engine at
+    all, and one from an engine that has since moved.
+    """
+
+    payload = {"schema": stage_reuse.BINDING_SCHEMA,
+               "created": "2024-05-03T12:00:00Z",
+               "arguments": stage_reuse.argument_binding(arguments),
+               "stated": {}}
+    if engine is not None:
+        payload["engine"] = engine
+    path = root / stage_reuse.BINDING_NAME
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8")
+    return path
+
+
+def test_a_bundle_a_different_engine_prepared_is_not_reused_as_this_one(
+        tmp_path):
+    """REUSE says "by this same engine".  Nothing here said which engine.
+
+    The reachable case, not an edge one: ``SOURCE_IDENTITY_KEYS`` is the
+    shape of ``runtime_manifest.provenance`` and every adapter's
+    ``source_identity`` is a DATA-source block, so a comparison that
+    skipped each member it could not find skipped all six on every real
+    bundle.  A bundle a DIFFERENT engine prepared then reused clean, and
+    the forecast integrated new dynamics over initial and boundary
+    conditions built by the old ingest code, under a receipt asserting
+    the engine matched.
+    """
+
+    root = _bundle(tmp_path / "prep", _identity(
+        source_identity=GFS_SOURCE_IDENTITY))
+    _binding(root, ["--cycle", "2024-05-03_12:00:00"],
+             engine={**stage_reuse.engine_source_identity(),
+                     "git_commit": "9" * 40, "git_tree": "8" * 40})
+
+    decision = stage_reuse.decide(
+        root, stated={}, arguments=["--cycle", "2024-05-03_12:00:00"])
+
+    assert decision["decision"] == stage_reuse.REBUILD
+    assert "source_identity.git_commit" in [
+        item["field"] for item in decision["differences"]]
+    assert any("the engine has changed" in (item.get("note") or "")
+               for item in decision["differences"])
+
+
+def test_a_bundle_that_cannot_say_what_built_it_is_rebuilt(tmp_path):
+    """The same rule ``STATEABLE`` already applies, on the other block.
+
+    A binding written before the engine was recorded, beside a real
+    adapter's identity, leaves the question "which code built this?"
+    unanswerable.  That is the same class of ignorance as an install
+    that cannot state its own identity, which this function has always
+    turned into a rebuild -- the asymmetry was the defect.
+    """
+
+    root = _bundle(tmp_path / "prep", _identity(
+        source_identity=GFS_SOURCE_IDENTITY))
+    _binding(root, ["--cycle", "2024-05-03_12:00:00"], engine=None)
+
+    decision = stage_reuse.decide(
+        root, stated={}, arguments=["--cycle", "2024-05-03_12:00:00"])
+
+    assert decision["decision"] == stage_reuse.REBUILD
+    assert any(item.get("recorded") is None
+               and "records no such member" in (item.get("note") or "")
+               for item in decision["differences"])
+
+
+def test_the_binding_records_the_engine_that_ran_the_stage(tmp_path):
+    """And the whole answer rests on that, so it is asserted directly.
+
+    Nothing a preparer publishes records the engine, so the binding is
+    the only artifact that can; a bundle whose binding names this engine
+    is still reused, which is what keeps the recovery seam a recovery
+    seam rather than an unconditional rebuild.
+    """
+
+    root = tmp_path / "prep"
+    arguments = ["--cycle", "2024-05-03_12:00:00"]
+    calls = []
+
+    def prepare():
+        _bundle(root, _identity(source_identity=GFS_SOURCE_IDENTITY))
+        calls.append("ran")
+
+    _prepare_stage(root, arguments=arguments, stated={}, run=prepare)
+    payload = json.loads(
+        (root / stage_reuse.BINDING_NAME).read_text(encoding="utf-8"))
+    assert payload["engine"] == stage_reuse.engine_source_identity()
+    assert payload["engine"], "this install cannot state its own identity"
+
+    second = _prepare_stage(root, arguments=arguments, stated={},
+                            run=prepare)
+    assert second["decision"] == stage_reuse.REUSE
+    assert calls == ["ran"], "the preparer ran a second time"
+
+
 def test_a_bundle_with_no_binding_is_rebuilt_rather_than_trusted(tmp_path):
     """A bundle prepared before this seam existed states no arguments.
 
@@ -456,6 +578,17 @@ def test_an_earlier_attempts_output_is_moved_aside_and_announced(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def _record_fetch_request(arguments, out):
+    from gpuwm import fetch
+    from gpuwm.cli import build_parser
+
+    args = build_parser().parse_args(["fetch", *arguments])
+    payload = fetch._manifest_payload(
+        source=args.source, cycle=fetch.parse_cycle(args.cycle, args.source),
+        hours=(), area=fetch._resolve_area(args), files=[])
+    (out / fetch.FETCH_MANIFEST_NAME).write_text(json.dumps(payload), encoding="utf-8")
+
+
 def test_the_chain_reruns_into_the_same_run_directory_without_refusing(
         tmp_path, monkeypatch):
     """The end-to-end shape of a Studio retry.
@@ -480,6 +613,7 @@ def test_the_chain_reruns_into_the_same_run_directory_without_refusing(
         out.mkdir(parents=True, exist_ok=True)
         (out / "SHA256SUMS").write_text("digest  a.grib2\n",
                                         encoding="utf-8")
+        _record_fetch_request(arguments, out)
         fetches.append(list(arguments))
         return {"arguments": list(arguments)}
 
@@ -542,6 +676,7 @@ def _chain_that_fails_at_the_forecast(tmp_path, monkeypatch):
         out.mkdir(parents=True, exist_ok=True)
         (out / "SHA256SUMS").write_text("digest  a.grib2\n",
                                         encoding="utf-8")
+        _record_fetch_request(arguments, out)
         fetches.append(list(arguments))
         return {"arguments": list(arguments),
                 "transfers": {"downloaded_files": 0, "verified_files": 6,

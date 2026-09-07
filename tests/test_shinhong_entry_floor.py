@@ -153,8 +153,8 @@ def _seam_stubbed_driver(monkeypatch, e_sgs):
         _shinhong_entry_advisory=False,
         pbl_tendencies=FakeTendencies(),
         last_ysu=None,
-        gf_rthblten=None,
-        gf_rqvblten=None,
+        gf_rthblten=np.zeros(shape, F),
+        gf_rqvblten=np.zeros(shape, F),
     )
     # THE REAL SEAM, BOUND TO THE FAKE.  _run_shinhong ends its due call
     # at PhysicsDriver._couple_pbl_slot, which mass-couples the raw rates
@@ -227,8 +227,8 @@ def test_driver_heals_degenerate_entry_before_launch(monkeypatch, capsys):
     # The due call really went through the coupling/retention seam: the
     # PRE-coupling theta and qv rates are what a Grell-Freitas call at
     # the top of the next step reads.
-    assert driver.gf_rthblten is captured["out"]["dtheta"]
-    assert driver.gf_rqvblten is captured["out"]["dqv"]
+    np.testing.assert_array_equal(driver.gf_rthblten, captured["out"]["dtheta"])
+    np.testing.assert_array_equal(driver.gf_rqvblten, captured["out"]["dqv"])
     err = capsys.readouterr().err
     assert "entry" in err and "4" in err and "shinhonginit" in err
 

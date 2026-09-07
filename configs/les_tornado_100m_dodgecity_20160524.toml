@@ -362,9 +362,12 @@ c_s = 0.25
 mix_isotropic = 1
 mix_upper_bound = 0.1
 isfflx = 1
-# P3 inflow seeding, pilot amplitude, fixed committed seed.  Settings are the
-# pilot ON arm verbatim from
-# docs/superpowers/receipts/les/inflow-generator/les.km3.p3.on-7h.toml:166-169.
+# P3 inflow seeding, pilot amplitude, fixed committed seed.  Amplitude, faces
+# and mode match the pilot ON arm
+# (docs/superpowers/receipts/les/inflow-generator/les.km3.p3.on-7h.toml:166-169);
+# the SEED deliberately does not -- the pilot ran seed = 0 and this case
+# commits its own date-keyed number, so the two are different realisations of
+# the same amplitude and are not a reproduction of each other.
 # The generator is opt-in and OFF by default; the D90 fetch meter runs on the
 # output and the scored footprint is the fetch-clean interior only.
 inflow_perturbation = true
@@ -401,14 +404,36 @@ c_s = 0.25
 mix_isotropic = 1
 mix_upper_bound = 0.1
 isfflx = 1
-# Same pilot amplitude and the same committed seed as d03.  The seed is
-# keyed per (seed, grid_id, face, refresh index) inside the generator, so a
-# shared seed still gives the two domains independent draws while keeping one
-# number in the config to cite.
-inflow_perturbation = true
-inflow_perturbation_seed = 20160524
-inflow_perturbation_amplitude_scale = 1.0
-inflow_perturbation_faces = "inflow"
+# OFF on d04.  RULED 2026-08-06 (G4 in
+# docs/superpowers/specs/P6-LES-DECISIONS-RATIFIED-2026-08-05.md), after the
+# model refused the run:
+#
+#   ValueError: inflow_perturbation defines its vertical extent from the
+#   parent-diagnosed PBLH and therefore requires a parent running a PBL
+#   scheme; parent bl_pbl_physics=0
+#
+# The generator exists for the mesoscale->LES handoff.  A parent running a
+# PBL scheme diagnoses PBLH because it PARAMETERIZES the turbulence its
+# child must spin up from nothing -- that is d02 (YSU) -> d03 exactly, and
+# it is why the perturbation stays ON there.
+#
+# d03 -> d04 is not that case.  The parent is itself LES at 500 m: its
+# RESOLVED eddies advect through d04's inflow faces and ARE the inflow
+# turbulence.  Injecting synthetic perturbations on top of them would
+# double-count.  The generator was never designed for a resolved-turbulence
+# parent, which is precisely why its own contract demands a parent PBLH --
+# the refusal is the model correctly encoding its applicability boundary,
+# not an obstacle to route around.
+#
+# This file shipped with the key TRUE here from before G4 existed: the case
+# was parked (d531fb521) and the ruling's sweep reached the mayfield twin
+# only.  It could never have run.
+#
+# FALSIFIER, registered: the d04 D90 spin-up fetch receipt (screen E1) is
+# still graded and still committed whatever it reads.  If d03 -> d04 fetch
+# turns out to be insufficient -- i.e. the resolved eddies do NOT arrive
+# developed -- this ruling is what a later attempt revisits.
+inflow_perturbation = false
 
 # Advisory data-acquisition hints (validated, not executed); keys mirror
 # `gpuwm fetch` flags.  `area` is the d01 footprint (34.146-40.817 N,

@@ -164,7 +164,12 @@ extern "C" __global__ void myjsfc_column(
     // tests/test_myj_port.py::test_the_dropped_terrain_height_cancels_in_float32.
     int lmh = nz;
     int lpbl = lmh;
-    real zcum = dz_a[0];                  // interface height above layer 0
+    // ZINT(I,K,J)=ZINT(I,K+1,J)+DZ(I,KFLIP,J) (:177-184) accumulates inside
+    // ONE column, so the seed is this thread's own lowest layer: element
+    // (0, col) of the (nz, ny, nx) array is dz_a[col], the same index :191
+    // reads six lines down.  dz_a[0] was column 0's lowest layer for every
+    // thread, wrong by dz[0][0] - dz[0][col] wherever terrain thins it.
+    real zcum = dz_a[col];                // interface height above layer 0
     real pblh = 0.0f;
     bool found = false;
     for (int iz = 1; iz < nz && !found; ++iz) {

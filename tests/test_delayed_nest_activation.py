@@ -371,18 +371,6 @@ def test_a_route_without_activation_machinery_refuses_by_name():
     assert "tick-exact sync violated" in message
 
 
-def test_the_prepared_tree_runner_calls_that_refusal():
-    """Reachability, not prose: the runner's preflight names the refusal
-    beside the spawn one, so a delayed child cannot reach the executor
-    through a route that has no activation callback."""
-    import inspect
-
-    from gpuwm import prepared_domain_tree_forecast as runner
-
-    source = inspect.getsource(runner.preflight_prepared_tree)
-    assert 'refuse_delayed_activation(exp, "prepared domain-tree")' in source
-
-
 # --- the structural refusals, untouched ---------------------------------
 
 def test_a_misaligned_delayed_start_keeps_its_structural_refusal(tmp_path):

@@ -854,6 +854,34 @@ def transition_parent_field_shape(state, field_name: str) -> tuple[int, ...]:
     return shape
 
 
+def transition_parent_window(state, window):
+    """Bounded, contiguous inputs for the existing column-local edge kernel.
+
+    The caller obtains ``window`` from the SINT registration's exact donor
+    halo. No transition is recomputed on the full parent just to interpolate
+    a child slab. Vertical coefficients are borrowed unchanged.
+    """
+    from types import SimpleNamespace
+    import cupy as cp
+    ny, nx = state.qv.shape[-2:]
+    if not isinstance(window, tuple) or len(window) != 2:
+        raise ValueError("transition window must be two bounded slices")
+    for sl, extent in zip(window, (ny, nx)):
+        if (not isinstance(sl, slice) or sl.step not in (None, 1)
+                or sl.start is None or sl.stop is None
+                or not 0 <= sl.start < sl.stop <= extent):
+            raise ValueError("transition window is outside the parent")
+    fields = {}
+    for name in ("alt", "qv", "qc", "qr", "qi", "qs", "qg", "qh",
+                 "qir", "qib", "mub2d", "mup"):
+        value = getattr(state, name, None)
+        fields[name] = (None if value is None else
+                        cp.ascontiguousarray(cp.asarray(value[(...,)+window])))
+    fields.update(c1h=cp.ascontiguousarray(cp.asarray(state.c1h)),
+                  c2h=cp.ascontiguousarray(cp.asarray(state.c2h)))
+    return SimpleNamespace(**fields)
+
+
 def _validate_transition_arrays(contract, state, out, shape) -> None:
     import cupy as cp
 

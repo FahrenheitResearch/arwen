@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from fractions import Fraction
@@ -75,6 +76,7 @@ from gpuwm.kernel_compile_notice import (  # noqa: E402
 )
 from gpuwm.ingest.prepared_cache import (  # noqa: E402
     CONDITIONAL_PREPARATION_RECEIPTS,
+    SOIL_PREPARATION_RECEIPTS,
     PREPARED_CACHE_SCHEMA,
     PreparedCacheReader,
     prepared_cache_identity,
@@ -112,8 +114,6 @@ from gpuwm.physics_compat import (  # noqa: E402
     WSM6_PROFILE_ID,
     acknowledgement_delivery,
     identify_single_domain_profile,
-    land_surface_component_for_selector,
-    land_surface_route_blocker,
     single_domain_physics_selection,
     single_domain_runtime_switches,
     single_domain_verification_status,
@@ -194,95 +194,15 @@ PHYSICS_PROFILES = (
 #: land-surface donor) can never have prepared a bundle, so it holds no
 #: row: including it would promise this stage an arm the profile itself
 #: refuses to supply.
-_MAPPED_PACKAGED_PROFILE = {
-    source: profile_id
-    for source, profile_id in packaged_profile_sources().items()
-    if packaged_profile(profile_id)["composition_state"] == "composed"
-}
+#: Sentinel for "this identity document has no such key at all", so a
+#: difference report can say `absent` rather than `None`, which is a value
+#: a field can legitimately hold.
+_MISSING = object()
 
-#: Every ``--source`` this stage runs a prepared bundle for: the three
-#: sources with their own direct runners, plus every composed packaged
-#: profile.  DERIVED, because the prep front door prints a ready-to-run
-#: forecast command for any packaged source it prepared -- so a literal
-#: list that fell behind the registry would print a command the very
-#: next stage refuses by name, which is worse than not printing one.
-SUPPORTED_SOURCES = frozenset(
-    {"gfs", "era5", "hrrr"} | set(_MAPPED_PACKAGED_PROFILE))
-
-# ---------------------------------------------------------------------------
-# Why "mapped" is not in that set, and what it would take -- scoped
-# 2026-08-16 against this file, gpuwm/mapped_direct.py and
-# gpuwm/mapped_composition.py, so the next reader does not re-derive it.
-# ---------------------------------------------------------------------------
-#
-# `20crv3` IS the declarative mapped route wearing a specific name.  Not
-# "similar to": gpuwm/mapped_direct.py is the single writer for both,
-# `_PROOF_SCHEMA["20crv3"]` IS mapped_direct.PROOF_SCHEMA, and the
-# composition receipt shape is identical for a 20CRv3 bundle and a bundle
-# a user prepared with their own mapping.  Preparation on an arbitrary
-# source therefore already works end to end -- `gpuwm prep --source
-# mapped` -- and it is only this stage, the last leg, that has no arm for
-# it.
-#
-# The blocker is the CERTIFICATE, not the engine.
-# `_validate_packaged_mapped_evidence` binds a mapped bundle to the
-# authorities PACKAGED with this distribution: `twentycrv3_authority_sha256()`
-# pins mapping.json, composition.json and the provenance document by
-# digest.  A caller-supplied mapping fails that pin, correctly.
-#
-# What a `mapped` arm needs, exactly, and none of it may widen the pin above:
-#
-#   1. The four per-source tables -- `_SOURCE_SCHEMA`, `_PROOF_SCHEMA`,
-#      `_HIERARCHY_PROOF_SCHEMA`, `_SOURCE_ADAPTER` -- plus their two
-#      `_LEGACY_*` companions and `_SOURCE_PHYSICS_PROFILES`, gain a
-#      "mapped" row.  Note that `_PROOF_SCHEMA["mapped"]` would EQUAL
-#      `_PROOF_SCHEMA["20crv3"]`, so any schema->source reverse lookup
-#      (gpuwm/stage_cli.py builds one) stops being a function and must
-#      disambiguate on the INPUT MANIFEST schema instead:
-#      `gpuwm-20crv3-grib2-inputs-v1` versus
-#      `gpuwm-mapped-source-inputs-v1`.
-#
-#   2. A SECOND, narrower certificate beside the packaged one -- never a
-#      relaxation of it.  For a caller's mapping the authorities cannot be
-#      pinned to a shipped digest, so they must be pinned to the digests
-#      the bundle's own composition receipt declares, cross-checked
-#      against the files on disk AND against the prepared-cache identity
-#      (`_validate_source_identity` already carries mapping_sha256 /
-#      composition_sha256 / composition_receipt_sha256 there), which is in
-#      turn bound by the caller's --prepared-content-sha256.  That chain
-#      is complete; what it stops asserting is WHICH mapping, which is the
-#      correct semantics for arbitrary input and the reason it must be a
-#      separate arm.
-#
-#   3. Three shape differences the generic arm must handle, all real:
-#      * the input manifest -- `gpuwm-mapped-source-inputs-v1` is
-#        {schema, mapping_sha256, composition_sha256, primary_files,
-#        supplements, provenance, decoders}, nothing like the 20CRv3
-#        member manifest `_twentycrv3_manifest_file_specs` validates, and
-#        it carries no valid_times/cadence_seconds -- so the
-#        manifest-cadence cross-check further down does not apply and the
-#        proof's own forcing axis governs alone.
-#      * decoder roles -- the 20CRv3 member manifest declares no decoder
-#        section, so its arm pins `_TWENTYCRV3_DECODER_ROLE_SETS` (one of
-#        the two shipped decode routes, in full); a caller's roles are
-#        whatever their manifest declares, so the receipt/execution
-#        comparison keys off the manifest.
-#      * the alignment receipt -- the 20CRv3 arm pins the composed
-#        exact-subset receipt's closed key set PLUS the member identity
-#        the sealed member manifest bound; a caller's comes from
-#        mapped_composition._compose_terrain and this runner has no
-#        independent source for its member.  It is bound by the receipt
-#        hash and cannot be re-derived, so the generic arm records it
-#        rather than predicting it.
-#
-# Not attempted here because it could only have been verified against a
-# fixture written in the same change -- and a certificate proved against
-# its own fixture is how a specific route quietly becomes a permissive
-# one.  The control that must survive the work is shipped and passing:
-# tests/test_prepared_single_domain_forecast.py::
-# test_source_20crv3_refuses_a_bundle_prepared_from_a_users_own_mapping.
-# `gpuwm sim` meets this reader at the door with the limit named, rather
-# than four stages deep as a hash mismatch.
+from gpuwm.prepared_source_schemas import composed_packaged_profiles, source_schemas
+_MAPPED_PACKAGED_PROFILE = composed_packaged_profiles()
+_MAPPED_SOURCES = frozenset({"mapped", *_MAPPED_PACKAGED_PROFILE})
+SUPPORTED_SOURCES = frozenset({"gfs", "era5", "hrrr"} | _MAPPED_SOURCES)
 
 #: The HRRR bundle this runner reads is the one
 #: ``tools/prepare_hrrr_wrf.py`` publishes, and it is NOT the portable
@@ -314,6 +234,7 @@ HRRR_BUNDLE_PATHS = MappingProxyType({
 #: so a fifth copy of this gate cannot be added silently.
 REFL_10CM_MICROPHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50)
 _SOURCE_PHYSICS_PROFILES = MappingProxyType({
+    "mapped": (),  # No source-specific verification claim; every suite remains selectable.
     # REPORTED METADATA, NOT A GATE (owner ruling 2026-07-31): these
     # per-source lists name the shipped profiles whose verification
     # evidence this runner can vouch for on each source.  They feed the
@@ -512,19 +433,10 @@ _RADIATION_SELECTION_KEYS = frozenset({
 # and `20crv3` writes its OWN input-manifest schema because its member
 # identity is sealed there -- a difference the stage reads to decide
 # whether to demand a member manifest, so it must survive.
-_SOURCE_SCHEMA = {
-    # Any composed mapped preparation writes this one; the packaged
-    # profile, not the schema, is what says WHICH source it is.
-    **{source: "gpuwm-mapped-composition-inputs-v1"
-       for source in _MAPPED_PACKAGED_PROFILE},
-    "gfs": "gpuwm-gfs-direct-input-manifest-v1",
-    "era5": "gpuwm-era5-direct-input-manifest-v1",
-    "20crv3": "gpuwm-20crv3-grib2-inputs-v1",
-    "hrrr": "gpuwm-hrrr-native-input-manifest-v1",
-}
+_SOURCE_SCHEMA = source_schemas(_MAPPED_SOURCES)
 _PROOF_SCHEMA = {
     **{source: "gpuwm-mapped-direct-wrf-proof-v1"
-       for source in _MAPPED_PACKAGED_PROFILE},
+       for source in _MAPPED_SOURCES},
     "gfs": "gpuwm-gfs-direct-wrf-proof-v3",
     "era5": "gpuwm-era5-direct-wrf-proof-v2",
     "hrrr": "gpuwm-hrrr-native-direct-wrf-proof-v1",
@@ -532,7 +444,7 @@ _PROOF_SCHEMA = {
 _LEGACY_PROOF_SCHEMAS = {
     # The mapped proof has never had an earlier revision, so no mapped
     # source accepts a legacy document.
-    **{source: frozenset() for source in _MAPPED_PACKAGED_PROFILE},
+    **{source: frozenset() for source in _MAPPED_SOURCES},
     # v2 remains independently verifiable.  It predates the explicit
     # front-door physics selection receipt and therefore cannot be promoted
     # to v3 by inference.
@@ -544,7 +456,7 @@ _LEGACY_PROOF_SCHEMAS = {
 }
 _HIERARCHY_PROOF_SCHEMA = {
     **{source: "gpuwm-mapped-native-hierarchy-proof-v1"
-       for source in _MAPPED_PACKAGED_PROFILE},
+       for source in _MAPPED_SOURCES},
     "gfs": "gpuwm-gfs-native-hierarchy-proof-v2",
     "era5": "gpuwm-era5-native-hierarchy-proof-v1",
     # HRRR's multi-domain route is gpuwm.hrrr_hierarchy_direct feeding
@@ -555,7 +467,7 @@ _HIERARCHY_PROOF_SCHEMA = {
     "hrrr": "gpuwm-hrrr-native-hierarchy-proof-unreachable-here",
 }
 _LEGACY_HIERARCHY_PROOF_SCHEMAS = {
-    **{source: frozenset() for source in _MAPPED_PACKAGED_PROFILE},
+    **{source: frozenset() for source in _MAPPED_SOURCES},
     # v1 predates the front-door physics receipt the v2 hierarchy proof
     # carries and cannot be promoted to it by inference, the same rule
     # the direct proof's v2 lives under.
@@ -583,13 +495,13 @@ _LEGACY_HIERARCHY_PROOF_SCHEMAS = {
 #: these sets, so the next key added to the writer fails a test instead
 #: of a user's run.
 MAPPED_DIRECT_PROOF_KEYS = frozenset({
-    "schema", "status", "forcing_times", "soil_texture_downscale",
+    "schema", "status", "stock_wrf_export", "forcing_times", "soil_texture_downscale",
     "forcing_hours", "boundary_interval_seconds", "execution_inputs",
     "source_composition", "preprocessing", "static", "geometry",
     "prepared_cache", "export", "timing_seconds", "proof_content_sha256",
 })
 MAPPED_HIERARCHY_PROOF_KEYS = frozenset({
-    "schema", "status", "domain_count", "forcing_times",
+    "schema", "status", "stock_wrf_export", "domain_count", "forcing_times",
     "soil_texture_downscale", "forcing_hours",
     "boundary_interval_seconds", "target_contract", "execution_inputs",
     "source_composition", "preprocessing", "hierarchy_workers",
@@ -616,7 +528,7 @@ _SOURCE_ADAPTER = {
     # per-model adapter id here would be a per-model label on a route
     # that has no per-model half.
     **{source: "rw-wps-mapped-composition-v2"
-       for source in _MAPPED_PACKAGED_PROFILE},
+       for source in _MAPPED_SOURCES},
     "gfs": "gfs-pgrb2-0p25-direct-v1",
     "era5": "era5-grib1-direct-v1",
     # The one mapped route whose adapter id IS model-specific, because
@@ -710,6 +622,15 @@ def runner_capabilities() -> dict[str, object]:
         "hash-bound experiment config on every supported source (see "
         "physics_admission)")
     sources = {
+        "mapped": {
+            "readiness": "IMPLEMENTED_RUNTIME_PREFLIGHT_REQUIRED",
+            "prepared_layouts": ["mapped-direct-d01-v1", "mapped-hierarchy-d01-v1"],
+            "single_d01_gpu_execution": True,
+            "physics_profile_ids": [],
+            "physics_profile_ids_semantics": source_profile_ids_semantics,
+            "authority_binding": "caller mapping/composition/input receipts and sealed cache identity",
+            "limitations": ["Forecast skill depends on the supplied data and selected physics; no model-specific verification is claimed."],
+        },
         "gfs": {
             "readiness": "IMPLEMENTED_RUNTIME_PREFLIGHT_REQUIRED",
             "prepared_layouts": [
@@ -1091,7 +1012,7 @@ def runner_capabilities() -> dict[str, object]:
         NOAHMP_PHYSICS_PROFILE: {
             "selector": 6,
             "readiness": "IMPLEMENTED_UNVERIFIED_EXPERT",
-            "explicit_expert_consent_required": True,
+            "explicit_expert_consent_required": False,
             "explicit_profile_selection_required": True,
             "runtime_guards": [
                 "measured 360,000-column ceiling or explicit expert budget",
@@ -1106,7 +1027,7 @@ def runner_capabilities() -> dict[str, object]:
         MYNN_NOAHMP_PHYSICS_PROFILE: {
             "selector": 6,
             "readiness": "IMPLEMENTED_UNVERIFIED_EXPERT",
-            "explicit_expert_consent_required": True,
+            "explicit_expert_consent_required": False,
             "explicit_profile_selection_required": True,
             "runtime_guards": [
                 "measured 360,000-column ceiling or explicit expert budget",
@@ -1175,7 +1096,7 @@ def runner_capabilities() -> dict[str, object]:
             "claim_output_directory_create_only": True,
             "single_specified_non_nested_d01": True,
             "feedback_required": 0,
-            "restart_interval_seconds_required": 0,
+            "restart_interval_seconds_required": None,
             "hash_bound_inputs": [
                 "proof",
                 "source-manifest",
@@ -1231,7 +1152,7 @@ def runner_capabilities() -> dict[str, object]:
                 "last_scheduled_frame_may_precede_run_end": True,
             },
             "configurable_cadence": True,
-            "restart_output": False,
+            "restart_output": True,
         },
         "capability_query": {
             "flag": "--show-capabilities",
@@ -1353,7 +1274,7 @@ def _history_period_count(run_seconds: float, cadence_seconds: float) -> int:
 
 def _history_output_schedule(
         *, start_time: datetime, run_seconds: float, cadence_seconds: float,
-        domain_id: int = 1,
+        domain_id: int = 1, after_seconds: float | None = None,
 ) -> tuple[tuple[float, datetime, str], ...]:
     """Resolve exact model-relative offsets, valid times, and WRF filenames."""
 
@@ -1376,7 +1297,8 @@ def _history_output_schedule(
     names = [record[2] for record in records]
     if len(names) != len(set(names)):
         raise ValueError("history cadence produces duplicate WRF filenames")
-    return tuple(records)
+    return tuple(record for record in records
+                 if after_seconds is None or record[0] > after_seconds)
 
 
 def _validate_hash_bound_history_cadence(
@@ -1456,7 +1378,7 @@ def _profile_runtime_switches(source: str, profile: str) -> dict[str, object]:
 
 
 def _profile_readiness(source: str, profile: str) -> tuple[str, str | None]:
-    if source in _MAPPED_PACKAGED_PROFILE:
+    if source in _MAPPED_SOURCES:
         suffix = {
             THOMPSON_PHYSICS_PROFILE: (
                 "; Thompson MP8 also remains an experimental table-bound "
@@ -1468,7 +1390,7 @@ def _profile_readiness(source: str, profile: str) -> tuple[str, str | None]:
                 "candidate"),
         }.get(profile, "")
         return "IMPLEMENTED_UNVERIFIED", (
-            "this 20CRv3 GPU forecast profile has no public acceptance gate"
+            f"this {source} GPU forecast profile has no public acceptance gate"
             f"{suffix}")
     if profile == TWENTYCRV3_WSM6_PHYSICS_PROFILE:
         # Selectable on any prepared source now; its verification
@@ -1497,8 +1419,8 @@ def _profile_readiness(source: str, profile: str) -> tuple[str, str | None]:
             "MYNN/MYNN/RUC has no gpuwm/WRF forecast trajectory comparison")
     if profile in (NOAHMP_PHYSICS_PROFILE, MYNN_NOAHMP_PHYSICS_PROFILE):
         return "IMPLEMENTED_UNVERIFIED_EXPERT", (
-            "Noah-MP has no gpuwm/WRF forecast trajectory comparison and "
-            "retains its registry-owned expert acknowledgement")
+            "Noah-MP has no gpuwm/WRF forecast trajectory comparison; "
+            "its registry acknowledgement is advisory")
     # Every other shipped template answers with its REGISTRY maturity
     # rather than a flat supported default: the fallback used to be
     # reachable only by WSM6 (maturity 'supported', which it matched),
@@ -1852,6 +1774,12 @@ def _experiment_tables(raw: Mapping[str, object]) -> dict[str, object]:
         from gpuwm.fetch import validate_fetch_hints
         validate_fetch_hints(fetch_table, source="materialized experiment")
     tables.pop("case_data", None)
+    static_table = tables.pop("static", None)
+    if static_table is not None:
+        from gpuwm.static.highres_production import parse_static_table
+        # Validate the companion's schema here; its path is resolved by the
+        # consuming file loader. The original TOML remains unchanged.
+        parse_static_table(static_table, source="materialized experiment", base_dir=Path("."))
     return tables
 
 
@@ -1941,15 +1869,6 @@ def _render_materialized_experiment(
         base_exp, "prepared single-domain forecast")
     refuse_unrouted_spawn(base_exp, "prepared single-domain forecast")
     if profile is None:
-        for domain in base_exp.domains:
-            component = land_surface_component_for_selector(
-                getattr(domain.run, "sf_surface_physics", None))
-            if component is not None:
-                blocker = land_surface_route_blocker(
-                    component, source=source)
-                if blocker is not None:
-                    raise ValueError(
-                        f"d{int(domain.grid_id):02d}: {blocker}")
         base_non_physics = _non_physics_descriptor_sha256(base_raw)
         return base_text, base_exp, {
             "base_non_physics_descriptor_sha256": base_non_physics,
@@ -1964,19 +1883,12 @@ def _render_materialized_experiment(
             },
         }
     switches = _profile_runtime_switches(source, profile)
-    component = land_surface_component_for_selector(
-        switches.get("sf_surface_physics"))
-    if component is not None:
-        blocker = land_surface_route_blocker(component, source=source)
-        if blocker is not None:
-            raise ValueError(blocker)
     pinned = _profile_pinned_physics(switches)
     _refuse_declared_physics_drift(
         _declared_physics_conflicts(base_raw, base_exp, pinned=pinned),
         profile=profile, origin=origin, base_exp=base_exp)
-    header = re.compile(
-        r"^\s*(\[\[|\[)([A-Za-z0-9_.-]+)(\]\]|\])\s*(?:#.*)?$")
-    assignment = re.compile(r"^\s*([A-Za-z0-9_-]+)\s*=")
+    from gpuwm.toml_document import iter_toml_statements
+    statements = list(iter_toml_statements(base_text))
     # DECLARATIONS THE NAMED PROFILE ITSELF REQUIRES.
     #
     # Naming a profile on the command line is an explicit selection, and
@@ -2000,11 +1912,8 @@ def _render_materialized_experiment(
     merged = list(declared) + [
         value for value in required_acknowledgements if value not in declared]
     rewrite_acknowledgements = tuple(merged) != declared
-    has_shared = any(
-        (match := header.match(line)) is not None
-        and match.group(1) == "[" and match.group(2) == "shared"
-        for line in base_text.splitlines()
-    )
+    has_shared = any(kind == "table" and path == ("shared",)
+                     for kind, path, _lines in statements)
     profile_lines = [
         "# RW-WPS generated exact physics authority; do not hand-edit.",
         f"# source={source} profile={profile}",
@@ -2016,56 +1925,43 @@ def _render_materialized_experiment(
         f"{_toml_literal(_NEST_MICROPHYSICS_TRANSITION)}",
     ]
     output: list[str] = []
-    section: str | None = None
+    section: tuple[str, ...] = ()
     shared_emitted = False
-    skipping_acknowledgements = False
 
     def finish_section() -> None:
         nonlocal shared_emitted
-        if section == "shared" and not shared_emitted:
+        if section == ("shared",) and not shared_emitted:
             if output and output[-1] != "":
                 output.append("")
             output.extend(profile_lines)
             shared_emitted = True
 
-    for line in base_text.splitlines():
-        match = header.match(line)
-        if match is not None:
+    for kind, path, lines in statements:
+        if kind in {"table", "array"}:
             finish_section()
-            is_array = match.group(1) == "[["
-            next_section = match.group(2)
-            if is_array and next_section == "domain" and not has_shared:
+            if kind == "array" and path == ("domain",) and not has_shared:
                 output.extend(["[shared]", *profile_lines, ""])
                 shared_emitted = True
                 has_shared = True
-            section = next_section
-            output.append(line)
-            if rewrite_acknowledgements and section == "experiment":
+            section = path
+            output.extend(lines)
+            if rewrite_acknowledgements and section == ("experiment",):
                 output.extend(_acknowledgement_lines(
                     merged, profile=profile,
                     added=required_acknowledgements))
             continue
-        if skipping_acknowledgements:
-            # Inside the base config's own acknowledgements array, which
-            # may span lines; it is re-emitted merged above.
-            if "]" in line:
-                skipping_acknowledgements = False
-            continue
-        key_match = assignment.match(line)
         # ``pinned``, not ``_MATERIALIZED_PHYSICS_KEYS``: only a key this
         # profile actually states is replaced by the block above.  Every
         # surviving line has been proved to agree with the profile, so
         # dropping it changes no value -- and a key the profile does not
         # pin keeps the value the config gave it instead of vanishing.
-        if (section in {"shared", "domain"} and key_match is not None
-                and key_match.group(1) in pinned):
+        if (section in {("shared",), ("domain",)} and kind == "assignment"
+                and len(path) == 1 and path[0] in pinned):
             continue
-        if (rewrite_acknowledgements and section == "experiment"
-                and key_match is not None
-                and key_match.group(1) == "acknowledgements"):
-            skipping_acknowledgements = "]" not in line
+        if (rewrite_acknowledgements and section == ("experiment",)
+                and kind == "assignment" and path == ("acknowledgements",)):
             continue
-        output.append(line)
+        output.extend(lines)
     finish_section()
     if not shared_emitted:
         if output and output[-1] != "":
@@ -2709,7 +2605,7 @@ def _validate_restored_source_adapter(metadata, source: str) -> None:
     """
 
     adapter = dict(metadata).get("source_adapter")
-    expected = "mapped" if source in _MAPPED_PACKAGED_PROFILE else source
+    expected = "mapped" if source in _MAPPED_SOURCES else source
     if adapter is not None and adapter != expected:
         raise ValueError("restored cache source adapter differs from request")
 
@@ -2757,6 +2653,264 @@ def _provenance_receipt() -> dict:
         return {"unavailable": f"{type(error).__name__}: {error}"}
 
 
+#: Attempts per identity resolution.  The failure this exists for is
+#: transient and environmental -- a ``git`` that does not spawn -- not a
+#: repository answering "no".  Two retries cost milliseconds on a
+#: healthy box and are not paid at all outside the one install shape
+#: that can degrade this way (see :func:`_runtime_provenance`).
+_IDENTITY_ATTEMPTS = 3
+
+#: The ``identity_source`` values a CHECKOUT can only reach by falling
+#: THROUGH the git branch of :func:`gpuwm.runtime_manifest.provenance`:
+#: that branch catches ``(OSError, SubprocessError)`` around its three
+#: ``git`` calls and continues down the ladder rather than raising, so
+#: one subprocess that fails to start re-answers the whole question from
+#: a lower rung.  The manifest rung is deliberately absent -- it is
+#: resolved BEFORE git and so is never a fall-through.
+_GIT_FALLTHROUGH_SOURCES = frozenset({
+    "installed-editable-source",
+    "installed-wheel-record",
+    "runtime-module-sha256-only",
+})
+
+#: The identity of a tree that is neither a manifest, nor a checkout,
+#: nor an installed distribution: a source tree someone copied into
+#: place.  The per-module digests in :func:`_runtime_source_identity`
+#: still bind what ran.
+_UNRESOLVED_PROVENANCE: Mapping[str, object] = MappingProxyType({
+    "git_commit": None, "git_tree": None, "git_status_short": None,
+    "identity_source": "runtime-module-sha256-only",
+    "distribution_manifest_sha256": None, "installed_wheel": None,
+    "installed_editable": None,
+})
+
+
+def _runtime_provenance() -> dict[str, object]:
+    """Which install is executing, asked so a git hiccup cannot rename it.
+
+    One resolver for all three installs (``gpuwm.runtime_manifest``).
+    Its git branch, though, is the one place a healthy checkout can
+    answer as something else entirely.  ``provenance`` wraps its three
+    ``git`` calls in ``except (OSError, subprocess.SubprocessError):
+    pass`` and CONTINUES to the editable/wheel ladder, so a single
+    ``git rev-parse`` that fails to spawn moves ``identity_source``,
+    ``git_commit``, ``git_tree``, ``git_status_short`` and one of
+    ``installed_wheel`` / ``installed_editable`` in one step, with
+    nothing on disk changed.  That is the cheap event this run's receipt
+    was destroyed by; see :func:`_runtime_source_identity_change`.
+
+    So a checkout that did not answer ``"git"`` is asked again.  The
+    precondition is a FILESYSTEM one -- ``.git`` is a name on disk --
+    because :func:`gpuwm.runtime_manifest.git_checkout_root` answers the
+    same question by spawning git, and during the outage this exists for
+    it would answer "not a checkout" every time and skip the retry that
+    fixes it.  A wheel install has no ``.git`` and so pays nothing.
+    """
+
+    from gpuwm.runtime_manifest import IdentityError, provenance
+
+    identity: dict[str, object] = dict(_UNRESOLVED_PROVENANCE)
+    for attempt in range(_IDENTITY_ATTEMPTS):
+        try:
+            identity = dict(provenance(REPO))
+        except IdentityError:
+            identity = dict(_UNRESOLVED_PROVENANCE)
+        if identity.get("identity_source") not in _GIT_FALLTHROUGH_SOURCES:
+            break
+        if not (REPO / ".git").exists():
+            # Not a checkout at all.  This rung's answer is the truth
+            # rather than a degraded one -- pip knows exactly which
+            # artifact it wrote, and RECORD says so -- so asking again
+            # would only buy the same answer three times.
+            break
+        if attempt + 1 < _IDENTITY_ATTEMPTS:
+            time.sleep(0.1 * (attempt + 1))
+    # A checkout that STILL did not answer "git" has now been asked
+    # _IDENTITY_ATTEMPTS times, so this is no longer a hiccup: git
+    # cannot be launched at all.  The rung that answered instead reports
+    # on the tree PIP WAS POINTED AT, which in a linked worktree is a
+    # different tree entirely -- measured here: the worktree executing
+    # is eada530d and the editable rung answered c1b32d0, the main
+    # checkout's HEAD.  Neither this module nor anything in
+    # ``source_sha256`` came out of that tree, so the top-level commit
+    # is re-read from REPO's own ``.git``.
+    if (identity.get("identity_source") in _GIT_FALLTHROUGH_SOURCES
+            and (REPO / ".git").exists()):
+        identity.update(_repo_head_identity())
+    return identity
+
+
+def _repo_head_identity() -> dict[str, object]:
+    """The git half of the identity, for REPO and no other tree.
+
+    ``git_commit`` is read out of ``.git`` bytes in a format git has not
+    changed in its lifetime, so a process that cannot SPAWN git can
+    still say which commit is executing.  Worktree-aware, which is what
+    matters here: ``.git`` is a FILE in a linked worktree and this
+    project's work happens almost entirely in them.
+
+    ``git_tree`` and ``git_status_short`` stay ``None``, and say so: the
+    tree id lives inside the commit object and the working tree cannot
+    be inspected without git at all.  The comparison reads ``None`` as
+    "this was not asked" rather than as an answer.
+    """
+
+    from gpuwm.provenance import git_dir_identity
+
+    try:
+        head = git_dir_identity(REPO)
+    except Exception:                                   # noqa: BLE001
+        head = None
+    return {
+        "git_commit": None if head is None else str(head["commit_full"]),
+        "git_tree": None,
+        "git_status_short": None,
+    }
+
+
+def _tracked_status_lines(value: object) -> list[str] | None:
+    """``git status --short`` with its untracked (``??``) rows dropped.
+
+    ``None`` in, ``None`` out, because "nobody asked git" and "git found
+    nothing" are different statements and the caller reads the
+    difference.
+
+    Untracked files are not the forecast implementation.  A run that
+    writes anything inside the checkout creates them -- ``runs/`` is not
+    ignored, so a single scratch file lands in ``git status --short`` as
+    ``?? runs/...`` -- and comparing the raw list made such a run fail
+    its own receipt for having produced output.  Measured in this
+    worktree: 0 status lines before ``touch runs/probe``, 1 after.
+
+    What survives the filter is every TRACKED path git reports as
+    modified, added, deleted or renamed, which is the signal worth
+    keeping: it catches an edit to a tracked file anywhere in the tree,
+    including the many that ``source_sha256`` does not hash.
+    """
+
+    if value is None:
+        return None
+    return [str(line) for line in value if not str(line).startswith("??")]
+
+
+def _untracked_blind(value: object) -> object:
+    """One identity component with its untracked-file COUNT removed.
+
+    ``installed_editable`` carries ``git.untracked_files`` -- an integer
+    counting exactly the rows :func:`_tracked_status_lines` drops -- so
+    on an editable install one scratch file moves the identity twice.
+    ``git.dirty`` and ``git.dirty_files`` count TRACKED changes and are
+    left alone, on purpose: they are the same signal the filtered status
+    lines carry, arriving from the other install shape.
+    """
+
+    if not isinstance(value, Mapping):
+        return value
+    git = value.get("git")
+    if not isinstance(git, Mapping) or "untracked_files" not in git:
+        return value
+    return {**value,
+            "git": {key: item for key, item in git.items()
+                    if key != "untracked_files"}}
+
+
+def _runtime_source_identity_change(
+        before: Mapping[str, object], after: Mapping[str, object],
+) -> str | None:
+    """Name the component that moved, or ``None`` if nothing did.
+
+    A plain ``before != after`` conflated unrelated events, and the
+    cheap ones destroyed the expensive one.  A finished forecast --
+    every step integrated, every ``wrfout`` frame written and verified
+    -- loses its receipt to ``forecast runtime implementation changed
+    during run`` in two shapes that share no code with an implementation
+    change:
+
+    * one ``git rev-parse`` failing to spawn at the end of the run,
+      which drops :func:`gpuwm.runtime_manifest.provenance` through its
+      git branch and re-answers ``identity_source``, ``git_commit``,
+      ``git_tree``, ``git_status_short`` and ``installed_wheel`` /
+      ``installed_editable`` from a lower rung, all at once (that one is
+      now also retried -- see :func:`_runtime_provenance` -- so reaching
+      this comparison degraded is rare);
+    * the run creating ONE untracked file inside the checkout, which
+      appends a ``??`` row to ``git_status_short`` and increments
+      ``installed_editable.git.untracked_files``.  ``runs/`` is not
+      ignored, so that is not an unusual run: it is a run that writes
+      where it was told to.
+
+    So the components are compared on their own terms:
+
+    * ``source_sha256`` is compared ALWAYS and strictly.  It is read
+      from bytes on disk, it hashes the ten modules that ARE this
+      forecast implementation, it cannot fail to resolve, and it is what
+      makes skipping anything else survivable.
+    * ``git_commit`` and ``git_tree`` are compared whenever BOTH ends
+      resolved them.  ``None`` means "this was not asked", which is an
+      unanswered question rather than a changed answer.
+      :func:`_runtime_provenance` guarantees both describe REPO, so they
+      stay comparable even when the rung underneath them changed.
+    * ``git_status_short`` is compared, both ends resolved, over TRACKED
+      paths only.
+    * ``distribution_manifest_sha256``, ``installed_wheel`` and
+      ``installed_editable`` are compared only when the SAME rung
+      answered at both ends.  A sealed manifest, a wheel RECORD and an
+      editable source tree answer three different questions, and one
+      rung's answer measured against another's is not a comparison.
+    * ``identity_source`` is not compared at all.  It names which
+      RESOLVER answered, not which code is executing, and the only way
+      it moves while every digest above holds is the fall-through this
+      exists for.  An install genuinely replaced mid-run rewrites the
+      ten hashed modules and is caught by ``source_sha256``.
+
+    That is narrower than the old test in exactly one case: a commit
+    that lands mid-run, touches none of the ten hashed files and no
+    tracked file at all, AND coincides with a git failure at one end.
+    Every other real change still fails: a tracked edit to a hashed file
+    moves ``source_sha256``, a tracked edit anywhere else moves the
+    filtered ``git_status_short``, and a HEAD that moves while git works
+    moves ``git_commit``.
+    """
+
+    if before == after:
+        return None
+    # 1. The bytes on disk.  Always, strictly.
+    first = dict(before.get("source_sha256") or {})
+    second = dict(after.get("source_sha256") or {})
+    for name in sorted(set(first) | set(second)):
+        if first.get(name) != second.get(name):
+            return (f"source_sha256 {name} {first.get(name)} -> "
+                    f"{second.get(name)}")
+    # 2. The commit and the tree, whenever both ends resolved them.
+    #    _runtime_provenance guarantees both describe REPO and no other
+    #    tree, so they stay comparable even across a changed rung.
+    for field in ("git_commit", "git_tree"):
+        one, other = before.get(field), after.get(field)
+        if one is None or other is None:
+            continue
+        if one != other:
+            return f"{field} {one!r} -> {other!r}"
+    # 3. The rung's OWN artifact, only when the same rung answered at
+    #    both ends.  A wheel RECORD, an editable source tree and a
+    #    sealed manifest answer three different questions; comparing one
+    #    rung's answer against another's is not a comparison at all.
+    if before.get("identity_source") == after.get("identity_source"):
+        for field in ("distribution_manifest_sha256", "installed_wheel",
+                      "installed_editable"):
+            one = _untracked_blind(before.get(field))
+            other = _untracked_blind(after.get(field))
+            if one is None or other is None:
+                continue
+            if one != other:
+                return f"{field} {one!r} -> {other!r}"
+    # 4. The working tree, tracked paths only.
+    one = _tracked_status_lines(before.get("git_status_short"))
+    other = _tracked_status_lines(after.get("git_status_short"))
+    if one is not None and other is not None and one != other:
+        return f"git_status_short {one!r} -> {other!r}"
+    return None
+
+
 def _runtime_source_identity() -> dict[str, object]:
     """Bind the exact forecast implementation, not only preparation code."""
 
@@ -2790,21 +2944,15 @@ def _runtime_source_identity() -> dict[str, object]:
     # also raised, uncaught, when site-packages happened to sit INSIDE
     # some unrelated repository, binding a stranger's commit or dying;
     # that case is now simply "not a checkout of this tree".
-    from gpuwm.runtime_manifest import IdentityError, provenance
-
-    try:
-        identity = provenance(REPO)
-    except IdentityError:
-        # Neither a manifest, nor a checkout, nor an installed
-        # distribution: a source tree someone copied into place.  The
-        # per-module digests above still bind what ran.
-        identity = {
-            "git_commit": None, "git_tree": None, "git_status_short": None,
-            "identity_source": "runtime-module-sha256-only",
-            "distribution_manifest_sha256": None, "installed_wheel": None,
-            "installed_editable": None,
-        }
-    return {**identity, "source_sha256": source_sha256}
+    #
+    # The KEYS this publishes, and their meanings, are unchanged.  This
+    # mapping is hashed into ``experiment_fingerprint``, which is
+    # published in checkpoint headers, so a new field here would move
+    # every already-sealed fingerprint and strand the legs carrying
+    # them.  What improved is the RELIABILITY of the resolution
+    # (:func:`_runtime_provenance`) and the end-of-run COMPARISON, which
+    # moved out to :func:`_runtime_source_identity_change`.
+    return {**_runtime_provenance(), "source_sha256": source_sha256}
 
 
 def _durable_wrfout_inventory(output_directory: Path) -> list[dict[str, object]]:
@@ -2898,7 +3046,7 @@ def _resolve_prepared_layout(
         return _PreparedLayout(
             kind=(
                 "mapped-direct-d01-v1"
-                if source in _MAPPED_PACKAGED_PROFILE
+                if source in _MAPPED_SOURCES
                 else "portable-single-domain-v2"),
             domain_bundle=expected,
             static_path=_require_file(
@@ -2930,30 +3078,18 @@ def _resolve_prepared_layout(
         "hierarchy artifact manifest")
     hierarchy_receipt_path = _require_file(
         hierarchy_root / "receipt.json", "hierarchy artifact receipt")
-    # This route runs d01 of a prepared hierarchy THROUGH the unchanged-WRF
-    # file set, so the export is a genuine input here and its absence is a
-    # refusal.  Say which absence it is: a preparation whose export was
-    # refused on representability, or never requested, is a complete
-    # forecast that this particular runner cannot serve -- and the domain
-    # tree runner can.  A bare "file not found" sent users looking for a
-    # broken preparation that is not broken.
+    # Both runners restore this prepared cache. The WRF file set is an
+    # optional companion; when present its redundant lineage still binds.
     export_slot = proof.get("wrf_manifest")
-    if isinstance(export_slot, Mapping) \
-            and export_slot.get("status") not in (None, "READY"):
-        raise ValueError(
-            "this hierarchy preparation published no stock-WRF file set "
-            f"({export_slot.get('status')}: {export_slot.get('reason')}); "
-            "the prepared domain tree is complete -- run it with "
-            "gpuwm-prepared-tree-forecast (module form: python -m "
-            "gpuwm.prepared_domain_tree_forecast)")
-    wrf_manifest_path = _require_file(
+    without_export = _optional_stock_wrf_export(proof, export_slot)
+    wrf_manifest_path = None if without_export else _require_file(
         prepared_root / "wrf-native-input" / "manifest.json",
         "hierarchy direct-WRF manifest")
     artifact_manifest = _load_json_object(
         artifact_manifest_path, "hierarchy artifact manifest")
     hierarchy_receipt = _load_json_object(
         hierarchy_receipt_path, "hierarchy artifact receipt")
-    wrf_manifest = _load_json_object(
+    wrf_manifest = dict(export_slot) if without_export else _load_json_object(
         wrf_manifest_path, "hierarchy direct-WRF manifest")
     expected_manifest = {
         "schema": "gpuwm-native-domain-artifacts-v1",
@@ -3025,9 +3161,9 @@ def _resolve_prepared_layout(
         "hierarchy_artifact_manifest": artifact_manifest_path,
         "hierarchy_receipt": hierarchy_receipt_path,
         "domain_receipt": domain_receipt_path,
-        "wrf_manifest": wrf_manifest_path,
+        **({"wrf_manifest": wrf_manifest_path} if wrf_manifest_path else {}),
     }
-    if source in _MAPPED_PACKAGED_PROFILE:
+    if source in _MAPPED_SOURCES:
         hierarchy_authority_paths.update({
             "mapped_root_static": _require_file(
                 prepared_root / "native-static.npz",
@@ -3039,7 +3175,7 @@ def _resolve_prepared_layout(
     return _PreparedLayout(
         kind=(
             "mapped-hierarchy-d01-v1"
-            if source in _MAPPED_PACKAGED_PROFILE else "hierarchy-d01-v1"),
+            if source in _MAPPED_SOURCES else "hierarchy-d01-v1"),
         domain_bundle=expected_bundle,
         static_path=_require_file(
             expected_bundle / "native-static.npz", "hierarchy d01 static cache"),
@@ -3313,7 +3449,12 @@ def _mapped_composition_manifest_file_specs(
         "schema", "mapping_sha256", "composition_sha256", "primary_files",
         "supplements", "provenance", "decoders",
     }
-    if (set(manifest) != expected_keys
+    member_keys = {"member", "member_identity"} & set(manifest)
+    if (member_keys and (member_keys != {"member", "member_identity"}
+            or any(not isinstance(manifest[key], str) or not manifest[key]
+                   for key in member_keys))):
+        raise ValueError("mapped manifest member identity is incomplete")
+    if (set(manifest) - member_keys != expected_keys
             or manifest.get("schema") != _SOURCE_SCHEMA[source]):
         raise ValueError(
             f"{source} portable source manifest has an unsupported schema or "
@@ -3380,7 +3521,7 @@ def _manifest_file_specs(
 
     if source == "20crv3":
         return _twentycrv3_manifest_file_specs(manifest), None
-    if source in _MAPPED_PACKAGED_PROFILE:
+    if source in _MAPPED_SOURCES:
         return _mapped_composition_manifest_file_specs(source, manifest), None
     expected_schema = _SOURCE_SCHEMA[source]
     expected_keys = {"schema", "files", "source"} \
@@ -3587,24 +3728,8 @@ def _validate_physics(
             or cfg.specified is not True or cfg.nested is not False):
         raise ValueError(
             "prepared forecast requires one specified, non-nested d01")
-    if (float(exp.restart_interval_s) != 0.0
-            or int(exp.feedback) != 0):
-        warn("restart_interval_s/feedback are inert on the prepared "
-             "single-domain runner (it writes no checkpoints, and one "
-             "domain has nothing to feed back); continuing with them "
-             "ignored")
-    # The one genuine per-source blocker, keyed on the resolved selector
-    # rather than a profile name, so a hand-authored suite meets exactly
-    # the gate a named one does.  The registry declaration has no
-    # opinion for sources it does not cover.
-    if source is not None:
-        component = land_surface_component_for_selector(
-            getattr(cfg, "sf_surface_physics", None))
-        if component is not None:
-            blocker = land_surface_route_blocker(component, source=source)
-            if blocker is not None:
-                raise ValueError(f"d01: {blocker}")
-
+    if exp.feedback != 0:
+        warn("feedback is inactive for a single domain; the declared value is preserved")
     matched = identify_single_domain_profile(cfg)
     effective = profile if profile is not None else matched
     # The receipt's ``source`` is the run's actual provenance.  (Until
@@ -3748,13 +3873,22 @@ def _validate_front_door_physics_proof(
     # its bundle is new here, so there is no history of proofs written
     # before the receipt existed, and a new source has no reason to be
     # admitted on weaker evidence than the one beside it.
-    if source not in {"gfs", "hrrr"} \
-            or proof.get("schema") in _LEGACY_PROOF_SCHEMAS[source]:
+    export = proof.get("export")
+    mapped_config_suite = (
+        source in _MAPPED_SOURCES
+        and isinstance(export, dict)
+        and export.get("status") == "READY"
+        and export.get("schema") == "gpuwm-native-direct-wrf-export-v3")
+    if not mapped_config_suite and (
+            source not in {"gfs", "hrrr"}
+            or proof.get("schema") in _LEGACY_PROOF_SCHEMAS[source]):
         return None
     if proof.get("schema") != _PROOF_SCHEMA[source]:
         return None
     label = source.upper()
-    selected = proof.get("physics")
+    # Mapped preparation binds the selection inside its export receipt.
+    # Older v2 exports stay readable under their original stock contract.
+    selected = export.get("physics") if mapped_config_suite else proof.get("physics")
     if not isinstance(selected, dict):
         raise ValueError(
             f"{label} v3 preparation proof physics receipt is missing")
@@ -3855,7 +3989,7 @@ def _execution_plan_receipt(
 
 
 def _validate_execution_file_receipt(
-        receipt, actual: Path, label: str,
+        receipt, actual: Path | None, label: str,
 ) -> None:
     """Bind a run-control file to the bytes the preparation validated.
 
@@ -3887,6 +4021,15 @@ def _validate_execution_file_receipt(
             "the file this preparation read cannot be named in any "
             "refusal about it. Re-prepare with a distribution that writes "
             "the provenance path.")
+    byte_count = receipt.get("bytes")
+    if isinstance(byte_count, bool) or not isinstance(byte_count, int) or byte_count <= 0:
+        raise ValueError(f"mapped {label} execution byte count is malformed")
+    _require_digest(receipt.get("sha256"), f"mapped {label} execution sha256")
+    if actual is None:
+        # A prepared hierarchy restores its sealed cache without the raw
+        # preparation files. Its caller validates typed domain configuration
+        # and compares this original digest to every cache's namelist identity.
+        return
     differences: list[str] = []
     actual_bytes = actual.stat().st_size
     if receipt.get("bytes") != actual_bytes:
@@ -3910,37 +4053,46 @@ def _validate_execution_file_receipt(
             "against the file you have.")
 
 
+def _optional_stock_wrf_export(proof, export) -> bool:
+    """Recognize the producer's explicit optional/off companion-file receipt."""
+    if not isinstance(export, dict) or export.get("status") == "READY":
+        return False
+    mode = proof.get("stock_wrf_export")
+    status = export.get("status")
+    valid = ((mode == "off" and status == "NOT_REQUESTED")
+             or (mode == "optional" and status == "REFUSED"))
+    keys = {"schema", "status", "reason"}
+    if status == "REFUSED":
+        keys.add("unsupported")
+        valid = valid and isinstance(export.get("unsupported"), dict)
+    if (not valid or set(export) != keys
+            or export.get("schema") not in {
+                "gpuwm-native-direct-wrf-export-v2", "gpuwm-native-direct-wrf-export-v3",
+                "gpuwm-native-direct-wrf-hierarchy-export-v1"}
+            or not isinstance(export.get("reason"), str) or not export["reason"]):
+        raise ValueError("stock-WRF export receipt differs from the requested mode")
+    return True
+
+
 def _validate_packaged_mapped_evidence(
         *, prepared_root: Path, proof: Mapping[str, object],
         manifest: Mapping[str, object], manifest_sha256: str,
-        experiment_config: Path, wps_namelist: Path,
+        experiment_config: Path | None, wps_namelist: Path | None,
         source: str = "20crv3",
 ) -> tuple[Mapping[str, Path], Mapping[str, object], str | None]:
-    """Bind a mapped proof to one exact PACKAGED source profile.
+    """Validate the shared mapped evidence, including explicit model claims.
 
-    One certificate, two manifest shapes.  The pin that matters is the
-    same for every packaged profile and is not relaxed for any of them:
-    the mapping, composition and provenance documents the preparation
-    copied into its evidence directory must be BYTE-EQUAL to the three
-    this distribution ships for that profile, and the composition receipt
-    inside the proof must name those same digests.  A caller-authored
-    mapping fails that pin, which is the correct answer and the reason
-    ``gpuwm prep --source mapped`` still has no forecast arm.
-
-    What varies is the input manifest, and only that: the
-    every-member GRIB2 archive carries its own member manifest with the
-    filename-bound member identity, and a composed mapped preparation
-    carries ``gpuwm-mapped-composition-inputs-v1``.  Each shape is
-    validated by its own reader below; ``source`` selects which, through
-    :data:`_MAPPED_PACKAGED_PROFILE`, never by sniffing.
+    Named profiles additionally pin their shipped authorities. ``mapped``
+    binds caller-authored authorities to the manifest, composition receipt
+    and sealed cache identity. Neither route requires a forecast certificate.
+    The historical function name remains for existing callers.
     """
 
     from gpuwm.source_authorities import packaged_authority_sha256
 
     profile_id = _MAPPED_PACKAGED_PROFILE.get(source)
-    if profile_id is None:
-        raise ValueError(
-            f"{source} is not prepared through a packaged mapped profile")
+    if source not in _MAPPED_SOURCES:
+        raise ValueError(f"{source} is not a mapped preparation")
     member_manifest = _SOURCE_SCHEMA[source] == _SOURCE_SCHEMA["20crv3"]
 
     direct_proof_keys = set(MAPPED_DIRECT_PROOF_KEYS)
@@ -3949,6 +4101,13 @@ def _validate_packaged_mapped_evidence(
     expected_proof_keys = (
         direct_proof_keys if schema == _PROOF_SCHEMA[source]
         else hierarchy_proof_keys)
+    # Older proofs predate the optional stock-WRF companion export control.
+    # Their READY export still goes through the original checks below.
+    if "stock_wrf_export" not in proof:
+        expected_proof_keys.discard("stock_wrf_export")
+    elif (not isinstance(proof["stock_wrf_export"], str)
+          or proof["stock_wrf_export"] not in {"off", "optional", "required"}):
+        raise ValueError("mapped stock-WRF export mode is invalid")
     # Every required key present, and nothing beyond them but the
     # declared-optional ones: a missing key and an unrecognised key are
     # both still refusals, which is the exactness this inventory exists
@@ -3976,15 +4135,43 @@ def _validate_packaged_mapped_evidence(
     if copied_manifest != (prepared_root / "source-evidence" /
                            "input-manifest.json").resolve():
         raise RuntimeError("mapped source manifest resolved unexpectedly")
-    expected_authority_sha256 = dict(packaged_authority_sha256(profile_id))
+    expected_authority_sha256 = (
+        dict(packaged_authority_sha256(profile_id)) if profile_id else {
+            "mapping": _require_digest(
+                manifest.get("mapping_sha256"), "mapped manifest mapping sha256"),
+            "composition": _require_digest(
+                manifest.get("composition_sha256"),
+                "mapped manifest composition sha256"),
+        })
     if (_sha256(mapping_path) != expected_authority_sha256["mapping"]
             or _sha256(composition_path)
             != expected_authority_sha256["composition"]):
-        raise ValueError(
-            f"mapped preparation does not use the packaged {source} "
-            f"authorities ({profile_id})")
+        if profile_id:
+            raise ValueError(
+                f"mapped preparation does not use the packaged {source} "
+                f"authorities ({profile_id})")
+        raise ValueError("mapped authorities differ from the input manifest")
     if _sha256(copied_manifest) != manifest_sha256:
         raise ValueError("mapped source manifest evidence differs from caller pin")
+    if not member_manifest and any(
+            manifest.get(f"{role}_sha256") != expected_authority_sha256[role]
+            for role in ("mapping", "composition")):
+        raise ValueError("mapped manifest authority identity differs")
+
+    composition_document = _load_json_object(
+        composition_path, "mapped composition authority")
+    declared_bindings = composition_document.get("field_sources") or {}
+    if not isinstance(declared_bindings, dict):
+        raise ValueError("mapped composition field sources must be an object")
+    terrain_bindings = [binding for binding in declared_bindings.values()
+                        if isinstance(binding, dict)
+                        and "terrain_height" in binding.get("fields", ())]
+    terrain_spec = composition_document.get("supplements", {}).get(
+        "terrain_height")
+    if terrain_spec is None and len(terrain_bindings) == 1:
+        terrain_spec = terrain_bindings[0]
+    if not isinstance(terrain_spec, dict):
+        raise ValueError("mapped composition names no unique terrain provider")
 
     known_names = {"mapping.json", "composition.json", "input-manifest.json",
                    "composition-inputs.json"}
@@ -3992,39 +4179,49 @@ def _validate_packaged_mapped_evidence(
         path.resolve() for path in evidence_root.iterdir()
         if path.is_file() and path.name not in known_names
     ]
-    if len(provenance_candidates) != 1:
-        raise ValueError(
-            f"mapped {source} source evidence must contain one provenance file")
-    provenance_path = provenance_candidates[0]
-    if (_sha256(provenance_path)
-            != expected_authority_sha256["provenance"]):
-        raise ValueError(f"mapped {source} provenance authority differs")
+    if member_manifest:
+        if len(provenance_candidates) != 1:
+            raise ValueError("mapped source evidence must contain one provenance file")
+        provenance_path = provenance_candidates[0]
+        if _sha256(provenance_path) != expected_authority_sha256["provenance"]:
+            raise ValueError(f"mapped {source} provenance authority differs")
+        provenance_paths = {"mapped_provenance": provenance_path}
+    else:
+        provenance_rows = manifest.get("provenance")
+        if (not isinstance(provenance_rows, dict) or not provenance_rows
+                or len(provenance_candidates) != len(provenance_rows)):
+            raise ValueError("mapped provenance evidence inventory differs")
+        provenance_paths = {}
+        remaining = {path: _sha256(path) for path in provenance_candidates}
+        for role, row in sorted(provenance_rows.items()):
+            digest = _require_digest(row.get("sha256"), "mapped provenance sha256")
+            candidates = [path for path, value in remaining.items() if value == digest]
+            if not candidates:
+                raise ValueError(f"mapped provenance authority differs: {role}")
+            path = candidates[0]
+            if path.stat().st_size != row.get("bytes"):
+                raise ValueError(f"mapped provenance byte count differs: {role}")
+            del remaining[path]
+            provenance_paths[f"mapped_provenance:{role}"] = path
+        terrain_role = terrain_spec.get("provenance_role")
+        if terrain_role not in provenance_rows:
+            raise ValueError("mapped terrain provenance role is missing")
+        terrain_digest = provenance_rows[terrain_role]["sha256"]
+        if profile_id and terrain_digest != expected_authority_sha256["provenance"]:
+            raise ValueError(f"mapped {source} provenance authority differs")
+        expected_authority_sha256["provenance"] = terrain_digest
+        provenance_path = provenance_paths[f"mapped_provenance:{terrain_role}"]
 
     receipt = proof.get("source_composition")
-    # Whether this profile borrows fields across sources is decided by
-    # the PACKAGED composition document -- already pinned byte-for-byte
-    # above -- never by sniffing the receipt: a receipt that carries (or
-    # omits) `contributing_sources` against the composition's declaration
-    # is a receipt for some other decode.
-    packaged_composition_document = _load_json_object(
-        composition_path, "mapped packaged composition authority")
-    declared_bindings = dict(
-        packaged_composition_document.get("field_sources") or {})
+    # Composition bytes are already bound above. Their declared donor roles,
+    # rather than a profile allowlist or a receipt's claims, govern the shape.
     expected_receipt_keys = {
         "schema", "status", "mapping", "composition", "input_manifest",
         "decoders", "terrain_products", "terrain_provenance", "alignment",
         "soil_layers", "frame_count", "valid_times", "frames",
         "receipt_content_sha256",
     }
-    # A CROSS-SOURCE profile ships each donor mapping as a pinned
-    # authority, and its composed receipt names every contributing source.
-    # The key is REQUIRED exactly when the profile declares bindings and
-    # FORBIDDEN otherwise, so a single-source bundle cannot smuggle a
-    # borrow in and a cross-source bundle cannot hide one.
-    from gpuwm.source_authorities import packaged_profile as _packaged_profile
-    contributing_pins = dict(
-        _packaged_profile(profile_id)["contributing_mappings"])
-    if contributing_pins:
+    if declared_bindings:
         expected_receipt_keys |= {"contributing_sources"}
     if (not isinstance(receipt, dict) or set(receipt) != expected_receipt_keys
             or receipt.get("schema") != "gpuwm-mapped-composition-receipt-v1"
@@ -4033,7 +4230,7 @@ def _validate_packaged_mapped_evidence(
         if declared_bindings and isinstance(receipt, dict) \
                 and "contributing_sources" not in receipt:
             raise ValueError(
-                "the packaged composition declares contributing-source "
+                "the composition declares contributing-source "
                 "bindings but the receipt names no contributing sources; "
                 "a cross-source decode always records them, so this "
                 "receipt belongs to some other decode")
@@ -4133,6 +4330,13 @@ def _validate_packaged_mapped_evidence(
                 or not isinstance(executed.get("bytes"), int)
                 or executed.get("bytes") <= 0):
             raise ValueError(f"mapped {source} decoder receipt differs: {role}")
+        if not member_manifest:
+            declared = manifest["decoders"][role]
+            if (declared.get("sha256") != executed.get("sha256")
+                    or declared.get("bytes") != executed.get("bytes")
+                    or receipt_basename(declared.get("path"))
+                    != receipt_basename(executed.get("path"))):
+                raise ValueError(f"mapped decoder manifest differs: {role}")
         decoder_sha256[role] = _require_digest(
             composed.get("sha256"), f"mapped {source} decoder {role} sha256")
 
@@ -4198,35 +4402,20 @@ def _validate_packaged_mapped_evidence(
         # the manifest is pinned by the caller's --source-manifest-sha256,
         # so this is the caller's own binding checked against the receipt.
         supplements = manifest.get("supplements")
-        if not isinstance(supplements, dict) or len(supplements) != 1:
-            raise ValueError(
-                "mapped composition manifest must bind exactly one "
-                "supplement role for a packaged profile")
-        supplement_role, supplement_rows = next(iter(supplements.items()))
-        field_sources = composition_document.get("field_sources") or {}
-        terrain_binding: dict | None = None
-        terrain_binding_name: str | None = None
-        if contributing_pins:
-            # A CROSS-SOURCE profile: the caller's supplement is the donor
-            # data file, riding the data role of whichever binding
-            # provides terrain (the composed decode already enforced
-            # exactly-one-provider for every field).
-            for name, binding in field_sources.items():
-                if "terrain_height" in binding.get("fields", ()):
-                    terrain_binding, terrain_binding_name = binding, name
-            if terrain_binding is None:
-                raise ValueError(
-                    "packaged cross-source composition binds no terrain "
-                    "provider")
-            declared_role = terrain_binding.get("data_role")
-        else:
-            declared_role = composition_document.get(
-                "supplements", {}).get("terrain_height", {}).get("data_role")
-        if supplement_role != declared_role:
-            raise ValueError(
-                f"mapped composition manifest binds supplement role "
-                f"{supplement_role!r}; the packaged composition declares "
-                f"{declared_role!r}")
+        if not isinstance(supplements, dict):
+            raise ValueError("mapped composition supplement inventory is missing")
+        field_sources = declared_bindings
+        terrain_binding = terrain_binding_name = None
+        for name, binding in field_sources.items():
+            if "terrain_height" in binding.get("fields", ()):
+                terrain_binding, terrain_binding_name = binding, name
+        declared_role = terrain_spec.get("data_role")
+        expected_roles = {str(binding["data_role"])
+                          for binding in declared_bindings.values()}
+        expected_roles.add(str(declared_role))
+        if set(supplements) != expected_roles:
+            raise ValueError("mapped supplement roles differ from the composition")
+        supplement_rows = supplements.get(declared_role)
         if not isinstance(supplement_rows, list) or not supplement_rows:
             raise ValueError("mapped composition supplement inventory is empty")
         # NAME plus digest, not the absolute path: the portable manifest
@@ -4254,7 +4443,7 @@ def _validate_packaged_mapped_evidence(
         # was invariant across the supplied times -- plus the fact that
         # its bytes are inside the proof, whose content hash the caller
         # pinned.
-        if contributing_pins:
+        if declared_bindings:
             # Cross-source: the top-level alignment is the terrain
             # provider's binding receipt, under the binding's own declared
             # clock; every borrowed field must carry a subset digest, and
@@ -4311,32 +4500,34 @@ def _validate_packaged_mapped_evidence(
             _require_digest(
                 alignment.get("terrain_subset_sha256"),
                 "mapped composition terrain subset sha256")
-        if contributing_pins:
+        if declared_bindings:
             from gpuwm.source_authorities import packaged_contributing_sha256
 
-            contributing_sha = dict(
-                packaged_contributing_sha256(profile_id))
+            contributing_sha = (
+                dict(packaged_contributing_sha256(profile_id))
+                if profile_id else {
+                    str(binding["mapping_role"]): _require_digest(
+                        binding.get("mapping_sha256"), "contributing mapping sha256")
+                    for binding in declared_bindings.values()})
             entries = receipt.get("contributing_sources")
             if (not isinstance(entries, list)
                     or len(entries) != len(declared_bindings)):
                 raise ValueError(
                     "contributing source inventory differs from the "
                     "packaged composition's declared bindings")
-            supplement_digests = {
-                str(row.get("sha256")) for row in supplement_rows
-                if isinstance(row, dict)
-            }
+            seen_bindings = set()
             for entry in entries:
                 if not isinstance(entry, dict):
                     raise ValueError(
                         "contributing source receipt is malformed")
                 binding_name = str(entry.get("binding"))
                 binding = declared_bindings.get(binding_name)
-                if binding is None:
+                if binding is None or binding_name in seen_bindings:
                     raise ValueError(
                         f"contributing source receipt names binding "
                         f"{binding_name!r}, which the packaged "
                         "composition does not declare")
+                seen_bindings.add(binding_name)
                 mapping_role = str(binding["mapping_role"])
                 mapping_record = entry.get("mapping")
                 recorded_sha256 = (
@@ -4362,16 +4553,31 @@ def _validate_packaged_mapped_evidence(
                         f"contributing source {binding_name!r} alignment "
                         "did not pass")
                 data_rows = entry.get("data")
-                if (not isinstance(data_rows, list) or not data_rows
-                        or not all(
-                            isinstance(row, dict)
-                            and str(row.get("sha256"))
-                            in supplement_digests
-                            for row in data_rows)):
+                declared_rows = supplements[str(binding["data_role"])]
+                def portable_rows(rows):
+                    if not isinstance(rows, list) or not rows:
+                        raise ValueError("contributing source data inventory is empty")
+                    return [(receipt_basename(row.get("path")), row.get("sha256"))
+                            for row in rows if isinstance(row, dict)]
+                if (not isinstance(data_rows, list)
+                        or len(data_rows) != len(declared_rows)
+                        or portable_rows(data_rows) != portable_rows(declared_rows)):
                     raise ValueError(
                         f"contributing source {binding_name!r} data does "
                         "not match the manifest's supplement inventory")
-        source_member = None
+                provenance_record = entry.get("provenance")
+                declared_provenance = manifest["provenance"].get(
+                    str(binding["provenance_role"]))
+                if (not isinstance(provenance_record, dict)
+                        or not isinstance(declared_provenance, dict)
+                        or provenance_record.get("sha256") != declared_provenance["sha256"]
+                        or receipt_basename(provenance_record.get("path"))
+                        != receipt_basename(declared_provenance["path"])):
+                    raise ValueError("contributing source provenance differs")
+        for key in ("member", "member_identity"):
+            if alignment.get(key) != manifest.get(key):
+                raise ValueError("mapped composition member/alignment receipt differs")
+        source_member = manifest.get("member")
     if receipt.get("soil_layers") != composition_document.get("soil_layers"):
         raise ValueError(f"mapped {source} soil-layer receipt differs")
     frames = receipt.get("frames")
@@ -4397,7 +4603,7 @@ def _validate_packaged_mapped_evidence(
     return MappingProxyType({
         "mapped_mapping": mapping_path,
         "mapped_composition": composition_path,
-        "mapped_provenance": provenance_path,
+        **provenance_paths,
     }), MappingProxyType({
         "receipt_content_sha256": expected_receipt_sha256,
         "mapping_sha256": expected_authority_sha256["mapping"],
@@ -4514,6 +4720,21 @@ def _validate_hrrr_source_identity(
             raise ValueError(
                 f"HRRR prepared cache source identity {key} differs from "
                 "the preparation proof")
+    if "ingest" in identity or "ingest" in proof:
+        ingest = identity.get("ingest")
+        if (not isinstance(ingest, dict)
+                or set(ingest) != {"soil_texture_downscale"}
+                or not isinstance(ingest["soil_texture_downscale"], bool)
+                or ingest != proof.get("ingest")):
+            raise ValueError("prepared cache ingest settings differ from preparation proof")
+    if "static_highres" in identity or "static_highres" in proof:
+        if identity.get("static_highres") != proof.get("static_highres"):
+            raise ValueError("prepared cache high-resolution settings differ from preparation proof")
+        from gpuwm.static.highres_production import parse_static_table
+        parse_static_table({"highres": identity.get("static_highres")},
+                           source="prepared high-resolution identity", base_dir=Path("."))
+    if identity.get("trace_gas_overrides") != proof.get("trace_gas_overrides"):
+        raise ValueError("prepared cache trace-gas settings differ from preparation proof")
     return identity
 
 
@@ -4521,12 +4742,15 @@ def _validate_source_identity(
         source: str, identity: object, manifest_sha256: str,
         manifest_files: Mapping[str, Mapping[str, object]], proof,
         *, layout: str, mapped_authority: Mapping[str, object] | None = None,
+        grid_id: int = 1,
+        experiment_config: Path | None = None,
+        experiment_config_sha256: str | None = None,
 ) -> Mapping[str, object]:
     if not isinstance(identity, dict):
         raise ValueError("prepared cache source identity must be an object")
-    if source in _MAPPED_PACKAGED_PROFILE:
+    if source in _MAPPED_SOURCES:
         if mapped_authority is None:
-            raise ValueError("20CRv3 mapped source authority is missing")
+            raise ValueError("mapped source authority is missing")
         expected = {
             "adapter": _SOURCE_ADAPTER[source],
             "mapping_sha256": mapped_authority["mapping_sha256"],
@@ -4538,24 +4762,46 @@ def _validate_source_identity(
         }
         if any(identity.get(key) != value for key, value in expected.items()):
             raise ValueError(
-                "prepared cache source identity differs from the exact-member "
-                "20CRv3 mapped authorities")
+                "prepared cache source identity differs from the mapped authorities")
         allowed = set(expected)
+        if "static_highres" in identity:
+            # Shared preflight below compares this owner-normalized block
+            # with the exact experiment authority for every source family.
+            allowed.add("static_highres")
+        case_fields = {"preparation_case_policy", "water_temperature_overlay"}
+        if case_fields & set(identity):
+            if not case_fields <= set(identity):
+                raise ValueError("mapped preparation case identity is incomplete")
+            if experiment_config is None or experiment_config_sha256 is None:
+                raise ValueError("mapped preparation case identity needs the pinned experiment authority")
+            from gpuwm.case_data import (
+                optional_case_data_from_config, preparation_case_policy)
+            from gpuwm.ingest.water_overlay import overlay_file_identity
+            data = optional_case_data_from_config(
+                experiment_config, expected_sha256=experiment_config_sha256)
+            policy = preparation_case_policy(data)
+            if identity["preparation_case_policy"] != policy:
+                raise ValueError("mapped preparation case policy differs from experiment authority")
+            overlay = None if data is None else data.water_temperature_overlay
+            expected_overlay = None if overlay is None else overlay_file_identity(overlay)
+            if identity["water_temperature_overlay"] != expected_overlay:
+                raise ValueError("mapped water-temperature overlay identity differs from its declared bytes")
+            allowed.update(case_fields)
         if layout == "mapped-hierarchy-d01-v1":
             allowed.update({
                 "target_contract", "nested_source_orography",
                 "hierarchy_implementation_sha256", "grid_id"})
             if (identity.get("target_contract")
                     != mapped_authority.get("target_contract")
-                    or identity.get("grid_id") != 1
+                    or identity.get("grid_id") != grid_id
                     or not isinstance(identity.get("nested_source_orography"), dict)
                     or not isinstance(
                         identity.get("hierarchy_implementation_sha256"), dict)):
                 raise ValueError(
-                    "20CRv3 hierarchy cache source identity is incomplete")
+                    "mapped hierarchy cache source identity is incomplete")
         if set(identity) != allowed:
             raise ValueError(
-                "20CRv3 prepared cache source identity has an unsupported shape")
+                "mapped prepared cache source identity has an unsupported shape")
         return identity
     if source == "hrrr":
         return _validate_hrrr_source_identity(identity, proof)
@@ -4620,7 +4866,9 @@ def _validate_cache_metadata(
             exp.start_time + timedelta(hours=forcing_hours[-1])).isoformat(),
         "forcing_hours": list(forcing_hours),
     }
+    receipt_keys = CONDITIONAL_PREPARATION_RECEIPTS
     if layout == HRRR_DIRECT_LAYOUT:
+        receipt_keys = SOIL_PREPARATION_RECEIPTS
         # The native preparation's own user metadata, which names the
         # HRRR cycle and both lead vocabularies rather than an adapter
         # string and a preprocessing receipt.  Compared exactly, like
@@ -4667,7 +4915,7 @@ def _validate_cache_metadata(
     # than waved through: a cache whose receipt differs from its proof
     # still refuses, and so does one that records a receipt its proof does
     # not (and vice versa) -- each of those is a genuine inconsistency.
-    for key in CONDITIONAL_PREPARATION_RECEIPTS:
+    for key in receipt_keys:
         if key in proof or (isinstance(user, dict) and key in user):
             expected_user[key] = proof.get(key)
     if user != expected_user:
@@ -4846,13 +5094,13 @@ def _validate_hierarchy_wrf_authority(
         "preprocessing": preprocessing,
         "regular_source_adapter": (
             "rw-wps-mapped"
-            if source in _MAPPED_PACKAGED_PROFILE else source),
+            if source in _MAPPED_SOURCES else source),
         "native_artifact_manifest": (
             "../hierarchy-artifacts/domain-artifacts.json"),
         "native_artifact_manifest_sha256": _sha256(
             layout.authority_paths["hierarchy_artifact_manifest"]),
     }
-    if source in _MAPPED_PACKAGED_PROFILE:
+    if source in _MAPPED_SOURCES:
         if mapped_authority is None:
             raise ValueError("20CRv3 hierarchy mapped authority is missing")
         expected_provenance.update({
@@ -4868,6 +5116,122 @@ def _validate_hierarchy_wrf_authority(
     return MappingProxyType(expected_d01)
 
 
+def _tolerated_absent_run_fields(
+        observed: Mapping[str, object], run: dict) -> list[dict]:
+    """Drop run fields a header written before them could not carry.
+
+    THE V-12 HOLE, on the route the tolerant table does not cover.  A
+    RunConfig field that joins the identity document refuses every
+    single-domain bundle prepared before it, because the comparison below
+    is a bare equality with one hand-written allowance -- and this has now
+    happened five times in this package's history.  The tree route solved
+    it with ingest.prepared_cache.DEFAULT_TOLERANT_IDENTITY_FIELDS, whose
+    entry means "no code read this at preparation time, so a header
+    written without it describes the same prepared state".  That argument
+    holds identically here, so this reads THAT table rather than a second
+    hand-typed list, and a field registered there is covered on both
+    routes in the commit that registers it.
+
+    Two conditions, both required: the field must be ABSENT from the
+    prepared header (a header that carries a value is compared to it),
+    and the current value must be the not-in-use one from
+    ``undelayed_identity_defaults`` (a bundle really running the feature
+    was prepared for a different clock and is refused by name).
+    """
+    from gpuwm.ingest.prepared_cache import (
+        DEFAULT_TOLERANT_IDENTITY_FIELDS, _run_config_defaults)
+
+    observed_run = {}
+    if isinstance(observed, Mapping):
+        domain = observed.get("domain_config")
+        if isinstance(domain, Mapping) and isinstance(
+                domain.get("run"), Mapping):
+            observed_run = domain["run"]
+    names = sorted(path[len("run."):]
+                   for path in DEFAULT_TOLERANT_IDENTITY_FIELDS
+                   if path.startswith("run."))
+    if not names:
+        return []
+    not_in_use = _run_config_defaults(*names)
+    overrides = []
+    for name in names:
+        if name in observed_run or name not in run:
+            continue
+        if run[name] != not_in_use[f"run.{name}"]:
+            continue
+        overrides.append({
+            "field": f"domain_config.run.{name}",
+            "prepared_identity": "field-absent",
+            "current_loader_default": run.pop(name),
+            "model_state_or_physics_changed": False,
+            "reason": (
+                "the field joined RunConfig after this bundle was "
+                "prepared and holds its not-in-use value, which no code "
+                "read at preparation time"),
+        })
+    return overrides
+
+
+def _dropped_preparation_inert_run_fields(
+        observed: Mapping[str, object], run: dict
+) -> tuple[Mapping[str, object], list[dict]]:
+    """Drop run fields preparation never reads, from BOTH sides.
+
+    The companion to :func:`_tolerated_absent_run_fields`, and the
+    stronger of the two rulings.  Tolerance covers a field ABSENT from
+    an older header and holding its not-in-use value; this covers a
+    field whose value cannot describe a difference in the artifact at
+    all, so it is dropped in both directions and at any value -- which
+    is the only thing that lets a bundle prepared under one adaptive
+    target be run under another.
+
+    Same table as the tree route
+    (``ingest.prepared_cache.PREPARATION_INERT_RUN_FIELDS``), so a field
+    registered there is covered on both routes by that one entry rather
+    than a second hand-typed list here.
+    """
+    from gpuwm.ingest.prepared_cache import PREPARATION_INERT_RUN_FIELDS
+
+    names = sorted(path[len("run."):]
+                   for path in PREPARATION_INERT_RUN_FIELDS
+                   if path.startswith("run."))
+    if not names:
+        return observed, []
+    observed_run = {}
+    if isinstance(observed, Mapping):
+        domain = observed.get("domain_config")
+        if isinstance(domain, Mapping) and isinstance(
+                domain.get("run"), Mapping):
+            observed_run = domain["run"]
+    overrides = []
+    for name in names:
+        in_header = name in observed_run
+        in_live = name in run
+        if not in_header and not in_live:
+            continue
+        prepared = observed_run[name] if in_header else "field-absent"
+        current = run.pop(name) if in_live else "field-absent"
+        if prepared == current:
+            continue
+        overrides.append({
+            "field": f"domain_config.run.{name}",
+            "prepared_identity": prepared,
+            "current_loader_default": current,
+            "model_state_or_physics_changed": False,
+            "reason": (
+                "no code on the preparation path reads this field, so the "
+                "prepared artifact is the same under either value"),
+        })
+    # Stripped unconditionally: the expected side has already had these
+    # names popped, so leaving them on the observed side would turn a
+    # dropped field into a difference -- the exact refusal this removes.
+    stripped = json.loads(_canonical(observed))
+    stripped_run = stripped.get("domain_config", {}).get("run", {})
+    for name in names:
+        stripped_run.pop(name, None)
+    return stripped, overrides
+
+
 def _resolve_cache_identity_compatibility(
         *, source: str, observed: Mapping[str, object],
         expected: Mapping[str, object],
@@ -4880,9 +5244,20 @@ def _resolve_cache_identity_compatibility(
         })
     compatible = json.loads(_canonical(expected))
     run = compatible.get("domain_config", {}).get("run", {})
+    # Inert first: it drops from both sides, so what follows compares
+    # only fields that can actually describe the prepared artifact.
+    observed_cmp, inert = _dropped_preparation_inert_run_fields(
+        observed, run)
+    absent = _tolerated_absent_run_fields(observed_cmp, run)
+    if (absent or inert) and observed_cmp == compatible:
+        return observed, MappingProxyType({
+            "schema": "gpuwm-prepared-cache-identity-compatibility-v1",
+            "status": "COMPATIBLE_LEGACY_DEFAULT",
+            "compatibility_overrides": inert + absent,
+        })
     removed = run.pop("nest_microphysics_transition", None)
-    if (source in _MAPPED_PACKAGED_PROFILE and removed == "same-scheme-only"
-            and observed == compatible):
+    if (source in _MAPPED_SOURCES and removed == "same-scheme-only"
+            and observed_cmp == compatible):
         return observed, MappingProxyType({
             "schema": "gpuwm-prepared-cache-identity-compatibility-v1",
             "status": "COMPATIBLE_LEGACY_DEFAULT",
@@ -4896,9 +5271,38 @@ def _resolve_cache_identity_compatibility(
                     "same-scheme default"),
             }],
         })
+    # NAME WHAT DIFFERS.  The sentence above stood alone, and a user
+    # reading it could not tell an upgrade from a changed configuration --
+    # measured on a bundle prepared one commit earlier, where the whole
+    # difference was twelve fields that had not existed yet.
     raise ValueError(
         "prepared cache identity differs from the requested source, static "
-        "data, configuration, namelist, or allowed legacy default")
+        "data, configuration, namelist, or allowed legacy default: "
+        + _describe_identity_difference(observed_cmp, compatible))
+
+
+def _describe_identity_difference(observed, expected, limit: int = 8) -> str:
+    """The first few differing identity paths, as ``path (a -> b)``."""
+    lines: list[str] = []
+
+    def walk(a, b, path: str) -> None:
+        if len(lines) >= limit:
+            return
+        if isinstance(a, Mapping) and isinstance(b, Mapping):
+            for key in sorted(set(a) | set(b)):
+                walk(a.get(key, _MISSING), b.get(key, _MISSING),
+                     f"{path}.{key}" if path else str(key))
+            return
+        if a != b:
+            lines.append(
+                f"{path} (prepared "
+                f"{'absent' if a is _MISSING else a!r} -> requested "
+                f"{'absent' if b is _MISSING else b!r})")
+
+    walk(observed, expected, "")
+    if not lines:
+        return "no field-level difference (the documents differ in shape)"
+    return "; ".join(lines)
 
 
 def preflight_prepared_forecast(
@@ -4949,7 +5353,7 @@ def preflight_prepared_forecast(
     source_manifest_path = _require_file(
         prepared_root / (
             "source-evidence/input-manifest.json"
-            if source in _MAPPED_PACKAGED_PROFILE
+            if source in _MAPPED_SOURCES
             else "source-input-manifest.json"),
         "portable source manifest")
     experiment_config = _require_file(experiment_config, "experiment config")
@@ -5017,7 +5421,7 @@ def preflight_prepared_forecast(
     mapped_paths: Mapping[str, Path] = MappingProxyType({})
     mapped_authority: Mapping[str, object] | None = None
     source_member: str | None = None
-    if source in _MAPPED_PACKAGED_PROFILE:
+    if source in _MAPPED_SOURCES:
         mapped_paths, mapped_authority, source_member = (
             _validate_packaged_mapped_evidence(
                 prepared_root=prepared_root, proof=proof, manifest=manifest,
@@ -5029,7 +5433,10 @@ def preflight_prepared_forecast(
                 ("experiment_config", experiment_config),
                 ("wps_namelist", wps_namelist)):
             spec = manifest_files[role]
-            if spec["name"] != actual.name or spec["sha256"] != _sha256(actual):
+            # The manifest retains its validated publication name; an
+            # explicit caller path is only a locator for those exact bytes.
+            # Keep that actual path below so later mutation checks rehash it.
+            if spec["sha256"] != _sha256(actual):
                 raise ValueError(
                     f"supplied {role} differs from the portable source manifest")
 
@@ -5058,7 +5465,7 @@ def preflight_prepared_forecast(
             "native HRRR route prepares contiguous hourly leads")
     if (source == "gfs" and cadence_hours not in {1, 3}) \
             or (source == "era5" and cadence_hours < 1) \
-            or (source in _MAPPED_PACKAGED_PROFILE
+            or (source in _MAPPED_SOURCES
                 and cadence_hours < 1):
         # The cadence is uniform (checked above) and the coverage is
         # checked below; a cadence outside the blessed set is coarser
@@ -5152,7 +5559,7 @@ def preflight_prepared_forecast(
                 "20CRv3 exact-member manifest cadence/coverage differs from "
                 "proof forcing")
 
-    if source not in _MAPPED_PACKAGED_PROFILE \
+    if source not in _MAPPED_SOURCES \
             and proof.get("input_manifest_sha256") != source_manifest_sha256:
         raise ValueError("preparation proof input manifest hash differs")
     if layout.kind in {"portable-single-domain-v2", HRRR_DIRECT_LAYOUT}:
@@ -5186,10 +5593,29 @@ def preflight_prepared_forecast(
     source_identity = _validate_source_identity(
         source, header_identity.get("source_identity"),
         source_manifest_sha256, manifest_files, proof, layout=layout.kind,
-        mapped_authority=mapped_authority)
+        mapped_authority=mapped_authority,
+        experiment_config=experiment_config,
+        experiment_config_sha256=_sha256(experiment_config))
     if layout.kind in _HIERARCHY_LAYOUTS \
             and source_identity.get("grid_id") != 1:
         raise ValueError("hierarchy prepared-cache source identity is not d01")
+    if "ingest" in source_identity:
+        from gpuwm.ingest.soil_downscale import declared_soil_texture_downscale
+        expected_ingest = {"soil_texture_downscale":
+                           declared_soil_texture_downscale(experiment_config)}
+        if source_identity["ingest"] != expected_ingest:
+            raise ValueError("prepared cache ingest settings differ from experiment authority")
+    from gpuwm.static.highres_production import load_static_highres, static_highres_identity
+    requested_highres = load_static_highres(experiment_config)
+    if ("static_highres" in source_identity
+            or (requested_highres is not None and requested_highres.enabled)):
+        if source_identity.get("static_highres") != static_highres_identity(requested_highres):
+            raise ValueError("prepared cache high-resolution settings differ from experiment authority")
+    if "trace_gas_overrides" in source_identity:
+        from gpuwm.case_data import trace_gas_overrides_from_config
+        if source_identity["trace_gas_overrides"] != trace_gas_overrides_from_config(
+                experiment_config):
+            raise ValueError("prepared cache trace-gas settings differ from experiment authority")
     if layout.kind == HRRR_DIRECT_LAYOUT:
         # Three of this identity's inputs are genuinely different values
         # on the HRRR route, where for the portable sources two of them
@@ -5248,7 +5674,7 @@ def preflight_prepared_forecast(
         reader, source=source, exp=exp, forcing_hours=forcing_hours,
         boundary_interval_seconds=boundary_interval_seconds, proof=proof,
         layout=layout.kind)
-    if source in _MAPPED_PACKAGED_PROFILE:
+    if source in _MAPPED_SOURCES:
         _validate_mapped_static_proof(
             proof, layout, source=source, static=static,
             geometry_receipt=geometry_receipt,
@@ -5280,7 +5706,7 @@ def preflight_prepared_forecast(
         if cache_proof != expected_cache_proof:
             raise ValueError(
                 "proof prepared-cache receipt differs from the bundle")
-        if source not in _MAPPED_PACKAGED_PROFILE:
+        if source not in _MAPPED_SOURCES:
             artifacts = proof.get("initialization_artifacts")
             if not isinstance(artifacts, dict):
                 raise ValueError(
@@ -5307,77 +5733,84 @@ def preflight_prepared_forecast(
                     "proof prepared-cache artifact differs from the bundle")
 
         export = proof.get("export")
-        expected_dimensions = {
-            "nx": int(exp.root.run.nx),
-            "ny": int(exp.root.run.ny),
-            "nz": int(exp.root.run.nz),
-        }
-        expected_export_schema = (
-            "gpuwm-native-direct-wrf-export-v3"
-            if source in {"gfs", "hrrr"}
-            and proof.get("schema") == _PROOF_SCHEMA[source]
-            else "gpuwm-native-direct-wrf-export-v2"
-        )
-        if (not isinstance(export, dict)
-                or export.get("schema") != expected_export_schema
-                or export.get("status") != "READY"
-                or export.get("forcing_hours") != list(forcing_hours)
-                or export.get("boundary_interval_seconds")
-                != boundary_interval_seconds
-                or export.get("dimensions") != expected_dimensions
-                or export.get("valid_time")
-                != exp.start_time.strftime("%Y-%m-%d_%H:%M:%S")):
-            raise ValueError(
-                "proof direct-WRF export identity differs from the run")
-        if expected_export_schema.endswith("-v3") \
-                and export.get("physics") != front_door_physics:
-            raise ValueError(
-                f"{source.upper()} v3 export physics receipt differs from "
-                "the preparation proof")
-        export_source = export.get("source")
-        expected_export_source = {
-            "contract_sha256": _sha256(contract_path),
-            "geometry_receipt_sha256": geometry_sha256,
-            "prepared_content_sha256": reader.content_sha256,
-            "prepared_header_sha256": header_sha256,
-            "resolved_physics_contract_sha256": (
-                _resolved_wrf_direct_contract_sha256(
-                    exp.root.run.mp_physics)),
-            "static_cache_sha256": static_sha256,
-        }
-        if export_source != expected_export_source:
-            raise ValueError(
-                "proof export source hashes differ from preparation")
-        if source not in _MAPPED_PACKAGED_PROFILE:
-            preprocessing_digest = hashlib.sha256(
-                _canonical(proof.get("preprocessing")).encode("utf-8")
-            ).hexdigest()
-            if proof.get("preprocessing_receipt_sha256") \
-                    != preprocessing_digest:
+        without_export = _optional_stock_wrf_export(proof, export)
+        if without_export:
+            export_source_receipt = MappingProxyType(dict(export))
+        else:
+            export = proof.get("export")
+            expected_dimensions = {
+                "nx": int(exp.root.run.nx),
+                "ny": int(exp.root.run.ny),
+                "nz": int(exp.root.run.nz),
+            }
+            expected_export_schema = (
+                "gpuwm-native-direct-wrf-export-v3"
+                if front_door_physics is not None
+                else "gpuwm-native-direct-wrf-export-v2"
+            )
+            if (not isinstance(export, dict)
+                    or export.get("schema") != expected_export_schema
+                    or export.get("status") != "READY"
+                    or export.get("forcing_hours") != list(forcing_hours)
+                    or export.get("boundary_interval_seconds")
+                    != boundary_interval_seconds
+                    or export.get("dimensions") != expected_dimensions
+                    or export.get("valid_time")
+                    != exp.start_time.strftime("%Y-%m-%d_%H:%M:%S")):
                 raise ValueError(
-                    "preparation proof preprocessing receipt hash differs")
-        export_source_receipt = MappingProxyType(expected_export_source)
+                    "proof direct-WRF export identity differs from the run")
+            if expected_export_schema.endswith("-v3") \
+                    and export.get("physics") != front_door_physics:
+                raise ValueError(
+                    f"{source.upper()} v3 export physics receipt differs from "
+                    "the preparation proof")
+            export_source = export.get("source")
+            expected_export_source = {
+                "contract_sha256": _sha256(contract_path),
+                "geometry_receipt_sha256": geometry_sha256,
+                "prepared_content_sha256": reader.content_sha256,
+                "prepared_header_sha256": header_sha256,
+                "resolved_physics_contract_sha256": (
+                    _resolved_wrf_direct_contract_sha256(
+                        exp.root.run.mp_physics)),
+                "static_cache_sha256": static_sha256,
+            }
+            if export_source != expected_export_source:
+                raise ValueError(
+                    "proof export source hashes differ from preparation")
+            if source not in _MAPPED_SOURCES:
+                preprocessing_digest = hashlib.sha256(
+                    _canonical(proof.get("preprocessing")).encode("utf-8")
+                ).hexdigest()
+                if proof.get("preprocessing_receipt_sha256") \
+                        != preprocessing_digest:
+                    raise ValueError(
+                        "preparation proof preprocessing receipt hash differs")
+            export_source_receipt = MappingProxyType(expected_export_source)
     else:
         _validate_hierarchy_d01_artifacts(
             layout, static=static, geometry_receipt=geometry_receipt,
             reader=reader, static_sha256=static_sha256,
             geometry_sha256=geometry_sha256)
-        export_source_receipt = _validate_hierarchy_wrf_authority(
-            layout, source=source, source_exp=source_exp,
-            forcing_hours=forcing_hours,
-            boundary_interval_seconds=boundary_interval_seconds,
-            source_manifest_sha256=source_manifest_sha256,
-            decoder_sha256=(
-                mapped_authority["decoder_sha256"]
-                if source == "20crv3" else
-                manifest_files["bridge"]["sha256"]),
-            preprocessing=proof.get("preprocessing"),
-            contract_sha256=_sha256(contract_path),
-            prepared_content_sha256=reader.content_sha256,
-            prepared_header_sha256=header_sha256,
-            static_sha256=static_sha256,
-            geometry_sha256=geometry_sha256,
-            mapped_authority=mapped_authority)
+        if _optional_stock_wrf_export(proof, dict(layout.wrf_manifest)):
+            export_source_receipt = layout.wrf_manifest
+        else:
+            export_source_receipt = _validate_hierarchy_wrf_authority(
+                layout, source=source, source_exp=source_exp,
+                forcing_hours=forcing_hours,
+                boundary_interval_seconds=boundary_interval_seconds,
+                source_manifest_sha256=source_manifest_sha256,
+                decoder_sha256=(
+                    mapped_authority["decoder_sha256"]
+                    if source in _MAPPED_SOURCES else
+                    manifest_files["bridge"]["sha256"]),
+                preprocessing=proof.get("preprocessing"),
+                contract_sha256=_sha256(contract_path),
+                prepared_content_sha256=reader.content_sha256,
+                prepared_header_sha256=header_sha256,
+                static_sha256=static_sha256,
+                geometry_sha256=geometry_sha256,
+                mapped_authority=mapped_authority)
 
     authority_paths = MappingProxyType({
         "proof": proof_path,
@@ -6021,34 +6454,9 @@ def _store_direct_gaps(reader) -> dict[str, object]:
 
 
 def _store_health_auxiliaries(bundle, cfg) -> dict[str, object]:
-    """The DOMAIN-shaped form of the two gated fields' auxiliary arrays.
+    from gpuwm.core.health import prepared_store_health_auxiliaries
 
-    ``collect_state_fields`` checks ``thp`` against the base-state theta and
-    ``mup`` against the base-state dry mass, and on the store-direct road the
-    descriptors come off the slab-height template, so both auxiliaries arrive
-    one slab tall.  The domain's own are in ``bundle.base``, which
-    :class:`gpuwm.ingest.prepared_store.PreparedStore` publishes un-windowed
-    for exactly this kind of reader.
-
-    float32 and not float64, because :meth:`gpuwm.core.state.DomainState
-    .load_base` is what put these numbers on the card on the resident road and
-    it casts them: comparing the same field against an FP64 auxiliary would be
-    a second instrument, one rounding apart from the one being matched.
-    """
-
-    base = bundle.base
-    out: dict[str, object] = {}
-    thb = getattr(base, "thb", None)
-    if thb is not None:
-        out["thp"] = np.asarray(thb, dtype=np.float32)
-    mub = getattr(base, "mub", None)
-    if mub is not None:
-        # ``load_base``'s own branch: flat terrain carries a SCALAR dry mass
-        # and fills the (ny, nx) plane with it, terrain carries the plane.
-        out["mup"] = (np.full((int(cfg.ny), int(cfg.nx)), float(mub),
-                              dtype=np.float32) if np.ndim(mub) == 0
-                      else np.asarray(mub, dtype=np.float32))
-    return out
+    return prepared_store_health_auxiliaries(bundle, cfg)
 
 
 def _store_full_state_health(bundle, cfg, *, phase: str) -> dict[str, object]:
@@ -6347,11 +6755,64 @@ def _store_domain_extreme(store: Mapping[str, object], key: str,
     return float(reducer(np.asarray(array)))
 
 
+def _single_prepared_root(domain_cfg, grid, state, clock, *, store_direct):
+    """Give both initialization roads the same scheduled boundary clock."""
+    from gpuwm.core.model import DomainNode
+    from gpuwm.ingest.lateral_bc import bind_lateral_boundary_clock
+
+    node = DomainNode(domain_cfg, grid, state, clock, None, [], None)
+    if not store_direct:
+        # Bind before tile factories or restart setup can inherit the mirror.
+        # The store road has no resident mirror; its builder receives this
+        # same node.clock explicitly below.
+        bind_lateral_boundary_clock(node.state, node.clock)
+    return node
+
+
+def _single_checkpoint_identity(inputs, runtime_source_identity):
+    """Bind every sealed authority, including the unchanged stop time in TOML."""
+    return {
+        "schema": "gpuwm.prepared-single-checkpoint.v1",
+        "source": inputs.source,
+        "prepared_content_sha256": inputs.cache_reader.content_sha256,
+        "authority_sha256": dict(inputs.file_sha256),
+        "runtime_source_identity": runtime_source_identity,
+    }
+
+
+@contextmanager
+def _checkpoint_restore_resources(writers, step_log):
+    """Unwind eager output owners if checkpoint or restored health is refused."""
+    try:
+        yield
+    except BaseException as error:
+        for close in (
+                lambda: writers.__exit__(type(error), error, error.__traceback__),
+                lambda: step_log.close(status="FAIL", error=f"{type(error).__name__}: {error}")):
+            try:
+                close()
+            except BaseException as cleanup_error:
+                error.add_note(f"restore cleanup also failed: {type(cleanup_error).__name__}: {cleanup_error}")
+        raise
+
+
+def _restore_single_checkpoint(model, restart):
+    """Use the canonical tree reader after the canonical store is attached."""
+    if restart is None:
+        return None
+    from gpuwm.io.restart import restore_tree_restart
+    from gpuwm.supervisor import validate_manifest_checkpoint
+
+    checkpoint = validate_manifest_checkpoint(Path(restart))
+    return restore_tree_restart(checkpoint, model)
+
+
 def run_prepared_forecast(
         inputs: PreparedForecastInputs, *, output_directory: Path,
         observer=None, first_products=None, stream_init: str = "auto",
         progress_options=None, preflight_seconds: float | None = None,
-        kernel_cache_census=None,
+        kernel_cache_census=None, restart: Path | None = None,
+        health_debug: bool = False,
 ) -> dict[str, object]:
     """Restore, integrate, and publish hash-bound source-neutral history.
 
@@ -6408,7 +6869,7 @@ def run_prepared_forecast(
     )
     from gpuwm.core.health import StateHealthValidator
     from gpuwm.core.model import (
-        DomainNode, ExperimentState, ModelRuntimeStatus, execute_experiment,
+        ExperimentState, ModelRuntimeStatus, execute_experiment,
     )
     from gpuwm.core.refl import consume_refl_10cm, domain_start_ticks_of
     from gpuwm.core.uh_diag import reset_up_heli_max
@@ -6423,12 +6884,23 @@ def run_prepared_forecast(
     outdir = Path(output_directory).resolve()
     progress_path = outdir / "progress.json"
     exp = inputs.experiment
+    from gpuwm.case_data import trace_gas_overrides_from_config
+    trace_gas_overrides = trace_gas_overrides_from_config(
+        inputs.experiment_config, expected_sha256=inputs.file_sha256["experiment_config"])
+
+    def initialize_cached_physics(*args, row_start=None, domain_rows=None, **kwargs):
+        return initialize_prepared_physics(
+            *args, **kwargs, p_top=exp.vertical.p_top, column_chunk=exp.column_chunk,
+            trace_gas_overrides=trace_gas_overrides)
     cfg = exp.root.run
     # The per-step log opens HERE, before the restore, so its first line
     # is the run announcing itself rather than the run's third minute.
     step_log = (progress_options or ProgressOptions()).open(
         outdir=outdir, start_time=exp.start_time,
-        run_seconds=float(exp.run_seconds))
+        run_seconds=float(exp.run_seconds),
+        # See the tree runner: scope-1 flag, read from the root, and it
+        # decides both the `dt` field and the stream's schema string.
+        adaptive_dt=bool(exp.root.run.use_adaptive_time_step))
     timing = {}
     # The preflight ran BEFORE this function -- it is what decided this
     # function may run at all -- so its number is handed in rather than
@@ -6464,7 +6936,16 @@ def run_prepared_forecast(
     # the restore because the whole point of the store road is that the
     # restore does not happen.
     tiles_options = getattr(exp, "tiles", None)
-    stream_decision = (streaming.decide(cfg, tiles_options)
+    planning_machine = streaming.cold_planning_machine(exp)
+    resident_estimate = None
+    if tiles_options is not None and tiles_options.mode == "auto":
+        from gpuwm.core.preflight import estimate_experiment
+        boundary_meta = inputs.cache_reader.header.get("metadata", {}).get("lbc")
+        resident_estimate = estimate_experiment(
+            exp, forcing_intervals=(None if boundary_meta is None
+                                    else len(boundary_meta["intervals"])))
+    stream_decision = (streaming.decide(
+        cfg, tiles_options, machine=planning_machine, resident_estimate=resident_estimate)
                        if tiles_options is not None and tiles_options.enabled
                        else None)
     init_road, init_receipt = _choose_stream_init_road(
@@ -6500,6 +6981,7 @@ def run_prepared_forecast(
             # operator set rather than against the machine's whole RAM.
             budget_bytes=getattr(tiles_options, "host_budget_bytes", None),
             constant_glw_wm2=declared_constant_glw(exp),
+            physics_initializer=initialize_cached_physics,
             log=lambda line: print(line, flush=True))
         # Named for the resident road's key, because it is the same work
         # measured: get the prepared case off disk and onto the machine.
@@ -6551,7 +7033,7 @@ def run_prepared_forecast(
                                 step_log, kernel_cache_census)
 
         started = time.perf_counter()
-        driver = initialize_prepared_physics(
+        driver = initialize_cached_physics(
             restored.initial_result, cfg, restored.met, restored.surface,
             inputs.static, inputs.landuse_identity, inputs.grid,
             exp.start_time,
@@ -6575,19 +7057,15 @@ def run_prepared_forecast(
     # the writer's carrier provenance need.  What it must NEVER be used for is
     # a domain-sized READ -- its arrays are 64 rows of the analysis -- and
     # every such reader on this route is routed to the store below, by name.
-    node = DomainNode(
+    node = _single_prepared_root(
         exp.root, inputs.grid, domain_state, clocks[1],
-        None, [], None)
-    fingerprint = hashlib.sha256(_canonical({
-        "schema": REPORT_SCHEMA,
-        "source": inputs.source,
-        "prepared_content_sha256": inputs.cache_reader.content_sha256,
-        "experiment_config_sha256": inputs.file_sha256["experiment_config"],
-        "wps_namelist_sha256": inputs.file_sha256["wps_namelist"],
-        "runtime_source_identity": runtime_source_identity,
-    }).encode("utf-8")).hexdigest()
+        store_direct=bundle is not None)
+    checkpoint_identity = _single_checkpoint_identity(inputs, runtime_source_identity)
+    fingerprint = hashlib.sha256(
+        _canonical(checkpoint_identity).encode("utf-8")).hexdigest()
     model = ExperimentState(
         node, MappingProxyType({1: node}), schedule, None, fingerprint)
+    model._experiment_fingerprint_components = checkpoint_identity
     model._runtime_status = ModelRuntimeStatus()
     model._resumed = False
     model._resume_committed_history_grid_ids = frozenset()
@@ -6603,6 +7081,7 @@ def run_prepared_forecast(
         # domain-invariant, so the bundle supplies them directly.
         1: SimpleNamespace(
             static_fields=inputs.static, geog_selection=None,
+            streamed_store=bundle,
             initial_result=(
                 restored.initial_result if bundle is None
                 else SimpleNamespace(coord=bundle.coord, base=bundle.base,
@@ -6767,6 +7246,7 @@ def run_prepared_forecast(
                 "forecast_wall_seconds": time.perf_counter() - forecast_started,
                 "gpu_peak_used_bytes_observed": memory_watch.peak_bytes(
                     "cuda_device_used"),
+                "last_checkpoint": event.get("last_checkpoint"),
                 "last_durable_wrfout": (
                     None if not durable_paths
                     else str(durable_paths[-1].resolve())),
@@ -6825,7 +7305,7 @@ def run_prepared_forecast(
     # report["tiles"], and printed as one line.
     streaming_decisions: dict = {}
     steppers = streaming.steppers_for_tree(
-        model, exp.tiles,
+        model, exp.tiles, machine=planning_machine, resident_estimate=resident_estimate,
         # ``store_domain_builder`` is ``prepared_domain_builder``'s
         # counterpart for a domain that was never resident: it reads the
         # geography, the lateral tables and the tile-state template off the
@@ -6886,6 +7366,32 @@ def run_prepared_forecast(
         # lands on the accumulator the tiles are actually folding into.
         node.state._streamed_domain = steppers[int(node.cfg.grid_id)]
 
+    with _checkpoint_restore_resources(writers, step_log):
+        restart_info = _restore_single_checkpoint(model, restart)
+        from gpuwm.runtime import _restart_is_complete
+        already_complete = _restart_is_complete(restart_info)
+        restored_seconds = (None if restart_info is None else
+                            float(node.clock.ticks / schedule.clock.tick_den))
+        if restart_info is not None:
+            from gpuwm.core.health import health_validator_for_domain
+            initial_health = _strict_json(vars(health_validator_for_domain(
+                model, node).validate(phase="restored.d01")))
+            if not initial_health["ok"]:
+                raise FloatingPointError(
+                    f"prepared forecast restored health failed: {initial_health}")
+
+    checkpoints = []
+
+    def restart_handler(tree, ticks):
+        from gpuwm.io.restart import write_tree_restart
+        valid = exp.start_time + timedelta(seconds=ticks / tree.schedule.clock.tick_den)
+        started = time.perf_counter()
+        tree._last_checkpoint = write_tree_restart(outdir, tree, valid)
+        checkpoints.append(str(Path(tree._last_checkpoint).resolve()))
+        step_log.restart_written(
+            domain=exp.root.grid_id, valid_time=valid,
+            path=tree._last_checkpoint, wall_seconds=time.perf_counter() - started)
+
     # Armed immediately before integration and disarmed by the first
     # completed step: the compile this names is paid inside step 1, and
     # a reader watching a silent terminal has no other way to learn
@@ -6897,27 +7403,27 @@ def run_prepared_forecast(
         memory_watch.start()
         stall_watch.arm()
         with writers:
-            execution = execute_experiment(
-                model, history_handler=history_handler,
-                progress_callback=progress_callback,
-                # NOT ARMED ON THE STORE ROAD, for the reason the unarmed
-                # initialized.d01 gate gives: the executor's validators are
-                # constructed on ``node.state``, which here is the
-                # slab-height template, and would report a pass over 1/16th
-                # of the analysis every fourth root step for the whole
-                # forecast.  A gate that cannot fail is worse than no gate,
-                # because it is read as one.  The per-step stability fold
-                # over the STORE stays armed and is what guards the run.
-                validate_state=(bundle is None),
-                skip_feedback_path=True, pool_trim_per_period=True,
-                steppers=steppers,
-                # ONE line per model time step, WRF's own bar.  Handed
-                # the bound method rather than a wrapper so the log is
-                # what the executor calls, and None when the log is off
-                # so a silenced run pays nothing per step.
-                step_observer=stall_watch.wrap(
-                    step_log.step_observer if step_log.enabled else None),
-                experiment=exp)
+            if already_complete:
+                from gpuwm.prepared_domain_tree_forecast import _completed_execution_report
+                execution = _completed_execution_report(model)
+            else:
+                execution = execute_experiment(
+                    model, history_handler=history_handler,
+                    restart_handler=restart_handler,
+                    progress_callback=progress_callback,
+                    # The common validator follows the attached canonical store.
+                    # Preserve the default store cost; explicit diagnostics enable it.
+                    validate_state=(bundle is None or health_debug),
+                    health_debug=health_debug,
+                    skip_feedback_path=True, pool_trim_per_period=True,
+                    steppers=steppers,
+                    # ONE line per model time step, WRF's own bar.  Handed
+                    # the bound method rather than a wrapper so the log is
+                    # what the executor calls, and None when the log is off
+                    # so a silenced run pays nothing per step.
+                    step_observer=stall_watch.wrap(
+                        step_log.step_observer if step_log.enabled else None),
+                    experiment=exp)
             cp.cuda.Stream.null.synchronize()
             timing["forecast_execution_with_async_io"] = (
                 time.perf_counter() - forecast_started)
@@ -6951,7 +7457,7 @@ def run_prepared_forecast(
         exp, cadence_seconds)
     output_schedule = _history_output_schedule(
         start_time=exp.start_time, run_seconds=exp.run_seconds,
-        cadence_seconds=cadence_seconds)
+        cadence_seconds=cadence_seconds, after_seconds=restored_seconds)
     expected_frames = len(output_schedule)
     if len(wrfout_paths) != expected_frames:
         raise RuntimeError(
@@ -6978,7 +7484,7 @@ def run_prepared_forecast(
         final_health = _strict_json(vars(
             StateHealthValidator(node.state).validate(phase="final.d01")))
         final_stability = _strict_json(streaming.stability_observer(
-            steppers.get(int(node.cfg.grid_id)))(
+            None if already_complete else steppers.get(int(node.cfg.grid_id)))(
                 node.state, cfg, boundary_width=cfg.spec_bdy_width))
         if not final_health["ok"]:
             raise FloatingPointError(
@@ -7001,7 +7507,9 @@ def run_prepared_forecast(
         # are a bitwise OR, and the argmax carries a DOMAIN flat index.  It
         # RAISES rather than returning a stale record if the sweep produced
         # none, which is the behaviour a final gate must have.
-        final_stability = _strict_json(stepper.health)
+        final_stability = (
+            {"available": False, "reason": "checkpoint is already at the stop; no new sweep"}
+            if already_complete else _strict_json(stepper.health))
         # TWO INSTRUMENTS, BOTH ARMED, over the same store the sweep has been
         # writing.  The fold answers the question a run loop has to ask every
         # step and answers it cheaply; the descriptor gate answers the one the
@@ -7010,12 +7518,13 @@ def run_prepared_forecast(
         # other and neither is inferred from the other's silence.
         final_health = _store_full_state_health(bundle, cfg, phase="final.d01")
         final_health["stability_fold"] = {
-            "ok": not bool(final_stability.get("nan")),
+            "ok": None if already_complete else not bool(final_stability.get("nan")),
+            "available": not already_complete,
             "instrument": "streamed store fold (StreamedDomain.health)",
             "covers": ("u, w and theta-perturbation finiteness and the two "
                        "Courant terms, over the whole domain in the store"),
         }
-        if not final_health["stability_fold"]["ok"]:
+        if not already_complete and not final_health["stability_fold"]["ok"]:
             raise FloatingPointError(
                 f"prepared forecast final stability fold failed: "
                 f"{final_health['stability_fold']}; "
@@ -7046,8 +7555,17 @@ def run_prepared_forecast(
         timing["canonical_final_state_digest"] = time.perf_counter() - started
 
     _verify_inputs_unchanged(inputs)
-    if _runtime_source_identity() != runtime_source_identity:
-        raise RuntimeError("forecast runtime implementation changed during run")
+    # The same gate, told what it is looking at.  The bare ``!=`` this
+    # replaced could not tell an implementation that changed from a
+    # ``git`` that failed to spawn or from a scratch file this very run
+    # wrote, and it destroyed the receipt of a finished forecast for
+    # either -- see :func:`_runtime_source_identity_change`.
+    final_source_identity = _runtime_source_identity()
+    moved = _runtime_source_identity_change(
+        runtime_source_identity, final_source_identity)
+    if moved is not None:
+        raise RuntimeError(
+            f"forecast runtime implementation changed during run: {moved}")
     output_inventory = []
     for path, (offset_seconds, valid_time, _name) in zip(
             wrfout_paths, output_schedule, strict=True):
@@ -7078,6 +7596,25 @@ def run_prepared_forecast(
         # can be wrong.
         "provenance": _provenance_receipt(),
         "runtime_source_identity": runtime_source_identity,
+        # What the end-of-run recheck could actually SEE.  The identity
+        # above is the one taken at launch; the gate that compares it
+        # skips a rung neither end resolved, and a skipped comparison
+        # that says nothing is how a weakened check goes unnoticed.
+        # ``git_compared: false`` on a receipt means the run was bound
+        # by ``source_sha256`` alone.
+        "runtime_source_identity_recheck": {
+            "identity_source_at_launch":
+                runtime_source_identity["identity_source"],
+            "identity_source_at_end":
+                final_source_identity["identity_source"],
+            "git_resolved_at_launch":
+                runtime_source_identity["git_commit"] is not None,
+            "git_resolved_at_end":
+                final_source_identity["git_commit"] is not None,
+            "git_compared": (
+                runtime_source_identity["git_commit"] is not None
+                and final_source_identity["git_commit"] is not None),
+        },
         "domain": {
             "grid_id": 1,
             "nx": int(cfg.nx),
@@ -7092,6 +7629,14 @@ def run_prepared_forecast(
         "io_mode": "history",
         "history_interval_seconds": cadence_seconds,
         "timing_seconds": timing,
+        "restart_contract": {
+            "mode": "exact-sealed-setup",
+            "restart_input": None if restart is None else str(Path(restart).resolve()),
+            "restored_seconds": restored_seconds,
+            "already_complete": already_complete,
+            "interval_seconds": float(exp.restart_interval_s),
+            "checkpoints_written": checkpoints,
+        },
         "executor": {
             "steps": int(execution.steps),
             "forces": int(execution.forces),
@@ -7176,16 +7721,16 @@ def run_prepared_forecast(
             "frames_per_file": 1,
             "expected_frame_count": expected_frames,
             "exact_frame_count_verified": True,
-            "initial_frame_verified": True,
-            "last_scheduled_frame_verified": True,
+            "initial_frame_verified": restart_info is None,
+            "last_scheduled_frame_verified": bool(output_schedule),
             "last_scheduled_offset_seconds": cadence_receipt[
                 "last_scheduled_offset_seconds"],
             "last_scheduled_valid_time": cadence_receipt[
                 "last_scheduled_valid_time"],
             "last_scheduled_equals_run_end": cadence_receipt[
                 "last_scheduled_equals_run_end"],
-            "initial_and_final_frames_verified": cadence_receipt[
-                "last_scheduled_equals_run_end"],
+            "initial_and_final_frames_verified": (restart_info is None and cadence_receipt[
+                "last_scheduled_equals_run_end"]),
             "all_frames_readback_verified": all(
                 item["atomic_writer_readback_verified"]
                 for item in output_inventory),
@@ -7254,19 +7799,17 @@ def run_prepared_forecast(
             report["health"]["final"].get("coverage", {}).get("seconds", 0.0))
         report["health"]["gates"] = {
             "initialized_d01_full_state": True,
-            "executor_periodic_full_state": False,
-            "per_step_stability_fold": True,
+            "executor_periodic_full_state": bool(health_debug),
+            "per_step_stability_fold": not already_complete,
             "final_d01_full_state": True,
-            "final_stability_fold": True,
+            "final_stability_fold": not already_complete,
             "why": (
-                "the two BOUNDARY full-state gates run over the pinned host "
-                "store, where the domain is, under the same per-field rules "
-                "the resident road's kernel applies; the executor's PERIODIC "
-                "full-state gate stays unarmed on cost rather than on reach "
-                f"-- one whole-store pass measured {one_pass:.1f}s here and "
-                "the executor would take it every fourth root step, against a "
-                "per-step stability fold that is already armed on every step "
-                "and is bit-equal to the resident reduction"),
+                "Whole-state gates read the canonical host store. "
+                f"A full-store pass took {one_pass:.1f}s; periodic scans are "
+                + ("enabled by --health-debug." if health_debug else
+                   "off by default; --health-debug enables them.")
+                + (" No step or stability fold is claimed for an already-complete restore."
+                   if already_complete else " Stability folds cover every new step.")),
         }
     # The early render, collected before this process may exit.  Its
     # worker is a DAEMON thread -- it has to be, so a wedged render can
@@ -7359,6 +7902,8 @@ def run_prepared_forecast(
         "requested_run_seconds": float(exp.run_seconds),
         "report": str((outdir / "report.json").resolve()),
         "frame_count": len(output_inventory),
+        "last_checkpoint": (None if model._last_checkpoint is None else
+                            str(Path(model._last_checkpoint).resolve())),
     }, heartbeat=True)
     return report
 
@@ -7441,6 +7986,8 @@ def build_parser() -> argparse.ArgumentParser:
     """
 
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--restart", type=Path, help="Resume a canonical checkpoint with this exact sealed preparation/configuration.")
+    parser.add_argument("--health-debug", action="store_true", help="Validate the canonical whole-domain state each step.")
     # The two MODE flags, declared rather than only intercepted.
     #
     # `main` answers both before argparse sees anything, because each is
@@ -7829,7 +8376,9 @@ def main(argv=None, *, observer=None) -> int:
     # naming the problem and a directory that works, never a traceback.
     try:
         outdir = claim_output_directory(
-            args.outdir, protected_roots=(args.prepared_root,))
+            args.outdir, protected_roots=(
+                args.prepared_root, args.experiment_config, args.wps_namelist,
+                *((Path(args.restart).parent,) if args.restart is not None else ())))
     except (ValueError, FileExistsError) as error:
         print(f"prepared_single_domain_forecast: --outdir refused: {error}",
               file=sys.stderr)
@@ -7886,7 +8435,8 @@ def main(argv=None, *, observer=None) -> int:
             first_products=first_products, stream_init=args.stream_init,
             progress_options=ProgressOptions.from_args(args),
             preflight_seconds=preflight_seconds,
-            kernel_cache_census=kernel_cache_census)
+            kernel_cache_census=kernel_cache_census,
+            restart=args.restart, health_debug=args.health_debug)
     except BaseException as error:
         model_elapsed_seconds = 0.0
         try:

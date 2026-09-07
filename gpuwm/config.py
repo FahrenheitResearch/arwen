@@ -271,14 +271,6 @@ class RunConfig:
     # capability rather than adding one.  Appended to preserve positional
     # RunConfig compatibility.
     isftcflx: int = 0
-    #: Run cu_physics = 16's kernels with cu_physics = 6's DEEP closure:
-    #: fixed ztau = 2400 s (module_cu_tiedtke.F:105) and the moisture-
-    #: convergence first guess (:855-866) in place of scale_fac scaling and
-    #: the geometric 0.1*zmfmax.  Those two substitutions are the entire
-    #: difference between the two schemes' deep arms, so this makes the
-    #: ported New Tiedtke run Tiedtke's closure without a second port.
-    #: False leaves every cu16 result bit-identical.
-    ntiedtke_tiedtke_closure: bool = False
     iz0tlnd: int = 0
     # Noah LSM options whose kernel branches already exist, so these expose
     # an implemented capability rather than adding one.  ``usemonalb`` selects
@@ -702,6 +694,87 @@ class RunConfig:
     #: experiment fingerprint and makes every existing checkpoint refuse to
     #: resume, for a field the run never reads.
     p3_backend: str = "cuda"
+    #: Run cu_physics = 16's kernels with cu_physics = 6's DEEP closure:
+    #: fixed ztau = 2400 s (module_cu_tiedtke.F:105) and the moisture-
+    #: convergence first guess (:855-866) in place of scale_fac scaling and
+    #: the geometric 0.1*zmfmax.  Those two substitutions are the entire
+    #: difference between the two schemes' deep arms, so this makes the
+    #: ported New Tiedtke run Tiedtke's closure without a second port.
+    #: False leaves every cu16 result bit-identical.
+    #:
+    #: APPENDED LAST, as every field since the freeze is.  d0c23dad0 (2.6.4)
+    #: declared it between ``isftcflx`` and ``iz0tlnd``, which is the one
+    #: placement tests/test_config_freeze.py exists to refuse; it moves
+    #: here on the line after 2.6.5.  The move changes no hash and no trajectory:
+    #: every RunConfig digest sorts its keys (gpuwm/io/restart.py
+    #: ``_canonical_json``, gpuwm/core/model.py ``experiment_fingerprint``),
+    #: the freeze goldens compare as dicts, and no constructor in the tree
+    #: builds a RunConfig positionally.  It is NOT scheme-scoped in
+    #: gpuwm.core.model.SCHEME_SCOPED_RUN_FIELDS, whose rows are keyed by
+    #: mp_physics: a cumulus-keyed row is a mechanism this tree does not
+    #: have yet, so the field binds every experiment fingerprint the way
+    #: the unscoped fields before the mp=28 pair did (the anchors in
+    #: tests/test_water_overlay.py re-pin for it, with the attribution
+    #: measured there).
+    ntiedtke_tiedtke_closure: bool = False
+    # --- adaptive time step (WRF Registry.EM_COMMON:2269-2281) ----------
+    #
+    # SCOPE IS NOT UNIFORM ACROSS THIS BLOCK, and the split is upstream's.
+    # target_cfl, target_hcfl, max_step_increase_pct and the three
+    # min/max/starting pairs are declared `max_domains` -- genuinely per
+    # domain, and listed in experiment._DOMAIN_RUN_OVERRIDES.  The three
+    # ABOVE them are declared scope `1`: ONE scalar for the whole run, no
+    # matter how many domains.  They are deliberately absent from that
+    # tuple, which is what makes "[shared] only" enforced rather than
+    # documented.
+    #
+    # Every one of these is registered in
+    # ingest.prepared_cache.DEFAULT_TOLERANT_IDENTITY_FIELDS in the same
+    # commit that adds it here.  A field that joins RunConfig without
+    # joining that table refuses every tree prepared before it -- that has
+    # now happened four times in this package's history, and the table's
+    # own comment says so.
+    use_adaptive_time_step: bool = False
+    step_to_output_time: bool = True      # Registry default is .true.
+    adaptation_domain: int = 1
+    target_cfl: float = 1.2
+    target_hcfl: float = 0.84
+    max_step_increase_pct: int = 5
+    #: -1 means "unset"; WRF substitutes a grid-spacing value in
+    #: start_em.F:939-953 -- NINT(4*min(dx,dy)/1000) for starting_time_step,
+    #: 8*dx(km) for max_time_step and 3*dx(km) for min_time_step.  Each carries a `_den` companion
+    #: because upstream takes them as exact rationals Sn/Sd, and 0 there
+    #: means "the value is whole seconds" rather than a zero denominator.
+    starting_time_step: int = -1
+    starting_time_step_den: int = 0
+    max_time_step: int = -1
+    max_time_step_den: int = 0
+    min_time_step: int = -1
+    min_time_step_den: int = 0
+    # APPENDED LAST, deliberately: this field was declared between
+    # ``etac`` and ``moist`` on lane/per-domain-vertical, which shifted
+    # 150 fields' positional index and is what
+    # tests/test_config_freeze.py::test_new_fields_are_reviewed_defaults_
+    # appended_last exists to prevent (same correction the New Tiedtke
+    # closure took in 2.6.4).  Nothing positional constructs RunConfig in
+    # this tree today, which is the property the discipline preserves.
+    #: This domain's OWN full-level eta ladder, ``nz + 1`` interfaces running
+    #: strictly from 1.0 at the surface to 0.0 at the model top.  ``None``
+    #: means the domain inherits whatever ladder its source carries, which is
+    #: what every run did before per-domain ladders existed and what a bare
+    #: config still does.
+    #:
+    #: An offline child (``gpuwm downscale``) uses this to carry a DEEPER
+    #: ladder than the archived parent it is built from -- the LES
+    #: downscaling case, where the child wants the levels and not just the
+    #: columns.  Naming a level count alone would be a trap: with no ladder
+    #: the child would silently get ``make_vertical_coord``'s uniform default
+    #: (gpuwm/core/grid.py), which is a different atmosphere from its
+    #: parent's stretched one.  ``p_top``, ``hybrid_opt`` and ``etac`` stay
+    #: SHARED with the parent and are deliberately absent here; see
+    #: gpuwm/vertical_remap.py :: require_shared_column_basis for why the
+    #: remap is only well posed when they agree.
+    eta_levels: tuple[float, ...] | None = None
 
 
 #: The Noah-MP option identity gpuwm admits, field -> the only accepted
@@ -1491,10 +1564,10 @@ def validate_milbrandt2_options(cfg: RunConfig) -> None:
             f"hard-codes {name}={only!r} ({citation}) and gpuwm's constant "
             "table is derived under that identity, so a different value "
             "would silently invalidate it.")
-    if ((cfg.ra_lw_physics, cfg.ra_sw_physics) == (4, 4)
+    if (4 in radiation_scheme_ids(cfg)
             and cfg.ra_rrtmg_variant != "rrtmg_legacy"):
         raise NotImplementedError(
-            "mp_physics=9 with ra_lw_physics=4/ra_sw_physics=4 on the "
+            "mp_physics=9 with a selector-4 spectrum on the "
             "RTE+RRTMGP variant has no cloud-optics coupling: WRF leaves "
             "has_reqc/has_reqi/has_reqs at 0 for MILBRANDT2MOM "
             "(phys/module_physics_init.F:1004-1023) and the scheme's own "
@@ -1690,6 +1763,11 @@ def load_config(path: str | Path) -> RunConfig:
             key_table[key] = table
         merged.update(entries)
     _anchor_config_file_paths(merged, path)
+    # TOML arrays arrive as lists; RunConfig is frozen and hashable, so the
+    # ladder is stored as a tuple.  Normalized here rather than in
+    # validate_run_config, which returns its argument unchanged.
+    if isinstance(merged.get("eta_levels"), list):
+        merged["eta_levels"] = tuple(merged["eta_levels"])
     return validate_run_config(RunConfig(**merged))
 
 
@@ -1716,9 +1794,6 @@ _SASE_REQUIREMENTS: tuple[tuple[str, object, str], ...] = (
      "constant-K diffusion may not silently stack on the SASE mixing"),
     ("kvdif", 0.0,
      "constant-K diffusion may not silently stack on the SASE mixing"),
-    ("bldt", 0.0,
-     "SASE produces a w tendency that is rebuilt every step rather than "
-     "carried across a PBL call interval, so it must run every step"),
 )
 
 
@@ -2548,6 +2623,137 @@ MIX_ISOTROPIC_RESTART_BREAK_NOTICE = (
     "advisory then applies); otherwise restart from t = 0.")
 
 
+def _adaptive_interval(whole: int, den: int, name: str):
+    """One of WRF's ``<name>`` / ``<name>_den`` rational pairs, or None.
+
+    ``-1`` is upstream's "unset" for all three pairs and means different
+    things per field, so it resolves to ``None`` here and each caller says
+    what its own unset means.  ``start_em.F:939-953`` substitutes
+    ``NINT(4*MIN(dx,dy)/1000)`` for the starting step, ``8*`` for the max
+    and ``3*`` for the min.  (An earlier version of this docstring said
+    ``6*dx`` for the starting step; that is the acoustic ``dt <= 6*dx``
+    constraint, a different rule, and it was wrong here.)
+
+    ``den = 0`` is upstream's "the value is whole seconds", NOT a zero
+    denominator: ``adapt_timestep_em.F:132-136`` branches on
+    ``starting_time_step_den .EQ. 0`` and passes ``Sd=1``, and
+    ``:186-214`` does the same for the two limits.  Otherwise the pair is
+    a genuine rational ``Sn/Sd`` -- ESMF holds time intervals as exact
+    rationals, so a step like 100/3 s stays exact over thousands of steps
+    where a float would drift.  That is the same reason ArWen's clock is
+    an integer tick lattice, which is why the pair maps onto it cleanly.
+    """
+    from fractions import Fraction
+
+    if whole == -1 and den == 0:
+        return None
+    if den < 0:
+        raise ValueError(
+            f"{name}_den must be >= 0 (0 means '{name} is whole seconds'), "
+            f"got {den}.")
+    if den == 0:
+        return Fraction(whole)
+    return Fraction(whole, den)
+
+
+def _validate_adaptive_time_step(cfg: RunConfig) -> None:
+    """Refuse incoherent adaptive-timestep combinations at admission.
+
+    Every refusal here is one that would otherwise present as a physics
+    failure hours into a run rather than as a configuration error in one
+    line -- which is the same argument
+    ``_check_run_length_on_step_grid`` makes for the run length.
+    """
+    if cfg.target_cfl <= 0.0:
+        raise ValueError(
+            f"target_cfl must be positive, got {cfg.target_cfl}: it is the "
+            "vertical Courant number the controller steers toward "
+            "(WRF Registry default 1.2), and calc_dt divides by it.")
+    if cfg.target_hcfl <= 0.0:
+        raise ValueError(
+            f"target_hcfl must be positive, got {cfg.target_hcfl}: it is "
+            "the horizontal Courant number the controller steers toward "
+            "(WRF Registry default 0.84).")
+    if cfg.max_step_increase_pct < 0:
+        raise ValueError(
+            "max_step_increase_pct must be >= 0, got "
+            f"{cfg.max_step_increase_pct}: it bounds growth against the "
+            "PREVIOUS step as 1 + pct/100, so a negative value asks the "
+            "step to shrink every time it is allowed to grow.")
+    if cfg.adaptation_domain != 1:
+        # THE REFUSAL NAMES THE BREAKAGE.  Upstream's `adaptation_domain`
+        # selects which domain's CFL drives the tree's step; gpuwm drives
+        # every domain from its own measured CFL and divides the parent's
+        # step down.  The child-driven arm exists in
+        # adaptive_timestep.nest_dt_from_parent (adapt_using_child=True)
+        # and has no caller, so any value but 1 was accepted, validated,
+        # written into three identity tables and the checkpoint header,
+        # and then did nothing at all -- the run adapted parent-first and
+        # said no word about it.  Refused rather than warned, because a
+        # user who sets this is asking for a different trajectory.
+        raise ValueError(
+            f"adaptation_domain must be 1, got {cfg.adaptation_domain}: "
+            "gpuwm adapts every domain from its own measured CFL and "
+            "divides the parent step down, so the child-driven selection "
+            "upstream's values above 1 request is not wired to the "
+            "driver.  Accepting the value would run a parent-driven "
+            "tree while the configuration said otherwise.")
+
+    min_dt = _adaptive_interval(cfg.min_time_step, cfg.min_time_step_den,
+                                "min_time_step")
+    max_dt = _adaptive_interval(cfg.max_time_step, cfg.max_time_step_den,
+                                "max_time_step")
+    start_dt = _adaptive_interval(cfg.starting_time_step,
+                                  cfg.starting_time_step_den,
+                                  "starting_time_step")
+    for value, name in ((min_dt, "min_time_step"), (max_dt, "max_time_step"),
+                        (start_dt, "starting_time_step")):
+        if value is not None and value <= 0:
+            raise ValueError(
+                f"{name} resolves to {float(value):g} s, which is not a "
+                "positive interval; -1 with a zero denominator is the way "
+                "to leave it unset.")
+    if min_dt is not None and max_dt is not None and min_dt > max_dt:
+        # Upstream applies max first and min second, so the minimum
+        # silently wins and the run integrates above max_time_step for its
+        # whole length.  Refused by name here instead.
+        raise ValueError(
+            f"min_time_step ({float(min_dt):g} s) exceeds max_time_step "
+            f"({float(max_dt):g} s).  WRF clamps max first and min second "
+            "(adapt_timestep_em.F:186-214), so this does not error there "
+            "-- the minimum wins and the model runs above the maximum it "
+            "was told to respect.")
+    if start_dt is not None:
+        if max_dt is not None and start_dt > max_dt:
+            raise ValueError(
+                f"starting_time_step ({float(start_dt):g} s) exceeds "
+                f"max_time_step ({float(max_dt):g} s).")
+        if min_dt is not None and start_dt < min_dt:
+            raise ValueError(
+                f"starting_time_step ({float(start_dt):g} s) is below "
+                f"min_time_step ({float(min_dt):g} s).")
+
+    if not cfg.use_adaptive_time_step:
+        return
+
+    # From here on the feature is ON, so the refusals are about whether it
+    # can actually be run rather than about whether the numbers cohere.
+    if not cfg.step_to_output_time:
+        # gpuwm.experiment._check_cadence requires every cadence to be a
+        # whole number of steps, and with a varying dt only the
+        # step-to-time mechanism can keep that true.  WRF's own Registry
+        # default is .true. for the same reason.
+        raise ValueError(
+            "use_adaptive_time_step needs step_to_output_time = true.  "
+            "gpuwm requires every cadence -- history_interval_s, the "
+            "relocation cadence and track interval, the radiation and "
+            "cumulus calls -- to be a whole number of steps, and a "
+            "varying dt can only keep that promise by landing exactly on "
+            "the output times.  WRF defaults it true "
+            "(Registry.EM_COMMON:2278); turning it off here would make "
+            "the first cadence check fail mid-run instead of now.")
+
+
 def validate_run_config(cfg: RunConfig) -> RunConfig:
     """The RunConfig invariant battery, shared by BOTH loaders.
 
@@ -2559,6 +2765,28 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
     experiment TOML fails exactly as it always has on the legacy path.
     Returns ``cfg`` unchanged on success.
     """
+    if cfg.eta_levels is not None:
+        # Shape and monotonicity only.  p_top is NOT a RunConfig field, so
+        # the pressure-dependent half of the eta contract cannot run here;
+        # it runs where the model top is actually known (the offline child
+        # reads it off the parent archive).
+        eta = tuple(float(value) for value in cfg.eta_levels)
+        if len(eta) != int(cfg.nz) + 1:
+            raise ValueError(
+                f"eta_levels has {len(eta)} interfaces but nz={cfg.nz} "
+                f"requires {int(cfg.nz) + 1}: the ladder and the level count "
+                "have to describe one grid, and a mismatch here would reach "
+                "make_vertical_coord as a shape error after the run had "
+                "already been prepared.")
+        if not all(math.isfinite(value) for value in eta):
+            raise ValueError("eta_levels must all be finite")
+        if (eta[0] != 1.0 or eta[-1] != 0.0
+                or any(b >= a for a, b in zip(eta, eta[1:]))):
+            raise ValueError(
+                "eta_levels must decrease strictly from 1.0 at the surface "
+                f"to 0.0 at the model top, got {eta[0]!r} .. {eta[-1]!r}: a "
+                "non-monotone ladder folds the coordinate and the reference "
+                "dry pressure stops decreasing with height.")
     if cfg.time_step_sound % 2 != 0:
         raise ValueError(
             f"time_step_sound must be even, got {cfg.time_step_sound}: RK3 "
@@ -2923,27 +3151,6 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
         raise ValueError(
             "ra_sw_physics must be 0 (off), 1 (WRF Dudhia), 4 "
             f"(RTE+RRTMGP), or 90 (analytic proxy), got {ra_sw_physics}.")
-    if ra_lw_physics == 1 and ra_sw_physics != 1:
-        # WRF RRTM longwave is implemented (gpuwm.core.rrtm_lw), but only
-        # the pairing WRF's own classic namelists use is wired: RRTM
-        # longwave with Dudhia shortwave.  RRTM-with-RRTMGP-shortwave
-        # would be a scheme combination WRF never runs, and
-        # RRTM-with-shortwave-off has no adapter, so both refuse here
-        # rather than resolve to something nobody asked for.
-        raise ValueError(
-            "ra_lw_physics=1 (WRF RRTM longwave) is implemented only as "
-            "WRF's classic pair with ra_sw_physics=1 (Dudhia shortwave), "
-            f"got ra_sw_physics={ra_sw_physics}.")
-    if ((ra_lw_physics in (4, 90) or ra_sw_physics in (4, 90))
-            and ra_lw_physics != ra_sw_physics):
-        raise ValueError(
-            f"ra_lw_physics={ra_lw_physics} and ra_sw_physics="
-            f"{ra_sw_physics}: RTE+RRTMGP (4) and analytic radiation (90) "
-            "are coupled LW/SW adapters and must be selected on both "
-            "components. Set ra_lw_physics = ra_sw_physics = 4 "
-            "(RTE+RRTMGP) or = 90 (the analytic proxy), or select the "
-            "0/0 (radiation off) or 0/1 (Dudhia shortwave, longwave off) "
-            "pair.")
     if cfg.icloud not in (0, 1):
         raise ValueError(f"icloud must be 0 or 1, got {cfg.icloud}.")
     if not math.isfinite(cfg.swrad_scat) or cfg.swrad_scat < 0.0:
@@ -2966,27 +3173,14 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
         raise ValueError(
             f"ra_rrtmg_variant must be '{RRTMG_VARIANT_RTE_RRTMGP}' or "
             f"'{RRTMG_VARIANT_LEGACY}', got {cfg.ra_rrtmg_variant!r}.")
-    if (cfg.ra_rrtmg_variant == RRTMG_VARIANT_LEGACY
-            and (ra_lw_physics, ra_sw_physics) != (4, 4)):
-        raise ValueError(
-            f"ra_rrtmg_variant='{RRTMG_VARIANT_LEGACY}' requires the "
-            "resolved 4/4 RRTMG pair (ra_physics=4 or "
-            "ra_lw_physics=ra_sw_physics=4), got "
-            f"{ra_lw_physics}/{ra_sw_physics}")
     if ((cfg.o3input != 2 or cfg.use_mp_re != 1)
+            and 4 in (ra_lw_physics, ra_sw_physics)
             and cfg.ra_rrtmg_variant != RRTMG_VARIANT_LEGACY):
         raise ValueError(
             f"o3input={cfg.o3input} and use_mp_re={cfg.use_mp_re}: "
-            "nondefault values are implemented only by "
-            f"ra_rrtmg_variant='{RRTMG_VARIANT_LEGACY}'."
-        )
-    if ((cfg.o3input != 2 or cfg.use_mp_re != 1)
-            and (ra_lw_physics, ra_sw_physics) != (4, 4)):
-        raise ValueError(
-            f"o3input={cfg.o3input} and use_mp_re={cfg.use_mp_re} require "
-            "the resolved 4/4 legacy-RRTMG radiation pair, got "
-            f"{ra_lw_physics}/{ra_sw_physics}."
-        )
+            "the selected modern-RRTMG spectrum does not implement "
+            "these nondefault ozone/effective-radius operations; they are "
+            f"implemented by ra_rrtmg_variant='{RRTMG_VARIANT_LEGACY}'.")
     if (cfg.wrf_rrtmg_compatibility in WRF_RRTMG_SUBSTITUTION_TOKENS
             and cfg.ra_rrtmg_variant != RRTMG_VARIANT_RTE_RRTMGP):
         raise ValueError(
@@ -3000,7 +3194,7 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "legacy RRTMG mapping and requires "
             f"ra_rrtmg_variant='{RRTMG_VARIANT_LEGACY}', got "
             f"{cfg.ra_rrtmg_variant!r}")
-    if (ra_lw_physics, ra_sw_physics) == (4, 4) and cfg.icloud != 1:
+    if 4 in (ra_lw_physics, ra_sw_physics) and cfg.icloud != 1:
         raise ValueError(
             "the 4/4 radiation adapters (RTE+RRTMGP today, legacy RRTMG "
             "when it lands) implement cloud-radiation coupling as always "
@@ -3189,6 +3383,7 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             f"and requires mp_physics=50 (got mp_physics={cfg.mp_physics}); "
             "no other scheme reads it, and gpuwm refuses a stray value "
             "instead of silently dropping it.")
+    _validate_adaptive_time_step(cfg)
     if cfg.no_mp_heating not in (0, 1):
         raise ValueError(
             "no_mp_heating must be 0 (microphysics latent heating on, the "

@@ -124,7 +124,7 @@ def test_headers_missing_is_named_as_headers_and_never_as_a_wheel(
     check = _check(monkeypatch, _HEADERS_MISSING, box_major=box_major)
     assert check.status == "missing"
     assert check.brief == "toolkit headers missing"
-    assert not check.blocking
+    assert check.blocking
     # It says which piece is missing, in those words.
     assert "NVRTC works" in check.detail
     assert "header" in check.detail.lower()
@@ -234,14 +234,79 @@ def test_a_box_that_cannot_be_judged_says_so_rather_than_passing(
     assert check.remedy is None
 
 
-def test_a_probe_that_would_not_run_still_prints_the_real_remedy(monkeypatch):
-    """The branch whose remedy/action pair is assembled by unpacking."""
+def test_a_probe_that_would_not_run_does_not_guess_a_missing_toolkit(monkeypatch):
+    """A process failure supplies no evidence that a toolkit install repairs it."""
     check = _check(monkeypatch, {"probe": "did not run: timeout"},
                    box_major=13)
     assert check.status == "missing"
-    assert not check.blocking
-    assert "conda install -c nvidia cuda-toolkit=13" in check.remedy
-    assert check.action == "pip install 'cupy-cuda13x[ctk]'"
+    assert check.blocking
+    assert "install" not in check.remedy
+    assert check.action == "gpuwm doctor --explain"
+    assert check.brief == "CUDA probe unavailable"
+
+
+def _execute_probe_with_failure(monkeypatch, fault):
+    """Run the exact subprocess program against a fault-controlled CuPy API."""
+    from contextlib import redirect_stdout
+    import io
+    import json
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    def trip(stage, result=None):
+        if fault == stage:
+            raise RuntimeError(f"controlled {stage} failure")
+        return result
+
+    fake = ModuleType("cupy")
+    fake.cuda = SimpleNamespace(
+        runtime=SimpleNamespace(getDeviceCount=lambda: 1),
+        get_current_stream=lambda: SimpleNamespace(synchronize=lambda: trip("synchronize")))
+    fake.RawModule = lambda **_kwargs: SimpleNamespace(
+        get_function=lambda _name: trip("compile", lambda *_args: trip("launch")))
+    fake.float32, fake.int64 = "float32", "int64"
+    fake.empty = lambda *_args, **_kwargs: trip("allocation", [0.0])
+    fake.asnumpy = lambda _array: trip("readback", [0.0 if fault == "validation" else 1.0])
+    fake.arange = lambda *_args, **_kwargs: SimpleNamespace(
+        sum=lambda: trip("reduction", 0 if fault == "reduction-validation" else 2016))
+    monkeypatch.setitem(sys.modules, "cupy", fake)
+    output = io.StringIO()
+    with redirect_stdout(output):
+        exec(doctor._NVRTC_HEADER_PROBE, {})
+    return json.loads(output.getvalue())
+
+
+@pytest.mark.parametrize("fault", ["compile", "allocation", "launch", "synchronize", "readback", "validation"])
+def test_probe_failure_names_the_actual_stage_without_guessing_an_installer(monkeypatch, fault):
+    payload = _execute_probe_with_failure(monkeypatch, fault)
+    assert payload["self_contained_stage"] == fault
+    assert payload["self_contained_compiled"] is (fault != "compile")
+    check = _check(monkeypatch, payload)
+    assert check.status == "missing" and check.blocking
+    assert check.brief == f"CUDA {fault} failed"
+    assert check.action == "nvidia-smi"
+    assert "pip install" not in check.remedy and "toolkit headers missing" not in check.detail
+    if fault != "compile":
+        assert "kernel compiled;" in check.detail
+
+
+@pytest.mark.parametrize("fault,stage", [("reduction", "reduction"), ("reduction-validation", "validation")])
+def test_reduction_execution_and_wrong_answers_do_not_claim_missing_headers(monkeypatch, fault, stage):
+    payload = _execute_probe_with_failure(monkeypatch, fault)
+    assert payload["self_contained"] == "ok"
+    assert payload["toolkit_headers_stage"] == stage
+    check = _check(monkeypatch, payload)
+    assert check.brief == f"CUDA {stage} failed" and check.blocking
+    assert "pip install" not in check.remedy and check.action == "nvidia-smi"
+
+
+@pytest.mark.parametrize("returncode,stdout", [(1, ""), (0, "{}"), (0, "[]")])
+def test_probe_process_failure_is_not_a_compiler_verdict(monkeypatch, returncode, stdout):
+    monkeypatch.setattr(doctor, "find_spec", lambda _name: object())
+    monkeypatch.setattr(doctor.subprocess, "run", lambda *_args, **_kwargs:
+                        subprocess.CompletedProcess([], returncode, stdout, "controlled process failure"))
+    result = doctor._nvrtc_header_probe()
+    assert result == {"probe": "controlled process failure"}
 
 
 # --------------------------------------------------------------------------

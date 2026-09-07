@@ -32,9 +32,9 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_ntiedtke_cumastrn_ownership import OWNERSHIP, RUN_OWNERSHIP
+from test_ntiedtke_cumastrn_ownership import OWNERSHIP, RUN_OWNERSHIP
 from gpuwm.core.ntiedtke import NT_SEEDS
-from tests.test_ntiedtke_launch_geometry import NT_CALL_ORDER
+from test_ntiedtke_launch_geometry import NT_CALL_ORDER
 
 _CU = Path(__file__).resolve().parents[1] / "gpuwm" / "core" / "kernels" \
     / "ntiedtke.cu"
@@ -323,7 +323,7 @@ def test_removing_any_stage_is_caught_by_at_least_one_gate(dropped,
     seven the manifest is the only thing standing between a silent
     omission and a wrong forecast.
     """
-    import tests.test_ntiedtke_call_order_vs_source as mod
+    import test_ntiedtke_call_order_vs_source as mod
 
     monkeypatch.setattr(
         mod, "NT_CALL_ORDER",
@@ -346,7 +346,7 @@ def test_the_gate_suite_is_not_carried_by_one_gate_alone():
     Not a claim that all three are needed for every stage -- measured, they
     are not -- but that each earns its place on some stage.
     """
-    import tests.test_ntiedtke_call_order_vs_source as mod
+    import test_ntiedtke_call_order_vs_source as mod
     fired = {g: 0 for g in _OMISSION_GATES}
     original = mod.NT_CALL_ORDER
     try:

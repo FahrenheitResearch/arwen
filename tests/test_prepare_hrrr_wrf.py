@@ -60,6 +60,7 @@ from gpuwm.static.lambert import grids_from_projection_config
 from gpuwm.stream import _materialize_input_namelist
 from gpuwm.vertical_contract import explicit_vertical_from_wrf_namelist
 from gpuwm.experiment import load_experiment
+from gpuwm.hrrr_configuration import resolved_run_settings
 from gpuwm.io import restart as restart_io
 from tools import prepare_hrrr_wrf as prepare
 from tools import prepared_domain_tree_forecast as tree_runner
@@ -308,6 +309,31 @@ def _contract_carrying_decoder(path: Path) -> Path:
     path.write_bytes(
         b"decoder\x00" + bridges.BRIDGE_ABI_MARKERS["hrrr_grib2_bridge"])
     return path
+
+
+def _configured_wrapper_input(tmp_path, namelist, profile=WSM6_PROFILE_ID,
+                              *, target=None, write_namelist=True, vertical=None, changes=None, history_interval=3600.):
+    from tools.hrrr_single_domain_benchmark import _experiment_tables
+    from gpuwm.experiment import VerticalConfig, build_experiment
+    from gpuwm.experiment_document import render_experiment_document
+    from gpuwm.hrrr_route_inputs import render_namelist_input
+    from gpuwm.ingest.hrrr_target import HrrrTargetDomain
+    import copy
+    target = target or HrrrTargetDomain.legacy_500x500()
+    vertical = vertical or VerticalConfig(
+        eta_levels=tuple(float(v) for v in np.linspace(1., 0., target.nz + 1)),
+        p_top=5000., hybrid_opt=2, etac=.2)
+    raw, _ = _experiment_tables(vertical, run_seconds=7200., target=target,
+        start_time=datetime(2026, 7, 18, 5), physics_profile=profile,
+        history_interval_seconds=history_interval)
+    if changes:
+        raw["shared"].update(changes)
+    config = tmp_path / "native-authority.toml"
+    config.write_text(render_experiment_document(raw), encoding="utf-8")
+    if write_namelist:
+        namelist.write_text(render_namelist_input(build_experiment(
+            copy.deepcopy(raw), source="wrapper test authority")), encoding="utf-8")
+    return config
 
 
 def _real_wrapper_inputs(tmp_path: Path):
@@ -966,7 +992,10 @@ def test_public_wrapper_extension_passes_production_tree_contracts(
     except FileNotFoundError:
         pytest.skip("native CPU preprocessing bridge is not installed")
 
+    authority = _configured_wrapper_input(tmp_path, f001_namelist,
+        target=target, write_namelist=False, vertical=vertical)
     common = [
+        "--experiment-config", str(authority),
         "--source-root", str(source),
         "--source-manifest", str(source_manifest),
         "--static-cache", str(static_cache),
@@ -1552,6 +1581,7 @@ def test_public_wrapper_preserves_absolute_source_leads_and_rebases_model_time(
     namelist = tmp_path / "namelist.input"
     for path in (static_cache, static_receipt, namelist):
         path.write_bytes(b"fixture")
+    authority = _configured_wrapper_input(tmp_path, namelist, physics_profile)
     decoder = tmp_path / "hrrr_grib2_bridge"
     decoder.write_bytes(b"decoder")
     monkeypatch.setattr(prepare, "_decoder", lambda _env: decoder)
@@ -1569,6 +1599,7 @@ def test_public_wrapper_preserves_absolute_source_leads_and_rebases_model_time(
                 "history_interval_seconds": 3600.0,
                 "physics": {
                     "schema": "gpuwm-prepared-physics-profile-v1",
+                    "resolved": resolved_run_settings(load_experiment(authority).root.run),
                     "profile": physics_profile,
                     "hrrr_initialization": _cold_start_receipt(
                         physics_profile),
@@ -1600,6 +1631,7 @@ def test_public_wrapper_preserves_absolute_source_leads_and_rebases_model_time(
     monkeypatch.setattr(prepare, "_run", fake_run)
     output = tmp_path / "output"
     assert prepare.main([
+        "--experiment-config", str(authority),
         "--source-root", str(source),
         "--source-manifest", str(source_manifest),
         "--source-manifest-sha256", "0" * 64,
@@ -1717,6 +1749,7 @@ def _wrapper_case(tmp_path: Path, monkeypatch, *, export_returncode: int = 0):
     namelist = tmp_path / "namelist.input"
     for path in (static_cache, static_receipt, namelist):
         path.write_bytes(b"fixture")
+    authority = _configured_wrapper_input(tmp_path, namelist)
     decoder = tmp_path / "hrrr_grib2_bridge"
     decoder.write_bytes(b"decoder")
     monkeypatch.setattr(prepare, "_decoder", lambda _env: decoder)
@@ -1734,6 +1767,7 @@ def _wrapper_case(tmp_path: Path, monkeypatch, *, export_returncode: int = 0):
                 "history_interval_seconds": 3600.0,
                 "physics": {
                     "schema": "gpuwm-prepared-physics-profile-v1",
+                    "resolved": resolved_run_settings(load_experiment(authority).root.run),
                     "profile": WSM6_PROFILE_ID,
                     "hrrr_initialization": _cold_start_receipt(
                         WSM6_PROFILE_ID),
@@ -1769,6 +1803,7 @@ def _wrapper_case(tmp_path: Path, monkeypatch, *, export_returncode: int = 0):
     monkeypatch.setattr(prepare, "_run", fake_run)
     output = tmp_path / "output"
     argv = [
+        "--experiment-config", str(authority),
         "--source-root", str(source),
         "--source-manifest", str(source_manifest),
         "--source-manifest-sha256", "0" * 64,
@@ -1971,3 +2006,60 @@ def test_stock_wrf_export_pass_is_earned_by_manifested_outputs(tmp_path):
     assert receipt["manifest_sha256"] == hashlib.sha256(
         (output / "manifest.json").read_bytes()).hexdigest()
     assert "REFUSED" not in prepare.STOCK_WRF_EXPORT_STATES
+
+
+@pytest.mark.parametrize("surface,layers,pbl,sfclay", [(2, 4, 1, 1), (3, 6, 5, 91), (3, 9, 5, 91)])
+def test_configured_native_preparation_publishes_selected_soil_and_physics(
+        tmp_path, monkeypatch, surface, layers, pbl, sfclay):
+    """Real CPU native preparation with fixture decoded source data; no forecast claim."""
+    target, static_cache, static_receipt, domain, namelist = _real_wrapper_inputs(tmp_path)
+    vertical = explicit_vertical_from_wrf_namelist(
+        namelist, expected_nz=target.nz, context="configured soil test")
+    changes = dict(sf_surface_physics=surface, num_soil_layers=layers,
+                   bl_pbl_physics=pbl, sf_sfclay_physics=sfclay)
+    authority = _configured_wrapper_input(tmp_path, namelist, target=target,
+        write_namelist=False, vertical=vertical, changes=changes)
+    source = tmp_path / "source"
+    source.mkdir()
+    for hour in (0, 1):
+        for product in ("wrfnat", "soil"):
+            (source / f"hrrr.t05z.{product}f{hour:02d}.grib2").write_bytes(
+                f"fixture:{product}:{hour}".encode())
+    manifest = source / "SHA256SUMS"
+    manifest.write_text("".join(f"{_file_sha256(path)}  {path.name}\n"
+                        for path in sorted(source.iterdir())), encoding="utf-8")
+    monkeypatch.setenv("GPUWM_HRRR_DECODER", str(_fixture_decoder(tmp_path)))
+    try:
+        bridge = resolve_cpu_bridge()
+    except FileNotFoundError:
+        pytest.skip("native CPU preprocessing bridge is not installed")
+    output = tmp_path / "prepared"
+    assert prepare.main([
+        "--source-root", str(source), "--source-manifest", str(manifest),
+        "--source-manifest-sha256", _file_sha256(manifest),
+        "--static-cache", str(static_cache), "--static-receipt", str(static_receipt),
+        "--domain-spec", str(domain), "--namelist-input", str(namelist),
+        "--experiment-config", str(authority), "--cycle", "2026-07-18_05:00:00",
+        "--run-seconds", "3600", "--pipeline-workers", "1", "--prepare-workers", "1",
+        "--preprocess-backend", "cpu", "--preprocess-workers", "1",
+        "--cpu-preprocess-bridge", str(bridge), "--skip-stock-wrf-export",
+        "--output-root", str(output)]) == 0
+    wrapper = json.loads((output / "public-wrapper-result.json").read_text())
+    assert wrapper["portable_bundle"] is not None, wrapper.get("portable_bundle_refusal")
+    report = json.loads((output / "native/preparation-report/report.json").read_text())
+    assert report["physics"]["profile"] is None
+    poisoned = copy.deepcopy(report)
+    poisoned["physics"]["resolved"]["sf_sfclay_physics"] = 999
+    with pytest.raises(RuntimeError, match="resolved physics differs"):
+        prepare._validated_physics_receipt(poisoned, requested_profile=None,
+            expected_selection=load_experiment(authority).root.run)
+    for name, value in changes.items():
+        assert report["physics"]["resolved"][name] == value
+    cache = output / "native/prepared-cache"
+    header = json.loads((cache / "header.json").read_text())
+    reader = PreparedCacheReader(cache, expected_identity=header["identity"])
+    reader.verify_all()
+    for field in ("TSLB", "SMOIS", "SH2O"):
+        data = reader.read_array("surface/" + field)
+        assert data.shape == (layers, target.ny, target.nx)
+        assert np.isfinite(data).all()

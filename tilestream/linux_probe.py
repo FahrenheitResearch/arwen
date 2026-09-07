@@ -44,7 +44,6 @@ import argparse
 import ctypes
 import json
 import os
-import resource
 import statistics
 import subprocess
 import sys
@@ -66,6 +65,10 @@ def read_meminfo():
 
 def container_evidence():
     """Several independent signals, because any one of them can be absent."""
+    if sys.platform != "linux":
+        raise RuntimeError("the Linux memory probe requires Linux /proc and resource limits")
+    import resource
+
     signals = {}
     signals["dockerenv"] = os.path.exists("/.dockerenv")
     try:
@@ -323,6 +326,8 @@ def main():
     ap.add_argument("--skip-managed", action="store_true")
     ap.add_argument("--json", metavar="PATH")
     args = ap.parse_args()
+    if sys.platform != "linux":
+        ap.error("this memory probe requires Linux; use gpuwm doctor for host readiness")
 
     mem = read_meminfo()
     sig = container_evidence()

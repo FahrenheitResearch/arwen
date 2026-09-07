@@ -11,10 +11,12 @@ stereographic (NH, SH, pole-anchored).  See
 ``tools/llxy_wrf461_oracle/build_llxy.py``.
 
 Gate policy: every quantity is compared in binary64 ULPs and pinned at
-the ceiling measured on this box (numpy libm vs glibc libm is the only
-source of drift; the transcriptions are operation-identical).  The one
-exception is the Lambert map factor, where the product ships the ARW
-tech-note form referenced to truelat1 while geogrid's authority uses
+the original measured ceiling. Two inverse rows additionally accept their measured setup/transcendental
+signatures: a one-ULP atan or exp difference is amplified by subtracting
+90 degrees. These are Lambert and Mercator library-rounding differences.
+An independent Decimal series and arithmetic mutations test that exception;
+the fixture and every general ceiling remain unchanged. For Lambert map
+factor, the product ships the ARW tech-note form referenced to truelat1 while geogrid's authority uses
 the mathematically identical form referenced to truelat2 -- that gate
 is a relative bound (measured 2.3e-16) plus the same measured ULP pin.
 
@@ -23,6 +25,7 @@ transform ceiling: a passing suite is not evidence unless it can fail.
 """
 from __future__ import annotations
 
+from decimal import Decimal, localcontext
 import json
 import struct
 from collections import defaultdict
@@ -136,13 +139,161 @@ def grids(fixture):
     return out
 
 
-def _gate(cls_name, tag, slot, got, want, context):
+# WRF4.6.1 / gfortran13.3 / glibc2.39 fixture vs NumPy2.4.3 on
+# glibc2.39: the setup is already inside its separate gates. At this one
+# deck point, atan rounds to ...d79 (independently verified below), while
+# Windows NumPy2.2.6 gives ...d78. The final subtraction amplifies that
+# single-ULP difference. Accept the observed chain, not an 8-ULP interval.
+_LAMBERT_SIGNATURE = (
+    ("-0x1.0000000000000p+0", "0x1.db43d43615c27p-2",
+     "0x1.096aaaaaaaaabp+9", "0x1.f3899572d54b0p+9",
+     "-0x1.dc5f3de5e3a2dp+5", "0x1.dd4888ec946a8p+9"),
+    (("arctan", "0x1.5c71ad4b712b6p-1", "0x1.31f2d9b937d79p-1"),),
+)
+
+# Mercator setup matches WRF exactly. Linux NumPy exp is one ULP below
+# Windows NumPy / Linux math / the independently rounded Decimal value;
+# atan is correctly rounded at both of those distinct inputs. Eight x
+# positions share this one y row, whose latitude does not depend on x.
+_MERCATOR_SIGNATURE = (
+    ("0x1.edf6451cd5ab0p-10", "0x1.81595ed4bceddp+3", "0x1.6400000000000p+5"),
+    (("exp", "0x1.b466b5ff36583p-4", "0x1.1cc7f434ab8cdp+0"),
+     ("arctan", "0x1.1cc7f434ab8cdp+0", "0x1.ad58f46ab6c36p-1")),
+)
+
+
+def _inverse_with_signature(grid, i, j, monkeypatch):
+    """Observe the actual inverse call without reproducing its arithmetic."""
+    calls = []
+    with monkeypatch.context() as patch:
+        for name in ("exp", "arctan"):
+            def record(value, name=name, original=getattr(np, name)):
+                result = original(value)
+                calls.append((name, float(value).hex(), float(result).hex()))
+                return result
+            patch.setattr(np, name, record)
+        lat, lon = grid.ij_to_latlon(i, j)
+    fields = (("hemi", "cone", "rebydx", "rsw", "polei", "polej")
+              if isinstance(grid, LambertGrid) else ("dlon", "rsw", "known_y"))
+    setup = tuple(float(getattr(grid, key)).hex() for key in fields)
+    return lat, lon, (setup, tuple(calls))
+
+
+def _gate(cls_name, tag, slot, got, want, context, *, signature=None):
     d = ulp_diff(got, want)
     ceiling = ULP_CEILINGS[(cls_name, tag, slot)]
-    assert d <= ceiling, (
+    measured_rounding = (
+        (cls_name, tag, slot) == ("LambertGrid", "IJLL", "lat")
+        and context == ("lc_sh_sec", 1.0, 97.5)
+        and want.hex() == "-0x1.5866f3a590adcp+4"
+        and got.hex() == "-0x1.5866f3a590ad4p+4"
+        and signature == _LAMBERT_SIGNATURE)
+    measured_rounding |= (
+        (cls_name, tag, slot) == ("MercatorGrid", "IJLL", "lat")
+        and isinstance(context, tuple) and len(context) == 3
+        and context[0] == "merc_trop" and context[2] == 89.0
+        and context[1] in (-9.5, 1.0, 27.75, 55.5, 56.0, 83.25, 111.0, 121.5)
+        and want.hex() == "0x1.85f31af494350p+2"
+        and got.hex() == "0x1.85f31af494340p+2"
+        and signature == _MERCATOR_SIGNATURE)
+    assert d <= ceiling or measured_rounding, (
         f"{cls_name} {tag} {slot}: {d} ULP > ceiling {ceiling} at "
         f"{context}: got {got!r} ({got.hex() if got == got else 'nan'}), "
         f"oracle {want!r}")
+
+
+def _decimal_atan(x):
+    # No platform libm: the alternating series has a bounded remainder.
+    def series(value):
+        term, total = value, Decimal(0)
+        for n in range(512):
+            total += term / (2 * n + 1)
+            term *= -value * value
+        assert abs(term / 1025) < Decimal("1e-100")
+        return total
+
+    if x > 1:
+        # atan(x) = pi/4 + atan((x-1)/(x+1)); Machin's formula supplies
+        # pi/4 = 4*atan(1/5) - atan(1/239), with fast-converging series.
+        return (4 * series(Decimal(1) / 5) - series(Decimal(1) / 239)
+                + series((x - 1) / (x + 1)))
+    return series(x)
+
+
+@pytest.mark.parametrize("argument,rounded", [
+    ("0x1.5c71ad4b712b6p-1", "0x1.31f2d9b937d79p-1"),
+    ("0x1.1cc7f434ab8cdp+0", "0x1.ad58f46ab6c36p-1"),
+    ("0x1.1cc7f434ab8cep+0", "0x1.ad58f46ab6c37p-1"),
+])
+def test_inverse_atan_rounding_has_an_independent_series_witness(argument, rounded):
+    with localcontext() as context:
+        context.prec = 110
+        total = _decimal_atan(Decimal.from_float(float.fromhex(argument)))
+        # Conservative bound for the series tails and Decimal rounding
+        # at110 digits. Both endpoints round to the same binary64 word.
+        error = Decimal("1e-100")
+        assert float(total - error) == float(total + error) == float.fromhex(rounded)
+
+
+def test_mercator_exp_rounding_has_an_independent_decimal_witness():
+    with localcontext() as context:
+        context.prec = 110
+        exponent = Decimal.from_float(float.fromhex("0x1.b466b5ff36583p-4"))
+        value = exponent.exp()
+        error = Decimal("1e-100")
+        assert (float(value - error) == float(value + error)
+                == float.fromhex("0x1.1cc7f434ab8cep+0"))
+        assert ulp_diff(float(value), float.fromhex(_MERCATOR_SIGNATURE[1][0][2])) == 1
+
+
+@pytest.mark.parametrize("projection,context,got,want,signature", [
+    ("LambertGrid", ("lc_sh_sec", 1.0, 97.5), "-0x1.5866f3a590ad4p+4",
+     "-0x1.5866f3a590adcp+4", _LAMBERT_SIGNATURE),
+    ("MercatorGrid", ("merc_trop", 1.0, 89.0), "0x1.85f31af494340p+2",
+     "0x1.85f31af494350p+2", _MERCATOR_SIGNATURE),
+])
+@pytest.mark.parametrize("mutation", ["output", "argument", "context"])
+def test_rounding_is_an_exact_signature_not_a_wider_tolerance(
+        projection, context, got, want, signature, mutation):
+    got, want = map(float.fromhex, (got, want))
+    if mutation == "output":
+        got = float(np.nextafter(got, want))  # closer still fails: no interval
+    elif mutation == "argument":
+        first, *rest = signature[1]
+        changed = float(np.nextafter(float.fromhex(first[1]), np.inf)).hex()
+        signature = (signature[0], ((first[0], changed, first[2]), *rest))
+    else:
+        context = (context[0], context[1], context[2] - 0.5)
+    with pytest.raises(AssertionError, match="ULP"):
+        _gate(projection, "IJLL", "lat", got, want, context, signature=signature)
+
+
+@pytest.mark.parametrize("cid,j,want,coefficient", [
+    ("lc_sh_sec", 97.5, "-0x1.5866f3a590adcp+4", "cone"),
+    ("merc_trop", 89.0, "0x1.85f31af494350p+2", "dlon"),
+])
+@pytest.mark.parametrize("mutation", ["coefficient", "operation"])
+def test_actual_arithmetic_mutations_cannot_use_rounding_exception(
+        grids, monkeypatch, cid, j, want, coefficient, mutation):
+    import copy
+    grid = copy.copy(grids[cid][1])
+    if mutation == "coefficient":
+        setattr(grid, coefficient, getattr(grid, coefficient) + 1e-6)
+    else:
+        original_atan = np.arctan
+        monkeypatch.setattr(np, "arctan", lambda value: original_atan(value) * 1.000001)
+    lat, _, signature = _inverse_with_signature(grid, 1.0, j, monkeypatch)
+    with pytest.raises(AssertionError, match="ULP"):
+        _gate(type(grid).__name__, "IJLL", "lat", float(lat),
+              float.fromhex(want), (cid, 1.0, j), signature=signature)
+
+
+def test_mercator_library_counterfactual_recovers_the_wrf_fixture(grids, monkeypatch):
+    import math
+    # Only exp changes library; the product inverse and setup stay intact.
+    monkeypatch.setattr(np, "exp", math.exp)
+    lat, _ = grids["merc_trop"][1].ij_to_latlon(1.0, 89.0)
+    assert float(lat).hex() == "0x1.85f31af494350p+2"
 
 
 def test_fixture_provenance(fixture):
@@ -224,12 +375,16 @@ def test_latlon_to_ij_matches_oracle(fixture, grids):
                   (cid, lat, lon))
 
 
-def test_ij_to_latlon_matches_oracle(fixture, grids):
+def test_ij_to_latlon_matches_oracle(fixture, grids, monkeypatch):
     _, rows, _ = fixture
     for cid, (case, grid) in grids.items():
         name = type(grid).__name__
         for (i, j), row in zip(case["ijll"], rows[("IJLL", cid)]):
-            lat, lon = grid.ij_to_latlon(i, j)
+            signature = None
+            if isinstance(grid, (LambertGrid, MercatorGrid)):
+                lat, lon, signature = _inverse_with_signature(grid, i, j, monkeypatch)
+            else:
+                lat, lon = grid.ij_to_latlon(i, j)
             want_lon = _hex_to_float(row[3])
             got_lon = float(lon)
             # both sides wrap into (-180, 180]; a value landing exactly
@@ -238,7 +393,7 @@ def test_ij_to_latlon_matches_oracle(fixture, grids):
             if abs(got_lon - want_lon) > 180.0:
                 got_lon -= 360.0 * np.sign(got_lon - want_lon)
             _gate(name, "IJLL", "lat", float(lat), _hex_to_float(row[2]),
-                  (cid, i, j))
+                  (cid, i, j), signature=signature)
             _gate(name, "IJLL", "lon", got_lon, want_lon, (cid, i, j))
 
 

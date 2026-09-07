@@ -23,6 +23,7 @@ admitted or if a genuinely-too-big one stops being refused.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import textwrap
 
@@ -451,7 +452,7 @@ def test_the_report_names_one_tiling_not_two(tmp_path, capsys):
 
 
 def test_check_on_a_config_that_does_not_stream_is_byte_identical(
-        tmp_path, capsys):
+        tmp_path, capsys, monkeypatch):
     """THE REGRESSION FENCE.  Nothing above may touch resident arithmetic.
 
     Pinned as integers rather than as a relation, because the failure this
@@ -462,10 +463,18 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     rc, payload = _check(capsys, config, "--budget-gib",
                          str(_FITS_STREAMED_GIB))
 
-    assert payload["peak_envelope_bytes"] == 15350499065
-    assert payload["observed_peak_envelope_bytes"] == 15350499065
-    assert payload["alloc_estimate_bytes"] == 12184233721
-    assert payload["reserve_bytes"] == 3531792356
+    # USTM (3669990e8c) adds one 550x550 FP32 surface plane;
+    # EOS (6b11e4c994) adds dc3f/dc4f/dphb_resid, three 49-value
+    # vectors on this flat grid: 1,210,588 real resident bytes.
+    # The CFL diagnostic is off and contributes exactly zero here.
+    # Resolved radiation selection (267900003) also prices the requested
+    # 4/4 modules when the legacy ra_physics alias is zero. The RTE ceiling
+    # is 5152 B/thread versus Morrison's 5120: 32 * 170 * 1536 = 8,355,840
+    # non-pool bytes on the reference card. No itemized allocation moves.
+    assert payload["peak_envelope_bytes"] == 15360247081
+    assert payload["observed_peak_envelope_bytes"] == 15360247081
+    assert payload["alloc_estimate_bytes"] == 12185625897
+    assert payload["reserve_bytes"] == 3540189961
     assert payload["budget_bytes"] == _FITS_STREAMED_GIB * GIB
     assert payload["gates"]["alloc_estimate_le_wddm_budget"] is False
     assert rc == 1
@@ -474,6 +483,46 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     exp = preflight._load_experiment_any(config)
     estimate = preflight.estimate_experiment(exp, vram_gib=None)
     assert payload["alloc_estimate_bytes"] == estimate.alloc_estimate_bytes
+
+    # Retain the old pins as an executable attribution control. Before
+    # 267900003, domain_kernel_modules checked only ra_physics == 4 and
+    # omitted these four modules for an explicitly declared LW/SW pair.
+    assert exp.root.run.ra_physics == 0
+    assert preflight.radiation_scheme_ids(exp.root.run) == (4, 4)
+    frames = preflight.kernel_local_frame_bytes(exp)
+    radiation_modules = {"rrtmgp_cloud", "rrtmgp_gas", "rrtmgp_mcica",
+                         "rrtmgp_rte"}
+    assert (set(preflight._radiation_44_kernel_modules(exp.root.run))
+            == radiation_modules)
+    assert frames["rrtmgp_rte"] == max(frames.values()) == 5152
+    with monkeypatch.context() as old_accounting:
+        # Remove only the newly reachable module accounting, preserving all
+        # physics selectors, arrays, workspace prices and admission logic.
+        old_accounting.setattr(preflight, "_radiation_44_kernel_modules",
+                               lambda run: ())
+        old_frames = preflight.kernel_local_frame_bytes(exp)
+        assert old_frames == {name: size for name, size in frames.items()
+                              if name not in radiation_modules}
+        assert old_frames["morrison"] == max(old_frames.values()) == 5120
+        old_estimate = preflight.estimate_experiment(exp, vram_gib=None)
+        old_rc, old_payload = _check(capsys, config, "--budget-gib",
+                                     str(_FITS_STREAMED_GIB))
+
+    # The actual command regains every original pin, with the same refusal.
+    assert old_payload["peak_envelope_bytes"] == 15351891241
+    assert old_payload["observed_peak_envelope_bytes"] == 15351891241
+    assert old_payload["alloc_estimate_bytes"] == 12185625897
+    assert old_payload["reserve_bytes"] == 3531834121
+    assert old_rc == rc == 1
+    delta = (5152 - 5120) * 170 * 1536
+    assert delta == 8355840
+    assert (estimate.non_pool_device_bytes - old_estimate.non_pool_device_bytes
+            == delta)
+    assert replace(old_estimate,
+                   non_pool_device_bytes=estimate.non_pool_device_bytes) == estimate
+    for key in ("peak_envelope_bytes", "observed_peak_envelope_bytes",
+                "reserve_bytes"):
+        assert payload[key] - old_payload[key] == delta
 
 
 def test_an_unconfigured_run_is_priced_exactly_as_it_always_was(tmp_path):

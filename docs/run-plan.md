@@ -171,7 +171,7 @@ already bound) → the prepared forecast runner, in process. The
 preparation's arguments are relayed from the fetch route's own
 published handoff (`prep-arguments.json`: the ordered `--input-list`,
 every `--supplement` role binding, the manifest authoring flag); the
-chain appends only the four values the handoff declares are the
+chain appends explicit `run_options.supplement` bindings and the four values the handoff declares are the
 caller's — `--wps-namelist` (the wizard's emission beside the config),
 `--experiment-config`, `--geog-root` and `--output-root`. The forecast
 is bound off the bundle exactly as `gpuwm sim` binds it
@@ -340,6 +340,7 @@ test rather than falling through to whatever the chain happened to do.
 | `restart` | `null` | a `gpuwmrst` checkpoint to continue from |
 | `render_products` | `null` | which products the render stage draws — `gpuwm render --products`' own spec (a comma-separated list, or `all`), or `none` to skip rendering. Absent leaves the default set unchanged. `prepared` route only |
 | `geog_root` | `null` | static geography tree (`prepared` route only) |
+| `supplement` | `[]` | repeatable `ROLE=PATH` preparation donor bindings, resolved relative to the plan. HRRR accepts `PMSL=GRIB` inside `data_dir` and binds explicit donor hashes in a run-local source manifest. Mapped routes forward the bindings to their preparer. GFS and existing prepared bundles reject this option. |
 | `data_dir` | `null` | where the fetch lands (`prepared` route only) |
 | `physics_profile` | `null` | passed to the HRRR preparer when stated (`prepared` route only) |
 | `health_debug` | `false` | enable debug phase health attribution |

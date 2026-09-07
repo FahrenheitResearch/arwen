@@ -107,6 +107,23 @@ STATE_SETUP_ARRAYS = (
     "dnw", "rdnw", "dn", "rdn", "fnp", "fnm", "znu", "znw",
 )
 
+#: Setup arrays that are DETERMINISTIC FUNCTIONS of the tuple above and
+#: are rebuilt beside it, so they carry no information the fingerprint
+#: does not already have.  Deliberately outside ``STATE_SETUP_ARRAYS``:
+#: appending them there would change the setup digest's byte stream and
+#: reject every checkpoint written by an earlier release, in exchange for
+#: hashing the same numbers twice.
+#:
+#: ``dphb_resid`` is ``diff(phb)`` in float64 minus the float32
+#: subtraction the EOS kernel performs on the stored ``phb``; ``dc3f`` /
+#: ``dc4f`` are ``c3f[k] - c3f[k+1]`` and ``c4f[k] - c4f[k+1]``
+#: differenced once in float64.  All three come from
+#: ``DomainState.load_base`` / ``set_base_geopotential``, which every
+#: restore path runs before any reader.
+STATE_DERIVED_SETUP_ARRAYS = (
+    "dphb_resid", "dc3f", "dc4f",
+)
+
 STATE_SETUP_SCALARS = (
     "mub", "p_top", "cf1", "cf2", "cf3", "cfn", "cfn1",
     "has_msf", "rotational",
@@ -176,6 +193,13 @@ def _update_lateral_fingerprint(digest, state) -> None:
                     digest, f"{name}/{side_name}/value", side.value)
                 _digest_array(
                     digest, f"{name}/{side_name}/tendency", side.tendency)
+                law = getattr(side, "time_law", None)
+                if law is not None:
+                    digest.update(b"rational-time-v1;")
+                    _digest_array(digest, f"{name}/{side_name}/quadratic",
+                                  law.quadratic)
+                    _digest_array(digest, f"{name}/{side_name}/denominator_rate",
+                                  law.denominator_rate)
 
 
 def setup_core_fingerprint(
@@ -230,6 +254,13 @@ def lateral_boundary_prefix_identity(
                     digest, f"{name}/{side_name}/value", side.value)
                 _digest_array(
                     digest, f"{name}/{side_name}/tendency", side.tendency)
+                law = getattr(side, "time_law", None)
+                if law is not None:
+                    digest.update(b"rational-time-v1;")
+                    _digest_array(digest, f"{name}/{side_name}/quadratic",
+                                  law.quadratic)
+                    _digest_array(digest, f"{name}/{side_name}/denominator_rate",
+                                  law.denominator_rate)
                 # The forcing consumer rounds host tables to FP32 before
                 # use.  Seal both endpoint frames in that exact numerical
                 # representation so an appended interval cannot replace the
@@ -239,6 +270,16 @@ def lateral_boundary_prefix_identity(
                 end = np.asarray(
                     _host(side.value) + _host(side.tendency) * duration,
                     dtype=np.float32)
+                if law is not None:
+                    from gpuwm.ingest.lateral_bc import (
+                        RationalTimeLaw, SideBoundary, evaluate_boundary_side)
+                    rounded = SideBoundary(start,
+                        np.asarray(_host(side.tendency), dtype=np.float32),
+                        RationalTimeLaw(
+                            np.asarray(_host(law.quadratic), dtype=np.float32),
+                            np.asarray(_host(law.denominator_rate), dtype=np.float32)))
+                    end = np.asarray(evaluate_boundary_side(
+                        rounded, np.float32(duration))[0], dtype=np.float32)
                 _digest_array(
                     start_frame, f"{name}/{side_name}/value", start)
                 _digest_array(
@@ -252,7 +293,12 @@ def lateral_boundary_prefix_identity(
             "end_frame_sha256": end_frame.hexdigest(),
         })
     return {
-        "schema": LATERAL_BOUNDARY_PREFIX_SCHEMA,
+        "schema": ("gpuwm-lateral-boundary-prefix-v3" if any(
+            getattr(getattr(field, side), "time_law", None) is not None
+            for interval in boundaries.intervals
+            for field in interval.fields.values()
+            for side in ("west", "east", "south", "north"))
+            else LATERAL_BOUNDARY_PREFIX_SCHEMA),
         "spec_bdy_width": boundaries.spec_bdy_width,
         "spec_zone": boundaries.spec_zone,
         "relax_zone": boundaries.relax_zone,
@@ -300,18 +346,16 @@ ADVECTIVE_FORCING_STATE = ("rthften", "rqvften")
 #: state.
 #:
 #: ``ww_pp`` -- the acoustic perturbation eta mass flux Omega'' -- has to
-#: survive a restart (it is the ONE acoustic perturbation field
-#: ``small_step_init`` does not seed, so it carries into every acoustic
-#: loop and reaches the scalars through WRF ``sumflux`` at the specified
-#: lateral boundary) and must NOT be in that identity: it is a view into
-#: the shared dycore workspace, which a child rebuild legitimately
-#: reuses.  Putting it in the identity made the relocation
-#: parent-invariance assertion fire on workspace churn -- a false
-#: positive on a real safety check.
+#: survive a restart. ``small_step_init`` does not seed it, and
+#: ``advance_mu_th`` leaves the forced outer column untouched before WRF
+#: ``sumflux`` reads it. It therefore owns per-domain storage, even in a
+#: tree with a shared dycore workspace. Sharing it formerly let child
+#: work overwrite the parent's retained boundary flux and checkpoint.
 #:
-#: So it rides its own ``acoustic/`` key namespace: written and restored
-#: by ``gpuwm/io/restart.py``, invisible to the ``state/`` key-set
-#: comparison, and invisible to every identity hash.
+#: The existing ``acoustic/`` namespace and exclusion from physical-state
+#: digests are preserved for checkpoint and relocation identity compatibility.
+#: This is independent of allocation ownership: the field is now retained by
+#: the domain, never admitted to the step-local rebuilt workspace.
 CHECKPOINT_ONLY_STATE = ("ww_pp",)
 
 
@@ -319,6 +363,7 @@ __all__ = [
     "ADVECTIVE_FORCING_STATE",
     "CHECKPOINT_ONLY_STATE",
     "LATERAL_BOUNDARY_PREFIX_SCHEMA",
+    "STATE_DERIVED_SETUP_ARRAYS",
     "STATE_SERIALIZED_ATTRS",
     "STATE_SETUP_ARRAYS",
     "STATE_SETUP_SCALARS",

@@ -49,9 +49,11 @@ MET_EM = BUNDLE / "met_em" / "met_em.d01.1974-04-03_12_00_00.nc"
 D04_MET_EM = BUNDLE / "met_em" / "met_em.d04.1974-04-03_12_00_00.nc"
 NAMELIST_WPS = BUNDLE / "namelists" / "namelist.wps"
 
-# Assembly/ratification runs set GPUWM_REQUIRE_CASE_GATES=1 so the bundle
-# oracle gates FAIL instead of silently skipping when the data is absent
-# (the tests then run and fail loudly on the missing files).
+# The `gpu` lane of .github/workflows/ci.yml sets GPUWM_REQUIRE_CASE_GATES=1
+# so the bundle oracle gates FAIL instead of silently skipping when the data
+# is absent (the tests then run and fail loudly on the missing files).  It is
+# the only setter in the tree, and tests/test_ci_workflow.py is what keeps it
+# one rather than none (audit xc-06-04).
 _REQUIRE_GATES = os.environ.get("GPUWM_REQUIRE_CASE_GATES") == "1"
 requires_bundle = pytest.mark.skipif(
     not _REQUIRE_GATES and not (ERA5_NC.is_file() and MET_EM.is_file()),

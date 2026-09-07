@@ -217,7 +217,11 @@ def test_the_declared_interval_selects_the_forcing_window():
     # lane made both genuinely per-domain (a PBL parent carrying a
     # PBL-off child is measured); the bar is unchanged and holds on
     # keys that remain shared-only.
-    ("smdiv", 0.2),          # a live shared dynamics setting
+    # smdiv was the dynamics specimen until the eleven Registry
+    # max_domains numerics became per-domain with the adaptive clock;
+    # damp_opt is a live shared dynamics setting that WRF scopes to the
+    # run, so the bar is unchanged.
+    ("damp_opt", 1),         # a live shared dynamics setting
     ("hill_height", 100.0),  # a live terrain setting
     ("mp_tend_lim", 5.0),    # a shared microphysics clamp
 ])

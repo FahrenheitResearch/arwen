@@ -627,3 +627,73 @@ def test_the_oracle_known_deltas_note_exists_and_the_registry_cites_it():
     option = registry["components"]["microphysics"]["options"]["wdm6-mp16"]
     assert any("docs/wdm6_oracle_known_deltas.md" in warning
                for warning in option["warnings"])
+
+
+@pytest.mark.parametrize("restore_module", ["gpuwm.verify.cases.real74_n5s", "gpuwm.ingest.wrfinput"])
+def test_the_wrfinput_restore_refloods_the_ccn_reservoir_wrf_discards(restore_module):
+    """PAR-MP-WDM6-10: WRF throws wrfinput's QNCCN away; so must the restore.
+
+    ``WDM6_NUMBER_WRFINPUT`` makes QNCCN a REQUIRED member of an mp=16
+    wrfinput, and ``_restore_active_moisture`` copies every mapped field in
+    unconditionally -- over the ``cfg.wdm6_ccn_conc`` fill ``DomainState``
+    performed at allocation, with no later refill anywhere in the tree
+    (``state.nn``'s only other reader is the kernel launch in
+    ``gpuwm/core/wdm6.py``, and ``apply()`` has no first-step branch).
+
+    WRF does the opposite, twice.  ``dyn_em/start_em.F:1750-1774`` writes
+    ``grid%ccn_conc`` into ``scalar(...,p_qnn)`` whenever the field arrives
+    empty -- its WDM6 arm is an explicit NO OP, so ``ccn_conc`` keeps the
+    namelist value -- and ``module_mp_wdm6.F:220-227`` then floods the whole
+    ``nn`` memory window with ``ccn0`` on ``itimestep == 1`` regardless of
+    what the file held.  ``real.exe`` never fills QNCCN
+    (``dyn_em/module_initialize_real.F`` mentions neither ``qnn`` nor
+    ``ccn``), so on the ingest path this test's zeros are the realistic
+    case, and a zero reservoir shuts off ``pcact``/``ncact`` activation --
+    the source term the whole double-moment warm rain is built on.
+
+    The nonzero half of the fixture is the load-bearing one: it fails on a
+    "fill only if the file is empty" repair as well as on no repair at all,
+    which is the mutation this test exists to catch, because WRF's flood is
+    unconditional in the file's value.
+    """
+    from importlib import import_module
+    n5s = import_module(restore_module)
+
+    cfg = _cfg()
+    shape = (cfg.nz, cfg.ny, cfg.nx)
+    raw = {name: np.zeros(shape, dtype=np.float32) for name in
+           ("QVAPOR", "QCLOUD", "QRAIN", "QICE", "QSNOW", "QGRAUP",
+            "QNRAIN", "QNCLOUD", "QNCCN")}
+    raw["QNCLOUD"] = np.full(shape, 3.5e8, dtype=np.float32)
+    state = SimpleNamespace(**{
+        name: np.zeros(shape, dtype=np.float32)
+        for name in ("qv", "qc", "qr", "qi", "qs", "qg", "nr", "nc", "nn")})
+    state.nn0 = np.full(shape, -99., dtype=np.float32)
+
+    n5s._restore_active_moisture(state, raw, cfg, np)
+    np.testing.assert_array_equal(
+        state.nn, np.full(shape, np.float32(cfg.wdm6_ccn_conc)))
+    np.testing.assert_array_equal(state.nn0, state.nn)
+    # Every other mapped field still comes from the file: this reflood is
+    # QNCCN alone, not a blanket discard of the restored moisture.
+    np.testing.assert_array_equal(state.nc, raw["QNCLOUD"])
+    np.testing.assert_array_equal(state.nr, raw["QNRAIN"])
+
+    # A wrfinput that already carries ccn_conc everywhere -- and one that
+    # carries something else -- both land on ccn_conc, as WRF's flood does.
+    raw["QNCCN"] = np.full(shape, 7.5e9, dtype=np.float32)
+    n5s._restore_active_moisture(state, raw, cfg, np)
+    np.testing.assert_array_equal(
+        state.nn, np.full(shape, np.float32(cfg.wdm6_ccn_conc)))
+
+    # mp=10 has no ``nn`` and must not acquire one from this arm.
+    morrison = replace(cfg, mp_physics=10)
+    morr_raw = {name: np.zeros(shape, dtype=np.float32) for name in
+                ("QVAPOR", "QCLOUD", "QRAIN", "QICE", "QSNOW", "QGRAUP",
+                 "QNRAIN", "QNICE", "QNSNOW", "QNGRAUPEL")}
+    morr_state = SimpleNamespace(**{
+        name: np.zeros(shape, dtype=np.float32)
+        for name in ("qv", "qc", "qr", "qi", "qs", "qg", "nr", "ni",
+                     "ns", "ng", "nc")})
+    n5s._restore_active_moisture(morr_state, morr_raw, morrison, np)
+    assert not hasattr(morr_state, "nn")

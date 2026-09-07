@@ -174,6 +174,12 @@ NEAR_SURFACE_NEST_DOWN = MappingProxyType({
 })
 
 
+#: See gpuwm/experiment.py::_OFFLINE_LADDER_DOOR.
+_OFFLINE_LADDER_DOOR = (
+    '  A per-domain vertical ladder IS available on the OFFLINE downscale route: `gpuwm downscale --child-levels N,STRETCH` prepares the child once on the host through a conservative vertical remap (gpuwm/vertical_remap.py) and runs it standalone.'
+)
+
+
 class NestedForecastRefusal(ValueError):
     """A nested free-forecast leg that this module will not assemble."""
 
@@ -338,11 +344,12 @@ def validate_nest_admissibility(child_run, *, parent_run,
 
     if int(child_run.nz) != int(parent_run.nz):
         raise NestedForecastRefusal(
-            f"vertical nesting is not implemented: child nz={child_run.nz} "
-            f"differs from parent nz={parent_run.nz}. The experiment's one "
-            "shared eta ladder is used by every domain, so a fine nest "
+            f"vertical nesting is not implemented on the INLINE nest "
+            f"corridor: child nz={child_run.nz} differs from parent "
+            f"nz={parent_run.nz}. The experiment's one shared eta ladder is "
+            "used by every domain in a live tree, so a fine inline nest "
             "inherits the parent's vertical resolution -- which is often "
-            "what actually limits the result")
+            "what actually limits the result." + _OFFLINE_LADDER_DOOR)
 
     if int(child_run.mp_physics) != int(parent_run.mp_physics):
         raise NestedForecastRefusal(

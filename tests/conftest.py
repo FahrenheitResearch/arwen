@@ -210,6 +210,22 @@ def _register_silent_deselection_guard(config):
         print(f"no_silent_deselection guard NOT LOADED: {error!r}")
 
 
+def _register_silent_skip_guard(config):
+    """Load the default skip guard by path; broken policy cannot read green."""
+    import importlib.util
+    import sys
+
+    path = (pathlib.Path(__file__).resolve().parents[1]
+            / "tools" / "battery" / "no_silent_skip.py")
+    if not path.is_file():
+        raise pytest.UsageError(f"required no_silent_skip guard is missing: {path}")
+    spec = importlib.util.spec_from_file_location("gpuwm_no_silent_skip", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["gpuwm_no_silent_skip"] = module
+    spec.loader.exec_module(module)
+    module.pytest_configure(config)
+
+
 def _tree_under_test():
     """Load ``tools/tree_under_test`` BY PATH, never by name.
 
@@ -254,6 +270,12 @@ def pytest_configure(config):
     # the wrong checkout is the thing the check above refuses.
     if not config.pluginmanager.hasplugin("no_silent_deselection_guard"):
         _register_silent_deselection_guard(config)
+
+    # The other half of the same question.  The guard above asks whether a
+    # listed file still CONTRIBUTES tests; this one asks whether the tests it
+    # contributes still RUN, which is the half a skip walks straight through.
+    if not config.pluginmanager.hasplugin("no_silent_skip_guard"):
+        _register_silent_skip_guard(config)
 
     config.addinivalue_line(
         "markers",
@@ -335,8 +357,9 @@ def _wizard_probe_pinned_to_a_24gib_card(monkeypatch):
     suite (117 of them at the time of writing) would size against
     whatever card the box happens to hold -- or refuse outright on the
     CPU legs -- turning grid dimensions machine-dependent.  The pin is a
-    24 GiB card, the tier the old silent default assumed, so every
-    historical fixture keeps its exact bytes.
+    24 GiB card with that tier's assumed free memory, so historical
+    geometry fixtures keep their exact bytes. Constrained availability
+    is exercised separately by the sizing-authority regressions.
 
     In-process invocations only; a test that drives the real CLI in a
     subprocess bypasses this and must declare its card (or pin its own
@@ -348,7 +371,7 @@ def _wizard_probe_pinned_to_a_24gib_card(monkeypatch):
 
     monkeypatch.setattr(
         domain_wizard, "device_memory_probe_subprocess",
-        lambda **_kwargs: {"free_bytes": 20 * 1024 ** 3,
+        lambda **_kwargs: {"free_bytes": int(domain_wizard.card_assumed_free_gib(24) * 1024 ** 3),
                            "total_bytes": 24 * 1024 ** 3,
                            "profile": None})
 

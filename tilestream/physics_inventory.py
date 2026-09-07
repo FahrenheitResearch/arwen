@@ -275,14 +275,13 @@ def carrier_manifest(state) -> dict[str, object]:
     driver = getattr(state, "physics", None)
     if driver is not None:
         manifest.update(restart._driver_manifest(driver))
-    # The one place the checkpoint set is WIDER than the sweep set.  See
-    # restart.RESTART_ONLY_DRIVER_SLOTS: legacy RRTMG's radiation/o33d_grid
-    # is host memory the adapter recomputes every radiation call and reads
-    # only from a CHILD domain, which streaming refuses.  Subtracted from
-    # both sides at once -- this function builds the store's inventory and
-    # each buffer's -- so the two agree by construction rather than by the
-    # domain and the buffers happening to have fired radiation equally often.
+    # A standalone adapter's host ozone output is restart-only; a tree's
+    # explicit device owner is a swept field under the same checkpoint key.
     for slot in restart.RESTART_ONLY_DRIVER_SLOTS:
+        # A tree's shared ozone field is a real device carrier; standalone
+        # legacy adapter output retains its historical restart-only role.
+        if slot == "radiation/o33d_grid" and getattr(driver, "o3rad", None) is not None:
+            continue
         manifest.pop(slot, None)
     return manifest
 
@@ -417,8 +416,7 @@ def streaming_only_members(state=None) -> tuple[str, ...]:
     keys = tuple(f"scratch/{slot}" for slot in STREAMING_ONLY_SLOTS)
     if state is None:
         return keys
-    pool = getattr(state, "_scratch", {})
-    return tuple(key for key in keys if key[len("scratch/"):] in pool)
+    return tuple(sorted(_restart_module().carried_scratch_manifest(state)))
 
 
 def streaming_manifest(state) -> dict[str, object]:
@@ -624,6 +622,10 @@ def geography_report(state, driver=None, *, max_depth: int = 4) -> dict:
     ``(path, shape, dtype, uniform)``.  ``driver`` deliberately does NOT
     descend into ``driver.state`` (the ``DomainState`` back-reference): those
     arrays are covered by the carrier manifest and by ``setup``.
+    ``cache_snapshots`` separately records owner-bound host cache inputs as
+    ``(path, shape, dtype, nbytes)``; ``cache_snapshot_host_bytes`` counts
+    distinct allocations at their actual dtype. These are pageable host
+    arrays, not device VRAM or the pinned transport arena.
     """
     import cupy as cp
 
@@ -641,6 +643,8 @@ def geography_report(state, driver=None, *, max_depth: int = 4) -> dict:
 
     driver_hits: list[tuple] = []
     output_only: list[tuple] = []
+    cache_snapshots: list[tuple] = []
+    snapshot_ids: set[int] = set()
     if driver is not None:
         carriers = {id(v) for v in carrier_manifest(state).values()}
         seen: set[int] = {id(state)}
@@ -666,6 +670,13 @@ def geography_report(state, driver=None, *, max_depth: int = 4) -> dict:
             members = getattr(obj, "__dict__", None)
             if members is None:
                 return
+            from gpuwm.core.geography_cache import geography_cache_snapshots
+            for name, value in geography_cache_snapshots(obj).items():
+                if id(value) not in snapshot_ids:
+                    snapshot_ids.add(id(value))
+                    cache_snapshots.append((f"{path}.{name}",
+                                            tuple(value.shape), str(value.dtype),
+                                            int(value.nbytes)))
             for key, value in list(members.items()):
                 target = output_only if (depth == 0 and key in skip_names) \
                     else sink
@@ -677,6 +688,8 @@ def geography_report(state, driver=None, *, max_depth: int = 4) -> dict:
         "setup": sorted(setup),
         "driver": sorted(driver_hits),
         "output_only": sorted(output_only),
+        "cache_snapshots": sorted(cache_snapshots),
+        "cache_snapshot_host_bytes": sum(rec[3] for rec in cache_snapshots),
         "scalars": {"has_msf": bool(getattr(state, "has_msf", False)),
                     "rotational": bool(getattr(state, "rotational", False))},
     }

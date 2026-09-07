@@ -1,0 +1,103 @@
+# ArWen terminal workspace
+
+Native Rust terminal interface for the existing ArWen CLI. Opening it starts no computation. Home offers **Choose a forecast mode**, **Open existing**, **Continue forecast**, **Fit starter TOML**, and **Browse case catalog**. The research browser covers 12 weather families, 38 questions, and 114 starting configurations; existing-state choices open their scenario or archived-parent workflow.
+
+On an installed release, run `gpuwm tui`. It uses that installation's Python
+environment for all engine jobs. The native executable travels in the same
+verified Windows/Linux bundle as the other native tools; `gpuwm fetch-bridges`
+installs it when using the universal Python wheel. `gpuwm tui --snapshot
+terminal.html` writes the existing terminal preview without starting a job.
+
+- New forecast asks five essentials (location, source, start cycle, duration, new filename), then shows every setting in an editable summary. Ctrl+A opens that summary early. Its visible source recommendation is read from the installed guided CLI; any source ID or alias can replace it. It collects exact native `domain` arguments, shows them before execution, and opens the emitted TOML with **Review launch plan** selected. The full TOML remains editable, including all settings outside the questions.
+- **Calendar (F3)** in a cycle/start-time question shows the selected source's UTC hours, current forecast horizons, publication guidance and documented archive bounds. Click a day and hour, use arrows/Tab, change month with PgUp/PgDn (Ctrl changes year), or type/paste an exact date. New forecast starts with `latest`: Next opens an asynchronous check through the ordinary acquisition resolver, then **Use date** keeps the exact selected cycle. **Latest complete (F4)** checks required final-hour objects where public probes exist. ERA5 instead says **Latest expected**, accounts for the whole requested analysis window behind its approximate publication delay, and labels recent ERA5T data and account requirements. Unknown archive bounds stay unknown; historical file versions still undergo normal acquisition/compatibility checks. Esc cancels the lookup and preserves the original guide value.
+- Open existing asks what you have: an ArWen TOML file, WRF `real.exe` inputs, or WPS `met_em` inputs. Paths are typed or pasted; the optional browser is separate.
+- Jump directly to a year in the calendar: click **[year]** or press **Y/F2**, type the year, then Enter. **«Year / Year»** moves one year; the month arrows remain available.
+- **K Cases** or **Browse case catalog** on Home opens ZIP, JSON or TOML catalogs. Browse files or paste a path, type to search, and use PgUp/PgDn for additional pages. Open a case, use Tab to select tier/source/output/VRAM fields, and Left/Right to choose a listed tier or initialization. F3 previews the complete selection and notes; **Review creation** shows the exact command. Creation validates native settings and resources, preserves catalog provenance, and opens editable TOML without starting a forecast. A changed catalog or existing destination is refused. `GPUWM_TUI_CASE_CATALOG` can supply an initial catalog path; a source-tree checkout otherwise offers the clearly marked synthetic example.
+- Continue forecast uses the existing `resume --from` checkpoint locator or `sim` prepared-bundle path. An ordinary output or log folder is not treated as a checkpoint.
+- Plan is the real `go --dry-run`. Prepare and run shows the equivalent command before starting the existing engine. Commands use argument arrays, never a shell.
+- **Plot history** reviews a `render --series` request so compatible history files can supply multi-hour accumulations. The native series route keeps distinct runs, domains, grids and lifecycle episodes separate. Requested products still require the relevant fields and a long enough history window.
+- Research-proposal v1 and v2 ZIP catalogs retain their original bytes and source-specific tier geometry and boundary cadence. Import reads `catalog.json` as data; it does not execute the archive's authoring scripts.
+- **B Plots** (or **Ctrl+P**, including from the TOML editor) chooses generated pictures. The TUI starts with **General: 25 plots**, with **Tornado / severe**, **Hurricane / tropical**, **Snow / winter**, **Rain / flooding**, and **Wind** presets. **Customize** loads the installed renderer's actual catalog in the background: type to search names or labels, then click a checkbox or press Space. The selected count and scrollable review keep every choice visible. **All** requests the available catalog; **None** skips pictures. **Edit list** accepts advanced comma-separated selectors, including stored fields such as `var:SNOWH`.
+- **Save plots** writes only `<configuration>.arwen-plots.json` beside the TOML. Reopening the configuration restores the exact selection; Save As carries an explicitly saved choice to the new file unless that destination already has plot settings. Cancelling changes nothing. Invalid or externally changed settings produce an error rather than silently reverting to defaults. Plot choices never change physics, grid, timing, history fields, or output cadence.
+- Plan/Run pass the selection through `go --products`. Both prepared-run entry points pass `sim --render-products`, which draws the **first committed history frame only** while integration continues; it does not render every saved frame. Ordinary CLI defaults stay unchanged: Go uses all products and Sim leaves rendering off. A preset requests products; saved fields, physics diagnostics and available times determine which can actually be drawn. The renderer names missing inputs or history restrictions in the log. Tornado products describe the environment and storm structure, and rainfall products do not predict flood depth.
+- **R Nodes** (or **Ctrl+R** from the editor) controls an existing ArWen installation on a Linux machine over SSH. Add its SSH alias or `user@host`, absolute Python path, existing workspace and configuration. The optional output parent must already exist; each launch gets a new child directory. Geography, prepared-bundle and WPS namelist fields are paths on the node. Choose an existing prepared bundle to reuse validated inputs without fetching/preparing another copy. Identity and SSH config fields refer to files on this computer. **Save** saves and selects the profile; **Connect** reports the remote installation; **Start** validates the remote inputs and opens an exact launch review. The header names the selected target. Select **Local computer** to run a local configuration again.
+- Node jobs keep running when the TUI closes, the laptop restarts, or SSH disconnects. **Jobs** lists saved runs; **View** reconnects by job ID, reads bounded logs and refreshes the last known state. A connection failure leaves that state visible and does not claim the simulation stopped. **Stop** has an explicit review and reports termination only after the node confirms it. **Resume** resolves a complete, validated checkpoint from the selected job and reviews a new output directory. Configurations, companion input files and checkpoint members are checked against their review hashes before starting. A failed/uncertain start is never automatically retried; refresh Jobs before starting another run.
+- Node profiles and plot preferences are shared across launch folders: `%APPDATA%/ArWen/nodes.json` on Windows, or `$XDG_CONFIG_HOME/arwen/nodes.json` (default `~/.config/arwen/nodes.json`) on Linux. Existing `.arwen-nodes.json` profiles are imported once with the original file preserved. **Delete** reviews removing a saved profile; remote jobs and files remain untouched. **L Local computer** returns to the local target. Profiles store paths and reconnect IDs, never passwords or key contents. SSH uses installed OpenSSH, existing keys/agent, and strict known-host verification. Both machines require ArWen with `gpuwm remote` support and the remote configuration's input files already on the node.
+- **D Domains** opens guided controls for each existing domain: grid size, refinement and time-step ratios, parent placement, delayed UTC start, storm/vortex following, triggered activation, retirement and re-arm. Click a field to edit; signal and policy choices have clickable buttons. **Apply to draft** changes only the reviewed fields in the complete TOML. Comments and unrelated settings remain intact. Save explicitly with Ctrl+S, then F5/F6 validates the whole configuration through the existing engine. Applying a disabled policy explicitly removes that policy table; cancelling leaves the draft unchanged.
+- Changing a signal or trigger keeps all entered values visible. The form names incompatible fields and requires you to clear them explicitly with Ctrl+U before applying. UH following requires a reflectivity fallback threshold; threshold units and the full scientific configuration are checked by the engine.
+- New forecast exposes **Root grid spacing** and **Nested grid ratios** beside the essential questions, with a live root-to-child spacing preview. A centre point sizes a rectangular grid to the GPU budget; a GeoJSON footprint preserves the requested area. Ratios refine spacing and do not independently choose geographic extent. **Domains → Downscale an archived forecast** opens the existing offline `downscale` route, including parent physics evidence, child surface warm start, boundary cadence, geometry and output paths. Its **plan** action uses `--dry-run` and may write a derived configuration/report into the new output directory; **run** starts the offline child only after command review. No scientific preset is added by the domain editor.
+
+Build with Rust 1.94 or newer, using the checked-in dependency mirror:
+
+```text
+cd tools/arwen-tui
+cargo build --release --locked --offline
+```
+
+Run in a Windows or Linux terminal with the Python environment containing ArWen:
+
+```text
+./target/release/arwen-tui --python PATH_TO_PYTHON
+./target/release/arwen-tui --python PATH_TO_PYTHON --config experiment.toml --output runs
+```
+
+All arguments are optional. Python defaults to `GPUWM_TUI_PYTHON`, then `python`. `gpuwm.tui_worker` must be available in that environment. For development, put the repository root on `PYTHONPATH`. The executable is native Rust; its commands share the installed ArWen Python/engine backend.
+
+| Key | Action |
+| --- | --- |
+| H | Home: New / Open / Continue |
+| K outside the editor | Case catalog browser, source/tier selection, and reviewed editable configuration creation |
+| D / Ctrl+D | Guided domains, tracking, lifecycle and historical downscaling; Ctrl+D also works from the TOML editor |
+| B / Ctrl+P | Plot presets, searchable product checklist, complete review, and persistent selection |
+| R / Ctrl+R | Select Local computer or a saved Linux node; add/edit SSH profiles and control node jobs |
+| In Nodes | N Add, E Edit, Enter Use, P Connect, J Jobs, S Start review, B Plots, L Local computer, Delete reviewed profile removal; Ctrl+S saves a profile |
+| In a node job | R Refresh, X review Stop, C review Resume; Esc returns without stopping the job |
+| In the plot picker | Type to search, Space/click to toggle, Ctrl+U clears search, F4 reviews the selected list |
+| F2 in domain fields | Apply the reviewed values to the in-memory draft; Ctrl+Enter remains an alias |
+| N / O / C on Home | New questions / choose existing inputs / continue |
+| S / P on Home | Live source catalog / physics suite catalog from the engine |
+| Enter / Shift+Tab in questions | Next / previous essential, or return after editing one setting |
+| Ctrl+A in questions | Open the complete editable settings summary |
+| Ctrl+U in a question | Clear the current value |
+| F2 in questions | Source or physics catalog, or downscale CLI help; Esc returns to saved answers |
+| F3 in a cycle/start-time question | Source-aware UTC calendar; F4 checks Latest; Enter keeps the selected date |
+| O / Ctrl+O outside Home | Paste a TOML configuration path |
+| F2 outside questions | Optional TOML file browser |
+| E / Ctrl+S / Esc | Complete TOML editor / save with backup / overview |
+| F3 | Choose output directory |
+| F5 | Check local configuration/resources, or connect to the selected node |
+| F6 | Review the local plan or a new node launch without forecasting |
+| F7 | Review and start Prepare and run |
+| F4 / F8 | Choose existing preparation / review its launch |
+| F9 / F10 | Choose Python / check installation |
+| F11 | Choose geography for Plan/Run |
+| F12 | Save As to a new file, including an unfinished draft |
+| L / End | Command log / follow latest output |
+| Click status / Ctrl+L | Scrollable command/error details, saved log path, and log controls |
+| C in Details | Copy the complete details text, including the saved log path |
+| Y in Details | Copy the complete saved log (up to 16 MiB) |
+| X | Confirm stopping the owned command |
+| Q | Close interface; running work can continue |
+| F1 | Help |
+
+The initial 12 km spacing and 6 hour duration are visible editable starting values. Creation preserves native defaults when an optional argument is empty; the source is always explicit. Changing a source does not make the TUI silently rewrite a physics choice. Unknown source aliases and all additional CLI arguments reach the native parser; full TOML editing is available before forecasting. Existing TOML paths are refused by New rather than overwritten.
+
+Logs live under the output directory in `.arwen-tui/<job-id>`. The worker records its exit code in `result.json`; missing or inconsistent completion records cannot produce a successful UI outcome. Quit offers **Stay** or **Stop and quit** while a local command is active, then waits for worker termination. Linux Stop first allows five seconds for interruption cleanup, then forces termination; a second confirmed Stop forces it immediately. Windows Stop terminates the owned JobObject. Stop keeps partial output and does not promise a new checkpoint. Remote jobs remain managed on their node when the local interface closes.
+
+**Ctrl+Q** opens Quit from every screen, including forms and terminals below the 65 × 20 editing minimum. **Ctrl+C** reviews stopping an active local command. **F1 / ?** opens help over a form; Esc returns to the same answers. Esc from an ordinary setup retains its answers for this session: press Esc again or reopen the same task to resume. In Settings, **Ctrl+Z Undo**, **Ctrl+Y Redo**, and **Ctrl+U Discard** also have visible buttons. Discard restores the saved configuration and can itself be undone. **F12 Save As** is the portable save-as shortcut. **F2 Apply to draft** works from domain forms. With a nonempty `NO_COLOR`, the workspace keeps bold, underline and explicit selection markers while using the terminal's default colors.
+
+In Research, type the displayed method such as `archived-parent downscale` to filter. **Ctrl+D** opens the selected family's archived-parent guide; **Ctrl+N** opens a family starter. **F4 Details** opens a full scrollable description at every supported width. Start with Auto or profile `8` for an 8 GiB target; larger profiles are marked `fit not checked`. Entering downscale GPU capacity or child dimensions disables automatic sizing. Ordinary guides reach review without a raw-argument prompt. All settings → Advanced CLI options → `on` exposes exact arguments; turn it off to remove those arguments from the request.
+
+The latest command remains **FAILED**, **INTERRUPTED**, or **COMPLETED** in the header after it exits. Click the yellow summary or **Ctrl+L Details** to read its diagnostics. The internal views retain up to 1,000 recent lines / 128 KiB and show the exact saved `job.log` path; Home/End, scroll buttons, and the mouse wheel navigate details. **C Copy details** copies all the details, including text outside the viewport. **Y Copy log** reads the complete saved file, up to 16 MiB; it reports an error if the file is missing, too large, or cannot be copied. Both actions display success or failure inside Details and preserve the command's failure status. **L View log** returns to recent output.
+
+A confirmed GPU memory refusal offers **Fit domain** and **Tile streaming**. Fit opens the reviewed fitting workflow with the current starter, projection center, and start time prefilled; it can resize the domain. Tile streaming preserves the domain area, resolution, timing, and physics. Its short review contains the current configuration, a new sibling filename, and mode `auto` (stream when needed) or `on` (force streaming). The existing engine plans tile dimensions and checks GPU and system RAM; no tile size is guessed by the UI. Confirming **Create configuration** invokes `domain-tiles --write`, which creates a new configuration only after validation. Use Check and Plan before running. Neither recovery action saves or starts work merely by opening it. Save an unsaved draft first. These choices are hidden for unrelated errors, unvalidated command completion, and a different or newly saved configuration. Host forcing RAM refusals keep their own diagnostics because GPU tiling cannot reduce source decode memory.
+
+Check also offers recovery when it returns exit 1 because a named allocation-budget gate failed alongside the peak-memory warning. That case requires a matching worker receipt, the explicit memory-preflight failure, and only recognized memory failure lines. Mixed failures retain their diagnostics without suggesting that resizing solves the unrelated problem.
+
+Windows copying uses the native Unicode clipboard and supports Windows Terminal/ConPTY. Because the TUI captures mouse input for its controls, hold **Shift** while dragging to select text in [Windows Terminal](https://learn.microsoft.com/en-us/windows/terminal/selection). On Linux, copying uses an available desktop clipboard helper: `wl-copy` on Wayland, or `xclip`/`xsel` on X11. If no helper or desktop clipboard is available, Details explains the failure; **Home** shows the saved log path so you can open it in a text editor. Clipboard helpers have a bounded timeout. No clipboard action runs a forecast, changes a configuration, or reads the previous clipboard contents.
+
+`--snapshot FILE.html` writes a static render of the same Ratatui widgets without starting a command. It is a preview tool, not a browser interface.
+
+For Rust tests, set `GPUWM_TUI_TEST_PYTHON` to the absolute Python executable in the ArWen environment, then run `cargo test --locked --offline`. The suite exercises actual owned worker processes and native guided configuration emission, without launching a forecast.
+
+Choose **Fit starter TOML** on Home (or press T) to size an editable starter through the ordinary domain-fit command. Exact scientific settings stay in the template. Review the settings and command; it creates a new fitted configuration and opens Review launch plan. The log records the exact field changes. This does not launch a forecast.

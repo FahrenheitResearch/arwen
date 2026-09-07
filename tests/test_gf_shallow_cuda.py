@@ -1,13 +1,21 @@
 """Device acceptance gate for the Grell-Freitas shallow scheme kernel.
 
-Same bar as tests/test_gf_shallow_parity.py and one notch past it: bitwise
-identity with the WRF v4.6.1 per-case capture (gf-shallow-levels.csv /
-gf-shallow-surface.csv, 18 cases) with fzu COMPUTED on the device.  The CPU
-reference needs the oracle's captured fzu to be bitwise -- its modelled
-tgammaf sits 2-4 ULP off glibc here and the xkshal = (xaa0-aa1)/mbdt
-cancellation turns that into 8.4e-3 relative in the shallow mass flux.
-gfk_tgamma IS glibc, so this gate runs the chain once, unpinned, and
-asserts every word.
+Same bar as tests/test_gf_shallow_parity.py: bitwise identity with the WRF
+v4.6.1 per-case capture (gf-shallow-levels.csv / gf-shallow-surface.csv, 18
+cases) with fzu PINNED from that capture, exactly as the CPU suite pins it.
+
+WHY IT IS PINNED, AND WHAT CHANGED AT 2.6.6.  Through 2.6.5 gfk_tgamma was a
+transcription of glibc 2.39's LGPL e_gammaf_r.c, so the kernel returned
+glibc's own words and this gate could run the chain unpinned -- the notch
+past the CPU suite.  The transcription is gone (an Apache-2.0 distribution
+cannot carry it) and gfk_tgamma is now ArWen's own CORRECTLY ROUNDED gamma,
+which glibc's is not on 39.44 per cent of [0.25, 36].  The shallow arm is
+the worst-exposed one: beta = 2.5 makes all three gamma calls live, and the
+xkshal = (xaa0-aa1)/mbdt cancellation turns a last-bit fzu change into
+8.4e-3 relative in the shallow mass flux.  So fzu is pinned here, the
+divergence is recorded in docs/gf_gamma_known_delta.md, and gamma itself is
+graded against a 113-bit oracle in
+tests/test_gf_gamma_correctly_rounded.py.
 
 OWNER RULING, and the ledger entry this file carries
 ----------------------------------------------------
@@ -59,6 +67,7 @@ from gpuwm.verify.gf_oracle import (                          # noqa: E402
 )
 from gf_field_lists import (                                  # noqa: E402
     SH_IN_LEV, SH_IN_SCA, SH_ISCA_FIELDS, SH_LEV_FIELDS, SH_SCA_FIELDS,
+    captured_fzu,
 )
 
 NZ = GF_NZ
@@ -86,9 +95,10 @@ def want(fixture):
     return want_s, fixture.shallow_levels
 
 
-def _launch(module, fixture, k22_wrf_faithful):
+def _launch(module, fixture, k22_wrf_faithful, pin_fzu=True):
     lv = fixture.stage_levels
     sf = fixture.stage_surface
+    _, _, fzu_sh = captured_fzu(fixture)
     col_of_case = {}
     for ci, (case, idx, arm) in enumerate(fixture.key):
         col_of_case.setdefault(int(case), ci)
@@ -101,7 +111,10 @@ def _launch(module, fixture, k22_wrf_faithful):
         for j, name in enumerate(SH_IN_LEV):
             lvin[case - 1, j, :] = lv[name][ci]
         for j, name in enumerate(SH_IN_SCA):
-            scin[case - 1, j] = 0.0 if name == "fzu_sh" else sf[name][ci]
+            if name == "fzu_sh":
+                scin[case - 1, j] = fzu_sh[ci] if pin_fzu else 0.0
+            else:
+                scin[case - 1, j] = sf[name][ci]
         iin[case - 1] = int(sf["kpbli"][ci])
     d_lv = cp.asarray(np.ascontiguousarray(lvin))
     d_sc = cp.asarray(np.ascontiguousarray(scin))
@@ -121,7 +134,7 @@ def _launch(module, fixture, k22_wrf_faithful):
 
 @pytest.fixture(scope="module")
 def stage(module, fixture):
-    """WRF-faithful k22, fzu computed on the device."""
+    """WRF-faithful k22, fzu pinned from the WRF capture."""
     return _launch(module, fixture, 1)
 
 
@@ -165,15 +178,53 @@ def test_shallow_int_field_exact(stage, want, field):
 
 
 @pytest.mark.gpu
-def test_sh_fzu_needed_no_pin(stage, want):
-    """The shallow arm's fzu is WORSE for a modelled gamma than the deep
-    arm's (beta = 2.5 makes all three tgammaf calls live) and the CPU
-    reference carries a measured 4-ULP budget for it.  The device computes
-    glibc's own words, so the budget here is zero, asserted bitwise."""
+def test_the_sh_fzu_pin_was_honoured(stage, want):
+    """The override is READ, so every other assertion here is not standing
+    on a silent no-op.
+
+    This replaces ``test_sh_fzu_needed_no_pin``, which asserted that the
+    device COMPUTED glibc's own sh_fzu with no override.  That was true only
+    while gfk_tgamma was a transcription of glibc's LGPL e_gammaf_r.c; it is
+    false now, deliberately, and docs/gf_gamma_known_delta.md is the record.
+    What is asserted instead is that the kernel reports back the word it was
+    handed, which is what makes the 18-case bitwise result above mean
+    something."""
     j = SH_SCA_FIELDS.index("sh_fzu")
     wantf = np.array([np.float32(v) for v in want[0]["sh_fzu"]],
                      dtype=np.float32)
     _assert_bit_exact(stage["sca"][:, j], wantf, "sh_fzu")
+
+
+@pytest.mark.gpu
+def test_the_unpinned_shallow_fzu_is_the_documented_divergence(module,
+                                                               fixture,
+                                                               want):
+    """Negative control for the pin: computing sh_fzu instead of pinning it
+    moves it away from WRF, which is the known delta, not a fault.
+
+    If this ever stops firing, gamma has gone back to reproducing glibc's
+    tgammaf and the licence position has silently changed -- read
+    docs/gf_gamma_known_delta.md before believing it.  The bound is asserted
+    too: the shallow arm's alpha and beta stay inside the interval gamma is
+    proven correctly rounded over, so no case may move by more than the
+    4-ULP budget the CPU suite already carries for fzu."""
+    free = _launch(module, fixture, 1, pin_fzu=False)
+    j = SH_SCA_FIELDS.index("sh_fzu")
+    got = free["sca"][:, j].copy().view(np.uint32)
+    wantf = np.array([np.float32(v) for v in want[0]["sh_fzu"]],
+                     dtype=np.float32)
+    wantw = wantf.copy().view(np.uint32)
+    live = wantf != np.float32(0.0)     # 0 means the PDF never ran on that case
+    assert int(live.sum()) == 16, int(live.sum())
+    d = np.abs(got[live].astype(np.int64) - wantw[live].astype(np.int64))
+    # MEASURED on the host harness (tools/gf_wrf461_oracle/gf_host_harness.cpp
+    # built as C++, no GPU): 12 of the 16 live cases move, worst 4 ULP, and
+    # the shallow mass flux moves at worst 0.839 per cent, median 0.366.
+    assert int((d != 0).sum()) == 12, int((d != 0).sum())
+    assert int(d.max()) <= 4, (
+        f"sh_fzu moved by {int(d.max())} ULP, past the 4-ULP budget "
+        f"tests/test_gf_shallow_parity.py carries; re-measure before "
+        f"accepting it")
 
 
 @pytest.mark.gpu

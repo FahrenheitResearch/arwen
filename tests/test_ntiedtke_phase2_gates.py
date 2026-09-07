@@ -384,26 +384,34 @@ def test_the_optional_tendency_components_branch_for_16():
 
 
 def test_the_prepared_cache_identity_needs_no_scheme_entry():
-    """RESOLVED, and it is NOT a gap -- checked rather than assumed.
-
-    The standing rules' Phase 2 definition names "the prepared-cache
-    identity fields accepting cu_physics = 16", and neither session had
-    examined it. It turns out to be field-generic:
-    prepared_domain_config_identity is ``asdict(domain_config)``, the whole
-    RunConfig serialized, compared by strict equality. ``cu_physics`` is
-    already one of those fields, so 16 needs no entry -- and a tree
-    prepared at 3 correctly refuses to run at 16.
-
-    Pinned so that if the identity ever becomes a scheme TABLE, this
-    conclusion stops being true and someone finds out.
-    """
-    import inspect
+    """Full domain serialization binds the scheme and every other run field."""
+    from dataclasses import asdict, replace
+    from datetime import datetime, timedelta
+    from gpuwm.config import RunConfig
+    from gpuwm.experiment import DomainConfig
     from gpuwm.ingest import prepared_cache
-    src = inspect.getsource(prepared_cache.prepared_domain_config_identity)
-    assert "asdict(domain_config)" in src, (
-        "the prepared-cache identity is no longer a generic asdict of the "
-        "domain config. If it became a per-scheme table, cu_physics = 16 "
-        "needs an entry and this is now a real Phase 2 item.")
+
+    run = RunConfig(nx=8, ny=8, nz=20, dx=4500., dy=4500., ztop=20000.,
+        dt=20., run_seconds=0., moist=True, mp_physics=10, cu_physics=3,
+        cudt_minutes=0., sf_sfclay_physics=1, sf_surface_physics=2,
+        bl_pbl_physics=1)
+    start = datetime(2026, 8, 29, 1)
+    domain = DomainConfig(2, 1, 10, 10, 3, 3, 300., run, start_time=start)
+    identity = prepared_cache.prepared_domain_config_identity
+    compare = prepared_cache.compare_prepared_domain_config
+    cached = identity(domain)
+    assert cached["run"] == asdict(run)
+    assert cached["start_time"] == start.isoformat()
+    assert compare(cached, identity(domain)) == ([], [])
+
+    new_scheme = identity(replace(domain, run=replace(run, cu_physics=16)))
+    assert new_scheme["run"] == {**asdict(run), "cu_physics": 16}
+    assert compare(cached, new_scheme) == ([], ["run.cu_physics"])
+    # A selected-field or per-scheme serializer cannot drop unrelated
+    # trajectory controls or the newly serialized delayed-domain date.
+    changed = identity(replace(domain, run=replace(run, dt=10.),
+        start_time=start + timedelta(hours=1)))
+    assert compare(cached, changed) == ([], ["run.dt", "start_time"])
 
 
 def test_adding_16_did_not_reparent_the_grell_key_check():

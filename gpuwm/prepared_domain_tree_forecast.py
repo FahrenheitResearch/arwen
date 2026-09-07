@@ -18,7 +18,8 @@ consent gates.
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
+from copy import copy
 from datetime import datetime, timedelta
 import hashlib
 import importlib.util
@@ -40,10 +41,15 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
+from gpuwm.forecast_initialization import TreeInitialization  # noqa: E402
 from gpuwm import __version__  # noqa: E402
+from gpuwm import prepared_single_domain_forecast as prepared_single  # noqa: E402
 from gpuwm.certify.capsule import emit_run_capsule  # noqa: E402
 from gpuwm.spectral_seam import (  # noqa: E402
     seam_capsule_receipts as _seam_capsule_receipts,
+)
+from gpuwm.core.adaptive_clock import (  # noqa: E402
+    NestDivideRefusal,
 )
 from gpuwm.core import streaming  # noqa: E402
 from gpuwm.core.microphysics_transition import (  # noqa: E402
@@ -137,12 +143,12 @@ _HIERARCHY_DOCUMENTS = (
         "filename": "proof.json",
         "schema": "gpuwm-mapped-native-hierarchy-proof-v1",
         "status": "READY_NOT_YET_STOCK_WRF_GATED",
-        "source": "20crv3",
+        "source": "mapped",
     },
 )
-SUPPORTED_SOURCES = tuple(
-    dict.fromkeys(entry["source"] for entry in _HIERARCHY_DOCUMENTS)
-)
+SUPPORTED_SOURCES = tuple(sorted(
+    {entry["source"] for entry in _HIERARCHY_DOCUMENTS}
+    | prepared_single._MAPPED_SOURCES))
 ARTIFACT_RECEIPT_SCHEMA = "gpuwm-native-hierarchy-artifact-build-v1"
 ARTIFACT_MANIFEST_SCHEMA = "gpuwm-native-domain-artifacts-v1"
 _HEX = frozenset("0123456789abcdef")
@@ -208,7 +214,8 @@ def _without_forecast_stop(exp):
     exceptions explicit prevents a newly introduced control from silently
     falling outside the restart-extend identity.
     """
-    value = _strict_json(asdict(exp))
+    from gpuwm.experiment import experiment_config_document
+    value = _strict_json(experiment_config_document(exp))
     if not isinstance(value, Mapping) or "run_seconds" not in value:
         raise ValueError(
             "sealed extension identity requires ExperimentConfig.run_seconds")
@@ -549,6 +556,29 @@ class PreparedTreeInputs:
     statics_corridor: object | None = None
     #: The corridor cache file, for the unchanged-during-run re-hash.
     statics_corridor_cache_path: Path | None = None
+    mapped_authority_paths: Mapping[str, Path] = MappingProxyType({})
+
+
+def _prepared_planning_nodes(inputs):
+    """Price adaptive halos from the statics the cache restore will install.
+
+    Store-first restores allocate from this decision before a full GPU state
+    exists. Supply the complete host geometry now so their acoustic reach is
+    the same as the live clock's, including maxima outside the first row slab.
+    """
+    exp = inputs.experiment
+    nodes = streaming._config_tree_nodes(exp.domains)
+    bundles = {bundle.grid_id: bundle for bundle in inputs.domains}
+    for node in nodes:
+        if (node.cfg.run.use_adaptive_time_step
+                and streaming.options_for_domain(node.cfg, exp.tiles).enabled):
+            static = bundles[node.cfg.grid_id].static_fields
+            # DomainState.set_map_coriolis installs float32 values; rounding
+            # here must agree at acoustic substep thresholds as well.
+            node.state = SimpleNamespace(
+                msfu=np.asarray(static["MAPFAC_U"], dtype=np.float32),
+                msfv=np.asarray(static["MAPFAC_V"], dtype=np.float32))
+    return nodes
 
 
 def _domain_rows(exp) -> list[dict[str, object]]:
@@ -604,7 +634,7 @@ TREE_RESTART_IDENTITY_COMPONENTS = (
 
 
 def tree_restart_identity_components(
-    inputs, runtime_identity
+    inputs, runtime_identity, initialization=None
 ) -> dict[str, object]:
     """The named components whose digest is the tree restart fingerprint.
 
@@ -625,7 +655,9 @@ def tree_restart_identity_components(
         "preparation_receipt_sha256":
             inputs.authority_sha256["preparation_receipt"],
         "domain_cache_content_sha256": {
-            f"d{bundle.grid_id:02d}": bundle.cache_reader.content_sha256
+            f"d{bundle.grid_id:02d}": (
+                bundle.cache_reader.content_sha256 if initialization is None
+                else initialization.domain_content_sha256(bundle))
             for bundle in inputs.domains
         },
         "execution_plan": _plan_restart_identity(inputs.execution_plan),
@@ -765,7 +797,11 @@ def _load_hierarchy_document(prepared_root: Path, expected_sha256: str):
                 f"prepared root {entry['filename']} is not a "
                 f"{entry['status']} {entry['source']} hierarchy"
             )
-        return candidate, document, entry["source"]
+        source = entry["source"]
+        if source == "mapped":
+            from gpuwm.stage_cli import packaged_source_of
+            source = packaged_source_of(prepared_root) or "mapped"
+        return candidate, document, source
     looked_for = ", ".join(
         sorted({e["filename"] for e in _HIERARCHY_DOCUMENTS}))
     if not seen:
@@ -893,6 +929,42 @@ def _validate_vertical(reader: PreparedCacheReader, exp, grid_id: int) -> None:
         raise ValueError(f"d{grid_id:02d} prepared p_top differs from the experiment")
 
 
+def _validate_delayed_prepared_geometry(exp) -> None:
+    """A dated cache needs the same fixed parent ground it was built on."""
+    from gpuwm.experiment import delayed_domain_ids
+    from gpuwm.static.corridor import moving_grid_ids
+
+    movers = moving_grid_ids(exp)
+    for gid in delayed_domain_ids(exp):
+        parent_id = exp.domain(gid).parent_id
+        while parent_id:
+            if parent_id in movers:
+                raise ValueError(
+                    f"prepared delayed child d{gid:02d} has moving ancestor "
+                    f"d{parent_id:02d}; its dated analysis must be prepared "
+                    "on the ancestor's live activation footprint, which "
+                    "this fixed prepared cache does not supply")
+            parent_id = exp.domain(parent_id).parent_id
+
+
+def _validate_delayed_prepared_time(exp, domain, reader, receipt) -> None:
+    """Require an owned child analysis, never infer its date from the root."""
+    if exp.domain_start_offset_exact(domain.grid_id) == 0:
+        return
+    expected = exp.domain_start_time(domain.grid_id).isoformat()
+    stamps = {
+        "prepared cache initial_valid_time": reader.header.get(
+            "metadata", {}).get("user", {}).get("initial_valid_time"),
+        "domain receipt valid_time": receipt.get("valid_time"),
+    }
+    for label, value in stamps.items():
+        if value != expected:
+            raise ValueError(
+                f"d{domain.grid_id:02d} {label} {value!r} differs from "
+                f"its delayed start_time {expected}; prepare this child "
+                "from the analysis at its activation time")
+
+
 def preflight_prepared_tree(
     *,
     prepared_root: Path,
@@ -916,6 +988,24 @@ def preflight_prepared_tree(
     if _sha256(experiment_config) != experiment_config_sha256:
         raise ValueError("experiment config differs from --experiment-config-sha256")
 
+    mapped_paths = {}
+    mapped_authority = None
+    mapped_manifest = None
+    mapped_files = {}
+    if prepared_source in prepared_single._MAPPED_SOURCES:
+        manifest_path = _require_file(
+            prepared_root / "source-evidence" / "input-manifest.json",
+            "mapped input manifest")
+        mapped_manifest = _json_object(manifest_path, "mapped input manifest")
+        manifest_digest = _sha256(manifest_path)
+        mapped_files, _ = prepared_single._manifest_file_specs(
+            prepared_source, mapped_manifest, None, preparation)
+        paths, mapped_authority, _ = prepared_single._validate_packaged_mapped_evidence(
+            prepared_root=prepared_root, proof=preparation,
+            manifest=mapped_manifest, manifest_sha256=manifest_digest,
+            experiment_config=None, wps_namelist=None, source=prepared_source)
+        mapped_paths = {"mapped_manifest": manifest_path, **paths}
+
     exp = load_experiment(experiment_config)
     if len(exp.domains) < 2:
         raise ValueError("prepared domain-tree runner requires at least two domains")
@@ -926,17 +1016,7 @@ def preflight_prepared_tree(
     # nest.
     from gpuwm.experiment import refuse_unrouted_spawn
     refuse_unrouted_spawn(exp, "prepared domain-tree")
-    # Same governance, same position, different capability: this route
-    # restores every domain from a prepared cache and marks it started,
-    # so it holds no activation context and no on_domain_start callback.
-    # A delayed child would sit at tick 0 while its parent advanced and
-    # the run would die at the first period boundary with a bare
-    # "tick-exact sync violated" traceback.  Task #205 fixed the
-    # activation-epoch REFL_10CM stash that killed delayed activation on
-    # the experiment-tree route; THIS shape is a different, still
-    # unimplemented one, and it says so by name.
-    from gpuwm.experiment import refuse_delayed_activation
-    refuse_delayed_activation(exp, "prepared domain-tree")
+    _validate_delayed_prepared_geometry(exp)
     # NO streaming refusal for [tiles]: this route wires a streamed-domain
     # builder (streaming.builders_for_tree, below), so mode = 'on' is
     # supported.  The refusal that stood here was written before the wiring
@@ -966,13 +1046,14 @@ def preflight_prepared_tree(
         # wires.  A bundle prepared without one still refuses -- a
         # config that says "follow the storm" must not integrate as a
         # silently static nest.
-        if int(exp.relocation.grid_id) not in {
-                int(domain.grid_id) for domain in exp.domains}:
+        from gpuwm.static.corridor import moving_grid_ids
+        unknown_movers = moving_grid_ids(exp) - {
+            int(domain.grid_id) for domain in exp.domains}
+        if unknown_movers:
             raise ValueError(
-                f"[relocation] names grid_id = {exp.relocation.grid_id}, "
-                "which is not a domain of this experiment")
+                f"follow names grid_id(s) {sorted(unknown_movers)} "
+                "which are not domains of this experiment")
         corridor_set = preparation.get("statics_corridor")
-        corridor_label = f"d{int(exp.relocation.grid_id):02d}"
         if not isinstance(corridor_set, Mapping):
             raise ValueError(
                 "[relocation] configures a follow source, but this "
@@ -995,8 +1076,7 @@ def preflight_prepared_tree(
         # as a KeyError mid-run instead of a named refusal at the door.
         from gpuwm.static.corridor import relocating_subtree_grid_ids
         needed = [f"d{gid:02d}"
-                  for gid in relocating_subtree_grid_ids(exp)] or [
-                      corridor_label]
+                  for gid in relocating_subtree_grid_ids(exp)]
         missing = [label for label in needed
                    if not isinstance(corridor_domains, Mapping)
                    or label not in corridor_domains]
@@ -1110,6 +1190,18 @@ def preflight_prepared_tree(
                 "namelist_sha256",
             )
         }
+    if mapped_authority is not None:
+        # The original configuration's digest is preparation identity. The
+        # current forecast may extend its stop time; typed per-domain checks
+        # below still compare every setting which changes the prepared state.
+        expected_authority = {
+            "bridge_manifest_sha256": manifest_digest,
+            "source_manifest_sha256": manifest_digest,
+            "namelist_sha256": preparation["execution_inputs"][
+                "experiment_config"]["sha256"],
+        }
+        if authority != expected_authority:
+            raise ValueError("mapped hierarchy authorities differ from the preparation")
     for label, value in authority.items():
         authority[label] = _digest(value, label)
 
@@ -1187,6 +1279,13 @@ def preflight_prepared_tree(
             "grid_id"
         ) != int(domain.grid_id):
             raise ValueError(f"{label} source identity/grid binding differs")
+        if mapped_authority is not None:
+            prepared_single._validate_source_identity(
+                prepared_source, source_identity, manifest_digest, mapped_files,
+                preparation, layout="mapped-hierarchy-d01-v1",
+                mapped_authority=mapped_authority, grid_id=int(domain.grid_id),
+                experiment_config=experiment_config,
+                experiment_config_sha256=experiment_config_sha256)
         normalized_source = dict(source_identity)
         normalized_source.pop("grid_id")
         if common_source_identity is None:
@@ -1195,6 +1294,7 @@ def preflight_prepared_tree(
             raise ValueError("prepared domain source identities differ")
 
         reader = PreparedCacheReader(cache, expected_identity=identity)
+        _validate_delayed_prepared_time(exp, domain, reader, domain_receipt)
         verified = reader.verify_all()
         if verified.get("content_sha256") != header.get("content_sha256"):
             raise ValueError(f"{label} cache content identity differs")
@@ -1280,6 +1380,9 @@ def preflight_prepared_tree(
                 [f"d{grid_id:02d}"]["cache"]["path"])
             for grid_id in sorted(statics_corridor)]
     interval_hours = forcing_hours[1] - forcing_hours[0]
+    from gpuwm.experiment import validate_boundary_timing
+    validate_boundary_timing(exp, int(interval_hours * 3600),
+                             source="prepared tree forcing")
     if exp.run_seconds > forcing_hours[-1] * 3600.0:
         # The gate that keeps a longer run_seconds honest.  A restart may
         # extend the forecast, but only into boundaries this tree was
@@ -1298,6 +1401,7 @@ def preflight_prepared_tree(
             "artifact_receipt": _sha256(artifact_receipt_path),
             "artifact_manifest": _sha256(artifact_manifest_path),
             "experiment_config": _sha256(experiment_config),
+            **{name: _sha256(path) for name, path in mapped_paths.items()},
         }
     )
     return PreparedTreeInputs(
@@ -1316,6 +1420,7 @@ def preflight_prepared_tree(
         execution_plan=execution_plan,
         authority_sha256=authority_hashes,
         source=prepared_source,
+        mapped_authority_paths=MappingProxyType(mapped_paths),
         tolerated_identity_fields=MappingProxyType({
             label: tuple(names)
             for label, names in tolerated_identity.items()}),
@@ -1330,6 +1435,8 @@ def _verify_inputs_unchanged(inputs: PreparedTreeInputs) -> None:
         "artifact_receipt": _sha256(inputs.artifact_receipt_path),
         "artifact_manifest": _sha256(inputs.artifact_manifest_path),
         "experiment_config": _sha256(inputs.experiment_config),
+        **{name: _sha256(path)
+           for name, path in inputs.mapped_authority_paths.items()},
     }
     if current != dict(inputs.authority_sha256):
         raise RuntimeError("prepared tree authorities changed during execution")
@@ -1373,6 +1480,152 @@ def _provenance_receipt() -> dict:
         return {"unavailable": f"{type(error).__name__}: {error}"}
 
 
+#: How long one ``git rev-parse`` may take before it is treated as
+#: unavailable.  The identity is resolved once at launch and once at the
+#: very END of a run, after every frame is written; a git that hangs
+#: there would wedge a finished 72-hour forecast on its receipt.  Matches
+#: ``runtime_manifest._GIT_TIMEOUT_S``, which asks git the same question.
+_GIT_TIMEOUT_S = 30
+
+#: Attempts per git question.  The failure this exists for is transient
+#: and environmental -- a spawn that does not start -- not a repository
+#: answering "no".  Two retries cost milliseconds on a healthy box and
+#: nothing at all where there is no repository to ask (see
+#: :func:`_git_head_query`).
+_GIT_ATTEMPTS = 3
+
+
+def _git_head_query(*arguments: str) -> str | None:
+    """One ``git`` question about HEAD, answered or ``None``.
+
+    Never raises.  ``None`` means ONLY "this process could not get an
+    answer" -- ``git rev-parse`` prints a 40-character object id on
+    success and can never legitimately produce ``None`` -- which is the
+    distinction :func:`_runtime_source_identity_change` reads.
+
+    Three hardenings over the bare ``subprocess.check_output(["git",
+    ...])`` this replaced, each for a failure this product has already
+    paid for once:
+
+    * the executable is resolved through
+      :func:`gpuwm.provenance.git_executable`, because ``"git"`` is
+      looked up in the CHILD's ``PATH`` and this project composes child
+      environments in several places; a composed environment that drops
+      the entry carrying git turns every identity question into
+      ``FileNotFoundError`` at once;
+    * a timeout, so the end-of-run recheck cannot hang a finished run;
+    * ``OSError``/``SubprocessError`` rather than the
+      ``FileNotFoundError``/``CalledProcessError`` pair, which let a
+      ``PermissionError`` or a ``TimeoutExpired`` out of a function whose
+      whole contract is to answer or shrug.
+    """
+
+    from gpuwm.provenance import git_executable
+
+    executable = git_executable()
+    if executable is None:
+        return None
+    # No repository, no question.  Skipped rather than asked-and-retried
+    # so a wheel install -- where ``git rev-parse`` answers 128 every
+    # time, deterministically -- pays nothing for the retries below.
+    if not (REPOSITORY_ROOT / ".git").exists():
+        return None
+    for attempt in range(_GIT_ATTEMPTS):
+        try:
+            return subprocess.check_output(
+                [executable, *arguments],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=_GIT_TIMEOUT_S,
+            ).strip()
+        except (OSError, subprocess.SubprocessError):
+            if attempt + 1 < _GIT_ATTEMPTS:
+                time.sleep(0.1 * (attempt + 1))
+    return None
+
+
+def _head_commit_and_tree() -> tuple[str | None, str | None]:
+    """``(commit, tree)`` for HEAD, with ``None`` for "could not ask"."""
+
+    commit = _git_head_query("rev-parse", "HEAD")
+    tree = _git_head_query("rev-parse", "HEAD^{tree}")
+    if commit is None:
+        # The commit is written down in ``.git`` in a format git has not
+        # changed in its lifetime, so a process that cannot SPAWN git can
+        # still say which commit is executing.  Worktree-aware, which
+        # matters here because this project's agents work almost
+        # exclusively in linked worktrees.  There is no such reader for
+        # the tree id -- it lives inside the commit object -- so a git
+        # outage still loses that half, and the comparison is built to
+        # survive losing it.
+        try:
+            from gpuwm.provenance import git_dir_identity
+
+            identity = git_dir_identity(REPOSITORY_ROOT)
+        except Exception:                               # noqa: BLE001
+            identity = None
+        if identity:
+            commit = str(identity["commit_full"])
+    return commit, tree
+
+
+def _runtime_source_identity_change(
+    before: Mapping[str, object], after: Mapping[str, object]
+) -> str | None:
+    """Name the component that moved, or ``None`` if nothing did.
+
+    A plain ``before != after`` conflated two unrelated events, and the
+    cheap one destroyed the expensive one.  Measured 2026-09-02: a
+    four-hour two-domain forecast completed all 240 outer steps, wrote 62
+    ``wrfout`` frames, and then died on ``forecast implementation changed
+    during execution``.  Nothing had changed -- none of the five hashed
+    files was modified, HEAD had not moved, no commit was made -- but the
+    ``git rev-parse`` at the end of the run failed to run, which flips
+    ``git_commit``/``git_tree`` from their real values to ``None``, and
+    ``None != "8f3c..."`` is a difference the equality test cannot tell
+    from a real one.  The run's receipt was replaced by
+    ``evidence/failed-run-receipt.json``.  On a 72-hour forecast that is
+    a very expensive way to lose nothing but a git hiccup.
+
+    So the two halves are compared on their own terms:
+
+    * ``gpuwm_version`` and ``source_sha256`` are compared ALWAYS and
+      strictly.  They are read from bytes on disk, they are the strongest
+      binding available, and they cannot fail to be resolved -- if the
+      implementation's bytes moved, this says so.
+    * ``git_commit``/``git_tree`` are compared only when BOTH ends
+      resolved them.  ``None`` is unambiguous here (see
+      :func:`_git_head_query`), so "git could not answer at one end" is
+      reported as what it is -- an unanswered question -- rather than as
+      a changed answer.
+
+    That is narrower than the old test in exactly one case: a commit that
+    lands mid-run, touches none of the five hashed files, AND coincides
+    with a git failure at one end.  Every other real change still fails:
+    a tracked edit to any hashed file moves ``source_sha256``, and a HEAD
+    that moves while git works moves ``git_commit``.
+    """
+
+    if before == after:
+        return None
+    if before["gpuwm_version"] != after["gpuwm_version"]:
+        return (f"gpuwm_version {before['gpuwm_version']!r} -> "
+                f"{after['gpuwm_version']!r}")
+    first = dict(before["source_sha256"])              # type: ignore[arg-type]
+    second = dict(after["source_sha256"])              # type: ignore[arg-type]
+    for name in sorted(set(first) | set(second)):
+        if first.get(name) != second.get(name):
+            return (f"source_sha256 {name} {first.get(name)} -> "
+                    f"{second.get(name)}")
+    for field in ("git_commit", "git_tree"):
+        if before[field] is None or after[field] is None:
+            continue
+        if before[field] != after[field]:
+            return f"{field} {before[field]} -> {after[field]}"
+    return None
+
+
 def _runtime_source_identity() -> Mapping[str, object]:
     files = (
         REPOSITORY_ROOT / "gpuwm/core/model.py",
@@ -1391,22 +1644,13 @@ def _runtime_source_identity() -> Mapping[str, object]:
         path.relative_to(REPOSITORY_ROOT).as_posix(): _sha256(path)
         for path in files
     }
-    try:
-        commit = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
-            cwd=REPOSITORY_ROOT,
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-        tree = subprocess.check_output(
-            ["git", "rev-parse", "HEAD^{tree}"],
-            cwd=REPOSITORY_ROOT,
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        commit = None
-        tree = None
+    # The KEYS and their meanings are unchanged: this mapping is hashed
+    # into ``sealed_extension_fingerprint`` and into the tree restart
+    # identity, both of which are published in checkpoint headers, so a
+    # new field here would move every already-sealed fingerprint and
+    # strand the legs that carry them.  Only the reliability of the two
+    # git values improved.
+    commit, tree = _head_commit_and_tree()
     return MappingProxyType(
         {
             "gpuwm_version": __version__,
@@ -1514,6 +1758,99 @@ def _completed_execution_report(model):
         histories={grid_id: 0 for grid_id in clocks}, clocks=clocks)
 
 
+def _write_failed_run_receipt(outdir, error) -> None:
+    """The receipt a run that STARTED and died owes its caller."""
+    evidence = outdir / "evidence"
+    evidence.mkdir(exist_ok=True)
+    _atomic_json(
+        evidence / "failed-run-receipt.json",
+        {
+            "schema": REPORT_SCHEMA,
+            "status": "FAIL",
+            "error_type": type(error).__name__,
+            "error": str(error),
+            "traceback": traceback.format_exc(),
+        },
+    )
+
+
+def fingerprint_across_stored_chain(header, fingerprint_as_built, model) -> str:
+    """The live restart fingerprint for a checkpoint written after a move.
+
+    Relocation BOUNDS are byte-inert on a fingerprint; an executed MOVE
+    binds, by folding each move receipt into the value
+    (:func:`gpuwm.core.nest_relocation.mark_fingerprint_across_move`).
+    So a fresh build's identity is its own base folded over the history
+    the checkpoint records, and that is the ordinary answer.
+
+    THE CASE THIS FUNCTION EXISTS FOR.  The chain is anchored to the base
+    the WRITING run computed, so folding it reproduces the stored value
+    only when this build computes the identical base.  Anything that
+    moves the base -- a widened exemption as much as a changed setting --
+    makes EVERY relocation checkpoint ever written unresumable, with a
+    message blaming the move history rather than the base.  Measured: a
+    checkpoint refused even with its own original configuration restored
+    exactly.
+
+    The header carries the components the writing run hashed, so its base
+    is recoverable: drop the ``relocation`` block (added as the chain was
+    marked) and hash the rest.  Two things must then BOTH hold before
+    that base is adopted.
+
+    1. Folding the SAME records from THAT base reproduces the stored
+       fingerprint.  This proves the checkpoint is self-consistent -- a
+       forged or truncated chain cannot pass, because the records hash
+       one-way into the result.
+
+    2. The stored components and the live ones agree once both are
+       normalised under this build's rules
+       (:func:`gpuwm.io.restart._identity_matches_under_current_rules`).
+
+    (1) ALONE IS NOT IDENTITY, and adopting the replayed value on its
+    strength was a hole rather than a widening: the replayed value is by
+    construction the stored fingerprint, so assigning it hands the gate
+    in :mod:`gpuwm.io.restart` the header to compare against itself --
+    and that gate is the only place a tree's preparation receipt, cache
+    content, execution plan and runtime source identity are ever
+    compared.  A checkpoint from a DIFFERENT prepared tree would have
+    resumed silently, because its chain is self-consistent too: the
+    chain proves the move history was not tampered with and says nothing
+    about which tree made the moves.  (2) is what a foreign tree fails
+    and what the widened-exemption case passes.
+    """
+    from gpuwm.core.nest_relocation import mark_fingerprint_across_move
+    from gpuwm.io.restart import _identity_matches_under_current_rules
+    from gpuwm.runtime import restore_relocation_fingerprint_components
+
+    chain = (header.get("relocation") or {}).get("record_sha256")
+    if not chain:
+        return fingerprint_as_built
+    marked = fingerprint_as_built
+    for record_sha256 in chain:
+        marked = mark_fingerprint_across_move(marked, record_sha256)
+    stored_fingerprint = header.get("experiment_fingerprint")
+    if marked == stored_fingerprint:
+        restore_relocation_fingerprint_components(model, chain)
+        return marked
+    stored_components = header.get("experiment_fingerprint_components")
+    if not isinstance(stored_components, dict):
+        return marked
+    base_components = {key: value
+                       for key, value in stored_components.items()
+                       if key != "relocation"}
+    replayed = hashlib.sha256(
+        _canonical(_strict_json(base_components)).encode("utf-8")).hexdigest()
+    for record_sha256 in chain:
+        replayed = mark_fingerprint_across_move(replayed, record_sha256)
+    if replayed != stored_fingerprint:
+        return marked
+    if not _identity_matches_under_current_rules(
+            {"experiment_fingerprint_components": base_components}, model):
+        return marked
+    restore_relocation_fingerprint_components(model, chain)
+    return replayed
+
+
 def run_prepared_tree(
     inputs: PreparedTreeInputs,
     *,
@@ -1524,6 +1861,8 @@ def run_prepared_tree(
     sealed_forcing_extension: bool = False,
     observer=None,
     progress_options=None,
+    initialization: TreeInitialization | None = None,
+    first_products=None,
 ) -> dict[str, object]:
     """Restore the prepared domains and execute the existing tree engine.
 
@@ -1546,6 +1885,14 @@ def run_prepared_tree(
     if io_mode not in {"history", "none"}:
         raise ValueError("io_mode must be 'history' or 'none'")
     _verify_thompson_assets(inputs.experiment)
+    if initialization is not None:
+        initialization.verify_inputs(inputs)
+        # External adapters have their own time authorities. This prepared
+        # cache activation hook cannot establish an external child's date.
+        from gpuwm.experiment import refuse_delayed_activation
+        refuse_delayed_activation(inputs.experiment, "external initialization")
+        if sealed_forcing_extension:
+            raise ValueError("this initialization does not supply the sealed forcing-prefix identity required for horizon extension")
 
     import cupy as cp
 
@@ -1556,7 +1903,7 @@ def run_prepared_tree(
         GpuPeakMemoryWatcher,
         default_cupy_probes,
     )
-    from gpuwm.core.health import StateHealthValidator
+    from gpuwm.core.health import StateHealthValidator, health_validator_for_domain
     from gpuwm.core.model import (
         DomainNode,
         ExperimentState,
@@ -1591,13 +1938,21 @@ def run_prepared_tree(
     evidence.mkdir()
     progress_path = evidence / "progress.json"
     exp = inputs.experiment
+    from gpuwm.case_data import trace_gas_overrides_from_config
+    trace_gas_overrides = trace_gas_overrides_from_config(
+        inputs.experiment_config, expected_sha256=inputs.authority_sha256["experiment_config"])
     # Opened before the restore, so the first thing a driving script
     # reads is this run announcing itself.  The markers and the JSONL
     # land beside the OUTPUTS (outdir), not under evidence/: they are
     # what a consumer polls, not what a post-mortem reads.
     step_log = (progress_options or ProgressOptions()).open(
         outdir=outdir, start_time=exp.start_time,
-        run_seconds=float(exp.run_seconds))
+        run_seconds=float(exp.run_seconds),
+        # Decides whether the step records carry `dt`, and with it which
+        # schema the stream declares.  Read from the ROOT because
+        # use_adaptive_time_step is Registry scope 1 -- one scalar for
+        # the whole run, not a per-domain choice.
+        adaptive_dt=bool(exp.root.run.use_adaptive_time_step))
     # The kernel cache as this run INHERITED it, before a single kernel
     # of this run's own is written into it.  Pure filesystem; asking
     # later reads a cache this run has already been filling, which is
@@ -1618,12 +1973,31 @@ def run_prepared_tree(
         heartbeat=True,
     )
 
+    planning_machine = streaming.cold_planning_machine(exp)
+    external_boundaries = getattr(initialization, "lateral_boundaries", None)
+    retained_intervals = (len(external_boundaries.intervals)
+        if external_boundaries is not None else
+        len(next(bundle for bundle in inputs.domains if bundle.parent_id == 0)
+            .cache_reader.header["metadata"]["lbc"]["intervals"]))
     estimate = estimate_experiment(
-        exp, forcing_interval_seconds=inputs.boundary_interval_seconds
+        exp, forcing_interval_seconds=inputs.boundary_interval_seconds,
+        forcing_intervals=retained_intervals, lateral_boundaries=external_boundaries,
     )
+    cold_decisions = {}
+    cold_nodes = _prepared_planning_nodes(inputs)
+    if streaming.tree_streams_anywhere(SimpleNamespace(walk_parent_first=lambda: cold_nodes), exp.tiles):
+        from gpuwm.core.streamed_relocation import mark_reconstruction_nodes
+        mark_reconstruction_nodes(cold_nodes, exp)
+        streaming.decide_tree(cold_nodes, exp.tiles, machine=planning_machine,
+                              decisions=cold_decisions, resident_estimate=estimate)
+    store_ids = ({gid for gid, decision in cold_decisions.items() if decision.stream}
+                 if initialization is None else set())
+    resident_domains = tuple(dc for dc in exp.domains if dc.grid_id not in store_ids)
     started = time.perf_counter()
-    arena = build_shared_scratch_arena(exp.domains)
-    rebuilt = build_shared_dycore_state_workspace(exp.domains)
+    # The estimator and core.model allocate shared arenas only for a tree.
+    # A single external domain keeps DomainState's own storage.
+    arena = build_shared_scratch_arena(resident_domains) if len(exp.domains) > 1 and resident_domains else None
+    rebuilt = build_shared_dycore_state_workspace(resident_domains) if len(exp.domains) > 1 and resident_domains else None
     # The shared helper, never a local restatement of the predicate: the
     # persistent workspace exists only for the MODERN RTE+RRTMGP
     # adapter, and `any(radiation_scheme_ids == (4, 4))` is also true for
@@ -1640,9 +2014,12 @@ def run_prepared_tree(
         if uses_modern_rrtmgp_workspace(exp)
         else None
     )
-    if arena.nbytes != estimate.scratch_arena_bytes:
+    from gpuwm.core.preflight import shared_scratch_arena_bytes, shared_dycore_state_workspace_bytes
+    expected_scratch = (shared_scratch_arena_bytes(resident_domains) if len(exp.domains) > 1 and resident_domains else 0)
+    expected_rebuilt = (shared_dycore_state_workspace_bytes(resident_domains) if len(exp.domains) > 1 and resident_domains else 0)
+    if (0 if arena is None else arena.nbytes) != expected_scratch:
         raise RuntimeError("shared scratch allocation differs from preflight")
-    if rebuilt.nbytes != estimate.dycore_state_workspace_bytes:
+    if (0 if rebuilt is None else rebuilt.nbytes) != expected_rebuilt:
         raise RuntimeError("shared rebuilt-state allocation differs from preflight")
     if (
         radiation_workspace is not None
@@ -1652,8 +2029,8 @@ def run_prepared_tree(
     timing["allocate_shared_workspaces"] = time.perf_counter() - started
     ledger = ModelMemoryLedger(
         estimate=estimate,
-        shared_scratch_arena_bytes=arena.nbytes,
-        shared_dycore_state_workspace_bytes=rebuilt.nbytes,
+        shared_scratch_arena_bytes=0 if arena is None else arena.nbytes,
+        shared_dycore_state_workspace_bytes=0 if rebuilt is None else rebuilt.nbytes,
         radiation_workspace=radiation_workspace,
     )
 
@@ -1663,6 +2040,8 @@ def run_prepared_tree(
     nodes = {}
     prepared = {}
     drivers = {}
+    early_steppers = {}
+    initial_reservations = {}
     initial_perturbation_receipts: list[dict[str, object]] = []
     started = time.perf_counter()
     # Arch-aware, like the single-domain road: the cache is keyed by
@@ -1680,23 +2059,201 @@ def run_prepared_tree(
             compute_capability=_compile_state.compute_capability,
             cached_entries=_compile_state.entries,
             cached_entries_for_this_card=_compile_state.entries_for_capability)
-    for domain, grid, bundle in zip(exp.domains, inputs.grids, inputs.domains):
+
+    def initialize_cache_physics(restored, domain, grid, bundle):
+        from gpuwm.core.cam_ozone import (
+            cam_ozone_setup, configure_cam_ozone, ozone_parent_for)
+        from gpuwm.core.radiation_composition import attach_modern_workspace
+
+        cam = cam_ozone_setup(exp=exp, dc=domain, grid=grid)
+        driver = initialize_prepared_physics(
+            restored.initial_result, domain.run, restored.met,
+            restored.surface, bundle.static_fields, NATIVE_LANDUSE_IDENTITY,
+            grid, exp.domain_start_time(domain.grid_id),
+            simulation_start_time=exp.start_time,
+            constant_glw_wm2=declared_constant_glw(exp),
+            p_top=exp.vertical.p_top, column_chunk=exp.column_chunk,
+            trace_gas_overrides=trace_gas_overrides,
+            **({"cam_ozone": cam, "ozone_parent": ozone_parent_for(cam)}
+               if cam is not None else {}))
+        driver = configure_cam_ozone(restored.initial_result.state, domain.run,
+                                    exp=exp, dc=domain, grid=grid)
+        attach_modern_workspace(getattr(driver, "radiation_callable", None),
+                                radiation_workspace)
+        return driver
+
+    bundles_by_id = {int(bundle.grid_id): bundle for bundle in inputs.domains}
+
+    def restore_store_domain(domain, grid, source):
+        from gpuwm.ingest.prepared_store import store_from_prepared_cache
+        from gpuwm.ingest.reconstruction_store import ReconstructionReservation
+        from gpuwm.core.streamed_relocation import StreamedChildReconstruction
+        from gpuwm.core.uh_diag import declared_follower_slots
+        from contextlib import nullcontext
+        decision = cold_decisions[domain.grid_id]
+        cap = decision.detail.get('reconstruction_default_allocator_bytes')
+        reservation = initial_reservations.get(domain.grid_id)
+        if cap is not None and reservation is None:
+            cap = (int(cap)+int(decision.detail.get('corridor_claim_bytes', 0))+511)//512*512
+            reservation = ReconstructionReservation(cap)
+            initial_reservations[domain.grid_id] = reservation
+        cells = (int(decision.tile_nx)+2*int(decision.halo))*(int(decision.tile_ny)+2*int(decision.halo))
+        rows = max(1, min(int(domain.run.ny), cells//int(domain.run.nx)))
+        slots = declared_follower_slots(exp.domains).get(int(domain.grid_id), ())
+        perturbation = None
+        perturbation_rows = []
+        if (exp.perturbation is not None and restart is None
+                and clocks[domain.grid_id].spec.start_ticks == 0):
+            from gpuwm.ingest.init_perturbation import build_initial_state_perturbation
+            perturbation = build_initial_state_perturbation(exp.perturbation, grid,
+                grid_id=int(domain.grid_id), require_containment=domain.parent_id == 0)
+        def physics(result, cfg, met, surface, static, landuse, slab_grid, valid_time,
+                    *, row_start=None, domain_rows=None, **kwargs):
+            from gpuwm.core.radiation_composition import attach_modern_workspace
+            from gpuwm.core.cam_ozone import (
+                cam_ozone_setup, configure_cam_ozone, ozone_parent_for)
+            slab_domain = replace(domain, run=cfg)
+            cam = cam_ozone_setup(exp=exp, dc=slab_domain, grid=slab_grid)
+            if perturbation is not None:
+                from gpuwm.core.diagnostics import update_diagnostics
+                update_diagnostics(result.state, cfg.hypsometric_opt)
+                window_perturbation = copy(perturbation)
+                rows = slice(int(row_start), int(row_start)+int(cfg.ny))
+                window_perturbation._placed = tuple(replace(p,
+                    horizontal_km=(None if p.horizontal_km is None else p.horizontal_km[rows]))
+                    for p in perturbation._placed)
+                perturbation_rows.append(window_perturbation.apply_to_state(
+                    result.state, allow_empty=True))
+            driver = initialize_prepared_physics(result, cfg, met, surface, static,
+                landuse, slab_grid, valid_time, **kwargs,
+                simulation_start_time=exp.start_time, p_top=exp.vertical.p_top,
+                column_chunk=exp.column_chunk, trace_gas_overrides=trace_gas_overrides,
+                **({'cam_ozone': cam, 'ozone_parent': ozone_parent_for(cam)}
+                   if cam is not None else {}))
+            driver = configure_cam_ozone(result.state, cfg, exp=exp,
+                                         dc=slab_domain, grid=slab_grid)
+            attach_modern_workspace(getattr(driver, 'radiation_callable', None), radiation_workspace)
+            for slot in slots:
+                result.state.scratch((cfg.ny, cfg.nx), slot)
+            return driver
+        with reservation.activate() if reservation is not None else nullcontext():
+            bundle = store_from_prepared_cache(source.cache,
+                expected_identity=dict(source.cache_identity), cfg=domain.run,
+                static=source.static_fields, landuse_attrs=NATIVE_LANDUSE_IDENTITY,
+                grid=grid, valid_time=exp.domain_start_time(domain.grid_id),
+                rows_per_slab=rows, budget_bytes=decision.detail.get('host_claim_bytes'),
+                constant_glw_wm2=declared_constant_glw(exp), physics_initializer=physics)
+        if perturbation_rows:
+            receipt = copy(perturbation_rows[0])
+            receipt['bubbles'] = [dict(row) for row in receipt['bubbles']]
+            for index, row in enumerate(receipt['bubbles']):
+                row['cells_touched'] = sum(r['bubbles'][index]['cells_touched']
+                                           for r in perturbation_rows)
+                if row.get('applied') and row['cells_touched'] == 0:
+                    raise ValueError(f"perturbation.bubbles #{index+1} touches zero cells "
+                                     f"in domain d{domain.grid_id:02d}")
+                for key in ('max_theta_added_k', 'max_qv_delta_kg_kg'):
+                    values = [r['bubbles'][index][key] for r in perturbation_rows
+                              if key in r['bubbles'][index]]
+                    if values:
+                        row[key] = max(values)
+            initial_perturbation_receipts.append(receipt)
+        def scratch(shape, slot, dtype=None):
+            with reservation.activate() if reservation is not None else nullcontext():
+                return cp.zeros(shape, dtype=np.float32 if dtype is None else dtype)
+        state = StreamedChildReconstruction._facade(bundle.template, domain.run,
+            bundle.store, bundle.geography, bundle.scalars, scratch_allocator=scratch)
+        state.lateral_boundaries = bundle.boundaries
+        return bundle, SimpleNamespace(initial_result=SimpleNamespace(
+            state=state, base=bundle.base, coord=bundle.coord))
+
+    def initialize_delayed_child(node, clock):
+        # Native preparation selected this child's exact analysis and ran
+        # the real-nest terrain/base-state SINT. Those parent operands are
+        # fixed setup fields; moving ancestors are refused in preflight.
+        # Restore again at birth so no pre-activation diagnostic or restart
+        # work can become this child's initial condition.
+        domain = node.cfg
+        bundle = bundles_by_id[int(domain.grid_id)]
+        _validate_delayed_prepared_time(
+            exp, domain, bundle.cache_reader,
+            _json_object(bundle.domain_receipt_path, "delayed child receipt"))
+        if clock.ticks != clock.spec.start_ticks:
+            raise RuntimeError("prepared child activation is off its start tick")
+        if int(domain.grid_id) in early_steppers:
+            owner = early_steppers[int(domain.grid_id)]
+            owner.tiled_run.close()
+            store_bundle, restored = restore_store_domain(domain, node.grid, bundle)
+            state = restored.initial_result.state
+            temporary_node = copy(node)
+            temporary_node.state = state
+            with owner.allocation_scope():
+                replacement = streaming.store_domain_builder(
+                    store_bundle, node=temporary_node, clock=clock)(
+                        None, domain.run, cold_decisions[domain.grid_id])
+            reservation = initial_reservations.get(domain.grid_id)
+            owner.rebind_after_reconstruction(replacement, state=state)
+            owner._reconstruction_reservation = reservation
+            owner._reconstruction_host_budget_bytes = cold_decisions[
+                domain.grid_id].detail.get('host_claim_bytes')
+            drivers[domain.grid_id] = store_bundle.template.physics
+            case = SimpleNamespace(static_fields=bundle.static_fields,
+                geog_selection=getattr(bundle, 'geog_selection', None),
+                initial_result=restored.initial_result, streamed_store=store_bundle)
+            return SimpleNamespace(grid=node.grid, state=state), case
         restored = restore_prepared_cache(
-            bundle.cache,
-            expected_identity=dict(bundle.cache_identity),
-            cfg=domain.run,
-            static=bundle.static_fields,
-            allow_nested_without_lbc=domain.parent_id != 0,
-        )
+            bundle.cache, expected_identity=dict(bundle.cache_identity),
+            cfg=domain.run, static=bundle.static_fields,
+            allow_nested_without_lbc=True)
         _rebind_rebuilt_state(restored.initial_result.state, rebuilt)
         restored.initial_result.state._scratch_arena = arena
+        drivers[domain.grid_id] = initialize_cache_physics(
+            restored, domain, node.grid, bundle)
+        case = SimpleNamespace(
+            static_fields=bundle.static_fields,
+            geog_selection=getattr(bundle, "geog_selection", None),
+            initial_result=restored.initial_result)
+        return (SimpleNamespace(grid=node.grid, state=restored.initial_result.state),
+                case)
+
+    for domain, grid, bundle in zip(exp.domains, inputs.grids, inputs.domains):
+        initialized = None
+        store_bundle = None
+        if domain.grid_id in store_ids and initialization is None:
+            store_bundle, restored = restore_store_domain(domain, grid, bundle)
+        elif initialization is None:
+            restored = restore_prepared_cache(
+                bundle.cache,
+                expected_identity=dict(bundle.cache_identity),
+                cfg=domain.run,
+                static=bundle.static_fields,
+                allow_nested_without_lbc=domain.parent_id != 0,
+            )
+            if restored.surface is None:
+                raise ValueError(
+                    f"d{domain.grid_id:02d} prepared cache lacks canonical surface")
+        else:
+            initialized = initialization.restore_domain(
+                domain, grid, bundle, start_time=exp.start_time,
+                scratch_arena=arena, dycore_state_workspace=rebuilt)
+            from gpuwm.forecast_initialization import DomainInitialization
+            if not isinstance(initialized, DomainInitialization):
+                raise TypeError("input adapter must return DomainInitialization")
+            restored = initialized
+        if store_bundle is None:
+            _rebind_rebuilt_state(restored.initial_result.state, rebuilt)
+            restored.initial_result.state._scratch_arena = arena
         if domain.parent_id != 0:
             restored.initial_result.state._nest_restart_classification = "REBUILT"
-        if restored.surface is None:
-            raise ValueError(
-                f"d{domain.grid_id:02d} prepared cache lacks canonical surface"
-            )
-        if exp.perturbation is not None and restart is None:
+        starts_at_t0 = clocks[domain.grid_id].spec.start_ticks == 0
+        if exp.perturbation is not None and restart is None and not starts_at_t0:
+            initial_perturbation_receipts.append({
+                "grid_id": int(domain.grid_id), "applied": False,
+                "reason": "delayed start: this domain initializes from the "
+                          "analysis at its activation time, after the "
+                          "perturbation instant"})
+        if (exp.perturbation is not None and restart is None and starts_at_t0
+                and store_bundle is None):
             # Configured initial-state theta bubbles (PROVENANCE D12).
             # The sealed caches stay the pure analysis; the bubbles are
             # added to the RESTORED state here, per domain, before
@@ -1737,21 +2294,18 @@ def run_prepared_tree(
                 "execution_plan": inputs.execution_plan,
             }, heartbeat=True)
             compile_notice = None
-        driver = initialize_prepared_physics(
-            restored.initial_result,
-            domain.run,
-            restored.met,
-            restored.surface,
-            bundle.static_fields,
-            NATIVE_LANDUSE_IDENTITY,
-            grid,
-            exp.start_time,
-            constant_glw_wm2=declared_constant_glw(exp),
-        )
-        radiation = driver.radiation_callable
-        if radiation is not None and radiation_workspace is not None:
-            radiation.column_chunk = radiation_workspace.column_chunk
-            radiation.chunk_workspace = radiation_workspace
+        if store_bundle is not None:
+            driver = store_bundle.template.physics
+        elif initialized is None:
+            driver = initialize_cache_physics(restored, domain, grid, bundle)
+        else:
+            driver = initialized.initialize_physics()
+            from gpuwm.core.cam_ozone import configure_cam_ozone
+            driver = configure_cam_ozone(restored.initial_result.state, domain.run,
+                                        exp=exp, dc=domain, grid=grid)
+            from gpuwm.core.radiation_composition import attach_modern_workspace
+            attach_modern_workspace(getattr(driver, "radiation_callable", None),
+                                    radiation_workspace)
         parent = None if domain.parent_id == 0 else nodes[domain.parent_id]
         node = DomainNode(
             cfg=domain,
@@ -1762,12 +2316,29 @@ def run_prepared_tree(
             children=[],
             coupler=None,
         )
+        node._started = starts_at_t0
         if parent is not None:
-            node.coupler = NestCoupler(
-                node, feedback=exp.feedback,
-                smooth_option=exp.smooth_option)
+            node.coupler = NestCoupler(node, feedback=exp.feedback,
+                                       smooth_option=exp.smooth_option)
+        if store_bundle is not None:
+            from contextlib import nullcontext
+            reservation = initial_reservations.get(domain.grid_id)
+            with reservation.activate() if reservation is not None else nullcontext():
+                stream = streaming.store_domain_builder(store_bundle, node=node, clock=node.clock)(
+                    None, domain.run, cold_decisions[domain.grid_id])
+            stream._state = node.state
+            node.state._streamed_domain = stream
+            from gpuwm.core.streaming import _STORE_ATTR, STREAMED_SCRATCH_ATTR
+            setattr(node.state, _STORE_ATTR, stream.store)
+            setattr(node.state, STREAMED_SCRATCH_ATTR,
+                {key[8:]: value for key, value in stream.store.items() if key.startswith('scratch/')})
+            if reservation is not None:
+                stream._reconstruction_reservation = reservation
+                stream._reconstruction_host_budget_bytes = int(cold_decisions[domain.grid_id].detail['host_claim_bytes'])
+            early_steppers[domain.grid_id] = stream
+        if parent is not None:
             parent.children.append(node)
-            if exp.feedback == 1:
+            if exp.feedback == 1 and starts_at_t0:
                 # WRF initialization is part of the two-way activation
                 # contract, not an optional sweep: med_nest_initial runs
                 # med_nest_feedback on each nest as it is built
@@ -1788,8 +2359,9 @@ def run_prepared_tree(
         nodes[domain.grid_id] = node
         prepared[domain.grid_id] = SimpleNamespace(
             static_fields=bundle.static_fields,
-            geog_selection=None,
+            geog_selection=getattr(bundle, "geog_selection", None),
             initial_result=restored.initial_result,
+            streamed_store=store_bundle,
         )
         drivers[domain.grid_id] = driver
     # This runner constructs DomainNodes directly rather than going through
@@ -1797,8 +2369,9 @@ def run_prepared_tree(
     # external mirror before restart validation or the first solve so Davies
     # consumers use WRF's post-increment dtbc semantic (dt..T), not the
     # retired elapsed-based compatibility path (0..T-dt).
-    bind_lateral_boundary_clock(
-        nodes[exp.root.grid_id].state, nodes[exp.root.grid_id].clock)
+    if exp.root.grid_id not in early_steppers:
+        bind_lateral_boundary_clock(
+            nodes[exp.root.grid_id].state, nodes[exp.root.grid_id].clock)
     timing["restore_tree_and_initialize_physics"] = time.perf_counter() - started
     if exp.perturbation is not None:
         # Treatment proof, before any integration: the accepted config
@@ -1828,7 +2401,7 @@ def run_prepared_tree(
         fingerprint_components = _strict_json(sealed_components)
     else:
         fingerprint_components = tree_restart_identity_components(
-            inputs, runtime_identity)
+            inputs, runtime_identity, initialization)
         fingerprint = hashlib.sha256(
             _canonical(_strict_json(fingerprint_components)).encode("utf-8")
         ).hexdigest()
@@ -1850,8 +2423,9 @@ def run_prepared_tree(
     # Published beside the digest so a checkpoint written here can be
     # refused BY NAME rather than as an unexplained hash difference.
     model._experiment_fingerprint_components = fingerprint_components
-    model._prepared_by_grid_id = MappingProxyType(prepared)
+    model._prepared_by_grid_id = prepared
     model._input_catalog = None
+    model._activation_context = {"experiment": exp}
     model._runtime_status = ModelRuntimeStatus()
     model._resumed = False
     model._resume_committed_history_grid_ids = frozenset()
@@ -1873,7 +2447,7 @@ def run_prepared_tree(
     # honest rather than permanent.  Bounds-only [relocation] builds no
     # runner, exactly as everywhere else.
     relocation_runner = (
-        runtime.build_prepared_tree_relocation_runner(
+        runtime.build_prepared_tree_relocation_runners(
             exp, statics_corridor=inputs.statics_corridor, model=model,
             outdir=outdir, radiation_workspace=radiation_workspace)
         if inputs.statics_corridor is not None else None)
@@ -2005,15 +2579,9 @@ def run_prepared_tree(
         # and the tracker's hysteresis (above), the acoustic Omega
         # (CHECKPOINT_ONLY_STATE), and the tracker's consultation window
         # (restart.CARRIED_SCRATCH_SLOTS).
-        from gpuwm.core.nest_relocation import mark_fingerprint_across_move
-
         header = read_restart_header(checkpoint)
-        chain = (header.get("relocation") or {}).get("record_sha256")
-        if chain:
-            marked = fingerprint_as_built
-            for record_sha256 in chain:
-                marked = mark_fingerprint_across_move(marked, record_sha256)
-            model.experiment_fingerprint = marked
+        model.experiment_fingerprint = fingerprint_across_stored_chain(
+            header, fingerprint_as_built, model)
         restart_info = restore_tree_restart(
             checkpoint, model,
             sealed_forcing_extension=sealed_forcing_extension)
@@ -2027,7 +2595,7 @@ def run_prepared_tree(
     initial_health = {}
     for grid_id, node in nodes.items():
         result = vars(
-            StateHealthValidator(node.state).validate(
+            health_validator_for_domain(model, node).validate(
                 phase=f"initialized.d{grid_id:02d}"
             )
         )
@@ -2140,16 +2708,20 @@ def run_prepared_tree(
     # with the earlier consumer no longer watching.
     landing = progress_log.LandingFanout(
         getattr(observer, "output_committed", None),
-        step_log.output_committed if step_log.enabled else None)
+        step_log.output_committed if step_log.enabled else None,
+        None if first_products is None else first_products.frame_committed)
     if landing and writers is not None:
         writers.attach_progress_callback(landing)
     if relocation_runner is not None and writers is not None:
         # Same seam as the case-data route: a moved domain's later
         # frames must describe the footprint that produced them.
-        relocation_runner.on_child_built.attach_writers(writers)
+        if getattr(relocation_runner, "is_collection", False):
+            relocation_runner.attach_writers(writers)
+        else:
+            relocation_runner.on_child_built.attach_writers(writers)
         # ...and to the descendant preparers of a MID-TREE move, which
         # are separate instances and would otherwise refresh nothing.
-        _fan = getattr(relocation_runner.reground_descendant,
+        _fan = getattr(getattr(relocation_runner, "reground_descendant", None),
                        "attach_writers", None)
         if callable(_fan):
             _fan(writers)
@@ -2182,11 +2754,13 @@ def run_prepared_tree(
     # nest resident, so "some grids are missing" is the NORMAL case and
     # cannot be read as an anomaly.  Only a per-grid verdict distinguishes
     # that from a run where auto declined on every grid.
-    streaming_decisions: dict = {}
-    steppers = streaming.steppers_for_tree(
-        model, exp.tiles,
-        builders=streaming.builders_for_tree(model, exp.tiles),
-        decisions=streaming_decisions)
+    streaming_decisions = cold_decisions
+    steppers = early_steppers
+    if initialization is not None:
+        steppers = streaming.steppers_for_tree(
+            model, exp.tiles, builders=streaming.builders_for_tree(model, exp.tiles),
+            decisions=streaming_decisions, machine=planning_machine,
+            resident_estimate=estimate)
     streaming_report = streaming.streaming_receipt(
         exp.tiles, streaming_decisions)
     if streaming_report:
@@ -2221,6 +2795,7 @@ def run_prepared_tree(
                     steppers=steppers,
                     step_observer=step_observer,
                     experiment=exp,
+                    delayed_child_initializer=initialize_delayed_child,
                 ))
             wrfout_paths = ()
         else:
@@ -2240,6 +2815,7 @@ def run_prepared_tree(
                         steppers=steppers,
                         step_observer=step_observer,
                         experiment=exp,
+                        delayed_child_initializer=initialize_delayed_child,
                     ))
                 writers.drain()
                 wrfout_paths = writers.paths
@@ -2271,7 +2847,7 @@ def run_prepared_tree(
     final_digests = {}
     for grid_id, node in nodes.items():
         result = vars(
-            StateHealthValidator(node.state).validate(phase=f"final.d{grid_id:02d}")
+            health_validator_for_domain(model, node).validate(phase=f"final.d{grid_id:02d}")
         )
         final_health[f"d{grid_id:02d}"] = _strict_json(result)
         if not result["ok"]:
@@ -2284,13 +2860,20 @@ def run_prepared_tree(
             streaming.stability_observer(steppers.get(int(grid_id)))(
                 node.state, node.cfg.run,
                 boundary_width=node.cfg.run.spec_bdy_width))
-        final_digests[f"d{grid_id:02d}"] = canonical_state_digest(
-            node.state, node.clock, scope="trajectory"
-        )
+        stream = steppers.get(int(grid_id))
+        final_digests[f"d{grid_id:02d}"] = (
+            stream.canonical_digest(node.clock, scope="trajectory") if stream is not None else
+            canonical_state_digest(node.state, node.clock, scope="trajectory"))
 
-    _verify_inputs_unchanged(inputs)
-    if _runtime_source_identity() != runtime_identity:
-        raise RuntimeError("forecast implementation changed during execution")
+    if initialization is None:
+        _verify_inputs_unchanged(inputs)
+    else:
+        initialization.verify_inputs(inputs)
+    final_identity = _runtime_source_identity()
+    moved = _runtime_source_identity_change(runtime_identity, final_identity)
+    if moved is not None:
+        raise RuntimeError(
+            f"forecast implementation changed during execution: {moved}")
     outputs = [
         {
             "path": str(path.resolve()),
@@ -2354,8 +2937,12 @@ def run_prepared_tree(
         # non-None block is either bounds-only or carries the corridor
         # binding plus every move receipt the runner recorded.
         "relocation": (
-            None if not exp.relocation.enabled else {
+            None if not (exp.relocation.enabled or any(
+                getattr(dc, "follow", None) is not None for dc in exp.domains)) else {
                 "config": exp.relocation.receipt(),
+                **({"followers": {f"d{int(dc.grid_id):02d}": dc.follow.to_json()
+                                   for dc in exp.domains if dc.follow is not None}}
+                   if any(dc.follow is not None for dc in exp.domains) else {}),
                 # A SET, not one corridor.  `statics_corridor` has been a
                 # dict keyed by grid_id since the moving subtree needed a
                 # corridor per member (the mover's, plus a root-framed one
@@ -2436,7 +3023,27 @@ def run_prepared_tree(
             },
         },
         "runtime_source_identity": runtime_identity,
+        # What the end-of-run recheck could actually SEE.  The identity
+        # above is the one taken at launch; the gate that compares it
+        # skips the git half when either end failed to resolve it, and a
+        # skipped comparison that says nothing is how a weakened check
+        # goes unnoticed.  ``git_compared: false`` on a receipt means the
+        # run was bound by ``source_sha256`` alone.
+        "runtime_source_identity_recheck": {
+            "git_resolved_at_launch":
+                runtime_identity["git_commit"] is not None,
+            "git_resolved_at_end":
+                final_identity["git_commit"] is not None,
+            "git_compared": (runtime_identity["git_commit"] is not None
+                             and final_identity["git_commit"] is not None),
+        },
     }
+    # Join the existing daemon render before a standalone process can exit.
+    # Absent/none leaves the previous receipt unchanged, as on the single arm.
+    if first_products is not None:
+        receipt = first_products.wait()
+        if receipt is not None:
+            report["first_products"] = receipt
     # Only when [tiles] was configured, so an unconfigured tree writes
     # the receipt it wrote before the mode existed -- see the same guard in
     # prepared_single_domain_forecast.
@@ -2452,8 +3059,9 @@ def run_prepared_tree(
     # Absent entirely -- receipt byte-for-byte unchanged -- for a tree
     # whose domains all run schemes with no aerosol number fields.
     aerosol_by_grid_id = {
-        int(bundle.grid_id): bundle.cache_reader.metadata.get(
-            AEROSOL_SOURCE_KEY, {})
+        int(bundle.grid_id): (
+            bundle.cache_reader.metadata if initialization is None
+            else initialization.domain_metadata(bundle)).get(AEROSOL_SOURCE_KEY, {})
         for bundle in inputs.domains
     }
     report.update(aerosol_source_report_entries(
@@ -2543,17 +3151,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--restart", type=Path,
         help="resume from any member of a gpuwmrst checkpoint set written "
-             "by an earlier run of this prepared tree; only the forecast "
+             "by an earlier run of this prepared tree.  The forecast "
              "length (run_seconds) and the output/restart cadence "
              "(history_interval_s, restart_interval_s) may differ from "
              "the run that wrote it -- the same contract `gpuwm run "
-             "--restart` publishes.  Anything else is refused by name")
+             "--restart` publishes.  Under an adaptive clock the "
+             "controller's targets and clamps (target_cfl, target_hcfl, "
+             "the time-step bounds, max_step_increase_pct) may differ "
+             "too: they govern future steps rather than model state, and "
+             "a resume that retunes them is reported rather than "
+             "refused, so a dead run can be recovered with the setting "
+             "that would have saved it.  Turning use_adaptive_time_step "
+             "itself on or off is still refused, as is anything else")
     parser.add_argument(
         "--sealed-forcing-extension", action="store_true",
         help=("write/restore checkpoints using the explicit append-only "
               "forcing-prefix contract"))
     parser.add_argument("--health-debug", action="store_true")
     parser.add_argument("--outdir", type=Path, required=True)
+    parser.add_argument("--render-products", default=None, metavar="SPEC",
+                        help="first committed frame's plot selectors, 'all', or "
+                             "'none'; omitted means no rendering")
+    parser.add_argument("--render-dir", type=Path, default=None, metavar="DIR",
+                        help="first-frame picture directory (default OUTDIR/png); "
+                             "ignored without --render-products")
     # The same four flags the single-domain door carries, registered
     # from the same function so the two cannot drift.
     add_progress_arguments(parser)
@@ -2619,6 +3240,7 @@ def main(argv=None, *, observer=None) -> int:
         print(f"prepared_domain_tree_forecast: --outdir refused: {error}",
               file=sys.stderr)
         return 2
+    started = time.perf_counter()
     try:
         inputs = preflight_prepared_tree(
             prepared_root=args.prepared_root,
@@ -2651,6 +3273,9 @@ def main(argv=None, *, observer=None) -> int:
         print(f"prepared_domain_tree_forecast: refused: {error}",
               file=sys.stderr)
         return 2
+    first_products = prepared_single._route_owned_first_products(
+        args, outdir=outdir, observer=observer, started=started)
+    run_finished = False
     try:
         report = run_prepared_tree(
             inputs,
@@ -2661,7 +3286,9 @@ def main(argv=None, *, observer=None) -> int:
             observer=observer,
             sealed_forcing_extension=args.sealed_forcing_extension,
             progress_options=ProgressOptions.from_args(args),
+            **({} if first_products is None else {"first_products": first_products}),
         )
+        run_finished = True
     except MissingTableAssets as error:
         # A refusal, not a failed run: no failed-run-receipt, because
         # nothing ran.  One sentence naming the table and the command
@@ -2679,20 +3306,32 @@ def main(argv=None, *, observer=None) -> int:
         print(f"prepared_domain_tree_forecast: --restart refused: {error}",
               file=sys.stderr)
         return 2
+    except NestDivideRefusal as error:
+        # A REFUSAL, and a MID-RUN one: unlike every refusal above it,
+        # the tree has integrated up to this boundary, so it still owes a
+        # failed-run receipt.  What it does not owe is a traceback: this
+        # arrived as the 40-line shape a crashed forecast takes, exiting
+        # 1, which made the one guard whose message names an arithmetic
+        # collapse AND its remedy the hardest of them to read.
+        _write_failed_run_receipt(outdir, error)
+        print(f"prepared_domain_tree_forecast: refused: {error}",
+              file=sys.stderr)
+        return 2
     except BaseException as error:
-        evidence = outdir / "evidence"
-        evidence.mkdir(exist_ok=True)
-        _atomic_json(
-            evidence / "failed-run-receipt.json",
-            {
-                "schema": REPORT_SCHEMA,
-                "status": "FAIL",
-                "error_type": type(error).__name__,
-                "error": str(error),
-                "traceback": traceback.format_exc(),
-            },
-        )
+        _write_failed_run_receipt(outdir, error)
         raise
+    finally:
+        # A later forecast failure must not abandon an already dispatched
+        # daemon render. Success was joined while composing the run report;
+        # on failure, preserve the forecast's refusal/exception even if the
+        # bounded render join itself fails or is interrupted.
+        if first_products is not None and not run_finished:
+            try:
+                first_products.wait()
+            except BaseException as render_error:
+                print("prepared_domain_tree_forecast: first-frame plot join "
+                      f"failed: {type(render_error).__name__}: {render_error}",
+                      file=sys.stderr)
     print(
         json.dumps(
             {

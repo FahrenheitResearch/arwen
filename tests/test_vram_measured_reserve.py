@@ -449,7 +449,7 @@ def _check_report(tmp_path, nx, ny, budget_gib):
     env["PYTHONPATH"] = str(REPO)
     return subprocess.run(
         [sys.executable, "-m", "gpuwm.cli", "check", str(config),
-         "--budget-gib", str(budget_gib)],
+         "--budget-gib", str(budget_gib), "--explain"],
         capture_output=True, text=True, cwd=str(REPO), env=env, timeout=900)
 
 

@@ -157,7 +157,7 @@ surface.sfctmp surface.sh2o surface.shdmax surface.shdmin surface.smcrel
 surface.smois surface.smstav surface.smstot surface.snoalb surface.snopcx
 surface.snotime surface.snow surface.snowc surface.snowh surface.sr
 surface.swdown surface.t2 surface.th2 surface.tmn surface.tsk surface.tslb
-surface.u10 surface.udrunoff surface.ust surface.v10 surface.vegfra
+surface.u10 surface.udrunoff surface.ust surface.ustm surface.v10 surface.vegfra
 surface.wspd surface.xice surface.xland surface.z0 surface.znt surface.zol
   surface.microphysics.rainnc surface.microphysics.rainncv
   surface.microphysics.sr surface.microphysics.snownc

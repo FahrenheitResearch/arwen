@@ -1,0 +1,31 @@
+{
+  "name": "ERA5 calendar: click year, jump decades, move one year",
+  "steps": [
+    {"action":"expect","text":"Choose a forecast mode","name":"home"},
+    {"action":"click","text":"Choose a forecast mode","row_prefix":"│"},
+    {"action":"press","key":"ctrl+n"},
+    {"action":"expect","text":"Location: latitude,longitude"},
+    {"action":"paste","text":"35.3,-97.5"},
+    {"action":"press","key":"enter"},
+    {"action":"expect","text":"Input source"},
+    {"action":"press","key":"ctrl+u"},
+    {"action":"paste","text":"era5"},
+    {"action":"press","key":"enter"},
+    {"action":"expect","text":"Start cycle (UTC)"},
+    {"action":"press","key":"ctrl+u"},
+    {"action":"paste","text":"2026-05-03T12"},
+    {"action":"press","key":"f3"},
+    {"action":"expect","text":["1940-01-01","[2026]"],"name":"source-calendar"},
+    {"action":"click","text":"[2026]","name":"click-year"},
+    {"action":"expect","text":"Year >"},
+    {"action":"paste","text":"1999"},
+    {"action":"press","key":"enter"},
+    {"action":"expect","text":["May [1999]","1999-05-03T12"],"name":"jumped-27-years"},
+    {"action":"click","text":"« Year"},
+    {"action":"expect","text":["May [1998]","1998-05-03T12"],"name":"previous-year"},
+    {"action":"click","text":"Year »"},
+    {"action":"expect","text":"May [1999]","name":"next-year"},
+    {"action":"click","text":"Use date (Enter)"},
+    {"action":"expect","text":["Start cycle (UTC)","1999-05-03T12"],"name":"selected-exact-utc-date"}
+  ]
+}

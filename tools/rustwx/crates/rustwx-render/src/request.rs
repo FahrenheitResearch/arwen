@@ -834,6 +834,13 @@ pub struct MapRenderRequest {
     /// Dynamic projected fill polygons drawn during the variable-data pass.
     #[serde(default)]
     pub projected_data_polygons: Vec<ProjectedPolygonFill>,
+    /// An unstructured mesh drawn cell by cell, in the same projected space
+    /// as `projected_domain`, during the variable-data pass.  `None` -- every
+    /// structured product -- draws none.  A caller that sets this hands a
+    /// field the rasteriser will not draw (an all-NaN placeholder) and lets
+    /// the cells carry the values, because a Voronoi mesh has no (ny, nx).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh_cells: Option<crate::mesh_cells::MeshCellsLayer>,
     #[serde(default)]
     pub inverse_raster_projection: Option<InverseRasterProjection>,
     /// The projection `projected_domain` was built in, with every
@@ -905,6 +912,7 @@ impl MapRenderRequest {
             projected_domain: None,
             projected_polygons: Vec::new(),
             projected_data_polygons: Vec::new(),
+            mesh_cells: None,
             inverse_raster_projection: None,
             resolved_projection: None,
             geographic_bounds: None,

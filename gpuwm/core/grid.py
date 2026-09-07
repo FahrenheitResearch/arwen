@@ -374,6 +374,35 @@ def finalize_vertical_coord(coord: VerticalCoord, p_top: float) -> None:
         coord.p_top = p_top
 
 
+def resample_eta_levels(eta_levels, nz: int) -> np.ndarray:
+    """Resample a normalized eta ladder at equally spaced level indices.
+
+    This preserves the source ladder's stretching and endpoints; requesting
+    its existing count returns an exact copy.  Both ladders obey the same
+    validation as model initialization through :func:`make_vertical_coord`.
+    """
+    import operator
+
+    if isinstance(nz, (bool, np.bool_)):
+        raise ValueError("nz must be a positive integer")
+    try:
+        nz = operator.index(nz)
+    except TypeError as error:
+        raise ValueError("nz must be a positive integer") from error
+    if nz < 1:
+        raise ValueError("nz must be a positive integer")
+    source = np.asarray(eta_levels, dtype=np.float64)
+    if source.ndim != 1 or source.size < 2:
+        raise ValueError("eta_levels must be a one-dimensional ladder "
+                         "with at least two levels")
+    source = make_vertical_coord(source.size - 1, eta_levels=source).znw
+    if source.size == nz + 1:
+        return source
+    levels = np.interp(np.linspace(0.0, 1.0, nz + 1),
+                       np.linspace(0.0, 1.0, source.size), source)
+    return make_vertical_coord(nz, eta_levels=levels).znw
+
+
 def make_vertical_coord(nz: int, stretch: float | None = None,
                         hybrid_opt: int = 0, etac: float = 0.2,
                         eta_levels: np.ndarray | None = None,

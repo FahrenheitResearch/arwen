@@ -262,6 +262,23 @@ because format floors (e.g. ~0.008 Pa for MU vs measured implementation-scale
 differences of 1-2 hPa) are orders of magnitude below
 implementation-difference scale — it would convert the degenerate gate into
 a differently-unpassable one, not an honest bound.
+
+CORRECTED 2026-09-03 (gate-integrity defect fix ver-05-01/nst-04-02; NOT an
+owner amendment -- no threshold, no envelope and no adjudication label
+changes): F28 as written above made a degenerate row report ``passed: true``,
+and with every one of the 61 measured envelopes degenerate-zero the compound
+N5S row accepted ANY gpuwm-vs-WRF distance.  "The twins never separated" is
+the absence of a yardstick, not evidence that the candidate is inside one.
+A degenerate row is therefore INCOMPLETE: it is neither accepted nor failed,
+it carries ``status: "incomplete"`` beside its unchanged
+``f28-degenerate-envelope`` adjudication and its measured distance, and it
+stops the compound verdict reading PASS -- ``verdict`` is "fail" if any
+non-degenerate row missed, else "incomplete" if any row was degenerate, else
+"pass", the same three-valued reduction
+:func:`gpuwm.verify.spectral_receipt.evaluate_gates` already uses.  F28's
+row-wise RE-BINDING is untouched: a future ensemble whose E95 > 0 scores
+those rows under the original ``gpu_distance <= E95`` comparator and the
+compound returns to PASS.
 """
 
 from __future__ import annotations
@@ -519,6 +536,14 @@ F27_DOCUMENTED_DEFICIENCY_ROWS = {
     ("d03", 20.0): 0.8558,
     ("d04", 20.0): 0.8558,
 }
+#: The floor under an F27 documented deficiency: the worst score F27 actually
+#: measured (the amendment records "gpuwm scores 0.7047-0.7084, stable across
+#: runs").  Without it the "documented deficiency" branch and the "at or above
+#: the bar" branch partition the finite reals and the row cannot fail for any
+#: finite FSS20 -- a regression to 0.02 would report PASS under an
+#: adjudication string that says "this is the known 0.70 deficiency".  A value
+#: below this floor is a NEW deficiency, not the recorded one, and blocks.
+F27_DOCUMENTED_DEFICIENCY_FLOOR = 0.7047
 #: F24: fraction of interior grid points required to treat an FSS event
 #: threshold as meteorologically measurable at the registered valid time.
 FSS_DEGENERATE_EVENT_FLOOR = 1.0e-4
@@ -572,10 +597,14 @@ def _statistical_family(milestone: str, domain: str,
             "Pass iff FSS20 >= 0.90 AND FSS30 >= 0.80 AND FSS40 >= 0.70, "
             "exactly REFL_10CM_FSS_FAMILY")
     else:
+        f27_floor = F27_DOCUMENTED_DEFICIENCY_FLOOR
         fss_threshold_text = (
             f"Pass iff FSS30 >= 0.80 AND FSS40 >= 0.70.  FSS20 >= "
-            f"{f27_bar:.4f} under F27: a value below {f27_bar:.4f} is a "
-            f"non-blocking DOCUMENTED-DEFICIENCY; at or above "
+            f"{f27_bar:.4f} under F27: a value below {f27_bar:.4f} but at or "
+            f"above the measured floor {f27_floor:.4f} is a "
+            f"non-blocking DOCUMENTED-DEFICIENCY; below {f27_floor:.4f} the "
+            f"deficiency is not the one F27 recorded and the row BLOCKS; at "
+            f"or above "
             f"{f27_bar:.4f} the conversion self-revokes and the row returns "
             f"to normal blocking at {f27_bar:.4f}")
     vs = f"{domain} vs reference {ref}. {note}"
@@ -1028,8 +1057,7 @@ NEST_GATES: tuple[NestGate, ...] = (
     NestGate(
         "N5", "N5S_matched_physics_wrf_shadow", "measured_bound", None,
         "CONTROLLER-RUN shadow gate (WSL; CPU WRF and GPU candidate are run "
-        "sequentially so there is no GPU conflict), BLOCKING N6 wherever "
-        "its registered envelope is non-degenerate.  From "
+        "sequentially so there is no GPU conflict), BLOCKING N6.  From "
         "identical restored inputs, run gpuwm and the stock instrumented "
         "WRF v4.6.1 Morrison+YSU T8b build for >= 30 min on all four "
         "domains.  Before scoring gpuwm, run M >= 3 CPU-WRF members whose "
@@ -1043,8 +1071,11 @@ NEST_GATES: tuple[NestGate, ...] = (
         "gpuwm-vs-unperturbed-WRF distance <= "
         "its like-for-like E95; aggregation may not average a miss away.  "
         "F28: an envelope is degenerate exactly when E95 == 0; that row is "
-        "DOCUMENTED-EVIDENCE under f28-degenerate-envelope and does not "
-        "block the compound verdict.  All non-degenerate rows remain binding "
+        "DOCUMENTED-EVIDENCE under f28-degenerate-envelope, which is the "
+        "absence of a yardstick and not evidence of agreement, so the row is "
+        "INCOMPLETE -- neither a pass nor a fail -- and the compound verdict "
+        "is INCOMPLETE, never PASS, while any such row stands.  All "
+        "non-degenerate rows remain binding "
         "without threshold changes.  RE-BINDING is automatic row-by-row: "
         "the staged Phase-6 convective-window extension restores full binding "
         "force for every row whose future E95 > 0.",

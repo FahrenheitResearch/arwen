@@ -1,31 +1,9 @@
-"""Which forecast routes write checkpoints -- said once, said early.
+"""Checkpoint capability shared by configuration checks and resume guidance.
 
-``restart_interval_s`` is a legal key in every experiment config, and on
-one route it does nothing.  A single-domain config with no ``[case_data]``
-table is executed by the prepared single-domain runner, which writes no
-checkpoints at all; the runner says so, honestly, but it says so at
-forecast time, which on the multi-hour run people actually checkpoint is
-after the run they wanted to be able to resume has already finished.
-``gpuwm check`` -- the stage whose whole job is to refuse or warn before
-the time is spent -- said nothing, and ``gpuwm resume`` then pointed the
-user back at the very knob that had just been declared inert.
-
-So the route fact lives here, in one place with no heavy imports, and
-both ``gpuwm check`` and ``gpuwm resume`` read it from here.  It is an
-advisory, not a gate: it changes no exit code and blocks nothing
-(warn-not-block).  Nothing in this module names a source, a case or a
-runner script -- the discriminator is structural, which is what makes it
-true for every source that reaches the prepared route.
-
-Route matrix this encodes:
-
-===============================  =================  ==================
-config shape                     runner             checkpoints
-===============================  =================  ==================
-``[case_data]`` present          ``gpuwm run``      yes
-no ``[case_data]``, 1 domain     prepared single    **no**
-no ``[case_data]``, 2+ domains   prepared tree      yes
-===============================  =================  ==================
+Declared-input, prepared single-domain and prepared tree routes all use
+the canonical checkpoint transport. A positive ``restart_interval_s``
+enables writing; zero deliberately disables it. Capability is independent
+of whether a particular run has already written a valid checkpoint.
 """
 
 from __future__ import annotations
@@ -34,18 +12,15 @@ from pathlib import Path
 
 #: The one-sentence advisory.  Detail belongs behind ``--explain``.
 CHECKPOINTLESS_ROUTE_ADVISORY = (
-    "restart_interval_s is inert on this route: a single-domain config "
-    "with no [case_data] table runs on the prepared single-domain "
-    "forecaster, which writes no checkpoints, so this run cannot be "
-    "resumed."
+    "restart_interval_s requires a valid forecast domain; this "
+    "configuration does not declare one."
 )
 
 #: The remedies, for ``--explain`` and for the resume refusal.
 CHECKPOINTLESS_ROUTE_REMEDY = (
-    "Checkpointing is reachable two ways: a multi-domain config, which "
-    "runs on the prepared domain-tree forecaster, or a [case_data] "
-    "experiment, which runs on `gpuwm run`.  Both write gpuwmrst_d*.npz "
-    "sets and both resume from them."
+    "Validate the configuration with gpuwm check. Single-domain and "
+    "multi-domain runs can write gpuwmrst_d*.npz checkpoints when "
+    "restart_interval_s is positive; resume requires a complete valid set."
 )
 
 
@@ -68,7 +43,7 @@ def route_writes_checkpoints(*, domain_count: int,
                              has_case_data: bool) -> bool:
     """Whether the route this config is steered to writes checkpoints."""
 
-    return bool(has_case_data) or int(domain_count) > 1
+    return bool(has_case_data) or int(domain_count) >= 1
 
 
 def checkpoint_route_advisory(*, domain_count: int, has_case_data: bool,

@@ -418,12 +418,14 @@ def get_cloud_dsd2(qc_grd, nc_grd, rho, iscf):
         lammax = (mu_c + f32(1.0)) * f32(1.0e6)
         if lamc < lammin:
             lamc = lammin
-            nc = f32(6.0) * lamc ** f32(3.0) * qc / (
+            # :6681 -- lamc**3 is an INTEGER exponent, which gfortran expands
+            # to multiplications at every -O level; it does not call powf.
+            nc = f32(6.0) * ((lamc * lamc) * lamc) * qc / (
                 PI * RHOW * (mu_c + f32(3.0)) * (mu_c + f32(2.0))
                 * (mu_c + f32(1.0)))
         elif lamc > lammax:
             lamc = lammax
-            nc = f32(6.0) * lamc ** f32(3.0) * qc / (
+            nc = f32(6.0) * ((lamc * lamc) * lamc) * qc / (   # :6684, int **3
                 PI * RHOW * (mu_c + f32(3.0)) * (mu_c + f32(2.0))
                 * (mu_c + f32(1.0)))
         cdist = nc * (mu_c + f32(1.0)) / lamc
@@ -935,7 +937,8 @@ def p3_main(qc, nc, qr, nr, th_old, th, qv_old, qv, dt, qitot, qirim, nitot,
 
                 # -- immersion freezing of droplets (:2984-3015)
                 if qc[i, k] >= QSMALL and t[i, k] <= f32(269.15):
-                    dum = (f32(1.0) / lamc) ** f32(3.0)
+                    inv_lamc = f32(1.0) / lamc
+                    dum = (inv_lamc * inv_lamc) * inv_lamc  # :2988
                     # WRF's own chain first and unchanged, so a value its
                     # arithmetic can represent is still its value, bit for
                     # bit.  The rescue below is reached only when it cannot

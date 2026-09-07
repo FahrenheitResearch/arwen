@@ -205,12 +205,11 @@ def test_the_stash_cadence_guard_still_exists_for_a_field_that_reads_one():
     from gpuwm.core.storm_tracking import (STASH_BACKED_FIELDS,
                                            TRACKED_FIELDS)
 
-    # Every position-only field is stash-backed: a field that is reduced
-    # on demand has a real signal position to report and should report it.
-    assert set(POSITION_ONLY_FIELDS) <= set(STASH_BACKED_FIELDS)
-    # ...and the one field that is neither still carries a full row.
+    # Native attributes are live reductions but still emit nest-position
+    # rows: they do not define hurricane pressure or wind diagnostics.
+    assert set(POSITION_ONLY_FIELDS) == set(STASH_BACKED_FIELDS) | {"attribute"}
     reduced = set(TRACKED_FIELDS) - set(STASH_BACKED_FIELDS)
-    assert reduced == {"pressure"}
+    assert reduced == {"pressure", "attribute"}
 
 
 @pytest.mark.parametrize("field,extra", [

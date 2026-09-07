@@ -64,6 +64,50 @@ _KIB = 1024.0
 _GIB = 1024.0 * 1024.0 * 1024.0
 
 
+PREP_EVENT_PREFIX = "GPUWM_PREP_EVENT "
+PREP_EVENT_SCHEMA = "gpuwm.prep-stage.v1"
+
+
+@contextlib.contextmanager
+def prep_stage(stage: str, *, label: str | None = None,
+               backend: str | None = None, count: int | None = None,
+               index: int | None = None):
+    """Report an actual preparation operation on stderr, leaving JSON stdout.
+
+    The small event envelope is shared with front-door child-output readers.
+    Stage names are open; event tags are started/finished/failed. No device,
+    forecast module, or output directory is needed to report preparation.
+    The yielded dictionary can carry an outcome/reason on completion, so an
+    optional file export can finish without claiming it produced files.
+    """
+    import json
+
+    fields = {"schema": PREP_EVENT_SCHEMA, "stage": stage,
+              "label": label or stage.replace("_", " ")}
+    fields.update({key: value for key, value in {
+        "backend": backend, "count": count, "index": index}.items()
+        if value is not None})
+
+    def emit(event, **details):
+        print(PREP_EVENT_PREFIX + json.dumps(
+            {**fields, "event": event, **details}, sort_keys=True,
+            allow_nan=False), file=sys.stderr, flush=True)
+
+    started = time.perf_counter()
+    emit("started")
+    completion = {}
+    try:
+        yield completion
+    except BaseException as error:
+        emit("failed", elapsed_seconds=time.perf_counter() - started,
+             error_type=type(error).__name__, error=str(error))
+        raise
+    else:
+        emit("finished", elapsed_seconds=time.perf_counter() - started,
+             **{key: completion[key] for key in ("outcome", "reason")
+                if key in completion})
+
+
 def line(text: str, *, stream=None) -> None:
     """One status line, flushed.
 
@@ -73,6 +117,72 @@ def line(text: str, *, stream=None) -> None:
     """
 
     print(text, file=sys.stdout if stream is None else stream, flush=True)
+
+
+def format_elapsed(seconds: float) -> str:
+    """Elapsed model or wall time, with hours allowed to exceed 24."""
+    hours, remainder = divmod(int(seconds), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+class ForecastProgress:
+    """Show validated supervisor heartbeats without replaying worker logs.
+
+    Stage changes appear immediately. An unchanged stage still reports its
+    elapsed wall time, so a long preparation does not look like a dead CLI.
+    A terminal gets at most one periodic line every five seconds; redirected
+    logs get one every thirty. Output failures never interrupt CUDA work.
+    """
+
+    def __init__(self, *, stream=None):
+        self.stream = sys.stderr if stream is None else stream
+        try:
+            terminal = self.stream.isatty()
+        except (AttributeError, OSError, ValueError):
+            terminal = False
+        self.interval = 5.0 if terminal else 30.0
+        self.started = time.monotonic()
+        self.last_print = float("-inf")
+        self.phase = None
+        self.enabled = True
+
+    def write(self, message: str) -> None:
+        if self.enabled:
+            try:
+                line(message, stream=self.stream)
+            except (OSError, ValueError):
+                self.enabled = False
+
+    def __call__(self, heartbeat) -> None:
+        now = time.monotonic()
+        phase = (heartbeat.started_at_utc, heartbeat.status)
+        if phase == self.phase and now - self.last_print < self.interval:
+            return
+        self.phase, self.last_print = phase, now
+        if heartbeat.status == "integrating":
+            message = (f"Forecast: {format_elapsed(heartbeat.model_elapsed_seconds)} "
+                       f"simulated; step {heartbeat.outer_step}")
+        elif heartbeat.status == "complete":
+            # A terminal heartbeat alone cannot establish a successful exit.
+            message = "Finishing forecast"
+        elif heartbeat.status.startswith("finalizing:"):
+            stage = heartbeat.status.removeprefix("finalizing:")
+            message = "Finishing: " + stage.replace("-", " ").replace("_", " ")
+        elif heartbeat.status == "failed":
+            message = "Forecast worker reported a failure; reading diagnostics"
+        else:
+            stage = heartbeat.status.removeprefix("preparing:")
+            label = {
+                "launch": "starting worker", "worker-start": "starting worker",
+                "prepare-case": "loading and preparing inputs",
+                "build-domain-tree": "initializing domains",
+                "resolve-schedule": "resolving forecast times",
+                "cold-start-wrfout": "writing initial output",
+                "restore-checkpoint": "restoring checkpoint",
+            }.get(stage, stage.replace("-", " ").replace("_", " "))
+            message = f"Preparing: {label}"
+        self.write(f"{message} | elapsed {format_elapsed(now - self.started)}")
 
 
 def line_buffer_stdout() -> None:
@@ -741,7 +851,7 @@ class TransferMonitor:
         self.close()
 
 
-__all__ = ["ByteCounter", "LOG_INTERVAL_S", "TRANSFER_EVENTS",
+__all__ = ["ByteCounter", "ForecastProgress", "format_elapsed", "LOG_INTERVAL_S", "TRANSFER_EVENTS",
            "TRANSFER_LOG_INTERVAL_S", "TRANSFER_TTY_INTERVAL_S",
            "TTY_INTERVAL_S", "TransferMonitor", "emit_event", "event_sink",
            "format_transfer_done_line", "line", "line_buffer_stdout"]

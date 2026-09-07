@@ -155,6 +155,10 @@ class StagedInputsMissing(SpeedrunRefusal):
     """The staged bytes a course consumes are not where the run points."""
 
 
+class ColdCacheRefusal(SpeedrunRefusal):
+    """``--cold-cache-dir`` names a directory this door will not empty."""
+
+
 # ---------------------------------------------------------------------------
 # Canonical bytes and digests
 # ---------------------------------------------------------------------------
@@ -833,8 +837,9 @@ __all__ = [
     "CAPSULE_FILENAME", "CAPSULE_SCHEMA_ID", "COMPARABILITY_FIELDS",
     "COMPILE_MODES", "COURSE_ASSET_DIR", "COURSE_TABLE_PATH",
     "ORCHESTRATION_STAGE", "OVER_ATTRIBUTION_CEILING",
-    "COURSE_TABLE_SCHEMA_ID", "CompileModeMismatch", "CourseAssetsMissing",
-    "CourseUnknown", "Incomparable", "NOT_SCREENED", "RecordVoid",
+    "COURSE_TABLE_SCHEMA_ID", "ColdCacheRefusal", "CompileModeMismatch",
+    "CourseAssetsMissing", "CourseUnknown", "Incomparable",
+    "NOT_SCREENED", "RecordVoid",
     "SCREENED", "SEAL_ALGORITHM", "SealBroken", "SpeedrunRefusal",
     "StagedInputsMissing", "VALID", "VOID", "assert_comparable",
     "assert_compile_mode", "assert_valid_record", "canonical_bytes",

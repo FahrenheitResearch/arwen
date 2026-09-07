@@ -1,11 +1,24 @@
-ArWen (Python package "gpuwm", preprocessor "rw-wps")
+ArWen companion data distribution (Python package "gpuwm-data")
 Copyright 2026 ArWen contributors
 
-Licensed under the Apache License, Version 2.0. Third-party datasets,
-tables, vendored components, and dependencies retain their own licenses
-and notices. Per-asset provenance (sources, generation recipes, SHA-256
-pins) is recorded in PROVENANCE.md and in the gpuwm/data/*/PROVENANCE.md
-files beside each packaged asset.
+Licensed under the Apache License, Version 2.0. The third-party datasets
+and tables packaged here retain their own licenses and notices. Per-asset
+provenance -- sources, generation recipes, SHA-256 pins -- is recorded in
+the PROVENANCE.md file beside each asset directory.
+
+This distribution is DATA. It contains no Python except one eleven-line
+__init__.py and a VERSION file, no compiled code, and no vendored
+dependency tree. Its NOTICE is therefore shorter than the gpuwm NOTICE and
+covers a different set of things; where a paragraph here has a fuller
+counterpart there, it says so.
+
+Where a licence requires its text to be reproduced rather than merely
+named, it is reproduced. The texts are in the licenses/ directory, which
+ships in both the wheel and the source distribution through the
+license-files declaration in pyproject.toml and lands in an installed
+wheel at gpuwm_data-<version>.dist-info/licenses/licenses/. Some also sit
+beside the data they belong to, which is where a reader looking at one
+directory rather than at the whole distribution will find them first.
 
 --------------------------------------------------------------------------
 
@@ -16,63 +29,98 @@ endorsed by the National Center for Atmospheric Research (NCAR) or the
 University Corporation for Atmospheric Research (UCAR). The Weather
 Research and Forecasting (WRF) model, developed at NCAR, is the
 transcription and verification authority for ArWen's WRF-derived
-mechanisms (WRF v4.6.1, https://github.com/wrf-model/WRF, released by
-UCAR as open source per its own notice).
+mechanisms (WRF v4.6.1, https://github.com/wrf-model/WRF).
 
-This distribution packages certain data assets generated with or copied
-from the WRF v4.6.1 distribution, including: Thompson microphysics
-lookup tables (generated with WRF's own table generator and
-SHA-256-pinned), Noah land-surface parameter tables (VEGPARM.TBL,
-SOILPARM.TBL, GENPARM.TBL; byte-identical to WRF's run directory), the
-Kain-Fritsch lookup table, an ERA5 Vtable, and the RRTMG radiation data
-files named below.
+WRF is not released under an open-source licence: UCAR places it in the
+public domain and requests a notice. That request is honoured here by
+reproduction rather than paraphrase. WRF v4.6.1 LICENSE.txt is at
+licenses/LICENSE-WRF-public-domain.txt and beside the packaged tables at
+gpuwm_data/data/thompson/LICENSE-WRF.txt, byte-identical to WRF's own
+(md5 ea0d72123846bafa972b29ca41f89b1a) and carrying the "WRF(R) is a
+registered trademark" line as UCAR writes it.
+
+An earlier version of this file said WRF was "released by UCAR as open
+source per its own notice". That was wrong in both halves -- WRF is not
+open source and UCAR's notice does not say it is -- and it is withdrawn.
+
+What this distribution packages from WRF: the Thompson microphysics
+lookup tables under gpuwm_data/data/thompson/tables/, generated with WRF's
+own table generator and SHA-256-pinned by
+gpuwm/core/thompson_contract.py in the companion package.
+
+UCAR's declaration disclaims UCAR's own claims. It cannot dispose of
+anyone else's, and one other claim reaches these tables; see "Numerical
+Recipes Software" below.
 
 --------------------------------------------------------------------------
 
-RRTMG (Atmospheric and Environmental Research, Inc.)
+Numerical Recipes Software
 
-The legacy-RRTMG radiation option transcribes WRF v4.6.1's RRTMG
-longwave and shortwave schemes and packages the RRTMG_LW_DATA and
-RRTMG_SW_DATA coefficient files and the ozone climatology files
-distributed with WRF. RRTMG was developed by Atmospheric and
-Environmental Research, Inc. (AER); its code and data carry AER's
-copyright and license notices, which are retained with the assets.
+The Thompson tables here are the OUTPUT of WRF's table generator, and that
+generator computes gamma functions with WRF's REAL FUNCTION GAMMLN, which
+phys/module_mp_thompson.F brackets with "(C) Copr. 1986-92 Numerical
+Recipes Software 2.02" immediately above and below.
+
+No Numerical Recipes code is in this distribution -- these are binary
+tables of numbers, not source -- so what is reproduced here is the notice
+and ArWen's position on it, not a licence over the bytes. Both are at
+licenses/NOTICE-Numerical-Recipes.txt, unchanged from the copy in the
+gpuwm distribution, where the transcription those tables came from lives.
+It is reproduced here because a table's provenance does not stop at the
+program that wrote it, and because a reader who finds the notice in one
+distribution should not have to guess whether it was meant to apply to the
+other.
 
 --------------------------------------------------------------------------
 
 RTE+RRTMGP
 
-The default radiation option uses k-distribution data from the
-RTE+RRTMGP project (https://github.com/earth-system-radiation),
-distributed under the BSD-3-Clause license, Copyright Atmospheric and
-Environmental Research and contributors. The license text is retained
-with the packaged data under gpuwm/data/rrtmgp.
+The k-distribution and cloud-optics files under gpuwm_data/data/rrtmgp/
+come from the earth-system-radiation rrtmgp-data repository and are BSD
+3-Clause, "Copyright (c) 2015-2018, Atmospheric and Environmental Research
+and Regents of the University of Colorado". That text ships beside the
+data at gpuwm_data/data/rrtmgp/LICENSE and again at
+licenses/LICENSE-RTE-RRTMGP-BSD-3-Clause.txt. Per-file upstream URLs, tag,
+commit and SHA-256 are in gpuwm_data/data/rrtmgp/PROVENANCE.md.
+
+The software that reads them -- about 5,700 lines under gpuwm/core/ -- is
+a different work with a different copyright line and is covered by the
+gpuwm distribution's NOTICE, not by this one.
 
 --------------------------------------------------------------------------
 
-wrf-rust
+Reference results under non-commercial terms
 
-Product rendering (gpuwm render) uses the "wrf-rust" Python package
-(imported as "wrf") as its diagnostic core. wrf-rust is a separate
-project with its own license and is installed via the optional
-[render] extra; it is not vendored in this distribution.
+The RFMIP clear-sky reference results
+(rfmip-clear-sky-reference-{lw,sw}-{up,down}.nc) are CC-BY-NC-SA-4.0:
+NonCommercial and ShareAlike, which is incompatible with Apache-2.0. They
+are excluded from BOTH built artifacts -- from the wheel by
+exclude-package-data and from the source distribution by the same entry,
+which setuptools applies to both -- so a `pip install gpuwm-data` never
+receives them. They remain in the public git repository as a verification
+fixture; the Apache-2.0 grant in the LICENSE file does not extend to them
+and is not offered over them. Their licence text ships at
+gpuwm_data/data/rrtmgp/LICENSE-CC-BY-NC-SA-4.0 so that PROVENANCE.md
+resolves.
+
+The related rfmip-clear-sky-inputs.nc carries an internal attribute naming
+CC-BY-4.0 and a link to CC-BY-SA-4.0. The ambiguity is recorded in
+PROVENANCE.md and both texts ship beside the file rather than one being
+chosen for the reader.
 
 --------------------------------------------------------------------------
 
-Vendored Rust crates
+Two entries this file used to carry, and why they are gone
 
-The GRIB decode workspace (tools/grib1_bridge) vendors its Rust
-dependency sources for offline, locked builds. Each vendored crate
-retains its own license; see tools/grib1_bridge/vendor.
-
---------------------------------------------------------------------------
-
-Data services (not redistributed)
-
-ArWen downloads or templates requests for data from NOAA (GFS via the
-NOMADS filter service and AWS Open Data; HRRR via AWS Open Data), from
-the Copernicus Climate Data Store (ERA5; use is subject to the
-Copernicus license and requires the user's own account), and relies on
-the user-staged NCAR WPS geographical dataset (WPS_GEOG) for static
-fields. None of these datasets are redistributed by this repository;
-their terms are between the user and the provider.
+  * RRTMG (AER). This distribution said "RRTMG was developed by
+    Atmospheric and Environmental Research, Inc. (AER); its code and data
+    carry AER's copyright and license notices, which are retained with the
+    assets." Two things were wrong. RRTMG_LW_DATA and RRTMG_SW_DATA are
+    unformatted Fortran binaries that carry no notice, so nothing was
+    being retained; and they are not in this distribution at all -- they
+    ship in the gpuwm wheel under gpuwm/data/wrf_radiation/, where AER's
+    notice and BSD-3-Clause grant are now reproduced beside them.
+  * Vendored Rust crates, wrf-rust, and the data-services paragraph. This
+    distribution vendors no crates, links no Rust, downloads nothing and
+    renders nothing. Those paragraphs were copied from the gpuwm NOTICE
+    and described that distribution, not this one.

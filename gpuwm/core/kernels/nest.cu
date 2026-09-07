@@ -192,14 +192,15 @@ extern "C" __global__ void nest_blend_terrain(
     const float* __restrict__ ter_interpolated,
     float* __restrict__ ter_input,
     int spec_bdy_width, int blend_width,
-    int nk, int ny, int nx)
+    int nk, int ny, int nx,
+    int domain_ny, int domain_nx, int j0, int i0)
 {
     size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     size_t total = (size_t)nk * ny * nx;
     if (tid >= total) return;
-    int i = (int)(tid % nx) + 1;              // WRF 1-based i
-    int j = (int)((tid / nx) % ny) + 1;       // WRF 1-based j
-    int ide = nx + 1, jde = ny + 1;
+    int i = (int)(tid % nx) + 1 + i0;        // WRF 1-based domain i
+    int j = (int)((tid / nx) % ny) + 1 + j0; // WRF 1-based domain j
+    int ide = domain_nx + 1, jde = domain_ny + 1;
     float fine = ter_input[tid];
     float coarse = ter_interpolated[tid];
     float r_blend_zones = 1.0f / (float)(blend_width + 1);     // :755
@@ -340,15 +341,15 @@ extern "C" __global__ void nest_copy_fcn(
     int ipos, int jpos,                // i/j_parent_start (1-based)
     int nri, int nrj, int spec_zone,
     int xstag, int ystag,
-    int nz, int nyp, int nxp, int nyc, int nxc)
+    int nz, int nyp, int nxp, int nyc, int nxc,
+    int parent_i0, int parent_j0, int child_i0, int child_j0,
+    int loop_i0, int loop_j0, int loop_ni, int loop_nj)
 {
     size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
-    int nide_span = xstag ? nxc - 1 : nxc;
-    int njde_span = ystag ? nyc - 1 : nyc;
-    int ci, cj, k;
-    if (!feedback_cell(tid, ipos, jpos, spec_zone, nide_span, njde_span,
-                       nri, nrj, xstag, ystag, nz, nyp, nxp, &ci, &cj, &k))
-        return;
+    if (tid >= (size_t)nz * loop_ni * loop_nj) return;
+    int ci = loop_i0 + (int)(tid % loop_ni) + 1;
+    int cj = loop_j0 + (int)((tid / loop_ni) % loop_nj) + 1;
+    int k = (int)(tid / ((size_t)loop_ni * loop_nj));
     bool odd = (nrj % 2) != 0;                                 // :1463
     int ni, nj, ij_lo, ij_hi, ij_stride, sub;
     float w;
@@ -396,10 +397,11 @@ extern "C" __global__ void nest_copy_fcn(
     for (int ij = ij_lo; ij <= ij_hi; ij += ij_stride) {
         int ipoints = (ij - 1) % nri + sub * (1 - nri / 2 - 1);
         int jpoints = (ij - 1) / nri + sub * (1 - nrj / 2 - 1);
-        acc = acc + w * nfld[I3(k, nj + jpoints - 1, ni + ipoints - 1,
+        acc = acc + w * nfld[I3(k, nj + jpoints - 1 - child_j0,
+                                ni + ipoints - 1 - child_i0,
                                 nyc, nxc)];                    // :1476-1477
     }
-    cfld[I3(k, cj - 1, ci - 1, nyp, nxp)] = acc;
+    cfld[I3(k, cj - 1 - parent_j0, ci - 1 - parent_i0, nyp, nxp)] = acc;
 }
 
 // copy_fcnm (interp_fcn.F:1747-1824): 1-pt masked-field feedback -- odd

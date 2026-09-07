@@ -1895,7 +1895,7 @@ fn read_array_f64_record_or_all(
     nc.read_array_f64(name).map_err(ImportError::from)
 }
 
-fn parse_utc_timestamp(value: &str) -> Option<i64> {
+pub(crate) fn parse_utc_timestamp(value: &str) -> Option<i64> {
     let trimmed = value.trim().trim_end_matches('\0').trim();
     if trimmed.is_empty() {
         return None;

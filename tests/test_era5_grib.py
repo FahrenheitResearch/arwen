@@ -4,10 +4,16 @@ Authority is the bundle ``Vtable.ERA5_CDO`` and its combined/per-time GRIB1
 files.  The bundled CDO-produced NetCDF files are an independent value and
 orientation oracle for the all-Rust bridge.
 """
+import gc
+import json
 import os
-from datetime import datetime
+import subprocess
+import sys
+import weakref
+from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
+from types import MappingProxyType
 
 import numpy as np
 import pytest
@@ -17,6 +23,9 @@ from gpuwm.ingest.grib import (
     build_rust_bridge,
     decode_era5_grib,
     parse_vtable,
+    _decode_bridge_partials,
+    _load_bridge_partials,
+    _valid_time,
 )
 
 
@@ -191,6 +200,258 @@ def test_snapshot_rejects_inconsistent_shapes_and_non_float64():
             snap.valid_time, snap.levels_hpa, snap.latitude, snap.longitude,
             {"PSFC": np.zeros((2, 3), dtype=np.float32)},
         )
+
+
+def _synthetic_partial(source, valid_time):
+    """One decoded product's contribution at one valid time.
+
+    The shape ``_load_bridge_partials`` hands the merge: pressure levels
+    already stacked, surface fields beside them, coordinates per file.
+    """
+
+    from gpuwm.ingest.grib import _PartialSnapshot
+
+    return _PartialSnapshot(
+        source=source,
+        valid_time=valid_time,
+        levels_hpa=(1000, 850),
+        latitude=np.array([25.0, 25.25], dtype=np.float64),
+        longitude=np.array([250.0, 250.25, 250.5], dtype=np.float64),
+        fields=MappingProxyType({
+            "T": np.arange(12, dtype=np.float64).reshape(2, 2, 3) + 250.0,
+            "PSFC": np.arange(6, dtype=np.float64).reshape(2, 3) + 90000.0,
+        }),
+    )
+
+
+def test_one_forcing_product_is_cached_twice_and_clearing_releases_both(
+        tmp_path, monkeypatch):
+    """The decode's host residency, and the release that ends it.
+
+    A run reaches this module TWICE for one product: the input catalog
+    decodes under its own time discovery (``valid_times=None``) and the
+    runtime decodes under the catalog's selection.  Those are different
+    cache keys, so the merged cache holds two DISJOINT frozen copies of
+    the same bytes -- every :class:`Era5Snapshot` field is copied in
+    ``__post_init__`` -- on top of the partials both were merged from,
+    and until ``clear_forcing_caches`` there was nothing in the package
+    that dropped any of it: a global 0.25 deg product stayed resident for
+    the life of the worker at three copies of 204 fields per valid time.
+
+    Probed by weak reference rather than by ``cache_info``, because the
+    question is what is still ALIVE.  Only the Rust bridge subprocess is
+    stubbed; ``cached_era5_forcing`` and the merge are the real ones.
+    """
+    from gpuwm.ingest import grib
+
+    grib_path = tmp_path / "era5.grb"
+    grib_path.write_bytes(b"stub")
+    vtable_path = tmp_path / "Vtable"
+    vtable_path.write_text("stub\n", encoding="utf-8")
+    bridge_path = tmp_path / "bridge"
+    bridge_path.write_text("stub\n", encoding="utf-8")
+    times = tuple(datetime(1974, 4, 3, 12) + timedelta(hours=6 * step)
+                  for step in range(3))
+    probes = {}
+
+    def bridge_partials(path, entries, executable):
+        partials = tuple(_synthetic_partial(path, value) for value in times)
+        probes["partials"] = weakref.ref(partials[0].fields["T"])
+        return partials
+
+    monkeypatch.setattr(grib, "parse_vtable", lambda path: ())
+    monkeypatch.setattr(grib, "_decode_bridge_partials", bridge_partials)
+    try:
+        discovered = grib.cached_era5_forcing(
+            [grib_path], vtable_path, bridge=bridge_path,
+            content_sha256=["ab" * 32])
+        selected = grib.cached_era5_forcing(
+            [grib_path], vtable_path, bridge=bridge_path,
+            content_sha256=["ab" * 32], valid_times=times)
+        assert discovered is not selected
+        first = discovered.snapshots[0].fields["T"]
+        second = selected.snapshots[0].fields["T"]
+        assert not np.shares_memory(first, second)
+        np.testing.assert_array_equal(first, second)
+        probes["discovered"] = weakref.ref(first)
+        probes["selected"] = weakref.ref(second)
+        del discovered, selected, first, second
+        gc.collect()
+        assert all(probe() is not None for probe in probes.values()), (
+            "the caches are what hold the decode; if this fails the test "
+            "no longer measures a release")
+        grib.clear_forcing_caches()
+        gc.collect()
+        assert not any(probe() is not None for probe in probes.values()), (
+            "clear_forcing_caches left the decode resident")
+    finally:
+        grib.clear_forcing_caches()
+
+
+# --- Bridge-dump gates -------------------------------------------------
+#
+# These build the ``gpuwm GRIB1 dump format version 1`` the Rust bridge emits
+# (``tools/grib1_bridge/src/main.rs``) directly, so the decoder's own gates can
+# be fed a definitely-wrong dump without a GRIB fixture.
+
+DUMP_SHAPE = (2, 3)
+
+
+def _bridge_message(**overrides):
+    message = {
+        "offset_values": 0, "count": DUMP_SHAPE[0] * DUMP_SHAPE[1],
+        "parameter": 167, "level_type": 1, "level": 0,
+        "table_version": 128, "center": 98,
+        "nx": DUMP_SHAPE[1], "ny": DUMP_SHAPE[0], "scan_mode": 0,
+        "year": 1974, "month": 4, "day": 3, "hour": 12, "minute": 0,
+        "time_unit": 1, "p1": 0, "p2": 0,
+        "time_range_indicator": 0, "has_bitmap": False,
+    }
+    message.update(overrides)
+    return message
+
+
+def _write_bridge_dump(directory, messages, values):
+    directory.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "format_version": 1, "edition": 1, "dtype": "<f8",
+        "shape": list(DUMP_SHAPE),
+        "latitude": [25.0 + 0.25 * j for j in range(DUMP_SHAPE[0])],
+        "longitude": [250.0 + 0.25 * i for i in range(DUMP_SHAPE[1])],
+        "messages": list(messages),
+    }
+    (directory / "metadata.json").write_text(
+        json.dumps(metadata), encoding="utf-8")
+    np.asarray(values, dtype="<f8").tofile(directory / "values.f64")
+    return directory
+
+
+def _bridge_vtable(path):
+    path.write_text(
+        "GRIB1| Level| From | To | metgrid | metgrid | Description |GRIB2|\n"
+        "Param| Type |Level1|Level2| Name   | Units   |             |Discp|\n"
+        "-----+------+------+------+--------+---------+-------------+-----+\n"
+        " 130 | 100  |   *  |      | TT     | K       | temperature |  0  |\n"
+        " 167 |  1   |   0  |      | TT     | K       | 2 m temp    |  0  |\n"
+        " 134 |  1   |   0  |      | PSFC   | Pa      | surface p   |  0  |\n"
+        "-----+------+------+------+--------+---------+-------------+-----+\n",
+        encoding="utf-8",
+    )
+    return parse_vtable(path)
+
+
+def test_valid_time_reads_a_16_bit_p1_under_time_range_10():
+    # WMO Table 5 indicator 10 spans PDS octets 19-20 as one 16-bit P1, so a
+    # 24-hour lead in hours is p1=0x00, p2=0x18.  Reading octet 19 alone
+    # timestamps the record at the reference hour, 24 h early.
+    message = _bridge_message(time_range_indicator=10, p1=0x00, p2=0x18)
+    assert _valid_time(message) == datetime(1974, 4, 4, 12)
+    instantaneous = _bridge_message(time_range_indicator=0, p1=6)
+    assert _valid_time(instantaneous) == datetime(1974, 4, 3, 18)
+
+
+def test_valid_time_refuses_an_interval_time_range_indicator():
+    # Indicators 2/3/4/5 are valid at reference + P2 and carry interval
+    # quantities; binding one to reference + P1 files an accumulation as an
+    # instantaneous analysis.
+    for indicator in (2, 3, 4, 5):
+        with pytest.raises(ValueError, match="time range indicator"):
+            _valid_time(_bridge_message(
+                time_range_indicator=indicator, p1=0, p2=6))
+
+
+def test_bridge_dump_with_fewer_messages_than_envelopes_is_refused(
+        tmp_path, monkeypatch):
+    # Negative control for the silently dropped GRIB1 message: the bridge
+    # skips a message whose sections do not parse and still exits 0, so a dump
+    # that is short by one message must not read as a complete decode.
+    entries = _bridge_vtable(tmp_path / "Vtable")
+    prepared = _write_bridge_dump(
+        tmp_path / "prepared", [_bridge_message()], np.full(6, 288.0))
+    stub = tmp_path / "stub_bridge.py"
+    stub.write_text(
+        "import shutil, sys\n"
+        f"shutil.copytree({str(prepared)!r}, sys.argv[2])\n",
+        encoding="utf-8",
+    )
+    # A real child process still writes the incomplete dump. Launch its
+    # Python script explicitly: Windows CreateProcess cannot execute a
+    # shebang script, and a WinError 193 would never test the refusal.
+    run_process = subprocess.run
+
+    def run_python_stub(command, **kwargs):
+        assert command[0] == str(stub)
+        return run_process([sys.executable, *command], **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run_python_stub)
+    envelope = b"GRIB" + (12).to_bytes(3, "big") + b"\x01" + b"7777"
+    grib = tmp_path / "two_messages.grb"
+    grib.write_bytes(envelope * 2)
+
+    with pytest.raises(ValueError, match="dropped by the decoder"):
+        _decode_bridge_partials(grib, entries, stub)
+
+
+def test_bridge_message_grid_must_match_the_primary_axes(tmp_path):
+    # A transposed message carries the same point count as the primary grid,
+    # so only a shape comparison can catch it before the reshape.
+    entries = _bridge_vtable(tmp_path / "Vtable")
+    dump = _write_bridge_dump(
+        tmp_path / "dump",
+        [_bridge_message(nx=DUMP_SHAPE[0], ny=DUMP_SHAPE[1])],
+        np.full(6, 288.0),
+    )
+    with pytest.raises(ValueError, match="not the primary grid"):
+        _load_bridge_partials(dump, entries, tmp_path / "source.grb")
+
+
+def test_bridge_messages_must_agree_on_their_scanning_mode(tmp_path):
+    # Two messages of the same shape whose scan modes disagree cannot share
+    # one latitude/longitude axis pair: one of them is stored the other way up.
+    entries = _bridge_vtable(tmp_path / "Vtable")
+    dump = _write_bridge_dump(
+        tmp_path / "dump",
+        [
+            _bridge_message(parameter=167, scan_mode=0),
+            _bridge_message(parameter=134, scan_mode=0x40, offset_values=6),
+        ],
+        np.concatenate([np.full(6, 288.0), np.full(6, 98000.0)]),
+    )
+    with pytest.raises(ValueError, match="disagree on GRIB1 scanning mode"):
+        _load_bridge_partials(dump, entries, tmp_path / "source.grb")
+
+
+def test_non_finite_values_without_a_bitmap_are_refused(tmp_path):
+    # No bitmap means every grid point was coded, so a non-finite cell has no
+    # provenance record and must not reach the initial condition.
+    entries = _bridge_vtable(tmp_path / "Vtable")
+    values = np.full(6, 288.0)
+    values[2] = np.nan
+    dump = _write_bridge_dump(
+        tmp_path / "dump", [_bridge_message(has_bitmap=False)], values)
+    with pytest.raises(ValueError, match="non-finite values"):
+        _load_bridge_partials(dump, entries, tmp_path / "source.grb")
+
+
+def test_a_bitmapped_pressure_field_records_its_missing_provenance(tmp_path):
+    # The surface branch recorded bitmap provenance and the pressure branch
+    # did not, so ``Era5DecodeResult``'s mask-equals-non-finite contract was
+    # structurally unreachable for half the inventory.
+    entries = _bridge_vtable(tmp_path / "Vtable")
+    values = np.full(6, 250.0)
+    values[4] = np.nan
+    dump = _write_bridge_dump(
+        tmp_path / "dump",
+        [_bridge_message(parameter=130, level_type=100, level=850,
+                         has_bitmap=True)],
+        values,
+    )
+    (partial,) = _load_bridge_partials(
+        dump, entries, tmp_path / "source.grb")
+    mask = partial.bitmap_missing["T"]
+    assert mask.shape == (1, DUMP_SHAPE[0], DUMP_SHAPE[1])
+    np.testing.assert_array_equal(mask, ~np.isfinite(partial.fields["T"]))
+    assert mask.sum() == 1
 
 
 @lru_cache(maxsize=1)

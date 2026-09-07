@@ -1011,10 +1011,40 @@ def test_an_impossible_vertical_grid_is_refused_for_28():
 
 
 def test_the_direct_hierarchy_path_knows_28():
-    from gpuwm.hrrr_hierarchy_direct import _SUPPORTED_MICROPHYSICS
+    """The preparation gate delegates edge capability to the shared resolver.
 
-    assert 28 in _SUPPORTED_MICROPHYSICS
-    assert {1, 6, 8, 10, 18} <= _SUPPORTED_MICROPHYSICS
+    The source-specific selector allowlist was retired with configured
+    physics preparation. Exercise the actual gate, including its mixed-edge
+    refusal, so a replacement private constant cannot stand in for admission.
+    """
+    from dataclasses import asdict, replace
+    from gpuwm.experiment import DomainConfig, ProjectionConfig
+    from gpuwm.hrrr_hierarchy_direct import _supported_hierarchy_slice
+
+    projection = ProjectionConfig(map_proj="lambert", ref_lat=35.0,
+        ref_lon=-98.0, truelat1=38.5, truelat2=38.5, stand_lon=-97.5)
+    root_run = _cfg(nx=64, ny=64, nz=49, grid_id=1, specified=True,
+                    nested=False, spec_zone=1, relax_zone=4)
+    target = SimpleNamespace(**asdict(projection), nx=64, ny=64, nz=49,
+        dx_m=root_run.dx, dy_m=root_run.dy, time_step_exact=root_run.dt,
+        spec_bdy_width=5, spec_zone=1, relax_zone=4)
+    for mp in (1, 6, 8, 10, 18, 28):
+        parent_run = replace(root_run, mp_physics=mp)
+        child_run = replace(parent_run, grid_id=2, nx=30, ny=30,
+            dx=parent_run.dx / 3, dy=parent_run.dy / 3,
+            dt=parent_run.dt / 3, specified=False, nested=True)
+        parent = DomainConfig(1, 0, 1, 1, 1, 1, 300.0, parent_run)
+        child = DomainConfig(2, 1, 10, 10, 3, 3, 300.0, child_run)
+        exp = SimpleNamespace(domains=(parent, child), feedback=0,
+            smooth_option=0, run_seconds=10.0, projection=projection,
+            spec_bdy_width=5)
+        _supported_hierarchy_slice(exp, target, forcing_hours=(0, 1))
+
+    # MP28 remains admitted on same-scheme nests only: no number/aerosol
+    # moment mapping has been defined for a mixed MP28 edge.
+    exp.domains = (parent, replace(child, run=replace(child.run, mp_physics=8)))
+    with pytest.raises(ValueError, match="MP28|mp_physics=28"):
+        _supported_hierarchy_slice(exp, target, forcing_hours=(0, 1))
 
 
 def test_the_wrf_authority_matrix_cites_the_registry_line_for_28():

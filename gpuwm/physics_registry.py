@@ -958,11 +958,13 @@ def validate_physics_plan(
                 domain_template_ids.append(template_id)
                 if route_declares_templates and template_id not in (
                         route_source_templates | route_expert_templates):
-                    errors.append(
+                    warnings.append(
                         _issue(
-                            "template-route",
+                            "template-route-evidence",
                             f"{base_path}.template_id",
-                            f"template {template_id!r} is not registered for this source/runner route",
+                            f"template {template_id!r} has no declared "
+                            "evidence entry for this source/runner route; "
+                            "the resolved runtime settings still apply",
                         )
                     )
                 elif template_id in route_expert_templates:
@@ -976,12 +978,13 @@ def validate_physics_plan(
                             )
                         )
                     elif route_expert_acknowledgement not in acknowledged:
-                        errors.append(
+                        warnings.append(
                             _issue(
-                                "expert-acknowledgement-required",
+                                "expert-acknowledgement-advisory",
                                 f"{base_path}.template_id",
-                                f"template {template_id!r} is an expert-only "
-                                f"template; the plan must carry "
+                                f"template {template_id!r} carries an "
+                                f"unacknowledged evidence advisory; it can "
+                                f"run. To acknowledge it, add "
                                 f"acknowledgements "
                                 f"[{route_expert_acknowledgement!r}]",
                             )

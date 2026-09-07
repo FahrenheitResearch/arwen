@@ -1,5 +1,6 @@
 use crate::color::Rgba;
 use crate::colormap::{LevelDensity, RenderDensity};
+use crate::theme::{PresentationTheme, RenderTheme, active_theme};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +246,10 @@ pub struct RenderPresentation {
     pub chrome: ChromeStyle,
     pub colorbar: ColorbarPresentation,
     pub layout: LayoutMetrics,
+    /// The active theme's per-presentation overrides; all `None` (and
+    /// `active == false`) when no theme is installed, which is every
+    /// render that predates themes.
+    pub theme: PresentationTheme,
 }
 
 impl RenderPresentation {
@@ -267,7 +272,80 @@ impl RenderPresentation {
         };
         presentation.plot_style = plot_style;
         presentation.apply_static_plot_style();
+        presentation.apply_theme(active_theme());
         presentation
+    }
+
+    /// Lay `theme` over this presentation: surface, chrome inks, colorbar
+    /// chrome and the per-role basemap overrides.  A default theme leaves
+    /// every field exactly as the mode and plot style set it.
+    pub fn apply_theme(&mut self, theme: &RenderTheme) {
+        if theme.is_default() {
+            return;
+        }
+        if let Some(canvas) = theme.canvas {
+            self.canvas_background = canvas;
+        }
+        if let Some(map) = theme.map {
+            self.map_background = map;
+        }
+        if let Some(ink) = theme.title_ink {
+            self.chrome.title_color = ink;
+        }
+        if let Some(ink) = theme.subtitle_ink {
+            self.chrome.subtitle_color = ink;
+        }
+        if let Some(frame) = theme.presentation.frame {
+            if self.chrome.frame_color.is_some() {
+                self.chrome.frame_color = Some(frame);
+            }
+        }
+        if let Some(color) = theme.colorbar_frame {
+            self.colorbar.frame_color = color;
+        }
+        if let Some(color) = theme.colorbar_divider {
+            self.colorbar.divider_color = color;
+        }
+        if let Some(color) = theme.colorbar_tick {
+            self.colorbar.tick_color = color;
+        }
+        if let Some(color) = theme.colorbar_label {
+            self.colorbar.label_color = color;
+        }
+        if let Some(boundary) = self.domain_boundary.as_mut() {
+            if let Some(frame) = theme.presentation.frame {
+                boundary.color = frame;
+            }
+        }
+        self.theme = theme.presentation;
+    }
+
+    /// The theme's fill for a basemap polygon role, when it names one.
+    fn theme_polygon(self, role: PolygonRole) -> Option<Rgba> {
+        if !self.theme.active {
+            return None;
+        }
+        match role {
+            PolygonRole::Ocean => self.theme.ocean,
+            PolygonRole::Land => self.theme.land,
+            PolygonRole::Lake => self.theme.lake,
+            PolygonRole::Generic => None,
+        }
+    }
+
+    /// The theme's ink for a linework role, when it names one.
+    fn theme_linework(self, role: LineworkRole) -> Option<Rgba> {
+        if !self.theme.active {
+            return None;
+        }
+        match role {
+            LineworkRole::Coast => self.theme.coast,
+            LineworkRole::Lake => self.theme.lake_line,
+            LineworkRole::International => self.theme.international,
+            LineworkRole::State => self.theme.state,
+            LineworkRole::County => self.theme.county,
+            LineworkRole::Generic => None,
+        }
     }
 
     fn apply_static_plot_style(&mut self) {
@@ -324,6 +402,12 @@ impl RenderPresentation {
     }
 
     pub fn polygon_style(self, role: PolygonRole, fallback: Rgba) -> PolygonStyle {
+        if let Some(color) = self.theme_polygon(role) {
+            return PolygonStyle {
+                visible: true,
+                color,
+            };
+        }
         if self.plot_style.uses_clean_atlas_presentation() {
             return clean_atlas_polygon_style(self.mode, role, fallback);
         }
@@ -432,6 +516,27 @@ impl RenderPresentation {
         fallback: Rgba,
         fallback_width: u32,
     ) -> LineworkStyle {
+        let mut style = self.untheme_linework_style(role, fallback, fallback_width);
+        if let Some(color) = self.theme_linework(role) {
+            // The theme names the ink; the role keeps its width, and its
+            // alpha when the theme colour is opaque.
+            let alpha = if color.a == 255 { style.color.a } else { color.a };
+            style.color = Rgba::with_alpha(color.r, color.g, color.b, alpha);
+        }
+        if role == LineworkRole::County {
+            if let Some(visible) = self.theme.county_visible.filter(|_| self.theme.active) {
+                style.visible = visible;
+            }
+        }
+        style
+    }
+
+    fn untheme_linework_style(
+        self,
+        role: LineworkRole,
+        fallback: Rgba,
+        fallback_width: u32,
+    ) -> LineworkStyle {
         if self.plot_style.uses_clean_atlas_presentation() {
             return clean_atlas_linework_style(self.mode, role, fallback, fallback_width);
         }
@@ -486,10 +591,11 @@ impl RenderPresentation {
     }
 
     pub fn domain_frame_style(self, requested: Rgba, requested_width: u32) -> LineworkStyle {
+        let frame = self.theme.frame.filter(|_| self.theme.active);
         if !self.plot_style.uses_clean_atlas_presentation() {
             return LineworkStyle {
                 visible: true,
-                color: requested,
+                color: frame.unwrap_or(requested),
                 width: requested_width.max(1),
             };
         }
@@ -500,12 +606,16 @@ impl RenderPresentation {
         };
         LineworkStyle {
             visible: true,
-            color: Rgba::with_alpha(18, 24, 32, 235),
+            color: frame.unwrap_or(Rgba::with_alpha(18, 24, 32, 235)),
             width,
         }
     }
 
     pub fn contour_color(self, requested: Rgba) -> Rgba {
+        self.theme.substitute_dark_ink(self.untheme_contour_color(requested))
+    }
+
+    fn untheme_contour_color(self, requested: Rgba) -> Rgba {
         match self.mode {
             ProductVisualMode::UpperAirAnalysis | ProductVisualMode::OverlayAnalysis => {
                 Rgba::new(30, 36, 44)
@@ -523,6 +633,10 @@ impl RenderPresentation {
     }
 
     pub fn barb_color(self, requested: Rgba) -> Rgba {
+        self.theme.substitute_dark_ink(self.untheme_barb_color(requested))
+    }
+
+    fn untheme_barb_color(self, requested: Rgba) -> Rgba {
         match self.mode {
             ProductVisualMode::UpperAirAnalysis | ProductVisualMode::OverlayAnalysis => {
                 Rgba::new(28, 34, 42)
@@ -808,6 +922,7 @@ fn filled_meteorology() -> RenderPresentation {
         chrome: common_chrome(TitleAnchor::Left, None),
         colorbar: common_colorbar(),
         layout: normal_layout(),
+        theme: PresentationTheme::default(),
     }
 }
 
@@ -821,6 +936,7 @@ fn upper_air_analysis() -> RenderPresentation {
         chrome: common_chrome(TitleAnchor::Left, None),
         colorbar: common_colorbar(),
         layout: normal_layout(),
+        theme: PresentationTheme::default(),
     }
 }
 
@@ -834,6 +950,7 @@ fn overlay_analysis() -> RenderPresentation {
         chrome: common_chrome(TitleAnchor::Left, None),
         colorbar: common_colorbar(),
         layout: normal_layout(),
+        theme: PresentationTheme::default(),
     }
 }
 
@@ -847,6 +964,7 @@ fn severe_diagnostic() -> RenderPresentation {
         chrome: common_chrome(TitleAnchor::Left, None),
         colorbar: common_colorbar(),
         layout: normal_layout(),
+        theme: PresentationTheme::default(),
     }
 }
 
@@ -860,6 +978,7 @@ fn panel_member() -> RenderPresentation {
         chrome: common_chrome(TitleAnchor::Left, None),
         colorbar: common_colorbar(),
         layout: compact_layout(),
+        theme: PresentationTheme::default(),
     }
 }
 

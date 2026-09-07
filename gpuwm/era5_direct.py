@@ -63,8 +63,7 @@ from gpuwm.ingest.soil import soil_source_orography
 from gpuwm.ingest.soil_downscale import (
     declared_soil_texture_downscale, soil_mesh_plan_from_case)
 from gpuwm.ingest.water_overlay import (
-    load_water_temperature_overlay,
-    overlay_snapshots,
+    load_bound_water_overlay, overlay_snapshot_sequence, verify_overlay_sequence,
 )
 from gpuwm.native_domain_artifacts import _atomic_staging_sibling
 from gpuwm.native_wrf_contract import (
@@ -388,14 +387,16 @@ def prepare_era5_wrf(
 
     total_started = time.perf_counter()
     exp, declared = load_era5_adapter_config(paths["experiment_config"])
+    from gpuwm.case_data import preparation_case_policy
+    case_policy = preparation_case_policy(declared)
+    from gpuwm.static.highres_production import (
+        load_static_highres, apply_prepared_highres, static_highres_identity)
+    static_highres = load_static_highres(paths["experiment_config"])
     from gpuwm.experiment import (
         refuse_unrouted_perturbation, refuse_unrouted_spawn,
     )
     refuse_unrouted_perturbation(exp, "ERA5-direct prepared-cache")
     refuse_unrouted_spawn(exp, "ERA5-direct prepared-cache")
-    from gpuwm.static.highres_production import refuse_inert_highres
-    refuse_inert_highres(paths["experiment_config"],
-                         lane="ERA5-direct adapter")
     # A present [case_data] defaults the adapter inputs the caller left
     # unset, so the wizard's one-file config is self-sufficient.  An
     # explicit argument always wins, and an explicitly passed input stays
@@ -488,6 +489,10 @@ def prepare_era5_wrf(
                 paths["wps_namelist"], Path(geog_root), (1,))
             landuse_attrs = geog_selection_from_catalog(
                 catalog, 1).landuse_global_attrs()
+    static, root_static_receipt = apply_prepared_highres(
+        static, grid, config=static_highres, domain_id=1,
+        case_date=exp.start_time.date(), landuse_attrs=landuse_attrs,
+        baseline_receipt=root_static_receipt)
     source_terrain = (
         None if source_orography is None
         else _load_source_orography(
@@ -501,6 +506,11 @@ def prepare_era5_wrf(
               else None))
     water_statics = _water_temperature_statics(
         static, landuse_attrs, water_temperature_policy)
+    if (water_statics is None and water_temperature_policy != "wrf_compat"
+            and (water_temperature_policy_declared is not None
+                 or water_temperature_overlay is not None)):
+        raise ValueError("declared water-temperature policy needs the selected land-use "
+                         "table's ISLAKE metadata; provide --geog-root with this static cache")
     if water_statics is None:
         # LOUD, and the coherent receipt is NOT printed: a prebuilt static
         # NPZ is numeric fields only, so with no geog root there is no
@@ -559,12 +569,8 @@ def prepare_era5_wrf(
     # the snapshots that feed BOTH the single-domain loop and the nested
     # hierarchy, before any horizontal interpolation.  Absent, this is
     # the identity: the same tuple object flows onward.
-    water_overlay = (
-        None if water_temperature_overlay is None
-        else load_water_temperature_overlay(
-            Path(water_temperature_overlay)))
-    snapshots, water_overlay_receipt = overlay_snapshots(
-        snapshots, water_overlay)
+    water_overlay, water_file_binding = load_bound_water_overlay(water_temperature_overlay)
+    snapshots = overlay_snapshot_sequence(snapshots, water_overlay, binding=water_file_binding)
     source_inventory = tuple(snapshots[0].fields) if snapshots else ()
     source_units = dict(canonical_units(parse_vtable(paths["vtable"])))
     has_invariant_orography = (
@@ -671,7 +677,7 @@ def prepare_era5_wrf(
         initialized = initialize_real(
             met, cfg, coord, static["HGT_M"], grid=grid,
             source_orography=source_terrain,
-            p_top=exp.vertical.p_top, sfcp_to_sfcp=True,
+            p_top=exp.vertical.p_top, sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
             preprocess_backend=preprocess,
             state_backend="preprocess")
         initialized.state.set_map_coriolis(
@@ -743,14 +749,17 @@ def prepare_era5_wrf(
     # LOUD when configured, absent when not: the overlay binding joins
     # the source identity only when an overlay was applied, so the
     # prepared cache identity moves exactly when the data does.
-    water_overlay_binding = (
-        {} if water_overlay_receipt is None
-        else {"water_temperature_overlay": {
-            **water_overlay_receipt,
-            "sha256": _sha256(Path(water_temperature_overlay)),
-        }})
+    water_overlay_receipt = verify_overlay_sequence(snapshots)
+    water_overlay_binding = ({} if water_overlay_receipt is None else
+                             {"water_temperature_overlay": water_overlay_receipt})
     native_source_identity = {
         "adapter": "era5-grib1-direct-v1",
+        **({"static_highres": static_highres_identity(static_highres)}
+           if static_highres is not None else {}),
+        "preparation_case_policy": {**case_policy,
+            "water_temperature_policy": water_temperature_policy,
+            "water_temperature_overlay": (None if water_temperature_overlay is None
+                else str(Path(water_temperature_overlay).resolve()))},
         "input_manifest_schema": manifest["schema"],
         "input_manifest_sha256": input_manifest_digest,
         "decoder": {
@@ -822,8 +831,12 @@ def prepare_era5_wrf(
                 soil_texture_downscale=declared_soil_texture_downscale(
                     declared),
                 statics_corridor=statics_corridor,
+                static_highres=static_highres,
+                sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
+                water_temperature_policy=water_temperature_policy,
             )
             hierarchy_seconds = time.perf_counter() - hierarchy_started
+            verify_overlay_sequence(snapshots)
             final_manifest = _verify_input_manifest(
                 Path(input_manifest), input_manifest_digest, paths)
             if final_manifest != manifest:
@@ -946,6 +959,7 @@ def prepare_era5_wrf(
                 for name, details in export_receipt["files"].items()
             },
         }
+        verify_overlay_sequence(snapshots)
         proof = {
             "schema": "gpuwm-era5-direct-wrf-proof-v2",
             "status": "READY_NOT_YET_STOCK_WRF_GATED",

@@ -11,6 +11,7 @@ changes the scientific support matrix.
 
 `install.sh` (POSIX) and `install.ps1` (PowerShell) at the repository root
 perform the whole developer install: create `.venv` if absent, install
+the matching data companion with `pip install -e gpuwm-data`, then install
 `-e '.[gpu-cu12,render]'` (or `gpu-cu13`) into it, stage the externalized Thompson tables
 with `gpuwm fetch-tables` (downloads only what is absent -- ~243 MiB
 from a checkout -- SHA-256-verified against the packaged pins before
@@ -26,7 +27,8 @@ GRIB bridges (`tools/grib1_bridge`) and the production render engine
 renderer build; until a render engine exists `gpuwm render` REFUSES,
 naming `gpuwm fetch-bridges` — weather-field product plots come from
 `rw_wrfbatch`, and `--engine matplotlib` is a named workaround that
-announces itself, not an automatic fallback), and
+announces itself, not an automatic fallback), build the terminal workspace
+in `tools/arwen-tui` with the same locked offline command, and
 finish with `gpuwm doctor`, whose exit status the script propagates.
 
 A pip install needs no toolchain for either half: `gpuwm fetch-bridges`

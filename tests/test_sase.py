@@ -585,7 +585,6 @@ _SASE_REQUIRED_DEVIATIONS = [
     ("km_opt", 4),
     ("khdif", 1.0),
     ("kvdif", 0.5),
-    ("bldt", 10.0),
 ]
 
 
@@ -1811,7 +1810,7 @@ def test_sase_driver_dispatch_and_tendency_accumulators(monkeypatch):
     from gpuwm.verify.sase_ref import E_MIN
 
     calls = []
-    physics, state, cfg, driver = _sase_shim_driver(monkeypatch, calls)
+    physics, state, cfg, driver = _sase_shim_driver(monkeypatch, calls, mp_physics=10)
     tend = driver.compute(state, cfg)
 
     assert "ysu" not in calls and "sase_step" in calls
@@ -2213,9 +2212,8 @@ def test_sase_surface_e_source_closed_form(monkeypatch):
     assert threaded.tobytes() == got.tobytes()
 
 
-def test_sase_requires_bldt_zero(monkeypatch):
-    """Positive bldt would carry the unserialized held rw across steps;
-    initialize_physics rejects it loudly."""
+def test_sase_positive_bldt_has_an_eager_held_w_carrier(monkeypatch):
+    """A skipped PBL call now has canonical, restart-carried momentum."""
     import gpuwm.core.physics as physics
     import gpuwm.core.state as state_module
 
@@ -2224,21 +2222,20 @@ def test_sase_requires_bldt_zero(monkeypatch):
     monkeypatch.setattr(physics, "cp", shim)
     cfg = _sase_cfg(bldt=5.0)
     state = state_module.DomainState(cfg)
-    with pytest.raises(ValueError, match="bldt"):
-        physics.initialize_physics(state, cfg)
+    driver = physics.initialize_physics(state, cfg)
+    assert driver.pbl_tendencies.rw.shape == state.w.shape
+    assert not driver.pbl_tendencies.rw.any()
 
 
-def test_sase_restart_inventory_shape_is_unchanged(monkeypatch):
-    """rw is a plain attribute, never a dataclass field: the tendency
-    component manifest, the PhysicsTendencies field set, and the driver
-    manifest keys are all byte-identical to S3-5's inventory."""
+def test_sase_restart_inventory_declares_optional_vertical_momentum(monkeypatch):
+    """The optional z-face tendency belongs to the shared field manifest."""
     import dataclasses
 
     import gpuwm.core.physics as physics
     from gpuwm.io import restart
 
     assert restart.TENDENCY_COMPONENTS == (
-        "ru", "rv", "rtheta", "rqv", "rqc", "rqr", "rqi", "rqs")
+        "ru", "rv", "rtheta", "rqv", "rqc", "rqr", "rqi", "rqs", "rw")
     fields = {f.name for f in dataclasses.fields(physics.PhysicsTendencies)}
     assert fields == set(restart.TENDENCY_COMPONENTS)
     assert "sase_active" in restart.DRIVER_REBUILT_ATTRS
@@ -2248,7 +2245,7 @@ def test_sase_restart_inventory_shape_is_unchanged(monkeypatch):
     _, state, cfg, driver = _sase_shim_driver(monkeypatch, calls)
     driver.compute(state, cfg)
     manifest = restart._driver_manifest(driver)
-    assert not any(key.endswith("/rw") for key in manifest)
+    assert manifest["driver/pbl_tendencies/rw"].shape == state.w.shape
 
 
 def test_dycore_admits_km_opt_zero_only_with_sase():
@@ -11843,7 +11840,7 @@ def test_the_documented_configuration_is_the_one_the_loader_admits(tmp_path):
     because no other test reads prose.  This one lifts the fenced block
     out of the published page and hands it to the real loader.
 
-    SIX MUTATION CONTROLS, one per documented requirement, each watched
+    MUTATION CONTROLS, one per documented requirement, each watched
     being REFUSED.  The page prints a table saying "none of these
     companions is taste, each is refused at config load".  Without the
     controls this test would still pass against a loader that enforced
@@ -11871,13 +11868,12 @@ def test_the_documented_configuration_is_the_one_the_loader_admits(tmp_path):
     # printed a YSU config beside this prose would pass a parse check.
     assert tomllib.loads(text)["run"]["bl_pbl_physics"] == SASE_PBL_SCHEME
 
-    # -- the six documented requirements, each removed in turn ----------
+    # -- documented requirements, each removed in turn ------------------
     refused = []
     mutations = {
         "km_opt": ("km_opt = 0", "km_opt = 4"),
         "khdif": ("khdif = 0.0", "khdif = 100.0"),
         "kvdif": ("kvdif = 0.0", "kvdif = 100.0"),
-        "bldt": ("bldt = 0.0", "bldt = 300.0"),
         "sf_sfclay_physics": ("sf_sfclay_physics = 91",
                               "sf_sfclay_physics = 0"),
         "moist": ("moist = true", "moist = false"),
@@ -11918,8 +11914,8 @@ def test_the_real_data_path_the_page_prints_is_two_edits_and_no_more():
     of the closure's structural requirements the emitted config already
     satisfies and requires that set to be EXACTLY the complement of the
     two the page names.  A wizard default that drifts -- radiation
-    turning ``moist`` off, a profile that starts carrying a nonzero
-    ``bldt`` -- turns the page's instruction into a lie and turns this
+    turning ``moist`` off or dropping its surface layer -- turns the
+    page's instruction into a lie and turns this
     red, which a test that merely asserted "km_opt and bl_pbl_physics
     are wrong" would not.
     """

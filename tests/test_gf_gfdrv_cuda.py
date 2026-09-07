@@ -4,9 +4,22 @@ The oracle is gf-levels.csv / gf-surface.csv -- GFDRV itself, 18 cases x 6
 grid spacings x 2 ishallow arms = 216 columns.  gf_gfdrv_stage runs the
 driver's mixed-precision preparation, CUP_gf_sh, neg_check, cup_gf,
 neg_check and the output algebra per column, one thread per column, with
-fzu COMPUTED (gfk_tgamma is glibc's own words, so the pin the CPU suite
-needs does not exist here) and the WRF-faithful k22 flag set, since the
-reference being graded against is WRF.
+the WRF-faithful k22 flag set, since the reference being graded against is
+WRF.
+
+fzu IS PINNED HERE, and that changed at 2.6.6.  Through 2.6.5 gfk_tgamma was
+a transcription of glibc's LGPL e_gammaf_r.c, so the kernel returned glibc's
+own words and this gate could compute fzu on the device.  The transcription
+is gone; ArWen's gamma is CORRECTLY ROUNDED and glibc's is not (39.44 per
+cent of [0.25, 36], worst 6 ULP), so the two no longer agree and neither
+does fzu.  ``docs/gf_gamma_known_delta.md`` is the record.  This suite now
+does exactly what tests/test_gf_driver_parity.py has always done: it feeds
+WRF's captured up_fzu/dn_fzu/sh_fzu back through the kernel's
+``fzu_override`` slots (DINS_fzu_up/dn/sh, built by
+gf_field_lists.drv_scalar_inputs) so that the ~4,000 transcribed lines of
+GFDRV either side of gamma stay graded bitwise against WRF.  What is graded
+here is the port; what is graded against a 113-bit oracle instead of against
+WRF is gamma, in tests/test_gf_gamma_correctly_rounded.py.
 
 The 208/216 mixed-precision boundary is handled exactly as the CPU gate
 handles it (tests/test_gf_driver_parity.py): the 8 columns of
@@ -45,7 +58,8 @@ from gpuwm.verify.gf_oracle import (                          # noqa: E402
     GF_NZ, load_gf_oracle, stage_rows_to_distrust,
 )
 from gf_field_lists import (                                  # noqa: E402
-    DRV_IN_LEV, DRV_IN_SCA, DRV_ISCA_FIELDS, DRV_LEV_FIELDS, DRV_SCA_FIELDS,
+    DRV_IN_LEV, DRV_ISCA_FIELDS, DRV_LEV_FIELDS, DRV_SCA_FIELDS,
+    captured_fzu, drv_scalar_inputs,
 )
 
 NZ = GF_NZ
@@ -66,17 +80,15 @@ def fixture():
     return load_gf_oracle()
 
 
-def _launch(module, fixture, k22_wrf_faithful):
+def _launch(module, fixture, k22_wrf_faithful, pin_fzu=True):
     gl = fixture.levels
     gs = fixture.surface
     n = fixture.ncol
     lvin = np.zeros((n, len(DRV_IN_LEV), NZ), dtype=np.float32)
-    scin = np.zeros((n, len(DRV_IN_SCA)), dtype=np.float32)
+    scin = drv_scalar_inputs(fixture, pin_fzu)
     iin = np.zeros((n, 3), dtype=np.int32)
     for j, name in enumerate(DRV_IN_LEV):
         lvin[:, j, :] = gl[name]
-    for j, name in enumerate(DRV_IN_SCA):
-        scin[:, j] = gs[name].astype(np.float32)
     iin[:, 0] = gs["kpbl"].astype(np.int32)
     iin[:, 1] = gs["ishallow"].astype(np.int32)
     iin[:, 2] = gs["ichoice"].astype(np.int32)
@@ -275,3 +287,71 @@ def test_the_shipped_default_is_bitwise_at_the_wrf_boundary(module, fixture,
         assert np.array_equal(a, b), name
     for j, name in enumerate(DRV_ISCA_FIELDS):
         assert np.array_equal(drv["isc"][:, j], shipped["isc"][:, j]), name
+
+
+# ==========================================================================
+# the gamma divergence, at the driver boundary -- the control that keeps the
+# pin above honest
+# ==========================================================================
+@pytest.mark.gpu
+def test_the_unpinned_run_is_the_documented_divergence_not_a_regression(
+        module, fixture, drv):
+    """With fzu COMPUTED -- the shipped forecast path -- GFDRV's output is
+    NOT bitwise WRF's, and that is the known delta, not a fault.
+
+    This is the negative control for the pin every other test in this file
+    uses.  Three things must hold and none is free.
+
+    * The unpinned run DIFFERS somewhere.  That proves the pin is
+      load-bearing and that gamma has not quietly gone back to reproducing
+      glibc's tgammaf.  If this stops firing, read
+      docs/gf_gamma_known_delta.md before believing anything else here.
+    * A column with NO pinned fzu cannot move.  WRF captures 0 for a profile
+      whose PDF never ran and 0 means "compute", so those columns get
+      identical inputs in both runs and must produce identical words.  This
+      is exact, not a heuristic: MEASURED on the host harness, 24 of the 216
+      columns have all three fzu at 0 and 0 of them move.
+    * No integer index moves.  MEASURED, all six index fields -- ktop,
+      kbcon, ktop_deep, k22_shallow, kbcon_shallow, ktop_shallow -- are
+      identical on all 216 columns, so the divergence displaces the answer
+      and does not flip a branch.  A branch flip would be a different and
+      much larger claim than the one docs/gf_gamma_known_delta.md makes.
+
+    The magnitude is documented rather than asserted, because it is a
+    property of this fixture and not of the port.  MEASURED on the host
+    harness over these 216 columns: RAINCV and PRATEC move on all 84 of
+    their nonzero columns, worst 7.273 per cent, median 1.613; the shallow
+    mass flux moves at worst 0.839 per cent, median 0.366; and every
+    tendency field moves by at most 2.12 per cent of its own maximum.
+    docs/gf_gamma_known_delta.md section 3 carries the whole table.
+    """
+    free = _launch(module, fixture, 1, pin_fzu=False)
+    up, dn, sh = captured_fzu(fixture)
+    pinned = (up > 0) | (dn > 0) | (sh > 0)
+    assert int(pinned.sum()) == 192, int(pinned.sum())
+
+    moved = np.zeros(fixture.ncol, dtype=bool)
+    for j in range(len(DRV_LEV_FIELDS)):
+        a = drv["lev"][:, j, :].copy().view(np.uint32)
+        b = free["lev"][:, j, :].copy().view(np.uint32)
+        moved |= (a != b).any(axis=1)
+    for j in range(len(DRV_SCA_FIELDS)):
+        a = drv["sca"][:, j].copy().view(np.uint32)
+        b = free["sca"][:, j].copy().view(np.uint32)
+        moved |= (a != b)
+
+    assert moved.any(), (
+        "computing fzu instead of pinning it changed nothing -- either the "
+        "override stopped being read or gamma is reproducing glibc again")
+
+    stray = np.flatnonzero(moved & ~pinned)
+    assert stray.size == 0, (
+        f"{stray.size} columns with no pinned fzu moved: "
+        f"{stray[:8].tolist()}.  Those columns get identical inputs in both "
+        f"runs, so the difference is NOT the gamma delta and must be found")
+
+    for j, name in enumerate(DRV_ISCA_FIELDS):
+        assert np.array_equal(drv["isc"][:, j], free["isc"][:, j]), (
+            f"{name} moved when fzu was computed -- the gamma delta flipped "
+            f"a branch, which is a larger claim than the known-delta note "
+            f"makes and must be re-measured before it is accepted")

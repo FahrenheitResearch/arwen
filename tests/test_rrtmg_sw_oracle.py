@@ -26,7 +26,7 @@ pytestmark = pytest.mark.slow
 
 FIXDIR = Path(__file__).resolve().parents[1] / "tools" / "rrtmg_wrf461_oracle" / "sw_fixtures"
 
-_FIX_FILES = ("fixtures_real.npz", "fixtures_synth.npz")
+_FIX_FILES = ("fixtures_real.npz", "fixtures_synth.npz", "fixtures_tall.npz")
 
 
 def _case_list():

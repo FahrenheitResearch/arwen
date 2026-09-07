@@ -109,6 +109,55 @@ def test_mp18_without_moist_state_fails_at_config_validation():
         validate_run_config(cfg)
 
 
+def test_the_low_temperature_cnuc_hack_reads_the_raw_staggered_w():
+    """``module_mp_nssl_2mom.F:10122`` reads ``w``, not ``wvel``.
+
+    NUCOND uses vertical velocity in two different shapes and the
+    difference is load-bearing::
+
+        :10122   IF ( qx(mgs,lc) > 10.*qxmin(lc) .and.
+                      w(igs(mgs),jgs,kgs(mgs)) > 2.0 ) THEN
+        :10381   wvel(mgs) = (0.5)*(w(igs(mgs),jgs,kp1)
+                                   +w(igs(mgs),jgs,kgs(mgs)))
+
+    The first is the RAW staggered element at the point's own ``k`` -- the
+    cell's bottom face.  The second is the mass-level average, and it is
+    the ONLY assignment to ``wvel`` in the whole subroutine (``NUCOND``
+    opens at ``:9611``), so at ``:10122`` no averaged ``w`` exists yet and
+    the raw read cannot be an oversight to smooth over.
+
+    Named breakage: a cell at ``T < 265 K`` with bottom face ``w = 1.8``
+    under top face ``w = 2.6`` averages to 2.2.  WRF keeps
+    ``cnuc = 0.1*ccnc``; an averaging port sets ``cnuc = 0``.  That is a
+    10x-to-zero difference in the nucleation pool, not a rounding residue.
+    Reached only with ``nssl_ccn_on = 0`` (which drives ``renucfrac`` to
+    1.0 and arms ``:10120``), so it is latent in the shipped default rather
+    than absent.
+
+    The gate is two-sided on purpose: it requires the raw element in the
+    cnuc block AND requires the mass-level average to survive at the two
+    ``wvel`` sites, so it pins WRF's own distinction rather than banning
+    one spelling outright.
+    """
+    kernel = (Path(__file__).parents[1] / "gpuwm" / "core" / "kernels"
+              / "nssl2_nucond.cu").read_text(encoding="utf-8")
+    average = ("0.5f * (\n                w_interface[idx] "
+               "+ w_interface[idx + horizontal_size])")
+
+    start = kernel.index("float diagnostic_cnuc = 0.0f;")
+    block = kernel[start:kernel.index("float cloud_mean_mass", start)]
+    assert "const float cnuc_w = w_interface[idx];" in block, (
+        ":10122's raw w(igs,jgs,kgs) read is gone from the cnuc block")
+    assert "horizontal_size" not in block, (
+        "the cnuc block reads a second interface, so it is averaging to "
+        "the mass level where WRF reads the cell's own bottom face")
+
+    # The averaged form is correct at :10381 and must not be swept away.
+    assert kernel.count(average) == 2, (
+        "wvel's mass-level average (:10381) no longer appears twice; this "
+        "gate would then pass for the wrong reason")
+
+
 def test_effective_radius_oracle_fixture_is_content_addressed():
     assert hashlib.sha256(_ORACLE.read_bytes()).hexdigest() == (
         "06e4f75711c751f1066292990063a28e3d25e5219640121513ac6b2c5c8dc3aa")

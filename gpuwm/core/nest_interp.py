@@ -39,7 +39,7 @@ summation paths round like the FP64 mirrors (plan Task 10).
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 
 import numpy as np
@@ -374,14 +374,65 @@ def _numpy_sint(cfld, reg):
     return result[0] if squeeze else result
 
 
-def sint(cfld, reg: NestRegistration, *, out=None, alloc=None):
+def window_registration(reg: NestRegistration, window):
+    """Exact SINT geometry and minimal donor rectangle for a child window.
+
+    ``window`` is two bounded unit-step slices in this registration's field
+    extent (including its staggered endpoint). Subcell phases are sliced from
+    the original tables, never recomputed from a fictitious slab placement.
+    Donor indices are translated by the crop origin; the two-cell SINT halo
+    remains present on every side. Device tables belong to the new geometry.
+    """
+    if not isinstance(window, tuple) or len(window) != 2:
+        raise ValueError("SINT window must be a pair of bounded slices")
+    normalized = []
+    for axis, extent in zip(window, (reg.nyc, reg.nxc)):
+        if (not isinstance(axis, slice) or axis.step not in (None, 1)
+                or axis.start is None or axis.stop is None
+                or not isinstance(axis.start, (int, np.integer))
+                or not isinstance(axis.stop, (int, np.integer))
+                or not 0 <= axis.start < axis.stop <= extent):
+            raise ValueError("SINT window slices must be nonempty, bounded and unit-step")
+        normalized.append(slice(int(axis.start), int(axis.stop)))
+    sy, sx = normalized
+    ci, cj = reg.ci[sx], reg.cj[sy]
+    x0, x1 = int(ci.min()) - 2, int(ci.max()) + 3
+    y0, y1 = int(cj.min()) - 2, int(cj.max()) + 3
+    if x0 < 0 or y0 < 0 or x1 > reg.nxp or y1 > reg.nyp:
+        raise ValueError("SINT window's donor halo is outside the parent")
+    cropped = replace(
+        reg, nxc=sx.stop-sx.start, nyc=sy.stop-sy.start,
+        nxp=x1-x0, nyp=y1-y0,
+        i_parent_start=reg.i_parent_start-x0,
+        j_parent_start=reg.j_parent_start-y0,
+        ci=np.array(ci-x0, dtype=np.int32),
+        cj=np.array(cj-y0, dtype=np.int32),
+        ip=reg.ip[sx].copy(), jp=reg.jp[sy].copy(),
+        xig=reg.xig.copy(), xjg=reg.xjg.copy(), _device={}, _binding="")
+    return cropped, (slice(y0, y1), slice(x0, x1))
+
+
+def sint(cfld, reg: NestRegistration, *, out=None, alloc=None, window=None):
     """SINT-interpolate a parent device field onto the child grid.
 
     ``cfld`` is ``(ny_p, nx_p)`` or ``(nz, ny_p, nx_p)`` FP32 (already
     coupled by the caller where WRF couples -- this operator is the bare
     horizontal interpolation the wrappers share).  Returns the child-extent
     field with the same leading shape.
+
+    ``window`` requests only a child rectangle. Only its exact donor rectangle
+    plus the SINT halo is copied; no full child intermediate is constructed.
     """
+    if window is not None:
+        if tuple(cfld.shape[-2:]) != (reg.nyp, reg.nxp):
+            raise ValueError("parent field does not match the registration extent")
+        cropped, donor = window_registration(reg, window)
+        if isinstance(cfld, np.ndarray):
+            payload = np.ascontiguousarray(cfld[(...,) + donor])
+        else:
+            import cupy as cp
+            payload = cp.ascontiguousarray(cfld[(...,) + donor])
+        return sint(payload, cropped, out=out, alloc=alloc)
     if isinstance(cfld, np.ndarray):
         if alloc is not None:
             raise ValueError("NumPy SINT does not accept a device allocator")
@@ -420,7 +471,7 @@ _SIDES = ("west", "east", "south", "north")
 def bdy_interp1(cfld, nfld, reg: NestRegistration, *,
                 parent_dt_fp32, parent_interval_ticks=None,
                 spec_zone=1, relax_zone=4, spec_bdy_width=5,
-                out=None, alloc=None):
+                out=None, alloc=None, sides=None):
     """Build the child's four-side boundary VALUE/TENDENCY device tables.
 
     Transliteration of ``bdy_interp1`` (interp_fcn.F:2423-2626): VALUE is
@@ -443,6 +494,10 @@ def bdy_interp1(cfld, nfld, reg: NestRegistration, *,
     layout (the L6 rolling nest_* slots); ``alloc(shape, dtype)`` places
     fresh ones.
     """
+    selected = _SIDES if sides is None else tuple(sides)
+    if not selected or len(set(selected)) != len(selected) or any(
+            side not in _SIDES for side in selected):
+        raise ValueError("boundary sides must be a nonempty unique selection")
     if reg.wrapper != "bdy":
         raise ValueError("bdy_interp1 needs a wrapper='bdy' registration "
                          "(stagger ioff = MAX((nri-1)/2,1), "
@@ -469,13 +524,15 @@ def bdy_interp1(cfld, nfld, reg: NestRegistration, *,
             return (alloc(shape, np.float32) if alloc is not None
                     else cp.empty(shape, dtype=cp.float32))
         out = {side: (_new(shapes[side]), _new(shapes[side]))
-               for side in _SIDES}
-    for side in _SIDES:            # fail loud BEFORE any device work
+               for side in selected}
+    for side in selected:            # fail loud BEFORE any device work
         value, tendency = out[side]
         _check_table(value, shapes[side], f"{side} value table")
         _check_table(tendency, shapes[side], f"{side} tendency table")
     dev = reg.device_tables(alloc=None)
     for index, side in enumerate(_SIDES):
+        if side not in selected:
+            continue
         value, tendency = out[side]
         count = nz * sz * (reg.nyc if index < 2 else reg.nxc)
         _launch(_kernel("nest_bdy_interp1"), count, (
@@ -489,7 +546,8 @@ def bdy_interp1(cfld, nfld, reg: NestRegistration, *,
 
 
 def blend_terrain(ter_interpolated, ter_input, *,
-                  spec_bdy_width=5, blend_width=5):
+                  spec_bdy_width=5, blend_width=5,
+                  domain_shape=None, origin=(0, 0)):
     """Blend parent-interpolated and fine terrain in place on ``ter_input``.
 
     ``blend_terrain`` (dyn_em/nest_init_utils.F:712-785): rows <=
@@ -499,7 +557,19 @@ def blend_terrain(ter_interpolated, ter_input, *,
     (mediation_integrate.F:733-741; blending all three is the ratified
     adjudication).  2-D ``(ny, nx)`` or 3-D ``(nk, ny, nx)`` FP32 device
     arrays; k is inert.
+
+    A reconstruction window supplies its mass-grid ``domain_shape`` and
+    zero-based ``origin``. Blend weights still refer to the true domain
+    edges; an internal slab edge must never become a new boundary frame.
     """
+    ny, nx = ter_input.shape[-2:]
+    domain_ny, domain_nx = (ny, nx) if domain_shape is None else domain_shape
+    j0, i0 = origin
+    if (any(not isinstance(v, (int, np.integer)) for v in
+            (domain_ny, domain_nx, j0, i0))
+            or j0 < 0 or i0 < 0 or ny < 1 or nx < 1
+            or j0 + ny > domain_ny or i0 + nx > domain_nx):
+        raise ValueError("terrain window lies outside its domain extent")
     if isinstance(ter_input, np.ndarray):
         if not isinstance(ter_interpolated, np.ndarray):
             raise TypeError("NumPy terrain blending requires NumPy operands")
@@ -512,9 +582,9 @@ def blend_terrain(ter_interpolated, ter_input, *,
         work_c = coarse[None] if squeeze else coarse
         _, ny, nx = work_f.shape
         sbw, width = int(spec_bdy_width), int(blend_width)
-        ide, jde = nx + 1, ny + 1
-        i1 = np.arange(1, nx + 1)[None, None, :]
-        j1 = np.arange(1, ny + 1)[None, :, None]
+        ide, jde = domain_nx + 1, domain_ny + 1
+        i1 = np.arange(i0 + 1, i0 + nx + 1)[None, None, :]
+        j1 = np.arange(j0 + 1, j0 + ny + 1)[None, :, None]
         reciprocal = 1.0 / (width + 1)
         blended_output = work_f.copy()
         for blend_cell in range(width, 0, -1):
@@ -546,7 +616,9 @@ def blend_terrain(ter_interpolated, ter_input, *,
     nk, ny, nx = ti3.shape
     _launch(_kernel("nest_blend_terrain"), nk * ny * nx, (
         ci3, ti3, np.int32(spec_bdy_width), np.int32(blend_width),
-        np.int32(nk), np.int32(ny), np.int32(nx)))
+        np.int32(nk), np.int32(ny), np.int32(nx),
+        np.int32(domain_ny), np.int32(domain_nx),
+        np.int32(j0), np.int32(i0)))
     return ter_input
 
 
@@ -669,7 +741,8 @@ def _copy_common(cfld, nfld, reg: NestRegistration, spec_zone):
     return c3, n3, args, count
 
 
-def copy_fcn(cfld, nfld, reg: NestRegistration, *, spec_zone=1):
+def copy_fcn(cfld, nfld, reg: NestRegistration, *, spec_zone=1,
+             parent_window=None, child_window=None):
     """Feedback cell-average of the child onto the parent, in place.
 
     ``copy_fcn`` (interp_fcn.F:1397-1742), BOTH parity branches: odd
@@ -681,10 +754,76 @@ def copy_fcn(cfld, nfld, reg: NestRegistration, *, spec_zone=1):
     transaction is a no-op at feedback=0 and nothing calls this in Phase 5
     runs.
     """
-    c3, n3, args, count = _copy_common(cfld, nfld, reg, spec_zone)
+    if parent_window is None and child_window is None:
+        c3, n3, args, count = _copy_common(cfld, nfld, reg, spec_zone)
+        ilo, ihi, jlo, jhi = feedback_parent_bounds(reg, spec_zone=spec_zone)
+        origins = (0, 0, 0, 0, ilo, jlo, max(0, ihi-ilo+1), max(0, jhi-jlo+1))
+    elif parent_window is None or child_window is None:
+        raise ValueError("windowed feedback requires both operand windows")
+    else:
+        donor = feedback_child_window(reg, parent_window, spec_zone=spec_zone)
+        if child_window != donor:
+            raise ValueError("feedback child window does not match exact donors")
+        c3, n3 = _as3d(cfld), _as3d(nfld)
+        py, px = parent_window
+        cy, cx = child_window
+        if c3.shape != (n3.shape[0], py.stop-py.start, px.stop-px.start):
+            raise ValueError("parent feedback operand does not match its window")
+        if n3.shape[1:] != (cy.stop-cy.start, cx.stop-cx.start):
+            raise ValueError("child feedback operand does not match its window")
+        nz, nyp, nxp = c3.shape
+        args = tuple(np.int32(v) for v in (
+            reg.i_parent_start, reg.j_parent_start, reg.nri, reg.nrj,
+            spec_zone, reg.xstag, reg.ystag, nz, nyp, nxp,
+            n3.shape[1], n3.shape[2]))
+        origins = (px.start, py.start, cx.start, cy.start,
+                   px.start, py.start, nxp, nyp)
+        count = c3.size
     if count > 0:
-        _launch(_kernel("nest_copy_fcn"), count, (c3, n3, *args))
+        _launch(_kernel("nest_copy_fcn"), count,
+                (c3, n3, *args, *(np.int32(v) for v in origins)))
     return cfld
+
+
+def feedback_child_window(reg, parent_window, *, spec_zone=1):
+    """Exact child donor rectangle for a bounded raw restriction launch."""
+    if len(parent_window) != 2:
+        raise ValueError("feedback window must have two bounded slices")
+    y, x = parent_window
+    ilo, ihi, jlo, jhi = feedback_parent_bounds(reg, spec_zone=spec_zone)
+    for axis, lo, hi in ((x, ilo, ihi), (y, jlo, jhi)):
+        if (not isinstance(axis, slice) or axis.step not in (None, 1)
+                or axis.start is None or axis.stop is None
+                or axis.start < lo or axis.stop > hi + 1
+                or axis.start >= axis.stop):
+            raise ValueError("feedback window lies outside the restriction rectangle")
+    ri, rj = reg.nri, reg.nrj
+    odd = rj % 2 != 0
+    if odd:
+        if reg.xstag:
+            ij0, ij1, stride = (ri+1)//2, (ri+1)//2 + ri*(ri-1), ri
+            oi, oj = 0, rj//2
+        elif reg.ystag:
+            ij0 = (rj*rj+1)//2 - rj//2
+            ij1, stride, oi, oj = ij0+rj-1, 1, ri//2, 0
+        else:
+            ij0, ij1, stride, oi, oj = 1, ri*rj, 1, ri//2, rj//2
+    else:
+        ij0, ij1, stride, oi, oj = 1, ri*rj, 1, 0, 0
+        if reg.xstag:
+            stride = ri
+        elif reg.ystag:
+            ij1 = ri
+    points = range(ij0, ij1+1, stride)
+    dx = [(ij-1) % ri - (ri//2 if odd else 0) + oi for ij in points]
+    dy = [(ij-1) // ri - (rj//2 if odd else 0) + oj for ij in points]
+    i0 = (x.start+1-reg.i_parent_start)*ri + min(dx)
+    i1 = (x.stop-reg.i_parent_start)*ri + max(dx) + 1
+    j0 = (y.start+1-reg.j_parent_start)*rj + min(dy)
+    j1 = (y.stop-reg.j_parent_start)*rj + max(dy) + 1
+    if i0 < 0 or j0 < 0 or i1 > reg.nxc or j1 > reg.nyc:
+        raise ValueError("feedback donors lie outside the child extent")
+    return slice(j0, j1), slice(i0, i1)
 
 
 def copy_fcnm(cfld, nfld, reg: NestRegistration, *, spec_zone=1):

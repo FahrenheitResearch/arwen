@@ -212,3 +212,12 @@ def test_every_chained_translation_unit_says_why_it_has_no_recording():
             == frozenset({"p3"}))
     for row in pf.KERNEL_LOCAL_FRAME_RECORDINGS:
         assert "p3" not in row.frames, row.box
+
+
+def test_complete_recordings_cover_the_current_standalone_source_set():
+    """A newly shipped module cannot silently invalidate a complete claim."""
+    sources = {path.stem for path in KERNEL_DIR.glob("*.cu")}
+    standalone = sources - set(pf.UNMEASURED_KERNEL_MODULES)
+    for recording in pf.KERNEL_LOCAL_FRAME_RECORDINGS:
+        if recording.complete:
+            assert set(recording.frames) == standalone, recording.box

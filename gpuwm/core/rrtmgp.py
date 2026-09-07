@@ -1,3 +1,21 @@
+# ======================================================================
+# THIRD-PARTY NOTICE.  Parts of this file are hand transcriptions of
+# third-party work.  ArWen distributes the file under the Apache License
+# 2.0; the notices below belong to the transcribed parts and are kept here
+# because their own licences require it.  Full texts are in the repository
+# NOTICE and in the licenses/ directory.
+#
+#   RTE+RRTMGP, transcribed from earth-system-radiation/rte-rrtmgp at the
+#   commit this file's own header cites.  BSD 3-Clause:
+#
+#       Copyright (c) 2015-2025, Atmospheric and Environmental Research,
+#         Regents of the University of Colorado,
+#         Trustees of Columbia University in the City of New York.
+#
+#   Clause 1 requires source redistributions to retain that notice, the
+#   conditions and the disclaimer; the full text is in
+#   licenses/LICENSE-RTE-RRTMGP-BSD-3-Clause.txt.
+# ======================================================================
 """GPU RTE+RRTMGP longwave/shortwave radiation.
 
 The coefficient loader in this first section mirrors the transformations in
@@ -23,6 +41,8 @@ from typing import Mapping, NamedTuple
 
 import numpy as np
 from netCDF4 import Dataset, chartostring
+
+from gpuwm.io.netcdf_serialization import netcdf4_session
 
 from gpuwm import data_assets
 from gpuwm.config import DEFAULT_COLUMN_CHUNK
@@ -354,20 +374,10 @@ _MP_CLOUD_OPTICS_SCHEME = {
 # deliberate exclusions (microphysics_transition's
 # UNVALIDATED_MIXED_EDGE_SELECTORS) are recorded the same way.
 #
-# THE RECORD LIVES IN THE MODULE THAT RAISES.  Both pairings are already
-# refused at admission by ``gpuwm/config.py``
-# (validate_milbrandt2_options, validate_p3_radiation), and
-# ``tools/build_registry.py`` writes the same refusal into the shipped
-# registry.  Neither is where a reader lands when
-# :func:`cloud_optics_scheme` throws, and until this record existed that
-# exception told them to "add a row" -- the one instruction that is wrong
-# for a selector deliberately left out, and, for mp=50, an instruction
-# that does not even work: the row alone is not the missing piece (see
-# the last paragraph of its entry).
-#
-# A selector with NEITHER a row NOR an entry here still gets the
-# fail-closed "add a row" message, which is the right message for a
-# scheme nobody has judged yet.
+# The remaining exclusion is also refused by validate_milbrandt2_options
+# and recorded by tools/build_registry.py. P3 has its own radii remap and
+# separate ice/snow flags above; its former blockers are implemented.
+# An unjudged selector still fails closed with the request for a source row.
 _NO_CLOUD_OPTICS_COUPLING = {
     9: (
         "MILBRANDT2MOM is absent from WRF's use_mp_re disjunction "
@@ -377,33 +387,7 @@ _NO_CLOUD_OPTICS_COUPLING = {
         "radiation no radii at all; Kessler's row would radiate an "
         "overcast ice cloud as clear sky and Morrison's would derive the "
         "radii from a gamma distribution that is not this scheme's."),
-    50: (
-        "P3 has ONE ice category and no snow species: "
-        "Registry.EM_COMMON:3038 declares p3_1category as "
-        "moist:qv,qc,qr,qi -- no qs and no qg -- and WRF, having put the "
-        "P3 family in the use_mp_re disjunction at "
-        "phys/module_physics_init.F:1017-1020, overrides has_reqs back "
-        "to 0 at :1026-1033 while leaving has_reqc=has_reqi=1.  So P3 "
-        "supplies a cloud and an ice radius (gpuwm/core/state.py seeds "
-        "effc/effi from module_mp_p3.F:2280-2282) and never a snow "
-        "radius, and it allocates no qs at all.  EVERY row above "
-        "resolves to a hydrometeor_paths branch that requires one: "
-        "'wsm6'/'thompson'/'nssl' raise without effc+effi+effs, and "
-        "'morrison' reconstructs from the four number moments "
-        "nc/nr/ni/ns, of which P3 transports ni alone.  Picking any of "
-        "them hands RRTMGP a snow radius P3 never computed. "
-        "AND THE ROW IS NOT THE ONLY MISSING PIECE: P3's moisture set is "
-        "F_QI true with F_QS false, and while cal_cldfra1 already "
-        "carries WRF's arm for exactly that "
-        "(module_radiation_driver.F:3879-3887, QCLD = QI + QC, "
-        "weight = QI/QCLD), THIS ADAPTER CANNOT ASK FOR IT: "
-        "_ICE_ACTIVE_SCHEMES is one bit and "
-        "RRTMGPRadiation.__call__ hands that one bit to BOTH f_qi and "
-        "f_qs, so no scheme name it can resolve produces the unequal "
-        "pair the arm is selected by.  A P3 coupling is therefore a "
-        "radii branch consuming effc/effi alone PLUS a call site that "
-        "resolves f_qi and f_qs separately, each with its own WRF "
-        "authority and its own evidence, not a value added to a table."),
+
 }
 
 #: The two adapters that DO serve these selectors, named by every refusal
@@ -1207,14 +1191,9 @@ class RFMIPResult:
     sw_dn: object
 
 
-_RFMIP_GAS_NAMES = {
-    "co2": "carbon_dioxide", "n2o": "nitrous_oxide",
-    "co": "carbon_monoxide", "ch4": "methane", "o2": "oxygen",
-    "n2": "nitrogen", "ccl4": "carbon_tetrachloride",
-    "cfc11": "cfc11", "cfc12": "cfc12", "cfc22": "hcfc22",
-    "hfc143a": "hfc143a", "hfc125": "hfc125", "hfc23": "hfc23",
-    "hfc32": "hfc32", "hfc134a": "hfc134a", "cf4": "cf4",
-}
+from gpuwm.core.trace_gases import (
+    RFMIP_GAS_NAMES as _RFMIP_GAS_NAMES, validate_trace_gas_overrides)
+
 
 
 # NOAA Global Monitoring Laboratory, "Globally averaged marine surface
@@ -1257,26 +1236,7 @@ def trace_gases(valid_date: date | datetime,
     selected = {
         "co2": _NOAA_GML_CO2_ANNUAL_PPM[selected_year] * 1.0e-6,
     }
-    if override is None:
-        return selected
-    if not isinstance(override, Mapping):
-        raise TypeError("trace-gas override must be a mapping or None")
-    unknown = sorted(set(override) - set(_RFMIP_GAS_NAMES))
-    if unknown:
-        raise ValueError(
-            f"unknown trace gas(es) {unknown} in override; known well-mixed "
-            f"gases: {sorted(_RFMIP_GAS_NAMES)}")
-    for gas, raw_value in override.items():
-        if isinstance(raw_value, bool):
-            raise ValueError(
-                f"trace-gas override[{gas!r}] = {raw_value!r} must be a "
-                "finite mole fraction in (0, 1e-2)")
-        value = float(raw_value)
-        if not np.isfinite(value) or not 0.0 < value < 1.0e-2:
-            raise ValueError(
-                f"trace-gas override[{gas!r}] = {value!r} must be a finite "
-                "mole fraction in (0, 1e-2)")
-        selected[gas] = value
+    selected.update(validate_trace_gas_overrides(override))
     return selected
 
 
@@ -1466,6 +1426,17 @@ class CloudTables:
 
 
 @lru_cache(maxsize=2)
+def coefficient_gas_names(kind: str) -> tuple[str, ...]:
+    """Read selected absorption operands without packing the full tables."""
+    if kind not in ("lw", "sw"):
+        raise ValueError("kind must be 'lw' or 'sw'")
+    filename = ("rrtmgp-gas-lw-g256.nc" if kind == "lw"
+                else "rrtmgp-gas-sw-g224.nc")
+    with netcdf4_session(), Dataset(_table(filename), "r") as nc:
+        return _strings(nc["gas_names"])
+
+
+@lru_cache(maxsize=2)
 def load_gas_tables(kind: str) -> GasTables:
     """Load and pack the v1.9 LW or SW gas k-distribution in float64."""
     kind = kind.lower()
@@ -1473,7 +1444,7 @@ def load_gas_tables(kind: str) -> GasTables:
         raise ValueError("kind must be 'lw' or 'sw'")
     filename = ("rrtmgp-gas-lw-g256.nc" if kind == "lw"
                 else "rrtmgp-gas-sw-g224.nc")
-    with Dataset(_table(filename), "r") as nc:
+    with netcdf4_session(), Dataset(_table(filename), "r") as nc:
         gas_names = _strings(nc["gas_names"])
         gas_minor = _strings(nc["gas_minor"])
         identifier_minor = _strings(nc["identifier_minor"])
@@ -1583,7 +1554,8 @@ def load_cloud_tables(kind: str) -> CloudTables:
     kind = kind.lower()
     if kind not in ("lw", "sw"):
         raise ValueError("kind must be 'lw' or 'sw'")
-    with Dataset(_table(f"rrtmgp-clouds-{kind}-bnd.nc"), "r") as nc:
+    with netcdf4_session(), Dataset(
+            _table(f"rrtmgp-clouds-{kind}-bnd.nc"), "r") as nc:
         return CloudTables(
             kind=kind,
             nband=len(nc.dimensions["nband"]),
@@ -2541,12 +2513,17 @@ class RRTMGPRadiation:
     # values.  None applies the pinned date-indexed policy; the frozen 1974
     # profile passes its declared 330 ppm choice explicitly.
     trace_gas_overrides: Mapping[str, float] | None = None
+    longwave: bool = True
+    shortwave: bool = True
     update_count: int = field(default=0, init=False)
     trace_vmr: dict[str, float] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         import cupy as cp
 
+        if not (self.longwave or self.shortwave):
+            raise ValueError("radiation adapter needs at least one spectrum")
+        self.publishes_olr = bool(self.longwave)
         if not isinstance(self.start_time, datetime):
             raise TypeError("radiation_start_time must be a datetime")
         self.latitude_deg = cp.ascontiguousarray(
@@ -2561,6 +2538,15 @@ class RRTMGPRadiation:
             raise ValueError("validation_mode must be 'fused' or 'full'")
         self.lw_tables = load_gas_tables("lw")
         self.sw_tables = load_gas_tables("sw")
+        if self.trace_gas_overrides is not None:
+            supported = set()
+            if self.longwave:
+                supported.update(self.lw_tables.gas_names)
+            if self.shortwave:
+                supported.update(self.sw_tables.gas_names)
+            self.trace_gas_overrides = validate_trace_gas_overrides(
+                self.trace_gas_overrides, supported=supported,
+                consumer="selected RRTMGP coefficient tables")
         if (not np.array_equal(self.lw_tables.press_ref,
                                self.sw_tables.press_ref)
                 or not np.array_equal(self.lw_tables.temp_ref,
@@ -2575,7 +2561,8 @@ class RRTMGPRadiation:
                 "above-model column adapter")
         self.lw_cloud_tables = load_cloud_tables("lw")
         self.sw_cloud_tables = load_cloud_tables("sw")
-        with Dataset(_table("rfmip-clear-sky-inputs.nc"), "r") as ncfile:
+        with netcdf4_session(), Dataset(
+                _table("rfmip-clear-sky-inputs.nc"), "r") as ncfile:
             ncfile.set_auto_mask(False)
             for gas, rfmip_name in _RFMIP_GAS_NAMES.items():
                 variable = ncfile[rfmip_name + "_GM"]
@@ -2784,11 +2771,13 @@ class RRTMGPRadiation:
             raise ValueError("radiation latitude/longitude must match state grid")
         declared_p_top = getattr(state, "p_top", None)
         if declared_p_top is not None:
-            lw_upper, _ = rrtmgp_above_model_layer_counts(declared_p_top)
-            if nz + lw_upper > 128:
+            lw_upper, sw_upper = rrtmgp_above_model_layer_counts(declared_p_top)
+            active_upper = max(lw_upper if self.longwave else 0,
+                               sw_upper if self.shortwave else 0)
+            if nz + active_upper > 128:
                 raise ValueError(
                     "RRTMGP radiation supports at most 128 layers including "
-                    f"the above-model column, got {nz + lw_upper}")
+                    f"the above-model column, got {nz + active_upper}")
         if atmosphere["exner"].shape != pressure.shape:
             raise ValueError(
                 f"exner must have shape {pressure.shape}, "
@@ -3020,9 +3009,11 @@ class RRTMGPRadiation:
                     "workspace "
                     f"{(workspace.nz, workspace.column_chunk, workspace.p_top)}")
 
-        lw_up = cp.empty((ncol, nz + 1), dtype=DTYPE)
-        lw_dn = cp.empty_like(lw_up)
-        for start in range(0, ncol, self.column_chunk):
+        flux_shape = (ncol, nz + 1)
+        lw_up = (cp.empty(flux_shape, dtype=DTYPE) if self.longwave
+                 else cp.zeros(flux_shape, dtype=DTYPE))
+        lw_dn = cp.empty_like(lw_up) if self.longwave else cp.zeros_like(lw_up)
+        for start in range(0, ncol if self.longwave else 0, self.column_chunk):
             sl = slice(start, min(start + self.column_chunk, ncol))
             chunk_ncol = sl.stop - sl.start
             lw_chunk = _prepare_above_model_chunk(
@@ -3152,9 +3143,9 @@ class RRTMGPRadiation:
             self._solar_constant(valid_time)
             / float(np.sum(np.asarray(self.sw_tables.solar_source,
                                       dtype=np.float64))))
-        sw_up = cp.empty_like(lw_up)
-        sw_dn = cp.empty_like(lw_up)
-        for start in range(0, ncol, self.column_chunk):
+        sw_up = cp.empty_like(lw_up) if self.shortwave else cp.zeros_like(lw_up)
+        sw_dn = cp.empty_like(lw_up) if self.shortwave else cp.zeros_like(lw_up)
+        for start in range(0, ncol if self.shortwave else 0, self.column_chunk):
             sl = slice(start, min(start + self.column_chunk, ncol))
             chunk_ncol = sl.stop - sl.start
             sw_chunk = _prepare_above_model_chunk(
@@ -3252,6 +3243,9 @@ class RRTMGPRadiation:
         result = _fluxes_to_radiation(
             lw_up, lw_dn, sw_up, sw_dn, plev, exner, ny=ny, nx=nx,
             coszen=mu_raw, validate=full_validation)
+        if not self.longwave:
+            result.glw = fields["glw"]
+            result.olr = None
         # Release hook.  The shipped SharedRRTMGPChunkWorkspace has no
         # ``on_call_end``, so it keeps its persistent behaviour with no
         # branch and no cost; a workspace that CAN hand its bytes back
@@ -4107,7 +4101,8 @@ def _planck_sources(tables: GasTables, play, plev, tlay, tlev, tsfc,
 def _rfmip_profiles(tables, sites, experiments):
     sites = np.asarray(sites, dtype=np.intp)
     experiments = np.asarray(experiments, dtype=np.intp)
-    with Dataset(_table("rfmip-clear-sky-inputs.nc"), "r") as nc:
+    with netcdf4_session(), Dataset(
+            _table("rfmip-clear-sky-inputs.nc"), "r") as nc:
         nc.set_auto_mask(False)
         nsite, nexp = sites.size, experiments.size
         play_site = np.asarray(nc["pres_layer"][sites], np.float64)

@@ -209,6 +209,9 @@ tests/test_wrf_legacy_radiation.py
 # "A refusal that fires on everything is not a contract check, it is an
 # outage" is its own docstring, and it was red at 5d6470308.
 tests/test_render_rust.py
+# A platform wheel's renderer must find maps fetched into the user profile;
+# bundle contents alone did not prove that the preferred executable used them.
+tests/test_render_basemap_delivery.py
 
 # Law A, the guard: a land surface with no longwave scheme is refused
 # unless the experiment declares it.  This is the config-load half.
@@ -559,6 +562,9 @@ tests/test_module_skip_placement.py
 # and the manifest hygiene on tools/battery/always_files.txt.  38 s, and it
 # also gates tools/battery/gpu_shard_files.txt.
 tests/test_fastfix_selector.py
+
+# Fast-fix execution rejects empty or failed evidence and keeps its scope explicit.
+tests/test_fastfix_runner.py
 
 # ---------------------------------------------------------------------------
 # The 2.2 train: lane/ingest-rust-2, appended to the restructured list above.
@@ -1219,7 +1225,11 @@ tests/test_tracked_file_writers_keep_lf.py
 # nobody -- the exact class SHARD 1i was written about.
 tests/test_p3_legacy_rrtmg_radii.py
 tests/test_p3_legacy_cloud_fraction.py
-tests/test_n5s_toolchain.py
+# tests/test_n5s_toolchain.py moves to work/pretag_private_files.txt: its
+# campaign harness and the suite itself are excluded by RELEASE-EXCLUDE.txt.
+# Run that private pretag leg before snapshot assembly (48 required CPU checks
+# plus the existing optional production-handoff check); an absent file here
+# prevents public Stage 1 collecting.
 tests/test_rw_wps_stock_inventory_contract.py
 tests/test_acoustic_npref.py
 
@@ -1318,3 +1328,255 @@ tests/test_ntiedtke_output_provenance.py
 tests/test_ntiedtke_pattern_controls.py
 tests/test_ntiedtke_phase2_gates.py
 tests/test_ntiedtke_stage_signature.py
+# The checkpoint pins in tests/test_restart.py ran red from the 2.6.1
+# merge until 2026-09-02, because the branch that merge brought in
+# appended one RunConfig field (ntiedtke_tiedtke_closure) and nobody
+# moved the pins with it.
+# The danger is not the red -- it is the GREEN that follows a paste: "a
+# config field was added" explains a moved digest, so a checkpoint-FORMAT
+# change riding in behind one is absorbed invisibly.  This file is the
+# per-change attribution that makes the paste unsafe, and it is worth
+# nothing unless it RUNS.  CPU-only, no cupy, ~0.6 s.
+tests/test_ntiedtke_closure_checkpoint.py
+
+# Adaptive time step (docs/ADAPTIVE-TIMESTEP.md): the surface, the WRF
+# calc_dt oracle, the checkpoint attribution, and the executor's
+# varying-step walk.  All CPU-only, no cupy, ~2 s for the four.
+# The oracle suite is 1728 parametrised comparisons against captured
+# WRF output and is the reason a calc_dt edit cannot land unnoticed.
+tests/test_adaptive_timestep_surface.py
+tests/test_adaptive_timestep_oracle.py
+tests/test_adaptive_timestep_checkpoint.py
+tests/test_adaptive_timestep_executor.py
+# The other two CPU-only members of the same lane.  The controller suite
+# reproduces upstream's vertical last_max_vert_cfl clobber
+# (adapt_timestep_em.F:406) deliberately, so a later "tidy-up" of that
+# asymmetry diverges from WRF on every adaptive run and is caught here.
+# The driver suite walks the eleven uniform-step assumptions the port had
+# to break, including the one that under-delivered frames and exited
+# ZERO -- an exit-status gate would have shipped it.
+tests/test_adaptive_timestep_controller.py
+tests/test_adaptive_clock_driver.py
+# The step log declares gpuwm.step-log/v4 and carries `dt` ONLY under an
+# adaptive clock; a fixed run must still emit v3 with no dt or every
+# existing consumer of the stream breaks.  Both directions are pinned
+# here.  CPU-only, no cupy.
+tests/test_step_log_adaptive_dt.py
+# The two suites the second contributed cut brought.  The first pins the
+# single-sourced set of RunConfig fields the clock DERIVES at run time:
+# the driver wrote `dt` and `time_step_sound` every root step while the
+# restart walk exempted only `dt`, so an adaptive run could not resume a
+# checkpoint of its own the moment its step moved the sound-step count --
+# a three-domain run wrote five checkpoint sets and could use none.  It
+# also pins the half that must NOT move: a resume that retunes a target
+# or a clamp is allowed and WARNED about, one that flips
+# use_adaptive_time_step is still refused, and a fixed clock still binds
+# every one of them exactly.  The second pins the nest divide: a parent
+# tick count poor in factors handed a 3:1 nest 373 substeps in one parent
+# step, which did not fail and cost 50x throughput in silence.  Both are
+# arithmetic and dataclass work, CPU-only, no cupy, ~1 s together.
+tests/test_adaptive_restart_sound_steps.py
+tests/test_nest_divide_collapse.py
+# The end-of-run implementation recheck.  A four-hour forecast wrote all
+# its frames and then died on "forecast implementation changed during
+# execution" because the final `git rev-parse` failed to spawn: None
+# against a real commit is a difference a bare equality test cannot tell
+# from a real one.  These two pin that the digest half is compared always
+# and the git half only when both ends resolved it.  CPU-only, no cupy.
+tests/test_runtime_source_identity_recheck.py
+tests/test_single_domain_runtime_source_identity_recheck.py
+# One netCDF4/HDF5 session at a time across the whole process.  The
+# shipped HDF5 is not thread-safe and netCDF4 drops the GIL around it, so
+# two threads inside it is a crash: a two-domain run with a relocating
+# child died with SIGSEGV or SIGBUS at the same relocation in 3 of 8 full
+# runs, nine frames of fourteen on disk, with the main thread opening an
+# RRTMGP table for the rebuilt child while a writer thread revalidated
+# the tape it had just published.  The writer's lock was private to its
+# own module, so it guarded the writer against itself and nothing else.
+# This pins that the two share one lock, that the lock serializes, and
+# that no Dataset open in gpuwm/core/rrtmgp.py sits outside it -- a
+# source audit rather than a race, because 3 in 8 is green most of the
+# time for the wrong reason.  CPU-only, no cupy, ~1 s.
+tests/test_netcdf_session_serialization.py
+# The per-domain wrfout writers.  The adaptive-timestep cut added
+# `configured_dt` to the writer's global attributes -- the only place the
+# step a run was ASKED for survives, since the live one moves every root
+# step -- and no battery file covered that constructor, so the suite sat
+# red on the release line until the next cut ran it by hand.  CPU-only,
+# no cupy, under a second.
+tests/test_wrfout.py
+
+# The three LES-enabler lanes merged 2026-09-03.  All CPU-only, all under
+# a few seconds, and none of them was on any battery list when it landed,
+# so a cut would have run none of this new coverage.
+#
+#   vertical_remap / offline_child_vertical / downscale_child_levels /
+#   inline_vertical_refusals -- the conservative dry-mass rebinning
+#   operator and the `--child-levels` door onto it.  Two things a cut must
+#   not ship broken: the operator's conservation bounds, and the
+#   OFF-trajectory bitwise lock
+#   (test_matched_ladder_offline_child_is_bitwise_unchanged), which is
+#   what says a run that asked for NO ladder is byte-for-byte the run it
+#   always was.  test_downscale_child_levels also holds the two doors the
+#   flag has to reach: the auto-sizer prices on the CHILD's level count
+#   (it priced a 128-level child as a 49-level one, 6.554 GiB against the
+#   real 10.980), and --child-levels is refused rather than dropped when
+#   the caller supplies their own child config.
+#
+#   inflow_perturbation / shipped_configs_inflow_applicability -- the
+#   refresh cadence under a breathing parent step (356 backward index
+#   moves in 1,910 forces before the fix), and the screen for inflow
+#   seeding declared under a PBL-off parent.  The screen caught a shipped
+#   config that could not run, in the flagship LES file.
+tests/test_vertical_remap.py
+tests/test_offline_child_vertical.py
+tests/test_downscale_child_levels.py
+tests/test_inline_vertical_refusals_name_the_door.py
+tests/test_inflow_perturbation.py
+tests/test_shipped_configs_inflow_applicability.py
+
+# CAM carrier ownership, parent lookup, configuration and identity.
+tests/test_cam_ozone.py
+
+# Independent spectrum composition, memory and selected gas controls.
+tests/test_radiation_composition.py
+
+# Acoustic persistent-carrier inventory and allocation accounting.
+tests/test_acoustic_carrier_lifetime.py
+
+# Health reads canonical host/device storage after initialization releases state.
+tests/test_attached_store_health.py
+
+# Fixed tracking-window state restore validates every sibling before applying.
+tests/test_streamed_lifecycle_restart.py
+
+# Ordinary single-domain execution routes through the shared adaptive scheduler.
+tests/test_single_adaptive_runtime.py
+
+# Visual launcher uses the shared wizard/schema and preserves exact user settings.
+tests/test_launchpad_api.py
+
+# Configured automatic admission retains shared allocations and explicit settings.
+tests/test_auto_admission.py
+
+# Impossible host stores are pruned while valid resident and mixed choices remain.
+tests/test_auto_search_host_floor.py
+
+# Fast feasible planning retains the complete nonprefix mixed-road fallback.
+tests/test_auto_search_feasible.py
+
+# Cold device-wide observation follows the selected CUDA PCI identity.
+tests/test_device_wide_planning_budget.py
+
+# Declared missing-field donors retain verified live and sealed source authority.
+tests/test_native_supplements.py
+
+# Every kernel frame recording names its compiler and covers its declared source set.
+tests/test_kernel_frame_recordings.py
+
+# Boundary-time local-memory growth must enter runtime pricing.
+tests/test_lbc_time_frame.py
+
+# Public prepared hierarchy restart forwards exact checkpoint and forcing authority.
+tests/test_sim_restart.py
+
+# Omitted wizard clocks preserve exact geometry, event times and active physics periods.
+tests/test_domain_wizard_default_clock.py
+
+# Independent declared follower windows retain storage, cadence and ordered move receipts.
+tests/test_follow_window_transport.py
+
+# Cargo lock/config/vendor edits have no Python import edge; require complete
+# offline sources, source-file hashes and safe release build instructions.
+tests/test_vendored_cargo_registry.py
+
+# Prepared follower corridors, independent ownership and public restart receipts.
+tests/test_prepared_followers.py
+
+# Explicit polygons preserve coverage using the selected operations, not point-preset size.
+tests/test_polygon_operation_bounds.py
+
+# Existing prepared launch preserves checkpoint authority and requested operations.
+tests/test_go_prepared_restart.py
+
+# First-use help and next commands retain exact user settings and complete advanced help.
+tests/test_cli_first_use.py
+
+# Guided domain prompts use the canonical parser and current physics recommendations.
+tests/test_domain_interactive.py
+
+# First-launch New/Fit must use measured available GPU memory, while declared
+# card sizing remains independent of local hardware and explicit polygons
+# keep their requested footprint when available memory requires a refusal.
+tests/test_wizard_sizing_authority.py
+tests/test_domain_polygon.py
+
+# Single prepared checkpoints retain strict authority, canonical stores and refusal cleanup.
+tests/test_single_prepared_restart.py
+
+# Editable starters are fully priced before fitting and preserve scientific settings and file ownership.
+tests/test_starter_template.py
+
+# Verified mapped stream ownership preserves exact bytes, validation and consumer lifetime.
+tests/test_mapped_owned_field.py
+
+# Declared gas operands preserve defaults, selected spectra and restart identity.
+tests/test_trace_gas_overrides.py
+
+# Temporary tiled owners drain on success/failure and preserve primary errors.
+tests/test_tiled_run_close.py
+
+# Supplied scalar forcing and exact atmospheric support retain source identity.
+tests/test_analyzed_scalar_boundaries.py
+tests/test_atmospheric_window.py
+
+# Radiation selector partitions are CPU checks, independent of CUDA tests.
+tests/test_rrtmgp_coupling.py
+
+# Native atmospheric publication validates all source bytes before retaining support.
+tests/test_mapped_atmospheric_writer.py
+
+# Moving-store ownership, dated child activation and analyzed scalar consumers.
+tests/test_nest_bounded_operands.py
+tests/test_nest_window.py
+tests/test_prepared_delayed_activation.py
+tests/test_streamed_relocation_capture.py
+tests/test_streamed_relocation_owner.py
+tests/test_streamed_state.py
+tests/test_qnn_specified_inflow.py
+tests/test_wrfinput_physics_fields.py
+tests/test_metgrid_number_initialization.py
+tests/test_tui_cli.py
+
+# Reported GPU-preflight and ERA5 mask failures have permanent CPU coverage.
+tests/test_supervisor.py
+tests/test_ingest_preflight.py
+
+# TUI plot selections and reviewed, durable remote jobs retain their CLI contracts.
+tests/test_tui_products.py
+tests/test_tui_sim_products.py
+tests/test_remote_cli.py
+tests/test_remote_snapshot.py
+tests/test_remote_worker_linux.py
+
+# Research recipes, native attributes and supplied archives retain scientific intent.
+tests/test_research_catalog.py
+tests/test_research_workspaces.py
+tests/test_attribute_tracking.py
+tests/test_gfs_initial_perturbation.py
+tests/test_downscale_archive_guards.py
+tests/test_downscale_auto_vram.py
+tests/test_case_catalog.py
+tests/test_source_availability.py
+tests/test_cli_memory_admission.py
+tests/test_go_supplements.py
+tests/test_hrrr_soil_choice.py
+
+# Static qualification may report comparison deltas, never broken execution.
+tests/test_static_platform_ci.py
+
+# Source installers must install the companion and build the terminal workspace.
+tests/test_install_scripts.py
+
+# Concise Check output must retain the full report's budget verdict and remedy.
+tests/test_check_display.py
