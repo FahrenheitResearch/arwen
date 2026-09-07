@@ -498,7 +498,8 @@ def _final_text(text: str, recipe: dict, *, lat: float, lon: float, data_dir: Pa
         recipe, lat=lat, lon=lon, grid_id=len(profile["geometry"]["nest_ratios"]) + 1)
 
 
-def _admission(text: str, *, recipe: dict, source: str, sizing, path: Path) -> tuple[object, dict]:
+def _admission(text: str, *, recipe: dict, source: str, sizing, path: Path,
+               retry_hint: str | None = None) -> tuple[object, dict]:
     from gpuwm import domain_wizard as wizard
     experiment = wizard.experiment_from_text(text, source=str(path))
     interval = wizard.source_forcing_interval_seconds(source)
@@ -509,17 +510,18 @@ def _admission(text: str, *, recipe: dict, source: str, sizing, path: Path) -> t
                                        vram_gib=sizing.vram_gib,
                                        forcing_interval_seconds=interval,
                                        profile=sizing.device_profile)
-    fitting_class = _hardware_class(sizing, "auto")
-    retry = (f"Retry this same question ({recipe['id']}) with --hardware-class auto "
-             f"or --hardware-class {fitting_class}, keeping the location, source, cycle, "
-             "duration and GPU capacity unchanged. In the TUI, reopen the saved guide "
-             f"and set Research GPU profile to auto or {fitting_class}. "
-             "The retry still checks the full study area; if it also refuses, make more "
-             "memory available or choose a question with a smaller required area.")
+    if retry_hint is None:
+        fitting_class = _hardware_class(sizing, "auto")
+        retry_hint = (f"Retry this same question ({recipe['id']}) with --hardware-class auto "
+                      f"or --hardware-class {fitting_class}, keeping the location, source, cycle, "
+                      "duration and GPU capacity unchanged. In the TUI, reopen the saved guide "
+                      f"and set Research GPU profile to auto or {fitting_class}. "
+                      "The retry still checks the full study area; if it also refuses, make more "
+                      "memory available or choose a question with a smaller required area.")
     if phases.peak_envelope_bytes > budget:
         raise ValueError(f"The complete {recipe['method']} configuration exceeds the immutable "
                          f"memory budget: {phases.peak_envelope_bytes / 2**30:.2f} GiB needed, "
-                         f"{budget / 2**30:.2f} GiB available. {retry}")
+                         f"{budget / 2**30:.2f} GiB available. {retry_hint}")
     minimum = float(recipe["geometry"].get("minimum_root_span_km", 0))
     root = experiment.domains[0].run
     span_x, span_y = root.nx * root.dx / 1000, root.ny * root.dy / 1000
@@ -527,7 +529,7 @@ def _admission(text: str, *, recipe: dict, source: str, sizing, path: Path) -> t
         ladder = " -> ".join(f"{domain.run.dx / 1000:g}" for domain in experiment.domains)
         raise ValueError(f"The fitted {span_x:g} x {span_y:g} km root ({ladder} km ladder) "
                          f"is smaller than this research question's "
-                         f"{minimum:g} km minimum span. {retry}")
+                         f"{minimum:g} km minimum span. {retry_hint}")
     return experiment, {"status": "passed-cpu-estimate", "binding_phase": phases.binding_phase,
                         "peak_envelope_bytes": phases.peak_envelope_bytes,
                         "envelope_budget_bytes": budget,

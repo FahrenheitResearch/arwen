@@ -211,6 +211,24 @@ def test_invalid_native_combination_leaves_no_published_configuration(tmp_path):
     assert not list(tmp_path.glob("invalid*"))
 
 
+def test_catalog_memory_refusal_keeps_its_own_retry_route_and_publishes_nothing(tmp_path, monkeypatch):
+    from gpuwm import domain_wizard as wizard, research_workspaces as research
+    admission = research._admission
+
+    def final_budget_refusal(text, **kwargs):
+        with monkeypatch.context() as patch:
+            patch.setattr(wizard, "sizing_budget_bytes", lambda *args, **options: 1)
+            return admission(text, **kwargs)
+
+    monkeypatch.setattr(research, "_admission", final_budget_refusal)
+    out = tmp_path / "refused.toml"
+    with pytest.raises(ValueError, match="smaller tier from this catalog") as failed:
+        catalog.create_case(EXAMPLES / "example.json", "synthetic-profile-example", out=out,
+                            tier="lower", vram_gib=32, now=NOW)
+    assert "--hardware-class" not in str(failed.value)
+    assert not list(tmp_path.iterdir())
+
+
 def test_cli_dispatch_lists_cases_as_compact_json(capsys):
     from gpuwm.cli import main
     assert main(["case-catalog", "list", "--catalog", str(EXAMPLES / "example.json"), "--json"]) == 0

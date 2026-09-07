@@ -3015,20 +3015,24 @@ def _rte_rrtmgp_cloud_optics_constraints(registry: dict) -> None:
 
     DERIVED, not transcribed, in all three of its parts: which schemes need
     the rule comes from ``_MP_CLOUD_OPTICS_SCHEME`` itself, the radiation
-    clause from the options' own projected selectors (every option landing
-    on the explicit 4/4 pair), and the variant clause from the shipped
+    clause from the options' resolved selectors (including the legacy
+    aggregate selector landing on 4/4), and the variant clause from the shipped
     ``ra_rrtmg_variant`` enum minus the legacy value.  A new scheme, a new
     radiation option resolving to the same adapter, or a third adapter each
     force a decision here instead of silently widening the admission.
     """
 
+    from types import SimpleNamespace
+
+    from gpuwm.config import radiation_scheme_ids
     from gpuwm.core.rrtmgp import _MP_CLOUD_OPTICS_SCHEME
 
     radiation_options = registry["components"]["radiation"]["options"]
     rte_rrtmgp_4_4 = sorted(
         option_id for option_id, option in radiation_options.items()
-        if option.get("selectors", {}).get("ra_lw_physics") == 4
-        and option.get("selectors", {}).get("ra_sw_physics") == 4)
+        if radiation_scheme_ids(SimpleNamespace(
+            **(option.get("parameters", {}) | option.get("selectors", {}))
+        )) == (4, 4))
     if not rte_rrtmgp_4_4:
         raise RuntimeError(
             "no radiation option projects the RTE+RRTMGP 4/4 selector pair; "

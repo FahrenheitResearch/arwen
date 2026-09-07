@@ -1,7 +1,7 @@
 {
   "schema": "gpuwm.ftz-route-inventory/v1",
   "generator": "tools/ftz_receipt/route_inventory.py",
-  "scope": "git ls-files -- *.py",
+  "scope": "git ls-files -- *.py minus RELEASE-EXCLUDE.txt globs",
   "constructor_kinds": [
     "cupy.ElementwiseKernel",
     "cupy.RawKernel",
@@ -9,19 +9,15 @@
     "cupy.ReductionKernel",
     "cupy.cuda.compiler.compile_using_nvrtc"
   ],
-  "site_count": 73,
+  "site_count": 68,
   "site_count_by_kind": {
     "cupy.ElementwiseKernel": 4,
     "cupy.RawKernel": 1,
-    "cupy.RawModule": 52,
+    "cupy.RawModule": 48,
     "cupy.ReductionKernel": 5,
-    "cupy.cuda.compiler.compile_using_nvrtc": 11
+    "cupy.cuda.compiler.compile_using_nvrtc": 10
   },
   "site_count_by_surface": {
-    "other": {
-      "cupy.RawModule": 4,
-      "cupy.cuda.compiler.compile_using_nvrtc": 1
-    },
     "package": {
       "cupy.ElementwiseKernel": 4,
       "cupy.RawModule": 10,
@@ -40,10 +36,6 @@
     }
   },
   "distinct_literal_option_tuples": [
-    [
-      "-std=c++14",
-      "--fmad=false"
-    ],
     [
       "-std=c++17",
       "--fmad=false"
@@ -65,98 +57,6 @@
     ]
   ],
   "sites": [
-    {
-      "file": "evidence/16gb-frontier/method/ftz_probe2.py",
-      "line": 27,
-      "column": 16,
-      "surface": "other",
-      "constructor": "_cc.compile_using_nvrtc",
-      "constructor_kind": "cupy.cuda.compiler.compile_using_nvrtc",
-      "enclosing": "via_nvrtc",
-      "takes_caller_options": true,
-      "options_argument_present": true,
-      "options_expression": "opts",
-      "options": null,
-      "options_element_expressions": null,
-      "options_are_literal": false,
-      "text": "binout, _ = _cc.compile_using_nvrtc(src, opts, None, 'probe.cu')"
-    },
-    {
-      "file": "evidence/16gb-frontier/method/ftz_probe2.py",
-      "line": 30,
-      "column": 10,
-      "surface": "other",
-      "constructor": "cp.RawModule",
-      "constructor_kind": "cupy.RawModule",
-      "enclosing": "via_nvrtc",
-      "takes_caller_options": true,
-      "options_argument_present": false,
-      "options_expression": null,
-      "options": null,
-      "options_element_expressions": null,
-      "options_are_literal": false,
-      "text": "mod = cp.RawModule(path=str(p)); k = mod.get_function('probe')"
-    },
-    {
-      "file": "evidence/p3-ship-20260829/receipts/gam_device.py",
-      "line": 23,
-      "column": 6,
-      "surface": "other",
-      "constructor": "cp.RawModule",
-      "constructor_kind": "cupy.RawModule",
-      "enclosing": null,
-      "takes_caller_options": true,
-      "options_argument_present": true,
-      "options_expression": "(\"-std=c++14\", \"--fmad=false\")",
-      "options": [
-        "-std=c++14",
-        "--fmad=false"
-      ],
-      "options_element_expressions": [
-        "\"-std=c++14\"",
-        "\"--fmad=false\""
-      ],
-      "options_are_literal": true,
-      "text": "mod = cp.RawModule(code=src, options=(\"-std=c++14\", \"--fmad=false\"))"
-    },
-    {
-      "file": "evidence/p3-ship-20260829/receipts/pow_probe.py",
-      "line": 31,
-      "column": 6,
-      "surface": "other",
-      "constructor": "cp.RawModule",
-      "constructor_kind": "cupy.RawModule",
-      "enclosing": null,
-      "takes_caller_options": true,
-      "options_argument_present": true,
-      "options_expression": "DEFAULT_OPTIONS",
-      "options": null,
-      "options_element_expressions": null,
-      "options_are_literal": false,
-      "text": "mod = cp.RawModule(code=p3_source() + src, options=DEFAULT_OPTIONS)"
-    },
-    {
-      "file": "evidence/p3-ship-20260829/receipts/probe_device_flush.py",
-      "line": 24,
-      "column": 6,
-      "surface": "other",
-      "constructor": "cp.RawModule",
-      "constructor_kind": "cupy.RawModule",
-      "enclosing": null,
-      "takes_caller_options": true,
-      "options_argument_present": true,
-      "options_expression": "(\"-std=c++14\", \"--fmad=false\")",
-      "options": [
-        "-std=c++14",
-        "--fmad=false"
-      ],
-      "options_element_expressions": [
-        "\"-std=c++14\"",
-        "\"--fmad=false\""
-      ],
-      "options_are_literal": true,
-      "text": "mod = cp.RawModule(code=src, options=(\"-std=c++14\", \"--fmad=false\"))"
-    },
     {
       "file": "gpuwm/core/attribute_tracking.py",
       "line": 99,

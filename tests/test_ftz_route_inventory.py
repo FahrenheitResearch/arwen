@@ -126,6 +126,25 @@ def test_inventory_reports_a_site_it_would_otherwise_skip(injected_checkout):
     assert before == 3 and after == 0, (before, after)
 
 
+def test_release_inventory_does_not_require_excluded_campaign_sources(
+    injected_checkout,
+):
+    root = injected_checkout
+    (root / "campaign").mkdir()
+    (root / "campaign" / "private_probe.py").write_text(
+        SYNTHETIC, encoding="utf-8")
+    (root / "RELEASE-EXCLUDE.txt").write_text(
+        "# Private campaign files are absent from the public tree.\n"
+        "campaign/**\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    private = ri.build_inventory(root)
+    assert len(private["sites"]) == 3
+    assert all(site["file"] == "pkg/synthetic_routes.py"
+               for site in private["sites"])
+    _git(root, "rm", "-f", "--", "campaign/private_probe.py")
+    assert ri.build_inventory(root) == private
+
+
 def test_scan_records_non_literal_option_expressions():
     """A tuple built at run time is recorded as an expression, not dropped."""
     text = ('import cupy as cp\n'

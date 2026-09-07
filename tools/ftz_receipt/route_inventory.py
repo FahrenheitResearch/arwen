@@ -1,9 +1,9 @@
-"""Enumerate every device-code compile site in the tree.
+"""Enumerate every device-code compile site in the public tree.
 
 A route is one construction path from Python source text to a compiled CUDA
 module.  The receipt's per-route claims are only as complete as this
 inventory, so the inventory is derived -- never typed -- from an AST walk over
-``git ls-files``, and it records the option tuple each caller supplies rather
+``git ls-files`` minus ``RELEASE-EXCLUDE.txt``, and it records the option tuple each caller supplies rather
 than a single global flags string.  There is no global flags string: the
 sites below pass different tuples, and one of them (``cp.ReductionKernel``)
 supplies no options at all.
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import fnmatch
 import json
 import subprocess
 import sys
@@ -60,10 +61,17 @@ def repo_root(start: Path | None = None) -> Path:
 
 
 def tracked_python_files(root: Path) -> list[str]:
-    """Every tracked ``*.py`` path, POSIX-relative, in git's own order."""
+    """Tracked public ``*.py`` paths, with the release's exclusions applied."""
     out = subprocess.run(["git", "ls-files", "--", "*.py"], cwd=str(root),
                          capture_output=True, text=True, check=True)
-    return sorted(p for p in out.stdout.splitlines() if p.strip())
+    manifest = root / "RELEASE-EXCLUDE.txt"
+    exclusions = [line.strip() for line in
+                  manifest.read_text(encoding="utf-8").splitlines()
+                  if line.strip() and not line.lstrip().startswith("#")
+                  ] if manifest.exists() else []
+    return sorted(p for p in out.stdout.splitlines() if p.strip()
+                  and not any(fnmatch.fnmatchcase(p, pattern)
+                              for pattern in exclusions))
 
 
 def _callee_tail(node: ast.AST) -> str | None:
@@ -211,7 +219,7 @@ def build_inventory(root: Path) -> dict:
     return {
         "schema": SCHEMA_ID,
         "generator": "tools/ftz_receipt/route_inventory.py",
-        "scope": "git ls-files -- *.py",
+        "scope": "git ls-files -- *.py minus RELEASE-EXCLUDE.txt globs",
         "constructor_kinds": sorted(set(CONSTRUCTOR_KINDS.values())),
         "site_count": len(records),
         "site_count_by_kind": dict(sorted(by_kind.items())),

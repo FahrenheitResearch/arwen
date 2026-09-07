@@ -45,6 +45,97 @@ Takes no options of its own.
 | `--set KEY=VALUE` | a setting to change in the branched run, repeatable. Changeable from a checkpoint: run_seconds, restart_interval_s, acknowledgements, relocation.*, tiles.*, output.*, domain.<grid_id>.history_interval_s, domain.<grid_id>.tiles.*, domain.<grid_id>.output.*. Everything else is refused by name, because the restart identity binds it |
 | `--supervisor-max-restarts N` | fresh-process recovery attempts (default 3) |
 
+## `gpuwm case-catalog`
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+
+## `gpuwm case-catalog create`
+
+| argument | what it does |
+|---|---|
+| `case_id` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--ack` | explicit native scientific acknowledgement; never inferred from catalog prose |
+| `--card` | _(the parser declares no help text for this option)_ |
+| `--catalog` | JSON, TOML or ZIP case catalog; never interpreted as commands |
+| `--expected-catalog-sha256` | bind creation to the exact original catalog bytes displayed by preview |
+| `--json` | emit compact JSON for the interface or scripts |
+| `--native-overrides` | JSON shared/domains scientific overrides; validated against the native contract |
+| `--out` | new experiment .toml; existing files are preserved |
+| `--physics-profile` | explicit native profile replacing the catalog's selected profile |
+| `--source-option` | listed source/initialization ID; default is the catalog's recommended option |
+| `--tier {lower,recommended,upper}` | _(the parser declares no help text for this option)_ |
+| `--vram-gib` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm case-catalog export`
+
+| option | what it does |
+|---|---|
+| `--catalog` | JSON, TOML or ZIP case catalog; never interpreted as commands |
+| `--json` | emit compact JSON for the interface or scripts |
+| `--original` | export the exact original JSON/TOML bytes; default is normalized JSON |
+| `--out` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm case-catalog list`
+
+| option | what it does |
+|---|---|
+| `--catalog` | JSON, TOML or ZIP case catalog; never interpreted as commands |
+| `--event-kind` | _(the parser declares no help text for this option)_ |
+| `--json` | emit compact JSON for the interface or scripts |
+| `--limit` | _(the parser declares no help text for this option)_ |
+| `--offset` | _(the parser declares no help text for this option)_ |
+| `--query` | _(the parser declares no help text for this option)_ |
+| `--source` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm case-catalog native-settings`
+
+| option | what it does |
+|---|---|
+| `--json` | emit compact JSON for the interface or scripts |
+
+## `gpuwm case-catalog preview`
+
+| argument | what it does |
+|---|---|
+| `case_id` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--catalog` | JSON, TOML or ZIP case catalog; never interpreted as commands |
+| `--json` | emit compact JSON for the interface or scripts |
+| `--native-overrides` | JSON shared/domains scientific overrides; validated against the native contract |
+| `--physics-profile` | explicit native profile replacing the catalog's selected profile |
+| `--source-option` | listed source/initialization ID; default is the catalog's recommended option |
+| `--tier {lower,recommended,upper}` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm case-catalog search`
+
+| option | what it does |
+|---|---|
+| `--catalog` | JSON, TOML or ZIP case catalog; never interpreted as commands |
+| `--event-kind` | _(the parser declares no help text for this option)_ |
+| `--json` | emit compact JSON for the interface or scripts |
+| `--limit` | _(the parser declares no help text for this option)_ |
+| `--offset` | _(the parser declares no help text for this option)_ |
+| `--query` | _(the parser declares no help text for this option)_ |
+| `--source` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm case-catalog show`
+
+| argument | what it does |
+|---|---|
+| `case_id` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--catalog` | JSON, TOML or ZIP case catalog; never interpreted as commands |
+| `--json` | emit compact JSON for the interface or scripts |
+
 ## `gpuwm cases`
 
 | option | what it does |
@@ -187,7 +278,7 @@ Takes no options of its own.
 | `--card {12gb,16gb,24gb,32gb}` | GPU tier; sets the VRAM budget with no local probe. With neither --card nor --vram-gib the wizard MEASURES the local card's capacity (short-lived probe, suppressed by GPUWM_NO_LOCAL_GPU) and refuses, naming both flags, when there is nothing to measure |
 | `--chain R1,R2,...` | custom nest refinement ratios, integers in [2, 8] (e.g. --root-dx 3 --chain 4 for 3 km -> 750 m); omit for a single domain at --root-dx. Sized by the same estimator fit loop as the presets |
 | `--cycle YYYY-MM-DDTHH|latest` | the forcing CYCLE (UTC), which is the run's start time unless --forecast-start-hour moves it; 'latest' probes the public mirrors for the newest complete gfs/hrrr cycle covering the whole window and prints what it picked (needs network; era5 must name an explicit time) |
-| `--data-dir DIR` | where fetched forcing lives/will live (default data/<name>) |
+| `--data-dir DIR` | explicit forcing directory; automatic go launches otherwise manage request-specific downloads. Manual acquisition and ERA5 paths default to data/<name> |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--forcing GRIB` | era5: explicit forcing GRIB path(s) already on disk (default <data-dir>/era5-combined.grib) |
 | `--forecast-start-hour K` | gfs/gdas/hrrr: initialize the run from the cycle's f{K} FORECAST lead instead of its analysis, so start_time = cycle + K h and the boundaries come from f{K+i}. This is how a window deep in a forecast (say f174..f240) is reached without integrating from f000. The initial condition is then itself a K-hour forecast, and every receipt says so |
@@ -390,7 +481,7 @@ Takes no options of its own.
 
 | option | what it does |
 |---|---|
-| `--data-dir DIR` | download routes only: reuse an existing `gpuwm fetch` download instead of fetching into <outdir>/data |
+| `--data-dir DIR` | download routes only: use this existing download instead of the automatically managed request cache |
 | `--dry-run` | validate the route and show how to launch it; fetch and run nothing |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--geog-root DIR` | override the geography tree (default: [case_data].geog_root for declared inputs, otherwise the staged WPS_GEOG tree) |
@@ -400,8 +491,8 @@ Takes no options of its own.
 | `--products LIST` | which products the render stage draws: a comma-separated list of catalog slugs, 'all' (the default -- the renderer's whole catalog), or 'none' to stop after the forecast. The same spelling `gpuwm render --products` takes |
 | `--restart CHECKPOINT` | continue an existing checkpoint; prepared-cache runs also need --prepared-root, and use fresh output |
 | `--run-stamp {on,off}` | put this run's forecast files, pictures and diagnostics in its own timestamped folder under --outdir (default on): --outdir/run-<YYYYMMDD>-<HHMMSS>Z_i<YYYYMMDD><HHMM>Z/ (launch instant UTC, then the model initialisation time; the _i part is omitted when the run's init time cannot be read). Successive runs of one configuration then never overwrite or interleave each other. 'off' writes straight into --outdir, which is what releases up to 2.4.1 did; it is kept only for a consumer still written against that and is a workaround, not a supported alternative |
+| `--supplement ROLE=PATH` | explicit preparation donor; repeat for multiple files. HRRR accepts PMSL=GRIB inside --data-dir and binds its bytes in the preparation source manifest |
 | `--wps-namelist PATH` | with --prepared-root: the exact WPS authority required by a single-domain portable bundle |
-| `--supplement ROLE=PATH` | explicit preparation donor; repeat for multiple files. HRRR accepts `PMSL=GRIB` inside `--data-dir` and binds its bytes in the preparation source manifest |
 
 ## `gpuwm import-namelist`
 
@@ -780,6 +871,7 @@ Takes no options of its own.
 |---|---|
 | `--annotate FILE.json` | rust engine: override the panel title and the three subtitle slots (title, title_suffix, subtitle_left, subtitle_center, subtitle_right). A short badge belongs in the centre slot; anything sentence-length belongs on the left, which owns the row's width |
 | `--barbs` | rust engine: draw the wind as BARBS, overruling both the automatic choice and any inherited RUSTWX_WIND_STREAMLINES |
+| `--context-wrfout FILE` | ==SUPPRESS== |
 | `--dpi N` | PNG resolution, matplotlib engine (default 150) |
 | `--engine {auto,rust,matplotlib}` | render engine: the vendored Rusty Weather renderer (campaign plot quality; 151 implicit-render catalog candidates per file) or the matplotlib workaround; 'auto' (default) uses rust whenever its binary is built and probes as runnable, and REFUSES otherwise rather than drawing weather fields with matplotlib -- 'matplotlib' asks for that workaround by name and announces itself |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
@@ -798,11 +890,12 @@ Takes no options of its own.
 | `--section lat,lon,lat,lon|FILE.json` | rust engine: the line the vertical-section products (xsec:<fill>[/<overlay>...] in --products, any 3-D wrfout field on a height axis) are cut along; a JSON file gives {start, end} or a {points, extend_km} polyline |
 | `--section-across KM` | rust engine: also draw each section product across the line, this many km long, through the fill's maximum column |
 | `--section-size WxH` | the size a cross-section is drawn at; absent, a section is landscape 2:1 at the map's width, because a vertical cut handed the map's own size comes out portrait |
+| `--series` | render compatible files from each run/domain/episode as one timeline, including multi-hour products |
 | `--size WxH` | output pixels, rust engine (default 1200x900) |
 | `--source-label TEXT` | model/provenance label stamped on every plot (default 'ArWen <the executing version>'); set it when rendering wrfout files this model did not produce, so the sheet does not claim them |
 | `--streamlines` | rust engine: draw the wind as STREAMLINES instead of barbs on every product that carries a wind layer. Without either flag the engine keeps its automatic choice (streamlines on curvilinear and projected grids, barbs on plain lat/lon), and the RUSTWX_WIND_STREAMLINES environment variable still works; this flag and --barbs outrank it |
 | `--theme NAME|FILE.json` | rust engine: the render theme -- a built-in name (default, dark) or a JSON theme file naming the surface, the inks, the basemap linework, the colorbar chrome, the fonts and the colormap overrides (schema in tools/rustwx/crates/rustwx-render/src/theme.rs; RUSTWX_THEME is the environment spelling). Omitted, the engine draws its own look and the PNGs are byte-identical |
-| `--timeidx N|all` | frame index within each file, or 'all' (default) |
+| `--timeidx N|all` | frame index within each file (within each timeline with --series), or 'all' (default) |
 
 ## `gpuwm report`
 
@@ -959,7 +1052,7 @@ Takes no options of its own.
 | `--progress-format {text,jsonl,off}` | how the run reports progress. Omitted, the runner's own default applies, which is the WRF-shaped `Timing for main:` line per step per domain on this terminal -- watching it run is the reason to run the stage alone. `jsonl` is what `gpuwm go` passes, because it owns the runner's stdout; pass it here when you are hosting this stage the same way |
 | `--render-dir DIR` | first-frame picture directory (default OUTDIR/png); ignored without --render-products |
 | `--render-products SPEC` | render selected products from the first committed history frame while the forecast runs: comma-separated catalog selectors, 'all', or 'none'. Omitted means no rendering; this does not render every saved frame |
-| `--restart RST` | resume from any member of a prepared hierarchy's checkpoint set into a fresh output folder; the existing tree runner validates config, inputs and checkpoint identity without changing settings |
+| `--restart RST` | resume a prepared single-domain checkpoint or any member of a hierarchy checkpoint set into a fresh output folder; the runtime validates config, inputs and checkpoint identity without changing settings |
 | `--run-stamp {on,off}` | put this run's wrfout, report.json and receipts in its own timestamped folder under --outdir (default on): --outdir/run-<YYYYMMDD>-<HHMMSS>Z_i<YYYYMMDD><HHMM>Z/ (launch instant UTC, then the model initialisation time; the _i part is omitted when the run's init time cannot be read). Successive runs of one configuration then never overwrite or interleave each other. 'off' writes straight into --outdir, which is what releases up to 2.4.1 did; it is kept only for a consumer still written against that and is a workaround, not a supported alternative |
 | `--runner {auto,single,tree}` | which runner arm to use. 'auto' (default) reads it off the bundle's own schema and domain count; the explicit values exist for a caller who knows better and wants to be refused precisely when they do not |
 | `--sealed-forcing-extension` | use the existing prepared-tree append-only forcing prefix contract when writing or restoring checkpoints |

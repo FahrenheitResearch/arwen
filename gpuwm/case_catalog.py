@@ -607,9 +607,12 @@ def create_case(catalog, case_id: str, *, out: str | Path, tier="recommended",
         for row in selection["native_overrides"]["domains"]:
             domains[row["grid_id"]].update(row["settings"])
         text = _config_text(raw)
-        recipe = {"method": "case catalog selection", "geometry": {"minimum_root_span_km": 0}, "validation_status": "catalog recommendations are not science validation"}
+        recipe = {"id": case_id, "method": "case catalog selection", "geometry": {"minimum_root_span_km": 0}, "validation_status": "catalog recommendations are not science validation"}
         with redirect_stdout(log), redirect_stderr(log):
-            experiment, admission = _admission(text, recipe=recipe, source=selection["source"], sizing=sizing, path=destination)
+            experiment, admission = _admission(
+                text, recipe=recipe, source=selection["source"], sizing=sizing, path=destination,
+                retry_hint="Choose a smaller tier from this catalog or make more GPU memory available. "
+                           "Keep the declared capacity equal to the target GPU.")
             if cadence is not None:
                 phases = wizard._sizing_phases(experiment, free_bytes=sizing.free_bytes,
                     source=selection["source"], forcing_interval_seconds=cadence * 3600,

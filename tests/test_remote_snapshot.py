@@ -200,8 +200,9 @@ def test_checkpointless_resume_keeps_public_route_refusal(tmp_path):
     source = config(tmp_path)
     output = tmp_path / "old output"
     output.mkdir()
-    with pytest.raises(ValueError, match="writes no checkpoints"):
+    with pytest.raises(ValueError, match="No manifest-valid checkpoint exists"):
         rw._checkpoint({"outdir": str(output), "snapshot_config": str(source)}, "latest")
+    assert list(output.iterdir()) == []
 
 
 def test_prepared_snapshot_preserves_bound_authority_bytes_exactly(tmp_path):

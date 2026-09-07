@@ -332,8 +332,9 @@ def test_registry_exposes_exact_gui_flags_and_explicit_overrides(tmp_path):
 @pytest.mark.parametrize("source", ["gfs", "gdas", "hrrr", "era5", "20crv3"])
 def test_native_sources_preserve_companions_and_labels_are_not_data_paths(tmp_path, known_products, source):
     cycle = "2015-09-05T18" if source == "20crv3" else "2020-09-05T18"
+    # This checks source companions, using enough capacity for HRRR's default suite.
     args = _args(tmp_path, "regional-evolution.reference", f"--source={source}", "--hours=3",
-                 f"--cycle={cycle}", "--name=Research: local / coast")
+                 f"--cycle={cycle}", "--name=Research: local / coast", "--vram-gib=16")
     receipt = research.create_workspace(args)
     config = tmp_path / "new.toml"
     raw = tomllib.loads(config.read_text())

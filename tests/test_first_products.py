@@ -583,8 +583,11 @@ def test_the_render_stage_collects_the_early_render_before_it_draws(
 
     assert trigger.waited
     assert len(commands) == 1
-    assert str(later) in commands[0]
-    assert str(frame) not in commands[0]
+    from gpuwm.cli import build_parser
+    request = build_parser().parse_args(commands[0][3:])
+    assert request.wrfout == [later]
+    assert request.context_wrfout == [frame]
+    assert request.series
 
 
 def test_a_run_whose_only_frame_was_published_early_draws_nothing_again(
