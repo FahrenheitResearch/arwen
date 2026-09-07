@@ -454,7 +454,8 @@ def test_standalone_python_project_excludes_forecast_executor(tmp_path):
     assert "gpuwm/prepared_source_schemas.py" in files
     for name in ("metem_forecast", "wrfinput_forecast", "launchpad_api", "tui_worker",
                  "remote_cli", "remote_worker", "research_workspaces",
-                 "starter_template", "tui_products"):
+                 "starter_template", "tui_products", "case_catalog",
+                 "case_catalog_import"):
         assert f"gpuwm/{name}.py" not in files
     assert "gpuwm/ingest/case_store.py" not in files
     assert "gpuwm/ingest/relocation_continuation.py" not in files

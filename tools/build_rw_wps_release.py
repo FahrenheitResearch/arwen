@@ -169,6 +169,7 @@ _TOP_LEVEL_EXCLUDES = {
     # entry point or staged preparation module consumes them.
     "remote_cli.py", "remote_worker.py", "research_workspaces.py",
     "starter_template.py", "tui_products.py",
+    "case_catalog.py", "case_catalog_import.py",
 }
 _CORE_MODULES = {
     "__init__.py",
