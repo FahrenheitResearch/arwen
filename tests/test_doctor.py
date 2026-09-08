@@ -769,11 +769,12 @@ def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
     # `gpuwm.mpas_mesh.MpasBridge.candidates`; their markers belong here
     # so `gpuwm fetch-bridges` and the release cut can tell an old build
     # of the generator from this one.
-    # The terminal also has its own tools/arwen-tui source-build ladder.
+    # The terminal and Zarr reader also have their own tools/arwen-tui and
+    # tools/zarr_bridge source-build ladders.
     assert extra == {"region_global_dealias", "netcdf_writer",
                      "gpuwm_mapped_engine", "static_fields", "obs_regrid",
                      "rw_mpas_mesh", "rw_mpas_static", "rw_mpas_init",
-                     "rw_mpas_convert", "rw_mpas_lbc", "arwen-tui"}
+                     "rw_mpas_convert", "rw_mpas_lbc", "arwen-tui", "rw_zarr"}
 
 
 def test_the_decoder_door_gates_the_contract_for_every_caller(

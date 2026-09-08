@@ -455,7 +455,10 @@ def test_standalone_python_project_excludes_forecast_executor(tmp_path):
     for name in ("metem_forecast", "wrfinput_forecast", "launchpad_api", "tui_worker",
                  "remote_cli", "remote_worker", "research_workspaces",
                  "starter_template", "tui_products", "case_catalog",
-                 "case_catalog_import"):
+                 "case_catalog_import", "companion_query", "companion_domains",
+                 "companion_forcing", "configuration_recovery", "remote_artifacts",
+                 "remote_input_transfer", "remote_plan", "remote_processed",
+                 "render", "render_receipts"):
         assert f"gpuwm/{name}.py" not in files
     assert "gpuwm/ingest/case_store.py" not in files
     assert "gpuwm/ingest/relocation_continuation.py" not in files
@@ -509,10 +512,20 @@ class RejectExternalModules(MetaPathFinder):
         forbidden = (
             "cupy",
             "gpuwm.cli",
+            "gpuwm.companion_query",
+            "gpuwm.companion_domains",
+            "gpuwm.companion_forcing",
+            "gpuwm.configuration_recovery",
             "gpuwm.core.model",
             "gpuwm.core.physics",
             "gpuwm.multi_run",
             "gpuwm.runtime",
+            "gpuwm.remote_artifacts",
+            "gpuwm.remote_input_transfer",
+            "gpuwm.remote_plan",
+            "gpuwm.remote_processed",
+            "gpuwm.render",
+            "gpuwm.render_receipts",
             "gpuwm.stream",
             "gpuwm.supervisor",
             "gpuwm.verify",

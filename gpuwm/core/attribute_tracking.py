@@ -97,20 +97,21 @@ def _float64_layer(array, xp):
     if xp is not np and array.dtype == xp.float32:
         if _FLOAT32_TO_FLOAT64 is None:
             _FLOAT32_TO_FLOAT64 = xp.ElementwiseKernel(
-                "uint32 bits", "float64 result", """
+                "uint32 bits", "uint64 result_bits", """
                 unsigned int exponent = (bits >> 23) & 255;
                 unsigned int fraction = bits & 8388607;
                 if (exponent == 255) {
-                    result = __longlong_as_double(fraction ?
-                        0x7ff8000000000000LL : 0x7ff0000000000000LL);
+                    result_bits = fraction ?
+                        0x7ff8000000000000ULL : 0x7ff0000000000000ULL;
                 } else {
-                    result = ldexp((double)(fraction + (exponent ? 8388608 : 0)),
-                                   exponent ? (int)exponent - 150 : -149);
+                    double result = ldexp((double)(fraction + (exponent ? 8388608 : 0)),
+                                         exponent ? (int)exponent - 150 : -149);
+                    result_bits = __double_as_longlong(result);
                 }
-                if (bits & 2147483648U) result = __longlong_as_double(
-                    __double_as_longlong(result) | 0x8000000000000000ULL);
+                if (bits & 2147483648U) result_bits |= 0x8000000000000000ULL;
                 """, "attribute_tracking_float32_to_float64_bits")
-        return _FLOAT32_TO_FLOAT64(array.view(xp.uint32))
+        # Store integer bits so CUDA cannot canonicalize away a NaN's sign.
+        return _FLOAT32_TO_FLOAT64(array.view(xp.uint32)).view(xp.float64)
     return array.astype(xp.float64, copy=True)
 
 

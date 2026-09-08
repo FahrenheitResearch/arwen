@@ -466,6 +466,7 @@ jobs:
             --mount "type=bind,source=$toolchain,target=/work/rust-toolchain,readonly" \
             --mount "type=bind,source=$build_root,target=/work/build" \
             --workdir /src "$MANYLINUX_IMAGE" \
+            /bin/bash -c 'dnf -y --setopt=install_weak_deps=False --setopt=keepcache=True install perl-IPC-Cmd perl-Time-Piece && exec "$@"' -- \
             /opt/python/cp311-cp311/bin/python -B /src/tools/build_linux_release_bridges.py \
             --source /src --revision "$BUNDLE_SOURCE_REV" \
             --rust-toolchain /work/rust-toolchain --cargo-home /work/build/cargo-home \

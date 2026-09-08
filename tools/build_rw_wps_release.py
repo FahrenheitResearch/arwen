@@ -170,6 +170,19 @@ _TOP_LEVEL_EXCLUDES = {
     "remote_cli.py", "remote_worker.py", "research_workspaces.py",
     "starter_template.py", "tui_products.py",
     "case_catalog.py", "case_catalog_import.py",
+    # The companion's query/edit/fit doors are registered only by gpuwm.cli;
+    # the remote modules transfer and supervise ArWen jobs. Configuration
+    # recovery is consumed by those excluded run/catalog doors. None belongs
+    # to source_cli's standalone preprocessing argument surface.
+    "companion_query.py", "companion_domains.py", "companion_forcing.py",
+    "configuration_recovery.py", "remote_artifacts.py",
+    "remote_input_transfer.py", "remote_plan.py", "remote_processed.py",
+    # The product renderer publishes supervisor/first-products receipts.
+    # Its callers are the excluded ArWen CLI/go/run-plan/remote doors and
+    # unstaged DA/cells/verification packages. RW-WPS has no render command;
+    # keep the renderer and its receipt owner together in full ArWen, rather
+    # than staging a renderer whose result publication cannot be imported.
+    "render.py", "render_receipts.py",
 }
 _CORE_MODULES = {
     "__init__.py",
