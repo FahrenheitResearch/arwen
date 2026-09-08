@@ -1,0 +1,66 @@
+{
+  "source_sha256": "b38d0b22b2e5d756b222f2e1150410261d18849561a18f005b5a06f800228b3a",
+  "job_id": "20260908T032050-9c66024c0297ec9f",
+  "state": "running",
+  "source_config_path": "fixtures/native-progress/case.toml",
+  "source_config_sha256": "cbb614f51835cb7cbba241b9a0b3b60aae39f0591fb78e66231b322e5ffe4178",
+  "native_result": {
+    "model_elapsed_seconds": 21600.0,
+    "stage": "finalize",
+    "phase": "render",
+    "phase_updated_unix_ms": 1788838284481,
+    "valid_time": "2013-05-20T06:00:00",
+    "progress": {
+      "schema": "arwen.forecast-progress.v1",
+      "outer_step": 360,
+      "model_seconds": 21600.0,
+      "run_seconds": 21600.0,
+      "wall_seconds": 473.837519,
+      "speed_x": 45.5852,
+      "step_ms": 3109.925,
+      "valid_time": "2013-05-20T06:00:00Z",
+      "updated_unix_ms": 1788838278109,
+      "phase": "render",
+      "domains": [
+        {
+          "grid_id": 1,
+          "model_seconds": 21600.0,
+          "history_interval_s": 3600.0,
+          "last_save_model_seconds": 21600.0,
+          "next_save_model_seconds": null,
+          "next_save_in_seconds": null
+        },
+        {
+          "grid_id": 2,
+          "model_seconds": 21600.0,
+          "history_interval_s": 900.0,
+          "last_save_model_seconds": 21600.0,
+          "next_save_model_seconds": null,
+          "next_save_in_seconds": null
+        },
+        {
+          "grid_id": 3,
+          "model_seconds": 21600.0,
+          "history_interval_s": 900.0,
+          "last_save_model_seconds": 21600.0,
+          "next_save_model_seconds": null,
+          "next_save_in_seconds": null
+        }
+      ],
+      "checkpoint": {
+        "interval_seconds": 3600.0,
+        "last_saved_model_seconds": 21600.0,
+        "next_model_seconds": null,
+        "in_seconds": null
+      },
+      "source": {
+        "run_id": "bec0372de4747748",
+        "manifest_sha256": "152eaec64537320440840a4e85d8d92c68b77148678b3a1ee22791811af7dfb5",
+        "snapshot_config_sha256": "51e70dcc3ec3080775c97d8fb057b72c2715a6fbf5f2ad817412ce33c313335d",
+        "event_sequence": 428
+      }
+    }
+  },
+  "runtime_changed": false,
+  "forecast_started": false
+}

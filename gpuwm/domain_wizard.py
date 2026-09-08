@@ -1829,7 +1829,8 @@ _HOSTING_SCALE_STEP = 1.05
 
 def _min_hosting_scale(ratios: tuple[int, ...], *,
                        clearance_rows: int = _CLEARANCE_ROWS,
-                       minimum_axis: int = 1) -> float:
+                       minimum_axis: int = 1,
+                       dimensions_builder=None) -> float:
     """Smallest scale in the bracket whose layout can host ``ratios``.
 
     ``_MIN_SCALE``'s comment claims it "still hosts the deepest ladder"
@@ -1854,7 +1855,8 @@ def _min_hosting_scale(ratios: tuple[int, ...], *,
     scale = _MIN_SCALE
     while scale <= _MAX_SCALE:
         try:
-            dims = _dims_for_scale(scale, ratios, clearance_rows=clearance_rows)
+            dims = (_dims_for_scale(scale, ratios, clearance_rows=clearance_rows)
+                    if dimensions_builder is None else dimensions_builder(scale))
             if min(min(pair) for pair in dims) < minimum_axis:
                 raise DomainFitError("template stencil/boundary needs larger axes")
         except DomainFitError:
@@ -3412,18 +3414,19 @@ def _lighter_profiles_than(profile: str | None, source: str,
     return [name for _cost, name in sorted(lighter, reverse=True)][:3]
 
 
-def _sizing_phases(exp, *, free_bytes: int, **kwargs):
+def _sizing_phases(exp, *, free_bytes: int, machine=None, **kwargs):
     """Price the emitted route against the declared card, including refusals."""
     if kwargs.get("forcing_interval_seconds") is not None:
         kwargs["ingest_forcing_interval_seconds"] = kwargs["forcing_interval_seconds"]
     options = getattr(exp, "tiles", None)
     if options is None or options.mode == "off":
-        return estimate_phases(exp, **kwargs)
+        return estimate_phases(exp, machine=machine, **kwargs)
     from gpuwm.core import streaming
     from tilestream.autoplan import CannotPlan
 
-    machine = streaming.planner_machine(
-        vram_bytes=free_bytes, name="gpuwm domain budget")
+    if machine is None:
+        machine = streaming.planner_machine(
+            vram_bytes=free_bytes, name="gpuwm domain budget")
     if machine is None:
         raise DomainFitError(
             "--tiles needs host RAM available to the shared planner; "
@@ -3456,7 +3459,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                profile: str | None = DEFAULT_PHYSICS_PROFILE,
                cumulus_requested: bool = False,
                vram_gib: float | None = None,
-               device_profile=None,
+               device_profile=None, target_machine=None,
                nz: int | None = None, tiles: str | None = None,
                forcing_interval_seconds: float | None = None,
                forcing_intervals: int | None = None,
@@ -3466,6 +3469,8 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                candidate_builder=None,
                clearance_rows: int = _CLEARANCE_ROWS,
                minimum_axis: int = 1,
+               dimensions_builder=None,
+               layout_label: str | None = None,
                ) -> tuple[list[tuple[int, int]], ExperimentConfig]:
     """Largest centered layout whose peak envelope fits the budget, with
     headroom left over.
@@ -3487,6 +3492,10 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
     A custom ``--root-dx``/``--chain`` goes through this same loop, so a
     hand-specified ladder is validated and sized exactly like a preset.
 
+    A template may supply dimensions_builder for its existing parent tree.
+    The same hosting search, complete candidate validation, source bounds,
+    and phase budget apply; the callback changes only proposed grid sizes.
+
     Takes FREE VRAM, not a budget: the reserve is a property of the
     candidate experiment (see :func:`sizing_budget_bytes`), so it cannot
     be computed before the candidate exists.  And it stops short of the
@@ -3498,13 +3507,14 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         raise ValueError("fit_ladder takes exactly one of ladder / ratios")
     if ratios is None:
         ratios = LADDER_RATIOS[ladder]
-    label = ladder if ladder is not None else "-".join(
-        f"{v:g}" for v in _ladder_dx_km(ratios, root_dx_m))
+    label = layout_label or (ladder if ladder is not None else "-".join(
+        f"{v:g}" for v in _ladder_dx_km(ratios, root_dx_m)))
     interval = (source_forcing_interval_seconds(source)
                 if forcing_interval_seconds is None else forcing_interval_seconds)
 
     def candidate(scale: float):
-        dims = _dims_for_scale(scale, ratios, clearance_rows=clearance_rows)
+        dims = (_dims_for_scale(scale, ratios, clearance_rows=clearance_rows)
+                if dimensions_builder is None else dimensions_builder(scale))
         if candidate_builder is not None:
             exp = candidate_builder(dims)
         else:
@@ -3530,7 +3540,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         # fit their card, take a multi-gigabyte download, and then OOM in
         # preprocessing -- the phase it had never priced.
         phases = _sizing_phases(
-            exp, forcing_intervals=forcing_intervals,
+            exp, machine=target_machine, forcing_intervals=forcing_intervals,
             free_bytes=free_bytes, source=source,
             forcing_interval_seconds=interval,
             vram_gib=vram_gib, profile=device_profile)
@@ -3605,7 +3615,8 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
     # chain deeper than any preset needs a larger root before its
     # innermost nest has any interior at all (:func:`_min_hosting_scale`).
     min_scale = _min_hosting_scale(ratios, clearance_rows=clearance_rows,
-                                   minimum_axis=minimum_axis)
+                                   minimum_axis=minimum_axis,
+                                   dimensions_builder=dimensions_builder)
     dims, exp, envelope, budget = candidate(min_scale)
     #: The part of the envelope no grid can move: this suite's CUDA
     #: context, the local-memory backing store of its kernel set, and the
@@ -3675,7 +3686,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
             f"{why}.  This is already the minimum layout, so there is no "
             "smaller grid on this ladder to fall back to")
         phases = _sizing_phases(
-            exp, forcing_intervals=forcing_intervals,
+            exp, machine=target_machine, forcing_intervals=forcing_intervals,
             free_bytes=free_bytes, source=source,
             forcing_interval_seconds=interval,
             vram_gib=vram_gib, profile=device_profile)
@@ -3708,7 +3719,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                     candidate_text, source=f"<candidate {label} "
                                            f"{candidate_profile}>")
                 return _sizing_phases(
-                    candidate_exp, forcing_intervals=forcing_intervals,
+                    candidate_exp, machine=target_machine, forcing_intervals=forcing_intervals,
             free_bytes=free_bytes, source=source,
                     forcing_interval_seconds=interval,
                     vram_gib=vram_gib,
@@ -3969,7 +3980,7 @@ def verify_polygon_containment(exp: ExperimentConfig,
         if not np.all(np.isfinite(clearances)) \
                 or min(clearances) + tolerance < margin:
             raise DomainFitError(
-                f"internal polygon fit regression: domain d{level:02d} "
+                f"internal polygon fit regression: domain d{exp.domains[level - 1].grid_id:02d} "
                 f"does not contain the footprint plus its {buffer_km:g} km "
                 "buffer; refusing to emit a partial target domain")
 
@@ -3977,7 +3988,7 @@ def verify_polygon_containment(exp: ExperimentConfig,
 def fit_polygon_ladder(*, footprint: PolygonFootprint,
                        buffers_km: tuple[float, ...],
                        free_bytes: int, hours: int,
-                       device_profile=None,
+                       device_profile=None, target_machine=None,
                        nz: int | None = None, tiles: str | None = None,
                        forcing_interval_seconds: float | None = None,
                        forcing_intervals: int | None = None,
@@ -3993,6 +4004,7 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
                        candidate_builder=None,
                        minimum_axis: int | None = None,
                        clearance_rows: int = _CLEARANCE_ROWS,
+                       dimensions_builder=None,
                        ) -> tuple[list[tuple[int, int]], ExperimentConfig]:
     """Fit one polygon-bound ladder, refusing rather than clipping it.
 
@@ -4022,11 +4034,13 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
     target_interior = get_source_adapter(source).root_target_interior_axis
     root_minimum = (None if target_interior is None else boundary_axis(
         _SPEC_BDY_WIDTH, interior_points=target_interior))
-    dims = polygon_ladder_dims(
+    dimension_options = dict(
         footprint=footprint, projection=projection, ratios=ratios,
         buffers_km=buffers_km, root_dx_m=root_dx_m, profile=profile,
         root_minimum_axis=root_minimum, minimum_axis=minimum_axis,
         clearance_rows=clearance_rows)
+    dims = (polygon_ladder_dims(**dimension_options) if dimensions_builder is None
+            else dimensions_builder(**dimension_options))
     if candidate_builder is not None:
         exp = candidate_builder(dims)
     else:
@@ -4069,7 +4083,7 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
     interval = (source_forcing_interval_seconds(source)
                 if forcing_interval_seconds is None else forcing_interval_seconds)
     phases = _sizing_phases(
-        exp, forcing_intervals=forcing_intervals,
+        exp, machine=target_machine, forcing_intervals=forcing_intervals,
         free_bytes=free_bytes, source=source,
         forcing_interval_seconds=interval,
         vram_gib=vram_gib, profile=device_profile)
@@ -4078,8 +4092,8 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
         forcing_interval_seconds=interval, profile=device_profile)
     if budget_bytes <= 0 or phases.peak_envelope_bytes > budget_bytes:
         layout = ", ".join(
-            f"d{index:02d} {nx}x{ny}"
-            for index, (nx, ny) in enumerate(dims, 1))
+            f"d{domain.grid_id:02d} {nx}x{ny}"
+            for domain, (nx, ny) in zip(exp.domains, dims))
         # A non-positive budget is NOT the card-is-too-small case here --
         # that one is layout-independent and already refused in `main` by
         # the CUDA-context-plus-margin floor.  This one is the layout's

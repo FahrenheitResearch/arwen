@@ -1,0 +1,424 @@
+//! The `pcodec` array to bytes codec (Experimental).
+//!
+//! <div class="warning">
+//! This codec is experimental and may be incompatible with other Zarr V3 implementations.
+//! </div>
+//!
+//! [Pcodec](https://github.com/mwlon/pcodec) (or Pco, pronounced "pico") losslessly compresses and decompresses numerical sequences with high compression ratio and fast speed.
+//!
+//! This codec requires the `pcodec` feature, which is disabled by default.
+//!
+//! ### Compatible Implementations:
+//! This codec is fully compatible with the `numcodecs.pcodec` codec in `zarr-python`.
+//!
+//! ### Specification
+//! - <https://github.com/zarr-developers/zarr-extensions/tree/numcodecs/codecs/numcodecs.pcodec>
+//!
+//! ### Codec `name` Aliases (Zarr V3)
+//! - `numcodecs.pcodec`
+//! - `https://codec.zarrs.dev/array_to_bytes/pcodec`
+//!
+//! ### Codec `id` Aliases (Zarr V2)
+//! - `pcodec`
+//!
+//! ### Codec `configuration` Example - [`PcodecCodecConfiguration`]:
+//! ```rust
+//! # let JSON = r#"
+//! {
+//!     "level": 5,
+//!     "mode_spec": "auto",
+//!     "delta_spec": "auto",
+//!     "paging_spec": "equal_pages_up_to",
+//!     "delta_encoding_order": null,
+//!     "equal_pages_up_to": 262144
+//! }
+//! # "#;
+//! # use zarrs::metadata_ext::codec::pcodec::PcodecCodecConfiguration;
+//! # serde_json::from_str::<PcodecCodecConfiguration>(JSON).unwrap();
+//! ```
+
+mod pcodec_codec;
+
+use std::sync::Arc;
+
+pub use pcodec_codec::PcodecCodec;
+use zarrs_metadata::v2::MetadataV2;
+use zarrs_metadata::v3::MetadataV3;
+
+use zarrs_codec::{Codec, CodecPluginV2, CodecPluginV3, CodecTraitsV2, CodecTraitsV3};
+pub use zarrs_metadata_ext::codec::pcodec::{
+    PcodecCodecConfiguration, PcodecCodecConfigurationV1, PcodecCompressionLevel,
+    PcodecDeltaEncodingOrder,
+};
+use zarrs_plugin::PluginCreateError;
+
+zarrs_plugin::impl_extension_aliases!(PcodecCodec,
+    v3: "numcodecs.pcodec", ["https://codec.zarrs.dev/array_to_bytes/pcodec"],
+    v2: "pcodec"
+);
+
+// Register the V3 codec.
+inventory::submit! {
+    CodecPluginV3::new::<PcodecCodec>()
+}
+// Register the V2 codec.
+inventory::submit! {
+    CodecPluginV2::new::<PcodecCodec>()
+}
+
+impl CodecTraitsV3 for PcodecCodec {
+    fn create(metadata: &MetadataV3) -> Result<Codec, PluginCreateError> {
+        let configuration = metadata.to_typed_configuration()?;
+        let codec = Arc::new(PcodecCodec::new_with_configuration(&configuration)?);
+        Ok(Codec::ArrayToBytes(codec))
+    }
+}
+
+impl CodecTraitsV2 for PcodecCodec {
+    fn create(metadata: &MetadataV2) -> Result<Codec, PluginCreateError> {
+        let configuration: PcodecCodecConfiguration = metadata.to_typed_configuration()?;
+        let codec = Arc::new(PcodecCodec::new_with_configuration(&configuration)?);
+        Ok(Codec::ArrayToBytes(codec))
+    }
+}
+
+// Re-export the trait and macro from zarrs_data_type
+pub use zarrs_data_type::codec_traits::pcodec::{
+    PcodecDataTypeExt, PcodecDataTypePlugin, PcodecDataTypeTraits, PcodecElementType,
+    impl_pcodec_data_type_traits,
+};
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU64;
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::array::{
+        ArrayBytes, ArraySubset, ChunkShape, ChunkShapeTraits, DataType, FillValue, data_type,
+        transmute_to_bytes_vec,
+    };
+    use zarrs_codec::{ArrayToBytesCodecTraits, BytesPartialDecoderTraits, CodecOptions};
+
+    const JSON_VALID: &str = r#"{
+        "level": 8,
+        "delta_encoding_order": 2,
+        "mode_spec": "auto",
+        "equal_pages_up_to": 262144
+    }"#;
+
+    #[test]
+    fn codec_pcodec_configuration() {
+        let codec_configuration: PcodecCodecConfiguration =
+            serde_json::from_str(JSON_VALID).unwrap();
+        let _ = PcodecCodec::new_with_configuration(&codec_configuration);
+    }
+
+    fn codec_pcodec_round_trip_impl(
+        codec: &PcodecCodec,
+        data_type: DataType,
+        fill_value: impl Into<FillValue>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let chunk_shape = vec![NonZeroU64::new(10).unwrap(), NonZeroU64::new(10).unwrap()];
+        let fill_value = fill_value.into();
+        let size = chunk_shape.num_elements_usize() * data_type.fixed_size().unwrap();
+        let bytes: Vec<u8> = (0..size).map(|s| s as u8).collect();
+        let bytes: ArrayBytes = bytes.into();
+
+        let max_encoded_size =
+            codec.encoded_representation(chunk_shape.as_slice(), &data_type, &fill_value)?;
+        let encoded = codec.encode(
+            bytes.clone(),
+            chunk_shape.as_slice(),
+            &data_type,
+            &fill_value,
+            &CodecOptions::default(),
+        )?;
+        assert!((encoded.len() as u64) <= max_encoded_size.size().unwrap());
+        let decoded = codec
+            .decode(
+                encoded,
+                chunk_shape.as_slice(),
+                &data_type,
+                &fill_value,
+                &CodecOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(bytes, decoded);
+        Ok(())
+    }
+
+    #[test]
+    fn codec_pcodec_round_trip_u16() {
+        codec_pcodec_round_trip_impl(
+            &PcodecCodec::new_with_configuration(&serde_json::from_str(JSON_VALID).unwrap())
+                .unwrap(),
+            data_type::uint16(),
+            0u16,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn codec_pcodec_round_trip_u32() {
+        codec_pcodec_round_trip_impl(
+            &PcodecCodec::new_with_configuration(&serde_json::from_str(JSON_VALID).unwrap())
+                .unwrap(),
+            data_type::uint32(),
+            0u32,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn codec_pcodec_round_trip_u64() {
+        codec_pcodec_round_trip_impl(
+            &PcodecCodec::new_with_configuration(&serde_json::from_str(JSON_VALID).unwrap())
+                .unwrap(),
+            data_type::uint64(),
+            0u64,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn codec_pcodec_round_trip_i16() {
+        codec_pcodec_round_trip_impl(
+            &PcodecCodec::new_with_configuration(&serde_json::from_str(JSON_VALID).unwrap())
+                .unwrap(),
+            data_type::int16(),
+            0i16,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn codec_pcodec_round_trip_i32() {
+        codec_pcodec_round_trip_impl(
+            &PcodecCodec::new_with_configuration(&serde_json::from_str(JSON_VALID).unwrap())
+                .unwrap(),
+            data_type::int32(),
+            0i32,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn codec_pcodec_round_trip_i64() {
+        codec_pcodec_round_trip_impl(
+            &PcodecCodec::new_with_configuration(&serde_json::from_str(JSON_VALID).unwrap())
+                .unwrap(),
+            data_type::int64(),
+            0i64,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn codec_pcodec_round_trip_f16() {
+        codec_pcodec_round_trip_impl(
+            &PcodecCodec::new_with_configuration(&serde_json::from_str(JSON_VALID).unwrap())
+                .unwrap(),
+            data_type::float16(),
+            half::f16::from_f32(0.0),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn codec_pcodec_round_trip_f32() {
+        codec_pcodec_round_trip_impl(
+            &PcodecCodec::new_with_configuration(&serde_json::from_str(JSON_VALID).unwrap())
+                .unwrap(),
+            data_type::float32(),
+            0f32,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn codec_pcodec_round_trip_f64() {
+        codec_pcodec_round_trip_impl(
+            &PcodecCodec::new_with_configuration(&serde_json::from_str(JSON_VALID).unwrap())
+                .unwrap(),
+            data_type::float64(),
+            0f64,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn codec_pcodec_round_trip_complex_float16() {
+        codec_pcodec_round_trip_impl(
+            &PcodecCodec::new_with_configuration(&serde_json::from_str(JSON_VALID).unwrap())
+                .unwrap(),
+            data_type::complex_float16(),
+            num::complex::Complex::<half::f16>::new(
+                half::f16::from_f32(0f32),
+                half::f16::from_f32(0f32),
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn codec_pcodec_round_trip_complex_float32() {
+        codec_pcodec_round_trip_impl(
+            &PcodecCodec::new_with_configuration(&serde_json::from_str(JSON_VALID).unwrap())
+                .unwrap(),
+            data_type::complex_float32(),
+            num::complex::Complex::<f32>::new(0f32, 0f32),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn codec_pcodec_round_trip_complex_float64() {
+        codec_pcodec_round_trip_impl(
+            &PcodecCodec::new_with_configuration(&serde_json::from_str(JSON_VALID).unwrap())
+                .unwrap(),
+            data_type::complex_float64(),
+            num::complex::Complex::<f64>::new(0f64, 0f64),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn codec_pcodec_round_trip_complex64() {
+        codec_pcodec_round_trip_impl(
+            &PcodecCodec::new_with_configuration(&serde_json::from_str(JSON_VALID).unwrap())
+                .unwrap(),
+            data_type::complex64(),
+            num::complex::Complex32::new(0f32, 0f32),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn codec_pcodec_round_trip_complex128() {
+        codec_pcodec_round_trip_impl(
+            &PcodecCodec::new_with_configuration(&serde_json::from_str(JSON_VALID).unwrap())
+                .unwrap(),
+            data_type::complex128(),
+            num::complex::Complex64::new(0f64, 0f64),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn codec_pcodec_round_trip_u8() {
+        assert!(
+            codec_pcodec_round_trip_impl(
+                &PcodecCodec::new_with_configuration(&serde_json::from_str(JSON_VALID).unwrap())
+                    .unwrap(),
+                data_type::uint8(),
+                0u8,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn codec_pcodec_partial_decode() {
+        let chunk_shape: ChunkShape = vec![NonZeroU64::new(4).unwrap(); 2];
+        let data_type = data_type::uint32();
+        let fill_value = FillValue::from(0u32);
+        let elements: Vec<u32> = (0..chunk_shape.num_elements_usize() as u32).collect();
+        let bytes = transmute_to_bytes_vec(elements);
+        let bytes: ArrayBytes = bytes.into();
+
+        let codec = Arc::new(
+            PcodecCodec::new_with_configuration(&serde_json::from_str(JSON_VALID).unwrap())
+                .unwrap(),
+        );
+
+        let encoded = codec
+            .encode(
+                bytes.clone(),
+                &chunk_shape,
+                &data_type,
+                &fill_value,
+                &CodecOptions::default(),
+            )
+            .unwrap();
+        let decoded_region = ArraySubset::new_with_ranges(&[1..3, 0..1]);
+        let input_handle = Arc::new(encoded);
+        let partial_decoder = codec
+            .partial_decoder(
+                input_handle.clone(),
+                &chunk_shape,
+                &data_type,
+                &fill_value,
+                &CodecOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(partial_decoder.size_held(), input_handle.size_held()); // packbits partial decoder does not hold bytes
+        let decoded_partial_chunk = partial_decoder
+            .partial_decode(&decoded_region, &CodecOptions::default())
+            .unwrap();
+
+        let decoded_partial_chunk: Vec<u8> = decoded_partial_chunk
+            .into_fixed()
+            .unwrap()
+            .as_chunks::<1>()
+            .0
+            .iter()
+            .map(|b| u8::from_ne_bytes(*b))
+            .collect();
+        let answer: Vec<u32> = vec![4, 8];
+        assert_eq!(transmute_to_bytes_vec(answer), decoded_partial_chunk);
+    }
+
+    #[cfg(feature = "async")]
+    #[tokio::test]
+    async fn codec_pcodec_async_partial_decode() {
+        let chunk_shape: ChunkShape = vec![NonZeroU64::new(4).unwrap(); 2];
+        let data_type = data_type::uint32();
+        let fill_value = FillValue::from(0u32);
+        let elements: Vec<u32> = (0..chunk_shape.num_elements_usize() as u32).collect();
+        let bytes = transmute_to_bytes_vec(elements);
+        let bytes: ArrayBytes = bytes.into();
+
+        let codec = Arc::new(
+            PcodecCodec::new_with_configuration(&serde_json::from_str(JSON_VALID).unwrap())
+                .unwrap(),
+        );
+
+        let encoded = codec
+            .encode(
+                bytes.clone(),
+                &chunk_shape,
+                &data_type,
+                &fill_value,
+                &CodecOptions::default(),
+            )
+            .unwrap();
+        let decoded_region = ArraySubset::new_with_ranges(&[1..3, 0..1]);
+        let input_handle = Arc::new(encoded);
+        let partial_decoder = codec
+            .async_partial_decoder(
+                input_handle,
+                &chunk_shape,
+                &data_type,
+                &fill_value,
+                &CodecOptions::default(),
+            )
+            .await
+            .unwrap();
+        let decoded_partial_chunk = partial_decoder
+            .partial_decode(&decoded_region, &CodecOptions::default())
+            .await
+            .unwrap();
+
+        let decoded_partial_chunk: Vec<u8> = decoded_partial_chunk
+            .into_fixed()
+            .unwrap()
+            .as_chunks::<1>()
+            .0
+            .iter()
+            .map(|b| u8::from_ne_bytes(*b))
+            .collect();
+        let answer: Vec<u32> = vec![4, 8];
+        assert_eq!(transmute_to_bytes_vec(answer), decoded_partial_chunk);
+    }
+}

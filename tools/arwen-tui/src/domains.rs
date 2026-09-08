@@ -1,4 +1,5 @@
 //! Guided edits to existing TOML. Python remains the configuration authority.
+use std::collections::{BTreeMap, BTreeSet};
 use toml_edit::{DocumentMut, InlineTable, Item, Table, TableLike, Value};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -12,12 +13,12 @@ pub enum Section {
 }
 
 pub const SECTIONS: [(Section, &str); 6] = [
-    (Section::Geometry, "Grid, placement and delayed start"),
-    (Section::AddChild, "Add a finer child nest"),
-    (Section::Follow, "Follow a storm, vortex or model attribute"),
-    (Section::Spawn, "Start a nest on time or weather criteria"),
-    (Section::Retire, "Retire a triggered nest"),
-    (Section::Rearm, "Re-arm a retired nest slot"),
+    (Section::Geometry, "Edit grid"),
+    (Section::AddChild, "Add child"),
+    (Section::Follow, "Storm tracking"),
+    (Section::Spawn, "Start trigger"),
+    (Section::Retire, "Retirement"),
+    (Section::Rearm, "Re-arm"),
 ];
 
 #[derive(Clone, Copy)]
@@ -167,6 +168,93 @@ pub fn labels(text: &str) -> Result<Vec<String>, String> {
             )
         })
         .collect())
+}
+
+/// A complete, reviewable subtree removal. Publishing remains the editor's job.
+pub struct Removal {
+    pub original: String,
+    pub index: usize,
+    pub title: String,
+    pub rows: Vec<String>,
+    pub removes_relocation: bool,
+    updated: String,
+}
+
+impl Removal {
+    pub fn new(text: String, index: usize) -> Result<Self, String> {
+        let mut doc = text.parse::<DocumentMut>()
+            .map_err(|e| format!("Correct the TOML first: {e}"))?;
+        let all = domains(&doc)?;
+        let mut parents = BTreeMap::new();
+        for domain in all.iter() {
+            let id = domain.get("grid_id").and_then(Item::as_integer)
+                .filter(|id| *id > 0).ok_or("Each domain needs a positive grid_id.")?;
+            let parent = domain.get("parent_id").and_then(Item::as_integer)
+                .ok_or("Each domain needs an integer parent_id.")?;
+            if parents.insert(id, parent).is_some() {
+                return Err(format!("Duplicate domain d{id:02}. Correct its ID in Settings first."));
+            }
+        }
+        if parents.values().filter(|parent| **parent == 0).count() != 1 {
+            return Err("The configuration needs exactly one root domain before removing a nest.".into());
+        }
+        for id in parents.keys() {
+            let mut current = *id;
+            let mut seen = BTreeSet::new();
+            while current != 0 {
+                if !seen.insert(current) {
+                    return Err("Domain parent links contain a cycle. Correct them in Settings first.".into());
+                }
+                current = *parents.get(&current)
+                    .ok_or("A domain's parent is missing. Correct its parent_id in Settings first.")?;
+            }
+        }
+        let selected = all.get(index).ok_or("Choose an existing domain.")?;
+        let id = selected["grid_id"].as_integer().unwrap();
+        if parents[&id] == 0 {
+            return Err("Keep the root domain. Use Edit to change it, or select a child to remove.".into());
+        }
+        let mut removed = BTreeSet::from([id]);
+        loop {
+            let children: Vec<_> = parents.iter()
+                .filter(|(id, parent)| removed.contains(parent) && !removed.contains(id))
+                .map(|(id, _)| *id).collect();
+            if children.is_empty() { break; }
+            removed.extend(children);
+        }
+        for domain in all.iter() {
+            let id = domain["grid_id"].as_integer().unwrap();
+            if removed.contains(&id) { continue; }
+            if let Some(source) = get(domain, "follow.refine_grid_id").and_then(Item::as_integer) {
+                if removed.contains(&source) {
+                    return Err(format!("d{id:02} still uses d{source:02} in follow.refine_grid_id. Change that tracking source in Settings first."));
+                }
+            }
+        }
+        let relocation = doc.get("relocation").and_then(Item::as_table_like);
+        let removes_relocation = relocation.and_then(|r| r.get("grid_id"))
+            .and_then(Item::as_integer).is_some_and(|id| removed.contains(&id));
+        if let Some(relocation) = relocation.filter(|_| !removes_relocation) {
+            for key in ["containment.grid_id", "follow.refine_grid_id"] {
+                if let Some(id) = get(relocation, key).and_then(Item::as_integer) {
+                    if removed.contains(&id) {
+                        return Err(format!("relocation.{key} still uses d{id:02}. Change that reference in Settings first."));
+                    }
+                }
+            }
+        }
+        let all_labels = labels(&text)?;
+        let rows = all.iter().zip(all_labels)
+            .filter(|(domain, _)| removed.contains(&domain["grid_id"].as_integer().unwrap()))
+            .map(|(_, label)| label).collect();
+        doc["domain"].as_array_of_tables_mut().unwrap()
+            .retain(|domain| !removed.contains(&domain["grid_id"].as_integer().unwrap()));
+        if removes_relocation { doc.remove("relocation"); }
+        Ok(Self { original: text, index, title: format!("Remove d{id:02} and its children?"),
+            rows, removes_relocation, updated: doc.to_string() })
+    }
+
+    pub fn apply(&self) -> String { self.updated.clone() }
 }
 
 fn get<'a>(table: &'a dyn TableLike, path: &str) -> Option<&'a Item> {
@@ -413,11 +501,11 @@ impl Form {
             SECTIONS.iter().find(|s| s.0 == section).unwrap().1
         );
         let note = if section == Section::AddChild {
-            format!("New d{child_id:02}, parent d{grid_id:02}. Enter the intended geometry; shared settings are inherited. No scientific preset is selected.")
+            format!("New d{child_id:02} inside d{grid_id:02}. Enter its grid size and placement.")
         } else if global_follow {
-            "Editing this nest's existing [relocation.follow]. Manual moves, containment and track output stay in the complete draft.".into()
+            "Edit this nest's existing relocation tracking.".into()
         } else {
-            "Only changed fields are applied. Blank optional values remove their keys. Save explicitly, then use F5 Check / F6 Plan for full validation.".into()
+            "Blank optional fields remove those settings. F2 applies; Ctrl+S saves.".into()
         };
         Ok(Self {
             section,

@@ -377,6 +377,7 @@ mod tests {
         for (width, height) in [(65, 20), (80, 24), (120, 36)] {
             let mut p = Panel::default();
             p.screen = Screen::Job;
+            press(&mut p,KeyCode::Char('g'),&c);
             c.view.log = (0..90).map(|i| format!("Step {i}\n")).collect();
             render(&mut p, &c, width, height);
             press(&mut p, KeyCode::End, &c);
@@ -412,6 +413,45 @@ mod tests {
             render(&mut p, &c, width, height);
             assert_eq!(p.offset, 0);
         }
+    }
+    #[test]
+    fn actual_native_progress_is_primary_and_raw_logs_are_a_separate_view(){
+        let receipt:Value=serde_json::from_str(include_str!("../tests/fixtures/native-progress-newcastle-2013.json")).unwrap();
+        let mut c=controller();let mut status=receipt["native_result"].clone();
+        status["state"]=receipt["state"].clone();status["id"]=receipt["job_id"].clone();
+        c.view.status=Some(status);c.view.log="RAW EVENT LOG DETAIL".into();
+        for(width,height)in[(65,20),(80,24),(120,36)]{
+            let mut panel=Panel{screen:Screen::Job,..Panel::default()};
+            let screen=render(&mut panel,&c,width,height);
+            for expected in ["RUNNING","Rendering images","Steps 360","Sim time","Wall time","45.6× realtime","100.0%","Checkpoint saved","G Raw logs"]{assert!(screen.contains(expected),"{expected}: {screen}");}
+            assert!(!screen.contains("RAW EVENT LOG DETAIL"));assert!(!screen.contains("arwen.forecast-progress.v1"));
+            capture("nodes-native-progress",width,height,&screen);
+            assert!(matches!(press(&mut panel,KeyCode::Char('g'),&c),Intent::Keep));
+            let logs=render(&mut panel,&c,width,height);assert!(logs.contains("RAW EVENT LOG DETAIL"));assert!(logs.contains("G Progress"));
+            press(&mut panel,KeyCode::Char('g'),&c);assert!(render(&mut panel,&c,width,height).contains("Steps 360"));
+            assert!(c.pending.is_none());
+        }
+        c.view.status.as_mut().unwrap()["state"]=serde_json::json!("completed");
+        assert!(job_progress_text(c.view.status.as_ref().unwrap(),true).starts_with("COMPLETED · Finished"));
+    }
+    #[test]
+    fn connected_workspace_restores_saved_job_without_opening_the_job_screen(){
+        let mut c=controller();c.view.runtime=Some(serde_json::json!({"capabilities":{}}));
+        c.view.last_refresh=Some(std::time::Instant::now());
+        let panel=Panel::default();assert!(matches!(panel.screen,Screen::Nodes));
+        assert!(!panel.should_refresh(&c));
+        assert!(panel.should_refresh_connected(&c,true),"A successful probe must fetch the remembered job immediately");
+        assert!(c.pending.is_none());assert_eq!(c.store.selected().unwrap().last_job.as_deref(),Some("job-1"));
+        c.view.status=Some(serde_json::json!({"id":"job-1","state":"running"}));c.view.eof=Some(true);
+        assert!(!panel.should_refresh_connected(&c,true));
+        c.view.last_refresh=Some(std::time::Instant::now()-std::time::Duration::from_secs(6));
+        assert!(panel.should_refresh_connected(&c,true),"A connected map must keep getting job status while the TUI shows another screen");
+        c.view.last_job_refresh=Some(std::time::Instant::now()-std::time::Duration::from_secs(2));
+        c.view.last_refresh=Some(std::time::Instant::now());
+        assert!(panel.should_refresh_connected(&c,true),"A just-finished timeline request must not postpone a due job-status update");
+        c.view.last_job_refresh=Some(std::time::Instant::now());
+        c.view.status=None;c.view.connection_error=Some("temporary SSH failure".into());c.view.last_refresh=Some(std::time::Instant::now());
+        assert!(!panel.should_refresh_connected(&c,true),"A failed reconnect must retain the retry backoff");
     }
     #[test]
     fn all_twelve_node_fields_are_reachable_in_both_keyboard_directions() {
@@ -452,6 +492,7 @@ pub struct Panel {
     pub offset: usize,
     pub notice: String,
     follow_tail: bool,
+    show_logs: bool,
     hits: Vec<(Rect, KeyCode)>,
     rows: Vec<(Rect, usize)>,
 }
@@ -465,6 +506,8 @@ pub enum Intent {
     ChooseJob(String),
     Reload,
     Plots,
+    CopyLogs,
+    OpenLog,
 }
 impl Default for Panel {
     fn default() -> Self {
@@ -474,6 +517,7 @@ impl Default for Panel {
             offset: 0,
             notice: String::new(),
             follow_tail: true,
+            show_logs: false,
             hits: Vec::new(),
             rows: Vec::new(),
         }
@@ -487,6 +531,84 @@ fn text(value: &str) -> String {
 }
 fn string(value: &Value, key: &str) -> String {
     text(value[key].as_str().unwrap_or("—"))
+}
+fn seconds(value: &Value) -> Option<f64> {
+    value.as_f64().filter(|v|v.is_finite()&&*v>=0.)
+}
+fn elapsed(value: &Value) -> String {
+    let Some(value)=seconds(value) else{return "—".into()};
+    let total=value.round() as u64;let (h,m,s)=(total/3600,total/60%60,total%60);
+    if h>0&&s==0{format!("{h}h{m:02}m")}else if h>0{format!("{h}h{m:02}m{s:02}s")}else if m>0{format!("{m}m{s:02}s")}else{format!("{s}s")}
+}
+fn progress_stage(status:&Value)->String {
+    let phase=status["phase"].as_str().unwrap_or("");let stage=status["stage"].as_str().unwrap_or(phase);
+    let label=if status["state"]=="completed"||stage=="completed"{"Finished"}
+        else if phase.contains("render")||stage=="finalize"{"Rendering images"}
+        else if stage=="fetch"||phase.contains("fetch"){"Acquiring weather inputs"}
+        else if stage=="prepare"||phase.starts_with("preparing:"){"Preparing forecast inputs"}
+        else if stage=="initialize"||phase.contains("initializ"){"Initializing domains"}
+        else if stage=="forecast"||phase=="integrating"||phase.contains("sync"){"Integrating forecast"}
+        else if stage=="completed"{"Finished"}else{"Waiting for forecast progress"};
+    format!("{} · {label}",status["state"].as_str().unwrap_or("refreshing").to_uppercase())
+}
+pub(crate) fn job_progress_text(status:&Value,compact:bool)->String {
+    let mut lines=vec![progress_stage(status)];
+    if let Some(error)=status["error"].as_str(){lines.push(format!("Needs attention: {}",text(error)));}
+    let p=&status["progress"];
+    let pipeline=&status["pipeline_progress"];
+    let stage=pipeline["stage"].as_str().or_else(||status["stage"].as_str()).unwrap_or("");
+    if seconds(&p["model_seconds"]).unwrap_or(0.)==0.&&matches!(stage,"fetch"|"prepare"|"initialize"){
+        if pipeline["schema"]=="arwen.pipeline-progress.v1"{
+            let phase=pipeline["phase"].as_str().unwrap_or(stage);
+            lines.push(match phase{"cds_queued"=>"CDS is queuing the ERA5 request".into(),"cds_running"=>"CDS is preparing the ERA5 response".into(),"requesting"=>"Requesting ERA5 inputs".into(),"request_completed"=>"An ERA5 response has downloaded".into(),"validating"=>"Validating downloaded weather inputs".into(),"ready"=>"Weather inputs are ready".into(),other=>text(other)});
+            lines.push(format!("Stage elapsed: {}",elapsed(&pipeline["wall_seconds"])));
+            let acquisition=&pipeline["acquisition"];
+            if let(Some(done),Some(total))=(acquisition["requests_completed"].as_u64(),acquisition["requests_total"].as_u64()){lines.push(format!("ERA5 requests: {done} / {total} complete"));}
+            else if let(Some(done),Some(total))=(acquisition["files_completed"].as_u64(),acquisition["files_total"].as_u64()){lines.push(format!("Input files: {done} / {total} complete"));}
+            if let Some(bytes)=acquisition["transferred_bytes"].as_u64(){lines.push(if acquisition["reused"]==true{"Using previously verified input files".into()}else{format!("Received {:.1} MiB",bytes as f64/1_048_576.)});}
+            if let Some(times)=acquisition["forcing_times_total"].as_u64(){lines.push(format!("Boundary weather: {times} requested times over {} hours",acquisition["forcing_hours"].as_u64().map(|n|n.to_string()).unwrap_or_else(||"the requested".into())));}
+            let prep=&pipeline["preparation"];
+            if let(Some(index),Some(total))=(prep["phase_index"].as_u64().or_else(||prep["index"].as_u64()),prep["phases_total"].as_u64().or_else(||prep["count"].as_u64())){lines.push(format!("Preparation operation: {index} / {total}"));}
+        }else{lines.push("Waiting for detailed input-preparation progress from the node.".into());}
+        lines.push("Simulation steps and speed appear when integration starts.".into());
+        return lines.join("\n");
+    }
+    if p["schema"]!="arwen.forecast-progress.v1"{
+        if seconds(&status["model_elapsed_seconds"]).is_some(){lines.push(format!("Simulated time: {}",elapsed(&status["model_elapsed_seconds"])));}
+        lines.push("Detailed timing is waiting for the next forecast progress report.".into());
+        lines.push("G shows raw logs; Y copies them and O opens a text file.".into());
+        return lines.join("\n");
+    }
+    let steps=p["outer_step"].as_u64().map(|v|v.to_string()).unwrap_or_else(||"—".into());
+    lines.push(format!("Steps {steps} · Sim time {} / {}",elapsed(&p["model_seconds"]),elapsed(&p["run_seconds"])));
+    let speed=seconds(&p["speed_x"]).filter(|s|*s>0.).map(|s|format!("{s:.1}× realtime")).unwrap_or_else(||"measuring".into());
+    lines.push(format!("Wall time {} · Speed {speed}",elapsed(&p["wall_seconds"])));
+    if let (Some(current),Some(total))=(seconds(&p["model_seconds"]),seconds(&p["run_seconds"]).filter(|v|*v>0.)){
+        let ratio=(current/total).clamp(0.,1.);let width=if compact{12}else{24};let filled=(ratio*width as f64).round() as usize;
+        lines.push(format!("Simulation [{}{}] {:.1}%", "#".repeat(filled),"-".repeat(width-filled),ratio*100.));
+    }
+    if let Some(domains)=p["domains"].as_array(){
+        if compact{
+            let upcoming=domains.iter().filter_map(|d|d["grid_id"].as_u64().map(|id|{
+                let next=if seconds(&d["next_save_in_seconds"]).is_some(){format!("in {}",elapsed(&d["next_save_in_seconds"]))}else if seconds(&d["last_save_model_seconds"]).is_some(){format!("saved {}",elapsed(&d["last_save_model_seconds"]))}else{"pending".into()};
+                format!("d{id:02} {next}")
+            })).collect::<Vec<_>>().join("; ");
+            lines.push(format!("Output: {upcoming}"));
+        }else{
+            for d in domains{if let Some(id)=d["grid_id"].as_u64(){
+                let next=if seconds(&d["next_save_in_seconds"]).is_some(){format!("next in {}",elapsed(&d["next_save_in_seconds"]))}else{"no further save scheduled".into()};
+                lines.push(format!("d{id:02} output every {} · {next} · last saved {}",elapsed(&d["history_interval_s"]),elapsed(&d["last_save_model_seconds"])));
+            }}
+        }
+    }
+    let checkpoint=&p["checkpoint"];
+    lines.push(if seconds(&checkpoint["interval_seconds"])==Some(0.){"Checkpoints: disabled for this run".into()}
+        else if seconds(&checkpoint["in_seconds"]).is_some(){format!("Next checkpoint in {} simulation time",elapsed(&checkpoint["in_seconds"]))}
+        else if seconds(&checkpoint["last_saved_model_seconds"]).is_some(){format!("Checkpoint saved at {} simulated",elapsed(&checkpoint["last_saved_model_seconds"]))}
+        else{"Checkpoint timing unavailable".into()});
+    if let Some(valid)=p["valid_time"].as_str(){lines.push(format!("Forecast time: {} UTC",valid.trim_end_matches('Z').replace('T'," ")));}
+    if status["state"]=="running"&&seconds(&p["model_seconds"]).zip(seconds(&p["run_seconds"])).is_some_and(|(now,end)|now>=end){lines.push("Simulation finished. Images are still being produced.".into());}
+    lines.join("\n")
 }
 fn controls(
     buttons: &[(&str, KeyCode)],
@@ -570,6 +692,7 @@ impl Panel {
             Update::Started(id) => {
                 self.offset = 0;
                 self.follow_tail = true;
+                self.show_logs = false;
                 self.screen = Screen::Job;
                 self.notice = format!(
                     "Started {id}. Closing this window leaves the job running on the node."
@@ -589,15 +712,21 @@ impl Panel {
                     "Connected. This node can now be used to start and control ArWen jobs.".into()
             }
             Update::Failed(error) => self.error(error.clone()),
-            Update::Status | Update::Logs => {}
+            Update::Status | Update::Logs | Update::PlanReviewed(_) | Update::ArtifactsSynced(_) | Update::ProcessedFrameSynced(_) | Update::ArtifactIndexed(_) => {}
         }
     }
     pub fn should_refresh(&self, c: &Controller) -> bool {
+        self.should_refresh_connected(c,false)
+    }
+    pub fn should_refresh_connected(&self,c:&Controller,companion_open:bool)->bool {
         let Some(job) = c.store.selected().and_then(|node| node.last_job.as_deref()) else {
             return false;
         };
-        if !matches!(self.screen, Screen::Job) || c.pending.is_some() {
+        if (!companion_open&&!matches!(self.screen, Screen::Job)) || c.pending.is_some() {
             return false;
+        }
+        if c.view.connection_error.is_none()&&c.view.runtime.is_some()&&c.view.status.as_ref().and_then(|s|s["id"].as_str())!=Some(job){
+            return true;
         }
         let delay_ms = if c.view.connection_error.is_some() {
             15_000
@@ -606,10 +735,10 @@ impl Panel {
         } else if c.view.needs_log_drain(job) {
             200
         } else {
-            5_000
+            1_000
         };
         c.view
-            .last_refresh
+            .last_job_refresh.or(c.view.last_refresh)
             .is_none_or(|at| at.elapsed().as_millis() >= delay_ms)
     }
     pub fn key(
@@ -641,6 +770,7 @@ impl Panel {
                     | KeyCode::PageDown
                     | KeyCode::Home
                     | KeyCode::End
+                    | KeyCode::Char('g')
             )
         {
             self.notice = "Waiting for the node request. Esc closes this panel; the request and remote job continue.".into();
@@ -759,6 +889,7 @@ impl Panel {
                         "Launch review closed. Jobs shows requests already sent to the node."
                             .into();
                 } else if code == KeyCode::Enter && key.kind == KeyEventKind::Press {
+                    if matches!(operation,Operation::StartPlan{..}){return Intent::Request(operation);}
                     match operation.confirmed(&review) {
                         Ok(op) => return Intent::Request(op),
                         Err(error) => self.notice = error,
@@ -850,6 +981,7 @@ impl Panel {
                         self.screen = Screen::Job;
                         self.offset = 0;
                         self.follow_tail = true;
+                        self.show_logs = false;
                         return Intent::ChooseJob(job.into());
                     } else if c.view.jobs.is_empty() && key.kind == KeyEventKind::Press {
                         return self.start_review(c, products);
@@ -865,6 +997,9 @@ impl Panel {
                 }
                 let job = c.store.selected().and_then(|n| n.last_job.clone());
                 match code {
+                    KeyCode::Char('g') => {self.show_logs=!self.show_logs;self.offset=0;}
+                    KeyCode::Char('y' | 'Y') => return Intent::CopyLogs,
+                    KeyCode::Char('o' | 'O') => return Intent::OpenLog,
                     KeyCode::Char('r') => {
                         if let Some(job) = job {
                             return Intent::Request(Operation::Logs {
@@ -1049,7 +1184,8 @@ impl Panel {
         ])
         .split(inner);
         let connection = if let Some(pending) = &c.pending {
-            format!("Contacting node: {}…", pending.operation.action())
+            if matches!(pending.operation,Operation::Probe)&&c.view.runtime.is_none(){"Connecting to the selected node…".into()}
+            else{format!("Connected · {}…",match pending.operation{Operation::ArtifactIndex{..}=>"checking saved forecast times",Operation::SyncArtifacts{..}=>"loading saved forecast output",Operation::Logs{..}|Operation::Status{..}=>"updating forecast progress",_=>"processing the requested action"})}
         } else if let Some(error) = c.load_error.as_ref().or(c.view.connection_error.as_ref()) {
             format!("Needs attention: {error}")
         } else if c.store.nodes.is_empty() {
@@ -1192,7 +1328,7 @@ impl Panel {
                     .selected()
                     .and_then(|n| n.last_job.as_deref())
                     .unwrap_or("No job selected");
-                let mut lines = format!(
+                let mut lines = if self.show_logs {format!(
                     "Job: {job}\nLast known state: {}\nOutput: {}\n\n{}",
                     status
                         .map(|v| string(v, "state"))
@@ -1201,12 +1337,15 @@ impl Panel {
                         .map(|v| string(v, "outdir"))
                         .unwrap_or_else(|| "—".into()),
                     c.view.log
-                );
-                if c.view.log.is_empty() {
+                )}else{job_progress_text(status.unwrap_or(&Value::Null),rows[1].width<90)};
+                if self.show_logs&&c.view.log.is_empty() {
                     lines.push_str("\nNo log text received yet. R refreshes.");
                 }
                 self.paragraph(frame, rows[1], &lines);
                 buttons.extend([
+                    (if self.show_logs{"G Progress"}else{"G Raw logs"},KeyCode::Char('g')),
+                    ("Y Copy logs", KeyCode::Char('y')),
+                    ("O Open log", KeyCode::Char('o')),
                     ("R Refresh", KeyCode::Char('r')),
                     ("X Stop", KeyCode::Char('x')),
                     ("C Resume", KeyCode::Char('c')),
@@ -1302,6 +1441,8 @@ impl Panel {
                     ""
                 }
             )
+        } else if matches!(self.screen, Screen::Job)&&!self.show_logs {
+            "Output and checkpoint countdowns use simulation time. Wall time and speed measure the forecast integration.".into()
         } else if matches!(self.screen, Screen::Jobs) && c.view.jobs.is_empty() {
             "The job list is empty. Enter/S requests a start review; the later confirmation is what starts a new job.".into()
         } else {
@@ -1336,7 +1477,7 @@ impl Panel {
         let value = text(value);
         let lines = crate::log_display_rows(&value, area.width as usize);
         let last = lines.len().saturating_sub(area.height as usize);
-        self.offset = if matches!(self.screen, Screen::Job) && self.follow_tail {
+        self.offset = if matches!(self.screen, Screen::Job) && self.show_logs && self.follow_tail {
             last
         } else {
             self.offset.min(last)

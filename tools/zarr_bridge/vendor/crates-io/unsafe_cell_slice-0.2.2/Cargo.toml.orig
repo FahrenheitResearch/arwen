@@ -1,0 +1,15 @@
+[package]
+name = "unsafe_cell_slice"
+version = "0.2.2"
+edition = "2021"
+rust-version = "1.63"
+description = "A microlibrary for creating multiple mutable references to a slice"
+documentation = "https://docs.rs/unsafe_cell_slice"
+repository = "https://github.com/LDeakin/unsafe_cell_slice"
+license = "MIT OR Apache-2.0"
+keywords = ["slice", "unsafe", "unsafecell"]
+categories = ["rust-patterns"]
+exclude = [".github"]
+
+[dev-dependencies]
+rayon = "1.7.0"

@@ -5913,8 +5913,10 @@ SOURCE_ANALYSIS_WIND_LEVEL_FIELDS = 1  # each of U and V, on its own stagger
 
 #: Single-level fields interpolated alongside them (surface state, skin,
 #: snow, ice, land mask and the four soil moisture/temperature layers).
-#: Counted from the decoder inventory of a real GFS ingest.
-SOURCE_ANALYSIS_SURFACE_FIELDS = {"era5": 19, "gfs": 19}
+#: ERA5 includes the three explicit lake-state fields in the current CDS
+#: request. These nominal counts apply only before an actual decoded catalog
+#: supplies its exact inventory; older/smaller inputs retain their own price.
+SOURCE_ANALYSIS_SURFACE_FIELDS = {"era5": 23, "gfs": 19}
 
 #: HOST bytes one decoded SOURCE field point occupies.  The GRIB1 bridge
 #: dump is float64 (`gpuwm/ingest/grib.py:550`, ``np.fromfile(...,
@@ -6796,12 +6798,18 @@ def estimate_experiment(
         # Modern tables/workspace persist while another domain executes legacy
         # radiation. Per-domain call peaks combine with that domain's other
         # transients; unrelated domains' transient maxima are not summed.
+        # Price the workspace from the same device profile as the non-pool
+        # terms. A live CuPy query here both mixed devices' assumptions and
+        # left a CUDA context in a process promising CPU-only estimation.
+        # Without a measured profile the workspace keeps its full ceilings.
         legacy_calls = tuple(
             legacy_radiation_vram_bytes(
                 ncol=dc.run.ny * dc.run.nx, nz=dc.run.nz,
                 p_top=exp.vertical.p_top, column_chunk=None,
                 longwave=radiation_scheme_ids(dc.run)[0] == 4,
-                shortwave=radiation_scheme_ids(dc.run)[1] == 4)
+                shortwave=radiation_scheme_ids(dc.run)[1] == 4,
+                resident_threads=(0 if profile is None else
+                                  profile.resident_thread_capacity))
             if (4 in radiation_scheme_ids(dc.run)
                 and rrtmg_variant(dc.run) == RRTMG_VARIANT_LEGACY) else 0
             for dc in exp.domains)
@@ -7597,11 +7605,22 @@ def config_forcing_schedule(
                    else (raw.get("fetch") or {}).get("cadence"))
         return (None if cadence is None else float(cadence) * 3600.0), None
     from gpuwm.case_data import build_case_data
+    data = build_case_data(table, source=str(path), base_dir=path.parent,
+                           require_inputs=False, require_met_inputs=False)
+    return case_forcing_schedule(data, exp, input_catalog=input_catalog)
+
+
+def case_forcing_schedule(data, exp: ExperimentConfig, *, input_catalog=None
+                          ) -> tuple[float | None, int | None]:
+    """Price an already resolved case's complete retained forcing schedule.
+
+    The same inventory applies to configs loaded from a path, inline plan
+    text, and generated intent. Paths have already been resolved by the
+    config loader; this helper neither rewrites nor decodes the input values.
+    """
     from gpuwm.ingest.grib import inspect_era5_forcing_times
     from gpuwm.ingest.preflight import _select_contiguous_times
 
-    data = build_case_data(table, source=str(path), base_dir=path.parent,
-                           require_inputs=False, require_met_inputs=False)
     interval = data.forcing_interval_s
     times = tuple(getattr(input_catalog, "valid_times", ()) or ())
     if not times and data.forcing and data.vtable.is_file() and all(

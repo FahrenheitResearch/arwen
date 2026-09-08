@@ -1,0 +1,650 @@
+//! A filesystem store for the [`zarrs`](https://docs.rs/zarrs/latest/zarrs/index.html) crate.
+//!
+//! This implementation is conformant with the filesystem store defined in the Zarr V3 specification: <https://zarr-specs.readthedocs.io/en/latest/v3/stores/filesystem/index.html>.
+//!
+//! ## Licence
+//! `zarrs_filesystem` is licensed under either of
+//! - the Apache License, Version 2.0 [LICENSE-APACHE](https://docs.rs/crate/zarrs_filesystem/latest/source/LICENCE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0> or
+//! - the MIT license [LICENSE-MIT](https://docs.rs/crate/zarrs_filesystem/latest/source/LICENCE-MIT) or <http://opensource.org/licenses/MIT>, at your option.
+
+use bytes::BytesMut;
+use std::sync::RwLock;
+use thiserror::Error;
+use walkdir::WalkDir;
+use zarrs_storage::byte_range::{ByteOffset, ByteRange, ByteRangeIterator, InvalidByteRangeError};
+use zarrs_storage::{
+    store_set_partial_many, AtomicRenameStorageTraits, Bytes, ListableStorageTraits,
+    MaybeBytesIterator, OffsetBytesIterator, ReadableStorageTraits, StorageError, StoreKey,
+    StoreKeyError, StoreKeys, StoreKeysPrefixes, StorePrefix, StorePrefixes, WritableStorageTraits,
+};
+
+#[cfg(target_os = "linux")]
+mod direct_io;
+use lru::LruCache;
+use positioned_io::{RandomAccessFile, ReadAt, WriteAt};
+use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::num::NonZeroUsize;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+#[cfg(target_os = "linux")]
+use direct_io::{MetadataExt, OpenOptionsExt, O_DIRECT};
+
+// // Register the store.
+// inventory::submit! {
+//     ReadableStorePlugin::new("file", |uri| Ok(Arc::new(create_store_filesystem(uri)?)))
+// }
+// inventory::submit! {
+//     WritableStorePlugin::new("file", |uri| Ok(Arc::new(create_store_filesystem(uri)?)))
+// }
+// inventory::submit! {
+//     ListableStorePlugin::new("file", |uri| Ok(Arc::new(create_store_filesystem(uri)?)))
+// }
+// inventory::submit! {
+//     ReadableWritableStorePlugin::new("file", |uri| Ok(Arc::new(create_store_filesystem(uri)?)))
+// }
+
+// #[allow(clippy::similar_names)]
+// fn create_store_filesystem(uri: &str) -> Result<FilesystemStore, StorePluginCreateError> {
+//     let url = url::Url::parse(uri)?;
+//     let path = std::path::PathBuf::from(url.path());
+//     FilesystemStore::new(path).map_err(|e| StorePluginCreateError::Other(e.to_string()))
+// }
+
+/// For `O_DIRECT`, we need a buffer that is aligned to the page size and is a
+/// multiple of the page size.
+fn bytes_aligned(size: usize) -> BytesMut {
+    let align = page_size::get();
+    let mut bytes = BytesMut::with_capacity(size + 2 * align);
+    let offset = bytes.as_ptr().align_offset(align);
+    bytes.split_off(offset)
+}
+
+/// Options for use with [`FilesystemStore`]
+#[non_exhaustive]
+#[derive(Debug, Clone, Default)]
+pub struct FilesystemStoreOptions {
+    direct_io: bool,
+    file_handle_cache_size: usize,
+}
+
+impl FilesystemStoreOptions {
+    /// Set whether or not to enable direct I/O. Needs support from the
+    /// operating system (currently only Linux) and file system.
+    pub fn direct_io(&mut self, direct_io: bool) -> &mut Self {
+        self.direct_io = direct_io;
+        self
+    }
+
+    /// Set the capacity of the file handle cache (default: 0, disabled).
+    ///
+    /// If nonzero, up to `file_handle_cache_size` files are kept open in a least-recently-used
+    /// cache and reused across [partial read](ReadableStorageTraits::get_partial_many) calls,
+    /// rather than each call opening and closing the file it reads from.
+    /// This substantially reduces filesystem metadata operations (`open`/`stat`/`close`) when many
+    /// byte ranges are read from the same files, such as partial reads of sharded arrays.
+    /// It is particularly beneficial on network filesystems (e.g. Lustre, NFS), where each
+    /// metadata operation is a server round trip.
+    ///
+    /// Cached file handles count towards the process open-file limit (e.g. `ulimit -n` on POSIX
+    /// systems); choose a capacity comfortably below that limit.
+    ///
+    /// Cached handles are invalidated on writes and erases through this store, but not on external
+    /// modification of the underlying files.
+    /// This option has no effect on reads with [`direct_io`](Self::direct_io) enabled.
+    pub fn file_handle_cache_size(&mut self, file_handle_cache_size: usize) -> &mut Self {
+        self.file_handle_cache_size = file_handle_cache_size;
+        self
+    }
+}
+
+/// A cached open file handle and its size at open time.
+#[derive(Debug)]
+struct CachedFile {
+    file: RandomAccessFile,
+    size: u64,
+}
+
+/// A synchronous file system store.
+///
+/// See <https://zarr-specs.readthedocs.io/en/latest/v3/stores/filesystem/index.html>.
+#[derive(Debug)]
+pub struct FilesystemStore {
+    base_path: PathBuf,
+    sort: bool,
+    options: FilesystemStoreOptions,
+    files: Mutex<HashMap<StoreKey, Arc<RwLock<()>>>>,
+    handle_cache: Option<Mutex<LruCache<StoreKey, Arc<CachedFile>>>>,
+}
+
+impl FilesystemStore {
+    /// Create a new file system store at a given `base_path`.
+    ///
+    /// # Errors
+    /// Returns a [`FilesystemStoreCreateError`] if `base_path` is empty.
+    pub fn new<P: AsRef<Path>>(base_path: P) -> Result<Self, FilesystemStoreCreateError> {
+        Self::new_with_options(base_path, FilesystemStoreOptions::default())
+    }
+
+    /// Create a new file system store at a given `base_path` and `options`.
+    ///
+    /// # Errors
+    /// Returns a [`FilesystemStoreCreateError`] if `base_path` is empty.
+    pub fn new_with_options<P: AsRef<Path>>(
+        base_path: P,
+        options: FilesystemStoreOptions,
+    ) -> Result<Self, FilesystemStoreCreateError> {
+        let base_path = base_path.as_ref().to_path_buf();
+        if base_path.to_str().is_none() {
+            return Err(FilesystemStoreCreateError::InvalidBasePath(base_path));
+        }
+
+        let handle_cache = NonZeroUsize::new(options.file_handle_cache_size)
+            .map(|capacity| Mutex::new(LruCache::new(capacity)));
+
+        Ok(Self {
+            base_path,
+            sort: false,
+            options,
+            files: Mutex::default(),
+            handle_cache,
+        })
+    }
+
+    /// Makes the store sort directories/files when walking.
+    #[must_use]
+    pub const fn sorted(mut self) -> Self {
+        self.sort = true;
+        self
+    }
+
+    /// Maps a [`StoreKey`] to a filesystem [`PathBuf`].
+    #[must_use]
+    pub fn key_to_fspath(&self, key: &StoreKey) -> PathBuf {
+        let mut path = self.base_path.clone();
+        if !key.as_str().is_empty() {
+            path.push(key.as_str().strip_prefix('/').unwrap_or(key.as_str()));
+        }
+        path
+    }
+
+    /// Maps a filesystem [`PathBuf`] to a [`StoreKey`].
+    fn fspath_to_key(&self, path: &std::path::Path) -> Result<StoreKey, StoreKeyError> {
+        let path = pathdiff::diff_paths(path, &self.base_path)
+            .ok_or_else(|| StoreKeyError::from(path.to_str().unwrap_or_default().to_string()))?;
+        let path_str = path.to_string_lossy();
+        #[cfg(target_os = "windows")]
+        {
+            StoreKey::new(path_str.replace('\\', "/"))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            StoreKey::new(path_str)
+        }
+    }
+
+    /// Maps a store [`StorePrefix`] to a filesystem [`PathBuf`].
+    #[must_use]
+    pub fn prefix_to_fs_path(&self, prefix: &StorePrefix) -> PathBuf {
+        let mut path = self.base_path.clone();
+        path.push(prefix.as_str());
+        path
+    }
+
+    /// Open the file for `key`, or retrieve/populate the cached handle if the file handle cache is
+    /// enabled.
+    ///
+    /// Returns [`None`] if the file does not exist.
+    /// Must be called with the file mutex of `key` held (read or write).
+    fn open_or_cached(&self, key: &StoreKey) -> Result<Option<Arc<CachedFile>>, StorageError> {
+        if let Some(cache) = &self.handle_cache {
+            if let Some(handle) = cache.lock().unwrap().get(key) {
+                return Ok(Some(handle.clone()));
+            }
+        }
+
+        let file = match RandomAccessFile::open(self.key_to_fspath(key)) {
+            Ok(file) => file,
+            Err(err) => {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    return Ok(None);
+                }
+                return Err(err.into());
+            }
+        };
+        let size = positioned_io::Size::size(&file)?
+            .ok_or_else(|| StorageError::Other("Could not determine file size".to_string()))?;
+        let handle = Arc::new(CachedFile { file, size });
+
+        if let Some(cache) = &self.handle_cache {
+            cache.lock().unwrap().put(key.clone(), handle.clone());
+        }
+        Ok(Some(handle))
+    }
+
+    /// Invalidate the cached file handle for `key`, if any.
+    ///
+    /// Must be called with the file mutex of `key` held for writing.
+    fn invalidate_handle(&self, key: &StoreKey) {
+        if let Some(cache) = &self.handle_cache {
+            cache.lock().unwrap().pop(key);
+        }
+    }
+
+    /// Invalidate all cached file handles.
+    fn invalidate_all_handles(&self) {
+        if let Some(cache) = &self.handle_cache {
+            cache.lock().unwrap().clear();
+        }
+    }
+
+    fn get_file_mutex(&self, key: &StoreKey) -> Arc<RwLock<()>> {
+        let mut files = self.files.lock().unwrap();
+        let file = files
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(RwLock::default()))
+            .clone();
+        drop(files);
+        file
+    }
+
+    fn set_impl(
+        &self,
+        key: &StoreKey,
+        value: &[u8],
+        offset: ByteOffset,
+        truncate: bool,
+    ) -> Result<(), StorageError> {
+        let file = self.get_file_mutex(key);
+        let _lock = file.write();
+        self.invalidate_handle(key);
+
+        // Create directories
+        let key_path = self.key_to_fspath(key);
+        if let Some(parent) = key_path.parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
+        let mut flags = OpenOptions::new();
+        flags.write(true).create(true).truncate(truncate);
+
+        // TODO: for now, only Linux support; also no support for `offset != 0`
+        let enable_direct =
+            cfg!(target_os = "linux") && self.options.direct_io && offset == 0 && !value.is_empty();
+
+        // If `value` is already page-size aligned, we don't need to copy.
+        let need_copy = value.as_ptr().align_offset(page_size::get()) != 0
+            || !value.len().is_multiple_of(page_size::get());
+
+        #[cfg(target_os = "linux")]
+        if enable_direct {
+            flags.custom_flags(O_DIRECT);
+        }
+
+        let mut file = flags.open(key_path)?;
+
+        // Write
+        if enable_direct {
+            if offset != 0 {
+                // This is unreachable, but keeping the check for safety.
+                return Err(StorageError::Other(
+                    "Direct I/O with non-zero offset is not supported".to_string(),
+                ));
+            }
+
+            if need_copy {
+                let mut buf = bytes_aligned(value.len());
+                buf.extend_from_slice(value);
+
+                // Pad to page size
+                let pad_size = buf.len().next_multiple_of(page_size::get()) - buf.len();
+                buf.extend(std::iter::repeat_n(0, pad_size));
+
+                file.write_all(&buf)?;
+            } else {
+                file.write_all(value)?;
+            }
+
+            // Truncate again to requested size
+            file.set_len(value.len() as u64)?;
+        } else {
+            file.write_all_at(offset, value)?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_lines)]
+    fn get_partial_many_direct_io<'a>(
+        &'a self,
+        key: &StoreKey,
+        byte_ranges: ByteRangeIterator<'a>,
+    ) -> Result<MaybeBytesIterator<'a>, StorageError> {
+        use std::collections::BTreeMap;
+        use std::os::unix::fs::FileExt;
+
+        // Lock and open the file
+        let file = self.get_file_mutex(key);
+        let _lock = file.read();
+        let mut flags = OpenOptions::new();
+        flags.read(true);
+        flags.custom_flags(O_DIRECT);
+        let file = match flags.open(self.key_to_fspath(key)) {
+            Ok(file) => file,
+            Err(err) => {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    return Ok(None);
+                }
+                return Err(err.into());
+            }
+        };
+
+        let file_size: u64 = file.metadata()?.size();
+        let ps = page_size::get() as u64;
+
+        // Find intersected pages
+        let byte_ranges = byte_ranges.collect::<Vec<ByteRange>>();
+        let intersected_pages_coalesced =
+            direct_io::coalesce_byte_ranges_with_page_size(file_size, &byte_ranges, ps);
+
+        // Read intersected pages
+        let mut page_bytes = BTreeMap::new();
+        for pages in intersected_pages_coalesced {
+            let num_pages = pages.0.end - pages.0.start;
+            let offset = pages.0.start * ps;
+            let length = usize::try_from(num_pages * ps).unwrap();
+            let mut buf = bytes_aligned(length);
+            let bytes_read = {
+                let buf = buf.spare_capacity_mut();
+                let buf = unsafe {
+                    std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<u8>(), length)
+                };
+                FileExt::read_at(&file, buf, offset as u64)?
+            };
+            unsafe {
+                buf.set_len(bytes_read);
+            }
+            page_bytes.insert(offset, buf.freeze());
+        }
+
+        // Extract the requested byte ranges
+        let out = byte_ranges
+            .into_iter()
+            .map(|byte_range| {
+                use std::ops::Bound;
+
+                let start = byte_range.start(file_size);
+                let length = usize::try_from(byte_range.length(file_size)).unwrap();
+
+                if (start + length as u64) > file_size {
+                    // NOTE: Could put this check earlier
+                    return Err(zarrs_storage::byte_range::InvalidByteRangeError::new(
+                        byte_range, file_size,
+                    )
+                    .into());
+                }
+
+                // Find the first element in page_bytes that is >= start_page_aligned
+                let (intersected_pages_start, bytes) = page_bytes
+                    .range((Bound::Unbounded, Bound::Included(&start)))
+                    .next_back()
+                    .ok_or_else(|| {
+                        StorageError::Other(format!(
+                            "Could not find intersected pages for byte range {byte_range}"
+                        ))
+                    })?;
+                // TODO: use upper bound when btree_cursors stabilises
+                // let (intersected_pages_start, bytes) = page_bytes
+                //     .upper_bound(Bound::Included(&start))
+                //     .peek_prev()
+                //     .ok_or_else(|| {
+                //         StorageError::Other(format!(
+                //             "Could not find intersected pages for byte range {byte_range}"
+                //         ))
+                //     })?;
+
+                let offset = usize::try_from(start - *intersected_pages_start).unwrap();
+                Ok(bytes.slice(offset..offset + length))
+            })
+            .collect::<Vec<_>>();
+        Ok(Some(Box::new(out.into_iter())))
+    }
+}
+
+impl ReadableStorageTraits for FilesystemStore {
+    fn get_partial_many<'a>(
+        &'a self,
+        key: &StoreKey,
+        byte_ranges: ByteRangeIterator<'a>,
+    ) -> Result<MaybeBytesIterator<'a>, StorageError> {
+        #[cfg(target_os = "linux")]
+        if self.options.direct_io {
+            return self.get_partial_many_direct_io(key, byte_ranges);
+        }
+
+        // Lock and open the file (or reuse a cached handle)
+        let file_mutex = self.get_file_mutex(key);
+        let _lock = file_mutex.read();
+        let Some(handle) = self.open_or_cached(key)? else {
+            return Ok(None);
+        };
+        let file = &handle.file;
+        let file_size = handle.size;
+
+        let out = byte_ranges
+            .map(|byte_range| {
+                // Calculate offset
+                let offset = match byte_range {
+                    ByteRange::FromStart(offset, _) => offset,
+                    ByteRange::Suffix(length) => file_size.saturating_sub(length),
+                };
+
+                // Get read length
+                let length = match byte_range {
+                    ByteRange::FromStart(start, None) => {
+                        file_size.checked_sub(start).ok_or_else(|| {
+                            StorageError::from(InvalidByteRangeError::new(byte_range, file_size))
+                        })?
+                    }
+                    ByteRange::FromStart(_, Some(length)) | ByteRange::Suffix(length) => length,
+                };
+                let length = usize::try_from(length).unwrap();
+
+                // Read at position
+                let mut buffer = Vec::with_capacity(length);
+                let spare = buffer.spare_capacity_mut();
+                // SAFETY: We're reading into uninitialised memory, which is safe because
+                // read_exact_at will fill all bytes or return an error
+                let slice = unsafe {
+                    std::slice::from_raw_parts_mut(spare.as_mut_ptr().cast::<u8>(), length)
+                };
+                file.read_exact_at(offset, slice)?;
+                // SAFETY: read_exact_at succeeded, so all bytes are now initialised
+                unsafe {
+                    buffer.set_len(length);
+                }
+                Ok(Bytes::from(buffer))
+            })
+            .collect::<Vec<_>>();
+
+        Ok(Some(Box::new(out.into_iter())))
+    }
+
+    fn size_key(&self, key: &StoreKey) -> Result<Option<u64>, StorageError> {
+        let key_path = self.key_to_fspath(key);
+        std::fs::metadata(key_path).map_or_else(|_| Ok(None), |metadata| Ok(Some(metadata.len())))
+    }
+
+    fn supports_get_partial(&self) -> bool {
+        true
+    }
+}
+
+impl WritableStorageTraits for FilesystemStore {
+    fn set(&self, key: &StoreKey, value: Bytes) -> Result<(), StorageError> {
+        Self::set_impl(self, key, &value, 0, true)
+    }
+
+    fn set_partial_many(
+        &self,
+        key: &StoreKey,
+        offset_values: OffsetBytesIterator,
+    ) -> Result<(), StorageError> {
+        store_set_partial_many(self, key, offset_values)
+    }
+
+    fn erase(&self, key: &StoreKey) -> Result<(), StorageError> {
+        let file = self.get_file_mutex(key);
+        let _lock = file.write();
+        self.invalidate_handle(key);
+
+        let key_path = self.key_to_fspath(key);
+        let result = std::fs::remove_file(key_path);
+        if let Err(err) = result {
+            match err.kind() {
+                std::io::ErrorKind::NotFound => Ok(()),
+                _ => Err(err.into()),
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    fn erase_prefix(&self, prefix: &StorePrefix) -> Result<(), StorageError> {
+        let _lock = self.files.lock(); // lock all operations
+        self.invalidate_all_handles();
+
+        let prefix_path = self.prefix_to_fs_path(prefix);
+        let result = std::fs::remove_dir_all(prefix_path);
+        if let Err(err) = result {
+            match err.kind() {
+                std::io::ErrorKind::NotFound => Ok(()),
+                _ => Err(err.into()),
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    fn supports_set_partial(&self) -> bool {
+        true
+    }
+}
+
+impl AtomicRenameStorageTraits for FilesystemStore {
+    fn rename(&self, source: &StoreKey, destination: &StoreKey) -> Result<(), StorageError> {
+        if source == destination {
+            return Ok(());
+        }
+
+        // The filesystem rename supplies cross-process atomicity. These process-local locks only
+        // keep the file handle cache coherent with the path replacement.
+        let (first_key, second_key) = if source < destination {
+            (source, destination)
+        } else {
+            (destination, source)
+        };
+        let first_file = self.get_file_mutex(first_key);
+        let second_file = self.get_file_mutex(second_key);
+        let _first_lock = first_file.write();
+        let _second_lock = second_file.write();
+        self.invalidate_handle(source);
+        self.invalidate_handle(destination);
+
+        let source_path = self.key_to_fspath(source);
+        let destination_path = self.key_to_fspath(destination);
+        std::fs::rename(source_path, destination_path)?;
+        Ok(())
+    }
+}
+
+impl ListableStorageTraits for FilesystemStore {
+    fn list(&self) -> Result<StoreKeys, StorageError> {
+        Ok(WalkDir::new(&self.base_path)
+            .sort_by_file_name()
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+            .filter(|v| v.path().is_file())
+            .filter_map(|v| self.fspath_to_key(v.path()).ok())
+            .collect())
+    }
+
+    fn list_prefix(&self, prefix: &StorePrefix) -> Result<StoreKeys, StorageError> {
+        Ok(WalkDir::new(self.prefix_to_fs_path(prefix))
+            .sort_by_file_name()
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+            .filter(|v| v.path().is_file())
+            .filter_map(|v| self.fspath_to_key(v.path()).ok())
+            .collect())
+    }
+
+    fn list_dir(&self, prefix: &StorePrefix) -> Result<StoreKeysPrefixes, StorageError> {
+        let prefix_path = self.prefix_to_fs_path(prefix);
+        let mut keys: StoreKeys = vec![];
+        let mut prefixes: StorePrefixes = vec![];
+        let dir = std::fs::read_dir(prefix_path);
+        if let Ok(dir) = dir {
+            for entry in dir {
+                let entry = entry?;
+                let fs_path = entry.path();
+                let path = fs_path.file_name().unwrap();
+                if fs_path.is_dir() {
+                    prefixes.push(StorePrefix::new(
+                        prefix.as_str().to_string() + path.to_str().unwrap() + "/",
+                    )?);
+                } else {
+                    keys.push(StoreKey::new(
+                        prefix.as_str().to_owned() + path.to_str().unwrap(),
+                    )?);
+                }
+            }
+        }
+        if self.sort {
+            keys.sort();
+            prefixes.sort();
+        }
+
+        Ok(StoreKeysPrefixes::new(keys, prefixes))
+    }
+
+    fn size(&self) -> Result<u64, StorageError> {
+        Ok(WalkDir::new(&self.base_path)
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+            .filter_map(|v| {
+                if v.path().is_file() {
+                    Some(std::fs::metadata(v.path()).unwrap().len())
+                } else {
+                    None
+                }
+            })
+            .sum())
+    }
+
+    fn size_prefix(&self, prefix: &StorePrefix) -> Result<u64, StorageError> {
+        let mut size = 0;
+        for key in self.list_prefix(prefix)? {
+            if let Some(size_key) = self.size_key(&key)? {
+                size += size_key;
+            }
+        }
+        Ok(size)
+    }
+}
+
+/// A filesystem store creation error.
+#[derive(Debug, Error)]
+pub enum FilesystemStoreCreateError {
+    /// An IO error.
+    #[error(transparent)]
+    IOError(#[from] std::io::Error),
+    /// The path is not valid on this system.
+    #[error("base path {0} is not valid")]
+    InvalidBasePath(PathBuf),
+}

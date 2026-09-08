@@ -51,6 +51,11 @@ What this module guarantees
   global search, so a landlocked lake with no analysis of its own cannot
   import another basin's water.
 * Every water cell is attributed in ``WATER_TEMP_SOURCE``.
+* A source can additionally declare lake-model water and ice state. Where
+  the lake has no usable analysis of its own, an explicitly ice-free model
+  water field supplies the entire component. This represents the source
+  model's local lake state even where its grid does not resolve that lake;
+  it is not mixed land-cell skin or a search for another basin's water.
 
 Where the guarantee is enforced
 -------------------------------
@@ -70,6 +75,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 import numpy as np
+from gpuwm.ingest.lake_temperature import LAKE_WATER_PROVIDER
 
 #: The MODIS inland-water category.  Kept as documentation of the value the
 #: MODIS land-use tables carry; NOTHING selects lakes with it.  The lake
@@ -95,11 +101,13 @@ SOURCE_LAND = 0
 SOURCE_ANALYSIS = 1        #: ERA5 SST, same-component donors
 SOURCE_COMPONENT_SKIN = 2  #: coherent SKINTEMP for a whole component
 SOURCE_PER_CELL = 3        #: the historical per-cell fuse (wrf_compat)
+SOURCE_LAKE_WATER = 4      #: explicit ice-free source lake-model state
 SOURCE_NAMES = {
     SOURCE_LAND: "land",
     SOURCE_ANALYSIS: "era5_sst_component",
     SOURCE_COMPONENT_SKIN: "era5_skintemp_component",
     SOURCE_PER_CELL: "per_cell_legacy",
+    SOURCE_LAKE_WATER: LAKE_WATER_PROVIDER,
 }
 
 #: A component takes the analysis when its own donors cover at least this
@@ -391,17 +399,72 @@ def _component_owner_of_source(labels, source_lat, source_lon,
 # ---------------------------------------------------------------------------
 # the assembled field
 # ---------------------------------------------------------------------------
+def _water_temperature_refusal(*, bad, values, skin, mapped_sst, source,
+                               labels, component_rows, diagnostic_context,
+                               diagnostic_latlon):
+    """Bounded evidence for a refusal, without changing any provider choice."""
+    bad_count = int(bad.sum())
+    cells = np.argwhere(bad)[:8]
+    lines = [
+        f"{bad_count} water cells have no admissible water temperature "
+        "after class-coherent assembly",
+        f"Context: {diagnostic_context or 'direct water-temperature assembly'}; "
+        f"mass grid {values.shape[0]}x{values.shape[1]}",
+        f"Bad cells (zero-based row/column; showing {len(cells)} of "
+        f"{bad_count}; admissible range {MIN_WATER_TEMPERATURE_K:g}.."
+        f"{MAX_WATER_TEMPERATURE_K:g} K):",
+    ]
+    latlon = None
+    if diagnostic_latlon is not None:
+        latitude, longitude = (np.asarray(axis) for axis in diagnostic_latlon)
+        if latitude.shape == values.shape and longitude.shape == values.shape:
+            latlon = latitude, longitude
+    sst = None if mapped_sst is None else np.asarray(mapped_sst)
+    if sst is not None and sst.shape != values.shape:
+        sst = None
+    shown_labels = set()
+    for row, column in cells:
+        label = int(labels[row, column])
+        shown_labels.add(label)
+        location = f"row={row}, column={column}"
+        if latlon is not None:
+            location += (f", lat={latlon[0][row, column]:.6f}, "
+                         f"lon={latlon[1][row, column]:.6f}")
+        sst_value = ("unavailable" if sst is None
+                     else f"{sst[row, column]:.8g}")
+        lines.append(
+            f"  {location}: assembled={values[row, column]:.8g} K, "
+            f"mapped_SKINTEMP={skin[row, column]:.8g} K, "
+            f"mapped_SST={sst_value} K, "
+            f"provider={SOURCE_NAMES[int(source[row, column])]}, "
+            f"component={label}")
+    lines.append("Components containing the shown cells:")
+    for item in component_rows:
+        if item["label"] in shown_labels:
+            lines.append(
+                f"  component={item['label']}, class={item['class']}, "
+                f"cells={item['cells']}, SST_donors={item['donors']}, "
+                f"SST_coverage={item['coverage']:.6g}, "
+                f"selected_provider={item['provider']}")
+    return ValueError("\n".join(lines))
+
+
 def assemble_water_temperature(
         *, mapped_sst, mapped_skin, target_land, target_lake,
         source_sst=None, source_lat=None, source_lon=None,
         target_lat=None, target_lon=None,
-        policy=DEFAULT_WATER_TEMPERATURE_POLICY):
+        policy=DEFAULT_WATER_TEMPERATURE_POLICY,
+        diagnostic_context=None, diagnostic_latlon=None,
+        mapped_lake_water=None):
     """Return ``(water_temperature, water_temperature_source, receipt)``.
 
     ``water_temperature`` is finished: every water cell carries a physical
     temperature chosen by ONE provider for its whole connected body.  Land
     cells carry the mapped skin temperature so the array is total, and the
     soil reconciler still decides what land does with it.
+
+    The optional diagnostic context and geographic latitude/longitude pair
+    are used only to explain a refusal; they never enter interpolation.
     """
     policy = validate_water_temperature_policy(policy)
     skin = np.asarray(mapped_skin, dtype=np.float64)
@@ -444,11 +507,16 @@ def assemble_water_temperature(
         return values.astype(np.float64), source, receipt
 
     lake = np.asarray(target_lake, dtype=bool) & water
+    lake_water = (None if mapped_lake_water is None else
+                  np.asarray(mapped_lake_water, dtype=np.float64))
+    if lake_water is not None and lake_water.shape != shape:
+        raise ValueError("mapped_lake_water and target_land shapes differ")
     labels, classes = label_surface_components(land, lake)
 
     per_provider = {name: 0 for name in SOURCE_NAMES.values()}
     on_analysis = 0
     on_skin = 0
+    on_lake_water = 0
     component_rows = []
 
     have_source = (source_sst is not None and source_lat is not None
@@ -486,7 +554,18 @@ def assemble_water_temperature(
                 if coverage >= MIN_COMPONENT_COVERAGE:
                     filled = _fill_within_component(estimate, selection)
                     chosen = filled
-        if chosen is None:
+        if chosen is None and classes[label] == "lake" and lake_water is not None:
+            # The provider is an explicitly decoded lake-model water state,
+            # whose phase contract was checked before interpolation. Tiny
+            # inland lakes can have no majority-water source cell at all.
+            # Choose this one provider for the entire component, never fill
+            # individual missing lake values from mixed land-cell skin.
+            values[selection] = lake_water[selection]
+            source[selection] = SOURCE_LAKE_WATER
+            per_provider[SOURCE_NAMES[SOURCE_LAKE_WATER]] += cells
+            on_lake_water += 1
+            provider_name = SOURCE_NAMES[SOURCE_LAKE_WATER]
+        elif chosen is None:
             # The whole body takes the coherent skin field, not a per-cell
             # mixture with whatever SST happened to reach part of it.
             values[selection] = skin[selection]
@@ -516,9 +595,11 @@ def assemble_water_temperature(
                     & (values >= MIN_WATER_TEMPERATURE_K)
                     & (values <= MAX_WATER_TEMPERATURE_K))
     if np.any(bad):
-        raise ValueError(
-            f"{int(bad.sum())} water cells have no admissible water "
-            "temperature after class-coherent assembly")
+        raise _water_temperature_refusal(
+            bad=bad, values=values, skin=skin, mapped_sst=mapped_sst,
+            source=source, labels=labels, component_rows=component_rows,
+            diagnostic_context=diagnostic_context,
+            diagnostic_latlon=diagnostic_latlon)
     if np.any(water & (source == SOURCE_LAND)):
         raise ValueError("a water cell was left without a declared provider")
 
@@ -533,6 +614,8 @@ def assemble_water_temperature(
         "per_provider": {k: v for k, v in per_provider.items() if v},
         "component_detail": component_rows,
     }
+    if lake_water is not None:
+        receipt["components_on_lake_water"] = on_lake_water
     return values, source, receipt
 
 
@@ -641,7 +724,9 @@ def assemble_horizontal_water_temperature(horizontal, statics):
     fields = horizontal.fields
     assembly = assemble_for_route(
         statics, mapped_skin=host(fields["SKINTEMP"]),
-        mapped_sst=(None if "SST" not in fields else host(fields["SST"])))
+        mapped_sst=(None if "SST" not in fields else host(fields["SST"])),
+        diagnostic_context=(
+            f"valid_time={horizontal.valid_time.isoformat()} UTC"))
     return replace(horizontal, water_temperature=assembly.values,
                    water_temperature_source=assembly.provider,
                    water_temperature_receipt=assembly.receipt)
@@ -649,7 +734,9 @@ def assemble_horizontal_water_temperature(horizontal, statics):
 
 def assemble_for_route(statics, *, mapped_sst, mapped_skin, source_sst=None,
                        source_lat=None, source_lon=None,
-                       target_lat=None, target_lon=None):
+                       target_lat=None, target_lon=None,
+                       diagnostic_context=None, diagnostic_latlon=None,
+                       mapped_lake_water=None):
     """THE assembly entry point.  Every forcing route reaches it here.
 
     Closing this route by route is what produced the quilt in the first
@@ -664,7 +751,11 @@ def assemble_for_route(statics, *, mapped_sst, mapped_skin, source_sst=None,
         target_land=statics.land, target_lake=statics.lake,
         source_sst=source_sst, source_lat=source_lat, source_lon=source_lon,
         target_lat=target_lat, target_lon=target_lon,
-        policy=statics.policy)
+        policy=statics.policy,
+        diagnostic_context=(statics.route if diagnostic_context is None
+                            else f"{statics.route}; {diagnostic_context}"),
+        diagnostic_latlon=diagnostic_latlon,
+        mapped_lake_water=mapped_lake_water)
     receipt = dict(receipt)
     receipt["route"] = statics.route
     receipt["lake_class"] = (
@@ -763,7 +854,7 @@ __all__ = [
     "WATER_TEMPERATURE_POLICIES",
     "DEFAULT_WATER_TEMPERATURE_POLICY",
     "SOURCE_LAND", "SOURCE_ANALYSIS", "SOURCE_COMPONENT_SKIN",
-    "SOURCE_PER_CELL", "SOURCE_NAMES",
+    "SOURCE_PER_CELL", "SOURCE_LAKE_WATER", "SOURCE_NAMES",
     "WaterTemperatureAssembly",
     "WaterTemperatureStatics",
     "validate_water_temperature_policy",

@@ -23,7 +23,8 @@ import numpy as np
 
 from gpuwm.ingest.grib import (Era5DecodeResult, Era5Snapshot,
                                cached_era5_forcing, canonical_units,
-                               inspect_grib1_envelopes, parse_vtable)
+                               inspect_grib1_envelopes, parse_vtable,
+                               forcing_container)
 from gpuwm import data_assets
 from gpuwm.ingest.horiz import (_MASKED_SEARCH_RADIUS,
                                 source_axis_space,
@@ -589,7 +590,8 @@ def _build_input_catalog(case_data) -> tuple[InputCatalog,
                if path.exists()}
     if len(parents) == 1:
         parent = next(iter(parents))
-        for name in ("retrieve.py", "retrieve.log", "SHA256SUMS.txt"):
+        for name in ("retrieve.py", "retrieve.log", "SHA256SUMS.txt",
+                     "era5-acquisition.json", "era5-arco-acquisition.json"):
             sidecar = parent / name
             if sidecar.is_file():
                 add_file("forcing_provenance", sidecar,
@@ -612,23 +614,33 @@ def _build_input_catalog(case_data) -> tuple[InputCatalog,
 
     entries = ()
     units: Mapping[str, str] = {}
+    regular_netcdf = bool(forcing_identities) and all(
+        path.suffix.lower() == ".nc" for path in forcing_identities)
+    encoding = ("native regular NetCDF" if regular_netcdf else
+                "native GRIB1 (vendored grib-core 0.1.0)")
     try:
-        entries = parse_vtable(case_data.vtable)
-        units = canonical_units(entries)
+        if regular_netcdf:
+            from gpuwm.ingest.regular_netcdf import REGULAR_FIELD_UNITS
+            units = REGULAR_FIELD_UNITS
+        else:
+            entries = parse_vtable(case_data.vtable)
+            units = canonical_units(entries)
     except Exception as exc:
         issues.append(PreflightIssue(
-            "vtable", f"could not parse the declared Vtable: {exc}",
-            path=Path(case_data.vtable),
+            "forcing-schema" if regular_netcdf else "vtable",
+            f"could not load the forcing field schema: {exc}",
+            path=None if regular_netcdf else Path(case_data.vtable),
         ))
 
     decodable: list[Path] = []
     content_hashes: list[str] = []
-    for path in forcing_paths:
+    for path, identity in zip(forcing_paths, forcing_identities):
         resolved = path.resolve()
         if resolved not in forcing_hashes:
             continue
         try:
-            inspect_grib1_envelopes(resolved)
+            if identity.suffix.lower() != ".nc":
+                inspect_grib1_envelopes(resolved)
         except Exception as exc:
             issues.append(PreflightIssue(
                 "grib-encoding", str(exc), path=resolved,
@@ -638,10 +650,11 @@ def _build_input_catalog(case_data) -> tuple[InputCatalog,
         content_hashes.append(forcing_hashes[resolved])
 
     decoded: Era5DecodeResult | None = None
-    if decodable and entries:
+    if decodable and (entries or regular_netcdf):
         try:
             decoded = cached_era5_forcing(
-                decodable, case_data.vtable, content_sha256=content_hashes
+                decodable, case_data.vtable, content_sha256=content_hashes,
+                container=forcing_container(forcing_identities),
             )
         except Exception as exc:
             # A BUILD failure and a DECODE failure are different
@@ -655,24 +668,24 @@ def _build_input_catalog(case_data) -> tuple[InputCatalog,
             if isinstance(exc, BridgeBuildError):
                 issues.append(PreflightIssue(
                     DECODER_BUILD_CODE,
-                    "the GRIB1 decoder this route needs could not be "
+                    "the native decoder this route needs could not be "
                     f"built here, so no input was read: {exc}",
                 ))
             else:
                 issues.append(PreflightIssue(
-                    "grib-decode",
+                    "netcdf-decode" if regular_netcdf else "grib-decode",
                     f"could not decode/merge forcing inputs: {exc}",
                     path=decodable[0] if len(decodable) == 1 else None,
                 ))
     elif not decodable:
         issues.append(PreflightIssue(
-            "grib-decode", "no structurally valid GRIB1 forcing file remains"
+            "forcing-decode", "no readable forcing file remains"
         ))
 
     if decoded is None:
         catalog = replace(
             _empty_catalog(product_id), files=tuple(files), units=units,
-            provenance={"encoding": "native GRIB1", "decode": "failed"},
+            provenance={"encoding": encoding, "decode": "failed"},
         )
         return catalog, tuple(issues)
 
@@ -693,6 +706,9 @@ def _build_input_catalog(case_data) -> tuple[InputCatalog,
     levels = (tuple(float(value) for value in snapshots[0].levels_hpa)
               if snapshots else ())
     inventory = (tuple(sorted(snapshots[0].fields)) if snapshots else ())
+    from gpuwm.ingest.lake_temperature import LAKE_FIELD_UNITS
+    units = {**units, **{name: unit for name, unit in LAKE_FIELD_UNITS.items()
+                         if name in inventory}}
     coverage = None
     masks: dict[tuple[datetime, str], CatalogMask] = {}
     if snapshots:
@@ -729,19 +745,22 @@ def _build_input_catalog(case_data) -> tuple[InputCatalog,
                 if bitmap is not None and np.any(bitmap):
                     masks[(snapshot.valid_time, name + "_MISSING")] = CatalogMask(
                         name, snapshot.valid_time,
-                        "native GRIB bitmap missing values",
+                        "native input missing values",
                         bitmap,
                     )
 
     provenance = {
         "product_id": product_id,
-        "encoding": "native GRIB1 (vendored grib-core 0.1.0)",
-        "vtable_schema": str(Path(vtable_identity).resolve()),
+        "encoding": encoding,
+        "field_schema": ("arwen.regular-forcing.v1" if regular_netcdf else
+                         str(Path(vtable_identity).resolve())),
         "time_selection": selection,
         "raw_valid_times": tuple(value.isoformat() for value in raw_times),
         "excluded_valid_times": tuple(value.isoformat()
                                       for value in excluded_times),
     }
+    if not regular_netcdf:
+        provenance["vtable_schema"] = str(Path(vtable_identity).resolve())
     catalog = InputCatalog(
         files=tuple(files), product_id=product_id, provenance=provenance,
         raw_valid_times=raw_times, valid_times=selected_times,
@@ -759,8 +778,12 @@ def _missing_required_inventory(catalog: InputCatalog) -> list[str]:
     :func:`build_input_catalog` and the aggregated report's forcing scan.
     """
 
-    return sorted((_REQUIRED_PRESSURE | _REQUIRED_SURFACE)
-                  - set(catalog.inventory))
+    inventory = set(catalog.inventory)
+    required = _REQUIRED_PRESSURE | _REQUIRED_SURFACE
+    if catalog.snapshots and all(getattr(snapshot, "specific_humidity_authority", False)
+                                 for snapshot in catalog.snapshots):
+        required = (required - {"RH", "D2"}) | {"PRES", "SPFH", "Q2"}
+    return sorted(required - inventory)
 
 
 def build_input_catalog(case_data) -> InputCatalog:
@@ -1703,7 +1726,7 @@ def preflight_report(exp, case_data) -> PreflightReport:
     catalog, build_issues = _build_input_catalog(case_data)
     failures = list(build_issues)
     checks: list[str] = ["resolved input SHA-256 catalog",
-                         "native GRIB1 envelope/decode contract"]
+                         "native forcing container/decode contract"]
 
     for checker in (
             lambda: _scan_forcing(catalog),

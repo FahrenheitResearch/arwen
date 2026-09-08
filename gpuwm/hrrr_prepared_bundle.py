@@ -118,6 +118,9 @@ def render_wps_namelist(experiment) -> str:
     domains = list(experiment.domains)
     if not domains:
         raise HrrrBundleError("this experiment declares no domains")
+    from gpuwm.wps_domain_ids import validated_domain_order, with_domain_ids
+    ids = validated_domain_order(domains)
+    slot_by_id = {grid_id: slot for slot, grid_id in enumerate(ids, start=1)}
 
     def number(value) -> str:
         return repr(int(value)) if isinstance(value, int) else repr(
@@ -127,7 +130,7 @@ def render_wps_namelist(experiment) -> str:
         return ", ".join(number(value) for value in values)
 
     root = domains[0].run
-    return (
+    text = (
         "&share\n"
         " wrf_core = 'ARW',\n"
         f" max_dom = {len(domains)},\n"
@@ -135,7 +138,7 @@ def render_wps_namelist(experiment) -> str:
         " io_form_geogrid = 2,\n"
         "/\n"
         "&geogrid\n"
-        f" parent_id         = {row(d.parent_id or 1 for d in domains)},\n"
+        f" parent_id         = {row(slot_by_id[d.parent_id or 1] for d in domains)},\n"
         f" parent_grid_ratio = {row(d.parent_grid_ratio for d in domains)},\n"
         f" i_parent_start    = {row(d.i_parent_start or 1 for d in domains)},\n"
         f" j_parent_start    = {row(d.j_parent_start or 1 for d in domains)},\n"
@@ -151,6 +154,7 @@ def render_wps_namelist(experiment) -> str:
         f" truelat2  = {number(projection.truelat2)},\n"
         f" stand_lon = {number(projection.stand_lon)},\n"
         "/\n")
+    return with_domain_ids(text, ids)
 
 
 def _publish_wps_namelist(root: Path, experiment, wps_namelist) -> Path:

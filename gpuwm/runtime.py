@@ -599,10 +599,12 @@ def forcing_snapshots(data: CaseDataConfig, input_catalog=None) -> dict:
     if not all(content_sha256):
         content_sha256 = None
 
+    from gpuwm.ingest.grib import forcing_container
     decoded = cached_era5_forcing(
         data.forcing, data.vtable, content_sha256=content_sha256,
         valid_times=input_catalog.valid_times,
         excluded_valid_times=input_catalog.excluded_valid_times,
+        container=forcing_container(forcing_identities),
     )
     by_time: dict[datetime, object] = {}
     for snapshot in decoded.snapshots:

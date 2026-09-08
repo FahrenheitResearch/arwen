@@ -74,6 +74,7 @@ impl Job {
             .arg("--")
             .arg(action)
             .args(args)
+            .env("GPUWM_CONFIGURATION_RECOVERY_DIR", dir.join("configuration-recovery"))
             .current_dir(&cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log.try_clone()?))
@@ -305,11 +306,37 @@ impl Job {
         self.outcome
             .is_some_and(|code| code != 0 && (self.stopping || code == 130))
     }
+    pub fn configuration_recovery(&self) -> Option<PathBuf> {
+        if !self.memory_refused {
+            return None;
+        }
+        configuration_recovery_path(&self.dir)
+    }
+}
+
+fn configuration_recovery_path(directory: &Path) -> Option<PathBuf> {
+    let folder = directory.join("configuration-recovery");
+    let receipt: serde_json::Value = serde_json::from_reader(
+        File::open(folder.join("recovery.json")).ok()?.take(64 * 1024)).ok()?;
+    if receipt["schema"] != "arwen.configuration-recovery.v1" || receipt["status"] != "memory-refused" {
+        return None;
+    }
+    let path = folder.join("draft.toml");
+    if !fs::symlink_metadata(&path).ok()?.file_type().is_file() { return None; }
+    let path = path.canonicalize().ok()?;
+    let owned = directory.canonicalize().ok()?.join("configuration-recovery");
+    path.starts_with(owned).then_some(path)
 }
 
 /// Recognize the existing CLI admission boundary, not an arbitrary occurrence
 /// of "memory" or a successful memory estimate preceding an unrelated failure.
 pub fn memory_refusal(action: &str, code: i32, log: &str) -> bool {
+    if code != 0 && log.lines().any(|line| {
+        serde_json::from_str::<serde_json::Value>(line).ok().is_some_and(|value| {
+            value["schema"] == "arwen.configuration-error.v1" && value["kind"] == "memory"
+                && value["created"] == false && value["error"].is_string()
+        })
+    }) { return true; }
     match (action, code) {
         ("go", 2) => {
             log.lines().any(|line| {

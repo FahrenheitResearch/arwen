@@ -15,6 +15,8 @@ from pathlib import Path
 import shlex
 import tomllib
 
+from gpuwm.configuration_recovery import MemoryAdmissionError
+
 
 
 def _publish_new_files(files):
@@ -114,10 +116,12 @@ class Starter:
         self.wps_original = None
         self.wps_base = None
         domains = self.exp.domains
-        if any(d.grid_id != i + 1 or d.parent_id != i
-               for i, d in enumerate(domains)):
-            raise ValueError("domain-fit currently fits linear parent chains numbered 1..N. "
-                             "Other layouts still run normally; their files are unchanged.")
+        from gpuwm.wps_domain_ids import validated_domain_order
+        self.domain_ids = validated_domain_order(domains)
+        self.index_by_id = {grid_id: index for index, grid_id in enumerate(self.domain_ids)}
+        self.paths = {}
+        for domain in domains:
+            self.paths[domain.grid_id] = (*self.paths.get(domain.parent_id, ()), domain.grid_id)
         if any(d.run.dx != d.run.dy for d in domains):
             raise ValueError("domain-fit currently fits square cells; the original "
                              "rectangular-cell configuration remains runnable unchanged.")
@@ -131,6 +135,11 @@ class Starter:
             from gpuwm.namelist_import import read_namelist_role
             self.wps_base = Path(self.raw["case_data"]["wps_namelist"])
             self.wps_original = read_namelist_role(self.wps_base, "starter WPS")
+            from gpuwm.wps_domain_ids import domain_ids_from_wps_text
+            original_ids = domain_ids_from_wps_text(self.wps_base.read_text(encoding="utf-8-sig"),
+                int(self.wps_original.get("share", {}).get("max_dom", [1])[0]))
+            if original_ids != self.domain_ids:
+                raise ValueError("Starter WPS domain identity differs from the configuration; reconcile its domain IDs before fitting")
             # The original WPS is a geometry declaration, not reusable fitted geometry.
             self.raw["case_data"]["wps_namelist"] = str(self.out.with_suffix(".namelist.wps"))
         if "static" in self.raw:
@@ -141,14 +150,50 @@ class Starter:
 
     def tables(self, dims):
         raw = copy.deepcopy(self.raw)
-        for i, (nx, ny) in enumerate(dims):
-            table = raw["domain"][i]
+        if len(dims) != len(self.domain_ids):
+            raise ValueError("Fitted dimensions do not cover the complete template domain tree")
+        by_id = {table["grid_id"]: table for table in raw["domain"]}
+        for domain, (nx, ny) in zip(self.exp.domains, dims):
+            table = by_id[domain.grid_id]
             table.update(nx=nx, ny=ny)
-            if i:
-                ratio = self.ratios[i - 1]
-                table.update(i_parent_start=(dims[i - 1][0] - nx // ratio) // 2 + 1,
-                             j_parent_start=(dims[i - 1][1] - ny // ratio) // 2 + 1)
+            if domain.parent_id:
+                ratio = domain.parent_grid_ratio
+                parent_dims = dims[self.index_by_id[domain.parent_id]]
+                table.update(i_parent_start=(parent_dims[0] - nx // ratio) // 2 + 1,
+                             j_parent_start=(parent_dims[1] - ny // ratio) // 2 + 1)
         return raw
+
+    def point_dimensions(self, scale):
+        """Use the existing ladder geometry on each actual parent path."""
+        from gpuwm import domain_wizard as dw
+        dimensions = {}
+        for domain in self.exp.domains:
+            path = self.paths[domain.grid_id]
+            ratios = tuple(self.exp.domain(grid_id).parent_grid_ratio for grid_id in path[1:])
+            dimensions[domain.grid_id] = dw._dims_for_scale(
+                scale, ratios, clearance_rows=self.exp.spec_bdy_width + self.exp.blend_width)[-1]
+        return [dimensions[grid_id] for grid_id in self.domain_ids]
+
+    def polygon_dimensions(self, **options):
+        """Merge native polygon fits along every branch, enlarging shared parents.
+
+        Every path uses the wizard's existing native projection and rounding.
+        A shared parent takes the largest request from its children; no branch
+        loses its requested footprint or its parent's boundary clearance.
+        """
+        from gpuwm import domain_wizard as dw
+        buffers = options.pop("buffers_km")
+        options.pop("ratios")
+        dimensions = {}
+        for domain in self.exp.domains:
+            path = self.paths[domain.grid_id]
+            ratios = tuple(self.exp.domain(grid_id).parent_grid_ratio for grid_id in path[1:])
+            branch = dw.polygon_ladder_dims(**options, ratios=ratios,
+                buffers_km=tuple(buffers[self.index_by_id[grid_id]] for grid_id in path))
+            for grid_id, pair in zip(path, branch):
+                previous = dimensions.get(grid_id, pair)
+                dimensions[grid_id] = tuple(max(a, b) for a, b in zip(previous, pair))
+        return [dimensions[grid_id] for grid_id in self.domain_ids]
 
     def candidate(self, dims):
         from gpuwm.experiment import build_experiment_from_config_tables
@@ -195,7 +240,8 @@ class Starter:
                 for section, table in fitted.items()) + "\n"
         if parse_namelist_text(text) != fitted:
             raise ValueError("Starter WPS settings did not round-trip; no output written")
-        return text, changes(original, fitted, "wps")
+        from gpuwm.wps_domain_ids import with_domain_ids
+        return with_domain_ids(text, self.domain_ids), changes(original, fitted, "wps")
 
 
 def _utc(value):
@@ -203,6 +249,31 @@ def _utc(value):
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
     return parsed
+
+
+def hardware_sizing(path):
+    """Use the selected node's measured capacity, availability and profile."""
+    from gpuwm import domain_wizard as dw
+    from gpuwm.core.preflight import non_pool_basis, profile_from_device_probe
+    from gpuwm.target_hardware import validate_sizing, validate_host_memory
+    path = Path(path).expanduser().resolve(strict=True)
+    if not path.is_file() or path.stat().st_size > 512 * 1024:
+        raise ValueError("Selected GPU hardware snapshot must be a JSON file no larger than 512 KiB")
+    payload = path.read_bytes()
+    document = json.loads(payload)
+    if not isinstance(document, dict):
+        raise ValueError("Selected GPU hardware snapshot must be a JSON object")
+    sizing = validate_sizing(document.get("sizing"))
+    profile = profile_from_device_probe(sizing)
+    if profile is None:
+        raise ValueError("Selected GPU hardware snapshot cannot be priced; reconnect the node before fitting")
+    total, free = sizing["total_bytes"], sizing["free_bytes"]
+    note = (f"domain: selected GPU {profile.name}, {total / dw.GIB:.2f} GiB total, "
+            f"{free / dw.GIB:.2f} GiB measured available; {non_pool_basis(profile)}")
+    identity = {"path": str(path), "sha256": hashlib.sha256(payload).hexdigest(), **sizing}
+    if document.get("host_memory") is not None:
+        identity["host_memory"] = validate_host_memory(document["host_memory"])
+    return dw.SizingBudget(total / dw.GIB, free, profile, note, measured=True), identity
 
 
 def fit_main(args):
@@ -223,11 +294,45 @@ def fit_main(args):
     if raw.get("fetch", {}).get("source") and source != dw.resolve_source(raw["fetch"]["source"]):
         raise ValueError("--source conflicts with the template's [fetch].source; "
                          "edit that declaration explicitly before fitting.")
-    sizing = dw.resolve_sizing_budget(args.card, args.vram_gib)
+    hardware = getattr(args, "hardware_json", None)
+    if (getattr(args, "target_host_memory_json", None) is not None and hardware is None
+            and args.card is None and args.vram_gib is None):
+        raise ValueError("--target-host-memory-json requires an explicit --card or --vram-gib budget")
+    hardware_identity = None
+    if hardware is not None:
+        if args.card is not None or args.vram_gib is not None:
+            raise ValueError("Choose the selected hardware snapshot or an explicit card capacity, not both")
+        sizing, hardware_identity = hardware_sizing(hardware)
+    else:
+        sizing = dw.resolve_sizing_budget(args.card, args.vram_gib)
     vram, device, note = sizing.vram_gib, sizing.device_profile, sizing.note
     if not math.isfinite(vram) or vram <= 0:
         raise ValueError("VRAM must be a finite positive GiB capacity")
     free = sizing.free_bytes
+    target_machine = None
+    host_identity = None
+    host_path = getattr(args, "target_host_memory_json", None)
+    if host_path is not None:
+        if hardware_identity is not None:
+            raise ValueError("The selected hardware snapshot already carries target host memory; choose only one host measurement")
+        from gpuwm.target_hardware import validate_host_memory
+        host_path = Path(host_path).expanduser().resolve(strict=True)
+        if not host_path.is_file() or host_path.stat().st_size > 512 * 1024:
+            raise ValueError("Selected target host snapshot must be a JSON file no larger than 512 KiB")
+        payload = host_path.read_bytes()
+        document = json.loads(payload)
+        if not isinstance(document, dict):
+            raise ValueError("Selected target host snapshot must contain a JSON object")
+        host_identity = {"path": str(host_path), "sha256": hashlib.sha256(payload).hexdigest(),
+                         "host_memory": validate_host_memory(document.get("host_memory", document))}
+    selected_host = hardware_identity if hardware_identity is not None else host_identity
+    if selected_host is not None and (starter.exp.tiles.mode != "off" or any(
+            getattr(getattr(domain, "tiles", None), "mode", "off") != "off" for domain in starter.exp.domains)):
+        from gpuwm.target_hardware import validate_host_memory
+        from tilestream.autoplan import Machine
+        host = validate_host_memory(selected_host.get("host_memory"))
+        target_machine = Machine(vram_bytes=free, host_bytes=host["total_bytes"],
+                                 name="selected forecast target", host_source="probe")
     footprint = dw.load_polygon_footprint(args.polygon) if args.polygon else None
     lat, lon = ((footprint.center_lat, footprint.center_lon) if footprint else
                 dw._parse_point(args.point))
@@ -266,7 +371,7 @@ def fit_main(args):
     common = dict(ratios=starter.ratios, root_dx_m=starter.dx,
                   free_bytes=free, hours=hours, start_time=start,
                   projection=projection, source=source, name=experiment["name"],
-                  vram_gib=vram, device_profile=device,
+                  vram_gib=vram, device_profile=device, target_machine=target_machine,
                   forcing_interval_seconds=interval,
                   candidate_builder=starter.candidate,
                   clearance_rows=starter.exp.spec_bdy_width + starter.exp.blend_width,
@@ -277,11 +382,13 @@ def fit_main(args):
     if footprint:
         buffers = dw._buffers_for_levels(dw.parse_level_buffers(args.buffer_km),
                                           len(starter.ratios) + 1)
-        dims, exp = dw.fit_polygon_ladder(footprint=footprint, buffers_km=buffers, **common)
+        dims, exp = dw.fit_polygon_ladder(footprint=footprint, buffers_km=buffers,
+            dimensions_builder=starter.polygon_dimensions, **common)
     else:
         if args.buffer_km is not None:
             raise ValueError("--buffer-km requires --polygon")
-        dims, exp = dw.fit_ladder(**common)
+        dims, exp = dw.fit_ladder(dimensions_builder=starter.point_dimensions,
+            layout_label="template tree " + ", ".join(f"d{grid_id:02d}" for grid_id in starter.domain_ids), **common)
     dw._pole_clearance_refusal(projection, *dims[0], starter.dx,
                                target_option="--polygon" if footprint else "--point")
     if fetch and dw.source_fetch_takes_a_crop_box(source):
@@ -295,17 +402,22 @@ def fit_main(args):
     from gpuwm.experiment import build_experiment_from_config_tables
     published = build_experiment_from_config_tables(tomllib.loads(text),
                 source=str(out), base_dir=out.parent)
-    phases = dw._sizing_phases(published, free_bytes=free, source=source,
+    phases = dw._sizing_phases(published, free_bytes=free, source=source, machine=target_machine,
                               forcing_interval_seconds=interval,
                               vram_gib=vram, profile=device)
     budget = dw.sizing_budget_bytes(published, free_bytes=free, vram_gib=vram,
                                     forcing_interval_seconds=interval, profile=device)
     if phases.peak_envelope_bytes > budget:
-        raise dw.DomainFitError("Final template exceeds the canonical phase budget: "
-                                + phases.verdict(budget))
-    wps_text, wps_delta = starter.wps_text(dw.render_wps_namelist(
-        projection, dims, starter.ratios, root_dx_m=starter.dx,
-        source=source, forcing_interval_seconds=interval), start, hours)
+        raise MemoryAdmissionError("Final template exceeds the canonical phase budget: "
+                                   + phases.verdict(budget),
+                                   peak_envelope_bytes=phases.peak_envelope_bytes,
+                                   budget_bytes=budget, binding_phase=phases.binding_phase)
+    from gpuwm.hrrr_prepared_bundle import render_wps_namelist
+    if not math.isfinite(interval) or interval <= 0 or int(interval) != interval:
+        raise ValueError("WPS forcing interval must be a positive whole number of seconds")
+    generated_wps = render_wps_namelist(published).replace(
+        " interval_seconds = 3600,", f" interval_seconds = {int(interval)},")
+    wps_text, wps_delta = starter.wps_text(generated_wps, start, hours)
     delta = changes(starter.original, final) + wps_delta
     print(f"Template: {starter.path}\nResolved configuration: {out}")
     if note:
@@ -324,7 +436,13 @@ def fit_main(args):
                  peak_envelope_bytes=phases.peak_envelope_bytes, budget_bytes=budget,
                  free_bytes=free, sizing_basis=("measured-available" if sizing.measured
                                                else "declared-capacity"),
+                 domain_order=list(starter.domain_ids),
+                 geometry_policy="centered domain tree; original parent IDs and grid ratios retained",
                  launch_performed=False)
+    if hardware_identity is not None:
+        proof["selected_hardware"] = hardware_identity
+    if host_identity is not None:
+        proof["selected_host_memory"] = host_identity
     out.parent.mkdir(parents=True, exist_ok=True)
     # Exclusive creation: never replace a file that appeared during the fit.
     _publish_new_files(((wps, wps_text),
@@ -393,7 +511,9 @@ def _tiles_tables(authority, mode):
 def _tiles_wps(source, output, *, text):
     """Copy a WPS authority, rebasing only its declared directory references."""
     from gpuwm.namelist_import import parse_namelist_text
+    from gpuwm.wps_domain_ids import domain_ids_from_wps_text, with_domain_ids
     original = parse_namelist_text(text)
+    ids = domain_ids_from_wps_text(text, int(original.get("share", {}).get("max_dom", [1])[0]))
     if source.parent == output.parent:
         return text
     tables = copy.deepcopy(original)
@@ -418,7 +538,7 @@ def _tiles_wps(source, output, *, text):
         for section, table in tables.items()) + "\n"
     if parse_namelist_text(text) != tables:
         raise ValueError("WPS settings did not round-trip; no output written")
-    return text
+    return with_domain_ids(text, ids)
 
 
 def _tiles_memory_plan(path, experiment, *, original):
@@ -457,9 +577,13 @@ def _tiles_memory_plan(path, experiment, *, original):
     if len(experiment.domains) > 1:
         road = phases.tree_road
         if road is None or road.refusal is not None or not road.priced:
-            raise ValueError("No fitting automatic tile plan: "
-                             + (road.refusal if road is not None and road.refusal
-                                else "the domain tree could not be priced"))
+            message = ("No fitting automatic tile plan: "
+                       + (road.refusal if road is not None and road.refusal
+                          else "the domain tree could not be priced"))
+            if getattr(road, "refusal_resource", None) in {"vram", "host", "memory"}:
+                raise MemoryAdmissionError(message, resource=road.refusal_resource,
+                    budget_bytes=budget, free_bytes=sizing.free_bytes)
+            raise ValueError(message)
         rows = [{**row, **row.get("tile", {})} for row in road.rows]
     else:
         try:
@@ -467,6 +591,11 @@ def _tiles_memory_plan(path, experiment, *, original):
                 experiment.root.run, experiment.tiles, machine=machine,
                 resident_estimate=phases.forecast)
         except Exception as error:
+            from tilestream.autoplan import CannotPlan
+            if isinstance(error, CannotPlan) and error.resource in {"vram", "host"}:
+                raise MemoryAdmissionError(f"No fitting automatic tile plan: {error}",
+                    resource=error.resource, budget_bytes=budget,
+                    free_bytes=sizing.free_bytes) from error
             raise ValueError(f"No fitting automatic tile plan: {error}") from error
         rows = [dict(grid_id=experiment.root.grid_id,
                      road="streamed" if decision.stream else "resident",
@@ -478,10 +607,12 @@ def _tiles_memory_plan(path, experiment, *, original):
     host_bytes = 0 if phases.streamed is None else phases.streamed.host_bytes
     if (phases.peak_envelope_bytes > budget
             or host_bytes > machine.host_budget_bytes):
-        raise ValueError("Tile streaming does not fit the available memory: "
+        raise MemoryAdmissionError("Tile streaming does not fit the available memory: "
                          + phases.verdict(budget)
                          + f"; host store {host_bytes / dw.GIB:.2f} GiB against "
-                         f"{machine.host_budget_bytes / dw.GIB:.2f} GiB available allowance")
+                         f"{machine.host_budget_bytes / dw.GIB:.2f} GiB available allowance",
+                         peak_envelope_bytes=phases.peak_envelope_bytes, budget_bytes=budget,
+                         host_store_bytes=host_bytes, host_budget_bytes=machine.host_budget_bytes)
     return dict(source=source, mode=experiment.tiles.mode, domains=rows,
                 peak_envelope_bytes=phases.peak_envelope_bytes,
                 budget_bytes=budget, free_bytes=sizing.free_bytes,
@@ -570,11 +701,14 @@ def register_cli(subparsers):
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--point", help="center LAT,LON; fit largest centered layout")
     target.add_argument("--polygon", type=Path, help="GeoJSON area; preserve its entire footprint")
-    parser.add_argument("--buffer-km", help="polygon buffer(s), outer to inner")
+    parser.add_argument("--buffer-km", help="one polygon buffer, or one per domain in the template's parent-before-child order")
     device = parser.add_mutually_exclusive_group()
     device.add_argument("--card", help="existing named GPU tier")
     device.add_argument("--vram-gib", type=float, help="target total VRAM capacity in GiB; "
                        "omit device flags to detect this machine\'s GPU")
+    device.add_argument("--hardware-json", type=Path, help="selected node hardware snapshot with measured capacity, available memory and device profile")
+    parser.add_argument("--target-host-memory-json", type=Path,
+                        help="selected target host-memory snapshot for an explicit --card or --vram-gib budget")
     parser.add_argument("--source", help="input source, required only without [fetch].source")
     parser.add_argument("--start-time", help="explicit new UTC start; otherwise preserve template")
     parser.add_argument("--hours", type=float, help="explicit new duration; otherwise preserve template")

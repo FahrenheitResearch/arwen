@@ -1,0 +1,56 @@
+--- a/crates/rw-ingest/src/ingest_hour.rs
++++ b/crates/rw-ingest/src/ingest_hour.rs
+@@ -1098,9 +1098,17 @@
+                 surface_components
+                     .iter()
+                     .filter(|(field, _)| {
+-                        config.model != ModelId::HrdpsWest
+-                            || forecast_hour != 0
+-                            || !matches!(*field, "apcp_run_total" | "orography")
++                        // RDPS has no accumulation interval at initialization:
++                        // ECCC's /model_rdps/10km/00/000 inventory omits
++                        // Precip-Accum_Sfc, while /001 publishes it. Keep this
++                        // an exact model/field/lead rule; a missing temperature,
++                        // pressure or wind object must still fail acquisition.
++                        // The experimental West feed also omits f000 terrain.
++                        forecast_hour != 0 || !match config.model {
++                            ModelId::Rdps => *field == "apcp_run_total",
++                            ModelId::HrdpsWest => matches!(*field, "apcp_run_total" | "orography"),
++                            _ => false,
++                        }
+                     })
+                     .filter(|(field, _)| profile.includes_surface_field(field))
+                     .map(|(_, component)| (*component).to_string()),
+@@ -3493,6 +3501,32 @@
+     }
+ 
+     #[test]
++    fn rdps_full_initialization_omits_only_the_unpublished_accumulation_interval() {
++        let cycle = CycleSpec::new("20260908", 0).unwrap();
++        let profile = IngestProfile::full();
++        let cancel = AtomicBool::new(false);
++        let sink = |_event: IngestEvent| {};
++        let config = IngestConfig {
++            model: ModelId::Rdps, cycle: &cycle, source_override: Some(SourceId::Eccc),
++            cache_root: Path::new("unused-cache"), use_cache: true, store_root: Path::new("unused-store"),
++            model_slug: "rdps", run_slug: "20260908-00", profile: &profile, verify: true,
++            progress: &sink, cancel: &cancel,
++        };
++        let initial = provider_component_products(&config, 0, "rws-surface").unwrap().unwrap();
++        assert_eq!(initial.len(), 9);
++        for component in ["AirTemp_AGL-2m", "DewPoint_AGL-2m", "WindU_AGL-10m", "WindV_AGL-10m", "Pressure_MSL", "Pressure_Sfc", "RelativeHumidity_AGL-2m", "WindGust_AGL-10m", "TotalCloudCover_Sfc"] {
++            assert!(initial.iter().any(|value| value == component), "missing required {component}");
++        }
++        for hour in [1, 6, 48, 84] {
++            let later = provider_component_products(&config, hour, "rws-surface").unwrap().unwrap();
++            assert_eq!(later.len(), 10);
++            assert!(later.iter().any(|component| component == "Precip-Accum_Sfc"));
++            assert_eq!(later.into_iter().filter(|component| component != "Precip-Accum_Sfc").collect::<Vec<_>>(), initial);
++        }
++        assert_eq!(provider_component_products(&config, 0, "rws-pressure").unwrap(), provider_component_products(&config, 1, "rws-pressure").unwrap());
++    }
++
++    #[test]
+     fn reps_bundle_is_bounded_scalar_and_member_free() {
+         let cycle = CycleSpec::new("20260814", 0).unwrap();
+         let profile = IngestProfile::surface_for_model(ModelId::Reps);

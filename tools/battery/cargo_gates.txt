@@ -392,3 +392,9 @@ cpu  tools/rw_wps  rw-wps  65
 # Cold Windows/Linux: 7 visual + 2 geography builder; 14 terminal + 4 worker controls.
 cpu  tools/arwen-launchpad  arwen-launchpad  9
 cpu  tools/arwen-tui  arwen-tui  18  GPUWM_TUI_TEST_PYTHON=@python
+
+# The regular-grid Zarr reader ships with the bundle. The real CLI reads a
+# hand-encoded store, writes NetCDF, and preserves CF packing, missingness,
+# time/level selection and decoded record bytes; units and no-clobber controls
+# prevent a plausible mislabeled field or overwritten output from passing.
+cpu  tools/zarr_bridge  rw-zarr  3

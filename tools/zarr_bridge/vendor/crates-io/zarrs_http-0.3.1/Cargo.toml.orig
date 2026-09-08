@@ -1,0 +1,37 @@
+[package]
+name = "zarrs_http"
+version = "0.3.1"
+authors = ["Lachlan Deakin <ljdgit@gmail.com>"]
+edition = "2021"
+rust-version = "1.82"
+description = "A synchronous http store for the zarrs crate"
+homepage = "https://zarrs.dev"
+documentation = "https://docs.rs/zarrs_http"
+repository = "https://github.com/zarrs/zarrs_http"
+license = "MIT OR Apache-2.0"
+keywords = ["zarr", "zarrs", "http"]
+categories = ["encoding"]
+
+[lints.rust]
+unused_variables = "warn"
+dead_code = "warn"
+missing_docs = "warn"
+unreachable_pub = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_panics_doc = "warn"
+missing_errors_doc = "warn"
+# wildcard_enum_match_arm = "warn"
+
+[dependencies]
+itertools = "0.14.0"
+thiserror = "2.0.12"
+reqwest = { version = ">=0.11.8,<0.13", features = ["blocking"] }
+url = { version = "2.2.0" }
+zarrs_storage = "0.4.0"
+
+[dev-dependencies]
+zarrs_storage = { version = "0.4.0", features = ["tests"] }

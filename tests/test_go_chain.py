@@ -237,9 +237,8 @@ def test_wizard_era5_config_uses_the_shared_declared_input_launch(tmp_path, caps
     output = tmp_path / "era5 launch"
     assert cli_main(["go", str(config), "--outdir", str(output), "--dry-run"]) == 0
     printed = capsys.readouterr().out
-    assert "go: era5, 1 domain(s); prepare -> forecast -> render" in printed
+    assert "go: era5, 1 domain(s); fetch -> prepare -> forecast -> render" in printed
     assert "Run: gpuwm go " in printed
-    assert "fetch ->" not in printed
     assert config.read_bytes() == before
     assert not output.exists()
 

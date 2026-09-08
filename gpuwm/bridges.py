@@ -101,6 +101,7 @@ CRATE_RELATIVE = "tools/grib1_bridge"
 #: line naming the argument vector), never a version number, which a
 #: rebuild bumps whether or not anything changed.
 BRIDGE_ABI_MARKERS = {
+    "rw_zarr": b"arwen.regular-forcing-record.v1",
     "arwen-tui": b"Usage: arwen-tui [--config FILE] [--python EXECUTABLE]",
     "grib1_bridge": b"usage: grib1_bridge INPUT.grb OUTPUT_DIR",
     "gfs_grib2_bridge": (

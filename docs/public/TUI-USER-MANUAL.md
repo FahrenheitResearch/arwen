@@ -49,6 +49,8 @@ gpuwm tui --config configs/forecast.toml --output runs
 
 Paths containing spaces must be quoted in your shell. Within an interface path field, type or paste the path itself without adding shell quotes. The selected Python controls every local engine job; **F9 Python** changes it and **F10 Check installation** checks it.
 
+In a terminal that sends dropped files as pasted paths, such as Windows Terminal, drag a TOML configuration or a catalog ZIP/JSON onto the workspace to open it. Quoted paths and spaces are supported. Dropping several files opens a chooser. Opening a dropped file starts no forecast; if the current configuration has unsaved edits, save with **Ctrl+S** or **F12** first. Ordinary pasted TOML text remains editable text in Settings.
+
 For a comfortable layout, use at least 65 columns by 20 rows and enlarge the terminal for long descriptions. **Ctrl+Q** and **F1** remain available when the terminal is too small for editing. A nonempty `NO_COLOR` uses your terminal's default colors while retaining bold, underline, and visible selection markers.
 
 ## 2. Find your way around
@@ -130,11 +132,15 @@ You can type an exact `YYYY-MM-DDTHH` UTC cycle. Convert a local event time to U
 
 For sources with public object probes, **Latest complete** checks the requested window rather than just the presence of an analysis file. ERA5 uses **Latest expected**, based on publication delay and the whole requested analysis window, and shows account and recent-data guidance. An expected date is not proof that your account has retrieved the data. Archive bounds and publication estimates are guidance; the acquisition stage still verifies the actual files.
 
+For an open ERA5 configuration, **U** or the **ERA5 provider** button beside Run selects **Google ARCO** or **Copernicus CDS**. Selection updates the draft's provider and canonical input filename; **Ctrl+Z** undoes it and **Ctrl+S** saves. Google uses the public hourly archive without a key. CDS uses the configured personal credentials. Go retrieves missing files from the selected provider before preparation. Custom or multiple forcing-file declarations remain editable in Settings.
+
+The **CDS key** panel shows whether a key is configured and the credential file it uses, including a WSL file selected through `CDSAPI_RC`. Enter or change the key in its masked field and use the panel's Save action. The existing key is never displayed, and a blank replacement preserves it. Environment-supplied credentials are identified in the panel. Configuration status does not contact CDS; a download checks authentication.
+
 Changing the source does not silently rewrite an explicitly chosen physics suite. If the combination is refused, choose a supported combination deliberately and review it again.
 
 ## 6. Shape domains and manage memory
 
-**D / Ctrl+D Domains** opens controls for the configuration's existing domains. Review grid size, parent placement, refinement and time-step ratios, delayed starts, following, triggered activation, retirement, and re-arm where present.
+**D / Ctrl+D Domains** opens the domain list. Click a row or use the arrow keys, then **Enter Edit**, **A Add child**, or **Delete Remove**. **M Advanced** opens tracking, delayed starts, retirement, and re-arm controls. Removal previews the selected domain and its children; the root must remain. **Ctrl+Z** undoes a draft change, and **Ctrl+S** saves.
 
 Edit fields, then use **F2 Apply to draft**. This changes the reviewed settings in the TOML draft; use **Ctrl+S** to save, followed by Check and Plan. Disabling a policy removes its policy table when applied. Cancel leaves the draft unchanged. If changing a signal makes another field incompatible, the form names it and asks you to clear it explicitly with **Ctrl+U**.
 
@@ -183,13 +189,15 @@ The current ArWen history route does not provide gust magnitude, visibility dist
 
 ## 8. Open a historical-case catalog
 
-Press **K Cases** or choose **Browse case catalog** on Home. Supply a JSON, TOML, or supported ZIP catalog. The interface reads catalog data; it does not run scripts included by the catalog author. A checkout's offered synthetic example is labelled as such.
+Press **K Cases** or choose **Browse case catalog** on Home. The built-in historical catalog opens automatically with 300 unique cases: the 200 original cases with their newer revisions, plus 100 additional worldwide cases. It is included in the installed package and needs no ZIP selection or separate download.
+
+Use **Change catalog** to open a supplied JSON, TOML, or supported ZIP catalog; **F4 Built-in** returns to the included catalog. General **Open** also lists catalog ZIP and JSON files and sends them to Cases. The interface reads catalog data; it does not run scripts included by the catalog author. The two separate synthetic authoring examples remain labelled as format demonstrations.
 
 Search the list and use **PgUp/PgDn** for additional pages. Open a case, use **Tab** to select tier, source, output, and VRAM fields, and use **Left/Right** to choose a listed tier or initialization. **F3** previews the full selection and notes. **Review creation** shows the exact command.
 
 Creation preserves catalog provenance and the selected source-specific geometry and cadence. It opens editable TOML without starting a forecast. If the catalog changed after review or the destination already exists, creation refuses; refresh the preview or choose a new path. Selecting a named historical event is not evidence that its data are available or that the resulting simulation reproduces the event.
 
-`GPUWM_TUI_CASE_CATALOG` can supply the initial catalog path. Opening a catalog does not overwrite it.
+`GPUWM_TUI_CASE_CATALOG` can override the initial catalog for a directly launched TUI. Otherwise the selected Python installation supplies its built-in catalog. Opening a catalog does not overwrite it.
 
 ## 9. Create a controlled scenario
 

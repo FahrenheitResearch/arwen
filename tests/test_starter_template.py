@@ -1,5 +1,6 @@
 """CPU proofs: the complete template is priced, not overlaid after fitting."""
 from argparse import Namespace
+import copy
 import hashlib
 from datetime import datetime
 import json
@@ -129,6 +130,60 @@ def test_serializer_roundtrips_nested_settings_and_literal_strings():
     assert tomllib.loads(st.render_tables(raw)) == raw
 
 
+@pytest.mark.parametrize("topology", ["two_domains", "stable_chain", "branched_tree"])
+@pytest.mark.parametrize("target", ["point", "polygon"])
+def test_fit_preserves_real_parent_tree_and_science_in_native_wps(tmp_path, topology, target):
+    from gpuwm.companion_domains import VORTEX_PRESET
+    from gpuwm.namelist_import import parse_namelist_text
+    from gpuwm.native_wrf_contract import native_geometry_contract
+    from gpuwm.static.projection import grids_from_projection_config, grids_from_wps_namelist
+    from gpuwm.wps_domain_ids import domain_ids_from_wps_text
+
+    path, raw = starter(tmp_path, nested=True)
+    if topology != "two_domains":
+        third = copy.deepcopy(raw["domain"][1])
+        third.update(grid_id=3, parent_id=1, nx=60, ny=60, i_parent_start=20, j_parent_start=20)
+        third["follow"] = dict(VORTEX_PRESET)
+        fourth = copy.deepcopy(third)
+        fourth.update(grid_id=4, parent_id=3, i_parent_start=21, j_parent_start=21)
+        fourth.pop("follow")
+        raw["domain"] = [raw["domain"][0], *([raw["domain"][1]] if topology == "branched_tree" else []), third, fourth]
+    path.write_text(st.render_tables(raw), encoding="utf-8")
+    before = path.read_bytes()
+    out = tmp_path / f"fitted-{topology}-{target}.toml"
+    options = dict(point="41,-99", write=True)
+    polygon = None
+    if target == "polygon":
+        polygon = tmp_path / "selected.geojson"
+        polygon.write_text(json.dumps({"type": "Polygon", "coordinates": [[
+            [-99.2, 40.8], [-98.8, 40.8], [-98.8, 41.2], [-99.2, 41.2], [-99.2, 40.8]]]}))
+        options.update(point=None, polygon=polygon)
+    assert st.fit_main(args(path, out, **options)) == 0
+    actual = tomllib.loads(out.read_text())
+    assert actual["shared"] == raw["shared"] and actual["output"] == raw["output"]
+    assert actual["experiment"] == raw["experiment"]
+    for before_domain, after_domain in zip(raw["domain"], actual["domain"]):
+        assert {k: v for k, v in before_domain.items() if k not in ("nx", "ny", "i_parent_start", "j_parent_start")} == {
+            k: v for k, v in after_domain.items() if k not in ("nx", "ny", "i_parent_start", "j_parent_start")}
+    exp = load_experiment(out)
+    wps = out.with_suffix(".namelist.wps")
+    tables = parse_namelist_text(wps.read_text())
+    ids = tuple(domain.grid_id for domain in exp.domains)
+    assert domain_ids_from_wps_text(wps.read_text(), len(ids)) == ids
+    slots = {grid_id: index for index, grid_id in enumerate(ids, 1)}
+    assert tables["geogrid"]["parent_id"] == [slots[domain.parent_id or 1] for domain in exp.domains]
+    expected_grids = grids_from_projection_config(exp)
+    actual_grids = grids_from_wps_namelist(wps)
+    for domain, expected_grid, actual_grid in zip(exp.domains, expected_grids, actual_grids):
+        assert native_geometry_contract(expected_grid, domain.run) == native_geometry_contract(actual_grid, domain.run)
+    if polygon is not None:
+        dw.verify_polygon_containment(exp, dw.load_polygon_footprint(polygon), (0.0,) * len(ids))
+    proof = json.loads(out.with_suffix(".fit.json").read_text())
+    assert proof["domain_order"] == list(ids)
+    assert proof["peak_envelope_bytes"] <= proof["budget_bytes"]
+    assert proof["launch_performed"] is False and path.read_bytes() == before
+
+
 def test_relative_companion_paths_use_template_origin(tmp_path):
     path, raw = starter(tmp_path)
     (tmp_path / "data").mkdir()
@@ -183,6 +238,120 @@ def test_no_device_flags_use_the_shared_gpu_detector(tmp_path, monkeypatch):
     monkeypatch.setattr(preflight, "device_memory_probe_subprocess", detected)
     gate = memory_gate({"config": out})
     assert not gate["refuse"] and not gate["warn"], gate["verdict"]
+
+
+def measured_hardware():
+    return {"devices": [{"name": "Selected test GPU", "memory_total_bytes": 32 * dw.GIB}],
+            "sizing": {"schema": "arwen.target-sizing.v1", "measured_unix_ms": 1788823235782,
+                "total_bytes": 32 * dw.GIB, "free_bytes": 12 * dw.GIB,
+                "profile": {"name": "Selected test GPU", "multiprocessor_count": 70,
+                    "max_threads_per_multiprocessor": 1536, "default_stack_limit_bytes": 1024,
+                    "bare_context_bytes": 256 * 1024 ** 2}}}
+
+
+def test_hardware_snapshot_keeps_capacity_free_and_profile_separate_without_local_probe(tmp_path, monkeypatch):
+    from gpuwm.cli import build_parser
+    monkeypatch.setattr(dw, "device_memory_probe_subprocess", lambda: pytest.fail("selected hardware must not probe local GPU"))
+    hardware = tmp_path / "selected-hardware.json"
+    hardware.write_text(json.dumps(measured_hardware()))
+    path, _ = starter(tmp_path, nested=True)
+    out = tmp_path / "selected-gpu.toml"
+    options = build_parser().parse_args(["domain-fit", str(path), "--point=40,-100",
+        "--hardware-json", str(hardware), "--out", str(out), "--write"])
+    assert st.fit_main(options) == 0
+    proof = json.loads(out.with_suffix(".fit.json").read_text())
+    assert proof["free_bytes"] == 12 * dw.GIB
+    assert proof["selected_hardware"]["total_bytes"] == 32 * dw.GIB
+    assert proof["selected_hardware"]["profile"] == measured_hardware()["sizing"]["profile"]
+    assert proof["selected_hardware"]["sha256"] == hashlib.sha256(hardware.read_bytes()).hexdigest()
+    assert proof["peak_envelope_bytes"] <= proof["budget_bytes"] < proof["free_bytes"]
+
+
+@pytest.mark.parametrize("section,key,value", [
+    ("sizing", "free_bytes", 33 * dw.GIB), ("sizing", "total_bytes", True),
+    ("sizing", "free_bytes", -1), ("sizing", "schema", "unknown"),
+    ("profile", "multiprocessor_count", "170"), ("profile", "max_threads_per_multiprocessor", 0),
+    ("profile", "default_stack_limit_bytes", -1), ("profile", "bare_context_bytes", 33 * dw.GIB),
+])
+def test_invalid_hardware_snapshots_do_not_substitute_a_local_or_reference_gpu(tmp_path, monkeypatch, section, key, value):
+    monkeypatch.setattr(dw, "device_memory_probe_subprocess", lambda: pytest.fail("invalid snapshot must not probe GPU"))
+    payload = measured_hardware()
+    target = payload["sizing"] if section == "sizing" else payload["sizing"]["profile"]
+    target[key] = value
+    hardware = tmp_path / "bad-hardware.json"
+    hardware.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="Selected GPU"):
+        st.hardware_sizing(hardware)
+
+
+@pytest.mark.parametrize("polygon", [False, True])
+@pytest.mark.parametrize("declared", [False, True])
+def test_streamed_fit_uses_selected_target_host_memory_for_every_candidate(tmp_path, monkeypatch, polygon, declared):
+    from gpuwm.core import streaming
+    payload = measured_hardware()
+    payload["host_memory"] = {"schema": "arwen.target-host-memory.v1",
+        "measured_unix_ms": 1788823235782, "total_bytes": 64 * dw.GIB}
+    hardware = tmp_path / "selected-hardware.json"
+    hardware.write_text(json.dumps(payload))
+    path, raw = starter(tmp_path, nested=True)
+    raw["tiles"] = {"mode": "auto", "store": "host"}
+    path.write_text(st.render_tables(raw), encoding="utf-8")
+    monkeypatch.setattr(dw, "device_memory_probe_subprocess", lambda: pytest.fail("remote Fit probed the local GPU"))
+    monkeypatch.setattr(streaming, "_host_total_bytes", lambda: pytest.fail("remote Fit read the desktop host RAM"))
+    real = dw._sizing_phases
+    observed = []
+    declared_free = dw.resolve_sizing_budget(None, 16).free_bytes
+    def price(exp, **kwargs):
+        machine = kwargs.get("machine")
+        assert machine is not None
+        assert machine.host_bytes == 64 * dw.GIB
+        assert machine.vram_bytes == (declared_free if declared else 12 * dw.GIB)
+        observed.append(machine)
+        return real(exp, **kwargs)
+    monkeypatch.setattr(dw, "_sizing_phases", price)
+    options = args(path, tmp_path / "fitted.toml", hardware_json=None if declared else hardware,
+                   target_host_memory_json=hardware if declared else None, vram_gib=16 if declared else None, write=True)
+    if polygon:
+        footprint = tmp_path / "area.geojson"
+        footprint.write_text(json.dumps({"type": "Polygon", "coordinates": [[
+            [-100.2, 39.8], [-99.8, 39.8], [-99.8, 40.2], [-100.2, 40.2], [-100.2, 39.8]]]}))
+        options.polygon, options.point = footprint, None
+    assert st.fit_main(options) == 0
+    assert len(observed) >= 2
+    receipt = json.loads(options.out.with_suffix(".fit.json").read_text())
+    assert receipt["selected_host_memory" if declared else "selected_hardware"]["host_memory"] == payload["host_memory"]
+
+
+def test_streamed_fit_requires_target_host_measurement_without_local_fallback(tmp_path, monkeypatch):
+    from gpuwm.core import streaming
+    hardware = tmp_path / "selected-hardware.json"
+    hardware.write_text(json.dumps(measured_hardware()))
+    path, raw = starter(tmp_path)
+    raw["tiles"] = {"mode": "on", "store": "host"}
+    path.write_text(st.render_tables(raw), encoding="utf-8")
+    monkeypatch.setattr(streaming, "_host_total_bytes", lambda: pytest.fail("missing target RAM used desktop RAM"))
+    out = tmp_path / "unpublished.toml"
+    with pytest.raises(ValueError, match="reconnect it before fitting streamed domains"):
+        st.fit_main(args(path, out, hardware_json=hardware, vram_gib=None, write=True))
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("measured", [False, True])
+def test_native_memory_gate_refuses_explicit_tree_planner_failure_even_with_small_reference(tmp_path, monkeypatch, measured):
+    from types import SimpleNamespace
+    from gpuwm import go_cli
+    from gpuwm.core import preflight
+    path, _ = starter(tmp_path, nested=True)
+    phases = SimpleNamespace(tree_road=SimpleNamespace(refusal="native configured tree cannot be planned"),
+        peak_envelope_bytes=1024, streamed_forecast=False, ingest_priced=True,
+        verdict=lambda budget: "Small resident reference: 1024 bytes")
+    monkeypatch.setattr(preflight, "estimate_phases", lambda *args, **kwargs: phases)
+    monkeypatch.setattr(preflight, "device_memory_probe_subprocess", lambda: measured_hardware()["sizing"] if measured else None)
+    monkeypatch.setattr(preflight, "device_memory_probe_reason", lambda: "fixture has no GPU")
+    monkeypatch.setattr(go_cli, "_planner_machine", lambda *args: None)
+    result = go_cli.memory_gate({"config": path})
+    assert result["refuse"] is True
+    assert "native configured tree cannot be planned" in result["verdict"]
 
 
 def test_publication_failure_removes_only_new_owned_companions(tmp_path, monkeypatch):
@@ -342,6 +511,43 @@ def test_tiles_auto_prices_entire_nested_tree_without_changing_any_domain(
     receipt = json.loads(out.with_suffix(".tiles.json").read_text())
     assert [row["grid_id"] for row in receipt["domains"]] == [1, 2]
     assert receipt["peak_envelope_bytes"] <= receipt["budget_bytes"]
+
+
+@pytest.mark.parametrize("resource", ["vram", "host", "memory", "geometry", None])
+def test_tile_retry_classifies_only_typed_memory_refusals(tmp_path, tile_machine, monkeypatch, capsys, resource):
+    from types import SimpleNamespace
+    from gpuwm.cli import main
+    from gpuwm.core import preflight
+    path, _ = tile_starter(tmp_path, nested=True)
+    phases = SimpleNamespace(tree_road=SimpleNamespace(
+        refusal="the same planner refusal text", refusal_resource=resource, priced=False))
+    monkeypatch.setattr(preflight, "estimate_phases", lambda *args, **kwargs: phases)
+    out = tmp_path / "not-published.toml"
+    assert main(["domain-tiles", str(path), "--out", str(out), "--write"]) == 2
+    output = capsys.readouterr()
+    if resource in {"vram", "host", "memory"}:
+        error = json.loads(output.out)
+        assert error["schema"] == "arwen.configuration-error.v1" and error["kind"] == "memory"
+        assert error["memory"]["resource"] == resource
+    else:
+        assert not output.out
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("resource", ["vram", "host", "geometry", None])
+def test_tree_report_retains_resource_type_without_guessing_from_text(tmp_path, tile_machine, monkeypatch, resource):
+    from gpuwm.core import streaming
+    from tilestream.autoplan import CannotPlan
+    path, raw = tile_starter(tmp_path, nested=True)
+    raw["tiles"] = {"mode": "auto"}
+    path.write_text(st.render_tables(raw), encoding="utf-8")
+    def refuse(*args, **kwargs):
+        if resource is None:
+            raise streaming.StreamingRefused("vram budget words in an unsupported route")
+        raise CannotPlan("same planner refusal words", resource)
+    monkeypatch.setattr(streaming, "decide_tree", refuse)
+    road = streaming.tree_road_plan(load_experiment(path))
+    assert not road.priced and road.refusal_resource == resource
 
 
 @pytest.mark.parametrize("resource", ["vram", "host", "unknown-host", "unknown-gpu"])

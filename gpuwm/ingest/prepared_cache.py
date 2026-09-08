@@ -1311,6 +1311,9 @@ def write_prepared_cache(path, *, identity, initial_result, met,
             getattr(initial_result, "aerosol_initialization", {}) or {})
         if aerosol_initialization:
             cache_metadata["aerosol_initialization"] = aerosol_initialization
+        lake_receipt = getattr(met, "water_temperature_receipt", None)
+        if lake_receipt and lake_receipt.get("lake_water_mapping"):
+            cache_metadata["water_temperature"] = _json_copy(dict(lake_receipt))
         if sealed_forcing_extension:
             if boundaries is None:
                 raise ValueError(

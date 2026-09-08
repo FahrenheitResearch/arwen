@@ -395,7 +395,7 @@ pub fn is_supported_wrf_file(path: &Path) -> bool {
                 .and_then(|value| value.to_str())
                 .map(|value| value.to_ascii_lowercase())
                 .as_deref(),
-            Some("nc" | "nc4" | "cdf")
+            Some("wrf" | "nc" | "nc4" | "cdf")
         )
 }
 

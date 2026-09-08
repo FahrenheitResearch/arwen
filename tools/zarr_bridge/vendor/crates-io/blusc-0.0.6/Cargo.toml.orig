@@ -1,0 +1,42 @@
+[package]
+name = "blusc"
+version = "0.0.6"
+authors = ["Mark Keller <markkellerweb+git@gmail.com>"]
+edition = "2021"
+rust-version = "1.91"
+license = "BSD-3-Clause"
+exclude = [
+    ".github/",
+    "c-blosc/**",
+    "c-blosc2/**",
+]
+repository = "https://github.com/keller-mark/blusc"
+keywords = ["compression", "blosc"]
+categories = ["compression", "wasm"]
+description = "Rust implementation of blosc compression, port of c-blosc2"
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+lz4_flex = "~0.12.0"
+zstd = "~0.13.3"
+flate2 = "^1.1.1"
+snap = "^1.1.1"
+
+# Minimum version bumps for transitive build-deps (needed for cargo-minimal-versions check)
+# zstd-sys v2.0.7 specifies pkg-config = "0.3" which resolves to 0.3.0 (too old)
+[build-dependencies]
+pkg-config = "0.3.19"
+
+[dev-dependencies]
+# ONLY FOR TESTING THAT THE RUST IMPLEMENTATION MATCHES THE C BINDINGS
+# Reference: https://github.com/maiteko/blosc2-src-rs
+blosc2-src = { version = "0.1.4", features = ["zstd"] }
+bytemuck = { version = "1.14.0", features = ["extern_crate_alloc", "must_cast", "min_const_generics"] }
+bytes = "1.7.0"
+ctor = "0.2"
+
+# Testing with same version of blosc-src used in zarrs
+# Reference: https://github.com/zarrs/zarrs/blob/9a8a79e72f2220e8c07269e77769e2f3419c9cd3/zarrs/Cargo.toml#L52
+blosc-src = { version = "0.3.6", features = ["snappy", "lz4", "zlib", "zstd"] }

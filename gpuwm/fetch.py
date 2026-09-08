@@ -409,6 +409,7 @@ ERA5_REQUEST_NAME = "era5-cds-request.json"
 #: request just bound; a file is copied by running it.
 ERA5_RETRIEVE_NAME = "era5-cds-retrieve.py"
 ERA5_COMBINED_NAME = "era5-combined.grib"
+ERA5_COMBINED_NAMES = {"cds": ERA5_COMBINED_NAME, "arco": "era5-combined.nc"}
 
 # ERA5 GRIB1 parameter expectations, grounded in what ingest consumes
 # (gpuwm/ingest/grib.py _CANONICAL_SPECS; gpuwm/ingest/real.py requires
@@ -3940,6 +3941,7 @@ def era5_request_template(*, cycle: datetime, hours: int, area: Area,
         "10m_u_component_of_wind", "10m_v_component_of_wind",
         "2m_temperature", "2m_dewpoint_temperature", "land_sea_mask",
         "skin_temperature", "sea_surface_temperature", "sea_ice_cover",
+        "lake_mix_layer_temperature", "lake_ice_temperature", "lake_ice_depth",
         "snow_depth",
         "soil_temperature_level_1", "soil_temperature_level_2",
         "soil_temperature_level_3", "soil_temperature_level_4",
@@ -3981,7 +3983,8 @@ CDSAPIRC_NAME = ".cdsapirc"
 def cds_credentials_path() -> Path:
     """The ``~/.cdsapirc`` cdsapi would read on this machine."""
 
-    return Path.home() / CDSAPIRC_NAME
+    override = os.environ.get("CDSAPI_RC")
+    return Path(override) if override is not None else Path.home() / CDSAPIRC_NAME
 
 
 def cds_credentials_present() -> bool:
@@ -4000,7 +4003,7 @@ def cds_credentials_present() -> bool:
     """
 
     try:
-        return cds_credentials_path().is_file()
+        return bool(os.environ.get("CDSAPI_KEY")) or cds_credentials_path().is_file()
     except OSError:
         return False
 
@@ -4217,6 +4220,9 @@ class Grib1Record:
     #: understands.  ``None`` means the geography was not stated in a
     #: form that can be read, never that the message is ungridded.
     grid: Grib1Grid | None = None
+    table_version: int | None = None
+    center: int | None = None
+    grid_definition_sha256: str | None = None
 
 
 _GRIB1_TIME_UNITS = {
@@ -4310,6 +4316,7 @@ def read_grib1_records(path: Path) -> tuple[Grib1Record, ...]:
                     "are instantaneous")
             valid_time = reference + lead * _GRIB1_TIME_UNITS[unit]
             grid = None
+            grid_definition_sha256 = None
             if pds[7] & 0x80:      # octet 8 bit 1: a GDS follows the PDS
                 pds_length = int.from_bytes(pds[0:3], "big")
                 stream.seek(envelope.offset + 8 + pds_length)
@@ -4317,10 +4324,13 @@ def read_grib1_records(path: Path) -> tuple[Grib1Record, ...]:
                 if len(header) == 3:
                     gds_length = int.from_bytes(header, "big")
                     if 32 <= gds_length <= envelope.length:
-                        grid = read_grib1_grid(
-                            header + stream.read(gds_length - 3))
+                        grid_bytes = header + stream.read(gds_length - 3)
+                        grid = read_grib1_grid(grid_bytes)
+                        grid_definition_sha256 = hashlib.sha256(grid_bytes).hexdigest()
             records.append(
-                Grib1Record(parameter, level_type, level, valid_time, grid))
+                Grib1Record(parameter, level_type, level, valid_time, grid,
+                            table_version=pds[3], center=pds[4],
+                            grid_definition_sha256=grid_definition_sha256))
     return tuple(records)
 
 
@@ -4677,9 +4687,19 @@ def _fetch_route_donors(plan, args) -> dict:
 
 def fetch_main(args) -> int:
     source = args.source
+    if getattr(args, "retrieve", False) and source != "era5":
+        raise ValueError("--retrieve applies to ERA5; other sources already download directly")
+    era5_provider = getattr(args, "era5_provider", None)
+    if era5_provider is not None and source != "era5":
+        raise ValueError("--era5-provider applies to --source era5 only")
+    era5_provider = era5_provider or "cds"
+    era5_product = getattr(args, "era5_product", None)
+    if era5_product is not None and source != "era5":
+        raise ValueError("--era5-product applies to --source era5 only")
+    era5_product = era5_product or "reanalysis"
     if source in fetch_routes.route_ids():
         return _route_fetch_main(args, source)
-    if getattr(args, "member", None) is not None:
+    if getattr(args, "member", None) is not None and source != "era5":
         raise ValueError(
             f"--member: --source {source} is not an ensemble route")
     area = _resolve_area(args)
@@ -4689,9 +4709,8 @@ def fetch_main(args) -> int:
     if args.fetch_workers is not None:
         if source == "era5":
             raise ValueError(
-                "--fetch-workers: --source gfs/gdas/hrrr only (era5 is a "
-                "manual CDS retrieval -- the template is written locally, "
-                "so there is nothing to parallelize)")
+                "--fetch-workers does not apply to ERA5; its provider "
+                "controls retrieval concurrency")
         # Refused here, before any network round trip, in the pool's own
         # words (a zero-or-negative count names no schedulable pool).
         fetch_pool.resolve_file_workers(args.fetch_workers)
@@ -4843,6 +4862,13 @@ def fetch_main(args) -> int:
             forecast_start_hour=args.forecast_start_hour)
         return 0
     if source == "era5" and args.validate:
+        from gpuwm.era5_member import validate_selection, check_member
+        member = validate_selection(product_type=era5_product, member=getattr(args, "member", None),
+            provider=era5_provider, cadence=args.cadence if args.cadence is not None else 6,
+            cycle=parse_cycle(args.cycle, source) if args.cycle is not None else None)
+        if member is not None:
+            for path in args.validate:
+                check_member(path, member)
         expected = None
         if args.cycle is not None and args.hours is not None:
             cycle = parse_cycle(args.cycle, source)
@@ -4877,9 +4903,23 @@ def fetch_main(args) -> int:
                 "is published with a delay of several days; pass an "
                 "explicit --cycle")
         cadence = args.cadence if args.cadence is not None else 6
-        write_era5_request(
-            cycle=parse_cycle(args.cycle, source), hours=args.hours,
-            area=area, out=args.out, cadence=cadence)
+        from gpuwm.era5_member import validate_selection
+        member = validate_selection(product_type=era5_product, member=getattr(args, "member", None),
+            provider=era5_provider, cadence=cadence, cycle=parse_cycle(args.cycle, source))
+        if member is not None and not getattr(args, "retrieve", False):
+            raise ValueError("ERA5 EDA requires --retrieve so native member verification runs before publication")
+        if getattr(args, "retrieve", False) or era5_provider == "arco":
+            if era5_provider == "arco":
+                from gpuwm.era5_arco import retrieve_era5_arco as retrieve
+            else:
+                from gpuwm.era5_acquisition import retrieve_era5 as retrieve
+            retrieve(cycle=parse_cycle(args.cycle, source), hours=args.hours,
+                area=area, out=args.out, cadence=cadence, force=args.force_refetch,
+                **({"product_type": era5_product, "member": member} if era5_provider == "cds" else {}))
+        else:
+            write_era5_request(
+                cycle=parse_cycle(args.cycle, source), hours=args.hours,
+                area=area, out=args.out, cadence=cadence)
         return 0
 
     if source in GFS_CONTAINER_SOURCES:
@@ -5206,6 +5246,7 @@ def _resolve_manifest_bridge(source: str) -> Path:
 FETCH_HINT_KEYS = frozenset({
     "source", "cycle", "hours", "area", "point", "radius_km", "out",
     "cadence", "forecast_start_hour",
+    "era5_provider", "era5_product", "member", "retrieve",
 })
 def _fetch_hint_sources() -> tuple[str, ...]:
     """Sources a ``[fetch]`` table may name -- one definition, derived.
@@ -5263,11 +5304,24 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
             f"source = {table['source']!r} in [fetch] of {source} is not "
             f"one of {known}")
     for key, value in table.items():
+        if key == "retrieve" and isinstance(value, bool):
+            continue
         if isinstance(value, bool) or not isinstance(
                 value, (str, int, float)):
             raise ValueError(
                 f"{key} = {value!r} in [fetch] of {source} must be a "
                 "scalar (string or number)")
+    if "retrieve" in table and not isinstance(table["retrieve"], bool):
+        raise ValueError(f"retrieve in [fetch] of {source} must be a boolean")
+    era5_keys = {"era5_provider", "era5_product", "member", "retrieve"} & table.keys()
+    if era5_keys and table["source"] != "era5":
+        raise ValueError(f"{sorted(era5_keys)} in [fetch] of {source} apply to ERA5 only")
+    if table["source"] == "era5":
+        from gpuwm.era5_member import validate_selection
+        raw_cycle = table.get("cycle")
+        validate_selection(product_type=table.get("era5_product", "reanalysis"), member=table.get("member"),
+            provider=table.get("era5_provider", "cds"), cadence=table.get("cadence", 6),
+            cycle=parse_cycle(raw_cycle, "era5") if raw_cycle is not None else None)
     # A hint table that advertises a fetch this ArWen would refuse is a
     # rotten hint: catch it at config load, in the same words the CLI
     # would use, rather than at the download.
@@ -5388,8 +5442,13 @@ def register_cli(subparsers) -> None:
         "fetch",
         help="download initialization/boundary data for any registered "
              "source with public bytes; download and decode only (GDAS -- "
-             "no ingest route); template + validate a manual ERA5 CDS "
-             "retrieval")
+             "no ingest route); retrieve ERA5 with configured CDS credentials")
+    parser.add_argument("--retrieve", action="store_true",
+        help="ERA5: download and validate with the selected provider (default CDS); otherwise write a CDS retrieval template")
+    parser.add_argument("--era5-provider", choices=("cds", "arco"), default=None,
+        help="ERA5 provider: cds uses Copernicus credentials; arco downloads Google's public hourly ERA5 Zarr archive without a key")
+    parser.add_argument("--era5-product", choices=("reanalysis", "ensemble_members"), default=None,
+        help="ERA5 product: reanalysis (default), or ten-member EDA with explicit --member 0..9 --cadence 3 --retrieve")
     parser.add_argument(
         "--source", required=True, type=source_argument, metavar="MODEL",
         help="public data source: "
@@ -5400,7 +5459,7 @@ def register_cli(subparsers) -> None:
                "refuses by name and points at `gpuwm prep --source-root`")
     parser.add_argument(
         "--member", default=None, metavar="ID",
-        help="ensemble routes (gefs, aigefs): which member to fetch "
+        help="ERA5 EDA: required encoded member 0..9. Ensemble routes (gefs, aigefs): which member to fetch "
              "(default the control).  Member identity is a PATH component "
              "for these products, so the files land under their declared "
              "upstream-relative paths and `gpuwm-member-prep --inputs` "
@@ -5448,7 +5507,7 @@ def register_cli(subparsers) -> None:
         "--cadence", type=int, default=None, choices=(1, 3, 6),
         help="forecast-hour cadence: gfs 1 or 3 (default 3); gdas 1, 3, "
              "or 6 (default 3, and it does not apply to --hours 0, which "
-             "is the analysis alone); era5 template 1, 3, or 6 "
+             "is the analysis alone); era5 1, 3, or 6 "
              "(default 6); hrrr is hourly.  On a table route the accepted "
              "cadences and the default are the row's own -- a cadence off "
              "the publisher's ladder refuses and names the ladder")

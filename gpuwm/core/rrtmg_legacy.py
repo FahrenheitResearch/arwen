@@ -513,7 +513,8 @@ def _r512(nbytes):
 
 def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
                                 ncol_day=None, lw_coefficients=None,
-                                longwave=True, shortwave=True):
+                                longwave=True, shortwave=True,
+                                resident_threads=None):
     """Peak transient device bytes of ONE adapter call.
 
     Composes the engines' own honest pricing functions
@@ -529,6 +530,11 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
     host->device cldfra staging are not included, mirroring the engines'
     own gates.  ``ncol_day`` bounds the SW day-column count (default:
     ``ncol``, the preflight upper bound).
+
+    ``resident_threads`` lets a host-side estimator use its already measured
+    device profile without opening a CUDA context. Zero means an unknown
+    device and prices the unchanged workspace ceilings; None retains the
+    engines' live-device behavior for existing direct callers.
     """
     ncol = int(ncol)
     nz = int(nz)
@@ -536,8 +542,12 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
     nlay_sw = nz + 1
     nday = ncol if ncol_day is None else int(ncol_day)
     chunk = None if column_chunk is None else int(column_chunk)
-    nc_lw = min(chunk or _lw.LW_BATCH_COLUMN_CHUNK, ncol)
-    nc_sw = min(chunk or _sw.SW_BATCH_COLUMN_CHUNK, max(nday, 0))
+    nc_lw = min(chunk or _lw.batch_column_chunk(
+        _lw.NGPTLW, _lw.LW_BATCH_COLUMN_CHUNK_CEILING,
+        resident_threads=resident_threads), ncol)
+    nc_sw = min(chunk or _lw.batch_column_chunk(
+        _sw.NGPTSW, _sw.SW_BATCH_COLUMN_CHUNK_CEILING,
+        resident_threads=resident_threads), max(nday, 0))
     f = 4
     estimate = 0
     if longwave:

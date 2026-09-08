@@ -91,6 +91,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+from contextvars import ContextVar
 import dataclasses
 import hashlib
 import io
@@ -152,6 +153,10 @@ EVENT_TAGS = (
 #: Envelope keys an event's own fields may not shadow.
 _ENVELOPE_KEYS = frozenset({
     "schema_version", "sequence", "emitted_unix_ms", "event"})
+
+# A prepared front door can enter another native run-plan in this process.
+# The scope belongs to that call, not to a global current run or a PID lookup.
+_PREPARED_PARENT: ContextVar[Any] = ContextVar("gpuwm_prepared_parent", default=None)
 
 _TOP_LEVEL_KEYS = frozenset({
     "schema", "name", "route", "config", "fetch", "output_root",
@@ -1522,6 +1527,7 @@ class EventStream:
         self._mirror = sys.stdout if mirror is EventStream.MIRROR_STDOUT \
             else mirror
         self._lock = threading.Lock()
+        self._native_parent_listener = None
         # Continue an existing stream rather than restarting its
         # numbering.  The file is opened for APPEND, so a second run
         # into the same directory -- a resume, or a caller that reused a
@@ -1566,6 +1572,10 @@ class EventStream:
             if self._mirror is not None:
                 self._mirror.write(line + "\n")
                 self._mirror.flush()
+            # Preserve the native stream's order even when different domain
+            # writers emit concurrently. The parent has its own stream lock.
+            if self._native_parent_listener is not None:
+                self._native_parent_listener(record, line + "\n")
         return record
 
     def close(self) -> None:
@@ -1686,6 +1696,7 @@ class RunObserver:
         #: single-domain runner publishes it in progress.json and the
         #: tree runner does not publish it at all.
         self._last_model_seconds: float | None = None
+        self._render_summary: dict[str, Any] | None = None
 
     # -- stage bookkeeping --------------------------------------------
 
@@ -1727,6 +1738,8 @@ class RunObserver:
             return
         stage = self._stage
         self._stage = None
+        if stage == "finalize" and self._render_summary is not None:
+            fields.setdefault("render_summary", self._render_summary)
         self._events.emit(
             "stage_finished", stage=stage,
             wall_seconds=round(
@@ -2527,11 +2540,16 @@ def _execute_experiment_route(plan: RunPlan, *, exp, data, config_path,
                        "render": plan.run_dir / "png", "render_products": products}
         observer.arm_first_products(render_plan)
     restart = plan.run_options.get("restart")
-    summary = runtime.run_experiment(
-        exp, data, plan.run_dir,
-        restart=None if restart is None else Path(restart),
-        progress_callback=observer,
-        health_debug=bool(plan.run_options.get("health_debug")))
+    from gpuwm import progress as progress_mod
+    def preparation_event(event, **fields):
+        if event == "warning" and fields.get("code") == "preparation_progress":
+            observer.events.emit(event, **fields)
+    with progress_mod.event_sink(preparation_event):
+        summary = runtime.run_experiment(
+            exp, data, plan.run_dir,
+            restart=None if restart is None else Path(restart),
+            progress_callback=observer,
+            health_debug=bool(plan.run_options.get("health_debug")))
     if render_plan is not None:
         _finish_render(render_plan, observer=observer)
     return {
@@ -2585,6 +2603,12 @@ class _GoObserver:
         # coarse signal for the stages that do not.
         if not isinstance(progress, dict):
             return
+        if progress.get("schema") == "gpuwm.prepare-progress/v1":
+            preparation = {key: progress[key] for key in
+                           ("schema", "status", "phase", "phase_index", "phases_total", "elapsed_seconds")
+                           if key in progress}
+            self._observer.warn("preparation_progress", "Preparing forecast inputs",
+                                phase=label, preparation=preparation)
         model_seconds = progress.get("model_elapsed_seconds")
         if not isinstance(model_seconds, (int, float)):
             return
@@ -2595,6 +2619,8 @@ class _GoObserver:
 
     def stage_end(self, *, label: str, exit_code: int, ok: bool,
                   elapsed_seconds: float, progress) -> None:
+        if label == "render" and isinstance(progress, dict) and progress.get("schema") == "gpuwm.render-summary.v1":
+            self._observer._render_summary = dict(progress)
         if not ok:
             self._observer.warn(
                 "chain_stage_failed",
@@ -2654,6 +2680,40 @@ def _fetch_arguments_from_hints(hints: Mapping[str, Any],
             continue
         arguments += ["--" + key.replace("_", "-"), str(value)]
     return arguments + ["--out", str(out)]
+
+
+def declared_forcing_fetch(payload: Mapping[str, Any], data) -> list[str] | None:
+    """Acquire missing declared forcing through the config's own fetch recipe."""
+    if data is None:
+        return None
+    hints = payload.get("fetch")
+    # Existing EDA bytes still need request/digest/native-member validation.
+    # The acquisition reuses an exact verified receipt without a network call.
+    eda = isinstance(hints, dict) and hints.get("source") == "era5" and hints.get("era5_product") == "ensemble_members"
+    if all(path.is_file() for path in data.forcing) and not eda:
+        return None
+    if not isinstance(hints, dict) or hints.get("source") != "era5":
+        return None
+    from gpuwm.fetch import ERA5_COMBINED_NAMES
+    provider = hints.get("era5_provider", "cds")
+    if provider not in ERA5_COMBINED_NAMES:
+        raise PlanError("[fetch].era5_provider must be 'cds' or 'arco'.")
+    if not hints.get("out"):
+        raise PlanError("ERA5 data is missing. Set [fetch].out to the directory containing the declared forcing file.")
+    # fetch.out is relative to the launch working directory; the case-data
+    # loader has already resolved forcing relative to the configuration.
+    out = Path(hints["out"]).expanduser().resolve()
+    expected = (out / ERA5_COMBINED_NAMES[provider]).resolve()
+    from gpuwm.case_data import same_case_data_path
+    if len(data.forcing) != 1 or not same_case_data_path(data.forcing[0], expected):
+        raise PlanError("ERA5 data is missing, and [fetch].out does not produce the file named by [case_data].forcing. Keep both paths on the same ERA5 combined file.")
+    arguments = _fetch_arguments_from_hints(hints, out=out)
+    from gpuwm.cli import _join_negative_coordinates
+    arguments = _join_negative_coordinates(arguments)
+    if "--retrieve" not in arguments:
+        arguments.append("--retrieve")
+    _validate_fetch_arguments(arguments)
+    return arguments
 
 
 def _prepare_stage(root: Path, *, arguments: Sequence[Any],
@@ -3470,6 +3530,128 @@ def _chain_summary(chain: Path, *,
     }
 
 
+class _PreparedRunRelay:
+    """Bind a native child run and relay its durable facts to its caller.
+
+    The child's original manifest, events and summary remain authoritative.
+    Every relayed fact names its exact original line; the caller publishes
+    its own heartbeat through the existing supervisor callback.
+    """
+
+    def __init__(self, observer: RunObserver, chain: Path, config_path: Path):
+        self.observer = observer
+        self.chain = chain.resolve()
+        self.config_path = config_path.resolve()
+        self.config_sha256 = hashlib.sha256(self.config_path.read_bytes()).hexdigest()
+        self.native = None
+        self.summary = None
+        self.failure = None
+        self.resolved = False
+
+    def attach(self, plan: RunPlan, events: EventStream, manifest_path: Path) -> None:
+        from gpuwm.supervisor import atomic_write_json
+        run_dir = plan.run_dir.resolve()
+        if (self.native is not None or run_dir.parent != self.chain
+                or events.path.resolve() != run_dir / EVENTS_FILENAME
+                or plan.config_path is None or plan.config_path.resolve() != self.config_path
+                or hashlib.sha256(plan.config_bytes()).hexdigest() != self.config_sha256
+                or plan.source != f"gpuwm go {self.config_path}"):
+            raise PlanError("The prepared native producer does not match this run's owned chain and exact configuration")
+        manifest = _read_json_object(manifest_path)
+        if (manifest.get("schema") != MANIFEST_SCHEMA or manifest.get("pid") != os.getpid()
+                or Path(manifest.get("run_dir", "")).resolve() != run_dir
+                or manifest.get("plan_sha256") != plan.sha256):
+            raise PlanError("The native producer manifest does not identify this process and plan")
+        self.native = {"schema": "gpuwm.native-run-binding.v1", "run_id": manifest["run_id"],
+                       "pid": manifest["pid"], "run_dir": str(run_dir),
+                       "manifest_path": str(manifest_path.resolve()),
+                       "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                       "events_path": str(events.path.resolve()),
+                       "progress_path": manifest["progress_path"],
+                       "config_source": str(self.config_path), "config_sha256": self.config_sha256}
+        parent_manifest = self.observer.events.path.parent / MANIFEST_FILENAME
+        parent = _read_json_object(parent_manifest)
+        if parent:
+            if parent.get("schema") != MANIFEST_SCHEMA or parent.get("pid") != os.getpid():
+                raise PlanError("The prepared caller manifest does not identify this process")
+            parent["native_run"] = dict(self.native)
+            atomic_write_json(parent_manifest, parent)
+        events._native_parent_listener = self.receive
+
+    def receive(self, record: Mapping[str, Any], line: str) -> None:
+        native_source = {**self.native, "sequence": record["sequence"],
+                         "emitted_unix_ms": record["emitted_unix_ms"],
+                         "event_sha256": hashlib.sha256(line.encode("utf-8")).hexdigest()}
+        event = record["event"]
+        fields = {key: value for key, value in record.items() if key not in _ENVELOPE_KEYS}
+        observer = self.observer
+        if event in {"plan_accepted", "resolved_plan"}:
+            if event == "resolved_plan":
+                if (record.get("config_sha256") != self.config_sha256
+                        or Path(record.get("config_source", "")).resolve() != self.config_path):
+                    raise PlanError("The native producer resolved a different configuration")
+                self.resolved = True
+            observer.events.emit("warning", code="native_producer_" + event,
+                message="The prepared route attached its native run." if event == "plan_accepted" else
+                        "The native producer resolved the caller's exact configuration.",
+                native_source=native_source)
+            return
+        if event == "failed":
+            self.failure = dict(record)
+            observer.events.emit("warning", code="native_producer_failed",
+                message=record.get("message", "The native producer failed"),
+                native_source=native_source, native_failure=fields)
+            return
+        if not self.resolved:
+            # A preparation warning may precede resolution; model/output
+            # facts require the exact config binding before they can relay.
+            if event != "warning":
+                raise PlanError("The native producer reported execution before configuration resolution")
+        if event == "completed":
+            if record.get("dry_run") is not False or not isinstance(record.get("summary"), dict):
+                raise PlanError("The native producer did not publish an executed completion summary")
+            self.summary = dict(record["summary"])
+            if isinstance(record.get("render_summary"), dict):
+                observer._render_summary = dict(record["render_summary"])
+            observer.events.emit("warning", code="native_producer_completed",
+                message="The native producer completed; the caller is collecting its receipts.",
+                native_source=native_source, native_summary=self.summary)
+            return
+        if event == "stage_started":
+            observer._stage = str(record["stage"])
+            observer._stage_started_wall = time.perf_counter()
+            observer._stage_phases = [record["phase"]] if record.get("phase") else []
+            if observer._heartbeat is not None:
+                if observer._stage == "finalize":
+                    observer._heartbeat.finalizing("native-finalize")
+                else:
+                    observer._heartbeat.preparing(str(record.get("phase") or record["stage"]))
+        elif event == "stage_finished":
+            if observer._stage == record.get("stage"):
+                observer._stage = None
+        elif event == "model_progress":
+            observer._last_model_seconds = float(record["model_seconds"])
+            observer._progress_events += 1
+            if observer._heartbeat is not None:
+                beat = _read_json_object(Path(self.native["progress_path"]))
+                if (beat.get("run_id") != self.native["run_id"]
+                        or beat.get("config_digest") != self.config_sha256
+                        or beat.get("pid") != os.getpid()
+                        or beat.get("model_elapsed_seconds") != record["model_seconds"]):
+                    raise PlanError("The native progress event does not match its own heartbeat")
+                observer._heartbeat(model_elapsed_seconds=beat["model_elapsed_seconds"],
+                    outer_step=beat["outer_step"], last_durable_wrfout=beat.get("last_durable_wrfout"),
+                    last_checkpoint=beat.get("last_checkpoint"), phase=str(record.get("phase") or "native-progress"))
+        elif event == "output_committed":
+            observer._committed += 1
+        elif event == "first_products_ready":
+            elapsed = round(time.perf_counter() - observer._accepted_wall, 6)
+            observer._first_products_seconds = elapsed
+            fields["native_seconds_from_plan_accepted"] = fields.get("seconds_from_plan_accepted")
+            fields["seconds_from_plan_accepted"] = elapsed
+        observer.events.emit(event, **fields, native_source=native_source)
+
+
 def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
                             observer: RunObserver) -> Mapping[str, Any]:
     """The native/prepared route: ``gpuwm go``'s chain, in this process.
@@ -3536,11 +3718,21 @@ def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
     # No tree keyword any more: `gpuwm go` itself dispatches a
     # multi-domain config to the tree runner, so this front door and
     # the interactive one now enter the same chain by the same call.
-    code = go_main(args, observer=_GoObserver(observer))
+    relay = _PreparedRunRelay(observer, plan.run_dir / "chain", Path(config_path))
+    token = _PREPARED_PARENT.set(relay)
+    try:
+        code = go_main(args, observer=_GoObserver(observer))
+    finally:
+        _PREPARED_PARENT.reset(token)
     if code:
         raise RuntimeError(
             f"`{' '.join(tokens)}` exited {code}; the stage that stopped "
-            "the chain is named in the failed event's warning above")
+            "the chain is named in the failed event's warning above" +
+            (f": {relay.failure['message']}" if relay.failure and relay.failure.get("message") else ""))
+    if relay.native is not None:
+        if relay.summary is None:
+            raise PlanError("The native producer exited without its completion summary")
+        return relay.summary
     # The chain's own completion signals, from the artifacts it leaves
     # -- `go`'s standing rule, and the only honest source here: this
     # function did not integrate anything, the hosted runner did, and it
@@ -3691,6 +3883,9 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
     manifest_path = write_manifest(
         plan, run_dir=run_dir, events_path=events.path, run_id=run_id,
         started_at_utc=started_at_utc)
+    native_parent = _PREPARED_PARENT.get()
+    if native_parent is not None:
+        native_parent.attach(plan, events, manifest_path)
 
     from gpuwm.provenance_gate import receipt_block
 
@@ -3762,6 +3957,12 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
         # gate still happens -- after the fetch, before the model.
         resolution, exp, data = resolve_plan(
             plan, generate_into=run_dir, require_inputs=False)
+        if fetch_arguments is None and plan.config_intent is None:
+            fetch_arguments = declared_forcing_fetch(
+                tomllib.loads(plan.config_bytes().decode("utf-8")), data)
+            if fetch_arguments is not None:
+                cycle_resolutions.append({"scope": "fetch", "key": "args",
+                    "value": fetch_arguments, "basis": "configuration.fetch"})
         for warning in resolution["warnings"]:
             events.emit("warning", code="library_warning",
                         message=warning["action"], detail=warning["why"])
@@ -3866,7 +4067,8 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
             # line every reader already reads.  Null when this run
             # published no products early.
             first_products_seconds=observer.first_products_seconds,
-            summary=dict(summary))
+            summary=dict(summary),
+            **({"render_summary": observer._render_summary} if observer._render_summary is not None else {}))
         return 0
     except BaseException as error:  # noqa: BLE001 - every exit is an event
         if observer is not None:
@@ -4202,30 +4404,20 @@ def _receipts(run_dir: Path) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _estimate_planner_machine(exp):
-    """A card for the tile planner, and ONLY when ``[tiles]`` needs one.
+def _estimate_planner_machine(exp, probe):
+    """Use the estimate's device observation when ``[tiles]`` needs it.
 
     ``mode = "auto"`` with no pinned tiling is the planner's decision and
-    the planner needs a machine; every other configuration answers from
-    the config alone.  Probing unconditionally would put a subprocess
-    launch on the path of a resident plan's estimate -- which a front end
-    asks for on every keystroke of a live sizing strip -- to compute a
-    number no resident plan uses.
-
-    The probe is out-of-process for the reason
-    :func:`gpuwm.core.preflight.device_memory_probe_subprocess` gives:
-    this call promises to create no CUDA context, and an in-process
-    ``memGetInfo`` creates one that outlives the answer.
+    the planner needs a machine. The same observation also prices resident
+    plans' device-dependent non-pool terms and radiation workspace widths.
     """
     options = getattr(exp, "tiles", None)
     if options is None or getattr(options, "mode", "off") == "off":
         return None
     if getattr(options, "tile_nx", None) is not None:
         return None                  # pinned: the configuration IS the plan
-    from gpuwm.core.preflight import device_memory_probe_subprocess
     from gpuwm.core.streaming import planner_machine
 
-    probe = device_memory_probe_subprocess()
     return planner_machine(
         vram_bytes=None if probe is None else int(probe["free_bytes"]),
         name="run-plan estimate probe")
@@ -4348,9 +4540,9 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
 
     VRAM comes from :mod:`gpuwm.core.preflight`'s itemization -- the
     same arithmetic ``gpuwm check`` reports, on the CPU, with no CUDA
-    context created IN THIS PROCESS (a ``[tiles] mode = "auto"`` config
-    has its planner card read by a short-lived subprocess, whose context
-    dies with it; see :func:`_estimate_planner_machine`).  Output-frame
+    context created IN THIS PROCESS. One short-lived subprocess observes
+    the local device for its non-pool terms, radiation workspace widths,
+    and tile planner; its context dies with it. Output-frame
     COUNTS are exact.  Wall time is
     ``null``: this package has no measured rate for an arbitrary
     configuration, and a front end showing an invented duration would
@@ -4373,11 +4565,32 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
     """
 
     from gpuwm.core.pace import estimate_pace
-    from gpuwm.core.preflight import estimate_phases
+    from gpuwm.core.preflight import (
+        DEFAULT_FORCING_INTERVAL_SECONDS, case_forcing_schedule,
+        device_memory_probe_subprocess, estimate_phases,
+        profile_from_device_probe)
 
-    resolution, exp, _data = resolve_plan(plan, require_inputs=False)
-    machine = _estimate_planner_machine(exp)
-    phases = estimate_phases(exp, source=None, machine=machine)
+    resolution, exp, data = resolve_plan(plan, require_inputs=False)
+    if data is not None:
+        forcing_interval, intervals = case_forcing_schedule(data, exp)
+    else:
+        payload = resolution.get("generated_config")
+        if payload is None:
+            payload = plan.config_bytes().decode("utf-8")
+        cadence = (tomllib.loads(payload).get("fetch") or {}).get("cadence")
+        forcing_interval = None if cadence is None else float(cadence) * 3600.0
+        intervals = None
+    probe = device_memory_probe_subprocess()
+    profile = profile_from_device_probe(probe)
+    total = None if probe is None else probe.get("total_bytes")
+    capacity = (total / 1024 ** 3 if isinstance(total, int)
+                and not isinstance(total, bool) and total > 0 else None)
+    machine = _estimate_planner_machine(exp, probe)
+    phases = estimate_phases(
+        exp, source=None, machine=machine, profile=profile, vram_gib=capacity,
+        forcing_interval_seconds=(forcing_interval if forcing_interval is not None else
+                                  DEFAULT_FORCING_INTERVAL_SECONDS),
+        forcing_intervals=intervals)
     estimate = phases.forecast
     streamed = phases.streamed
     # ONE DECISION PER DOCUMENT.  The envelope this document quotes is
@@ -4411,7 +4624,17 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
     return {
         "schema": ESTIMATE_SCHEMA,
         "plan": resolution["plan"],
-        "vram": _vram_estimate(estimate, streamed, exp),
+        "vram": {
+            **_vram_estimate(estimate, streamed, exp),
+            "phase_scope": "forecast",
+            "device_basis": ("measured local device" if profile is not None
+                             else "conservative reference; local device unmeasured"),
+            "device_profile": (None if profile is None else
+                               dataclasses.asdict(profile)),
+            "forcing_interval_seconds": (forcing_interval if forcing_interval is not None else
+                                         DEFAULT_FORCING_INTERVAL_SECONDS),
+            "retained_forcing_intervals": intervals,
+        },
         "disk": {
             "frames": frames,
             "total_frames": sum(entry["frames"] for entry in frames),

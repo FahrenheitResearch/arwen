@@ -2716,7 +2716,9 @@ def test_resolve_prints_one_json_document_and_runs_nothing(
 
 def test_estimate_reports_measured_numbers_and_nulls_the_unmeasured_ones(
         tmp_path, capsys):
-    config = make_case_toml(tmp_path)
+    # This is a pre-download estimate. Present inputs are now inventoried
+    # for retained boundary counts, so placeholder bytes are not GRIB data.
+    config = make_case_toml(tmp_path, files=False)
     plan_path = _write_plan(tmp_path, config, tmp_path / "run")
     from gpuwm.cli import build_parser
     args = build_parser().parse_args(

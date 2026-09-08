@@ -390,6 +390,17 @@ def validate_native_lambert_contracts(
         raise ValueError(
             f"{label} experiment geometry resolved to {len(expected_grids)} "
             f"grids for {len(exp.domains)} domains")
+    from gpuwm.wps_domain_ids import domain_ids_from_wps_text, validated_domain_order
+    expected_ids = validated_domain_order(exp.domains)
+    wps_ids = domain_ids_from_wps_text(
+        Path(wps_namelist).read_text(encoding="utf-8-sig"), len(wps_grids))
+    if wps_ids != expected_ids:
+        raise ValueError(f"WPS/experiment domain identity mismatch: WPS {wps_ids}, experiment {expected_ids}")
+    slots = {grid_id: slot for slot, grid_id in enumerate(expected_ids, start=1)}
+    expected_parents = [slots[domain.parent_id or 1] for domain in exp.domains]
+    observed_parents = wps_values.get("parent_id", [1])[:len(exp.domains)]
+    if observed_parents != expected_parents:
+        raise ValueError(f"WPS/experiment parent-slot identity mismatch: WPS {observed_parents}, experiment {expected_parents}")
 
     compared = (
         "ref_lat", "ref_lon", "truelat1", "truelat2", "stand_lon",
@@ -406,13 +417,8 @@ def validate_native_lambert_contracts(
             for name in compared
             if getattr(observed, name) != getattr(expected, name)
         }
-        if domain.grid_id != index:
-            domain_drift["grid_id"] = {
-                "wps": index,
-                "experiment": domain.grid_id,
-            }
         if domain_drift:
-            drift[f"d{index:02d}"] = domain_drift
+            drift[f"d{domain.grid_id:02d}"] = domain_drift
     if drift:
         raise ValueError(f"WPS/experiment domain geometry mismatch: {drift}")
 

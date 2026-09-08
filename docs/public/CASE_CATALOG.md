@@ -1,9 +1,28 @@
 # Case catalogs
 
-ArWen reads a historical-case catalog from JSON or TOML. A catalog can describe
+ArWen includes a default catalog of **300 historical cases** and also reads
+custom catalogs from ZIP, JSON or TOML. A catalog can describe
 tornadoes, derechos, hurricanes and other studies without embedding commands or
 inventing another forecast engine. The same catalog serves the interface and
 the `gpuwm case-catalog` commands.
+
+Open **Case catalogs** to browse the included cases. CLI commands use the same
+catalog when `--catalog` is omitted:
+
+```sh
+gpuwm case-catalog list --query "El Reno"
+gpuwm case-catalog default --json
+```
+
+The bundled `gpuwm/data/case-catalog/historical.zip` combines the supplied
+200-case catalog and its worldwide expansion. All 200 earlier case IDs are
+retained, with the newer complete records taking precedence, and 100 cases
+are added. The result contains 120 tornado, 60 convective-wind, 70
+tropical-cyclone and 50 synoptic cases. Source references, planning limitations,
+initializations and scientific settings remain as supplied; merging does not
+validate a forecast preset. The ZIP includes `merge-provenance.json` with both
+original archive hashes, source titles and versions, and every retained ID.
+The original archives are not modified. Pass `--catalog` to use another catalog.
 
 The supplied `gpuwm/data/case-catalog/example.json` and `example.toml` contain
 **synthetic format demonstrations, not historical cases or scientific

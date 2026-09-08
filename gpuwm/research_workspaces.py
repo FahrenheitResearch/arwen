@@ -18,6 +18,8 @@ from pathlib import Path
 import re
 import tempfile
 
+from gpuwm.configuration_recovery import MemoryAdmissionError, retain_final_candidate
+
 
 CATALOG_PATH = Path(__file__).parent / "data" / "tui" / "research-workspaces.json"
 HARDWARE_PATH = CATALOG_PATH.with_name("research-hardware-profiles.json")
@@ -519,9 +521,12 @@ def _admission(text: str, *, recipe: dict, source: str, sizing, path: Path,
                       "The retry still checks the full study area; if it also refuses, make more "
                       "memory available or choose a question with a smaller required area.")
     if phases.peak_envelope_bytes > budget:
-        raise ValueError(f"The complete {recipe['method']} configuration exceeds the immutable "
-                         f"memory budget: {phases.peak_envelope_bytes / 2**30:.2f} GiB needed, "
-                         f"{budget / 2**30:.2f} GiB available. {retry_hint}")
+        raise MemoryAdmissionError(
+            f"The complete {recipe['method']} configuration exceeds the immutable "
+            f"memory budget: {phases.peak_envelope_bytes / 2**30:.2f} GiB needed, "
+            f"{budget / 2**30:.2f} GiB available. {retry_hint}",
+            peak_envelope_bytes=phases.peak_envelope_bytes, budget_bytes=budget,
+            binding_phase=phases.binding_phase)
     minimum = float(recipe["geometry"].get("minimum_root_span_km", 0))
     root = experiment.domains[0].run
     span_x, span_y = root.nx * root.dx / 1000, root.ny * root.dy / 1000
@@ -706,8 +711,14 @@ def create_workspace(args) -> dict:
             stage.as_posix(), destination.parent.as_posix())
         text = _final_text(native_text, recipe,
                            lat=lat, lon=lon, data_dir=data_dir, profile=profile)
-        experiment, admission = _admission(text, recipe=recipe, source=native.source,
-                                          sizing=sizing, path=destination)
+        try:
+            experiment, admission = _admission(text, recipe=recipe, source=native.source,
+                                              sizing=sizing, path=destination)
+        except MemoryAdmissionError as error:
+            retain_final_candidate(error, text=text, requested_path=destination, stage=stage,
+                metadata={"configuration_id": recipe["id"], "source": native.source,
+                          "catalog_sha256": catalog["catalog_sha256"]})
+            raise
         staged.write_text(text, encoding="utf-8", newline="\n")
         domains = [{"grid_id": domain.grid_id, "parent_id": domain.parent_id,
                     "nx": domain.run.nx, "ny": domain.run.ny, "nz": domain.run.nz,

@@ -1,0 +1,124 @@
+use std::borrow::Cow;
+use std::sync::Arc;
+
+use super::{blosc_decompress_bytes_partial, blosc_typesize, blosc_validate};
+use crate::array::ArrayBytesRaw;
+use crate::array::codec::bytes_to_bytes::blosc::blosc_nbytes;
+#[cfg(feature = "async")]
+use zarrs_codec::AsyncBytesPartialDecoderTraits;
+use zarrs_codec::{BytesPartialDecoderTraits, CodecError, CodecOptions};
+use zarrs_storage::StorageError;
+use zarrs_storage::byte_range::ByteRangeIterator;
+
+/// Partial decoder for the `blosc` codec.
+pub(crate) struct BloscPartialDecoder {
+    input_handle: Arc<dyn BytesPartialDecoderTraits>,
+}
+
+impl BloscPartialDecoder {
+    pub(crate) fn new(input_handle: Arc<dyn BytesPartialDecoderTraits>) -> Self {
+        Self { input_handle }
+    }
+}
+
+impl BytesPartialDecoderTraits for BloscPartialDecoder {
+    fn exists(&self) -> Result<bool, StorageError> {
+        self.input_handle.exists()
+    }
+
+    fn size_held(&self) -> usize {
+        self.input_handle.size_held()
+    }
+
+    fn partial_decode_many(
+        &self,
+        decoded_regions: ByteRangeIterator,
+        options: &CodecOptions,
+    ) -> Result<Option<Vec<ArrayBytesRaw<'_>>>, CodecError> {
+        let encoded_value = self.input_handle.decode(options)?;
+        let Some(encoded_value) = encoded_value else {
+            return Ok(None);
+        };
+
+        if let Some(_destsize) = blosc_validate(&encoded_value) {
+            let nbytes = blosc_nbytes(&encoded_value);
+            let typesize = blosc_typesize(&encoded_value);
+            if let (Some(nbytes), Some(typesize)) = (nbytes, typesize) {
+                let decoded_byte_ranges = decoded_regions
+                    .map(|byte_range| {
+                        let start = usize::try_from(byte_range.start(nbytes as u64)).unwrap();
+                        let end = usize::try_from(byte_range.end(nbytes as u64)).unwrap();
+                        blosc_decompress_bytes_partial(&encoded_value, start, end - start, typesize)
+                            .map(Cow::Owned)
+                            .map_err(|err| CodecError::from(err.to_string()))
+                    })
+                    .collect::<Result<Vec<_>, CodecError>>()?;
+                return Ok(Some(decoded_byte_ranges));
+            }
+        }
+        Err(CodecError::from("blosc encoded value is invalid"))
+    }
+
+    fn supports_partial_decode(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "async")]
+/// Asynchronous partial decoder for the `blosc` codec.
+pub(crate) struct AsyncBloscPartialDecoder {
+    input_handle: Arc<dyn AsyncBytesPartialDecoderTraits>,
+}
+
+#[cfg(feature = "async")]
+impl AsyncBloscPartialDecoder {
+    pub(crate) fn new(input_handle: Arc<dyn AsyncBytesPartialDecoderTraits>) -> Self {
+        Self { input_handle }
+    }
+}
+
+#[cfg(feature = "async")]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl AsyncBytesPartialDecoderTraits for AsyncBloscPartialDecoder {
+    async fn exists(&self) -> Result<bool, StorageError> {
+        self.input_handle.exists().await
+    }
+
+    fn size_held(&self) -> usize {
+        self.input_handle.size_held()
+    }
+
+    async fn partial_decode_many<'a>(
+        &'a self,
+        decoded_regions: ByteRangeIterator<'a>,
+        options: &CodecOptions,
+    ) -> Result<Option<Vec<ArrayBytesRaw<'a>>>, CodecError> {
+        let encoded_value = self.input_handle.decode(options).await?;
+        let Some(encoded_value) = encoded_value else {
+            return Ok(None);
+        };
+
+        if let Some(_destsize) = blosc_validate(&encoded_value) {
+            let nbytes = blosc_nbytes(&encoded_value);
+            let typesize = blosc_typesize(&encoded_value);
+            if let (Some(nbytes), Some(typesize)) = (nbytes, typesize) {
+                let decoded_byte_ranges = decoded_regions
+                    .map(|byte_range| {
+                        let start = usize::try_from(byte_range.start(nbytes as u64)).unwrap();
+                        let end = usize::try_from(byte_range.end(nbytes as u64)).unwrap();
+                        blosc_decompress_bytes_partial(&encoded_value, start, end - start, typesize)
+                            .map(Cow::Owned)
+                            .map_err(|err| CodecError::from(err.to_string()))
+                    })
+                    .collect::<Result<Vec<_>, CodecError>>()?;
+                return Ok(Some(decoded_byte_ranges));
+            }
+        }
+        Err(CodecError::from("blosc encoded value is invalid"))
+    }
+
+    fn supports_partial_decode(&self) -> bool {
+        true
+    }
+}

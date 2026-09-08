@@ -258,6 +258,16 @@ try {
 }
 
 # ------------------------------------------------------------------ doctor
+Say 'building the regular-grid Zarr reader (offline, locked)'
+Push-Location 'tools\zarr_bridge'
+try {
+    Invoke-Step 'cargo build (rw_zarr)' {
+        cargo build --release --locked --offline
+    }
+} finally {
+    Pop-Location
+}
+
 Say 'running gpuwm doctor'
 & (Join-Path '.venv' 'Scripts\gpuwm.exe') doctor
 $doctorExit = $LASTEXITCODE

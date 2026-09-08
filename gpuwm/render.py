@@ -1252,6 +1252,24 @@ def _engine_output_time(name: str) -> datetime.datetime:
     raise ValueError(f"Cannot identify the rendered frame time in {name!r}")
 
 
+def _history_identity_attribute(name: str) -> bool:
+    """Immutable run/grid/science identity, excluding the per-frame carrier ledger.
+
+    Wrfout's radiation carrier SOURCE and LAST_UPDATE describe which update
+    supplies the current frame, including analysis-to-radiation handoff. They
+    change while one forecast advances. Initial-condition source/cycle/lead,
+    physics selectors, domain episode, projection and actual coordinates still
+    distinguish independent histories; none of those are carrier ledger keys.
+    """
+    names = {"START_DATE", "SIMULATION_START_DATE", "GRID_ID", "PARENT_ID",
+             "I_PARENT_START", "J_PARENT_START", "PARENT_GRID_RATIO", "DX", "DY",
+             "MAP_PROJ", "TRUELAT1", "TRUELAT2", "STAND_LON", "CEN_LAT",
+             "CEN_LON", "MOAD_CEN_LAT", "POLE_LAT", "POLE_LON", "HYBRID_OPT", "ETAC",
+             "DT", "TITLE"}
+    return (name in names or name.endswith("_PHYSICS")
+            or name.startswith("GPUWM_") and not name.startswith("GPUWM_CARRIER_"))
+
+
 def _history_series_record(path: Path) -> tuple[tuple, tuple[datetime.datetime, ...]]:
     """Identify one actual grid and run before sharing its native time store."""
     import netCDF4
@@ -1260,13 +1278,9 @@ def _history_series_record(path: Path) -> tuple[tuple, tuple[datetime.datetime, 
     try:
         with netCDF4.Dataset(path) as dataset:
             attributes = dataset.ncattrs()
-            names = ("START_DATE", "SIMULATION_START_DATE", "GRID_ID", "PARENT_ID",
-                     "I_PARENT_START", "J_PARENT_START", "PARENT_GRID_RATIO", "DX", "DY",
-                     "MAP_PROJ", "TRUELAT1", "TRUELAT2", "STAND_LON", "CEN_LAT",
-                     "CEN_LON", "MOAD_CEN_LAT", "POLE_LAT", "POLE_LON", "HYBRID_OPT", "ETAC")
             metadata = {name: np.asarray(dataset.getncattr(name)).tolist()
                         for name in attributes
-                        if name in names or name.startswith("GPUWM_")}
+                        if _history_identity_attribute(name)}
             for name in ("GRID_ID", "DX", "DY"):
                 if name not in metadata:
                     raise ValueError(f"missing {name}")
@@ -2433,6 +2447,11 @@ def render_main(args: argparse.Namespace) -> int:
                 args.wrfout, products=products, timeidx=timeidx,
                 outdir=args.out, dpi=args.dpi,
                 source_label=args.source_label, layout=args.layout)
+        from gpuwm.render_receipts import publish_invocation
+        render_summary = publish_invocation(root=args.out, engine=engine,
+            requested_spec=rust_products if engine == "rust" else ",".join(products),
+            written=written, failures=failures, skipped=skipped, layout=args.layout,
+            inputs=args.wrfout, context_inputs=getattr(args, "context_wrfout", ()))
         for failure in failures:
             print(f"render FAIL: {failure}", file=sys.stderr)
         notice = skip_notice(skipped, wrote_any=bool(written))
@@ -2441,6 +2460,7 @@ def render_main(args: argparse.Namespace) -> int:
                 notice, explain=explain.explain_enabled(args),
                 command="gpuwm render"), file=sys.stderr)
         print(f"render: {len(written)} file(s) -> {args.out}")
+        print(f"render: result receipt -> {render_summary['summary_path']}")
     finally:
         _publish_run_dir(args)
     # Written-and-no-failures, where a SKIP IS NOT A FAILURE.  The two

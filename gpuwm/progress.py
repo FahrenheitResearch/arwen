@@ -89,9 +89,15 @@ def prep_stage(stage: str, *, label: str | None = None,
         if value is not None})
 
     def emit(event, **details):
+        payload = {**fields, "event": event, **details}
         print(PREP_EVENT_PREFIX + json.dumps(
-            {**fields, "event": event, **details}, sort_keys=True,
+            payload, sort_keys=True,
             allow_nan=False), file=sys.stderr, flush=True)
+        # Native run hosts may retain the existing preparation receipt as
+        # metadata. The operation and its output are unchanged.
+        public = {key: value for key, value in payload.items() if key != "error"}
+        emit_event("warning", code="preparation_progress", phase="prepare",
+                   preparation=public, message=fields["label"])
 
     started = time.perf_counter()
     emit("started")

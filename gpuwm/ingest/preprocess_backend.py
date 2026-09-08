@@ -32,6 +32,8 @@ _COMMON_IMPLEMENTATION_SOURCES = (
     "gpuwm/ingest/interpolation_support.py",
     "gpuwm/ingest/atmospheric_window.py",
     "gpuwm/ingest/real.py",
+    "gpuwm/ingest/lake_temperature.py",
+    "gpuwm/ingest/water_temperature.py",
     "gpuwm/ingest/vert.py",
 )
 

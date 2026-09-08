@@ -40,6 +40,217 @@ def test_json_and_toml_examples_are_the_same_data_and_keep_original_bytes():
     assert left.sha256 != right.sha256
 
 
+def test_bundled_historical_catalog_preserves_all_earlier_cases_and_newer_records():
+    from tools.build_builtin_case_catalog import _json_bytes
+    path = catalog.builtin_catalog_path()
+    with zipfile.ZipFile(path) as archive:
+        assert set(archive.namelist()) == {"catalog.json", "merge-provenance.json"}
+        payload = archive.read("catalog.json")
+        document = json.loads(payload)
+        provenance = json.loads(archive.read("merge-provenance.json"))
+    assert provenance["merged_catalog_sha256"] == hashlib.sha256(payload).hexdigest()
+    assert document["schema"] == "arwen.case-catalog/v2"
+    assert len(document["cases"]) == provenance["case_count"] == 300
+    ids = {row["id"] for row in document["cases"]}
+    assert len(ids) == 300
+    assert len(provenance["older_case_ids_retained"]) == 200
+    assert set(provenance["older_case_ids_retained"]) <= ids
+    assert len(provenance["new_case_ids_added"]) == 100
+    assert provenance["older_case_ids_missing"] == []
+    assert [row["sha256"] for row in provenance["inputs"]] == [
+        "4a746e5098aa5a641e1b66a948c35423a680a4825013ba20b9288732bb32d828",
+        "818004eaa37973edd4eacd0dcf7608f490717f8fc0131d735dd8fa375b500bf8"]
+    selected = {row["id"]: row["sha256"] for row in provenance["selected_records"]}
+    assert selected == {row["id"]: hashlib.sha256(_json_bytes(row)).hexdigest()
+                        for row in document["cases"]}
+    assert document["metadata"]["bundled_merge"]["inputs"] == provenance["inputs"]
+
+
+def test_builtin_merge_selects_whole_newer_records_and_is_reproducible(tmp_path):
+    from tools.build_builtin_case_catalog import build_catalog
+    def archive(name, cases):
+        path = tmp_path / name
+        with zipfile.ZipFile(path, "w") as output:
+            output.writestr("catalog.json", json.dumps({"schema": "arwen.case-catalog/v2",
+                "title": name, "cases": cases, "metadata": {"preserved": "source metadata"}}))
+        return path
+    old = archive("old.zip", [{"id": "one", "category": "tornado", "old_only": 1,
+                              "physics": {"mp": 8}}])
+    new_cases = [{"id": "one", "category": "tornado", "physics": {"mp": 10}},
+                 {"id": "two", "category": "synoptic", "note": "literal data"}]
+    new = archive("new.zip", new_cases)
+    payload, provenance = build_catalog(old, new)
+    assert payload == build_catalog(old, new)[0]
+    import io
+    with zipfile.ZipFile(io.BytesIO(payload)) as output:
+        merged = json.loads(output.read("catalog.json"))
+    assert merged["cases"] == new_cases
+    assert merged["metadata"]["preserved"] == "source metadata"
+    assert provenance["duplicate_case_ids"] == ["one"]
+    incomplete = archive("missing.zip", [new_cases[1]])
+    with pytest.raises(ValueError, match="omits earlier case IDs"):
+        build_catalog(old, incomplete)
+
+
+def test_cli_uses_installed_catalog_default_from_an_unrelated_folder(tmp_path, monkeypatch, capsys):
+    from gpuwm.cli import main
+    monkeypatch.chdir(tmp_path)
+    assert main(["case-catalog", "default", "--json"]) == 0
+    default = json.loads(capsys.readouterr().out)
+    assert default["case_count"] == 300
+    assert Path(default["path"]) == catalog.builtin_catalog_path()
+    assert main(["case-catalog", "list", "--limit=1", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["total"] == 300 and len(result["cases"]) == 1
+    assert result["provenance"]["source"] == default["path"]
+    assert result["cases"][0]["id"] == "tornado-2013-05-31-el-reno-oklahoma"
+    assert main(["case-catalog", "list", "--catalog", str(EXAMPLES / "example.json"), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["total"] == 2
+    assert not list(tmp_path.iterdir())
+
+
+def test_missing_builtin_catalog_names_the_installation_remedy(tmp_path, monkeypatch, capsys):
+    from gpuwm.cli import main
+    monkeypatch.setattr(catalog, "BUILTIN_CATALOG_PATH", tmp_path / "missing.zip")
+    assert main(["case-catalog", "default", "--json"]) == 2
+    assert "reinstall ArWen" in json.loads(capsys.readouterr().out)["error"]
+
+
+def test_validation_keeps_caller_data_and_accepts_exactly_the_same_text_controls(document):
+    document["cases"][0]["event"]["start_utc"] = "2026-09-01T01:00:00+01:00"
+    document["cases"][0]["metadata"] = {"nested": [{"text": "café 日本\tline\nreturn\r"}]}
+    original = deepcopy(document)
+    validated = catalog.validate_catalog(document)
+    assert document == original
+    assert validated["cases"][0]["event"]["start_utc"] == "2026-09-01T00:00:00Z"
+    validated["cases"][0]["metadata"]["nested"][0]["text"] = "changed"
+    assert document == original
+    for codepoint in range(256):
+        value = "left" + chr(codepoint) + "right"
+        if codepoint < 32 and chr(codepoint) not in "\n\t\r":
+            with pytest.raises(catalog.CatalogError, match="control character"):
+                catalog._text(value, "test")
+        else:
+            assert catalog._text(value, "test") == value
+
+
+def test_empty_and_metadata_search_preserve_case_order_and_filters(tmp_path, document):
+    document["cases"][0]["metadata"] = {"nested": {"prose": "rare-metadata-token 日本"}}
+    loaded = catalog.load_catalog(write_catalog(tmp_path, document))
+    empty = catalog.list_cases(loaded)
+    assert empty == catalog.list_cases(loaded, query=" \t\n")
+    assert [row["id"] for row in empty["cases"]] == [row["id"] for row in document["cases"]]
+    found = catalog.list_cases(loaded, query="rare-METADATA-token 日本")
+    assert [row["id"] for row in found["cases"]] == [document["cases"][0]["id"]]
+    assert catalog.list_cases(loaded, query="rare-metadata-token", event_kind="not-an-event")["total"] == 0
+
+
+def test_catalog_session_detects_changed_bytes_even_with_the_same_size_and_timestamp(tmp_path, document, monkeypatch):
+    import os
+    path = write_catalog(tmp_path, document)
+    session = catalog._CatalogSession()
+    loads = []
+    original_loader = catalog._load_catalog_bytes
+    def record(path, raw):
+        loads.append(hashlib.sha256(raw).hexdigest())
+        return original_loader(path, raw)
+    monkeypatch.setattr(catalog, "_load_catalog_bytes", record)
+    first = session.load(path)
+    assert session.load(path) is first and len(loads) == 1
+    stamp = path.stat()
+    before = path.read_bytes()
+    title = document["cases"][0]["title"]
+    replacement = ("X" if title[0] != "X" else "Y") + title[1:]
+    changed = before.replace(json.dumps(title).encode(), json.dumps(replacement).encode(), 1)
+    assert len(changed) == len(before) and changed != before
+    path.write_bytes(changed)
+    os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    second = session.load(path)
+    assert len(loads) == 2 and second.sha256 != first.sha256
+    assert second.original == changed and second.document["cases"][0]["title"] == replacement
+    detail = catalog.case_detail(second, document["cases"][0]["id"])
+    detail["case"]["title"] = "A caller's edit"
+    assert session.load(path).document["cases"][0]["title"] == replacement
+    path.write_text("not a JSON catalog", encoding="utf-8")
+    with pytest.raises(catalog.CatalogError):
+        session.load(path)
+    path.write_bytes(changed)
+    assert session.load(path) is second
+
+
+def test_catalog_worker_is_read_only_and_recovers_request_framing(tmp_path, document):
+    import io
+    path = write_catalog(tmp_path, document)
+    malformed = proposal_document()
+    malformed["cases"] = [None]
+    malformed_path = write_catalog(tmp_path, malformed, "malformed-proposal.json")
+    target = tmp_path / "must-not-create.toml"
+    requests = [
+        b"not json\n",
+        b"[\"list\", false]\n",
+        b"\xff\n",
+        (json.dumps(["create", document["cases"][0]["id"], "--out", str(target)]) + "\n").encode(),
+        b"[\"export\", \"--out\", \"ignored.json\"]\n",
+        b"[\"list\", \"--help\"]\n",
+        b"[\"list\", \"--unknown\"]\n",
+        b"x" * (64 * 1024 + 10) + b"\n",
+        b"[" * 2000 + b"]" * 2000 + b"\n",
+        (json.dumps(["list", "--catalog", str(malformed_path)]) + "\n").encode(),
+        (json.dumps(["list", "--catalog", str(path), "--json"]) + "\n").encode(),
+    ]
+    output = io.StringIO()
+    assert catalog._tui_server(io.BytesIO(b"".join(requests)), output) == 0
+    results = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert len(results) == len(requests)
+    assert all(row["schema"] == "arwen.case-error.v1" and row["created"] is False
+               for row in results[:-1])
+    assert results[-1]["schema"] == "arwen.case-list.v1" and results[-1]["total"] == 2
+    assert set(tmp_path.iterdir()) == {path, malformed_path}
+
+
+def test_catalog_worker_reuses_validation_but_recomputes_preview(tmp_path, document, monkeypatch):
+    import io
+    from gpuwm import source_availability
+    path = write_catalog(tmp_path, document)
+    requests = ["list", "show", "preview", "preview"]
+    ident = document["cases"][0]["id"]
+    original_loader = catalog._load_catalog_bytes
+    original_availability = source_availability.availability
+    loads, previews = [], []
+    def load(path, raw):
+        loads.append(raw)
+        return original_loader(path, raw)
+    def available(*args, **kwargs):
+        previews.append(True)
+        kwargs["now"] = NOW
+        result = original_availability(*args, **kwargs)
+        return result | {"test_observation": len(previews)}
+    monkeypatch.setattr(catalog, "_load_catalog_bytes", load)
+    monkeypatch.setattr(source_availability, "availability", available)
+    encoded = b"".join((json.dumps([command, *([] if command == "list" else [ident]),
+        "--catalog", str(path), "--json"]) + "\n").encode() for command in requests)
+    output = io.StringIO()
+    assert catalog._tui_server(io.BytesIO(encoded), output) == 0
+    rows = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert len(loads) == 1 and len(previews) == 2
+    assert [row["schema"] for row in rows] == ["arwen.case-list.v1", "arwen.case-detail.v1",
+                                             "arwen.case-preview.v1", "arwen.case-preview.v1"]
+    assert rows[2]["source_availability"]["test_observation"] == 1
+    assert rows[3]["source_availability"]["test_observation"] == 2
+    assert {row["provenance"]["original_sha256"] for row in rows} == {hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def test_standalone_catalog_entrypoint_has_normal_results_and_hides_private_worker(capsys):
+    assert catalog.main(["list", "--catalog", str(EXAMPLES / "example.json"), "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result == catalog.list_cases(EXAMPLES / "example.json")
+    with pytest.raises(SystemExit) as stopped:
+        catalog.main(["--help"])
+    assert stopped.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "preview" in help_text and "--tui-server" not in help_text
+
+
 def test_distributed_schema_validates_both_authoring_examples():
     import jsonschema
     schema = json.loads(catalog.SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -229,6 +440,82 @@ def test_catalog_memory_refusal_keeps_its_own_retry_route_and_publishes_nothing(
     assert not list(tmp_path.iterdir())
 
 
+@pytest.mark.parametrize("kind", ["polygon", "era5", "hrrr"])
+def test_geometry_only_opens_native_domains_without_any_gpu_sizing(tmp_path, monkeypatch, kind):
+    from gpuwm import domain_wizard as wizard, research_workspaces as research
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Opening a case must not resolve or admit a GPU memory budget")
+
+    for name in ("resolve_sizing_budget", "domain_main", "_sizing_phases", "sizing_budget_bytes"):
+        monkeypatch.setattr(wizard, name, forbidden)
+    monkeypatch.setattr(research, "_admission", forbidden)
+    if kind == "polygon":
+        source, case_id, options = EXAMPLES / "example.json", "synthetic-overrides-example", {}
+    else:
+        source = proposal_zip(tmp_path, document=worldwide_proposal_document())
+        case_id, options = "synthetic-import", {"source_option": kind}
+    out = tmp_path / "opened.toml"
+    receipt = catalog.create_case(source, case_id, out=out, tier="lower", now=NOW,
+                                  geometry_only=True, **options)
+    from gpuwm.experiment import load_experiment
+    experiment = load_experiment(out)
+    assert experiment.domains
+    assert receipt["admission"]["status"] == "geometry-validated"
+    assert receipt["admission"]["memory_admission"] == "deferred-to-review"
+    assert receipt["admission"]["forecast_started"] is False
+    assert "envelope_budget_bytes" not in receipt["admission"]
+    assert receipt["config_sha256"] == hashlib.sha256(out.read_bytes()).hexdigest()
+    assert Path(receipt["original_catalog"]).read_bytes() == source.read_bytes()
+    if kind != "polygon":
+        assert [d.run.dx / 1000 for d in experiment.domains] == ([12, 3, 1] if kind == "era5" else [3, 1])
+        assert [d.run.nx for d in experiment.domains] == ([50, 72, 72] if kind == "era5" else [72, 72])
+    if kind == "polygon":
+        assert experiment.domains[0].run.epssm == .4
+    preserved = {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+    with pytest.raises(FileExistsError):
+        catalog.create_case(source, case_id, out=out, tier="lower", now=NOW,
+                            geometry_only=True, **options)
+    assert preserved == {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+
+
+@pytest.mark.parametrize("failure", ["science", "coverage", "capacity"])
+def test_geometry_only_retains_native_validation_and_never_publishes_invalid_case(tmp_path, failure):
+    options = {"geometry_only": True}
+    source, case_id = EXAMPLES / "example.json", "synthetic-profile-example"
+    pattern = "sf_surface_physics"
+    if failure == "science":
+        options["native_overrides"] = {"shared": {"sf_surface_physics": 999}}
+    elif failure == "capacity":
+        options["vram_gib"] = 32
+        pattern = "defers GPU memory admission"
+    else:
+        document = worldwide_proposal_document()
+        for preset in document["cases"][0]["presets"].values():
+            for domain in preset["source_domain_recipes"]["regional_3_1"]["domains"]:
+                domain["center_lat"], domain["center_lon"] = 35., 140.
+        source, case_id = proposal_zip(tmp_path, document=document), "synthetic-import"
+        options["source_option"] = "hrrr"
+        pattern = "(?i)(coverage|outside|hrrr)"
+    out = tmp_path / "invalid.toml"
+    with pytest.raises(ValueError, match=pattern):
+        catalog.create_case(source, case_id, out=out, tier="lower", now=NOW, **options)
+    assert not list(tmp_path.glob("invalid*"))
+
+
+def test_cli_geometry_only_returns_deferred_admission_receipt(tmp_path, monkeypatch, capsys):
+    from gpuwm.cli import main
+    from gpuwm import domain_wizard as wizard
+    monkeypatch.setattr(wizard, "resolve_sizing_budget", lambda *a, **k: pytest.fail("GPU probe on Open Case"))
+    out = tmp_path / "cli-open.toml"
+    assert main(["case-catalog", "create", "synthetic-overrides-example", "--catalog",
+                 str(EXAMPLES / "example.json"), "--tier", "lower", "--out", str(out),
+                 "--geometry-only", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["admission"]["memory_admission"] == "deferred-to-review"
+    assert result["forecast_started"] is False
+
+
 def test_cli_dispatch_lists_cases_as_compact_json(capsys):
     from gpuwm.cli import main
     assert main(["case-catalog", "list", "--catalog", str(EXAMPLES / "example.json"), "--json"]) == 0
@@ -328,6 +615,8 @@ def test_imported_native_creation_honors_hourly_cadence_and_unique_vtables(tmp_p
         assert raw["fetch"]["cycle"] == "2013-05-31T14"
         assert raw["fetch"]["cadence"] == 1 and raw["fetch"]["hours"] == 11
         assert raw["case_data"]["forcing_interval_s"] == 3600
+        assert [Path(value).resolve() for value in raw["case_data"]["forcing"]] == [(tmp_path / "data" / name / "era5-combined.grib").resolve()]
+        assert raw["case_data"]["geog_root"] == "${GPUWM_CASE_DATA_ROOT}/WPS_GEOG"
         assert raw["case_data"]["vtable"].startswith(name + ".")
         assert (tmp_path / raw["case_data"]["vtable"]).is_file()
         assert "interval_seconds = 3600" in out.with_suffix(".namelist.wps").read_text()

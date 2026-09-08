@@ -692,10 +692,8 @@ def write_domain_artifacts_manifest(
             f"refusing to overwrite domain-artifact manifest {manifest_path}")
     records = tuple(sorted(artifacts, key=lambda item: item.grid_id))
     identifiers = [item.grid_id for item in records]
-    if identifiers != list(range(1, len(records) + 1)):
-        raise ValueError(
-            "domain artifacts must contain contiguous grid ids beginning at "
-            f"d01, got {identifiers}")
+    from gpuwm.wps_domain_ids import validated_domain_ids
+    validated_domain_ids(identifiers)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     root = manifest_path.parent.resolve()
 
@@ -1834,12 +1832,8 @@ def _validated_hierarchy(exp, artifacts: Sequence[PreparedDomainArtifacts]):
         raise ValueError("hierarchy export requires at least one domain")
     if len(domains) > 99:
         raise ValueError("hierarchy export supports at most 99 WRF domains")
-    expected_ids = list(range(1, len(domains) + 1))
-    actual_ids = [domain.grid_id for domain in domains]
-    if actual_ids != expected_ids:
-        raise ValueError(
-            "WRF hierarchy grid ids must be contiguous and parent-before-child: "
-            f"expected {expected_ids}, got {actual_ids}")
+    from gpuwm.wps_domain_ids import validated_domain_ids
+    expected_ids = list(validated_domain_ids([domain.grid_id for domain in domains]))
     if exp.projection is None or exp.projection.map_proj not in (
             "lambert", "mercator", "polar"):
         raise ValueError(
@@ -1851,7 +1845,7 @@ def _validated_hierarchy(exp, artifacts: Sequence[PreparedDomainArtifacts]):
             raise ValueError(
                 f"duplicate artifacts for grid_id={artifact.grid_id}")
         declared[artifact.grid_id] = artifact
-    if sorted(declared) != expected_ids:
+    if sorted(declared) != sorted(expected_ids):
         raise ValueError(
             "domain-artifact ids must exactly cover the WRF hierarchy: "
             f"expected {expected_ids}, got {sorted(declared)}")

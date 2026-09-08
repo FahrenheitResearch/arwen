@@ -1345,6 +1345,14 @@ def test_split_history_window_matches_the_combined_native_render(tmp_path, capsy
     first = _write_wrfout(tmp_path / "wrfout_d02_first.nc", stamps[:1])
     last = _write_wrfout(tmp_path / "wrfout_d02_last.nc", stamps[1:], seed_offset=1)
     combined = _write_wrfout(tmp_path / "combined.nc", stamps)
+    import netCDF4
+    for path, source, updated in ((first, "initial_forcing", 0.), (last, "radiation_scheme", 2880.)):
+        with netCDF4.Dataset(path, "a") as dataset:
+            dataset.GPUWM_CARRIER_GLW_SOURCE = source
+            dataset.GPUWM_CARRIER_SWDOWN_SOURCE = source
+            dataset.GPUWM_CARRIER_GLW_LAST_UPDATE = updated
+            dataset.GPUWM_CARRIER_SWDOWN_LAST_UPDATE = updated
+            dataset.GPUWM_SURFACE_RADIATION_POLICY = "required"
     common = ["--engine", "rust", "--products", "qpf_1h", "--size", "400x300",
               "--run-stamp", "off"]
     isolated = tmp_path / "isolated"
@@ -1393,6 +1401,32 @@ def test_series_grouping_keeps_actual_runs_grids_and_episodes_separate(tmp_path)
     duplicate = _write_wrfout(tmp_path / "wrfout_d02_duplicate.nc", stamps[:1])
     with pytest.raises(ValueError, match="overlapping valid times"):
         group_history_series([first, duplicate])
+
+
+@pytest.mark.parametrize("attribute,value", [
+    ("GPUWM_INITIAL_CONDITION_SOURCE", "different-source"),
+    ("GPUWM_INITIAL_CONDITION_CYCLE", "1974-04-03_12:00:00"),
+    ("GPUWM_INITIAL_FORECAST_LEAD_HOURS", 6),
+    ("MP_PHYSICS", 6), ("GPUWM_SURFACE_RADIATION_POLICY", "disabled"),
+])
+def test_carrier_updates_do_not_join_different_source_or_scientific_histories(tmp_path, attribute, value):
+    import netCDF4
+    from gpuwm.render import group_history_series
+    first = _write_wrfout(tmp_path / "wrfout_d02_first.nc", ("1974-04-03_18:00:00",))
+    last = _write_wrfout(tmp_path / "wrfout_d02_last.nc", ("1974-04-03_19:00:00",))
+    for index, path in enumerate((first, last)):
+        with netCDF4.Dataset(path, "a") as dataset:
+            dataset.GPUWM_CARRIER_GLW_SOURCE = "initial_forcing" if index == 0 else "radiation_scheme"
+            dataset.GPUWM_CARRIER_GLW_LAST_UPDATE = index * 2880.
+            dataset.GPUWM_INITIAL_CONDITION_SOURCE = "era5"
+            dataset.GPUWM_INITIAL_CONDITION_CYCLE = "1974-04-03_18:00:00"
+            dataset.GPUWM_INITIAL_FORECAST_LEAD_HOURS = 0
+            dataset.MP_PHYSICS = 8
+            dataset.GPUWM_SURFACE_RADIATION_POLICY = "required"
+    assert group_history_series([last, first]) == [[first, last]]
+    with netCDF4.Dataset(last, "a") as dataset:
+        dataset.setncattr(attribute, value)
+    assert {tuple(group) for group in group_history_series([first, last])} == {(first,), (last,)}
 
 
 @needs_renderer

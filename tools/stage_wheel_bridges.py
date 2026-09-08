@@ -124,6 +124,7 @@ _WORKSPACE_TARGET = {
     "tools/region_global_dealias": "target/release",
     "tools/rw_wps": "target/release",
     "tools/arwen-tui": "target/release",
+    "tools/zarr_bridge": "target/release",
 }
 
 

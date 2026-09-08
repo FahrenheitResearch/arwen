@@ -92,6 +92,18 @@ fn fixture(root: &Path) {
 import sys
 def main(argv):
     import subprocess, time, os, json, pathlib
+    if len(argv) > 1 and argv[1] == 'shared-recovery':
+        mode = argv[2]
+        folder = pathlib.Path(os.environ['GPUWM_CONFIGURATION_RECOVERY_DIR'])
+        if mode != 'no-draft':
+            folder.mkdir()
+            (folder/'draft.toml').write_bytes(b"name='complete rejected candidate'\n")
+            (folder/'recovery.json').write_text(json.dumps({'schema':'arwen.configuration-recovery.v1','status':'memory-refused'}))
+        print(json.dumps({'schema':'arwen.configuration-error.v1','kind':'input' if mode == 'ordinary' else 'memory','created':False,'error':'budget refusal'}), flush=True)
+        if mode == 'mismatch':
+            (folder.parent/'result.json').write_text(json.dumps({'schema':'gpuwm-tui-result-v1','status':'failed','exit_code':2,'cli_args':['another-command']}))
+            os._exit(2)
+        return 0 if mode == 'success' else 2
     if argv[0] in ('go', 'check'):
         mode = argv[1]
         memory_one = mode.startswith('memory1-')
@@ -242,6 +254,25 @@ fn memory_recovery_requires_the_matching_worker_receipt_and_actual_refusal() {
         let mut running = job::Job::start(&python(), "check", &args, &directory, &root).unwrap();
         assert_eq!(wait(&mut running), 1);
         assert_eq!(running.memory_refused, matches!(mode, "valid" | "linux" | "compact"), "check1 {mode}");
+    }
+}
+
+#[test]
+fn shared_configuration_recovery_does_not_depend_on_the_creator_command_name() {
+    let root = scratch("shared-recovery");
+    fixture(&root);
+    for creator in ["case-catalog", "research", "future-configuration-creator"] {
+        for mode in ["valid", "ordinary", "success", "mismatch", "no-draft"] {
+            let directory = root.join(format!("{creator}-{mode}"));
+            let mut running = job::Job::start(&python(), creator,
+                &["shared-recovery".into(), mode.into()], &directory, &root).unwrap();
+            assert_eq!(wait(&mut running), if mode == "success" { 0 } else { 2 });
+            assert_eq!(running.memory_refused, matches!(mode, "valid" | "no-draft"));
+            assert_eq!(running.configuration_recovery().is_some(), mode == "valid");
+            if let Some(path) = running.configuration_recovery() {
+                assert_eq!(fs::read_to_string(path).unwrap(), "name='complete rejected candidate'\n");
+            }
+        }
     }
 }
 

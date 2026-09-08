@@ -1,0 +1,946 @@
+//! Zarr nodes.
+//!
+//! A node in a Zarr hierarchy represents either an [`Array`](crate::array::Array) or a [`Group`](crate::group::Group).
+//!
+//! A [`Node`] has an associated [`NodePath`], [`NodeMetadata`], and children.
+//!
+//! The [`Node::hierarchy_tree`] function can be used to create a string representation of a the hierarchy below a node.
+
+mod node_name;
+pub use node_name::{NodeName, NodeNameError};
+
+mod node_path;
+pub use node_path::{NodePath, NodePathError};
+
+mod node_sync;
+pub(crate) use node_sync::get_all_nodes_of;
+pub use node_sync::{get_child_nodes, get_child_nodes_opt, node_exists, node_exists_listable};
+
+mod key;
+pub use key::{
+    data_key, meta_key, meta_key_v2_array, meta_key_v2_attributes, meta_key_v2_group, meta_key_v3,
+};
+
+#[cfg(feature = "async")]
+mod node_async;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
+
+#[cfg(feature = "async")]
+pub(crate) use node_async::async_get_all_nodes_of;
+#[cfg(feature = "async")]
+pub use node_async::{
+    async_get_child_nodes, async_get_child_nodes_opt, async_node_exists, async_node_exists_listable,
+};
+use thiserror::Error;
+
+use crate::array::{ArrayCreateError, ArrayMetadata};
+use crate::config::{MetadataRetrieveVersion, UseConsolidatedMetadata};
+use crate::group::GroupCreateError;
+use zarrs_metadata::GroupMetadata;
+pub use zarrs_metadata::NodeMetadata;
+use zarrs_metadata::v2::{ArrayMetadataV2, GroupMetadataV2};
+use zarrs_metadata_ext::group::consolidated_metadata::{
+    ConsolidatedMetadata, ConsolidatedMetadataMetadata,
+};
+#[cfg(feature = "async")]
+use zarrs_storage::{AsyncListableStorageTraits, AsyncReadableStorageTraits};
+use zarrs_storage::{ListableStorageTraits, ReadableStorageTraits, StorageError, StorePrefixError};
+
+/// A Zarr hierarchy node.
+///
+/// See <https://zarr-specs.readthedocs.io/en/latest/v3/core/index.html#hierarchy>.
+#[derive(Debug, Clone)]
+pub struct Node {
+    /// Node path.
+    path: NodePath,
+    /// Node metadata.
+    metadata: NodeMetadata,
+    /// Node children.
+    ///
+    /// Only group nodes can have children.
+    children: Vec<Node>,
+}
+
+impl From<Node> for NodeMetadata {
+    fn from(value: Node) -> Self {
+        value.metadata
+    }
+}
+
+impl From<Node> for NodePath {
+    fn from(value: Node) -> Self {
+        value.path
+    }
+}
+
+/// A node creation error.
+#[derive(Clone, Debug, Error)]
+pub enum NodeCreateError {
+    /// An invalid node path.
+    #[error(transparent)]
+    NodePathError(#[from] NodePathError),
+    /// An invalid store prefix.
+    #[error(transparent)]
+    StorePrefixError(#[from] StorePrefixError),
+    /// A storage error.
+    #[error(transparent)]
+    StorageError(#[from] StorageError),
+    /// Metadata version mismatch
+    #[error("Found V2 metadata in V3 key or vice-versa")]
+    MetadataVersionMismatch,
+    /// Missing metadata.
+    #[error("Metadata is missing for {0}")]
+    MissingMetadata(String),
+    // TODO: In a future breaking release, consider adding a more specific
+    // `MissingConsolidatedMetadata` variant instead of using `MissingMetadata`.
+}
+
+impl From<NodeCreateError> for ArrayCreateError {
+    fn from(value: NodeCreateError) -> Self {
+        ArrayCreateError::from(match value {
+            NodeCreateError::NodePathError(err) => StorageError::Other(err.to_string()),
+            NodeCreateError::StorePrefixError(err) => StorageError::Other(err.to_string()),
+            NodeCreateError::StorageError(err) => err,
+            NodeCreateError::MetadataVersionMismatch => {
+                StorageError::Other(NodeCreateError::MetadataVersionMismatch.to_string())
+            }
+            NodeCreateError::MissingMetadata(err) => {
+                StorageError::Other(NodeCreateError::MissingMetadata(err).to_string())
+            }
+        })
+    }
+}
+
+impl From<NodeCreateError> for GroupCreateError {
+    fn from(value: NodeCreateError) -> Self {
+        GroupCreateError::from(match value {
+            NodeCreateError::NodePathError(err) => StorageError::Other(err.to_string()),
+            NodeCreateError::StorePrefixError(err) => StorageError::Other(err.to_string()),
+            NodeCreateError::StorageError(err) => err,
+            NodeCreateError::MetadataVersionMismatch => {
+                StorageError::Other(NodeCreateError::MetadataVersionMismatch.to_string())
+            }
+            NodeCreateError::MissingMetadata(err) => {
+                StorageError::Other(NodeCreateError::MissingMetadata(err).to_string())
+            }
+        })
+    }
+}
+
+/// Expand the inline `metadata` map of a [`ConsolidatedMetadata`] into a flat
+/// list of `(NodePath, NodeMetadata)` rooted under `base_path`.
+///
+/// Keys in the consolidated map are relative paths to `base_path`. A leading
+/// `/` is tolerated for compatibility with implementations that include it.
+pub(crate) fn expand_consolidated_metadata(
+    base_path: &NodePath,
+    consolidated: ConsolidatedMetadata,
+) -> Result<Vec<(NodePath, NodeMetadata)>, NodeCreateError> {
+    let mut out = Vec::with_capacity(consolidated.metadata.len());
+    for (rel, md) in consolidated.metadata {
+        let path = base_path.join(&rel)?;
+        if path == *base_path {
+            // The base group is conventionally not included in its own consolidated map; skip it if it is.
+            continue;
+        }
+        out.push((path, md));
+    }
+    Ok(out)
+}
+
+/// Recursively collect the children of `parent` from the parent-keyed map.
+fn collect_children_from_map(
+    parent: &NodePath,
+    by_parent: &mut BTreeMap<NodePath, BTreeMap<NodePath, NodeMetadata>>,
+) -> Vec<Node> {
+    let Some(entries) = by_parent.remove(parent) else {
+        return Vec::new();
+    };
+    entries
+        .into_iter()
+        .map(|(path, md)| {
+            let children = match &md {
+                NodeMetadata::Group(_) => collect_children_from_map(&path, by_parent),
+                NodeMetadata::Array(_) => Vec::new(),
+            };
+            Node::new_with_metadata(path, md, children)
+        })
+        .collect()
+}
+
+/// Build a tree of [`Node`]s from a flat list of `(NodePath, NodeMetadata)` entries
+/// and the `base_path` of the parent group whose direct children are returned.
+pub(crate) fn build_node_tree(
+    base_path: &NodePath,
+    flat: Vec<(NodePath, NodeMetadata)>,
+) -> Vec<Node> {
+    let mut by_parent: BTreeMap<NodePath, BTreeMap<NodePath, NodeMetadata>> = BTreeMap::new();
+    for (path, md) in flat {
+        if let Some(parent) = path.parent() {
+            by_parent.entry(parent).or_default().insert(path, md);
+        }
+    }
+    collect_children_from_map(base_path, &mut by_parent)
+}
+
+/// Apply the [`UseConsolidatedMetadata`] policy to an already-extracted optional
+/// [`ConsolidatedMetadata`].
+///
+/// Returns `Ok(Some(...))` when consolidated metadata should be used, `Ok(None)`
+/// when it is absent and the policy permits falling back to listing, and
+/// [`NodeCreateError::MissingMetadata`] when the policy requires consolidated
+/// metadata but it is absent.
+pub(crate) fn resolve_consolidated_policy(
+    path: &NodePath,
+    consolidated: Option<ConsolidatedMetadata>,
+    policy: UseConsolidatedMetadata,
+) -> Result<Option<ConsolidatedMetadata>, NodeCreateError> {
+    if policy == UseConsolidatedMetadata::Never {
+        return Ok(None);
+    }
+    match (consolidated, policy) {
+        (Some(c), _) => Ok(Some(c)),
+        // TODO: In a future breaking release, consider using a more specific
+        // `MissingConsolidatedMetadata` error variant instead of `MissingMetadata`.
+        (None, UseConsolidatedMetadata::Must) => Err(NodeCreateError::MissingMetadata(format!(
+            "Consolidated metadata required but missing on group {path}"
+        ))),
+        (None, _) => Ok(None),
+    }
+}
+
+/// Read the v3 consolidated metadata from a group's metadata, honouring the
+/// configured [`UseConsolidatedMetadata`] policy.
+pub(crate) fn consolidated_metadata_for_open(
+    path: &NodePath,
+    metadata: &NodeMetadata,
+    policy: UseConsolidatedMetadata,
+) -> Result<Option<ConsolidatedMetadata>, NodeCreateError> {
+    let consolidated = match metadata {
+        NodeMetadata::Group(GroupMetadata::V3(group_metadata)) => group_metadata
+            .additional_fields
+            .get("consolidated_metadata")
+            .and_then(|f| {
+                serde_json::from_value::<ConsolidatedMetadata>(f.as_value().clone()).ok()
+            }),
+        NodeMetadata::Group(GroupMetadata::V2(_)) | NodeMetadata::Array(_) => None,
+    };
+    resolve_consolidated_policy(path, consolidated, policy)
+}
+
+/// Build a `Vec<Node>` containing only the direct children of `base_path`
+/// from a flat `(NodePath, NodeMetadata)` list. Nested descendants are dropped.
+pub(crate) fn direct_children_from_flat(
+    base_path: &NodePath,
+    flat: Vec<(NodePath, NodeMetadata)>,
+) -> Vec<Node> {
+    let mut out: Vec<Node> = flat
+        .into_iter()
+        .filter(|(p, _)| p.parent().as_ref() == Some(base_path))
+        .map(|(p, m)| Node::new_with_metadata(p, m, vec![]))
+        .collect();
+    out.sort_by(|a, b| a.path().cmp(b.path()));
+    out
+}
+
+impl Node {
+    pub(crate) fn get_metadata<TStorage: ?Sized + ReadableStorageTraits + ListableStorageTraits>(
+        storage: &Arc<TStorage>,
+        path: &NodePath,
+        version: &MetadataRetrieveVersion,
+    ) -> Result<NodeMetadata, NodeCreateError> {
+        if let MetadataRetrieveVersion::Default | MetadataRetrieveVersion::V3 = version {
+            // Try a Zarr V3 group/array
+            let key_v3 = meta_key_v3(path);
+            if let Some(metadata) = storage.get(&key_v3)? {
+                let metadata: NodeMetadata = serde_json::from_slice(&metadata)
+                    .map_err(|err| StorageError::InvalidMetadata(key_v3, err.to_string()))?;
+                match metadata {
+                    NodeMetadata::Array(ArrayMetadata::V3(_))
+                    | NodeMetadata::Group(GroupMetadata::V3(_)) => return Ok(metadata),
+                    NodeMetadata::Array(ArrayMetadata::V2(_))
+                    | NodeMetadata::Group(GroupMetadata::V2(_)) => {
+                        return Err(NodeCreateError::MetadataVersionMismatch);
+                    }
+                }
+            }
+        }
+
+        if let MetadataRetrieveVersion::Default | MetadataRetrieveVersion::V2 = version {
+            // Try a Zarr V2 array
+            let array_key = meta_key_v2_array(path);
+            let attributes_key = meta_key_v2_attributes(path);
+            if let Some(metadata) = storage.get(&array_key)? {
+                let mut metadata: ArrayMetadataV2 = serde_json::from_slice(&metadata)
+                    .map_err(|err| StorageError::InvalidMetadata(array_key, err.to_string()))?;
+                let attributes = storage.get(&attributes_key)?;
+                if let Some(attributes) = attributes {
+                    metadata.attributes = serde_json::from_slice(&attributes).map_err(|err| {
+                        StorageError::InvalidMetadata(attributes_key, err.to_string())
+                    })?;
+                }
+                return Ok(NodeMetadata::Array(ArrayMetadata::V2(metadata)));
+            }
+
+            // Try a Zarr V2 group
+            let group_key = meta_key_v2_group(path);
+            if let Some(metadata) = storage.get(&group_key)? {
+                let mut metadata: GroupMetadataV2 = serde_json::from_slice(&metadata)
+                    .map_err(|err| StorageError::InvalidMetadata(group_key, err.to_string()))?;
+                let attributes = storage.get(&attributes_key)?;
+                if let Some(attributes) = attributes {
+                    metadata.attributes = serde_json::from_slice(&attributes).map_err(|err| {
+                        StorageError::InvalidMetadata(attributes_key, err.to_string())
+                    })?;
+                }
+                return Ok(NodeMetadata::Group(GroupMetadata::V2(metadata)));
+            }
+        }
+
+        // No metadata has been found
+        Err(NodeCreateError::MissingMetadata(path.to_string()))
+    }
+
+    #[cfg(feature = "async")]
+    // Identical to get_metadata.. with awaits
+    // "maybe async" one day?
+    pub(crate) async fn async_get_metadata<
+        TStorage: ?Sized + AsyncReadableStorageTraits + AsyncListableStorageTraits,
+    >(
+        storage: &Arc<TStorage>,
+        path: &NodePath,
+        version: &MetadataRetrieveVersion,
+    ) -> Result<NodeMetadata, NodeCreateError> {
+        if let MetadataRetrieveVersion::Default | MetadataRetrieveVersion::V3 = version {
+            // Try a Zarr V3 group/array
+            let key_v3 = meta_key_v3(path);
+            if let Some(metadata) = storage.get(&key_v3).await? {
+                let metadata: NodeMetadata = serde_json::from_slice(&metadata)
+                    .map_err(|err| StorageError::InvalidMetadata(key_v3, err.to_string()))?;
+                match metadata {
+                    NodeMetadata::Array(ArrayMetadata::V3(_))
+                    | NodeMetadata::Group(GroupMetadata::V3(_)) => return Ok(metadata),
+                    NodeMetadata::Array(ArrayMetadata::V2(_))
+                    | NodeMetadata::Group(GroupMetadata::V2(_)) => {
+                        return Err(NodeCreateError::MetadataVersionMismatch);
+                    }
+                }
+            }
+        }
+
+        if let MetadataRetrieveVersion::Default | MetadataRetrieveVersion::V2 = version {
+            // Try a Zarr V2 array
+            let array_key = meta_key_v2_array(path);
+            let attributes_key = meta_key_v2_attributes(path);
+            if let Some(metadata) = storage.get(&array_key).await? {
+                let mut metadata: ArrayMetadataV2 = serde_json::from_slice(&metadata)
+                    .map_err(|err| StorageError::InvalidMetadata(array_key, err.to_string()))?;
+                let attributes = storage.get(&attributes_key).await?;
+                if let Some(attributes) = attributes {
+                    metadata.attributes = serde_json::from_slice(&attributes).map_err(|err| {
+                        StorageError::InvalidMetadata(attributes_key, err.to_string())
+                    })?;
+                }
+                return Ok(NodeMetadata::Array(ArrayMetadata::V2(metadata)));
+            }
+
+            // Try a Zarr V2 group
+            let group_key = meta_key_v2_group(path);
+            if let Some(metadata) = storage.get(&group_key).await? {
+                let mut metadata: GroupMetadataV2 = serde_json::from_slice(&metadata)
+                    .map_err(|err| StorageError::InvalidMetadata(group_key, err.to_string()))?;
+                let attributes = storage.get(&attributes_key).await?;
+                if let Some(attributes) = attributes {
+                    metadata.attributes = serde_json::from_slice(&attributes).map_err(|err| {
+                        StorageError::InvalidMetadata(attributes_key, err.to_string())
+                    })?;
+                }
+                return Ok(NodeMetadata::Group(GroupMetadata::V2(metadata)));
+            }
+        }
+
+        // No metadata has been found
+        Err(NodeCreateError::MissingMetadata(path.to_string()))
+    }
+
+    /// Open a node at `path` and read metadata and children from `storage` with default [`MetadataRetrieveVersion`].
+    ///
+    /// # Errors
+    /// Returns [`NodeCreateError`] if metadata is invalid or there is a failure to list child nodes.
+    pub fn open<TStorage: ?Sized + ReadableStorageTraits + ListableStorageTraits>(
+        storage: &Arc<TStorage>,
+        path: &str,
+    ) -> Result<Self, NodeCreateError> {
+        Self::open_opt(storage, path, &MetadataRetrieveVersion::Default)
+    }
+
+    /// Open a node at `path` and read metadata and children from `storage` with non-default [`MetadataRetrieveVersion`].
+    ///
+    /// # Errors
+    /// Returns [`NodeCreateError`] if metadata is invalid or there is a failure to list child nodes.
+    pub fn open_opt<TStorage: ?Sized + ReadableStorageTraits + ListableStorageTraits>(
+        storage: &Arc<TStorage>,
+        path: &str,
+        version: &MetadataRetrieveVersion,
+    ) -> Result<Self, NodeCreateError> {
+        let path: NodePath = path.try_into()?;
+        let policy = crate::config::global_config().use_consolidated_metadata();
+        let metadata = Self::get_metadata(storage, &path, version)?;
+        let children = match &metadata {
+            NodeMetadata::Array(_) => Vec::default(),
+            NodeMetadata::Group(_) => {
+                match consolidated_metadata_for_open(&path, &metadata, policy)? {
+                    Some(consolidated) => {
+                        let flat = expand_consolidated_metadata(&path, consolidated)?;
+                        build_node_tree(&path, flat)
+                    }
+                    None => get_child_nodes_opt(storage, &path, true, version)?,
+                }
+            }
+        };
+        let node = Self {
+            path,
+            metadata,
+            children,
+        };
+        Ok(node)
+    }
+
+    #[cfg(feature = "async")]
+    /// Asynchronously open a node at `path` and read metadata and children from `storage` with default [`MetadataRetrieveVersion`].
+    ///
+    /// # Errors
+    /// Returns [`NodeCreateError`] if metadata is invalid or there is a failure to list child nodes.
+    pub async fn async_open<
+        TStorage: ?Sized + AsyncReadableStorageTraits + AsyncListableStorageTraits,
+    >(
+        storage: Arc<TStorage>,
+        path: &str,
+    ) -> Result<Self, NodeCreateError> {
+        Self::async_open_opt(storage, path, &MetadataRetrieveVersion::Default).await
+    }
+
+    #[cfg(feature = "async")]
+    /// Asynchronously open a node at `path` and read metadata and children from `storage` with non-default [`MetadataRetrieveVersion`].
+    ///
+    /// # Errors
+    /// Returns [`NodeCreateError`] if metadata is invalid or there is a failure to list child nodes.
+    pub async fn async_open_opt<
+        TStorage: ?Sized + AsyncReadableStorageTraits + AsyncListableStorageTraits,
+    >(
+        storage: Arc<TStorage>,
+        path: &str,
+        version: &MetadataRetrieveVersion,
+    ) -> Result<Self, NodeCreateError> {
+        let path: NodePath = path.try_into()?;
+        let policy = crate::config::global_config().use_consolidated_metadata();
+        let metadata = Self::async_get_metadata(&storage, &path, version).await?;
+        let children = match &metadata {
+            NodeMetadata::Array(_) => Vec::default(),
+            NodeMetadata::Group(_) => {
+                match consolidated_metadata_for_open(&path, &metadata, policy)? {
+                    Some(consolidated) => {
+                        let flat = expand_consolidated_metadata(&path, consolidated)?;
+                        build_node_tree(&path, flat)
+                    }
+                    None => async_get_child_nodes_opt(&storage, &path, true, version).await?,
+                }
+            }
+        };
+        let node = Self {
+            path,
+            metadata,
+            children,
+        };
+        Ok(node)
+    }
+
+    /// Create a new node at `path` with `metadata` and `children`.
+    #[must_use]
+    pub fn new_with_metadata(path: NodePath, metadata: NodeMetadata, children: Vec<Self>) -> Self {
+        Self {
+            path,
+            metadata,
+            children,
+        }
+    }
+
+    /// Indicates if a node is the root.
+    #[must_use]
+    pub fn is_root(&self) -> bool {
+        self.path.is_root()
+    }
+
+    /// Returns the name of the node.
+    #[must_use]
+    pub fn name(&self) -> NodeName {
+        let name = self
+            .path
+            .as_str()
+            .split('/')
+            .next_back()
+            .unwrap_or_default();
+        unsafe { NodeName::new_unchecked(name) }
+    }
+
+    /// Returns a reference to the path of the node.
+    #[must_use]
+    pub fn path(&self) -> &NodePath {
+        &self.path
+    }
+
+    /// Returns a reference to the metadata of the node.
+    #[must_use]
+    pub fn metadata(&self) -> &NodeMetadata {
+        &self.metadata
+    }
+
+    /// Returns a reference to the children of the node.
+    #[must_use]
+    pub fn children(&self) -> &[Self] {
+        &self.children
+    }
+
+    /// Return a tree representation of a hierarchy as a string.
+    ///
+    /// Arrays are annotated with their shape and data type.
+    /// For example:
+    /// ```text
+    /// a
+    ///   baz [10000, 1000] float64
+    ///   foo [10000, 1000] float64
+    /// b
+    /// ```
+    #[must_use]
+    pub fn hierarchy_tree(&self) -> String {
+        fn print_metadata(name: &str, string: &mut String, metadata: &NodeMetadata) {
+            match metadata {
+                NodeMetadata::Array(array_metadata) => {
+                    let s = match array_metadata {
+                        ArrayMetadata::V3(array_metadata) => {
+                            format!(
+                                "{} {:?} {}",
+                                name, array_metadata.shape, array_metadata.data_type
+                            )
+                        }
+                        ArrayMetadata::V2(array_metadata) => {
+                            format!(
+                                "{} {:?} {:?}",
+                                name, array_metadata.shape, array_metadata.dtype
+                            )
+                        }
+                    };
+                    string.push_str(&s);
+                }
+                NodeMetadata::Group(_) => {
+                    string.push_str(name);
+                }
+            }
+            string.push('\n');
+        }
+
+        fn update_tree(string: &mut String, children: &[Node], depth: usize) {
+            for child in children {
+                let name = child.name();
+                string.push_str(&" ".repeat(depth * 2));
+                print_metadata(name.as_str(), string, &child.metadata);
+                update_tree(string, &child.children, depth + 1);
+            }
+        }
+
+        let mut string = String::default();
+        print_metadata("/", &mut string, &self.metadata);
+        update_tree(&mut string, &self.children, 1);
+        string
+    }
+
+    /// Consolidate metadata. Returns [`None`] for an array.
+    ///
+    /// [`ConsolidatedMetadataMetadata`] can be converted into [`ConsolidatedMetadata`] in [`GroupMetadataV3`](crate::metadata::v3::GroupMetadataV3).
+    #[must_use]
+    #[allow(clippy::items_after_statements)]
+    pub fn consolidate_metadata(&self) -> Option<ConsolidatedMetadataMetadata> {
+        if let NodeMetadata::Array(_) = self.metadata {
+            // Arrays cannot have consolidated metadata
+            return None;
+        }
+
+        fn update_consolidated_metadata(
+            node_path: &str,
+            consolidated_metadata: &mut ConsolidatedMetadataMetadata,
+            children: &[Node],
+        ) {
+            for child in children {
+                let relative_path = child
+                    .path()
+                    .as_str()
+                    .strip_prefix(node_path)
+                    .expect("child path should always include the node path");
+                let relative_path = relative_path.strip_prefix('/').unwrap_or(relative_path);
+                let relative_path = relative_path.to_string();
+                consolidated_metadata.insert(relative_path, child.metadata.clone());
+                update_consolidated_metadata(node_path, consolidated_metadata, &child.children);
+            }
+        }
+        let mut consolidated_metadata = HashMap::default();
+        update_consolidated_metadata(
+            self.path().as_str(),
+            &mut consolidated_metadata,
+            &self.children,
+        );
+        Some(consolidated_metadata)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::array::{ArrayBuilder, ArrayMetadataOptions};
+    use crate::group::{GroupMetadata, GroupMetadataV3};
+    use zarrs_storage::store::MemoryStore;
+    use zarrs_storage::{StoreKey, WritableStorageTraits};
+
+    #[test]
+    fn node_metadata_array() {
+        const JSON_ARRAY: &str = r#"{
+            "zarr_format": 3,
+            "node_type": "array",
+            "shape": [
+              10000,
+              1000
+            ],
+            "data_type": "float64",
+            "chunk_grid": {
+              "name": "regular",
+              "configuration": {
+                "chunk_shape": [
+                  1000,
+                  100
+                ]
+              }
+            },
+            "chunk_key_encoding": {
+              "name": "default",
+              "configuration": {
+                "separator": "/"
+              }
+            },
+            "fill_value": "NaN",
+            "codecs": [
+              {
+                "name": "bytes",
+                "configuration": {
+                  "endian": "little"
+                }
+              },
+              {
+                "name": "gzip",
+                "configuration": {
+                  "level": 1
+                }
+              }
+            ],
+            "attributes": {
+              "foo": 42,
+              "bar": "apples",
+              "baz": [
+                1,
+                2,
+                3,
+                4
+              ]
+            },
+            "dimension_names": [
+              "rows",
+              "columns"
+            ]
+          }"#;
+        serde_json::from_str::<NodeMetadata>(JSON_ARRAY).unwrap();
+    }
+
+    #[test]
+    fn node_metadata_group() {
+        const JSON_GROUP: &str = r#"{
+        "zarr_format": 3,
+        "node_type": "group",
+        "attributes": {
+            "spam": "ham",
+            "eggs": 42
+        }
+    }"#;
+        serde_json::from_str::<NodeMetadata>(JSON_GROUP).unwrap();
+    }
+
+    /// Implicit node support is removed since implicit groups were removed from the Zarr V3 spec
+    #[test]
+    fn node_implicit() {
+        let store = std::sync::Arc::new(MemoryStore::new());
+        let node_path = "/node";
+        assert!(Node::open(&store, node_path).is_err());
+    }
+
+    #[test]
+    fn node_array() {
+        let store = std::sync::Arc::new(MemoryStore::new());
+        let node_path = "/node";
+        let array = ArrayBuilder::new(
+            vec![1, 2, 3],
+            vec![1, 1, 1],
+            crate::array::data_type::float32(),
+            0.0f32,
+        )
+        .build(store.clone(), node_path)
+        .unwrap();
+        array.store_metadata().unwrap();
+        let stored_metadata = array.metadata_opt(&ArrayMetadataOptions::default());
+
+        let node = Node::open(&store, node_path).unwrap();
+        assert_eq!(node.metadata, NodeMetadata::Array(stored_metadata));
+    }
+
+    #[test]
+    fn node_invalid_path() {
+        let store: std::sync::Arc<MemoryStore> = std::sync::Arc::new(MemoryStore::new());
+        let invalid_node_path = "node";
+        assert_eq!(
+            Node::open(&store, invalid_node_path)
+                .unwrap_err()
+                .to_string(),
+            "invalid node path node"
+        );
+    }
+
+    #[test]
+    fn node_invalid_metadata() {
+        let store: std::sync::Arc<MemoryStore> = std::sync::Arc::new(MemoryStore::new());
+        store
+            .set(&StoreKey::new("node/zarr.json").unwrap(), vec![0].into())
+            .unwrap();
+        assert_eq!(
+            Node::open(&store, "/node").unwrap_err().to_string(),
+            "error parsing metadata for node/zarr.json: expected value at line 1 column 1"
+        );
+    }
+
+    #[test]
+    fn node_invalid_child() {
+        let store: std::sync::Arc<MemoryStore> = std::sync::Arc::new(MemoryStore::new());
+        store
+            .set(
+                &StoreKey::new("node/array/zarr.json").unwrap(),
+                vec![0].into(),
+            )
+            .unwrap();
+        assert_eq!(
+            Node::open(&store, "/node/array").unwrap_err().to_string(),
+            "error parsing metadata for node/array/zarr.json: expected value at line 1 column 1"
+        );
+        assert_eq!(
+            Node::open(&store, "/node").unwrap_err().to_string(),
+            "Metadata is missing for /node"
+        );
+    }
+
+    #[test]
+    fn node_root() {
+        let node = Node::new_with_metadata(
+            NodePath::root(),
+            NodeMetadata::Group(GroupMetadata::V3(GroupMetadataV3::default())),
+            vec![],
+        );
+        assert!(node.is_root());
+    }
+
+    fn array_md(shape: u64) -> NodeMetadata {
+        NodeMetadata::Array(
+            serde_json::from_str::<zarrs_metadata::v3::ArrayMetadataV3>(&format!(
+                r#"{{
+                    "zarr_format": 3,
+                    "node_type": "array",
+                    "shape": [{shape}],
+                    "data_type": "float32",
+                    "chunk_grid": {{"name": "regular", "configuration": {{"chunk_shape": [{shape}]}}}},
+                    "chunk_key_encoding": {{"name": "default", "configuration": {{"separator": "/"}}}},
+                    "fill_value": 0,
+                    "codecs": [{{"name": "bytes", "configuration": {{"endian": "little"}}}}]
+                }}"#
+            ))
+            .unwrap()
+            .into(),
+        )
+    }
+
+    fn group_md() -> NodeMetadata {
+        NodeMetadata::Group(GroupMetadataV3::default().into())
+    }
+
+    #[test]
+    fn expand_consolidated_metadata_root_and_nested_bases() {
+        // Base is root: rel "foo" → "/foo"
+        let mut c = ConsolidatedMetadata::default();
+        c.metadata.insert("foo".to_string(), array_md(1));
+        c.metadata.insert("/bar".to_string(), array_md(2));
+        c.metadata.insert(String::new(), group_md()); // base group entry — must be skipped
+        c.metadata.insert("/".to_string(), group_md()); // also base entry after stripping leading slash
+        let out = super::expand_consolidated_metadata(&NodePath::root(), c).unwrap();
+        let paths: Vec<_> = out.iter().map(|(p, _)| p.as_str().to_string()).collect();
+        assert!(paths.contains(&"/foo".to_string()));
+        assert!(paths.contains(&"/bar".to_string()));
+        assert!(
+            !paths.iter().any(|p| p == "/"),
+            "base group must be skipped"
+        );
+
+        // Base is non-root: rel "foo" → "/group/foo"
+        let base = NodePath::new("/group").unwrap();
+        let mut c = ConsolidatedMetadata::default();
+        c.metadata.insert("foo".to_string(), array_md(3));
+        c.metadata.insert("sub/leaf".to_string(), array_md(4));
+        let out = super::expand_consolidated_metadata(&base, c).unwrap();
+        let mut paths: Vec<_> = out.iter().map(|(p, _)| p.as_str().to_string()).collect();
+        paths.sort();
+        assert_eq!(paths, vec!["/group/foo", "/group/sub/leaf"]);
+    }
+
+    #[test]
+    fn build_node_tree_and_direct_children() {
+        // Hierarchy: /a (group), /a/x (array), /a/y (group, no children)
+        let entries = vec![
+            (NodePath::new("/a").unwrap(), group_md()),
+            (NodePath::new("/a/x").unwrap(), array_md(1)),
+            (NodePath::new("/a/y").unwrap(), group_md()),
+        ];
+
+        // From root: only /a is direct.
+        let direct = super::direct_children_from_flat(&NodePath::root(), entries.clone());
+        let names: Vec<_> = direct
+            .iter()
+            .map(|n| n.path().as_str().to_string())
+            .collect();
+        assert_eq!(names, vec!["/a"]);
+        assert!(
+            direct[0].children().is_empty(),
+            "direct must not populate descendants"
+        );
+
+        // Tree from root.
+        let tree = super::build_node_tree(&NodePath::root(), entries.clone());
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].path().as_str(), "/a");
+        let mut child_names: Vec<_> = tree[0]
+            .children()
+            .iter()
+            .map(|n| n.path().as_str().to_string())
+            .collect();
+        child_names.sort();
+        assert_eq!(child_names, vec!["/a/x", "/a/y"]);
+        // /a/y is an empty group — collect_children_from_map's "no entries" branch.
+        let y = tree[0]
+            .children()
+            .iter()
+            .find(|n| n.path().as_str() == "/a/y")
+            .unwrap();
+        assert!(y.children().is_empty());
+    }
+
+    #[test]
+    fn consolidated_metadata_for_open_v2_and_array_return_none() {
+        use crate::config::UseConsolidatedMetadata;
+
+        // V2 group metadata → never has consolidated metadata.
+        let v2_group = NodeMetadata::Group(zarrs_metadata::v2::GroupMetadataV2::new().into());
+        let result = super::consolidated_metadata_for_open(
+            &NodePath::root(),
+            &v2_group,
+            UseConsolidatedMetadata::Auto,
+        )
+        .unwrap();
+        assert!(result.is_none());
+
+        // Array metadata → never has consolidated metadata.
+        let arr = array_md(1);
+        let result = super::consolidated_metadata_for_open(
+            &NodePath::root(),
+            &arr,
+            UseConsolidatedMetadata::Auto,
+        )
+        .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn resolve_consolidated_policy_branches() {
+        use crate::config::UseConsolidatedMetadata;
+        let path = NodePath::root();
+        let some_md = ConsolidatedMetadata::default();
+
+        // Never always returns None even when present.
+        assert!(
+            super::resolve_consolidated_policy(
+                &path,
+                Some(some_md.clone()),
+                UseConsolidatedMetadata::Never,
+            )
+            .unwrap()
+            .is_none()
+        );
+
+        // Auto with present returns Some.
+        assert!(
+            super::resolve_consolidated_policy(
+                &path,
+                Some(some_md.clone()),
+                UseConsolidatedMetadata::Auto,
+            )
+            .unwrap()
+            .is_some()
+        );
+
+        // Auto with absent returns None.
+        assert!(
+            super::resolve_consolidated_policy(&path, None, UseConsolidatedMetadata::Auto,)
+                .unwrap()
+                .is_none()
+        );
+
+        // Must with absent errors.
+        let err = super::resolve_consolidated_policy(&path, None, UseConsolidatedMetadata::Must)
+            .unwrap_err();
+        assert!(matches!(err, NodeCreateError::MissingMetadata(_)));
+    }
+
+    #[test]
+    fn expand_consolidated_metadata_malformed_key_errors() {
+        // A key with a trailing slash produces an invalid NodePath ("/foo/").
+        let mut c = ConsolidatedMetadata::default();
+        c.metadata.insert("foo/".to_string(), array_md(1));
+        let err = super::expand_consolidated_metadata(&NodePath::root(), c).unwrap_err();
+        assert!(matches!(err, NodeCreateError::NodePathError(_)));
+    }
+
+    #[test]
+    fn missing_consolidated_metadata_error_message() {
+        // Verify that missing consolidated metadata uses MissingMetadata with a descriptive message.
+        let path = NodePath::root();
+        let err = super::resolve_consolidated_policy(&path, None, UseConsolidatedMetadata::Must)
+            .unwrap_err();
+        let s = err.to_string();
+        assert!(s.contains("Consolidated metadata required but missing"));
+
+        // Verify the error converts correctly to ArrayCreateError and GroupCreateError.
+        let arr_err: ArrayCreateError = err.clone().into();
+        assert!(
+            arr_err
+                .to_string()
+                .contains("Consolidated metadata required but missing")
+        );
+
+        let group_err: GroupCreateError = err.into();
+        assert!(
+            group_err
+                .to_string()
+                .contains("Consolidated metadata required but missing")
+        );
+    }
+}

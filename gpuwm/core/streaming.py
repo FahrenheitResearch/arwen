@@ -147,6 +147,10 @@ STREAMING_KEYS = frozenset({
 class StreamingRefused(RuntimeError):
     """A configuration that asks for ``[tiles]`` and cannot legally have it."""
 
+    def __init__(self, *args, resource=None):
+        super().__init__(*args)
+        self.resource = resource
+
 
 class _Unset:
     """Distinguishes "not supplied" from "supplied as None".
@@ -896,7 +900,9 @@ def streamed_envelope(cfg, options: "StreamingOptions | None" = None, *,
     # single-domain envelope and the tree walk's host ledger cannot drift
     # apart -- and unrounded, so every figure below is the one it was.
     store, arena = _store_and_arena_bytes(cfg, decision)
-    host_total = _host_total_bytes()
+    # A caller pricing another forecast host supplies that host's measured
+    # Machine. Keep this budget report on the same host as the tile decision.
+    host_total = machine.host_bytes if machine is not None else _host_total_bytes()
     return StreamedEnvelope(
         vram_bytes=int(vram), store_bytes=int(store), arena_bytes=int(arena),
         host_bytes=int(store + arena),
@@ -4687,10 +4693,11 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
         machine = replace(machine, vram_bytes=budget, vram_headroom=0.0)
     attempts = 0
     last_error = None
+    non_memory_refusal = False
     last_rows = {}
 
     def attempt(working_machine, forced, permitted_streams=None):
-        nonlocal attempts, last_error, last_rows
+        nonlocal attempts, last_error, last_rows, non_memory_refusal
         attempts += 1
         rows = {}
         try:
@@ -4698,6 +4705,8 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
                                   decisions=rows, forced_stream=frozenset(forced))
         except (StreamingRefused, _CannotPlan()) as exc:
             last_error = exc
+            if getattr(exc, "resource", None) not in {"vram", "host", "memory"}:
+                non_memory_refusal = True
             last_rows = rows
             return None
         last_rows = rows
@@ -4768,7 +4777,7 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
     if fixed_floor > budget:
         raise StreamingRefused(
             f"the shared process/radiation floor {fixed_floor} bytes exceeds "
-            f"the {budget} byte admission budget before domain claims")
+            f"the {budget} byte admission budget before domain claims", resource="vram")
     # A domain whose full store already exceeds the whole host allowance
     # cannot stream on ANY tile. Exclude that impossible choice before the
     # subset search; the ordinary walk still validates every actual candidate.
@@ -4802,7 +4811,7 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
                 f"{host_budget / (1024 ** 3):.2f} GiB host allowance even "
                 "before tile-dependent storage. Their required resident "
                 f"envelope is {required_envelope / (1024 ** 3):.2f} GiB, "
-                f"above the {budget / (1024 ** 3):.2f} GiB admission budget.")
+                f"above the {budget / (1024 ** 3):.2f} GiB admission budget.", resource="host")
     tile_machine = replace(machine, vram_bytes=budget)
     candidate = attempt(tile_machine, ())
     if candidate is not None:
@@ -4837,7 +4846,8 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
     detail = "" if last_error is None else f" ({last_error})"
     raise StreamingRefused(
         "no auto resident/streamed road found by the shared planner fits "
-        f"the {budget / (1024 ** 3):.2f} GiB admission budget and host/coupling obligations{detail}")
+        f"the {budget / (1024 ** 3):.2f} GiB admission budget and host/coupling obligations{detail}",
+        resource=None if non_memory_refusal else "memory")
 
 
 def _decide_tree(nodes, options=None, *, machine=None,
@@ -5097,7 +5107,7 @@ def _decide_tree(nodes, options=None, *, machine=None,
                     "is a refusal one domain later instead of here.  "
                     "Raise [tiles] vram_budget_bytes or free VRAM, shrink "
                     "the tree, or run it resident by deleting the [tiles] "
-                    f"table.  The planner's own words: {exc}") from exc
+                    f"table.  The planner's own words: {exc}", resource=exc.resource) from exc
             decision.detail.update(
                 reserved_bytes=int(reserve), reserved_for=list(reserved_for),
                 budget_before_reserve_bytes=budget_before)
@@ -5239,6 +5249,7 @@ class TreeRoadPlan:
     root_envelope: object | None = None
     resident_subset_envelope_bytes: int = 0
     configured_mixed_envelope_bytes: int = 0
+    refusal_resource: str | None = None
 
     @property
     def peak_vram_bytes(self) -> int:
@@ -5410,17 +5421,21 @@ def tree_road_plan(exp, *, machine=None, resident_estimate=None) -> TreeRoadPlan
     mark_reconstruction_nodes(nodes, exp)
     decisions: dict = {}
     refusal = None
+    refusal_resource = None
     outcome = None
     try:
         outcome = decide_tree(nodes, options, machine=machine,
                               decisions=decisions, resident_estimate=resident_estimate)
     except StreamingRefused as error:
         refusal = str(error)
+        refusal_resource = error.resource
     except Exception as error:              # a report never dies on its estimate
         # ``autoplan.CannotPlan`` for a domain no road can carry lands
         # here: streaming would not have saved this tree either, and the
         # planner's sentence says why.
         refusal = str(error)
+        if isinstance(error, _CannotPlan()):
+            refusal_resource = error.resource
     rows = _plan_rows(decisions)
     # PRICED FROM THE WALK'S OWN DECISION, never re-derived: the root's
     # envelope has to describe the road this walk chose for it, and a
@@ -5442,7 +5457,8 @@ def tree_road_plan(exp, *, machine=None, resident_estimate=None) -> TreeRoadPlan
                 row["road"] == "streamed" for row in rows),
             vram_hold_bytes=0, radiation_transient_bytes=0, host_bytes=0,
             total_budget_bytes=0, process_overhead_bytes=0,
-            host_budget_bytes=None, root_envelope=root_envelope)
+            host_budget_bytes=None, root_envelope=root_envelope,
+            refusal_resource=refusal_resource)
     return TreeRoadPlan(
         rows=rows, refusal=refusal, priced=outcome.priced,
         streams_any=any(row["road"] == "streamed" for row in rows),
@@ -5455,7 +5471,8 @@ def tree_road_plan(exp, *, machine=None, resident_estimate=None) -> TreeRoadPlan
         host_budget_bytes=outcome.host_budget_bytes,
         root_envelope=root_envelope,
         resident_subset_envelope_bytes=outcome.resident_subset_envelope_bytes,
-        configured_mixed_envelope_bytes=outcome.configured_mixed_envelope_bytes)
+        configured_mixed_envelope_bytes=outcome.configured_mixed_envelope_bytes,
+        refusal_resource=refusal_resource)
 
 
 def streaming_receipt(options: StreamingOptions | None,

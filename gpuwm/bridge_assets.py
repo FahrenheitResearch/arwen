@@ -509,6 +509,9 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "arwen-tui", "executable", "tools/arwen-tui",
         "GPUWM_TUI_BIN", "the Rust terminal workspace (gpuwm tui)"),
+    BundledArtifact(
+        "rw_zarr", "executable", "tools/zarr_bridge",
+        "GPUWM_RW_ZARR", "regular-grid Zarr acquisition and forcing record decode"),
 )
 
 

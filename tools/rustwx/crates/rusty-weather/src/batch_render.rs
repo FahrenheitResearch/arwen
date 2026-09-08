@@ -510,10 +510,10 @@ pub fn run_batch_render(
         )
     })?;
 
-    let planned = hours
+    let planned = per_hour
         .len()
-        .checked_mul(per_hour.len())
-        .and_then(|count| count.checked_add(product_request.windowed.len()))
+        .checked_add(product_request.windowed.len())
+        .and_then(|products| hours.len().checked_mul(products))
         .ok_or_else(|| "batch work-item count overflowed usize".to_string())?;
     let all_products = per_hour
         .iter()
@@ -635,11 +635,13 @@ pub fn run_batch_render(
         }
     }
 
-    if !cancel.load(Ordering::Relaxed) && !product_request.windowed.is_empty() {
-        let anchor_hour = stored_hours
-            .last()
-            .copied()
-            .ok_or_else(|| "windowed render needs at least one stored hour".to_string())?;
+    // Windowed products follow the same selected anchors as ordinary
+    // products. The complete earlier store remains baseline context; a
+    // selected hour must never silently become the latest stored hour.
+    for &anchor_hour in &hours {
+        if cancel.load(Ordering::Relaxed) || product_request.windowed.is_empty() {
+            break;
+        }
         let store = protected(|| {
             StoreFieldSource::open(
                 &request.store_root,
@@ -660,7 +662,7 @@ pub fn run_batch_render(
                 let config = render_config(&request, model, &cycle, source, domain);
                 for slug in &product_request.windowed {
                     emit(BatchRenderEvent::ItemStarted {
-                        hour: None,
+                        hour: Some(anchor_hour),
                         slug: slug.clone(),
                         kind: BatchProductKind::Windowed,
                         completed,
@@ -679,6 +681,7 @@ pub fn run_batch_render(
                         &request.model_slug,
                         &request.run_slug,
                         &product_request.windowed,
+                        anchor_hour,
                     )
                 });
                 match outcomes {
@@ -695,7 +698,7 @@ pub fn run_batch_render(
                                     summary.rendered += 1;
                                     summary.outputs.push(output_path.clone());
                                     emit(BatchRenderEvent::ItemRendered {
-                                        hour: None,
+                                        hour: Some(anchor_hour),
                                         slug,
                                         output_path,
                                         render_ms,
@@ -708,9 +711,9 @@ pub fn run_batch_render(
                                 ProductOutcome::Skipped(reason) => {
                                     summary.skipped += 1;
                                     emit(BatchRenderEvent::ItemSkipped {
-                                        hour: None,
+                                        hour: Some(anchor_hour),
                                         slug,
-                                        reason,
+                                        reason: format!("F{anchor_hour:03}: {reason}"),
                                         completed,
                                         total: planned,
                                     });
@@ -723,9 +726,9 @@ pub fn run_batch_render(
                             completed += 1;
                             summary.failed += 1;
                             emit(BatchRenderEvent::ItemFailed {
-                                hour: None,
+                                hour: Some(anchor_hour),
                                 slug: slug.clone(),
-                                error: error.clone(),
+                                error: format!("F{anchor_hour:03}: {error}"),
                                 completed,
                                 total: planned,
                             });
@@ -739,7 +742,7 @@ pub fn run_batch_render(
                         break;
                     }
                     emit(BatchRenderEvent::ItemStarted {
-                        hour: None,
+                        hour: Some(anchor_hour),
                         slug: slug.clone(),
                         kind: BatchProductKind::Windowed,
                         completed,
@@ -748,9 +751,9 @@ pub fn run_batch_render(
                     completed += 1;
                     summary.failed += 1;
                     emit(BatchRenderEvent::ItemFailed {
-                        hour: None,
+                        hour: Some(anchor_hour),
                         slug: slug.clone(),
-                        error: format!("open window anchor hour: {error}"),
+                        error: format!("open window anchor F{anchor_hour:03}: {error}"),
                         completed,
                         total: planned,
                     });
@@ -982,9 +985,7 @@ fn render_hour_items(
                                 (index, None, Vec::new())
                             } else {
                                 let (outcome, advice) = advisory::hold(|| {
-                                    protected(|| {
-                                        render_hour_item(config, store, hour, kind, slug)
-                                    })
+                                    protected(|| render_hour_item(config, store, hour, kind, slug))
                                 });
                                 (index, Some(outcome), advice)
                             };
@@ -1162,9 +1163,17 @@ fn render_windowed_items(
     model_slug: &str,
     run_slug: &str,
     requested: &[String],
+    anchor_hour: u16,
 ) -> Result<Vec<(String, ProductOutcome)>, String> {
     let Some(mut outcome) = render_windowed_products(
-        config, store, store_root, model_slug, run_slug, requested, false,
+        config,
+        store,
+        store_root,
+        model_slug,
+        run_slug,
+        requested,
+        anchor_hour,
+        false,
     )
     .map_err(|err| err.to_string())?
     else {
@@ -1295,16 +1304,18 @@ fn validate_work(
             request.limits.max_hours
         ));
     }
-    if per_hour_products > request.limits.max_products_per_hour {
+    let products = per_hour_products
+        .checked_add(windowed_products)
+        .ok_or_else(|| "batch product count overflowed usize".to_string())?;
+    if products > request.limits.max_products_per_hour {
         return Err(format!(
-            "{per_hour_products} per-hour products selected; GUI ceiling is {}",
+            "{products} per-hour products selected; GUI ceiling is {}",
             request.limits.max_products_per_hour
         ));
     }
     let work = hours
         .len()
-        .checked_mul(per_hour_products)
-        .and_then(|count| count.checked_add(windowed_products))
+        .checked_mul(products)
         .ok_or_else(|| "batch work-item count overflowed usize".to_string())?;
     if work == 0 {
         return Err("select at least one product".to_string());
@@ -1592,6 +1603,187 @@ mod tests {
         dir
     }
 
+    fn write_windowed_store(root: &std::path::Path, run: &str, hours: &[u16]) {
+        let shape = GridShape::new(4, 3).unwrap();
+        let grid = LatLonGrid::new(
+            shape,
+            (0..12).map(|cell| 35.0 + (cell / 4) as f32).collect(),
+            (0..12).map(|cell| -100.0 + (cell % 4) as f32).collect(),
+        )
+        .unwrap();
+        for &hour in hours {
+            let temperature = SelectedField2D::new(
+                FieldSelector::height_agl(CanonicalField::Temperature, 2),
+                "K",
+                grid.clone(),
+                vec![280.0; 12],
+            )
+            .unwrap();
+            // A cumulative WRF-style plane whose trailing increment changes
+            // every hour. Reusing the final window cannot pass as an earlier
+            // window even if its filename is relabelled.
+            let rain = SelectedField2D::new(
+                FieldSelector::surface(CanonicalField::TotalPrecipitation),
+                "kg/m^2",
+                grid.clone(),
+                (0..12)
+                    .map(|cell| f32::from(hour * (hour + 1)) * (cell + 1) as f32)
+                    .collect(),
+            )
+            .unwrap();
+            write_hour_from_fields_with_derived(
+                root,
+                "wrf",
+                run,
+                hour,
+                &[("temperature_2m", &temperature), ("apcp", &rain)],
+                &[],
+                &[],
+                "windowed-anchor-test",
+                1_578_000_000 + u64::from(hour) * 3600,
+            )
+            .unwrap();
+        }
+    }
+
+    fn windowed_request(root: &std::path::Path, run: &str, out: &str) -> BatchRenderRequest {
+        let mut request =
+            BatchRenderRequest::conservative(root, "wrf", run, 0, "qpf_1h", root.join(out));
+        request.output_width = 480;
+        request.output_height = 360;
+        request
+    }
+
+    #[test]
+    fn all_stored_windows_render_each_anchor_and_current_retains_earlier_context() {
+        let root = test_dir("windowed-anchors");
+        let run = "local_wrf_20200102_210000";
+        write_windowed_store(&root, run, &[0, 1, 2, 3, 4, 5, 6]);
+        let mut all = windowed_request(&root, run, "all");
+        all.hours = BatchHourScope::AllStored;
+        let mut rendered = Vec::new();
+        let mut skipped = Vec::new();
+        let summary = run_batch_render(all, &AtomicBool::new(false), |event| match event {
+            BatchRenderEvent::ItemRendered {
+                hour, output_path, ..
+            } => {
+                rendered.push((hour, output_path));
+            }
+            BatchRenderEvent::ItemSkipped { hour, reason, .. } => skipped.push((hour, reason)),
+            _ => {}
+        })
+        .unwrap();
+        assert_eq!(
+            (
+                summary.planned,
+                summary.rendered,
+                summary.skipped,
+                summary.failed
+            ),
+            (7, 6, 1, 0)
+        );
+        assert_eq!(
+            rendered.iter().map(|(hour, _)| *hour).collect::<Vec<_>>(),
+            (1..=6).map(Some).collect::<Vec<_>>()
+        );
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].0, Some(0));
+        assert!(skipped[0].1.starts_with("F000:"), "{skipped:?}");
+
+        for (hour, path) in &rendered {
+            let hour = hour.unwrap();
+            assert!(
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains(&format!("_f{hour:03}_"))
+            );
+            // A selected non-final anchor sees the same baseline and values
+            // as the full gallery; the stored F006 must not replace it.
+            let mut current = windowed_request(&root, run, &format!("current-{hour}"));
+            current.hours = BatchHourScope::Current(hour);
+            let one = run_batch_render(current, &AtomicBool::new(false), |_| {}).unwrap();
+            assert_eq!(
+                (one.planned, one.rendered, one.skipped, one.failed),
+                (1, 1, 0, 0)
+            );
+            assert_eq!(
+                std::fs::read(path).unwrap(),
+                std::fs::read(&one.outputs[0]).unwrap()
+            );
+        }
+
+        // Independent native compute control: the fixture's F001->F002
+        // increment is 4*(cell+1) mm, with later F003..F006 still stored.
+        let computed = crate::render_all::windowed_store::compute_windowed_products(
+            &root,
+            "wrf",
+            run,
+            &[0, 1, 2],
+            &["qpf_1h".to_string()],
+        )
+        .unwrap();
+        assert_eq!(computed.anchor_hour, 2);
+        assert_eq!(computed.grids[0].hours_used, vec![1, 2]);
+        for (cell, value) in computed.grids[0].values.iter().enumerate() {
+            assert!((value - 4.0 * (cell + 1) as f64 / 25.4).abs() < 1e-6);
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn windowed_missing_predecessor_is_a_skip_for_its_actual_anchor() {
+        let root = test_dir("windowed-gap");
+        let run = "local_wrf_20200102_210000";
+        write_windowed_store(&root, run, &[0, 1, 3]);
+        let mut request = windowed_request(&root, run, "out");
+        request.hours = BatchHourScope::AllStored;
+        let mut skipped = Vec::new();
+        let summary = run_batch_render(request, &AtomicBool::new(false), |event| {
+            if let BatchRenderEvent::ItemSkipped { hour, reason, .. } = event {
+                skipped.push((hour, reason));
+            }
+        })
+        .unwrap();
+        assert_eq!(
+            (
+                summary.planned,
+                summary.rendered,
+                summary.skipped,
+                summary.failed
+            ),
+            (3, 1, 2, 0)
+        );
+        assert_eq!(
+            skipped.iter().map(|(hour, _)| *hour).collect::<Vec<_>>(),
+            vec![Some(0), Some(3)]
+        );
+        assert!(skipped[1].1.starts_with("F003:"), "{skipped:?}");
+        assert!(skipped[1].1.contains("F002"), "{skipped:?}");
+        assert!(
+            summary.outputs[0]
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("_f001_")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn windowed_work_limit_counts_every_selected_anchor() {
+        let root = test_dir("windowed-limit");
+        let run = "local_wrf_20200102_210000";
+        write_windowed_store(&root, run, &[0, 1, 2, 3, 4, 5, 6]);
+        let mut request = windowed_request(&root, run, "out");
+        request.hours = BatchHourScope::AllStored;
+        request.limits.max_work_items = 6;
+        let error = run_batch_render(request, &AtomicBool::new(false), |_| {}).unwrap_err();
+        assert!(error.contains("7 product-hours"), "{error}");
+        assert!(!root.join("out").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// A store whose one hour carries: a canonical plane that is the sole
     /// source of a named direct product, a known derived grid, an unknown
     /// derived-marker diagnostic, and a plane whose selector is neither a
@@ -1608,13 +1800,9 @@ mod tests {
         let grid = LatLonGrid::new(shape, lat, lon).unwrap();
         let temperature_selector = FieldSelector::height_agl(CanonicalField::Temperature, 2);
         let temperature_values: Vec<f32> = (0..12).map(|value| 270.0 + value as f32).collect();
-        let temperature = SelectedField2D::new(
-            temperature_selector,
-            "K",
-            grid,
-            temperature_values.clone(),
-        )
-        .unwrap();
+        let temperature =
+            SelectedField2D::new(temperature_selector, "K", grid, temperature_values.clone())
+                .unwrap();
         let sbcape_values: Vec<f32> = (0..12).map(|value| 500.0 + value as f32 * 100.0).collect();
         let custom_values: Vec<f32> = (0..12).map(|value| value as f32).collect();
         write_hour_from_fields_with_derived(
@@ -1645,8 +1833,7 @@ mod tests {
         // deliberately opaque.  The writer API cannot spell it, which is
         // the point: only files, not this build's vocabulary, decide what
         // a store contains.
-        let manifest =
-            RwsRunManifest::load(&root.join("wrf").join(run).join("run.json")).unwrap();
+        let manifest = RwsRunManifest::load(&root.join("wrf").join(run).join("run.json")).unwrap();
         let mystery_values: Vec<f32> = (0..12).map(|value| -2.0 + value as f32 * 0.5).collect();
         let mut writer = HourWriter::new(
             "wrf",
@@ -1736,16 +1923,9 @@ mod tests {
         assert_eq!(generic_row.units.as_deref(), Some("widgets"));
 
         // (c) Rendering it through the production batch path yields a PNG.
-        let request = BatchRenderRequest::conservative(
-            &root,
-            "wrf",
-            run,
-            0,
-            format!("var:{mystery}"),
-            &out,
-        );
-        let summary =
-            run_batch_render(request, &AtomicBool::new(false), |_event| {}).unwrap();
+        let request =
+            BatchRenderRequest::conservative(&root, "wrf", run, 0, format!("var:{mystery}"), &out);
+        let summary = run_batch_render(request, &AtomicBool::new(false), |_event| {}).unwrap();
         assert_eq!(summary.rendered, 1, "{summary:?}");
         assert_eq!(summary.failed, 0);
         let output = &summary.outputs[0];
@@ -1780,8 +1960,7 @@ mod tests {
 
         let render_pass = |label: &str| {
             let out = root.join(label);
-            let request =
-                BatchRenderRequest::conservative(&root, "wrf", run, 0, products, &out);
+            let request = BatchRenderRequest::conservative(&root, "wrf", run, 0, products, &out);
             let mut events = Vec::new();
             let summary = run_batch_render(request, &AtomicBool::new(false), |event| {
                 // Timings are wall clock and never identical; identity is
@@ -1838,7 +2017,10 @@ mod tests {
         assert_eq!(first_summary.skipped, second_summary.skipped);
         assert_eq!(
             first_bytes.iter().map(|(name, _)| name).collect::<Vec<_>>(),
-            second_bytes.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            second_bytes
+                .iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
             "summary.outputs must stay in catalog order"
         );
         for ((name, left), (_, right)) in first_bytes.iter().zip(second_bytes.iter()) {
@@ -1883,7 +2065,11 @@ mod tests {
         );
         assert_eq!(summary.rendered, summary.outputs.len(), "{summary:?}");
         for output in &summary.outputs {
-            assert!(output.exists(), "announced but absent: {}", output.display());
+            assert!(
+                output.exists(),
+                "announced but absent: {}",
+                output.display()
+            );
         }
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1918,7 +2104,10 @@ mod tests {
             cores,
             "an unloaded box must still fan out to its cores"
         );
-        assert_eq!(product_worker_count_within(3, Some(plenty * 4)), cores.min(3));
+        assert_eq!(
+            product_worker_count_within(3, Some(plenty * 4)),
+            cores.min(3)
+        );
 
         // A platform that will not answer imposes no cap, which is what
         // this loop did before the cap existed.
@@ -1945,11 +2134,18 @@ mod tests {
             return; // Nothing to be capped below.
         }
         let (_, said) = advisory::hold(|| advise_if_memory_bound(cores, 4096, Some(1 << 40)));
-        assert!(said.is_empty(), "an uncapped width must not editorialise: {said:?}");
+        assert!(
+            said.is_empty(),
+            "an uncapped width must not editorialise: {said:?}"
+        );
 
         let (_, said) = advisory::hold(|| advise_if_memory_bound(1, 4096, Some(1 << 30)));
         assert_eq!(said.len(), 1, "a capped width must say so: {said:?}");
-        assert!(said[0].line.starts_with("RENDER_WIDTH\t1\t"), "{}", said[0].line);
+        assert!(
+            said[0].line.starts_with("RENDER_WIDTH\t1\t"),
+            "{}",
+            said[0].line
+        );
         assert!(
             said[0].line.contains("RUSTWX_BATCH_RENDER_THREADS"),
             "the advisory must name the override: {}",

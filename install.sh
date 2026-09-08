@@ -215,6 +215,8 @@ else
 fi
 say "building the terminal workspace in tools/arwen-tui (offline, locked)"
 ( cd tools/arwen-tui && cargo build --release --locked --offline )
+say "building the regular-grid Zarr reader (offline, locked)"
+( cd tools/zarr_bridge && cargo build --release --locked --offline )
 
 # ------------------------------------------------------------------ doctor
 say "running gpuwm doctor"

@@ -6,6 +6,7 @@ use std::error::Error;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
+mod era5_member;
 
 fn visit_grib1_envelopes(
     input: &Path,
@@ -134,12 +135,18 @@ fn write_message_metadata<W: Write>(
     let pds = &message.pds;
     let gds = message.gds.as_ref().ok_or("GRIB1 message has no GDS")?;
     let (message_nx, message_ny, message_scan) = grid_shape_and_scan(&gds.grid_type)?;
+    // Exact original grid bytes let a consumer bind fields without treating
+    // equal dimensions as equal coordinates. Packing metadata is diagnostic;
+    // the decoder does not clamp or otherwise change source values.
+    let grid_definition_hex: String = gds.raw.iter().map(|byte| format!("{byte:02x}")).collect();
     write!(
         metadata,
         concat!(
             "{{\"offset_values\":{},\"count\":{},",
             "\"parameter\":{},\"level_type\":{},\"level\":{},",
             "\"table_version\":{},\"center\":{},",
+            "\"grid_definition_hex\":\"{}\",",
+            "\"binary_scale\":{},\"decimal_scale\":{},\"bits_per_value\":{},\"reference_value\":{},",
             "\"nx\":{},\"ny\":{},\"scan_mode\":{},",
             "\"year\":{},\"month\":{},",
             "\"day\":{},\"hour\":{},\"minute\":{},",
@@ -153,6 +160,11 @@ fn write_message_metadata<W: Write>(
         pds.level_value,
         pds.table_version,
         pds.center_id,
+        grid_definition_hex,
+        message.bds.binary_scale,
+        pds.decimal_scale,
+        message.bds.bits_per_value,
+        message.bds.reference_value,
         message_nx,
         message_ny,
         message_scan,
@@ -287,6 +299,23 @@ fn main() {
     // proves a staged bridge by these bytes (see lib.rs).
     let _ = std::hint::black_box(gpuwm_preprocess_cpu::SOURCE_REV_STAMP);
     let arguments = env::args_os().collect::<Vec<_>>();
+    if arguments.len() == 2 && arguments[1] == "--era5-member-capabilities" {
+        println!("{{\"schema\":\"{}\",\"members\":[0,1,2,3,4,5,6,7,8,9],\"local_definitions\":[1,17,36],\"complete_input_census\":true,\"table_qualified_census\":true,\"lake_surface_parameters\":{{\"center\":98,\"table\":228,\"parameters\":[8,13,14],\"surface_only\":true}},\"byte_preserving\":true}}", era5_member::SCHEMA);
+        return;
+    }
+    if arguments.len() >= 2 && (arguments[1] == "--era5-member" || arguments[1] == "--check-era5-member") {
+        let result = (|| -> Result<(), Box<dyn Error>> {
+            let selecting = arguments[1] == "--era5-member";
+            if arguments.len() != if selecting { 5 } else { 4 } {
+                return Err("usage: grib1_bridge --era5-member N INPUT OUTPUT | --check-era5-member N INPUT".into());
+            }
+            let member: u8 = arguments[2].to_str().ok_or("Member must be 0..9")?.parse()?;
+            if selecting { era5_member::select(Path::new(&arguments[3]), Path::new(&arguments[4]), member) }
+            else { era5_member::check(Path::new(&arguments[3]), member) }
+        })();
+        if let Err(error) = result { eprintln!("grib1_bridge: {error}"); std::process::exit(1); }
+        return;
+    }
     if arguments.len() != 3 {
         eprintln!("usage: grib1_bridge INPUT.grb OUTPUT_DIR | --inventory INPUT.grb");
         std::process::exit(2);

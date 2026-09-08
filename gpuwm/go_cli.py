@@ -141,18 +141,12 @@ def checked_config_fetch_cycle(fetch_table: dict, *, start_time=None):
     return cycle
 
 
-def managed_download_dir(case_root: Path, fetch_table: dict) -> Path:
-    """Select a reusable cache for this request without changing existing data.
-
-    Quick Forecast can launch different cycles and areas into one workspace.
-    Sharing one flat download directory made the second request hit fetch's
-    correct wrong-input refusal. Keep requests separate here; the downloader
-    still locks its selected directory and verifies every reused payload.
-    """
+def _managed_download_request(fetch_table: dict):
+    """The existing normalized acquisition identity, independent of output path."""
     import hashlib
 
     from types import SimpleNamespace
-    from gpuwm import fetch, fetch_guard, fetch_routes, source_adapters
+    from gpuwm import fetch, source_adapters
 
     request = {key: value for key, value in fetch_table.items() if key != "out"}
     try:
@@ -175,6 +169,24 @@ def managed_download_dir(case_root: Path, fetch_table: dict) -> Path:
     except (TypeError, ValueError) as error:
         raise GoRefusal(f"The forecast download settings are invalid: {error}") from error
     key = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return request, source, cycle, area, key
+
+
+def managed_download_key(fetch_table: dict) -> str:
+    """Use the native managed cache's complete canonical request key elsewhere."""
+    return _managed_download_request(fetch_table)[-1]
+
+
+def managed_download_dir(case_root: Path, fetch_table: dict) -> Path:
+    """Select a reusable cache for this request without changing existing data.
+
+    Quick Forecast can launch different cycles and areas into one workspace.
+    Sharing one flat download directory made the second request hit fetch's
+    correct wrong-input refusal. Keep requests separate here; the downloader
+    still locks its selected directory and verifies every reused payload.
+    """
+    from gpuwm import fetch, fetch_guard, fetch_routes
+    request, source, cycle, area, key = _managed_download_request(fetch_table)
     # A separate namespace preserves the flat data directory created by older
     # versions, including a prior request that the user may still need.
     cache_root = Path(case_root) / "downloads"
@@ -563,6 +575,10 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         # not advisory about what is fetched.
         "cadence": (int(fetch_table["cadence"])
                     if fetch_table.get("cadence") is not None else None),
+        "era5_provider": fetch_table.get("era5_provider"),
+        "era5_product": fetch_table.get("era5_product"),
+        "member": fetch_table.get("member"),
+        "retrieve": fetch_table.get("retrieve", False),
         "area": str(fetch_table["area"]),
         "data": data,
         "profile": profile,
@@ -732,6 +748,11 @@ def fetch_command(plan: dict) -> list[str]:
     if plan.get("forecast_start_hour"):
         command.extend(
             ("--forecast-start-hour", str(plan["forecast_start_hour"])))
+    for key in ("era5_provider", "era5_product", "member"):
+        if plan.get(key) is not None:
+            command.extend(("--" + key.replace("_", "-"), str(plan[key])))
+    if plan.get("retrieve"):
+        command.append("--retrieve")
     return command
 
 
@@ -1225,11 +1246,17 @@ def _render_stage(plan: dict, *, explain: bool,
         print(f"  -- render complete: {len(already)} frame(s) were "
               "published by the early render and verified by digest; "
               "nothing was left to draw.")
+        from gpuwm.render_receipts import read_summary
+        summary = read_summary(plan["render"])
+        if summary is not None:
+            _notify(observer, "stage_end", label="render", exit_code=0, ok=True,
+                    elapsed_seconds=0., progress=summary)
         return True
     # A digest-verified early frame remains an accumulation baseline even
     # though its already published pictures must not be rewritten.
+    from gpuwm.render_receipts import SUMMARY_FILENAME
     _run_stage("render", render_command(plan, frames, context_frames=already), explain=explain,
-               observer=observer)
+               progress=Path(plan["render"]) / SUMMARY_FILENAME, observer=observer)
     return True
 
 
@@ -1634,9 +1661,9 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
     ``experiment`` may carry the already validated run-plan resolution,
     including explicit launch options; other callers load the config here.
 
-    Returns a dict with ``verdict`` (always), ``refuse`` (a genuine OOM
-    prediction: the binding phase does not fit even the whole card's
-    free VRAM) and ``warn`` (it fits free VRAM but not the reserved
+    Returns a dict with ``verdict`` (always), ``refuse`` (the binding phase
+    exceeds free memory or the native planner explicitly refused the
+    configured execution road) and ``warn`` (it fits free VRAM but not the reserved
     budget -- said out loud, never blocking).
     """
 
@@ -1696,6 +1723,7 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
         forcing_interval_seconds=(forcing_interval if forcing_interval is not None
                                   else DEFAULT_FORCING_INTERVAL_SECONDS),
         ingest_forcing_interval_seconds=forcing_interval)
+    planner_refusal = getattr(getattr(phases, "tree_road", None), "refusal", None)
 
     if probe is None:
         # No numbers: price the phases and print the verdict, but never
@@ -1707,10 +1735,12 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
         # chain dead.  The front door refuses that case before this
         # function is reached; the reason is still carried here so a
         # caller reading the gate's own dict is not told a fiction.
-        return {"verdict": f"{phases.verdict(None)} ({probe_reason})"
-                           if probe_reason else phases.verdict(None),
-                "refuse": False, "warn": False, "free_bytes": None,
-                "probe_reason": probe_reason, "phases": phases}
+        verdict = f"{phases.verdict(None)} ({probe_reason})" if probe_reason else phases.verdict(None)
+        if planner_refusal and str(planner_refusal) not in verdict:
+            verdict += "; native tile planner refused this configuration: " + str(planner_refusal)
+        return {"verdict": verdict,
+                "refuse": bool(planner_refusal), "warn": False, "free_bytes": None,
+                "probe_reason": probe_reason, "phases": phases, "device_probe": probe}
     free = int(probe["free_bytes"])
     # The budget the ENVELOPE is compared against, from the wizard's own
     # seam so the two doors cannot disagree about one card.  It is free
@@ -1727,7 +1757,11 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
         profile=profile)
     peak = phases.peak_envelope_bytes
     verdict = phases.verdict(budget)
-    refuse = peak > free
+    # A resident reference number cannot admit a configuration for which the
+    # native tree planner explicitly refused the configured execution road.
+    refuse = peak > free or bool(planner_refusal)
+    if planner_refusal and str(planner_refusal) not in verdict:
+        verdict += "; native tile planner refused this configuration: " + str(planner_refusal)
     # THE PINNED STORE IS A REFUSAL TOO, and only for a streamed run: the
     # domain lives in host RAM there, so a config whose store cannot be
     # page-locked dies at attach -- after the download, which is exactly
@@ -1754,6 +1788,7 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
         # reason"; None means the probe answered.
         "probe_reason": None,
         "phases": phases,
+        "device_probe": probe,
     }
 
 
@@ -1900,11 +1935,19 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
     # Do this before output allocation, network access or runtime loading.
     resolution, exp, data = runplan.resolve_plan(plan, require_inputs=False)
     bundle = runplan._existing_prepared_bundle(plan)
+    if bundle is None:
+        acquisition = runplan.declared_forcing_fetch(payload, data)
+        if acquisition is not None:
+            raw["fetch"] = {"args": acquisition}
+            identity = hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
+            plan = runplan.build_plan(raw, source=f"gpuwm go {config}",
+                base_dir=config.resolve().parent, sha256=identity)
     source = (bundle["source"] if bundle is not None else
               config_forcing_source(config, priced_only=False) or "declared inputs")
     stages = (["verify prepared bundle", "restore" if options.get("restart") else "forecast"]
               if bundle is not None else
-              ["prepare", "forecast"] if declared_inputs else ["fetch", "prepare", "forecast"])
+              ["prepare", "forecast"] if declared_inputs and plan.fetch_arguments is None
+              else ["fetch", "prepare", "forecast"])
     if str(options["render_products"]).strip().lower() != "none":
         stages.append("render")
     print(f"go: {source}, {len(exp.domains)} domain(s); " + " -> ".join(stages))

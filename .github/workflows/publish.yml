@@ -387,7 +387,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "commit=$tag_commit" >> "$GITHUB_OUTPUT"
 
-  # One bundle per target platform. All 27 declared artifacts are probed;
+  # One bundle per target platform. All 28 declared artifacts are probed;
   # Linux is built and qualified inside the pinned glibc 2.28 baseline.
   bridges:
     if: github.event_name != 'pull_request'
@@ -446,6 +446,10 @@ jobs:
         if: matrix.platform == 'win-x86_64'
         working-directory: tools/arwen-tui
         run: cargo build --release --locked --offline
+      - name: build the regular-grid Zarr reader
+        if: matrix.platform == 'win-x86_64'
+        working-directory: tools/zarr_bridge
+        run: cargo build --release --locked --offline
       - name: build and qualify Linux artifacts on glibc 2.28
         if: matrix.platform == 'linux-x86_64'
         shell: bash
@@ -498,6 +502,7 @@ jobs:
               Path("tools/region_global_dealias/target/release"),
               Path("tools/rw_wps/target/release"),
               Path("tools/arwen-tui/target/release"),
+              Path("tools/zarr_bridge/target/release"),
           )
           # Each library's ABI entry point comes from the one table that
           # declares it, gpuwm.bridge_assets.LIBRARY_ABI, so this probe
@@ -547,7 +552,8 @@ jobs:
                   --search tools/rustwx/target/release
                   --search tools/region_global_dealias/target/release
                   --search tools/rw_wps/target/release
-                  --search tools/arwen-tui/target/release)
+                  --search tools/arwen-tui/target/release
+                  --search tools/zarr_bridge/target/release)
           if [ "$BUNDLE_PLATFORM" = "linux-x86_64" ]; then
             search=(--search "$RUNNER_TEMP/arwen-manylinux/artifacts")
           fi

@@ -35,7 +35,26 @@ pub fn user_plane_value(y: usize, x: usize) -> f32 {
 
 /// Write the fixture as `wrfout_d01_<stamp>` inside `dir`, returning its path.
 pub fn write(dir: &Path) -> PathBuf {
-    let path = dir.join("wrfout_d01_2026-08-19_00_00_00");
+    write_frame(dir, "2026-08-19_00:00:00", None)
+}
+
+/// A timestamped cumulative-rain frame for the native CLI's series tests.
+#[allow(dead_code)]
+pub fn write_rain_frame(dir: &Path, lead_seconds: i64, rain_total: f32) -> PathBuf {
+    let init = chrono::NaiveDate::from_ymd_opt(2026, 8, 19)
+        .unwrap()
+        .and_hms_opt(0, 0, 0)
+        .unwrap();
+    let valid = init + chrono::Duration::seconds(lead_seconds);
+    write_frame(
+        dir,
+        &valid.format("%Y-%m-%d_%H:%M:%S").to_string(),
+        Some(rain_total),
+    )
+}
+
+fn write_frame(dir: &Path, valid_time: &str, rain_total: Option<f32>) -> PathBuf {
+    let path = dir.join(format!("wrfout_d01_{}", valid_time.replace(':', "_")));
     let cells = NX * NY;
     let volume = cells * NZ;
 
@@ -80,7 +99,9 @@ pub fn write(dir: &Path) -> PathBuf {
             .unwrap();
     }
 
-    let times = schema.def_var("Times", NcType::Char, &[time, strlen]).unwrap();
+    let times = schema
+        .def_var("Times", NcType::Char, &[time, strlen])
+        .unwrap();
 
     let surface = |schema: &mut Schema, name: &str, units: &str| {
         let id = schema
@@ -109,6 +130,13 @@ pub fn write(dir: &Path) -> PathBuf {
     let sinalpha = surface(&mut schema, "SINALPHA", "1");
     let cosalpha = surface(&mut schema, "COSALPHA", "1");
     let user = surface(&mut schema, USER_PLANE, USER_PLANE_UNITS);
+    let rain = rain_total.map(|total| {
+        (
+            surface(&mut schema, "RAINC", "mm"),
+            surface(&mut schema, "RAINNC", "mm"),
+            total,
+        )
+    });
 
     let volume_var = |schema: &mut Schema, name: &str, dims: &[usize], units: &str| {
         let id = schema.def_var(name, NcType::Float, dims).unwrap();
@@ -211,8 +239,16 @@ pub fn write(dir: &Path) -> PathBuf {
 
     let mut writer = NcWriter::create(&path, schema).unwrap();
     writer
-        .write_record(0, times, VarData::Char(b"2026-08-19_00:00:00"))
+        .write_record(0, times, VarData::Char(valid_time.as_bytes()))
         .unwrap();
+    if let Some((rainc, rainnc, total)) = rain {
+        writer
+            .write_record(0, rainc, VarData::F32(&vec![0.0; cells]))
+            .unwrap();
+        writer
+            .write_record(0, rainnc, VarData::F32(&vec![total; cells]))
+            .unwrap();
+    }
     for (id, values) in [
         (xlat, &lat),
         (xlong, &lon),

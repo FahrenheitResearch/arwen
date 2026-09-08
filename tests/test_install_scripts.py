@@ -27,7 +27,7 @@ if kind == 'git':
     assert args[:1] == ['clone'], args
     checkout = cwd / args[-1]
     for name in ('gpuwm', 'gpuwm-data', 'tools/grib1_bridge', 'tools/rustwx',
-                 'tools/arwen-tui', '.venv/bin', '.venv/Scripts'):
+                 'tools/arwen-tui', 'tools/zarr_bridge', '.venv/bin', '.venv/Scripts'):
         (checkout / name).mkdir(parents=True, exist_ok=True)
     (checkout / 'pyproject.toml').write_text('# fixture checkout\n')
     for name in ('python', 'gpuwm'):
@@ -154,7 +154,7 @@ def test_clean_clone_installs_matching_companion_then_engine_and_builds_tui(tmp_
         ['-m', 'pip', 'install', '-e', '.[gpu-cu13,render]'],
     ]
     built = [Path(row['cwd']).name for row in rows if row['kind'] == 'cargo']
-    assert built == ['grib1_bridge', *([] if no_render else ['rustwx']), 'arwen-tui']
+    assert built == ['grib1_bridge', *([] if no_render else ['rustwx']), 'arwen-tui', 'zarr_bridge']
     assert rows[0]['kind'] == 'git'
     assert rows[-1]['kind'] == 'gpuwm' and rows[-1]['args'] == ['doctor']
 

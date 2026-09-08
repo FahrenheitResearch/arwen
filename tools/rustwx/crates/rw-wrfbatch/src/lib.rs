@@ -33,3 +33,4 @@ pub mod wrf_volumes;
 pub mod obs_grid;
 pub mod scales;
 pub mod section;
+pub mod process_request;

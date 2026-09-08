@@ -66,6 +66,7 @@ from gpuwm.branch import register_cli as branch_register_cli
 from gpuwm.bridge_assets import register_cli as bridge_assets_register_cli
 from gpuwm.certify.cli import register_cli as certify_register_cli
 from gpuwm.config import load_config
+from gpuwm.configuration_recovery import MemoryAdmissionError, error_document as configuration_error_document
 from gpuwm.core.preflight import check_main
 from gpuwm.core.preflight import register_cli as preflight_register_cli
 from gpuwm.da.enprod import register_cli as enprod_register_cli
@@ -361,6 +362,14 @@ def build_parser() -> argparse.ArgumentParser:
         func=lambda args: args.ingest_preflight_handler(args)
         or check_main(args))
     fetch_register_cli(sub)
+    from gpuwm.cds_credentials import register_cli as cds_credentials_register_cli
+    cds_credentials_register_cli(sub)
+    from gpuwm.companion_query import register_cli as companion_query_register_cli
+    companion_query_register_cli(sub)
+    from gpuwm.companion_domains import register_cli as companion_domains_register_cli
+    companion_domains_register_cli(sub)
+    from gpuwm.companion_forcing import register_cli as companion_forcing_register_cli
+    companion_forcing_register_cli(sub)
     stream_register_cli(sub)
     geog_register_cli(sub)
     domain_register_cli(sub)
@@ -706,6 +715,11 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
         # companion wheel shipped without its rrtmgp/*.nc.  The message
         # already names the member, the breakage, and the pip line.
         print(f"gpuwm {args.command}: {error}", file=sys.stderr)
+        return 2
+    except MemoryAdmissionError as error:
+        import json
+        print(f"gpuwm {args.command}: " + _layer(error, args), file=sys.stderr)
+        print(json.dumps(configuration_error_document(error), ensure_ascii=True, allow_nan=False))
         return 2
     except ValueError as error:
         # Documented refusals (the wizard's latitude/antimeridian

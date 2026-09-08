@@ -127,12 +127,8 @@ def _validated_static_one_way_topology(exp, grids) -> dict[str, object]:
     if len(grids) != len(domains):
         raise ValueError(
             "regular-grid hierarchy requires one validated grid per domain")
-    ids = tuple(int(domain.grid_id) for domain in domains)
-    expected_ids = tuple(range(1, len(domains) + 1))
-    if ids != expected_ids:
-        raise ValueError(
-            "regular-grid hierarchy ids must be contiguous d01..dNN in "
-            f"parent-before-child order, got {ids}")
+    from gpuwm.wps_domain_ids import validated_domain_order
+    validated_domain_order(domains)
     # THE FEEDBACK REFUSAL THAT STOOD HERE IS LIFTED.  It said the
     # hierarchy's artifacts "are written one-way and read one-way", and
     # the first half was always vacuous: an initial state, sealed statics

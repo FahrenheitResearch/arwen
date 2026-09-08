@@ -1995,6 +1995,9 @@ fn dispatch() -> Result<(), CliError> {
 
 fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
+    if let Some(result) = rw_wrfbatch::process_request::try_cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
+        return match result { Ok(()) => ExitCode::SUCCESS, Err(message) => { eprintln!("{message}"); ExitCode::FAILURE } };
+    }
     match dispatch() {
         Ok(()) => ExitCode::SUCCESS,
         Err(CliError::Help) => {

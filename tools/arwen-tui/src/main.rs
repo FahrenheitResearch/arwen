@@ -1,13 +1,20 @@
 mod clipboard;
+mod cds_credentials;
+mod companion;
 mod domains;
 mod calendar;
 mod cases;
 mod editor;
+mod file_drop;
+mod file_drop_input;
 mod guide;
 mod job;
 mod node_ui;
 mod plotsettings;
 mod remote;
+mod run_view;
+#[cfg(test)]
+mod run_view_process_tests;
 mod research;
 mod research_browser;
 mod scenario;
@@ -64,6 +71,9 @@ enum Dialog {
     Nodes,
     DomainMenu(usize, usize),
     DomainForm(domains::Form, Option<usize>),
+    DomainRemoval(domains::Removal, u16),
+    Era5Provider(usize, String),
+    CdsCredentials(cds_credentials::Form),
     Choice(bool, usize),
     Guide(Guide),
     Calendar(Guide, calendar::Form),
@@ -72,6 +82,7 @@ enum Dialog {
     Review(Request, Option<Guide>, u16),
     Path(&'static str, String),
     Browser(PathBuf, Vec<PathBuf>, usize),
+    DroppedFiles(Vec<PathBuf>, usize),
     Stop,
     Quit,
     Help(HelpScroll),
@@ -85,7 +96,8 @@ struct HelpScroll {
 }
 
 const HELP_TEXT: &str = "Click tabs, settings, actions and buttons.\n\
-K Cases: open a catalog, choose source and tier, review editable TOML\n\
+K Cases: browse built-in historical cases, choose source and tier\n\
+Drop a TOML or catalog file to open it; several files open a chooser\n\
 W Research: choose a weather question and configuration\n\
 I Scenario: review initial-state warm bubbles\n\
 H Home   V Overview   D/Ctrl+D Domains   F/E Settings   L Logs\n\
@@ -100,6 +112,7 @@ Ctrl+Q Quit anywhere; Ctrl+C reviews stopping a local command.\n\
 F1 / ? opens help over a form; Esc returns to your answers.\n\
 After memory refusal: Ctrl+F Fit domain; Ctrl+T Tile streaming.\n\
 In domain forms: F2 applies changes to the draft.\n\
+U ERA5 provider: Google ARCO or Copernicus CDS (ERA5 inputs only).\n\
 F5 Check   F6 Plan   F7 Review and run\n\
 F3 Output folder   F4 Prepared folder   F8 Run prepared\n\
 F9 Python   F10 Installation check\n\
@@ -140,6 +153,12 @@ enum Hit {
     PlotItem(usize),
     Nodes,
     DomainField(usize),
+    DomainSelect(usize),
+    Era5Provider,
+    CdsCredentials,
+    Quit,
+    JobResult,
+    OpenCompanion,
     DomainValue(usize),
     GuideGrid(usize),
     CalendarDay(u8),
@@ -180,6 +199,7 @@ struct App {
     status: String,
     selected: usize,
     log_offset: usize,
+    local_raw_logs: bool,
     exit: bool,
     exit_after_job: bool,
     input_enabled: bool,
@@ -191,12 +211,27 @@ struct App {
     guide_cache: Option<Guide>,
     case_cache: Option<cases::Form>,
     plot_catalog: plotsettings::Catalog,
+    cds: cds_credentials::Client,
+    companion: companion::Controller,
+    companion_remote: Option<CompanionRemoteRequest>,
+    run_views: run_view::Manager,
+    companion_artifacts: Option<serde_json::Value>,
+    tui_map_review: Option<companion::Request>,
+    tui_map_waiting: Option<companion::Request>,
+    tui_map_launch: Option<companion::Request>,
+    discard_setup_review: bool,
     nodes: remote::Controller,
     node_panel: node_ui::Panel,
     plots_from_nodes: bool,
     hits: Vec<HitRegion>,
     #[cfg(test)]
     clipboard_hook: Option<fn(&str) -> Result<(), String>>,
+}
+
+struct CompanionRemoteRequest {
+    request: companion::Request,
+    node: remote::Node,
+    source: serde_json::Value,
 }
 
 fn safe(text: &str) -> String {
@@ -253,6 +288,19 @@ fn draw_log(frame: &mut Frame, area: Rect, text: &str, offset: usize, title: &st
     frame.render_widget(Paragraph::new(visible).block(panel(title)), area);
 }
 
+fn local_forecast_action(action: &str, command: &[String]) -> bool {
+    matches!(action, "run-plan" | "go" | "sim" | "run" | "resume")
+        && !command.iter().any(|arg| matches!(arg.as_str(), "--dry-run" | "--physics-profiles" | "--help"))
+}
+
+fn draw_forecast_progress(frame: &mut Frame, area: Rect, status: &serde_json::Value) {
+    let text = node_ui::job_progress_text(status, area.width < 90 || area.height < 14);
+    frame.render_widget(
+        Paragraph::new(safe(&text)).wrap(Wrap { trim: false }).block(panel(" Forecast progress ")),
+        area,
+    );
+}
+
 impl App {
     fn new() -> io::Result<Self> {
         let cwd = env::current_dir()?;
@@ -266,8 +314,17 @@ impl App {
             output: cwd.join("arwen-runs"), prepared: PathBuf::new(), geog_root: PathBuf::new(), cwd,
             tab: Tab::Home, dialog: None, dialog_stack: Vec::new(), saved_guides: Vec::new(), job: None, startup_failure: None,
             status: "Choose a forecast mode, open a configuration, or continue a run. Each launch starts with a review.".into(),
-            selected: 0, log_offset: 0, exit: false, input_enabled: false, active_config: None, memory_recovery_config: None, pending_config: None, guide_cache: None, case_cache: None, hits: Vec::new(),
+            selected: 0, log_offset: 0, local_raw_logs: false, exit: false, input_enabled: false, active_config: None, memory_recovery_config: None, pending_config: None, guide_cache: None, case_cache: None, hits: Vec::new(),
             plot_catalog: plotsettings::Catalog::default(),
+            cds: cds_credentials::Client::default(),
+            companion: companion::Controller::default(),
+            companion_remote: None,
+            run_views: run_view::Manager::default(),
+            companion_artifacts: None,
+            tui_map_review: None,
+            tui_map_waiting: None,
+            tui_map_launch: None,
+            discard_setup_review: false,
             pending_workflow: None,
             nodes, node_panel: node_ui::Panel::default(), plots_from_nodes: false,
             #[cfg(test)]
@@ -307,6 +364,26 @@ impl App {
             self.exit = true;
         }
     }
+    fn show_job_result(&mut self) {
+        if let Some(Dialog::Details { offset, .. }) = &mut self.dialog {
+            *offset = 0;
+            return;
+        }
+        let previous = self.dialog.take();
+        self.show_details();
+        if let Some(Dialog::Details { offset, .. }) = &mut self.dialog { *offset = 0; }
+        if let Some(previous) = previous { self.dialog_stack.push(previous); }
+    }
+    fn job_result(&self) -> Option<(String, Option<PathBuf>, bool)> {
+        if let Some(failure) = &self.startup_failure {
+            return Some(("FAILED TO START · click for details".into(), failure.log.clone(), true));
+        }
+        let job = self.job.as_ref()?;
+        let code = job.outcome?;
+        let state = if job.interrupted() { "STOPPED" } else if code == 0 { "COMPLETED" } else { "FAILED" };
+        Some((format!("{state} · {} · exit {code} · click for details", job.action),
+            Some(job.dir.join("job.log")), code != 0))
+    }
     fn retain_guide(&mut self, guide: Guide) {
         self.saved_guides.retain(|saved| saved.kind != guide.kind
             || saved.workflow != guide.workflow || saved.research != guide.research);
@@ -325,7 +402,7 @@ impl App {
     }
     fn badge(&self) -> &'static str {
         if self.nodes.store.selected().is_some() {
-            if self.nodes.pending.is_some() {
+            if self.nodes.pending.as_ref().is_some_and(|request|matches!(request.operation,remote::Operation::Probe))&&self.nodes.view.runtime.is_none()&&self.nodes.view.status.is_none() {
                 return "CONNECTING";
             }
             if self.nodes.view.connection_error.is_some() {
@@ -400,6 +477,10 @@ impl App {
                     })
             })
     }
+    fn has_local_forecast_job(&self) -> bool {
+        self.startup_failure.is_none()
+            && self.job.as_ref().is_some_and(|job| local_forecast_action(&job.action, &job.command))
+    }
     fn show_details(&mut self) {
         let mut text = self.status.clone();
         if let Some(failure) = &self.startup_failure {
@@ -433,7 +514,7 @@ impl App {
             notice: None,
             // Failures normally explain the cause at the end of the output.
             // Home still exposes the complete status and saved file path.
-            offset: if self.log_path().is_some() {
+            offset: if self.log_path().is_some() && !self.memory_recovery_available() {
                 usize::MAX
             } else {
                 0
@@ -448,13 +529,7 @@ impl App {
         } else {
             Ok(details.to_owned())
         };
-        let result = content.and_then(|text| {
-            #[cfg(test)]
-            if let Some(copy) = self.clipboard_hook {
-                return copy(&text).map(|_| text.len());
-            }
-            clipboard::copy(&text).map(|_| text.len())
-        });
+        let result = content.and_then(|text| self.copy_text(&text));
         match result {
             Ok(bytes) => format!(
                 "Copied {} ({bytes} bytes). Paste into another app.",
@@ -466,6 +541,44 @@ impl App {
             ),
             Err(error) => format!("Copy failed: {error}"),
         }
+    }
+    fn copy_text(&self, text:&str)->Result<usize,String>{
+        #[cfg(test)]
+        if let Some(copy)=self.clipboard_hook{return copy(text).map(|_|text.len());}
+        clipboard::copy(text).map(|_|text.len())
+    }
+    fn node_log_text(&self)->String{
+        let node=self.nodes.store.selected();
+        let mut value=format!("Node: {}\nJob: {}\nState: {}\n\nRecent retained node output (up to 128 KiB):\n{}",
+            node.map(|n|n.name.as_str()).unwrap_or("No node selected"),
+            node.and_then(|n|n.last_job.as_deref()).unwrap_or("No job selected"),
+            self.nodes.view.status.as_ref().and_then(|v|v["state"].as_str()).unwrap_or("Unknown"),
+            self.nodes.view.log);
+        if let Some(error)=self.nodes.view.status.as_ref().and_then(|v|v["error"].as_str()){
+            value.push_str(&format!("\n\nNative failure: {error}\n"));
+        }
+        safe(&value)
+    }
+    fn save_log_text(&self, text:&str)->Result<PathBuf,String>{
+        use std::io::Write;
+        let directory=self.output.join(".arwen-tui").join("logs");
+        fs::create_dir_all(&directory).map_err(|e|e.to_string())?;
+        let path=directory.join(format!("arwen-log-{}-{}.txt",std::process::id(),remote::stamp()));
+        let mut file=fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e|e.to_string())?;
+        file.write_all(text.as_bytes()).and_then(|_|file.sync_all()).map_err(|e|e.to_string())?;
+        path.canonicalize().map_err(|e|e.to_string())
+    }
+    fn open_log_text(&self, text:&str)->String{
+        let result=self.save_log_text(text).and_then(|path|{
+            #[cfg(not(test))]
+            {
+                let program=if cfg!(target_os="windows"){"notepad.exe"}else if cfg!(target_os="macos"){"open"}else{"xdg-open"};
+                std::process::Command::new(program).arg(&path).spawn()
+                    .map_err(|e|format!("Saved {}. Could not open the text editor: {e}",display_path(&path)))?;
+            }
+            Ok(path)
+        });
+        match result{Ok(path)=>format!("Opened plain-text log: {}",display_path(&path)),Err(error)=>error}
     }
     fn fit_current(&mut self) {
         // A refusal (for example an unsaved draft) must remain visible in the
@@ -553,13 +666,67 @@ impl App {
         self.status = "Keep the domain area, resolution and physics. The engine plans GPU tiles and checks available GPU and system RAM. Review before creating a new configuration.".into();
         self.dialog = Some(Dialog::Summary(guide, 0));
     }
+    fn reset_setup(&mut self) {
+        // Explicit Reset discards only editable setup. The local Job, its
+        // active_config, the SSH controller and its selected node remain owned.
+        self.discard_setup_review |= self.nodes.pending.as_ref().is_some_and(|request|
+            matches!(request.operation, remote::Operation::ReviewPlan { .. }
+                | remote::Operation::Start { preview: true, .. }
+                | remote::Operation::Resume { preview: true, .. }));
+        self.editor = None;
+        self.prepared = PathBuf::new();
+        self.memory_recovery_config = None;
+        self.pending_config = None;
+        self.pending_workflow = None;
+        self.guide_cache = None;
+        self.case_cache = None;
+        self.saved_guides.clear();
+        self.tui_map_review = None;
+        self.tui_map_waiting = None;
+        self.tui_map_launch = None;
+        self.dialog = None;
+        self.dialog_stack.clear();
+        fn is_review(screen: &node_ui::Screen) -> bool {
+            match screen {
+                node_ui::Screen::Review { .. } => true,
+                node_ui::Screen::Error { previous, .. } => is_review(previous),
+                _ => false,
+            }
+        }
+        if is_review(&self.node_panel.screen) { self.node_panel.open(&self.nodes); }
+        self.tab = Tab::Home;
+        self.selected = 0;
+        self.hits.clear();
+        self.status = "Setup reset. Choose a mode or open a configuration. Saved files, the selected target and running jobs are preserved.".into();
+    }
+    fn accept_setup_review_update(&mut self, update: &remote::Update) -> bool {
+        let stale = self.discard_setup_review && matches!(update,
+            remote::Update::Preview { .. } | remote::Update::PlanReviewed(_));
+        self.discard_setup_review = false;
+        if stale {
+            self.status = "Setup reset; the earlier launch review was discarded. Running jobs remain available.".into();
+        }
+        !stale
+    }
     fn open(&mut self, path: PathBuf) {
         if self.dirty() {
             self.status =
                 "Save with Ctrl+S, or export the draft with F12 before opening another configuration.".into();
             return;
         }
-        match Editor::load(absolute(path, &self.cwd)) {
+        let path = absolute(path, &self.cwd);
+        let catalog = path.extension().is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("zip") || extension.eq_ignore_ascii_case("json")
+        }) || (path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("toml"))
+            && fs::read_to_string(&path).ok()
+                .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
+                .and_then(|document| document.get("schema").and_then(|v| v.as_str()).map(str::to_owned))
+                .is_some_and(|schema| schema.starts_with("arwen.case-catalog")));
+        if catalog {
+            self.begin_cases_from(Some(path));
+            return;
+        }
+        match Editor::load(path) {
             Ok(e) => {
                 self.memory_recovery_config = None;
                 self.status = format!(
@@ -580,8 +747,11 @@ impl App {
                 .map(|e| e.path())
                 .filter(|p| {
                     p.is_dir()
-                        || p.extension()
-                            .is_some_and(|e| e.eq_ignore_ascii_case("toml"))
+                        || p.extension().is_some_and(|e| {
+                            e.eq_ignore_ascii_case("toml")
+                                || e.eq_ignore_ascii_case("json")
+                                || e.eq_ignore_ascii_case("zip")
+                        })
                 })
                 .collect::<Vec<_>>();
             items.sort_by_key(|p| {
@@ -624,6 +794,464 @@ impl App {
                 Err(e) => e,
             };
         }
+    }
+    fn era5_provider(&self) -> Option<&'static str> {
+        let doc = self.editor.as_ref()?.text().parse::<toml_edit::DocumentMut>().ok()?;
+        let fetch = doc.get("fetch")?.as_table_like()?;
+        if fetch.get("source").and_then(toml_edit::Item::as_str) != Some("era5") { return None; }
+        Some(match fetch.get("era5_provider") {
+            None => "cds",
+            Some(value) => match value.as_str() {
+                Some("cds") => "cds", Some("arco") => "arco", _ => "unknown",
+            },
+        })
+    }
+    fn begin_era5_provider(&mut self) {
+        let Some(provider) = self.era5_provider() else { return; };
+        self.dialog = Some(Dialog::Era5Provider(usize::from(provider == "cds"),
+            self.editor.as_ref().unwrap().text()));
+    }
+    fn begin_cds_credentials(&mut self) {
+        self.cds.refresh(&self.python, &self.cwd);
+        self.overlay(Dialog::CdsCredentials(cds_credentials::Form::new()));
+    }
+    fn companion_context(&self) -> serde_json::Value {
+        let config = self.editor.as_ref().map(|editor| &editor.path);
+        let hash = config.and_then(|path| fs::read(path).ok()).map(|bytes| companion::digest(&bytes));
+        serde_json::json!({"config_path":config,"config_sha256":hash,"python":self.python,"cwd":self.cwd,
+            "output_root":self.output,"geog_root":(!self.geog_root.as_os_str().is_empty()).then_some(&self.geog_root),
+            "prepared_root":(!self.prepared.as_os_str().is_empty()).then_some(&self.prepared),
+            "render_products":self.plot_spec().unwrap_or_else(|_| "all".into()),
+            "plot_preferences_path":config.map(|path| plotsettings::sidecar(path)),
+            "current_job_dir":self.job.as_ref().map(|job| &job.dir),"target":self.companion_target(),
+            "available_targets":self.available_companion_targets()})
+    }
+    fn available_companion_targets(&self)->Vec<serde_json::Value>{
+        let mut values=vec![serde_json::json!({"kind":"local","name":"Local computer"})];
+        values.extend(self.nodes.store.nodes.iter().map(|node|serde_json::json!({"kind":"ssh","node_id":node.id,
+            "connection_sha256":companion::digest(node.connection_key().as_bytes()),"name":node.name})));
+        values
+    }
+    fn select_companion_target(&mut self,target:&companion::Target)->Result<String,String>{
+        let id=match target{
+            companion::Target::Local=>None,
+            companion::Target::Ssh{node_id,connection_sha256}=>{
+                let node=self.nodes.store.nodes.iter().find(|node|node.id==*node_id).ok_or("That saved node no longer exists. Refresh the targets.")?;
+                if companion::digest(node.connection_key().as_bytes())!=*connection_sha256{return Err("That node connection changed. Refresh the targets before selecting it.".into());}
+                node.validate(false)?;
+                Some(node_id.clone())
+            }
+        };
+        if self.nodes.pending.as_ref().is_some_and(|pending|matches!(pending.operation,remote::Operation::Probe)
+            &&Some(&pending.node.id)==id.as_ref()&&self.checked_companion_target(Some(target)).is_ok()){
+            return Ok("Connecting to the selected node…".into());
+        }
+        self.nodes.select(id)?;
+        self.tui_map_waiting=None;self.tui_map_launch=None;
+        if self.nodes.store.selected().is_none(){return Ok("Target: Local computer.".into());}
+        self.nodes.begin(remote::Operation::Probe,&self.python,&self.output,&self.cwd).map_err(|error|{
+            self.nodes.view.connection_error=Some(error.clone());error
+        })?;
+        Ok("Connecting to the selected node…".into())
+    }
+    fn companion_target(&self)->serde_json::Value {
+        let Some(node)=self.nodes.store.selected() else{return serde_json::json!({"kind":"local","name":"Local computer"});};
+        let runtime=self.nodes.view.runtime.as_ref();
+        let capability=|name:&str|runtime.is_some_and(|r|r["capabilities"][name]==true);
+        let hardware=runtime.and_then(|r|r.get("probe")).filter(|p|p["measured_unix_ms"].is_u64()&&p["devices"].is_array())
+            .map(|p|serde_json::json!({"measured_unix_ms":p["measured_unix_ms"],"devices":p["devices"],"sizing":p["sizing"],"host_memory":p["host_memory"]}));
+        serde_json::json!({"kind":"ssh","node_id":node.id,"name":node.name,
+            "connection_sha256":companion::digest(node.connection_key().as_bytes()),"workspace":node.workspace,
+            "remote_geog_root":(!node.geography.is_empty()).then_some(&node.geography),"hardware":hardware,
+            "capabilities":{"stage_plan_v1":capability("stage_plan_v1"),"review_plan_v1":capability("review_plan_v1"),"start_plan_v1":capability("start_plan_v1"),"artifact_sync_v1":capability("artifact_sync_v1"),
+                "artifact_index_v1":capability("artifact_index_v1"),"artifact_sequence_v1":capability("artifact_sequence_v1")}})
+    }
+    fn checked_companion_target(&self,target:Option<&companion::Target>)->Result<Option<remote::Node>,String>{
+        match (self.nodes.store.selected(),target) {
+            (None,None|Some(companion::Target::Local))=>Ok(None),
+            (Some(node),Some(companion::Target::Ssh{node_id,connection_sha256}))
+                if node.id==*node_id&&companion::digest(node.connection_key().as_bytes())==*connection_sha256=>Ok(Some(node.clone())),
+            _=>Err("The execution target changed or its SSH binding is missing. Select the intended target and review again.".into()),
+        }
+    }
+    fn checked_companion_plan(&self,request:&companion::Request,path:&std::path::Path)->Result<serde_json::Value,String>{
+        if self.dirty(){return Err("Save the TUI draft before reviewing or launching a map plan.".into());}
+        let plan=companion::read_json(path,4*1024*1024)?;
+        if plan["schema"]!="gpuwm.run-plan.v1"{return Err("Unsupported run-plan schema.".into());}
+        let bytes=fs::read(path).map_err(|e|e.to_string())?;
+        let plan_hash=companion::digest(&bytes);
+        if request.plan_sha256.as_deref()!=Some(plan_hash.as_str()){return Err("The saved map plan changed; review again.".into());}
+        let config=PathBuf::from(plan["config"]["path"].as_str().ok_or("Remote review needs a saved configuration path.")?);
+        let config=if config.is_absolute(){config}else{path.parent().unwrap_or(&self.cwd).join(config)};
+        let config=config.canonicalize().map_err(|e|format!("Cannot open the saved map configuration: {e}"))?;
+        if self.editor.as_ref().map(|e|&e.path)!=Some(&config){return Err("Open this saved map configuration in the TUI before reviewing its remote launch.".into());}
+        let config_hash=companion::digest(&fs::read(&config).map_err(|e|e.to_string())?);
+        if request.config_sha256.as_deref()!=Some(config_hash.as_str()){return Err("The saved map configuration changed; review again.".into());}
+        Ok(serde_json::json!({"plan_path":path.canonicalize().map_err(|e|e.to_string())?,"plan_sha256":plan_hash,
+            "config_path":config,"config_sha256":config_hash}))
+    }
+    fn begin_companion_remote(&mut self,request:companion::Request)->Result<(),String>{
+        if self.companion_remote.is_some()||self.nodes.pending.is_some(){return Err("A node request is in progress. Wait for it to finish, then retry this action.".into());}
+        let node=self.checked_companion_target(request.target.as_ref())?.ok_or("Select an SSH node for this action.")?;
+        let mut source=serde_json::Value::Null;
+        let operation=match &request.action {
+            companion::Action::ReviewPlan(path)=>{
+                if self.busy(){return Err("A local job is already running.".into());}
+                let target=self.companion_target();
+                if target["capabilities"]["review_plan_v1"]!=true||target["capabilities"]["stage_plan_v1"]!=true {
+                    return Err("Connect to the selected node in Nodes and confirm its current ArWen runtime supports staged map plans. No remote work was started.".into());
+                }
+                source=self.checked_companion_plan(&request,path)?;
+                remote::Operation::ReviewPlan{plan:path.clone(),plan_sha256:request.plan_sha256.clone().unwrap(),config_sha256:request.config_sha256.clone().unwrap(),
+                    output:format!("{}/arwen-map-{}",node.output_directory().trim_end_matches('/'),remote::stamp())}
+            }
+            companion::Action::LaunchPlan(path)=>{
+                if self.busy(){return Err("A local job is already running.".into());}
+                if self.nodes.view.status.as_ref().is_some_and(|job|matches!(job["state"].as_str(),Some("starting"|"running"|"stopping"|"ownership_mismatch"|"lost"))){
+                    return Err("The selected node's current job is still active or unresolved. Inspect its status before starting another map plan.".into());
+                }
+                source=self.checked_companion_plan(&request,path)?;
+                let id=request.review_id.as_deref().ok_or("Remote launch needs its review ID.")?;
+                let review_path=self.companion.session.as_ref().ok_or("The companion session closed.")?.review_path(id)?;
+                let bytes=fs::read(&review_path).map_err(|e|format!("Cannot read the completed node review: {e}"))?;
+                if request.review_sha256.as_deref()!=Some(companion::digest(&bytes).as_str()){return Err("The completed node review changed; review again.".into());}
+                let review=companion::read_json(&review_path,2*1024*1024)?;
+                if review["schema"]!="arwen.companion-remote-review.v1"||review["review_id"]!=id
+                    ||review["source"]!=source||review["target"]!=request.target.as_ref().unwrap().value()
+                    ||review["node_settings_sha256"]!=companion::digest(serde_json::json!([node.output_directory(),node.geography]).to_string().as_bytes()) {
+                    return Err("The node, its input locations, or saved configuration changed after review. Review again.".into());
+                }
+                Self::checked_companion_inputs(&review["remote_review"])?;
+                let mut remote_review=review["remote_review"].clone();
+                if remote_review["source_blobs"].as_array().is_some_and(|blobs|!blobs.is_empty()){
+                    remote_review["local_source_manifest"]=serde_json::json!(review_path);
+                }
+                remote::Operation::StartPlan{review:remote_review}
+            }
+            companion::Action::StopJob(id)=>{
+                if node.last_job.as_deref()!=Some(id.as_str())||self.nodes.view.status.as_ref().and_then(|j|j["id"].as_str())!=Some(id.as_str()){
+                    return Err("That job is not the selected node's current recorded job. Refresh Nodes before stopping it.".into());
+                }
+                remote::Operation::Stop{job:id.clone()}
+            }
+            companion::Action::SyncArtifacts{job,domain,sequence,reader_leases}=>{
+                if node.last_job.as_deref()!=Some(job.as_str())||self.nodes.view.status.as_ref().and_then(|j|j["id"].as_str())!=Some(job.as_str()){
+                    return Err("That artifact job is not the selected node's current recorded job. Refresh Nodes first.".into());
+                }
+                if self.companion_target()["capabilities"]["artifact_sync_v1"]!=true{
+                    return Err("Reconnect the selected node to confirm committed frame transfer support.".into());
+                }
+                if sequence.is_some()&&self.companion_target()["capabilities"]["artifact_sequence_v1"]!=true{
+                    return Err("Reconnect the selected node to confirm forecast-time selection support.".into());
+                }
+                let cache=self.companion.session.as_ref().ok_or("The companion session closed.")?.directory
+                    .join("remote-artifacts").join(&node.id).join(job);
+                remote::Operation::SyncArtifacts{job:job.clone(),domain:*domain,cache,sequence:*sequence,reader_leases:*reader_leases}
+            }
+            companion::Action::ArtifactIndex{job,domain,after_sequence}=>{
+                if node.last_job.as_deref()!=Some(job.as_str())||self.nodes.view.status.as_ref().and_then(|j|j["id"].as_str())!=Some(job.as_str()){
+                    return Err("That timeline job is not the selected node's current recorded job. Refresh Nodes first.".into());
+                }
+                if self.companion_target()["capabilities"]["artifact_index_v1"]!=true{
+                    return Err("Reconnect the selected node to confirm native forecast timeline support.".into());
+                }
+                remote::Operation::ArtifactIndex{job:job.clone(),domain:*domain,after_sequence:*after_sequence}
+            }
+            companion::Action::SyncProcessedFrame{job,domain,sequence}=>{
+                if node.last_job.as_deref()!=Some(job.as_str())||self.nodes.view.status.as_ref().and_then(|status|status["id"].as_str())!=Some(job.as_str()){
+                    return Err("That converted frame is not the selected node's current recorded job. Open an older run through Runs.".into());
+                }
+                let cache=self.companion.session.as_ref().ok_or("The companion session closed.")?.directory
+                    .join("processed-store").join(&node.id).join(job);
+                remote::Operation::SyncProcessedFrame{job:job.clone(),domain:*domain,cache,sequence:*sequence}
+            }
+            _=>return Err("Unsupported remote companion operation.".into()),
+        };
+        self.nodes.begin(operation,&self.python,&self.output,&self.cwd)?;
+        self.status="Contacting the selected node; the TUI is retaining the request and its log.".into();
+        self.companion_remote=Some(CompanionRemoteRequest{request,node,source});
+        Ok(())
+    }
+    fn finish_companion_remote(&mut self,update:&remote::Update){
+        let Some(pending)=self.companion_remote.take()else{return;};
+        let target=pending.request.target.as_ref().unwrap().value();
+        let mut details=serde_json::json!({"target":target});
+        let result=(||->Result<String,String>{
+            self.checked_companion_target(pending.request.target.as_ref())?;
+            match(update,&pending.request.action){
+                (remote::Update::Failed(error),_)=>Err(error.clone()),
+                (remote::Update::PlanReviewed(remote_review),companion::Action::ReviewPlan(path))=>{
+                    Self::checked_companion_inputs(remote_review)?;
+                    if self.checked_companion_plan(&pending.request,path)?!=pending.source{return Err("The local selection changed during the node review.".into());}
+                    let review=serde_json::json!({"schema":"arwen.companion-remote-review.v1","review_id":pending.request.id,
+                        "created_unix_ms":companion::now_ms(),"target":target,"source":pending.source,
+                        "node_settings_sha256":companion::digest(serde_json::json!([pending.node.output_directory(),pending.node.geography]).to_string().as_bytes()),
+                        "remote_review":remote_review});
+                    let(path,hash)=self.companion.session.as_ref().ok_or("The companion session closed.")?.save_review(&pending.request.id,&review)?;
+                    if self.tui_map_review.as_ref().is_some_and(|request|request.id==pending.request.id){
+                        let mut launch=pending.request.clone();launch.id=format!("tui-launch-{}",remote::stamp());launch.name="launch_plan".into();
+                        launch.action=match &pending.request.action{companion::Action::ReviewPlan(path)=>companion::Action::LaunchPlan(path.clone()),_=>unreachable!()};
+                        launch.review_id=Some(pending.request.id.clone());launch.review_sha256=Some(hash.clone());self.tui_map_launch=Some(launch);
+                        self.node_panel.screen=node_ui::Screen::Review{operation:remote::Operation::StartPlan{review:remote_review.clone()},review:remote_review.clone()};
+                        self.node_panel.notice="Current saved map setup reviewed on the selected node. Enter starts only these reviewed inputs.".into();
+                        self.dialog=Some(Dialog::Nodes);
+                    }
+                    details["review_id"]=serde_json::json!(pending.request.id);details["review_path"]=serde_json::json!(path);details["review_sha256"]=serde_json::json!(hash);
+                    Ok("Node review ready. No forecast started.".into())
+                }
+                (remote::Update::Started(id),companion::Action::LaunchPlan(_))=>{
+                    details["job_id"]=serde_json::json!(id);details["job_dir"]=serde_json::Value::Null;
+                    details["remote_output_root"]=self.nodes.view.status.as_ref().map(|j|j["outdir"].clone()).unwrap_or_default();
+                    Ok("The reviewed plan started on the selected node.".into())
+                }
+                (remote::Update::Stopped(id),companion::Action::StopJob(_))=>{
+                    details["job_id"]=serde_json::json!(id);Ok("The selected node confirmed job termination.".into())
+                }
+                (remote::Update::ArtifactsSynced(reply),companion::Action::SyncArtifacts{job,..})=>{
+                    if self.nodes.store.selected().and_then(|node|node.last_job.as_deref())!=Some(job.as_str())
+                        ||reply["artifacts"]["job_id"]!=*job{return Err("The selected artifact job changed during transfer.".into());}
+                    details["job_id"]=serde_json::json!(job);details["transferred_bytes"]=reply["transferred_bytes"].clone();
+                    details["waiting"]=reply["artifacts"]["waiting"].clone();
+                    if let Some(recovery)=reply.get("cache_recovery"){
+                        self.companion_artifacts=None;
+                        details["cache_recovery"]=recovery.clone();
+                        return Ok("Refreshing a retained frame whose cached bytes changed.".into());
+                    }
+                    if reply["artifacts"]["waiting"]==true{return Ok("Waiting for this domain's first committed node frame.".into());}
+                    let mut artifacts=reply["artifacts"].clone();artifacts["schema"]=serde_json::json!("arwen.remote-artifacts.v1");
+                    artifacts["target"]=target.clone();
+                    let(path,hash)=self.companion.session.as_ref().ok_or("The companion session closed.")?.save_artifacts(&pending.request.id,&artifacts)?;
+                    details["artifact_manifest_path"]=serde_json::json!(path);details["artifact_manifest_sha256"]=serde_json::json!(hash);
+                    self.companion_artifacts=Some(details.clone());
+                    Ok("Committed node frame ready.".into())
+                }
+                (remote::Update::ArtifactIndexed(reply),companion::Action::ArtifactIndex{job,..})=>{
+                    if self.nodes.store.selected().and_then(|node|node.last_job.as_deref())!=Some(job.as_str())
+                        ||reply["artifact_index"]["job_id"]!=*job{return Err("The selected timeline job changed during discovery.".into());}
+                    let mut index=reply["artifact_index"].clone();index["schema"]=serde_json::json!("arwen.remote-artifact-index.v1");
+                    index["target"]=target.clone();
+                    let(path,hash)=self.companion.session.as_ref().ok_or("The companion session closed.")?.save_artifacts(&pending.request.id,&index)?;
+                    details["job_id"]=serde_json::json!(job);details["waiting"]=index["waiting"].clone();
+                    details["artifact_index_path"]=serde_json::json!(path);details["artifact_index_sha256"]=serde_json::json!(hash);
+                    Ok("Native forecast timeline page ready.".into())
+                }
+                (remote::Update::ProcessedFrameSynced(reply),companion::Action::SyncProcessedFrame{job,..})=>{
+                    if self.nodes.store.selected().and_then(|node|node.last_job.as_deref())!=Some(job.as_str())||reply["processed_frame"]["job_id"]!=*job{
+                        return Err("The selected converted-frame job changed during transfer.".into());
+                    }
+                    details["job_id"]=serde_json::json!(job);details["processed_frame"]=reply["processed_frame"].clone();
+                    let result=remote::processed_message(&details["processed_frame"]);
+                    if let Ok(message)=&result{if details["processed_frame"]["processing"].is_object(){details["processed_frame"]["processing"]["message"]=serde_json::json!(message);}}
+                    result
+                }
+                _=>Err("The node returned a different operation; no success was assumed.".into()),
+            }
+        })();
+        self.status=match &result{Ok(message)|Err(message)=>message.clone()};
+        if let Some(session)=&self.companion.session{if let Err(error)=session.respond_with(&pending.request.id,&pending.request.name,result,details){self.status=error;}}
+    }
+    fn checked_companion_inputs(review:&serde_json::Value)->Result<(),String>{
+        let inputs=review["source_inputs"].as_object().filter(|m|!m.is_empty()&&m.len()<=22).ok_or("The remote review has no bounded selected-input manifest.")?;
+        for(name,expected)in inputs{
+            let path=std::path::Path::new(name);
+            let hash=expected.as_str().filter(|h|h.len()==64&&h.bytes().all(|c|c.is_ascii_hexdigit())).ok_or("The review contains an invalid source-input SHA-256.")?;
+            if !path.is_absolute()||path.is_symlink()||fs::metadata(path).map(|m|!m.is_file()||m.len()>65536).unwrap_or(true)
+                ||fs::read(path).map(|b|companion::digest(&b)!=hash).unwrap_or(true){
+                return Err(format!("Selected local input '{}' changed or is unavailable. Review the map plan again.",path.file_name().unwrap_or_default().to_string_lossy()));
+            }
+        }
+        Ok(())
+    }
+    fn use_nodes_file(&mut self,path:PathBuf)->Result<(),String>{
+        if !path.is_absolute()||!path.is_file(){return Err("--nodes-file requires an absolute existing node profile JSON file.".into());}
+        let controller=remote::Controller::load_path(path);
+        if let Some(error)=&controller.load_error{return Err(format!("Cannot open the selected node profile file: {error}"));}
+        self.nodes=controller;
+        Ok(())
+    }
+    fn prepare_startup_node(&mut self)->Result<(),String>{
+        let node=self.nodes.store.selected().ok_or("--connect-node requires an active saved node profile; choose its ID in the selected node profile file.")?;
+        node.validate(false)?;
+        self.open_nodes();
+        Ok(())
+    }
+    fn open_companion(&mut self) {
+        if self.dirty() {
+            self.status = "Save or Save As before opening the visual workspace. Your draft is preserved.".into();
+            return;
+        }
+        if let Err(error) = self.plot_spec() { self.status = error; return; }
+        let context = self.companion_context();
+        self.status = match self.companion.open(&self.cwd, &self.output, context) { Ok(message) | Err(message) => message };
+        self.publish_companion_status(true);
+        if self.nodes.store.selected().is_some()&&self.nodes.pending.is_none()&&self.nodes.view.runtime.is_none(){self.node_request(remote::Operation::Probe);}
+    }
+    fn publish_companion_status(&mut self, force: bool) {
+        if self.companion.session.is_none() { return; }
+        if !force && self.companion.session.as_ref().is_some_and(|session| !session.due()) { return; }
+        let mut status = self.companion_context();
+        status["state"] = serde_json::json!(if self.busy()||self.nodes.pending.is_some() { "running" } else { "ready" });
+        status["draft_dirty"] = serde_json::json!(self.dirty());
+        status["job"] = if let Some(node)=self.nodes.store.selected(){
+            self.nodes.view.status.as_ref().map(|job|serde_json::json!({"job_id":job["id"],"job_dir":null,
+                "target":{"kind":"ssh","node_id":node.id,"connection_sha256":companion::digest(node.connection_key().as_bytes())},
+                "action":if job["action"]=="start-plan"{"run-plan"}else{job["action"].as_str().unwrap_or("remote")},
+                "state":job["state"],"exit_code":job["exit_code"],"remote_output_root":job["outdir"],
+                "source_config_path":job["source_config_path"],"source_config_sha256":job["source_config_sha256"],
+                "error":job["error"],"stage":job["stage"],"phase":job["phase"],"phase_updated_unix_ms":job["phase_updated_unix_ms"],"model_elapsed_seconds":job["model_elapsed_seconds"],"valid_time":job["valid_time"],"render_summary":job["render_summary"],"progress":job["progress"],"pipeline_progress":job["pipeline_progress"],
+                "manifest_ready":false,"log_path":null,"progress_path":null,"events_path":null,"ready_dir":null})).unwrap_or_default()
+        }else{self.job.as_ref().map(|job| companion::job_status(job, &self.output)).unwrap_or(serde_json::Value::Null)};
+        status["target_connection_error"]=serde_json::json!(self.nodes.view.connection_error);
+        if let Some(artifacts)=&self.companion_artifacts{
+            if status["job"]["job_id"]==artifacts["job_id"]&&status["job"]["target"]==artifacts["target"]{
+                for key in ["artifact_manifest_path","artifact_manifest_sha256"]{status["job"][key]=artifacts[key].clone();}
+            }
+        }
+        if let Some(session) = &mut self.companion.session {
+            if let Err(error) = session.publish(status, force) { self.status = format!("Visual workspace status: {error}"); }
+        }
+    }
+    fn poll_run_views(&mut self) {
+        for reply in self.run_views.poll() {
+            if let Some(session)=self.companion.session.as_ref().filter(|session|session.id==reply.session_id){
+                let _=session.respond_with(&reply.request.id,&reply.request.name,reply.result,reply.details);
+            }
+        }
+    }
+    fn poll_companion_requests(&mut self) {
+        for request in self.companion.requests() {
+            if run_view::Manager::handles(&request.action){
+                let result=self.companion.session.as_ref().ok_or_else(||"The companion session closed.".to_owned())
+                    .and_then(|session|self.run_views.begin(request.clone(),session,&self.nodes.store,&self.python,&self.output,&self.cwd));
+                if let Some(session)=&self.companion.session{match result{
+                    Ok(Some(reply))=>{let _=session.respond_with(&request.id,&request.name,reply.result,reply.details);}
+                    Ok(None)=>{}
+                    Err(error)=>{let _=session.respond_with(&request.id,&request.name,Err(error),serde_json::json!({"target":request.target.as_ref().map(companion::Target::value)}));}
+                }}
+                continue;
+            }
+            let remote_action=matches!(&request.action,companion::Action::ReviewPlan(_)|companion::Action::LaunchPlan(_)|companion::Action::StopJob(_)|companion::Action::SyncArtifacts{..}|companion::Action::SyncProcessedFrame{..}|companion::Action::ArtifactIndex{..})
+                && (self.nodes.store.selected().is_some()||matches!(request.target,Some(companion::Target::Ssh{..})));
+            if remote_action {
+                if let Err(error)=self.begin_companion_remote(request.clone()){
+                    self.status=error.clone();if let Some(session)=&self.companion.session{let _=session.respond_with(&request.id,&request.name,Err(error),serde_json::json!({"target":request.target.as_ref().map(companion::Target::value)}));}
+                }
+                self.publish_companion_status(true);continue;
+            }
+            let mut job = None;
+            let result = match &request.action {
+                companion::Action::BrowseRuns|companion::Action::OpenRun(_)|companion::Action::CloseRun(_)=>Err("Close a saved run through its own read-only viewer.".into()),
+                companion::Action::ReviewPlan(_) => Err("Choose and connect an SSH node before remote review.".into()),
+                companion::Action::SyncArtifacts{..}|companion::Action::SyncProcessedFrame{..}|companion::Action::ArtifactIndex{..}=>Err("Choose and connect the recorded SSH node before retrieving frames.".into()),
+                companion::Action::LaunchPlan(path) => {
+                    if self.busy() { Err("A local job is already running.".into()) }
+                    else if self.nodes.store.selected().is_some() { Err("Select Local computer before launching a companion plan.".into()) }
+                    else if self.dirty() { Err("Save the TUI draft before launching a plan.".into()) }
+                    else if self.checked_companion_target(request.target.as_ref()).is_err(){Err("The execution target changed. Review again.".into())}
+                    else if (request.plan_sha256.is_some()||request.config_sha256.is_some())&&self.checked_companion_plan(&request,path).is_err(){Err("The saved plan or configuration changed. Review again.".into())}
+                    else {
+                        match companion::read_json(path, 4 * 1024 * 1024) {
+                            Ok(plan) if plan["schema"] == "gpuwm.run-plan.v1" => {
+                                let previous = self.job.as_ref().map(|job| job.dir.clone());
+                                self.start_command("run-plan", &[path.to_string_lossy().into_owned()], None);
+                                job = self.job.as_ref().filter(|job| Some(&job.dir) != previous.as_ref()).map(|job| job.dir.clone());
+                                if job.is_some() {
+                                    self.active_config = plan["config"]["path"].as_str().map(PathBuf::from)
+                                        .map(|config| if config.is_absolute() { config } else { path.parent().unwrap_or(&self.cwd).join(config) })
+                                        .and_then(|config| config.canonicalize().ok());
+                                    Ok("Run plan accepted.".into())
+                                } else { Err(self.status.clone()) }
+                            }
+                            Ok(_) => Err("Unsupported run-plan schema.".into()),
+                            Err(error) => Err(error),
+                        }
+                    }
+                }
+                companion::Action::StopJob(id) => {
+                    match &mut self.job {
+                        Some(current) if current.dir == PathBuf::from(id) => {
+                            job = Some(current.dir.clone());
+                            current.stop().map(|_| current.stop_message().to_owned()).map_err(|e| e.to_string())
+                        }
+                        _ => Err("That job is not the current TUI job.".into()),
+                    }
+                }
+                companion::Action::OpenConfig(path) => {
+                    if self.dirty() { Err("Save or Save As before opening another configuration.".into()) }
+                    else if !path.is_file() || !path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("toml")) {
+                        Err("Choose an existing TOML configuration.".into())
+                    } else {
+                        let expected = path.canonicalize().ok();
+                        self.open(path.clone());
+                        if self.editor.as_ref().map(|editor| &editor.path) == expected.as_ref() { Ok("Configuration opened.".into()) }
+                        else { Err(self.status.clone()) }
+                    }
+                }
+                companion::Action::ResetSetup => {
+                    self.reset_setup();
+                    Ok(self.status.clone())
+                }
+                companion::Action::FocusLogs => {
+                    if request.target.is_some()&&self.checked_companion_target(request.target.as_ref()).is_err(){Err("The requested log target changed. Choose the intended node again.".into())}
+                    else{self.view(Tab::Logs);Ok("Logs selected in the control center.".into())}
+                }
+                companion::Action::FocusNodes => {self.open_nodes();Ok("Node targets opened in the control center.".into())}
+                companion::Action::FocusSetup => {
+                    self.dialog=None;self.dialog_stack.clear();self.view(Tab::Settings);
+                    Ok(if self.editor.is_some(){"Configuration settings opened in the control center."}else{"Create or open a configuration on Home."}.into())
+                }
+                companion::Action::SelectTarget=>self.select_companion_target(request.target.as_ref().expect("typed target")),
+            };
+            self.status = match &result { Ok(message) | Err(message) => message.clone() };
+            if result.is_err() { job = None; }
+            if let Some(session) = &self.companion.session {
+                let response=if matches!(request.action,companion::Action::SelectTarget){session.respond_with(&request.id,&request.name,result,
+                    serde_json::json!({"target":request.target.as_ref().map(companion::Target::value)}))}else{session.respond(&request.id, &request.name, result, job.as_deref())};
+                if let Err(error) = response {
+                    self.status = format!("Visual workspace response: {error}");
+                }
+            }
+            self.publish_companion_status(true);
+        }
+    }
+    fn set_era5_provider(&mut self, provider: &str, original: &str) -> Result<(), String> {
+        if !matches!(provider, "cds" | "arco") { return Err("Choose an ERA5 provider.".into()); }
+        let editor = self.editor.as_mut().ok_or("Open an ERA5 configuration first.")?;
+        if editor.text() != original {
+            return Err("The draft changed. Reopen the ERA5 provider choice.".into());
+        }
+        let mut doc = original.parse::<toml_edit::DocumentMut>()
+            .map_err(|_| "Correct the TOML in Settings first.")?;
+        if doc.get("fetch").and_then(|fetch| fetch.get("source"))
+            .and_then(toml_edit::Item::as_str) != Some("era5") {
+            return Err("Provider selection needs [fetch].source = \"era5\".".into());
+        }
+        let forcing = doc.get("case_data").and_then(|data| data.get("forcing"))
+            .and_then(toml_edit::Item::as_array)
+            .filter(|paths| paths.len() == 1)
+            .and_then(|paths| paths.get(0)).and_then(toml_edit::Value::as_str)
+            .ok_or("Custom ERA5 inputs: edit provider and forcing paths in Settings.")?;
+        let name_at = forcing.rfind(['/', '\\']).map_or(0, |index| index + 1);
+        if !matches!(&forcing[name_at..], "era5-combined.grib" | "era5-combined.nc") {
+            return Err("Custom ERA5 inputs: edit provider and forcing paths in Settings.".into());
+        }
+        let next_forcing = format!("{}{}", &forcing[..name_at],
+            if provider == "arco" { "era5-combined.nc" } else { "era5-combined.grib" });
+        let fetch = doc.get_mut("fetch").and_then(toml_edit::Item::as_table_like_mut)
+            .ok_or("Correct [fetch] in Settings first.")?;
+        let mut value = toml_edit::Value::from(provider);
+        if let Some(old) = fetch.get("era5_provider").and_then(toml_edit::Item::as_value) {
+            *value.decor_mut() = old.decor().clone();
+        }
+        fetch.insert("era5_provider", toml_edit::Item::Value(value));
+        let paths = doc.get_mut("case_data").and_then(|data| data.get_mut("forcing"))
+            .and_then(toml_edit::Item::as_array_mut).unwrap();
+        let path = paths.get_mut(0).unwrap();
+        let mut value = toml_edit::Value::from(next_forcing);
+        *value.decor_mut() = path.decor().clone();
+        *path = value;
+        editor.replace_draft(doc.to_string());
+        Ok(())
     }
     fn export_dialog(&mut self) {
         if let Some(e) = &self.editor {
@@ -777,7 +1405,66 @@ impl App {
         self.node_panel.open(&self.nodes);
         self.dialog = Some(Dialog::Nodes);
     }
+    fn current_setup_uses_staged_node(&self)->bool{
+        self.editor.is_some()&&self.nodes.store.selected().is_some_and(|node|node.config.trim().is_empty())
+    }
+    fn current_setup_review_request(&mut self)->Result<companion::Request,String>{
+        if self.dirty(){return Err("Save the current setup before reviewing its node forecast.".into());}
+        let config=self.editor.as_ref().ok_or("Open or create a setup before reviewing its node forecast.")?.path.clone();
+        let node=self.nodes.store.selected().ok_or("Choose a node for this setup.")?.clone();
+        let products=self.plot_spec()?;
+        let config_sha256=companion::digest(&fs::read(&config).map_err(|e|e.to_string())?);
+        self.companion.ensure_session(&self.output)?;
+        let directory=self.companion.session.as_ref().unwrap().directory.join("workspace");
+        fs::create_dir_all(&directory).map_err(|e|e.to_string())?;
+        let id=format!("tui-review-{}",remote::stamp());let path=directory.join(format!("{id}.json"));
+        let plan=serde_json::json!({"schema":"gpuwm.run-plan.v1","name":id,"route":"prepared",
+            "config":{"path":config},"output_root":self.output.join(format!("run-{id}")),
+            "run_options":{"render_products":products}});
+        let bytes=serde_json::to_vec_pretty(&plan).map_err(|e|e.to_string())?;
+        use std::io::Write;
+        let mut file=fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e|e.to_string())?;
+        file.write_all(&bytes).and_then(|_|file.sync_all()).map_err(|e|e.to_string())?;
+        Ok(companion::Request{id,name:"review_plan".into(),action:companion::Action::ReviewPlan(path),
+            target:Some(companion::Target::Ssh{node_id:node.id.clone(),connection_sha256:companion::digest(node.connection_key().as_bytes())}),
+            plan_sha256:Some(companion::digest(&bytes)),config_sha256:Some(config_sha256),review_id:None,review_sha256:None})
+    }
+    fn review_current_setup_on_node(&mut self)->Result<(),String>{
+        if self.busy()||self.companion_remote.is_some()||self.nodes.pending.as_ref().is_some_and(|p|p.operation.mutates()){
+            return Err("Another forecast action is in progress. Follow its status before reviewing this setup.".into());
+        }
+        let request=self.current_setup_review_request()?;
+        self.tui_map_launch=None;self.tui_map_review=Some(request.clone());
+        if self.nodes.pending.is_none()&&self.companion_target()["capabilities"]["review_plan_v1"]==true{
+            self.begin_companion_remote(request)?;
+            self.node_panel.notice="Checking the current saved setup and GPU memory on the selected node…".into();
+        }else{
+            if self.nodes.pending.is_none(){self.nodes.begin(remote::Operation::Probe,&self.python,&self.output,&self.cwd)?;}
+            self.tui_map_waiting=Some(request);
+            self.node_panel.notice="Connecting to the selected node, then reviewing the current saved setup…".into();
+        }
+        self.status=self.node_panel.notice.clone();self.dialog=Some(Dialog::Nodes);Ok(())
+    }
+    fn continue_current_setup_review(&mut self,update:&remote::Update){
+        let Some(request)=self.tui_map_waiting.take()else{return;};
+        if let remote::Update::Failed(error)=update{self.node_panel.error(error.clone());return;}
+        let result=if self.checked_companion_target(request.target.as_ref()).is_err(){Err("The selected node changed while connecting. Review the current setup again.".into())}
+            else if self.companion_target()["capabilities"]["review_plan_v1"]==true{self.begin_companion_remote(request)}
+            else if matches!(update,remote::Update::Connected){Err("The connected node's runtime does not support staged map plans. Update its matched ArWen runtime.".into())}
+            else{self.tui_map_waiting=Some(request);self.nodes.begin(remote::Operation::Probe,&self.python,&self.output,&self.cwd)};
+        if let Err(error)=result{self.status=error.clone();self.node_panel.error(error);}
+    }
     fn node_request(&mut self, operation: remote::Operation) {
+        if matches!(operation,remote::Operation::Start{preview:true,..})&&self.current_setup_uses_staged_node(){
+            if let Err(error)=self.review_current_setup_on_node(){self.status=error.clone();self.node_panel.error(error);}
+            return;
+        }
+        if matches!(operation,remote::Operation::StartPlan{..}){
+            let result=self.tui_map_launch.clone().ok_or_else(||"This map review is no longer current. Review the saved setup again.".to_owned())
+                .and_then(|request|self.begin_companion_remote(request));
+            if let Err(error)=result{self.status=error.clone();self.node_panel.error(error);}
+            return;
+        }
         let action = operation.action();
         let mutates = operation.mutates();
         match self
@@ -816,6 +1503,17 @@ impl App {
                 self.dialog = None;
             }
             node_ui::Intent::Plots => self.begin_plots(),
+            node_ui::Intent::CopyLogs => {
+                self.node_panel.notice=match self.copy_text(&self.node_log_text()){
+                    Ok(bytes)=>format!("Copied node logs ({bytes} bytes). Paste into another app."),
+                    Err(error)=>format!("Copy failed: {error}. O opens a plain-text log."),
+                };
+                self.status=self.node_panel.notice.clone();
+            }
+            node_ui::Intent::OpenLog => {
+                self.node_panel.notice=self.open_log_text(&self.node_log_text());
+                self.status=self.node_panel.notice.clone();
+            }
             node_ui::Intent::Remove(id) => match self.nodes.remove_node(&id) {
                 Ok(()) => {
                     self.node_panel.open(&self.nodes);
@@ -828,23 +1526,15 @@ impl App {
                 }
             },
             node_ui::Intent::Request(operation) => self.node_request(operation),
-            node_ui::Intent::Select(id) => match self.nodes.select(id) {
-                Ok(()) => {
-                    self.status = self
-                        .nodes
-                        .store
-                        .selected()
-                        .map(|n| {
-                            format!(
-                                "Target: {} ({}). F7 reviews a new job using {}.",
-                                n.name, n.host, n.config
-                            )
-                        })
-                        .unwrap_or_else(|| "Target: Local computer.".into());
-                    self.node_panel.notice = self.status.clone();
+            node_ui::Intent::Select(id) => {
+                let target=id.map(|id|self.nodes.store.nodes.iter().find(|node|node.id==id)
+                    .map(|node|companion::Target::Ssh{node_id:node.id.clone(),connection_sha256:companion::digest(node.connection_key().as_bytes())})
+                    .ok_or_else(||"The selected saved node no longer exists.".to_owned())).transpose();
+                match target.and_then(|target|self.select_companion_target(&target.unwrap_or(companion::Target::Local))){
+                    Ok(message)=>{self.status=message.clone();self.node_panel.notice=message;}
+                    Err(error)=>{self.status=error.clone();self.node_panel.error(error);}
                 }
-                Err(error) => self.node_panel.error(error),
-            },
+            }
             node_ui::Intent::Save(node) => {
                 let id = node.id.clone();
                 match self
@@ -996,6 +1686,7 @@ impl App {
                 self.job = Some(job);
                 self.tab = Tab::Logs;
                 self.log_offset = 0;
+                self.local_raw_logs = false;
             }
             Err(e) => {
                 self.status =
@@ -1012,10 +1703,18 @@ impl App {
                 self.pending_workflow = None;
                 self.tab = Tab::Logs;
                 self.log_offset = 0;
+                self.local_raw_logs = false;
             }
         }
     }
     fn poll(&mut self) {
+        self.poll_companion_requests();
+        self.poll_run_views();
+        self.cds.poll();
+        if self.tab == Tab::Overview || self.era5_provider().is_some()
+            || matches!(self.dialog, Some(Dialog::CdsCredentials(_))) {
+            self.cds.ensure(&self.python, &self.cwd);
+        }
         self.plot_catalog.poll();
         if let Some(Dialog::Calendar(_, form)) = &mut self.dialog {
             form.poll();
@@ -1024,16 +1723,25 @@ impl App {
             form.poll();
         }
         if let Some(update) = self.nodes.poll() {
-            self.node_panel.update(&update);
+            self.finish_companion_remote(&update);
+            let current_setup = self.accept_setup_review_update(&update);
+            if current_setup { self.node_panel.update(&update); }
+            if matches!(update,remote::Update::Connected)
+                &&self.nodes.store.selected().and_then(|node|node.last_job.as_ref()).is_some()
+                &&matches!(self.node_panel.screen,node_ui::Screen::Nodes|node_ui::Screen::Jobs){
+                self.node_panel.screen=node_ui::Screen::Job;
+                self.node_panel.notice="Reconnecting to this node's saved forecast job…".into();
+            }
             match &update {
-                remote::Update::Preview { .. } => self.status = "Node launch review is ready in Nodes.".into(),
+                remote::Update::Preview { .. } if current_setup => self.status = "Node launch review is ready in Nodes.".into(),
                 remote::Update::Started(id) => self.status = format!("Remote job {id} started. Nodes shows its status and log; closing the TUI leaves it running."),
                 remote::Update::Stopped(id) => self.status = format!("Node confirmed termination of {id}."),
                 remote::Update::Failed(error) => self.status = error.clone(),
                 _ => {},
             }
+            self.continue_current_setup_review(&update);
         }
-        if matches!(self.dialog, Some(Dialog::Nodes)) && self.node_panel.should_refresh(&self.nodes)
+        if (matches!(self.dialog, Some(Dialog::Nodes))||self.companion.session.is_some()) && self.node_panel.should_refresh_connected(&self.nodes,self.companion.session.is_some())
         {
             if let Some(job) = self.nodes.store.selected().and_then(|n| n.last_job.clone()) {
                 self.node_request(remote::Operation::Logs {
@@ -1101,6 +1809,11 @@ impl App {
                             Err(error) => self.status = format!("Configuration created; mode plots were not saved: {error}. B opens Plots for review."),
                         }
                     }
+                } else if let Some(draft) = self.job.as_ref().and_then(Job::configuration_recovery) {
+                    self.open_configuration_recovery(draft);
+                } else if self.memory_recovery_available() {
+                    self.status = "This memory plan does not fit. Your configuration is preserved. Ctrl+F reviews fitting its grids; Ctrl+T reviews tile streaming. Details explain the planner's limit.".into();
+                    self.show_details();
                 } else {
                     self.status="Configuration creation FAILED. Click this summary or Ctrl+L for the engine's error; Esc returns to your saved answers.".into();
                 }
@@ -1111,6 +1824,19 @@ impl App {
         }
         if self.exit_after_job && !self.busy() {
             self.exit = true;
+        }
+        self.publish_companion_status(false);
+    }
+    fn open_configuration_recovery(&mut self, draft: PathBuf) {
+        if self.dirty() {
+            self.status = format!("Configuration exceeds GPU memory. Its recovery draft is saved at {}. Save your open edits before opening it to Fit domain or Tile streaming.", display_path(&draft));
+            return;
+        }
+        self.open(draft.clone());
+        if self.editor.as_ref().is_some_and(|editor| editor.path == draft) {
+            self.memory_recovery_config = Some(draft);
+            self.status = "Configuration exceeds GPU memory. Saved as a recovery draft; no runnable configuration was created. Ctrl+F fits its grids to this GPU; Ctrl+T reviews tile streaming while keeping its geometry.".into();
+            self.show_details();
         }
     }
     fn view(&mut self, tab: Tab) {
@@ -1148,6 +1874,16 @@ impl App {
         }
     }
     fn mouse(&mut self, event: MouseEvent) {
+        if event.kind == MouseEventKind::Down(MouseButton::Left) {
+            if let Some(action) = self.hits.iter().rev().find(|hit|
+                matches!(hit.action, Hit::Quit | Hit::JobResult)
+                && event.column >= hit.area.x && event.column < hit.area.right()
+                && event.row >= hit.area.y && event.row < hit.area.bottom()).map(|hit| hit.action) {
+                match action { Hit::Quit => self.request_quit(), Hit::JobResult => self.show_job_result(), _ => {} }
+                self.hits.clear();
+                return;
+            }
+        }
         if !self.input_enabled {
             return;
         }
@@ -1215,6 +1951,14 @@ impl App {
                     form.choose(index, &self.plot_catalog);
                 }
             }
+            Hit::DomainSelect(index) => {
+                if let Some(Dialog::Domains(selected)) = &mut self.dialog { *selected = index; }
+            }
+            Hit::Era5Provider => self.begin_era5_provider(),
+            Hit::CdsCredentials => self.begin_cds_credentials(),
+            Hit::Quit => self.request_quit(),
+            Hit::JobResult => self.show_job_result(),
+            Hit::OpenCompanion => self.open_companion(),
             Hit::DomainField(index) => {
                 if let Some(Dialog::DomainForm(form, editing)) = &mut self.dialog {
                     form.selected = index;
@@ -1261,7 +2005,9 @@ impl App {
                     Some(Dialog::Choice(_, selected))
                     | Some(Dialog::Summary(_, selected))
                     | Some(Dialog::Browser(_, _, selected))
+                    | Some(Dialog::DroppedFiles(_, selected))
                     | Some(Dialog::Domains(selected))
+                    | Some(Dialog::Era5Provider(selected, _))
                     | Some(Dialog::DomainMenu(_, selected)) => *selected = index,
                     _ => return,
                 }
@@ -1336,6 +2082,20 @@ impl App {
             self.dialog_key(dialog, key);
             return;
         }
+        if self.tab == Tab::Overview && ctrl && matches!(key.code, KeyCode::Char('z' | 'Z' | 'y' | 'Y')) {
+            if let Some(editor) = &mut self.editor {
+                let undo = matches!(key.code, KeyCode::Char('z' | 'Z'));
+                let changed = if undo { editor.undo() } else { editor.redo() };
+                self.status = if changed {
+                    if undo { "Undid the last draft edit." } else { "Redid the draft edit." }
+                } else { "No draft edit to restore." }.into();
+            }
+            return;
+        }
+        if self.tab != Tab::Settings && key.code == KeyCode::Char('u') && !ctrl {
+            self.begin_era5_provider();
+            return;
+        }
         if (ctrl && matches!(key.code, KeyCode::Char('r' | 'R')))
             || (self.tab != Tab::Settings && key.code == KeyCode::Char('r'))
         {
@@ -1368,6 +2128,11 @@ impl App {
             || (self.tab != Tab::Settings && key.code == KeyCode::Char('b'))
         {
             self.begin_plots();
+            return;
+        }
+        if !ctrl && self.tab == Tab::Logs && key.code == KeyCode::Char('g') && self.has_local_forecast_job() {
+            self.local_raw_logs = !self.local_raw_logs;
+            self.log_offset = 0;
             return;
         }
         if (ctrl && matches!(key.code, KeyCode::Char('g' | 'G')))
@@ -1540,6 +2305,13 @@ impl App {
             KeyCode::Char('q') => {
                 self.request_quit();
             }
+            KeyCode::Char('y' | 'Y') if self.tab==Tab::Logs=>{
+                self.status=match self.copy_text(&self.log_text()){
+                    Ok(bytes)=>format!("Copied logs ({bytes} bytes). Paste into another app."),
+                    Err(error)=>format!("Copy failed: {error}. O opens a plain-text log."),
+                };
+            }
+            KeyCode::Char('o' | 'O') if self.tab==Tab::Logs=>self.status=self.open_log_text(&self.log_text()),
             KeyCode::Char('o') => {
                 self.dialog = Some(Dialog::Path("Configuration path", String::new()))
             }
@@ -1550,7 +2322,7 @@ impl App {
                     self.status = "Open a configuration first (O).".into()
                 }
             }
-            KeyCode::Char('l') => self.tab = Tab::Logs,
+            KeyCode::Char('l') => self.view(Tab::Logs),
             KeyCode::Char('v') => self.tab = Tab::Overview,
             KeyCode::Char('x') if self.nodes.store.selected().is_some() => {
                 self.dialog = Some(Dialog::Nodes);
@@ -1601,6 +2373,9 @@ impl App {
         }
     }
     fn begin_cases(&mut self) {
+        self.begin_cases_from(None);
+    }
+    fn begin_cases_from(&mut self, catalog: Option<PathBuf>) {
         if self.nodes.store.selected().is_some() {
             self.open_nodes();
             self.node_panel.notice = "Choose Local computer to create a local configuration from a case catalog.".into();
@@ -1611,7 +2386,10 @@ impl App {
             return;
         }
         self.guide_cache = None;
-        self.dialog = Some(Dialog::Cases(self.case_cache.take().unwrap_or_else(|| cases::Form::new(&self.python, &self.cwd))));
+        self.dialog = Some(Dialog::Cases(match catalog {
+            Some(path) => cases::Form::from_catalog(&self.python, &self.cwd, &path),
+            None => self.case_cache.take().unwrap_or_else(|| cases::Form::new(&self.python, &self.cwd)),
+        }));
         self.status = "Browse case catalogs, inspect their source and physics choices, then create editable TOML.".into();
     }
     fn begin_workflows(&mut self) {
@@ -1764,8 +2542,19 @@ impl App {
         }
     }
     fn begin_domains(&mut self) {
-        self.status = "Choose a domain to edit its grid, tracking or lifecycle. Draft edits do not save or launch a forecast.".into();
+        self.status = "Select a domain. Edit, add a child, or remove it from the draft.".into();
         self.dialog = Some(Dialog::Domains(0));
+    }
+    fn edit_domain(&mut self, index: usize, section: domains::Section) {
+        let form = self.editor.as_ref().ok_or_else(|| "Open a configuration first.".to_owned())
+            .and_then(|editor| domains::Form::new(editor.text(), index, section));
+        match form {
+            Ok(form) => self.dialog = Some(Dialog::DomainForm(form, None)),
+            Err(error) => {
+                self.status = error;
+                self.dialog = Some(Dialog::Domains(index));
+            }
+        }
     }
     fn domain_labels(&self) -> Result<Vec<String>, String> {
         match &self.editor {
@@ -1927,7 +2716,14 @@ impl App {
         if key.code == KeyCode::Esc {
             self.dialog = match dialog {
                 Dialog::DomainMenu(index, _) => Some(Dialog::Domains(index)),
+                Dialog::DomainRemoval(removal, _) => Some(Dialog::Domains(removal.index)),
+                Dialog::CdsCredentials(mut form) if form.editing => {
+                    form.editing = false;
+                    Some(Dialog::CdsCredentials(form))
+                }
+                Dialog::CdsCredentials(_) => self.dialog_stack.pop(),
                 Dialog::DomainForm(form, Some(_)) => Some(Dialog::DomainForm(form, None)),
+                Dialog::DomainForm(form, None) if matches!(form.section, domains::Section::Geometry | domains::Section::AddChild) => Some(Dialog::Domains(form.index)),
                 Dialog::DomainForm(form, None) => Some(Dialog::DomainMenu(form.index, 0)),
                 Dialog::Guide(g) if g.summary_edit => Some(Dialog::Summary(g.clone(), g.step + 1)),
                 Dialog::Guide(g) => { self.retain_guide(g); None },
@@ -1940,6 +2736,7 @@ impl App {
                 Dialog::Review(request, None, _) if request.command == "case-catalog" => self.case_cache.take().map(Dialog::Cases),
                 Dialog::Quit => { self.exit_after_job = false; self.dialog_stack.pop() },
                 Dialog::Help(_) | Dialog::Stop => self.dialog_stack.pop(),
+                Dialog::Details { .. } if !self.dialog_stack.is_empty() => self.dialog_stack.pop(),
                 _ => None,
             };
             return;
@@ -1975,11 +2772,19 @@ impl App {
             Dialog::Domains(mut selected) => {
                 let count = self.domain_labels().map(|rows| rows.len()).unwrap_or(0);
                 match key.code {
+                    KeyCode::Char('s' | 'S') if key.modifiers.contains(KeyModifiers::CONTROL) => self.save(),
+                    KeyCode::Char('z' | 'Z') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if let Some(editor) = &mut self.editor {
+                            self.status = if editor.undo() { "Undid the last draft edit." } else { "No earlier draft edit to undo." }.into();
+                        }
+                        let count = self.domain_labels().map(|rows| rows.len()).unwrap_or(0);
+                        selected = selected.min(count.saturating_sub(1));
+                    }
                     KeyCode::Up => selected = selected.saturating_sub(1),
                     KeyCode::Down => selected = (selected + 1).min(count + 1),
-                    KeyCode::Enter => {
+                    KeyCode::Enter | KeyCode::Char('e' | 'E') => {
                         if selected < count {
-                            self.dialog = Some(Dialog::DomainMenu(selected, 0));
+                            self.edit_domain(selected, domains::Section::Geometry);
                         } else {
                             self.begin_guide(if selected == count {
                                 Kind::New
@@ -1988,6 +2793,25 @@ impl App {
                             });
                         }
                         return;
+                    }
+                    KeyCode::Char('a' | 'A') if selected < count => {
+                        self.edit_domain(selected, domains::Section::AddChild);
+                        return;
+                    }
+                    KeyCode::Char('m' | 'M') if selected < count => {
+                        self.dialog = Some(Dialog::DomainMenu(selected, 0));
+                        return;
+                    }
+                    KeyCode::Delete | KeyCode::Char('r' | 'R') if selected < count => {
+                        if let Some(editor) = &self.editor {
+                            match domains::Removal::new(editor.text(), selected) {
+                                Ok(removal) => {
+                                    self.dialog = Some(Dialog::DomainRemoval(removal, 0));
+                                    return;
+                                }
+                                Err(error) => self.status = error,
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -2016,6 +2840,74 @@ impl App {
                 }
                 self.dialog = Some(Dialog::DomainMenu(index, selected));
             }
+            Dialog::DomainRemoval(removal, mut offset) => {
+                match key.code {
+                    KeyCode::Up => offset = offset.saturating_sub(1),
+                    KeyCode::Down => offset = offset.saturating_add(1),
+                    KeyCode::PageUp => offset = offset.saturating_sub(8),
+                    KeyCode::PageDown => offset = offset.saturating_add(8),
+                    KeyCode::Home => offset = 0,
+                    KeyCode::F(2) => {
+                        if let Some(editor) = &mut self.editor {
+                            if editor.text() != removal.original {
+                                self.status = "The draft changed. Reopen Domains before removing anything.".into();
+                            } else {
+                                editor.replace_draft(removal.apply());
+                                self.status = format!("Removed {} domain(s) from the draft. Ctrl+Z undoes; Ctrl+S saves.", removal.rows.len());
+                                let count = self.domain_labels().map(|rows| rows.len()).unwrap_or(1);
+                                self.dialog = Some(Dialog::Domains(removal.index.min(count.saturating_sub(1))));
+                                return;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                self.dialog = Some(Dialog::DomainRemoval(removal, offset));
+            }
+            Dialog::Era5Provider(mut selected, original) => {
+                match key.code {
+                    KeyCode::Char('c' | 'C') => {
+                        self.dialog = Some(Dialog::Era5Provider(selected, original));
+                        self.begin_cds_credentials();
+                        return;
+                    }
+                    KeyCode::Up => selected = selected.saturating_sub(1),
+                    KeyCode::Down => selected = (selected + 1).min(1),
+                    KeyCode::Enter => {
+                        let (provider, label) = if selected == 0 { ("arco", "Google ARCO") } else { ("cds", "Copernicus CDS") };
+                        match self.set_era5_provider(provider, &original) {
+                            Ok(()) => {
+                                self.status = format!("ERA5: {label}. Ctrl+S saves; Ctrl+Z undoes.");
+                                self.tab = Tab::Overview;
+                                return;
+                            }
+                            Err(error) => self.status = error,
+                        }
+                    }
+                    _ => {}
+                }
+                self.dialog = Some(Dialog::Era5Provider(selected, original));
+            }
+            Dialog::CdsCredentials(mut form) => {
+                let editable = self.cds.status.as_ref().is_some_and(|status| status.editable) && !self.cds.busy();
+                if key.code == KeyCode::F(2) && editable {
+                    self.cds.save(&self.python, &self.cwd, form.take_key());
+                    form.editing = false;
+                } else if key.code == KeyCode::F(5) && !self.cds.busy() {
+                    self.cds.refresh(&self.python, &self.cwd);
+                } else if editable && form.editing {
+                    match key.code {
+                        KeyCode::Enter | KeyCode::Tab => form.editing = false,
+                        KeyCode::Backspace => form.backspace(),
+                        KeyCode::Char('u' | 'U') if key.modifiers.contains(KeyModifiers::CONTROL) => form.clear(),
+                        KeyCode::Char(character) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => form.append(&character.to_string()),
+                        _ => {}
+                    }
+                } else if editable && matches!(key.code, KeyCode::Enter | KeyCode::Char('e' | 'E')) {
+                    form.editing = true;
+                }
+                self.dialog = Some(Dialog::CdsCredentials(form));
+            }
             Dialog::DomainForm(mut form, mut editing) => {
                 if key.code == KeyCode::F(2) || (key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::CONTROL)) {
                     match form.apply() {
@@ -2025,8 +2917,11 @@ impl App {
                                     self.status = "The draft changed while this form was open. Reopen Domains to edit its current values.".into();
                                 } else {
                                     editor.replace_draft(text);
-                                    self.status = "Applied the reviewed domain settings to your draft. Ctrl+S saves; F5 checks the complete configuration and F6 reviews the plan.".into();
-                                    self.dialog = Some(Dialog::DomainMenu(form.index, 0));
+                                    self.status = "Domain updated in the draft. Ctrl+S saves; F5 checks.".into();
+                                    let index = if form.section == domains::Section::AddChild {
+                                        self.domain_labels().map(|rows| rows.len().saturating_sub(1)).unwrap_or(form.index)
+                                    } else { form.index };
+                                    self.dialog = Some(Dialog::Domains(index));
                                     return;
                                 }
                             }
@@ -2267,6 +3162,15 @@ impl App {
                 }
             }
             Dialog::Path(label, mut value) => match key.code {
+                KeyCode::F(2) if label == "Configuration path" => {
+                    let path = absolute(PathBuf::from(unquote(value.trim())), &self.cwd);
+                    let folder = if path.is_dir() {
+                        path
+                    } else {
+                        path.parent().unwrap_or(&self.cwd).to_path_buf()
+                    };
+                    self.browse(folder);
+                }
                 KeyCode::Enter => {
                     let path = PathBuf::from(unquote(value.trim()));
                     if path.as_os_str().is_empty()
@@ -2344,6 +3248,22 @@ impl App {
                 }
                 _ => self.dialog = Some(Dialog::Browser(dir, items, selected)),
             },
+            Dialog::DroppedFiles(items, mut selected) => match key.code {
+                KeyCode::Up => {
+                    selected = selected.saturating_sub(1);
+                    self.dialog = Some(Dialog::DroppedFiles(items, selected));
+                }
+                KeyCode::Down => {
+                    selected = (selected + 1).min(items.len().saturating_sub(1));
+                    self.dialog = Some(Dialog::DroppedFiles(items, selected));
+                }
+                KeyCode::Enter => {
+                    if let Some(path) = items.get(selected) {
+                        self.open(path.clone());
+                    }
+                }
+                _ => self.dialog = Some(Dialog::DroppedFiles(items, selected)),
+            },
             Dialog::Stop => {
                 if matches!(key.code, KeyCode::Char('y' | 'Y')) && key.kind == KeyEventKind::Press {
                     if let Some(job) = &mut self.job {
@@ -2401,6 +3321,32 @@ impl App {
     fn paste(&mut self, value: String) {
         if !self.input_enabled {
             return;
+        }
+        if let Some(Dialog::CdsCredentials(form)) = &mut self.dialog {
+            if self.cds.status.as_ref().is_some_and(|status| status.editable) && !self.cds.busy() {
+                form.append(&value);
+            }
+            return;
+        }
+        let open_files = self.dialog.is_none() || matches!(self.dialog,
+            Some(Dialog::Browser(..) | Dialog::DroppedFiles(..)
+                | Dialog::Path("Configuration path", _) | Dialog::Choice(false, _)
+                | Dialog::Cases(_)));
+        if open_files {
+            if let Some(paths) = file_drop::paths(&value, &self.cwd) {
+                if self.dirty() {
+                    self.status = "Save with Ctrl+S or F12 before opening a dropped file. Your draft is unchanged.".into();
+                    return;
+                }
+                self.dialog = None;
+                if paths.len() == 1 {
+                    self.open(paths[0].clone());
+                } else {
+                    self.status = format!("{} files dropped. Choose one to open; no forecast starts.", paths.len());
+                    self.dialog = Some(Dialog::DroppedFiles(paths, 0));
+                }
+                return;
+            }
         }
         if matches!(self.dialog, Some(Dialog::Nodes)) {
             self.node_panel.paste(&value);
@@ -2582,6 +3528,12 @@ fn compact_overview(app: &App, width: u16, height: u16) -> Vec<Line<'static>> {
         let source = value("fetch", "source")
             .or_else(|| value("case_data", "source"))
             .unwrap_or_else(|| "not selected".into());
+        let source = match app.era5_provider() {
+            Some("arco") => "ERA5 · Google ARCO".into(),
+            Some("cds") => "ERA5 · Copernicus CDS".into(),
+            Some(_) => "ERA5 · choose provider (U)".into(),
+            None => source,
+        };
         lines.push(Line::styled(
             format!(
                 "Input: {} · F Settings · D Domains · B Plots",
@@ -2742,7 +3694,7 @@ fn draw_dialog(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = match app.dialog.as_ref().unwrap() {
         Dialog::Nodes | Dialog::Workflows(_) | Dialog::Scenario(..) => unreachable!(),
         Dialog::Details { .. } => "Command / error details".into(),
-        Dialog::Domains(_) => "Domains - nesting and historical downscaling".into(),
+        Dialog::Domains(_) => "Domains".into(),
         Dialog::Plots(form) => format!(
             "Plots - {}",
             match form.mode {
@@ -2754,6 +3706,9 @@ fn draw_dialog(frame: &mut Frame, app: &mut App, area: Rect) {
         ),
         Dialog::DomainMenu(_, _) => "Domain settings".into(),
         Dialog::DomainForm(form, _) => form.title.clone(),
+        Dialog::DomainRemoval(removal, _) => removal.title.clone(),
+        Dialog::Era5Provider(..) => "ERA5 provider".into(),
+        Dialog::CdsCredentials(_) => "Copernicus CDS key".into(),
         Dialog::Choice(true, _) => "Continue forecast".into(),
         Dialog::Choice(false, _) => "Open existing".into(),
         Dialog::Guide(g) => format!("{} - {}", g.title(), g.progress()),
@@ -2761,8 +3716,10 @@ fn draw_dialog(frame: &mut Frame, app: &mut App, area: Rect) {
         Dialog::Cases(..) => "Cases - catalog, source and configuration".into(),
         Dialog::Summary(g, _) => format!("{} - review settings", g.title()),
         Dialog::Review(..) => "Review before starting (Up/Down to scroll)".into(),
+        Dialog::Path("Configuration path", _) => "Configuration or catalog path".into(),
         Dialog::Path(label, _) => (*label).into(),
         Dialog::Browser(dir, ..) => format!("Open - {}", display_path(dir)),
+        Dialog::DroppedFiles(..) => "Choose a dropped file to open".into(),
         Dialog::Stop => "Stop this run?".into(),
         Dialog::Quit => "Close workspace?".into(),
         Dialog::Help(_) => "ArWen help".into(),
@@ -2889,28 +3846,88 @@ fn draw_dialog(frame: &mut Frame, app: &mut App, area: Rect) {
         }
         Dialog::Domains(selected) => {
             let (mut labels, note) = match app.domain_labels() {
-                Ok(rows) => (rows, "Select a domain to edit its geometry, movement or lifecycle. Create a nested forecast or downscale an existing archive below.".to_owned()),
+                Ok(rows) => (rows, "Select a domain. Changes stay in your draft.".to_owned()),
                 Err(error) => (Vec::new(), error),
             };
             labels.push("New forecast with nested grids".into());
             labels.push("Downscale an archived forecast (offline child)".into());
-            let parts = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(body);
+            let count = labels.len() - 2;
+            let parts = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).split(body);
             frame.render_widget(Paragraph::new(note).wrap(Wrap { trim: false }), parts[0]);
             let rows = labels
                 .into_iter()
                 .enumerate()
-                .map(|(i, label)| (vec![Line::raw(label)], Hit::Choice(i)))
+                .map(|(i, label)| (vec![Line::raw(label)], if i < count { Hit::DomainSelect(i) } else { Hit::Choice(i) }))
                 .collect();
             clickable_list(frame, &mut app.hits, parts[1], rows, Some(*selected));
-            button_bar(
-                frame,
-                &mut app.hits,
-                buttons,
-                &[
-                    ("Back", key_hit(KeyCode::Esc)),
-                    ("Open (Enter)", key_hit(KeyCode::Enter)),
-                ],
-            );
+            let mut actions = vec![("Back", key_hit(KeyCode::Esc)),
+                (if *selected < count { "Edit (Enter)" } else { "Open (Enter)" }, key_hit(KeyCode::Enter))];
+            if *selected < count {
+                actions.extend([("Add child (A)", key_hit(KeyCode::Char('a'))),
+                    ("Remove (Del)", key_hit(KeyCode::Delete)),
+                    ("Advanced (M)", key_hit(KeyCode::Char('m')))]);
+            }
+            button_bar(frame, &mut app.hits, buttons, &actions);
+        }
+        Dialog::DomainRemoval(removal, offset) => {
+            let mut lines = vec![Line::raw("Remove these domains from the draft:"), Line::raw("")];
+            lines.extend(removal.rows.iter().map(|row| Line::raw(row.clone())));
+            if removal.removes_relocation {
+                lines.push(Line::raw(""));
+                lines.push(Line::raw("Also remove their relocation settings and scheduled moves."));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::raw("F2 removes. Esc cancels. Up/Down scrolls."));
+            let content = Paragraph::new(lines).wrap(Wrap { trim: false });
+            let max_offset = content.line_count(body.width).saturating_sub(body.height as usize).min(u16::MAX as usize) as u16;
+            let offset = (*offset).min(max_offset);
+            frame.render_widget(content.scroll((offset, 0)), body);
+            if let Some(Dialog::DomainRemoval(_, stored)) = &mut app.dialog { *stored = offset; }
+            button_bar(frame, &mut app.hits, buttons, &[
+                ("Cancel", key_hit(KeyCode::Esc)),
+                ("F2 Remove from draft", key_hit(KeyCode::F(2))),
+            ]);
+        }
+        Dialog::Era5Provider(selected, _) => {
+            let parts = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).split(body);
+            frame.render_widget(Paragraph::new("Choose the ERA5 download provider."), parts[0]);
+            clickable_list(frame, &mut app.hits, parts[1], vec![
+                (vec![Line::raw("Google ARCO")], Hit::Choice(0)),
+                (vec![Line::raw("Copernicus CDS")], Hit::Choice(1)),
+            ], Some(*selected));
+            button_bar(frame, &mut app.hits, buttons, &[
+                ("Cancel", key_hit(KeyCode::Esc)),
+                ("Use provider (Enter)", key_hit(KeyCode::Enter)),
+                ("CDS key (C)", key_hit(KeyCode::Char('c'))),
+            ]);
+        }
+        Dialog::CdsCredentials(form) => {
+            let mut lines = vec![Line::styled(format!("CDS key: {}", app.cds.summary()), theme::heading())];
+            if let Some(status) = &app.cds.status {
+                lines.extend([
+                    Line::raw(format!("File: {}", status.path)),
+                    Line::raw(format!("Source: {}", status.source)),
+                    Line::raw(format!("Endpoint: {}", status.url)),
+                ]);
+                if status.editable {
+                    lines.push(Line::styled(format!("{}: {}", if form.editing { "Enter key >" } else { "New key" }, form.masked()), theme::heading()));
+                    lines.push(Line::raw(if form.editing { "Type or paste. Enter finishes editing; F2 saves." }
+                        else { "Enter changes the key. F2 saves." }));
+                } else {
+                    lines.push(Line::raw("Set by environment variables. Change them and reopen ArWen."));
+                }
+            }
+            lines.push(Line::raw(app.cds.notice.clone()));
+            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), body);
+            let mut actions = vec![("Back", key_hit(KeyCode::Esc))];
+            if !app.cds.busy() {
+                if app.cds.status.as_ref().is_some_and(|status| status.editable) {
+                    actions.push((if form.editing { "Done editing" } else { "Enter / Change key" }, key_hit(KeyCode::Enter)));
+                    actions.push(("F2 Save key", key_hit(KeyCode::F(2))));
+                }
+                actions.push(("F5 Refresh", key_hit(KeyCode::F(5))));
+            }
+            button_bar(frame, &mut app.hits, buttons, &actions);
         }
         Dialog::DomainMenu(index, selected) => {
             let label = app
@@ -2939,7 +3956,7 @@ fn draw_dialog(frame: &mut Frame, app: &mut App, area: Rect) {
         Dialog::DomainForm(form, Some(index)) => {
             let field = &form.fields[*index];
             let parts = Layout::vertical([Constraint::Min(2), Constraint::Length(2)]).split(body);
-            frame.render_widget(Paragraph::new(format!("{}\n> {}\n\n{}\n\nType or paste; Ctrl+U clears. Enter returns to the reviewed fields.", field.label, safe(&field.value), field.help)).wrap(Wrap { trim: false }), parts[0]);
+            frame.render_widget(Paragraph::new(format!("{}\n> {}\n\n{}\n\nEnter keeps this field. Ctrl+U clears.", field.label, safe(&field.value), field.help)).wrap(Wrap { trim: false }), parts[0]);
             let choices = field
                 .choices()
                 .iter()
@@ -2966,7 +3983,7 @@ fn draw_dialog(frame: &mut Frame, app: &mut App, area: Rect) {
                 .first()
                 .is_some_and(|f| f.label == "Policy enabled" && f.value == "false")
             {
-                "Applying false removes this entire policy, including advanced values. Other policies remain unchanged. Cancel keeps the original draft."
+                "F2 removes this policy and its advanced settings. Esc cancels."
             } else if let Some(issue) = &signal_issue {
                 issue
             } else {
@@ -3208,7 +4225,7 @@ fn draw_dialog(frame: &mut Frame, app: &mut App, area: Rect) {
                 ]
             } else {
                 vec![
-                    "Open an ArWen configuration (.toml)",
+                    "Open a configuration or case catalog (TOML, ZIP, JSON)",
                     "Use WRF real.exe inputs (directory)",
                     "Use WPS met_em inputs (directory)",
                 ]
@@ -3238,7 +4255,7 @@ fn draw_dialog(frame: &mut Frame, app: &mut App, area: Rect) {
             frame.render_widget(
                 Paragraph::new(format!(
                     "{}\n\n> {}\n\nType or paste the path. Ctrl+U clears it.\n{}",
-                    label,
+                    if *label == "Configuration path" { "Configuration (TOML) or case catalog (ZIP, JSON, TOML)" } else { label },
                     safe(value),
                     if *label == "Save draft as" {
                         "Use a new file name; your current file is kept."
@@ -3249,15 +4266,14 @@ fn draw_dialog(frame: &mut Frame, app: &mut App, area: Rect) {
                 .wrap(Wrap { trim: false }),
                 body,
             );
-            button_bar(
-                frame,
-                &mut app.hits,
-                buttons,
-                &[
-                    ("Cancel", key_hit(KeyCode::Esc)),
-                    ("Use this path (Enter)", key_hit(KeyCode::Enter)),
-                ],
-            );
+            let mut actions = vec![
+                ("Cancel", key_hit(KeyCode::Esc)),
+                ("Use this path (Enter)", key_hit(KeyCode::Enter)),
+            ];
+            if *label == "Configuration path" {
+                actions.push(("Browse (F2)", key_hit(KeyCode::F(2))));
+            }
+            button_bar(frame, &mut app.hits, buttons, &actions);
         }
         Dialog::Browser(dir, items, selected) => {
             let rows = items
@@ -3293,6 +4309,16 @@ fn draw_dialog(frame: &mut Frame, app: &mut App, area: Rect) {
                     ("Paste path", key_hit(KeyCode::Char('/'))),
                 ],
             );
+        }
+        Dialog::DroppedFiles(items, selected) => {
+            let rows = items.iter().enumerate().map(|(index, path)| (
+                vec![Line::raw(guide_value_tail(&display_path(path), usize::from(body.width.saturating_sub(4))))], Hit::Browser(index)
+            )).collect();
+            clickable_list(frame, &mut app.hits, body, rows, Some(*selected));
+            button_bar(frame, &mut app.hits, buttons, &[
+                ("Cancel", key_hit(KeyCode::Esc)),
+                ("Open (Enter)", key_hit(KeyCode::Enter)),
+            ]);
         }
         Dialog::Stop => {
             frame.render_widget(Paragraph::new("Stop this run and its preparation/forecast workers?\n\nPartial outputs are kept. Resume uses the last checkpoint already saved.").wrap(Wrap { trim: false }), body);
@@ -3362,6 +4388,29 @@ fn draw_dialog(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+fn draw_header_actions(frame: &mut Frame, app: &mut App, area: Rect) {
+    if area.width >= 17 && area.height > 0 {
+        button_bar(frame, &mut app.hits, Rect::new(area.right() - 17, area.y, 17, 1),
+            &[("Quit (Ctrl+Q)", Hit::Quit)]);
+    }
+    if area.height < 3 { return; }
+    if let Some((result, path, failed)) = app.job_result() {
+        let result_area = Rect::new(area.x, area.y + 1, area.width, 2);
+        let log = path.map(|path| {
+            let shown = path.strip_prefix(&app.output).unwrap_or(&path);
+            format!("Log: {}", guide_value_tail(&display_path(shown), area.width.saturating_sub(5) as usize))
+        }).unwrap_or_else(|| "No log file was created. Click for details.".into());
+        let style = if failed { theme::notice(true) } else {
+            Style::default().fg(theme::BACK).bg(theme::LEAF)
+        };
+        frame.render_widget(Paragraph::new(vec![
+            Line::styled(result, style.add_modifier(Modifier::BOLD)),
+            Line::styled(log, style),
+        ]).style(style), result_area);
+        app.hits.push(HitRegion { area: result_area, action: Hit::JobResult });
+    }
+}
+
 fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     app.set_viewport(area.width, area.height);
@@ -3377,6 +4426,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
             _ => "Ctrl+Q quits; Ctrl+C reviews stopping a local run.",
         };
         frame.render_widget(Paragraph::new(format!("ArWen — resize to at least 65 × 20.\nEditing paused. {controls}")).wrap(Wrap { trim: false }), area);
+        draw_header_actions(frame, app, area);
         theme::finish(frame);
         return;
     }
@@ -3455,6 +4505,8 @@ fn draw(frame: &mut Frame, app: &mut App) {
                 ]),
                 parts[0],
             );
+            button_bar(frame, &mut app.hits, Rect::new(parts[0].x, parts[0].y, parts[0].width, 1),
+                &[("Open visual workspace", Hit::OpenCompanion)]);
             let columns = if spacious {
                 Layout::horizontal([
                     Constraint::Percentage(60),
@@ -3476,7 +4528,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
                     "Choose a forecast mode",
                     "Severe storms, tropical, winter, fire weather and more",
                 ),
-                ("Open existing", "ArWen TOML, WRF inputs, or WPS met_em"),
+                ("Open existing", "Configuration, case catalog, WRF inputs, or WPS met_em"),
                 (
                     "Continue forecast",
                     "Locate a real checkpoint or an existing prepared bundle",
@@ -3581,6 +4633,8 @@ fn draw(frame: &mut Frame, app: &mut App) {
             let mut lines = vec![];
             if let Some(e) = &app.editor {
                 lines.push(fact("Configuration", display_path(&e.path).to_string()));
+                lines.push(fact("CDS key", app.cds.summary()));
+                if let Some(status) = &app.cds.status { lines.push(fact("CDS file", &status.path)); }
                 lines.push(fact(
                     "Plots",
                     app.plot_selection()
@@ -3602,6 +4656,11 @@ fn draw(frame: &mut Frame, app: &mut App) {
                             if let Some(v) = doc.get(table).and_then(|t| t.get(key)) {
                                 lines.push(fact(label, v.to_string().trim().to_string()));
                             }
+                        }
+                        if let Some(provider) = app.era5_provider() {
+                            lines.push(fact("ERA5 provider [U]", match provider {
+                                "arco" => "Google ARCO", "cds" => "Copernicus CDS", _ => "Choose provider",
+                            }));
                         }
                         if let Some(domains) =
                             doc.get("domain").and_then(|v| v.as_array_of_tables())
@@ -3650,6 +4709,8 @@ fn draw(frame: &mut Frame, app: &mut App) {
                     Line::raw("Review and edit every setting in the TOML."),
                     Line::raw("Check it, review the plan, then launch."),
                 ]);
+                lines.push(fact("CDS key", app.cds.summary()));
+                if let Some(status) = &app.cds.status { lines.push(fact("CDS file", &status.path)); }
             }
             lines.push(Line::raw(""));
             lines.push(fact("Outputs [F3]", display_path(&app.output).to_string()));
@@ -3706,6 +4767,9 @@ fn draw(frame: &mut Frame, app: &mut App) {
                 right[0],
                 &mut state,
             );
+            let visual = Rect::new(right[0].x + 1, right[0].y, right[0].width.saturating_sub(2), 1);
+            frame.render_widget(Paragraph::new("─".repeat(visual.width as usize)).style(Style::default().fg(theme::BORDER).bg(theme::SURFACE)), visual);
+            button_bar(frame, &mut app.hits, visual, &[("Open visual workspace", Hit::OpenCompanion)]);
             for i in state.offset()..ACTIONS.len() {
                 let y = right[0].y + 1 + (i - state.offset()) as u16;
                 if y < right[0].bottom().saturating_sub(1) {
@@ -3785,13 +4849,26 @@ fn draw(frame: &mut Frame, app: &mut App) {
             }
         }
         Tab::Logs => {
-            let text = app.log_text();
-            let title = if app.busy() {
-                " Live log · X stop · Up/Down scroll · End follow "
+            let forecast = app.has_local_forecast_job();
+            let log_rows=Layout::vertical([Constraint::Min(2),Constraint::Length(1)]).split(rows[2]);
+            if forecast && !app.local_raw_logs {
+                let status = companion::job_status(app.job.as_ref().expect("forecast job"), &app.output);
+                draw_forecast_progress(frame, log_rows[0], &status);
             } else {
-                " Recent output · Up/Down scroll · End follow "
-            };
-            draw_log(frame, rows[2], &text, app.log_offset, title);
+                let title = if app.busy() {
+                    " Live log · X stop · Up/Down scroll · End follow "
+                } else {
+                    " Recent output · Up/Down scroll · End follow "
+                };
+                draw_log(frame, log_rows[0], &app.log_text(), app.log_offset, title);
+            }
+            let mut buttons = Vec::new();
+            if forecast {
+                buttons.push((if app.local_raw_logs {"G Progress"} else {"G Raw logs"}, key_hit(KeyCode::Char('g'))));
+            }
+            buttons.extend([("Y Copy logs",key_hit(KeyCode::Char('y'))),("O Open log",key_hit(KeyCode::Char('o')))]);
+            if app.busy() { buttons.push(("X Stop", key_hit(KeyCode::Char('x')))); }
+            button_bar(frame,&mut app.hits,log_rows[1],&buttons);
         }
     }
     let status_rows =
@@ -3819,11 +4896,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         status_actions.push(("Ctrl+T Tile streaming", Hit::TileCurrent));
     }
     button_bar(frame, &mut app.hits, status_rows[1], &status_actions);
-    button_bar(
-        frame,
-        &mut app.hits,
-        rows[4],
-        &[
+    let mut actions = vec![
             (
                 if app.nodes.store.selected().is_some() {
                     "F5 Connect"
@@ -3841,15 +4914,30 @@ fn draw(frame: &mut Frame, app: &mut App) {
                 key_hit(KeyCode::F(6)),
             ),
             ("F7 Run", key_hit(KeyCode::F(7))),
+    ];
+    if let Some(provider) = app.era5_provider() {
+        actions.push((match provider {
+            "arco" => "ERA5: Google (U)", "cds" => "ERA5: CDS (U)", _ => "ERA5 provider (U)",
+        }, Hit::Era5Provider));
+    }
+    if app.tab == Tab::Overview || app.era5_provider().is_some() {
+        actions.push((match app.cds.status.as_ref() {
+            Some(status) if status.configured => "CDS key: set",
+            Some(_) => "CDS key: missing",
+            None => "CDS key",
+        }, Hit::CdsCredentials));
+    }
+    actions.extend([
             (
                 "Geography",
                 Hit::Key(KeyCode::Char('g'), KeyModifiers::CONTROL),
             ),
             ("Save", Hit::Key(KeyCode::Char('s'), KeyModifiers::CONTROL)),
             ("Help", key_hit(KeyCode::F(1))),
-        ],
-    );
+    ]);
+    button_bar(frame, &mut app.hits, rows[4], &actions);
     draw_dialog(frame, app, area);
+    draw_header_actions(frame, app, area);
     theme::finish(frame);
 }
 
@@ -4119,9 +5207,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut snap = None;
     let (mut snapshot_width, mut snapshot_height) = (120, 36);
     let mut snapshot_selection = String::from("current");
+    let mut open_companion = false;
+    let mut connect_node = false;
+    let mut explicit_nodes = false;
+    let mut configured = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--config" => app.open(PathBuf::from(args.next().ok_or("--config needs a path")?)),
+            "--companion" => {
+                app.companion.explicit_path = Some(absolute(PathBuf::from(args.next().ok_or("--companion needs an executable")?), &app.cwd));
+            }
+            "--open-companion" => open_companion = true,
+            "--connect-node" => connect_node = true,
+            "--nodes-file" => {
+                if explicit_nodes{return Err("--nodes-file may be supplied only once.".into());}
+                app.use_nodes_file(PathBuf::from(args.next().ok_or("--nodes-file needs an absolute profile JSON path")?))?;
+                explicit_nodes=true;
+            }
+            "--config" => {
+                if configured{return Err("--config may be supplied only once.".into());}
+                app.open(PathBuf::from(args.next().ok_or("--config needs a path")?));configured=true;
+            }
             "--python" => {
                 app.python = PathBuf::from(args.next().ok_or("--python needs an executable")?)
             }
@@ -4166,7 +5271,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 snapshot_selection = args.next().ok_or("--snapshot-screen needs a screen name")?
             }
             "--help" | "-h" => {
-                println!("ArWen terminal workspace (2.7 preview)\nUsage: arwen-tui [--config FILE] [--python EXECUTABLE] [--output DIR] [--prepared DIR] [--geog-root DIR]\n\nStart with W Research to choose a weather question and configuration. I Scenario edits initial-state warm bubbles; D Domains edits following and tracking in an open configuration. Open existing or Continue forecast resumes your own workflow. Click options, tabs and buttons. O accepts a TOML path; F2 optionally browses. F/E edits all settings; V shows overview; G opens geography. Ctrl+S saves. F6 reviews the plan; F7 reviews the exact launch command.\nNo command starts automatically. F1 shows all keys; Up/Down or wheel, PgUp/PgDn and Home/End scroll help; Esc closes it.\n\nRead-only capture: --snapshot FILE.html [--snapshot-width COLUMNS] [--snapshot-height ROWS] [--snapshot-screen SCREEN]. Produces styled HTML and FILE.cells.json from the actual terminal cells. SCREEN: home, overview, settings, logs, help, nodes, domains, plots, guide, modes, mode:ID, research:ID, scenario (needs --config), or current. Default size: 120 x 36.");
+                println!("Visual workspace: --companion PATH (or ARWEN_COMPANION); --open-companion opens it at startup.\n");
+                println!("Node profiles: --nodes-file ABSOLUTE_JSON selects one explicit profile store; --connect-node opens Nodes and probes its active profile without starting a forecast.\n");
+                println!("ArWen terminal workspace (2.7 preview)\nUsage: arwen-tui [--config FILE] [--python EXECUTABLE] [--output DIR] [--prepared DIR] [--geog-root DIR]\n\nStart with W Research to choose a weather question and configuration. I Scenario edits initial-state warm bubbles; D Domains edits following and tracking in an open configuration. Open existing or Continue forecast resumes your own workflow. Click options, tabs and buttons. K opens the built-in historical cases. O accepts TOML configurations and catalog ZIP/JSON files; F2 browses. Drop files to open them without starting a forecast. F/E edits all settings; V shows overview; G opens geography. Ctrl+S saves. F6 reviews the plan; F7 reviews the exact launch command.\nNo command starts automatically. F1 shows all keys; Up/Down or wheel, PgUp/PgDn and Home/End scroll help; Esc closes it.\n\nRead-only capture: --snapshot FILE.html [--snapshot-width COLUMNS] [--snapshot-height ROWS] [--snapshot-screen SCREEN]. Produces styled HTML and FILE.cells.json from the actual terminal cells. SCREEN: home, overview, settings, logs, help, nodes, domains, plots, guide, modes, mode:ID, research:ID, scenario (needs --config), or current. Default size: 120 x 36.");
                 return Ok(());
             }
             "--version" => {
@@ -4177,6 +5284,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     if let Some(path) = snap {
+        if open_companion { return Err("--open-companion cannot be combined with a read-only snapshot.".into()); }
+        if connect_node{return Err("--connect-node cannot be combined with a read-only snapshot.".into());}
         if !(1..=400).contains(&snapshot_width) || !(1..=160).contains(&snapshot_height) {
             return Err("Snapshot dimensions must be 1..400 columns and 1..160 rows".into());
         }
@@ -4195,14 +5304,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Open ArWen TUI in an interactive terminal; use --help for launch options.".into(),
         );
     }
+    if connect_node { app.prepare_startup_node()?; }
     let mut terminal = ratatui::init();
     execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
+    if connect_node { app.node_request(remote::Operation::Probe); }
+    if open_companion { app.open_companion(); }
     let result = (|| -> io::Result<()> {
         while !app.exit {
             app.poll();
             terminal.draw(|f| draw(f, &mut app))?;
             if event::poll(Duration::from_millis(150))? {
-                match event::read()? {
+                let pending = file_drop_input::read(event::read()?, &app.cwd)?;
+                for (index, input) in pending.into_iter().enumerate() {
+                    if index > 0 {
+                        app.poll();
+                        terminal.draw(|f| draw(f, &mut app))?;
+                    }
+                    match input {
                     Event::Key(k) => {
                         let size = terminal.size()?;
                         app.set_viewport(size.width, size.height);
@@ -4219,6 +5337,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.hits.clear();
                     }
                     _ => {}
+                    }
+                    if app.exit {
+                        break;
+                    }
                 }
             }
         }
@@ -5040,6 +6162,75 @@ mod tests {
     }
 
     #[test]
+    fn a_creation_recovery_draft_enters_the_existing_fit_tiles_and_run_workflow() {
+        let original = include_str!("../../../configs/gfs_12km_quickstart.toml");
+        let mut app = loaded_app(original);
+        let existing = app.editor.as_ref().unwrap().path.clone();
+        let draft = existing.with_file_name("rejected-complete-draft.toml");
+        fs::write(&draft, original).unwrap();
+        app.startup_failure = Some(StartupFailure { message: "Confirmed memory refusal".into(), log: None });
+        app.open_configuration_recovery(draft.clone());
+        assert_eq!(app.editor.as_ref().unwrap().path, draft);
+        assert!(app.memory_recovery_available());
+        for (width, height) in [(65, 20), (80, 24), (120, 36)] {
+            let screen = render_at(&mut app, width, height);
+            assert!(screen.contains("Fit domain") && screen.contains("Tile streaming"), "{screen}");
+        }
+        app.tile_current();
+        let Some(Dialog::Summary(guide, _)) = &app.dialog else { panic!("Shared streaming review"); };
+        let request = guide.request(&app.cwd).unwrap();
+        assert_eq!(request.command, "domain-tiles");
+        assert_eq!(guide.questions[0].value, display_path(&draft));
+        app.fit_current();
+        let Some(Dialog::Guide(guide)) = &app.dialog else { panic!("Shared fit guide"); };
+        assert_eq!(guide.kind, Kind::Fit);
+        assert_eq!(guide.questions[0].value, display_path(&draft));
+        assert_eq!(app.argv(Action::Run).unwrap().0, "go");
+        assert_eq!(fs::read_to_string(&existing).unwrap(), original);
+        app.editor.as_mut().unwrap().insert("# unsaved\n");
+        let edited = app.editor.as_ref().unwrap().text();
+        app.open_configuration_recovery(existing);
+        assert_eq!(app.editor.as_ref().unwrap().text(), edited);
+        assert!(app.status.contains("Save your open edits"));
+    }
+
+    #[test]
+    fn node_logs_have_visible_copy_and_plain_text_open_without_changing_job_or_draft(){
+        let original="# untouched saved configuration\na=1\n";
+        let mut app=loaded_app(original);
+        let saved=app.editor.as_ref().unwrap().path.clone();
+        app.editor.as_mut().unwrap().insert("# draft\n");
+        let draft=app.editor.as_ref().unwrap().text();
+        let mut node=remote::Node::blank();node.name="Node fixture".into();node.host="fixture-node".into();node.last_job=Some("job-fixture".into());
+        app.nodes.store.active=Some(node.id.clone());app.nodes.store.nodes.push(node.clone());
+        app.nodes.view.log="native prepare output café 界\nFAILED explicit forcing\n".into();
+        app.nodes.view.status=Some(serde_json::json!({"id":"job-fixture","state":"failed","error":"Exact native failure"}));
+        app.node_panel.screen=node_ui::Screen::Job;
+        app.dialog=None;app.tab=Tab::Overview;app.key(press(KeyCode::Char('l')));
+        assert!(matches!(app.dialog,Some(Dialog::Nodes)));
+        app.clipboard_hook=Some(record_copy);
+        for(width,height)in[(65,20),(80,24),(120,36)]{
+            let screen=render_at(&mut app,width,height);
+            assert!(screen.contains("Y Copy logs")&&screen.contains("O Open log"),"{screen}");
+        }
+        let text=app.node_log_text();
+        app.key(press(KeyCode::Char('y')));
+        COPIED.with(|copies|assert_eq!(copies.borrow().last(),Some(&text)));
+        assert!(app.node_panel.notice.contains("Copied node logs"));
+        let path=app.save_log_text(&text).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(),text);
+        assert_eq!(path.extension().and_then(|s|s.to_str()),Some("txt"));
+        app.key(press(KeyCode::Char('o')));
+        assert!(app.node_panel.notice.contains("Opened plain-text log"));
+        assert_eq!(app.nodes.store.selected().unwrap().id,node.id);
+        assert_eq!(app.nodes.store.selected().unwrap().last_job.as_deref(),Some("job-fixture"));
+        assert_eq!(app.editor.as_ref().unwrap().text(),draft);
+        assert_eq!(fs::read_to_string(saved).unwrap(),original);
+        app.clipboard_hook=Some(|_|Err("clipboard unavailable".into()));
+        app.key(press(KeyCode::Char('y')));
+        assert!(app.node_panel.notice.contains("O opens a plain-text log"));
+    }
+    #[test]
     fn diagnostic_copy_buttons_copy_full_text_and_keep_failures_visible() {
         let original = "# original configuration\na=1\n";
         let mut app = loaded_app(original);
@@ -5469,7 +6660,12 @@ mod tests {
         }
         click_hit(&mut app, |h| matches!(h, Hit::Domains));
         render_at(&mut app, 80, 24);
-        click_hit(&mut app, |h| matches!(h, Hit::Choice(1)));
+        click_hit(&mut app, |h| matches!(h, Hit::DomainSelect(1)));
+        assert!(matches!(app.dialog, Some(Dialog::Domains(1))));
+        assert_eq!(app.editor.as_ref().unwrap().text(), original);
+        assert!(!app.dirty());
+        render_at(&mut app, 80, 24);
+        click_hit(&mut app, |h| matches!(h, Hit::Key(KeyCode::Char('m'), _)));
         render_at(&mut app, 80, 24);
         click_hit(&mut app, |h| matches!(h, Hit::Choice(0)));
         render_at(&mut app, 80, 24);
@@ -5482,7 +6678,7 @@ mod tests {
         assert_eq!(app.editor.as_ref().unwrap().text(), original);
         assert!(!app.dirty());
         app.key(press(KeyCode::Esc));
-        assert!(matches!(app.dialog, Some(Dialog::DomainMenu(1, _))));
+        assert!(matches!(app.dialog, Some(Dialog::Domains(1))));
         app.key(press(KeyCode::Enter));
         if let Some(Dialog::DomainForm(form, _)) = &mut app.dialog {
             form.fields[0].value = "180".into();
@@ -6292,8 +7488,308 @@ mod tests {
         app.set_viewport(120, 36);
         app
     }
+    #[test]
+    fn companion_timeline_receipt_and_corrupt_cache_recovery_are_typed_and_job_bound(){
+        let mut app=loaded_app("a=1\n");
+        let mut node=remote::Node::blank();node.host="fixture-node".into();node.last_job=Some("job-1".into());
+        app.nodes.store.active=Some(node.id.clone());app.nodes.store.nodes.push(node.clone());
+        let target=companion::Target::Ssh{node_id:node.id.clone(),connection_sha256:companion::digest(node.connection_key().as_bytes())};
+        app.companion.session=Some(companion::Session::test_session(&app.output).unwrap());
+        let session=app.companion.session.as_ref().unwrap().directory.clone();
+        let render_summary=serde_json::json!({"schema":"gpuwm.render-summary.v1","rendered_png_count":25,"skipped_families":[{"name":"qpf_1h","reasons":["Previous frame is unavailable"]}]});
+        let native_receipt:serde_json::Value=serde_json::from_str(include_str!("../tests/fixtures/native-progress-newcastle-2013.json")).unwrap();let progress=native_receipt["native_result"]["progress"].clone();
+        app.nodes.view.status=Some(serde_json::json!({"id":"job-1","action":"start-plan","state":"completed","render_summary":render_summary,"phase":"preparing:prepare-case","phase_updated_unix_ms":123456,"progress":progress}));
+        app.publish_companion_status(true);
+        let status=companion::read_json(&session.join("status.json"),128*1024).unwrap();
+        assert_eq!(status["job"]["render_summary"],render_summary);
+        assert_eq!(status["job"]["progress"],progress);
+        assert_eq!(status["job"]["phase"],"preparing:prepare-case");
+        assert_eq!(status["job"]["phase_updated_unix_ms"],123456);
+        let request=companion::Request{id:"timeline-1".into(),name:"artifact_index".into(),
+            action:companion::Action::ArtifactIndex{job:"job-1".into(),domain:3,after_sequence:0},target:Some(target.clone()),
+            plan_sha256:None,config_sha256:None,review_id:None,review_sha256:None};
+        app.companion_remote=Some(CompanionRemoteRequest{request:request.clone(),node:node.clone(),source:serde_json::Value::Null});
+        app.finish_companion_remote(&remote::Update::ArtifactIndexed(serde_json::json!({"artifact_index":{
+            "schema":"gpuwm.remote-artifact-index.v1","job_id":"job-1","domain":3,"waiting":true,"entries":[],"next_after_sequence":null,"latest_sequence":null}})));
+        let response=companion::read_json(&session.join("responses/timeline-1.json"),65536).unwrap();
+        assert_eq!(response["ok"],true);
+        let saved=PathBuf::from(response["artifact_index_path"].as_str().unwrap());
+        let bytes=fs::read(&saved).unwrap();assert_eq!(response["artifact_index_sha256"],companion::digest(&bytes));
+        let value:serde_json::Value=serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["schema"],"arwen.remote-artifact-index.v1");assert_eq!(value["target"],target.value());
+        let mut request=request;request.id="recovery-1".into();request.name="sync_artifacts".into();
+        request.action=companion::Action::SyncArtifacts{job:"job-1".into(),domain:3,sequence:Some(42),reader_leases:true};
+        app.companion_remote=Some(CompanionRemoteRequest{request,node,source:serde_json::Value::Null});
+        app.companion_artifacts=Some(serde_json::json!({"job_id":"job-1","artifact_manifest_path":"old"}));
+        let recovery=serde_json::json!({"schema":"arwen.artifact-cache-recovery.v1","sha256":"a".repeat(64),"reason":"corrupt_retained_object"});
+        app.finish_companion_remote(&remote::Update::ArtifactsSynced(serde_json::json!({"artifacts":{"job_id":"job-1","waiting":true,"frames":[]},"transferred_bytes":0,"cache_recovery":recovery})));
+        let response=companion::read_json(&session.join("responses/recovery-1.json"),65536).unwrap();
+        assert_eq!(response["cache_recovery"],recovery);assert_eq!(response["ok"],true);
+        assert!(app.companion_artifacts.is_none()&&response["artifact_manifest_path"].is_null());
+    }
+    #[test]
+    fn companion_open_configuration_preserves_remote_target_and_hardware_identity(){
+        let mut app=loaded_app("a=1\n");
+        let directory=app.editor.as_ref().unwrap().path.parent().unwrap().to_path_buf();
+        app.nodes=remote::Controller::load(&directory);
+        let mut node=remote::Node::blank();node.host="fixture-node".into();node.workspace="/node/work".into();
+        app.nodes.store.active=Some(node.id.clone());app.nodes.store.nodes.push(node.clone());
+        app.nodes.view.runtime=Some(serde_json::json!({"capabilities":{"stage_plan_v1":true,"review_plan_v1":true,"start_plan_v1":true},
+            "probe":{"measured_unix_ms":1234,"devices":[{"index":0,"uuid":"GPU-fixture","memory_total_bytes":16000000000u64,"memory_free_bytes":15000000000u64}],
+                "sizing":{"schema":"arwen.target-sizing.v1","total_bytes":16000000000u64,"free_bytes":15000000000u64,"profile":{"name":"measured fixture"}}}}));
+        let next=directory.join("saved-map-candidate.toml");fs::write(&next,"a=2\n").unwrap();
+        app.open(next.clone());
+        assert_eq!(app.nodes.store.selected().unwrap().id,node.id);
+        assert_eq!(app.editor.as_ref().unwrap().path,next.canonicalize().unwrap());
+        let target=app.companion_target();assert_eq!(target["hardware"]["measured_unix_ms"],1234);
+        assert_eq!(target["hardware"]["sizing"],app.nodes.view.runtime.as_ref().unwrap()["probe"]["sizing"]);
+        assert_eq!(target["connection_sha256"],companion::digest(node.connection_key().as_bytes()));
+        assert!(app.checked_companion_target(None).is_err());
+        assert!(app.checked_companion_target(Some(&companion::Target::Ssh{node_id:node.id.clone(),connection_sha256:companion::digest(node.connection_key().as_bytes())})).unwrap().is_some());
+        let selected=app.nodes.store.active.clone();app.open_nodes();assert_eq!(app.nodes.store.active,selected);
+        assert!(app.nodes.pending.is_none()&&app.job.is_none());
+    }
+    #[test]
+    fn companion_reset_setup_discards_draft_and_review_but_preserves_files_target_and_job_context(){
+        let mut app=loaded_app("a=1\n");
+        let saved=app.editor.as_ref().unwrap().path.clone();
+        let original=fs::read(&saved).unwrap();
+        app.nodes=remote::Controller::load(saved.parent().unwrap());
+        let mut node=remote::Node::blank();node.host="fixture-node".into();node.workspace="/owned/work".into();
+        node.last_job=Some("running-fixture".into());
+        app.nodes.store.active=Some(node.id.clone());app.nodes.store.nodes.push(node);
+        app.nodes.view.status=Some(serde_json::json!({"id":"running-fixture","state":"running"}));
+        app.nodes.view.runtime=Some(serde_json::json!({"probe":{"measured_unix_ms":1234}}));
+        let target=app.companion_target();
+        app.active_config=Some(saved.clone());
+        app.pending_config=Some(saved.clone());app.memory_recovery_config=Some(saved.clone());
+        app.prepared=saved.with_file_name("prepared");app.geog_root=saved.with_file_name("geography");
+        app.tab=Tab::Settings;app.key(press(KeyCode::Char('#')));assert!(app.dirty());
+        app.guide_cache=Some(Guide::new(Kind::New,&app.cwd,&app.output));
+        app.saved_guides.push(Guide::new(Kind::New,&app.cwd,&app.output));
+        app.dialog=Some(Dialog::Help(HelpScroll::default()));
+        app.dialog_stack.push(Dialog::Help(HelpScroll::default()));
+        app.node_panel.screen=node_ui::Screen::Review{operation:remote::Operation::StartPlan{review:serde_json::json!({})},review:serde_json::json!({})};
+        let session=companion::Session::test_session(&app.output).unwrap();
+        let directory=session.directory.clone();let session_id=session.id.clone();
+        app.companion.session=Some(session);
+        fs::write(directory.join("requests/reset-fixture.json"),serde_json::to_vec(&serde_json::json!({
+            "schema":"arwen.companion-request.v1","session_id":session_id,"id":"reset-fixture","action":"reset_setup"})).unwrap()).unwrap();
+        app.poll_companion_requests();
+        let response=companion::read_json(&directory.join("responses/reset-fixture.json"),8192).unwrap();
+        assert_eq!(response["ok"],true);assert_eq!(response["action"],"reset_setup");
+        let status=companion::read_json(&directory.join("status.json"),65536).unwrap();
+        assert!(status["config_path"].is_null());assert_eq!(status["draft_dirty"],false);
+        assert!(app.editor.is_none()&&app.pending_config.is_none()&&app.memory_recovery_config.is_none());
+        assert!(app.prepared.as_os_str().is_empty());
+        assert_eq!(app.geog_root,saved.with_file_name("geography"));
+        assert!(app.guide_cache.is_none()&&app.saved_guides.is_empty()&&app.dialog.is_none()&&app.dialog_stack.is_empty());
+        assert!(app.tui_map_review.is_none()&&app.tui_map_waiting.is_none()&&app.tui_map_launch.is_none());
+        assert_eq!(app.active_config,Some(saved.clone()));assert_eq!(app.companion_target(),target);
+        assert_eq!(app.nodes.view.status.as_ref().unwrap()["state"],"running");
+        assert_eq!(fs::read(&saved).unwrap(),original);
+        assert!(!matches!(app.node_panel.screen,node_ui::Screen::Review{..}));
+        app.open(saved.clone());
+        assert_eq!(app.editor.as_ref().unwrap().text(),"a=1\n");
+        assert_eq!(app.editor.as_ref().unwrap().path,saved);
+        assert_eq!(app.companion_context()["geog_root"],serde_json::json!(saved.with_file_name("geography")));
+    }
+    #[test]
+    fn reset_setup_rejects_late_review_without_discarding_a_job_started_update(){
+        let mut app=loaded_app("a=1\n");
+        app.reset_setup();app.discard_setup_review=true;
+        assert!(!app.accept_setup_review_update(&remote::Update::Preview{
+            operation:remote::Operation::StartPlan{review:serde_json::json!({})},review:serde_json::json!({})}));
+        assert!(app.editor.is_none());assert!(!app.discard_setup_review);
+        app.discard_setup_review=true;
+        assert!(app.accept_setup_review_update(&remote::Update::Started("running-fixture".into())));
+        assert!(!app.discard_setup_review);
+    }
+    #[test]
+    fn reset_setup_leaves_an_owned_running_local_job_alive(){
+        let mut app=loaded_app("a=1\n");
+        let python=PathBuf::from(env::var_os("GPUWM_TUI_TEST_PYTHON").expect("set test Python path"));
+        let root=app.output.parent().unwrap().join("owned-reset-fixture");
+        let package=root.join("gpuwm");fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("__init__.py"),"").unwrap();
+        fs::write(package.join("tui_worker.py"),include_str!("../../../gpuwm/tui_worker.py")).unwrap();
+        fs::write(package.join("cli.py"),"import time\ndef main(argv=None):\n print('benign reset fixture alive', flush=True)\n time.sleep(30)\n return 0\n").unwrap();
+        let owned=Job::start(&python,"benign-reset-fixture",&[],&root.join("job"),&root).unwrap();
+        let directory=owned.dir.clone();app.job=Some(owned);
+        app.active_config=Some(app.editor.as_ref().unwrap().path.clone());
+        let active=app.active_config.clone();
+        app.reset_setup();
+        assert_eq!(app.job.as_ref().unwrap().dir,directory);assert_eq!(app.active_config,active);
+        assert!(app.busy());assert!(app.job.as_mut().unwrap().poll().unwrap().is_none());
+        // Cleanup terminates only this test's deliberately owned sleeping helper.
+        app.job.as_mut().unwrap().stop().unwrap();
+        let deadline=std::time::Instant::now()+Duration::from_secs(10);
+        while app.job.as_mut().unwrap().poll().unwrap().is_none(){
+            assert!(std::time::Instant::now()<deadline);std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    #[test]
+    fn companion_current_setup_plan_keeps_source_target_and_products_without_remote_paths(){
+        let mut app=loaded_app("a=1\n");
+        let directory=app.editor.as_ref().unwrap().path.parent().unwrap().to_path_buf();
+        app.nodes=remote::Controller::load(&directory);
+        let mut node=remote::Node::blank();node.host="fixture-node".into();node.workspace="/owned/work".into();
+        app.nodes.store.nodes.push(node.clone());app.nodes.store.active=Some(node.id.clone());
+        assert!(app.current_setup_uses_staged_node());
+        let available=app.available_companion_targets();assert_eq!(available.len(),2);assert_eq!(available[1]["node_id"],node.id);
+        let request=app.current_setup_review_request().unwrap();
+        let companion::Action::ReviewPlan(path)=&request.action else{panic!("staged review");};
+        let plan=companion::read_json(path,65536).unwrap();
+        assert_eq!(plan["route"],"prepared");assert_eq!(plan["config"]["path"],serde_json::json!(app.editor.as_ref().unwrap().path));
+        assert_eq!(plan["run_options"]["render_products"],app.plot_spec().unwrap());
+        assert!(app.checked_companion_plan(&request,path).is_ok());assert!(app.nodes.pending.is_none()&&app.job.is_none());
+        let wrong=companion::Target::Ssh{node_id:node.id.clone(),connection_sha256:"0".repeat(64)};
+        assert!(app.select_companion_target(&wrong).is_err());assert_eq!(app.nodes.store.active,Some(node.id));
+        app.nodes.store.nodes[0].config="/explicit/advanced.toml".into();assert!(!app.current_setup_uses_staged_node());
+    }
+    #[test]
+    fn companion_explicit_nodes_and_focus_setup_preserve_the_visible_draft(){
+        let mut app=loaded_app("a=1\n");
+        let directory=app.editor.as_ref().unwrap().path.parent().unwrap().to_path_buf();
+        let path=directory.join("explicit-node-profiles.json");
+        let mut controller=remote::Controller::load_path(path.clone());
+        let mut node=remote::Node::blank();node.host="fixture-node".into();node.workspace="/owned/node/work".into();
+        controller.store.active=Some(node.id.clone());controller.store.nodes.push(node.clone());controller.store.save(&path).unwrap();
+        let original=fs::read(&path).unwrap();
+        assert!(app.use_nodes_file(PathBuf::from("relative-profiles.json")).is_err());
+        app.use_nodes_file(path.clone()).unwrap();app.prepare_startup_node().unwrap();
+        assert_eq!(app.nodes.path,path);assert_eq!(app.nodes.store.active,Some(node.id.clone()));
+        assert!(matches!(app.dialog,Some(Dialog::Nodes)));assert!(app.nodes.pending.is_none()&&app.job.is_none());
+        app.editor.as_mut().unwrap().insert("# unsaved\n");let draft=app.editor.as_ref().unwrap().text();
+        let session=companion::Session::test_session(&directory.join("focus-control")).unwrap();
+        fs::write(session.directory.join("requests/focus-setup.json"),serde_json::to_vec(&serde_json::json!({
+            "schema":"arwen.companion-request.v1","session_id":session.id,"id":"focus-setup","action":"focus_setup"})).unwrap()).unwrap();
+        app.companion.session=Some(session);app.poll_companion_requests();
+        assert_eq!(app.tab,Tab::Settings);assert!(app.dialog.is_none());assert!(app.dirty());
+        assert_eq!(app.editor.as_ref().unwrap().text(),draft);assert_eq!(app.nodes.store.active,Some(node.id));
+        assert_eq!(fs::read(path).unwrap(),original);assert!(app.nodes.pending.is_none()&&app.job.is_none());
+    }
+    #[test]
+    fn companion_remote_review_is_source_bound_and_does_not_publish_a_job(){
+        let mut app=loaded_app("a=1\n");
+        let config=app.editor.as_ref().unwrap().path.clone();let directory=config.parent().unwrap().to_path_buf();
+        app.nodes=remote::Controller::load(&directory);
+        let mut node=remote::Node::blank();node.host="fixture-node".into();node.workspace="/node/work".into();
+        app.nodes.store.active=Some(node.id.clone());app.nodes.store.nodes.push(node.clone());
+        let session=companion::Session::test_session(&directory.join("control")).unwrap();
+        let control=session.directory.clone();app.companion.session=Some(session);
+        let path=directory.join("map-plan.json");fs::write(&path,serde_json::to_vec(&serde_json::json!({"schema":"gpuwm.run-plan.v1","config":{"path":config}})).unwrap()).unwrap();
+        let request=companion::Request{id:"review-fixture".into(),name:"review_plan".into(),action:companion::Action::ReviewPlan(path.clone()),
+            target:Some(companion::Target::Ssh{node_id:node.id.clone(),connection_sha256:companion::digest(node.connection_key().as_bytes())}),
+            plan_sha256:Some(companion::digest(&fs::read(&path).unwrap())),config_sha256:Some(companion::digest(&fs::read(&config).unwrap())),review_id:None,review_sha256:None};
+        let source=app.checked_companion_plan(&request,&path).unwrap();
+        app.companion_remote=Some(CompanionRemoteRequest{request:request.clone(),node:node.clone(),source:source.clone()});
+        let wps=directory.join("selected.namelist.wps");fs::write(&wps,"&share\n max_dom = 1,\n/\n").unwrap();
+        let mut inputs=serde_json::Map::new();inputs.insert(config.to_string_lossy().into_owned(),serde_json::json!(companion::digest(&fs::read(&config).unwrap())));
+        inputs.insert(path.to_string_lossy().into_owned(),serde_json::json!(companion::digest(&fs::read(&path).unwrap())));
+        inputs.insert(wps.to_string_lossy().into_owned(),serde_json::json!(companion::digest(&fs::read(&wps).unwrap())));
+        app.finish_companion_remote(&remote::Update::PlanReviewed(serde_json::json!({"memory":{"measured":true,"refuse":false},"source_inputs":inputs})));
+        let response=companion::read_json(&control.join("responses/review-fixture.json"),65536).unwrap();
+        assert_eq!(response["ok"],true);assert!(response["job_id"].is_null());assert!(response["job_dir"].is_null());
+        let review_path=PathBuf::from(response["review_path"].as_str().unwrap());
+        assert_eq!(response["review_sha256"],companion::digest(&fs::read(&review_path).unwrap()));
+        assert_eq!(companion::read_json(&review_path,65536).unwrap()["source"],source);
+        let mut launch=request.clone();launch.id="launch-fixture".into();launch.name="launch_plan".into();
+        launch.action=companion::Action::LaunchPlan(path.clone());launch.review_id=Some(request.id.clone());
+        launch.review_sha256=Some(response["review_sha256"].as_str().unwrap().into());
+        fs::write(&wps,"&share\n max_dom = 2,\n/\n").unwrap();
+        let error=app.begin_companion_remote(launch).unwrap_err();
+        assert!(error.contains("selected.namelist.wps")&&error.contains("changed"),"{error}");
+        fs::write(&config,"a=3\n").unwrap();assert!(app.checked_companion_plan(&request,&path).is_err());
+        assert!(app.nodes.pending.is_none()&&app.job.is_none());
+    }
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn ordinary_open_lists_catalogs_and_keeps_the_loaded_configuration() {
+        let mut app = loaded_app("a=1\n");
+        let original = app.editor.as_ref().unwrap().path.clone();
+        let folder = original.parent().unwrap().to_path_buf();
+        let catalogs = [
+            ("historical.ZIP", "archive bytes are read by the catalog backend"),
+            ("historical.json", "{}"),
+            ("historical.toml", "schema = 'arwen.case-catalog.v1'\n"),
+        ];
+        for (name, contents) in catalogs {
+            fs::write(folder.join(name), contents).unwrap();
+        }
+        fs::write(folder.join("not-a-configuration.txt"), "unrelated").unwrap();
+        for (name, _) in catalogs {
+            app.dialog = None;
+            app.tab = Tab::Home;
+            app.key(press(KeyCode::Char('o')));
+            app.key(press(KeyCode::Enter));
+            assert!(matches!(&app.dialog, Some(Dialog::Path("Configuration path", _))));
+            app.paste(display_path(&folder));
+            app.key(press(KeyCode::F(2)));
+            let Some(Dialog::Browser(_, items, selected)) = &mut app.dialog else {
+                panic!("Open must show its file browser");
+            };
+            assert!(!items.iter().any(|p| p.ends_with("not-a-configuration.txt")));
+            *selected = items.iter().position(|p| p.ends_with(name)).unwrap();
+            app.key(press(KeyCode::Enter));
+            assert!(matches!(app.dialog, Some(Dialog::Cases(_))), "{name}");
+            assert_eq!(app.editor.as_ref().unwrap().path, original);
+            assert_eq!(app.editor.as_ref().unwrap().text(), "a=1\n");
+            assert!(app.job.is_none());
+        }
+    }
+
+    #[test]
+    fn dropped_file_opens_without_running_and_unsaved_drafts_are_preserved() {
+        let mut app = loaded_app("a=1\n");
+        let original = app.editor.as_ref().unwrap().path.clone();
+        let other = original.with_file_name("storm space-界.toml");
+        fs::write(&other, "b=2\n").unwrap();
+        app.tab = Tab::Home;
+        app.paste(format!("\"{}\"", other.display()));
+        assert_eq!(app.editor.as_ref().unwrap().text(), "b=2\n");
+        assert!(app.editor.as_ref().unwrap().path.ends_with("storm space-界.toml"));
+        assert!(app.job.is_none());
+        assert_eq!(fs::read_to_string(&original).unwrap(), "a=1\n");
+
+        app.tab = Tab::Settings;
+        app.editor.as_mut().unwrap().insert("# unsaved edit\n");
+        let draft = app.editor.as_ref().unwrap().text();
+        app.paste(format!("\"{}\"", original.display()));
+        assert_eq!(app.editor.as_ref().unwrap().text(), draft);
+        assert!(app.editor.as_ref().unwrap().path.ends_with("storm space-界.toml"));
+        assert!(app.status.contains("draft is unchanged"));
+        assert_eq!(fs::read_to_string(&other).unwrap(), "b=2\n");
+
+        app.paste("\n[render]\nproducts=['t2']\n".into());
+        assert!(app.editor.as_ref().unwrap().text().contains("products=['t2']"));
+        assert!(app.job.is_none());
+    }
+
+    #[test]
+    fn multiple_dropped_files_require_selection_and_catalogs_use_cases() {
+        let mut app = loaded_app("a=1\n");
+        let original = app.editor.as_ref().unwrap().path.clone();
+        let catalog = original.with_file_name("weather cases.zip");
+        fs::write(&catalog, "catalog backend validates archive bytes").unwrap();
+        app.paste(format!("\"{}\" \"{}\"", original.display(), catalog.display()));
+        assert!(matches!(&app.dialog, Some(Dialog::DroppedFiles(paths, 0)) if paths.len()==2));
+        assert_eq!(app.editor.as_ref().unwrap().path, original);
+        for (width, height) in [(65, 20), (80, 24), (120, 36)] {
+            let screen = render_at(&mut app, width, height);
+            assert!(screen.contains("Choose a dropped file"));
+            assert!(screen.contains("weather cases.zip") && screen.contains("experiment.toml"));
+            assert!(app.hits.iter().any(|hit| matches!(hit.action, Hit::Key(KeyCode::Enter, _))));
+        }
+        app.key(press(KeyCode::Down));
+        app.key(press(KeyCode::Enter));
+        assert!(matches!(app.dialog, Some(Dialog::Cases(_))));
+        assert_eq!(app.editor.as_ref().unwrap().path, original);
+        assert_eq!(fs::read_to_string(&original).unwrap(), "a=1\n");
+        assert!(app.job.is_none());
     }
 
     #[test]
@@ -6565,6 +8061,79 @@ mod tests {
         assert!(app.geog_root.as_os_str().is_empty());
         assert_eq!(app.editor.as_ref().unwrap().text(), "name = 'unchanged'\n");
     }
+    #[test]
+    fn local_forecast_progress_keeps_native_timing_and_nonforecast_output_readable() {
+        for action in ["run-plan", "go", "sim", "run", "resume"] {
+            assert!(local_forecast_action(action, &[]));
+        }
+        for action in ["check", "doctor", "sources", "domain", "case-catalog"] {
+            assert!(!local_forecast_action(action, &[]));
+        }
+        for flag in ["--dry-run", "--physics-profiles", "--help"] {
+            assert!(!local_forecast_action("run-plan", &[flag.into()]));
+        }
+        let fixture:serde_json::Value=serde_json::from_str(include_str!("../tests/fixtures/native-progress-newcastle-2013.json")).unwrap();
+        let mut status=serde_json::json!({"state":"running","phase":"integrating","progress":fixture["native_result"]["progress"]});
+        for (width,height) in [(65,12),(80,16),(120,24)] {
+            let mut terminal=Terminal::new(TestBackend::new(width,height)).unwrap();
+            terminal.draw(|frame|draw_forecast_progress(frame,frame.area(),&status)).unwrap();
+            let buffer=terminal.backend().buffer();
+            let rendered=(0..height).map(|y|(0..width).map(|x|buffer[(x,y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n");
+            for label in ["Forecast progress","RUNNING","Steps 360","Wall time","Checkpoint"] {
+                assert!(rendered.contains(label),"Missing {label} at {width}x{height}:\n{rendered}");
+            }
+            assert!(!rendered.contains("RENDER_SUMMARY"));
+        }
+        status["state"]=serde_json::json!("completed");
+        assert!(node_ui::job_progress_text(&status,true).starts_with("COMPLETED · Finished"));
+    }
+
+    #[test]
+    fn local_forecast_progress_toggle_preserves_copy_open_stop_and_geography() {
+        let Some(python)=env::var_os("GPUWM_TUI_TEST_PYTHON").map(PathBuf::from) else{return};
+        let mut app=loaded_app("# unchanged local setup\na=1\n");
+        let root=app.editor.as_ref().unwrap().path.parent().unwrap().to_path_buf();
+        let package=root.join("gpuwm");fs::create_dir(&package).unwrap();
+        fs::write(package.join("__init__.py"),"").unwrap();
+        fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../gpuwm/tui_worker.py"),package.join("tui_worker.py")).unwrap();
+        fs::write(package.join("cli.py"),"def main(argv=None):\n return 0\n").unwrap();
+        app.job=Some(Job::start(&python,"run-plan",&[],&root.join("job"),&root).unwrap());
+        let raw="native raw fixture log café\n";
+        fs::write(app.job.as_ref().unwrap().dir.join("job.log"),raw).unwrap();
+        app.tab=Tab::Logs;app.clipboard_hook=Some(record_copy);
+        let draft=app.editor.as_ref().unwrap().text();
+        for (width,height) in [(65,20),(80,24),(120,36)] {
+            let screen=render_at(&mut app,width,height);
+            for label in ["Forecast progress","G Raw logs","Y Copy logs","O Open log","X Stop"] {
+                assert!(screen.contains(label),"Missing {label} at {width}x{height}:\n{screen}");
+            }
+            assert!(!screen.contains("native raw fixture"));
+            app.log_offset=100;
+            app.key(press(KeyCode::Char('G')));
+            assert!(app.local_raw_logs&&app.log_offset==0&&app.dialog.is_none());
+            let screen=render_at(&mut app,width,height);
+            assert!(screen.contains("native raw fixture")&&screen.contains("G Progress"),"{screen}");
+            app.key(press(KeyCode::PageUp));assert_eq!(app.log_offset,10);
+            app.key(press(KeyCode::End));assert_eq!(app.log_offset,0);
+            app.key(press(KeyCode::Char('y')));
+            COPIED.with(|copies|assert!(copies.borrow().last().unwrap().contains(raw.trim())));
+            app.key(press(KeyCode::Char('o')));assert!(app.status.contains(".txt"));
+            app.key(press(KeyCode::Char('g')));assert!(!app.local_raw_logs);
+            app.key(KeyEvent::new(KeyCode::Char('g'),KeyModifiers::CONTROL));
+            assert!(matches!(app.dialog,Some(Dialog::Path("Geography folder",_))));app.key(press(KeyCode::Esc));
+            app.key(press(KeyCode::Char('x')));assert!(matches!(app.dialog,Some(Dialog::Stop)));app.key(press(KeyCode::Esc));
+            assert_eq!(app.editor.as_ref().unwrap().text(),draft);
+        }
+        let deadline=std::time::Instant::now()+Duration::from_secs(10);
+        while app.job.as_mut().unwrap().poll().unwrap().is_none(){
+            assert!(std::time::Instant::now()<deadline);std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(render_at(&mut app,80,24).contains("COMPLETED"));
+        app.job.as_mut().unwrap().action="sources".into();
+        assert!(!app.has_local_forecast_job());
+        let screen=render_at(&mut app,80,24);assert!(!screen.contains("G Raw logs"));
+    }
+
     #[test]
     fn loaded_long_log_tail_scroll_and_resize_show_latest_display_rows() {
         let mut app = loaded_app("name = 'log control'\n");

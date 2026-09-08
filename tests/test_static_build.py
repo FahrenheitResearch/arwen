@@ -143,7 +143,7 @@ def test_geog_selection_uses_fortran_per_element_defaults_not_broadcast(
         selection = GeogSelection.from_case_data(data, domain_id=domain_id)
         assert selection.resolution_tokens == ("default",)
         assert selection.lai == "lai_modis_10m"
-    with pytest.raises(ValueError, match="exceeds.*max_dom=3"):
+    with pytest.raises(ValueError, match="absent.*max_dom=3"):
         GeogSelection.from_case_data(data, domain_id=4)
 
 

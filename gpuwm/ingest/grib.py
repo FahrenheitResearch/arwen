@@ -132,6 +132,28 @@ _NATIVE_LEVEL_ALIASES: dict[tuple[int, int], tuple[int, int]] = {
     (42, 112): (42, 1),
 }
 
+# ECMWF's local table 228 lake state. A bare parameter number is ambiguous:
+# the table, originating centre and surface level are part of this binding.
+# These optional native fields supplement legacy CDO Vtables, which cannot
+# express a table-qualified parameter. They never change a Vtable mapping.
+_NATIVE_LAKE_SPECS = {
+    (98, 228, 8, 1, 0): "LAKE_WATER_TEMP",
+    (98, 228, 13, 1, 0): "LAKE_ICE_TEMP",
+    (98, 228, 14, 1, 0): "LAKE_ICE_DEPTH",
+}
+
+
+def _native_canonical_name(message, canonical):
+    identity = tuple(int(message.get(name, -1)) for name in
+                     ("center", "table_version", "parameter", "level_type", "level"))
+    lake = _NATIVE_LAKE_SPECS.get(identity)
+    if lake is not None:
+        return lake
+    # Unknown local-table fields must not alias an ordinary Vtable parameter.
+    if identity[1] == 228:
+        return None
+    return canonical.get((identity[2], identity[3]))
+
 
 def _canonical_mapping(entries: tuple[VtableEntry, ...]) -> dict[tuple[int, int], str]:
     by_key = {
@@ -629,6 +651,21 @@ def _load_bridge_partials(
 
     values = np.fromfile(directory / "values.f64", dtype="<f8")
     canonical = _canonical_mapping(entries)
+    from gpuwm.ingest.lake_temperature import LAKE_FIELDS
+    mapped_messages = [message for message in metadata["messages"]
+                       if _native_canonical_name(message, canonical) is not None]
+    if any(_native_canonical_name(message, canonical) in LAKE_FIELDS
+           for message in mapped_messages):
+        # The lake provider's exact grid is part of its scientific identity.
+        # Equal point counts/scan flags alone cannot prove equal coordinates.
+        definitions = [message.get("grid_definition_hex")
+                       for message in mapped_messages]
+        if any(not isinstance(value, str) or not value for value in definitions):
+            raise ValueError(
+                "native lake-state decoding needs per-message grid identity; "
+                "rebuild/install the matching GRIB1 bridge")
+        if len(set(definitions)) != 1:
+            raise ValueError("native lake-state and forcing messages have different source grids")
     layers: dict[datetime, dict[str, dict[int, np.ndarray]]] = {}
     surfaces: dict[datetime, dict[str, np.ndarray]] = {}
     surface_bitmaps: dict[datetime, dict[str, np.ndarray]] = {}
@@ -636,7 +673,7 @@ def _load_bridge_partials(
     scan_modes: set[int] = set()
     for message in metadata["messages"]:
         key = (int(message["parameter"]), int(message["level_type"]))
-        name = canonical.get(key)
+        name = _native_canonical_name(message, canonical)
         if name is None:
             continue
         count = int(message["count"])
@@ -871,6 +908,8 @@ def _merge_partials(
                 f"{valid_time.isoformat()} in [{actual}]"
             )
         inventories.add(frozenset(fields))
+        from gpuwm.ingest.lake_temperature import source_lake_fields
+        source_lake_fields(fields)
         snapshots.append(Era5Snapshot(
             valid_time=valid_time,
             levels_hpa=np.asarray(levels, dtype=np.float64),
@@ -935,9 +974,18 @@ def _merge_catalog_partials(
         excluded_valid_times=exclusions)
 
 
+def forcing_container(paths: Sequence[str | Path]) -> str:
+    """Select the container from original declared filenames, before CAS remapping."""
+    kinds = {"netcdf" if Path(path).suffix.lower() == ".nc" else "grib1"
+             for path in paths}
+    if len(kinds) > 1:
+        raise ValueError("Declare one forcing container type per input series: GRIB1 or regular NetCDF.")
+    return next(iter(kinds), "grib1")
+
+
 def inspect_era5_forcing_times(
     grib_paths: Sequence[str | Path], vtable_path: str | Path,
-    *, bridge: str | Path | None = None,
+    *, bridge: str | Path | None = None, container: str | None = None,
 ) -> tuple[datetime, ...]:
     """Read pressure-backed catalog times through native GRIB1 headers only.
 
@@ -946,10 +994,17 @@ def inspect_era5_forcing_times(
     as in :func:`_merge_catalog_partials`. Values are not decoded or staged.
     Full field and spatial validation remains the input catalog's job.
     """
+    paths = tuple(Path(path) for path in grib_paths)
+    container = container or forcing_container(paths)
+    if container == "netcdf":
+        from gpuwm.ingest.regular_netcdf import inspect_regular_netcdf_times
+        return inspect_regular_netcdf_times(paths)
+    if container != "grib1":
+        raise ValueError(f"Unknown forcing container: {container}")
     mapping = _canonical_mapping(parse_vtable(vtable_path))
     executable = Path(bridge) if bridge is not None else build_rust_bridge(release=True)
     times: set[datetime] = set()
-    for raw_path in grib_paths:
+    for raw_path in paths:
         path = Path(raw_path)
         envelopes = inspect_grib1_envelopes(path)
         result = subprocess.run(
@@ -1118,6 +1173,20 @@ def _decode_era5_forcing_partials_resolved(
 
 
 @lru_cache(maxsize=8)
+def _decode_regular_netcdf_resolved(
+    input_keys: tuple[tuple[str, str], ...],
+    valid_times: tuple[datetime, ...] | None,
+    excluded_valid_times: tuple[datetime, ...],
+) -> Era5DecodeResult:
+    """The same content and selection cache for native regular NetCDF."""
+    from gpuwm.ingest.regular_netcdf import decode_regular_netcdf_files
+    return decode_regular_netcdf_files(
+        tuple(Path(path) for path, _identity in input_keys),
+        valid_times=valid_times, excluded_valid_times=excluded_valid_times,
+    )
+
+
+@lru_cache(maxsize=8)
 def _decode_era5_gribs_resolved(
     input_keys: tuple[tuple[str, str], ...],
     vtable_path: str,
@@ -1142,6 +1211,7 @@ def cached_era5_forcing(
     content_sha256: Sequence[str] | None = None,
     valid_times: Sequence[datetime] | None = None,
     excluded_valid_times: Sequence[datetime] = (),
+    container: str | None = None,
 ) -> Era5DecodeResult:
     """Keyed multi-file snapshot service used by the input catalog.
 
@@ -1166,6 +1236,14 @@ def cached_era5_forcing(
         (os.fspath(path), identity)
         for path, identity in zip(paths, identities)
     )
+    container = container or forcing_container(paths)
+    if container == "netcdf":
+        return _decode_regular_netcdf_resolved(
+            input_keys, None if valid_times is None else tuple(valid_times),
+            tuple(excluded_valid_times),
+        )
+    if container != "grib1":
+        raise ValueError(f"Unknown forcing container: {container}")
     vtable = Path(vtable_path).resolve()
     stat = vtable.stat()
     vtable_key = f"size={stat.st_size};mtime_ns={stat.st_mtime_ns}"
@@ -1205,11 +1283,12 @@ def clear_forcing_caches() -> None:
     _decode_era5_grib_resolved.cache_clear()
     _decode_era5_forcing_partials_resolved.cache_clear()
     _decode_era5_gribs_resolved.cache_clear()
+    _decode_regular_netcdf_resolved.cache_clear()
 
 
 __all__ = [
     "Era5DecodeResult", "Era5Snapshot", "Grib1Envelope", "VtableEntry",
     "build_rust_bridge", "cached_era5_forcing", "cached_era5_snapshots",
-    "canonical_units", "clear_forcing_caches", "decode_era5_grib",
+    "canonical_units", "clear_forcing_caches", "decode_era5_grib", "forcing_container",
     "decode_era5_gribs", "inspect_grib1_envelopes", "inspect_era5_forcing_times", "parse_vtable",
 ]

@@ -59,4 +59,13 @@ evidence/upstream/** -text
 tools/noahmp_wrf461_oracle/*.sh text eol=lf
 
 # Preserve upstream checksum bytes, including shell scripts in the UI mirror.
-tools/arwen-ui-vendor/crates-io/** -text
+tools/arwen-ui-vendor/crates-io/** -text -whitespace
+
+# Cargo verifies the original registry bytes, including upstream script endings.
+# Preserve upstream formatting in the newly vendored Zarr dependency closure.
+tools/zarr_bridge/vendor/** -text -whitespace
+
+# Generated notices and retained upstream patches preserve quoted formatting.
+licenses/THIRD-PARTY-LICENSES-zarr-binary.txt -whitespace
+tools/rustwx/assets/basemap/THIRD-PARTY-LICENSES-zarr-binary.txt -whitespace
+tools/rustwx/patches/rdps-f000-components.patch -whitespace

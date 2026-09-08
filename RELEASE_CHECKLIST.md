@@ -177,6 +177,10 @@ reproduce them, not because their proofs are optional:
       revision stamp as the other gpuwm-owned native tools. From each clean
       wheel installation, `gpuwm tui --snapshot terminal.html` must resolve
       the verified installed executable and emit the terminal preview.
+- [ ] Build `tools/zarr_bridge` with `cargo build --release --locked --offline`
+      on both platforms. Include its output in bundle packing and probe the
+      reader with the other declared artifacts. The Zarr bridge's source stamp,
+      offline vendor inventory and binary notices must match the release source.
 - [ ] Run the real terminal journeys against the installed release executable
       and Python environment. `tools/battery/tui_journeys.py` and its recipes
       in `tools/battery/tui-journeys/` cover creation, a changed second forecast,

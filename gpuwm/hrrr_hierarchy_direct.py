@@ -528,12 +528,8 @@ def _supported_hierarchy_slice(exp, root_target, *, forcing_hours) -> None:
         raise ValueError(
             "the public HRRR hierarchy gate requires between 1 and "
             f"{_MAX_PUBLIC_DOMAINS} domains")
-    domain_ids = tuple(domain.grid_id for domain in exp.domains)
-    expected_ids = tuple(range(1, len(exp.domains) + 1))
-    if domain_ids != expected_ids:
-        raise ValueError(
-            "the public HRRR hierarchy requires contiguous, parent-before-"
-            f"child grid ids {expected_ids}, got {domain_ids}")
+    from gpuwm.wps_domain_ids import validated_domain_order
+    validated_domain_order(exp.domains)
     if exp.feedback != 0 or exp.smooth_option != 0:
         raise ValueError("the public HRRR hierarchy gate is one-way only")
     horizon = sealed_forcing_horizon_seconds(forcing_hours)

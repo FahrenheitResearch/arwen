@@ -659,7 +659,7 @@ def test_every_bundled_artifact_is_one_the_resolver_searches_for():
     other four are the artifacts with their own resolution modules.
     """
 
-    from gpuwm import doctor, rustwx, rustwx_fetch
+    from gpuwm import doctor, rustwx, rustwx_fetch, zarr_bridge
     from gpuwm.ingest.cpu_backend import CPU_BRIDGE_ENV
     from gpuwm.obs import dealias_region
 
@@ -681,6 +681,9 @@ def test_every_bundled_artifact_is_one_the_resolver_searches_for():
     crates = {artifact.name: artifact.crate
               for artifact in bridge_assets.BUNDLED_ARTIFACTS}
     assert crates["region_global_dealias"] == dealias_region.CRATE_RELATIVE
+    assert envs["rw_zarr"] == zarr_bridge.BRIDGE_ENV
+    assert crates["rw_zarr"] == zarr_bridge.CRATE_RELATIVE
+    assert bridges.BRIDGE_ABI_MARKERS["rw_zarr"] == zarr_bridge.ABI_MARKER
     # And the filename the bundle stages is the one the ladder opens.
     staged = bridge_assets.artifact_filename(
         next(a for a in bridge_assets.BUNDLED_ARTIFACTS
@@ -691,6 +694,19 @@ def test_every_bundled_artifact_is_one_the_resolver_searches_for():
         dealias_region.region_bridge_candidates())
     for name, env in bridges.BRIDGE_ENV.items():
         assert envs[name] == env
+
+
+def test_missing_zarr_reader_names_the_actual_install_or_source_build_remedy(tmp_path, monkeypatch):
+    from gpuwm import zarr_bridge
+    monkeypatch.delenv(zarr_bridge.BRIDGE_ENV, raising=False)
+    monkeypatch.setattr(zarr_bridge, "__file__", str(tmp_path / "gpuwm/zarr_bridge.py"))
+    monkeypatch.setattr(zarr_bridge, "packaged_bridge_dir", lambda: tmp_path / "package")
+    monkeypatch.setattr(zarr_bridge, "default_bridge_dir", lambda: tmp_path / "home")
+    with pytest.raises(FileNotFoundError) as error:
+        zarr_bridge.resolve_zarr_bin()
+    message = str(error.value)
+    assert "rw_zarr" in message and "zarr_bridge" in message
+    assert "cargo build --release --locked --offline" in message
 
 
 # ---------------------------------------------------------------------------

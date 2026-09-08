@@ -2537,7 +2537,7 @@ def _wif_grid_latlon_from(grid, state):
 def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                     coord: VerticalCoord, terrain, *, source_orography=None,
                     p_top=5000.0, sfcp_to_sfcp=True,
-                    use_sh_qv=False,
+                    use_sh_qv=None,
                     analyzed_species=None,
                     analyzed_number_fields=(),
                     analyzed_surface_fields=(),
@@ -2558,8 +2558,9 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
 
     ``analyzed_species`` optionally declares the actual analyzed mass inventory
     from source metadata. An empty tuple declares no analyzed mass fields;
-    absent species retain WRF's allocated zero. None preserves the established
-    native caller contract, including its required five-species inventory.
+    absent species retain WRF's allocated zero. None uses the snapshot's
+    declaration when present, otherwise preserving the established native
+    caller contract, including its required five-species inventory.
 
     ``analyzed_number_fields`` declares flagged metgrid QNI/QNC/QNR/QNS/QNG/QNH
     inputs. They use WRF's same linear Q vertical operator and selected scalar
@@ -2587,8 +2588,9 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     synthetic profile; ``RealInitResult.aerosol_initialization`` is the
     receipt for that hand-off.  WRF's default
     ``use_sh_qv = .false.`` vertically interpolates HRRR RH and then diagnoses
-    qv; direct SPFH/qv interpolation is available only when this function's
-    explicit ``use_sh_qv=True`` option is selected.  With WRF's default
+    qv. Omitted ``use_sh_qv`` follows the snapshot's explicit
+    ``specific_humidity_authority`` metadata; unmarked sources keep WRF's
+    False default. An explicit boolean overrides that declaration. With
     ``use_sh_qv=False``, RH is diagnosed from the already horizontally mapped
     SPFH, temperature, and pressure exactly where real.exe handles FLAG_SH.
     Surface fields build WRF's ``use_surface`` pseudo-level that anchors
@@ -2642,9 +2644,13 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         # fallback (MP28_AEROSOL_SYNTHETIC_FALLBACK) rather than a
         # deviation notice.
         validate_aerosol_source_options(cfg)
+    if use_sh_qv is None:
+        use_sh_qv = getattr(snapshot, "specific_humidity_authority", False)
     if not isinstance(use_sh_qv, (bool, np.bool_)):
         raise TypeError("use_sh_qv must be boolean")
     use_sh_qv = bool(use_sh_qv)
+    if analyzed_species is None:
+        analyzed_species = getattr(snapshot, "analyzed_species", None)
     column_workers = _column_worker_count(column_workers)
     if cfg.nz != coord.dnw.size:
         raise ValueError("RunConfig.nz and vertical coordinate differ")

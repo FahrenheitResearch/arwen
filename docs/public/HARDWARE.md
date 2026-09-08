@@ -517,8 +517,8 @@ Every factor is larger than it first looks:
 
 - **2-D fields per valid time** counts horizontal slices, not
   variables. `gpuwm fetch --source era5` asks CDS for 5 pressure-level
-  variables on the 37 standard levels plus 20 single-level variables --
-  205 full 2-D arrays at every valid time. The certified GFS ladder is
+  variables on the 37 standard levels plus 23 single-level variables --
+  208 full 2-D arrays at every valid time. The certified GFS ladder is
   5 x 21 + 19 = 124. These are the retrievals this tool writes; a
   narrower request decodes proportionally less, and `gpuwm check`
   prices the count your forcing files actually carry rather than this
@@ -540,12 +540,12 @@ Every factor is larger than it first looks:
   keeps one frozen set after that, because a nest re-ingests the same
   forcing onto its own grid.
 
-Worked, at ERA5's 205 fields per valid time over 8 valid times:
+Worked, at ERA5's 208 fields per valid time over 8 valid times:
 
 | forcing extent | source grid | per valid time | 8 times, held twice |
 |---|---|---|---|
-| global, 0.25 deg | 721 x 1440 | 1.59 GiB | **25.37 GiB** |
-| 40 x 50 deg box, 0.25 deg | 161 x 201 | 50.6 MiB | **0.79 GiB** |
+| global, 0.25 deg | 721 x 1440 | 1.61 GiB | **25.74 GiB** |
+| 40 x 50 deg box, 0.25 deg | 161 x 201 | 51.4 MiB | **0.80 GiB** |
 
 A factor of 32 for the same forecast on the same card. It is why the
 first question to ask about a run that died without saying anything is

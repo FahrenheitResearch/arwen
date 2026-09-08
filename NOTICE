@@ -1,6 +1,11 @@
 ArWen (Python package "gpuwm", preprocessor "rw-wps")
 Copyright 2026 ArWen contributors
 
+The native regular-grid Zarr reader's locked dependencies, including codec
+and TLS libraries, are inventoried with their licence texts in
+licenses/THIRD-PARTY-LICENSES-zarr-binary.txt. That notice also accompanies
+the bridge bundle's map-asset tree.
+
 Licensed under the Apache License, Version 2.0. Third-party datasets,
 tables, vendored components, and dependencies retain their own licenses
 and notices. Per-asset provenance (sources, generation recipes, SHA-256

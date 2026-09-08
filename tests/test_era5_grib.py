@@ -405,6 +405,41 @@ def test_bridge_message_grid_must_match_the_primary_axes(tmp_path):
         _load_bridge_partials(dump, entries, tmp_path / "source.grb")
 
 
+def test_native_lake_fields_bind_table_centre_level_and_preserve_raw_values(tmp_path):
+    entries = _bridge_vtable(tmp_path / "Vtable")
+    raw = [-6.77626680920867e-21, 273.15, 295.25]
+    names = ["LAKE_ICE_DEPTH", "LAKE_ICE_TEMP", "LAKE_WATER_TEMP"]
+    messages = [_bridge_message(parameter=parameter, table_version=228,
+                    offset_values=6 * index, grid_definition_hex="001c00")
+                for index, parameter in enumerate((14, 13, 8))]
+    dump = _write_bridge_dump(tmp_path / "lake", messages,
+                             np.concatenate([np.full(6, value) for value in raw]))
+    (partial,) = _load_bridge_partials(dump, entries, tmp_path / "lake.grib")
+    for name, value in zip(names, raw):
+        np.testing.assert_array_equal(partial.fields[name], value)
+    from gpuwm.ingest.grib import _native_canonical_name
+    assert _native_canonical_name(messages[0], {}) == "LAKE_ICE_DEPTH"
+    for changed in ({"center": 7}, {"table_version": 128},
+                    {"level_type": 100}, {"level": 1}):
+        assert _native_canonical_name({**messages[0], **changed}, {}) is None
+    assert _native_canonical_name({**messages[0], "parameter": 167},
+                                  {(167, 1): "T2"}) is None
+
+
+@pytest.mark.parametrize("definition, match", [
+    (None, "needs per-message grid identity"),
+    ("different-source-origin", "different source grids"),
+])
+def test_lake_source_grid_identity_is_required_beyond_equal_shape(tmp_path, definition, match):
+    entries = _bridge_vtable(tmp_path / "Vtable")
+    messages = [_bridge_message(grid_definition_hex="original-grid"),
+                _bridge_message(parameter=8, table_version=228,
+                    offset_values=6, grid_definition_hex=definition)]
+    dump = _write_bridge_dump(tmp_path / "lake", messages, np.full(12, 290.0))
+    with pytest.raises(ValueError, match=match):
+        _load_bridge_partials(dump, entries, tmp_path / "lake.grib")
+
+
 def test_bridge_messages_must_agree_on_their_scanning_mode(tmp_path):
     # Two messages of the same shape whose scan modes disagree cannot share
     # one latitude/longitude axis pair: one of them is stored the other way up.

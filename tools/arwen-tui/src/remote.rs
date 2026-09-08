@@ -189,6 +189,63 @@ impl Node {
         match operation {
             Operation::Probe => {}
             Operation::List => args.extend(["--limit".into(), "50".into()]),
+            Operation::ReviewPlan { plan, plan_sha256, config_sha256, output } => {
+                if !plan.is_absolute() { return Err("Saved companion plan must use an absolute local path.".into()); }
+                posix_absolute(output, "Remote output directory")?;
+                valid_sha(plan_sha256, "plan")?;
+                valid_sha(config_sha256, "configuration")?;
+                args.extend(["--plan".into(), plan.to_string_lossy().into_owned(),
+                    "--expected-plan-sha256".into(), plan_sha256.clone(),
+                    "--expected-config-sha256".into(), config_sha256.clone(),
+                    "--outdir".into(), output.clone()]);
+                if !self.geography.is_empty() {
+                    posix_absolute(&self.geography, "Remote geography directory")?;
+                    args.extend(["--geog-root".into(), self.geography.clone()]);
+                }
+            }
+            Operation::StartPlan { review } => {
+                let bundle = review["bundle_id"].as_str().ok_or("Remote review has no bundle ID.")?;
+                valid_job(bundle)?;
+                args.extend(["--bundle-id".into(), bundle.into()]);
+                for name in ["bundle", "plan", "config", "input"] {
+                    let hash = review[format!("{name}_sha256")].as_str().ok_or("Remote review is missing an input hash.")?;
+                    valid_sha(hash, name)?;
+                    args.extend([format!("--expected-{name}-sha256"), hash.into()]);
+                }
+                if review["memory"]["measured"] != true || review["memory"]["refuse"] != false {
+                    return Err("The remote memory review is not launch-ready. Review the selected node again.".into());
+                }
+                if review["source_blobs"].as_array().is_some_and(|blobs|!blobs.is_empty()){
+                    let path=PathBuf::from(review["local_source_manifest"].as_str().ok_or("Large inputs need the completed local review for background verification.")?);
+                    if !path.is_absolute(){return Err("Completed source-input review path must be absolute.".into());}
+                    args.extend(["--source-inputs-file".into(),path.to_string_lossy().into_owned()]);
+                }
+            }
+            Operation::SyncArtifacts { job, domain, cache, sequence, reader_leases } => {
+                valid_job(job)?;
+                if !(1..=999).contains(domain)||!cache.is_absolute(){return Err("Remote artifacts need a valid domain and absolute owned cache.".into());}
+                args.extend(["--job".into(),job.clone(),"--domain".into(),domain.to_string(),
+                    "--cache-root".into(),cache.to_string_lossy().into_owned()]);
+                if let Some(sequence)=sequence{
+                    if *sequence==0||*sequence>i64::MAX as u64{return Err("Artifact sequence must be a positive integer.".into());}
+                    args.extend(["--sequence".into(),sequence.to_string()]);
+                }
+                if *reader_leases{args.push("--reader-leases".into());}
+            }
+            Operation::ArtifactIndex{job,domain,after_sequence}=>{
+                valid_job(job)?;
+                if !(1..=999).contains(domain)||*after_sequence>i64::MAX as u64{return Err("Invalid artifact timeline selector.".into());}
+                args.extend(["--job".into(),job.clone(),"--domain".into(),domain.to_string(),"--after-sequence".into(),after_sequence.to_string()]);
+            }
+            Operation::SyncProcessedFrame{job,domain,cache,sequence}=>{
+                valid_job(job)?;
+                if !(1..=999).contains(domain)||!cache.is_absolute(){return Err("Converted fields need a valid domain and absolute owned cache.".into());}
+                args.extend(["--job".into(),job.clone(),"--domain".into(),domain.to_string(),"--cache-root".into(),cache.to_string_lossy().into_owned()]);
+                if let Some(sequence)=sequence{
+                    if *sequence==0||*sequence>i64::MAX as u64{return Err("Converted frame sequence must be a positive integer.".into());}
+                    args.extend(["--sequence".into(),sequence.to_string()]);
+                }
+            }
             Operation::Start {
                 products,
                 preview,
@@ -374,6 +431,144 @@ pub fn valid_job(value: &str) -> Result<(), String> {
     }
 }
 
+fn valid_sha(value:&str,label:&str)->Result<(),String>{
+    if value.len()==64 && value.bytes().all(|c|c.is_ascii_hexdigit()){Ok(())}
+    else{Err(format!("Invalid {label} SHA-256 binding."))}
+}
+
+fn artifact_producer_root(artifacts:&Value,manifest:&Value)->Result<String,String>{
+    let outer=artifacts["remote_output_root"].as_str().ok_or("Remote artifact has no job output root.")?;
+    let Some(binding)=artifacts.get("producer_binding") else{return Ok(outer.to_owned());};
+    if binding["schema"]!="gpuwm.remote-producer-binding.v1"{return Err("Unknown native producer binding.".into());}
+    let authority=|value:&Value|->Result<Value,String>{
+        let raw=value["utf8"].as_str().ok_or("Native producer authority has no exact bytes.")?;
+        if raw.len()>128*1024||value["sha256"]!=crate::companion::digest(raw.as_bytes()){
+            return Err("Native producer authority hash changed.".into());
+        }
+        serde_json::from_str(raw).map_err(|_|"Native producer authority is not valid JSON.".into())
+    };
+    let parent=authority(&binding["parent_manifest"])?;
+    let resolved=authority(&binding["parent_resolved"])?;
+    let produced=authority(&binding["producer_resolved"])?;
+    let pointer=binding["chain_pointer"]["utf8"].as_str().ok_or("Native chain pointer has no exact bytes.")?;
+    let name=pointer.trim();
+    if pointer.len()>256||!name.starts_with("run-")||name.contains('/')||name.contains('\\')
+        ||name.contains("..")||name.chars().any(char::is_control)
+        ||binding["chain_pointer"]["sha256"]!=crate::companion::digest(pointer.as_bytes()){
+        return Err("Native chain pointer does not name one owned stamped run.".into());
+    }
+    let root=format!("{outer}/chain/{name}");
+    let config=resolved["config_source"].as_str().ok_or("Native resolved receipt has no config source.")?;
+    valid_sha(resolved["config_sha256"].as_str().unwrap_or(""),"native producer configuration")?;
+    if parent["schema"]!="gpuwm.run-manifest.v1"||parent["route"]!="prepared"
+        ||parent["run_dir"]!=outer||parent["outputs_dir"]!=outer||parent["pid"]!=manifest["pid"]
+        ||parent["run_id"]==manifest["run_id"]
+        ||binding["parent_manifest"]["remote_path"]!=format!("{outer}/run-manifest.json")
+        ||binding["chain_pointer"]["remote_path"]!=format!("{outer}/chain/latest-run.txt")
+        ||artifacts["run_manifest"]["remote_path"]!=format!("{root}/run-manifest.json")
+        ||manifest["outputs_dir"]!=root||manifest["plan_source"]!=format!("gpuwm go {config}")
+        ||resolved["schema_version"]!="gpuwm.run-plan.event.v1"||resolved["event"]!="resolved_plan"
+        ||produced["schema_version"]!="gpuwm.run-plan.event.v1"||produced["event"]!="resolved_plan"
+        ||resolved["config_source"]!=produced["config_source"]||resolved["config_sha256"]!=produced["config_sha256"]
+        ||resolved["sequence"]!=binding["parent_resolved"]["sequence"]
+        ||produced["sequence"]!=binding["producer_resolved"]["sequence"]
+        ||parent["events_path"]!=binding["parent_resolved"]["remote_path"]
+        ||manifest["events_path"]!=binding["producer_resolved"]["remote_path"]{
+        return Err("Native producer does not match this job's parent manifest, pointer and configuration receipts.".into());
+    }
+    Ok(root)
+}
+
+fn validate_processed_frame(job:&str,domain:u32,cache:&Path,sequence:Option<u64>,value:&Value)->Result<(),String>{
+    if value["schema"]!="arwen.remote-processed-frame.v1"||value["job_id"]!=job||value["domain"]!=domain||!value["waiting"].is_boolean(){
+        return Err("Converted fields belong to a different job or domain.".into());
+    }
+    let returned_sequence=value["sequence"].as_u64().filter(|n|*n>0&&*n<=i64::MAX as u64);
+    if sequence.is_some_and(|wanted|returned_sequence!=Some(wanted))
+        &&!(value["waiting"]==true&&value["sequence"].is_null()&&value["commit"].is_null()){
+        return Err("Converted fields belong to a different requested forecast time.".into());
+    }
+    let processing=&value["processing"];
+    if !processing.is_null()&&(processing["schema"]!="arwen.native-store-queue.v1"||processing["job_id"]!=job
+        ||!matches!(processing["state"].as_str(),Some("queued"|"processing"|"waiting_for_output"|"complete"|"failed"))){
+        return Err("Native conversion progress belongs to another job or schema.".into());
+    }
+    let authority=|record:&Value|->Result<Value,String>{
+        let raw=record["utf8"].as_str().ok_or("Converted fields have no exact native authority bytes.")?;
+        if raw.len()>128*1024||record["sha256"]!=crate::companion::digest(raw.as_bytes()){
+            return Err("Converted-field native authority checksum changed.".into());
+        }
+        serde_json::from_str(raw).map_err(|_|"Converted-field authority is not JSON.".into())
+    };
+    if !value["run_manifest"].is_null(){
+        let manifest=authority(&value["run_manifest"])?;let root=artifact_producer_root(value,&manifest)?;
+        if manifest["schema"]!="gpuwm.run-manifest.v1"||manifest["run_id"]!=value["run_id"]||manifest["pid"]!=value["remote_pid"]
+            ||manifest["pid"].as_u64().is_none_or(|pid|pid==0)||manifest["run_dir"]!=root||manifest["outputs_dir"]!=root{
+            return Err("Converted fields disagree with their original native producer.".into());
+        }
+        if !value["commit"].is_null(){
+            let commit=authority(&value["commit"])?;
+            if commit["schema_version"]!="gpuwm.run-plan.event.v1"||commit["event"]!="output_committed"||commit["domain"]!=domain
+                ||commit["sequence"].as_u64()!=returned_sequence||value["commit"]["sequence"].as_u64()!=returned_sequence
+                ||commit["valid_time"]!=value["valid_time"]||manifest["events_path"]!=value["commit"]["remote_path"]
+                ||commit.get("run_id").is_some_and(|id|id!=&manifest["run_id"]){
+                return Err("Converted fields disagree with the selected native frame commit.".into());
+            }
+        }else if value["waiting"]!=true{return Err("Ready converted fields have no committed-frame authority.".into());}
+    }else if value["waiting"]!=true{return Err("Ready converted fields have no native producer manifest.".into());}
+    if value["waiting"]==true{
+        if !value["local_result_path"].is_null(){return Err("A pending conversion cannot supply a ready local result.".into());}
+        return Ok(());
+    }
+    if returned_sequence.is_none()||!value["transferred_bytes"].is_u64(){return Err("Ready converted fields have no exact sequence or transfer count.".into());}
+    valid_sha(value["source_sha256"].as_str().unwrap_or(""),"converted source")?;
+    let archive=value["archive"]["sha256"].as_str().ok_or("Converted store has no archive identity.")?;
+    valid_sha(archive,"converted archive")?;
+    if value["archive"]["size_bytes"].as_u64().is_none_or(|n|n==0){return Err("Converted store archive has no byte length.".into());}
+    let cache=cache.canonicalize().map_err(|error|error.to_string())?;
+    let root=cache.join(archive);
+    if root.is_symlink()||root.canonicalize().map_err(|error|error.to_string())?!=root{return Err("Converted store escaped its immutable cache directory.".into());}
+    let path=PathBuf::from(value["local_result_path"].as_str().ok_or("Converted fields have no local result receipt.")?);
+    if !path.is_absolute()||path.is_symlink()||path.canonicalize().map_err(|error|error.to_string())?!=root.join("native-result.json"){
+        return Err("Converted result receipt is outside its owned archive cache.".into());
+    }
+    let result=crate::companion::read_json(&path,4*1024*1024)?;
+    let frame=&result["frame"];let source=&result["remote_source"];
+    if result["schema"]!="arwen.wrf-process-result.v1"||result["domain"]!=format!("d{domain:02}")||frame!=&value["frame"]
+        ||frame["schema"]!="arwen.companion-store-frame.v1"||frame["identity"]["source_sha256"]!=value["source_sha256"]
+        ||frame["identity"]["case_id"]!=value["run_id"]||source["job_id"]!=job||source["domain"]!=domain
+        ||source["sequence"].as_u64()!=returned_sequence||source["run_id"]!=value["run_id"]||source["source_sha256"]!=value["source_sha256"]
+        ||source["run_manifest"]!=value["run_manifest"]||source["commit"]!=value["commit"]{
+        return Err("The local converted receipt lost its source, run, domain or time authority.".into());
+    }
+    let store=PathBuf::from(frame["store_root"].as_str().ok_or("Converted frame has no local store root.")?);
+    let hour=PathBuf::from(frame["hour_path"].as_str().ok_or("Converted frame has no local hour file.")?);
+    let store_canonical=store.canonicalize().map_err(|error|error.to_string())?;
+    if !store.is_absolute()||store.is_symlink()||store_canonical==root.join("store")||!store_canonical.starts_with(root.join("store"))
+        ||!hour.is_absolute()||hour.is_symlink()||!hour.canonicalize().map_err(|error|error.to_string())?.starts_with(&store_canonical)
+        ||hour.extension().is_none_or(|extension|extension!="rws")
+        ||frame["rws_bytes"].as_u64().filter(|bytes|*bytes>0)!=Some(fs::metadata(&hour).map_err(|error|error.to_string())?.len()){
+        return Err("Converted native files are outside their verified local store or have changed length.".into());
+    }
+    valid_sha(frame["rws_sha256"].as_str().unwrap_or(""),"converted hour")?;
+    valid_sha(frame["grid_sha256"].as_str().unwrap_or(""),"converted grid")?;
+    Ok(())
+}
+
+pub(crate) fn processed_message(value:&Value)->Result<String,String>{
+    if value["processing"]["state"]=="failed"{
+        return Err(format!("Native field conversion could not finish: {}",value["processing"]["error"].as_str().unwrap_or("the node reported a conversion failure")));
+    }
+    if value["waiting"]==true{
+        let processing=&value["processing"];
+        return Ok(match (processing["ready"].as_u64(),processing["committed"].as_u64()){
+            (Some(ready),Some(total))=>format!("Converting saved weather fields on the node: {ready} of {total} frames ready."),
+            _=>"Waiting for the selected native weather fields to finish converting on the node.".into(),
+        });
+    }
+    Ok("Converted native weather fields are ready.".into())
+}
+
 pub fn stamp() -> String {
     format!(
         "{}-{}",
@@ -508,6 +703,11 @@ impl Store {
 pub enum Operation {
     Probe,
     List,
+    ReviewPlan { plan: PathBuf, plan_sha256: String, config_sha256: String, output: String },
+    StartPlan { review: Value },
+    SyncArtifacts { job: String, domain: u32, cache: PathBuf, sequence: Option<u64>, reader_leases: bool },
+    SyncProcessedFrame { job: String, domain: u32, cache: PathBuf, sequence: Option<u64> },
+    ArtifactIndex { job: String, domain: u32, after_sequence: u64 },
     Start {
         products: String,
         preview: bool,
@@ -600,6 +800,9 @@ impl Binding {
 
 impl Operation {
     pub fn confirmed(&self, review: &Value) -> Result<Self, String> {
+        if review["memory"].is_object() && (review["memory"]["measured"] != true || review["memory"]["refuse"] == true) {
+            return Err(format!("Remote memory review is not launch-ready: {}", review["memory"]["verdict"].as_str().unwrap_or("actual node capacity is unknown")));
+        }
         let mut operation = self.clone();
         let resume = matches!(operation, Self::Resume { .. });
         match &mut operation {
@@ -620,6 +823,11 @@ impl Operation {
         match self {
             Self::Probe => "probe",
             Self::List => "list",
+            Self::ReviewPlan { .. } => "review-plan",
+            Self::StartPlan { .. } => "start-plan",
+            Self::SyncArtifacts { .. } => "sync-artifacts",
+            Self::SyncProcessedFrame { .. } => "sync-processed-frame",
+            Self::ArtifactIndex { .. } => "artifact-index",
             Self::Start { .. } => "start",
             Self::Status { .. } => "status",
             Self::Logs { .. } => "logs",
@@ -631,6 +839,7 @@ impl Operation {
         matches!(
             self,
             Self::Start { preview: false, .. }
+                | Self::StartPlan { .. }
                 | Self::Stop { .. }
                 | Self::Resume { preview: false, .. }
         )
@@ -715,6 +924,8 @@ pub struct View {
     terminal_eof_confirmed: bool,
     pub connection_error: Option<String>,
     pub last_refresh: Option<Instant>,
+    /// Status/log polling has its own clock; timeline traffic cannot postpone it.
+    pub last_job_refresh: Option<Instant>,
 }
 
 impl Default for View {
@@ -729,6 +940,7 @@ impl Default for View {
             terminal_eof_confirmed: false,
             connection_error: None,
             last_refresh: None,
+            last_job_refresh: None,
         }
     }
 }
@@ -747,6 +959,10 @@ pub enum Update {
     Status,
     Logs,
     Preview { operation: Operation, review: Value },
+    PlanReviewed(Value),
+    ArtifactsSynced(Value),
+    ProcessedFrameSynced(Value),
+    ArtifactIndexed(Value),
     Started(String),
     Stopped(String),
     Failed(String),
@@ -809,7 +1025,7 @@ impl Controller {
         Self::load_path(cwd.join(".arwen-nodes.json"))
     }
 
-    fn load_path(path: PathBuf) -> Self {
+    pub(crate) fn load_path(path: PathBuf) -> Self {
         let (store, load_error) = match Store::load(&path) {
             Ok(store) => (store, None),
             Err(error) => (Store::default(), Some(error)),
@@ -947,7 +1163,11 @@ impl Controller {
         };
         let request = self.pending.take().expect("the completed request");
         self.view.last_refresh = Some(Instant::now());
-        if self.store.selected().map(Node::connection_key) != Some(request.node.connection_key()) {
+        if matches!(request.operation,Operation::Status{..}|Operation::Logs{..}|Operation::List|Operation::Stop{..}|Operation::StartPlan{..}|Operation::Start{preview:false,..}|Operation::Resume{preview:false,..}){
+            self.view.last_job_refresh=Some(Instant::now());
+        }
+        if self.store.selected().map(|node| (node.id.clone(), node.connection_key()))
+            != Some((request.node.id.clone(), request.node.connection_key())) {
             return Some(Update::Failed(
                 "A reply arrived for a different saved node. Refresh the selected node.".into(),
             ));
@@ -1002,6 +1222,97 @@ impl Controller {
                 self.view.jobs = jobs.clone();
                 Ok(Update::Jobs)
             }
+            Operation::ReviewPlan { plan_sha256, config_sha256, .. } => {
+                let review = &reply["review"];
+                if reply["dry_run"] != true || !review.is_object()
+                    || review["source"]["plan_sha256"] != *plan_sha256
+                    || review["source"]["config_sha256"] != *config_sha256 {
+                    return Err("The node review does not match the saved companion plan and configuration.".into());
+                }
+                for name in ["bundle", "plan", "config", "input"] {
+                    valid_sha(review[format!("{name}_sha256")].as_str().unwrap_or(""), name)?;
+                }
+                if !review["memory"].is_object() {
+                    return Err("The node returned no actual memory review.".into());
+                }
+                let runtime = self.view.runtime.get_or_insert_with(|| json!({}));
+                runtime["runtime"] = review["runtime"].clone();
+                runtime["probe"] = review["probe"].clone();
+                if !runtime["capabilities"].is_object(){runtime["capabilities"]=json!({});}
+                for key in ["stage_plan_v1","review_plan_v1","start_plan_v1"]{runtime["capabilities"][key]=json!(true);}
+                Ok(Update::PlanReviewed(review.clone()))
+            }
+            Operation::SyncArtifacts { job, domain, cache, sequence, reader_leases } => {
+                let artifacts=&reply["artifacts"];
+                if artifacts["schema"]!="gpuwm.remote-artifacts.v1"||artifacts["job_id"]!=*job
+                    ||!artifacts["waiting"].is_boolean()||!reply["transferred_bytes"].is_u64(){
+                    return Err("Node artifact reply is incomplete or belongs to a different job.".into());
+                }
+                if let Some(recovery)=reply.get("cache_recovery"){
+                    if !reader_leases||artifacts["waiting"]!=true||recovery["schema"]!="arwen.artifact-cache-recovery.v1"
+                        ||recovery["reason"]!="corrupt_retained_object"{return Err("Invalid retained-frame cache recovery response.".into());}
+                    valid_sha(recovery["sha256"].as_str().unwrap_or(""),"retained frame")?;
+                }
+                if artifacts["waiting"]!=true {
+                    let frames=artifacts["frames"].as_array().filter(|f|f.len()==1).ok_or("Node must return one selected-domain frame.")?;
+                    let frame=&frames[0];
+                    if frame["domain"]!=*domain{return Err("Node artifact belongs to a different domain.".into());}
+                    if sequence.is_some_and(|value|frame["commit"]["sequence"].as_u64()!=Some(value)){return Err("Node artifact belongs to a different requested time.".into());}
+                    for key in ["sha256","id"]{valid_sha(frame[key].as_str().unwrap_or(""),"artifact")?;}
+                    let path=PathBuf::from(frame["path"].as_str().ok_or("Downloaded frame has no local path.")?);
+                    let objects=cache.join("objects").canonicalize().map_err(|e|e.to_string())?;
+                    if !path.is_absolute()||path.is_symlink()||path.canonicalize().map_err(|e|e.to_string())?!=objects.join(format!("{}.wrf",frame["sha256"].as_str().unwrap()))
+                        ||frame["size_bytes"].as_u64().filter(|n|*n>0&&*n<=512*1024*1024)!=Some(fs::metadata(&path).map_err(|e|e.to_string())?.len()){
+                        return Err("Downloaded artifact path or byte length disagrees with its owned cache.".into());
+                    }
+                    for authority in [&artifacts["run_manifest"],&frame["commit"]]{
+                        let raw=authority["utf8"].as_str().ok_or("Artifact authority has no exact UTF-8 bytes.")?;
+                        if authority["sha256"]!=crate::companion::digest(raw.as_bytes())||serde_json::from_str::<Value>(raw).is_err(){
+                            return Err("Artifact source authority changed during transfer.".into());
+                        }
+                    }
+                    let manifest:Value=serde_json::from_str(artifacts["run_manifest"]["utf8"].as_str().unwrap()).unwrap();
+                    let commit:Value=serde_json::from_str(frame["commit"]["utf8"].as_str().unwrap()).unwrap();
+                    let producer_root=artifact_producer_root(artifacts,&manifest)?;
+                    if manifest["schema"]!="gpuwm.run-manifest.v1"||manifest["run_id"]!=artifacts["run_id"]
+                        ||manifest["pid"]!=artifacts["remote_pid"]||manifest["run_dir"]!=producer_root
+                        ||manifest["events_path"]!=frame["commit"]["remote_path"]||commit["schema_version"]!="gpuwm.run-plan.event.v1"
+                        ||commit["event"]!="output_committed"||commit["domain"]!=frame["domain"]||commit["path"]!=frame["remote_path"]
+                        ||commit["valid_time"]!=frame["valid_time"]||commit["sequence"]!=frame["commit"]["sequence"]{
+                        return Err("Downloaded frame disagrees with its native run and commit identity.".into());
+                    }
+                }
+                Ok(Update::ArtifactsSynced(reply))
+            }
+            Operation::SyncProcessedFrame{job,domain,cache,sequence}=>{
+                validate_processed_frame(job,*domain,cache,*sequence,&reply["processed_frame"])?;
+                Ok(Update::ProcessedFrameSynced(reply))
+            }
+            Operation::ArtifactIndex{job,domain,after_sequence}=>{
+                let index=&reply["artifact_index"];
+                if index["schema"]!="gpuwm.remote-artifact-index.v1"||index["job_id"]!=*job||index["domain"]!=*domain||!index["waiting"].is_boolean(){
+                    return Err("Node timeline reply belongs to a different job or domain.".into());
+                }
+                let entries=index["entries"].as_array().filter(|rows|rows.len()<=256).ok_or("Node timeline page is excessive or missing.")?;
+                let mut last=*after_sequence;
+                for entry in entries{
+                    let sequence=entry["sequence"].as_u64().filter(|n|*n>last&&*n<=i64::MAX as u64).ok_or("Node timeline sequences must increase.")?;
+                    if entry["domain"]!=*domain||entry["valid_time"].as_str().is_none_or(|v|v.is_empty()||v.len()>64){return Err("Node timeline has an invalid forecast time.".into());}
+                    last=sequence;
+                }
+                if !index["next_after_sequence"].is_null()&&(entries.is_empty()||index["next_after_sequence"].as_u64()!=Some(last)){
+                    return Err("Node timeline cursor disagrees with its last entry.".into());
+                }
+                if let Some(raw)=index["run_manifest"]["utf8"].as_str(){
+                    if index["run_manifest"]["sha256"]!=crate::companion::digest(raw.as_bytes()){return Err("Native timeline manifest bytes changed.".into());}
+                    let manifest:Value=serde_json::from_str(raw).map_err(|_|"Native timeline manifest is not JSON.")?;
+                    let root=artifact_producer_root(index,&manifest)?;
+                    if manifest["schema"]!="gpuwm.run-manifest.v1"||manifest["run_id"]!=index["run_id"]||manifest["pid"]!=index["remote_pid"]||manifest["run_dir"]!=root{
+                        return Err("Node timeline disagrees with its native producer.".into());
+                    }
+                }else if index["waiting"]!=true||!entries.is_empty(){return Err("Node timeline has no native run authority.".into());}
+                Ok(Update::ArtifactIndexed(reply))
+            }
             Operation::Start { preview: true, .. } | Operation::Resume { preview: true, .. } => {
                 if reply["dry_run"] != true || !reply["review"].is_object() {
                     return Err("Node did not return a launch review. No start is assumed.".into());
@@ -1011,7 +1322,7 @@ impl Controller {
                     review: reply["review"].clone(),
                 })
             }
-            Operation::Start { preview: false, .. } | Operation::Resume { preview: false, .. } => {
+            Operation::Start { preview: false, .. } | Operation::Resume { preview: false, .. } | Operation::StartPlan { .. } => {
                 let id = job_identity(&reply["job"])?;
                 self.view.status = Some(reply["job"].clone());
                 self.view.log.clear();
@@ -1092,6 +1403,17 @@ impl Controller {
     }
 }
 
+/// Reuse the native receipt validator for an independent read-only session.
+/// The ephemeral controller never loads, selects or persists a user profile.
+pub(crate) fn validate_readonly_reply(node:&Node,operation:&Operation,reply:&Value)->Result<(),String>{
+    if !matches!(operation,Operation::List|Operation::Status{..}|Operation::ArtifactIndex{..}|Operation::SyncArtifacts{..}|Operation::SyncProcessedFrame{..}){
+        return Err("This run viewer only accepts read-only job and artifact requests.".into());
+    }
+    let mut store=Store::default();store.nodes.push(node.clone());store.active=Some(node.id.clone());
+    let mut controller=Controller{store,path:PathBuf::new(),view:View::default(),pending:None,load_error:None};
+    controller.accept(operation,reply.clone()).map(|_|())
+}
+
 fn job_identity(job: &Value) -> Result<String, String> {
     let id = job["id"].as_str().ok_or("Node response has no job ID.")?;
     valid_job(id)?;
@@ -1158,6 +1480,151 @@ mod tests {
             "input_sha256":hash,"checkpoint":if resume { Some("/old/run/checkpoint.npz") } else { None },
             "checkpoint_sha256":if resume { Some(hash.clone()) } else { None },
             "checkpoint_set_sha256":if resume { Some(hash) } else { None }})
+    }
+    #[test]
+    fn map_review_uses_local_saved_plan_and_never_profile_configuration(){
+        let mut node=node();node.config="/unrelated/profile-case.toml".into();
+        let plan=std::env::temp_dir().join("saved map plan.json");
+        let operation=Operation::ReviewPlan{plan:plan.clone(),plan_sha256:"a".repeat(64),config_sha256:"b".repeat(64),output:"/new/output".into()};
+        let args=node.args(&operation).unwrap();
+        assert_eq!(args[0],"review-plan");
+        assert_eq!(args[args.iter().position(|v|v=="--plan").unwrap()+1],plan.to_string_lossy());
+        assert!(!args.contains(&node.config));assert!(!operation.mutates());
+        let review=json!({"bundle_id":"1234567890abcdef1234567890abcdef","bundle_sha256":"a".repeat(64),
+            "plan_sha256":"b".repeat(64),"config_sha256":"c".repeat(64),"input_sha256":"d".repeat(64),
+            "memory":{"measured":true,"refuse":false}});
+        let launch=Operation::StartPlan{review:review.clone()};
+        assert!(launch.mutates());assert!(node.args(&launch).is_ok());
+        let mut with_blobs=review.clone();with_blobs["source_blobs"]=json!([{"source_path":"selected.grib"}]);
+        assert!(node.args(&Operation::StartPlan{review:with_blobs.clone()}).is_err());
+        let local_review=std::env::temp_dir().join("completed-node-review.json");
+        with_blobs["local_source_manifest"]=json!(local_review);
+        let args=node.args(&Operation::StartPlan{review:with_blobs}).unwrap();
+        assert_eq!(args[args.iter().position(|v|v=="--source-inputs-file").unwrap()+1],local_review.to_string_lossy());
+        let mut unknown=review;unknown["memory"]["measured"]=json!(false);
+        assert!(node.args(&Operation::StartPlan{review:unknown}).is_err());
+    }
+    #[test]
+    fn hosted_artifact_keeps_exact_parent_pointer_and_both_config_receipts(){
+        let outer="/owned/run";let name="run-20260907-180001Z_i201305311200Z";
+        let root=format!("{outer}/chain/{name}");
+        let authority=|path:&str,value:Value|{let utf8=format!("{}\n",value);json!({"remote_path":path,"sha256":crate::companion::digest(utf8.as_bytes()),"utf8":utf8,"sequence":1})};
+        let parent=json!({"schema":"gpuwm.run-manifest.v1","route":"prepared","pid":123,"run_id":"parent",
+            "run_dir":outer,"outputs_dir":outer,"events_path":format!("{outer}/events.jsonl")});
+        let manifest=json!({"pid":123,"run_id":"producer","outputs_dir":root,"events_path":format!("{root}/events.jsonl"),"plan_source":"gpuwm go /saved/case.toml"});
+        let resolved=json!({"schema_version":"gpuwm.run-plan.event.v1","event":"resolved_plan","sequence":1,
+            "config_source":"/saved/case.toml","config_sha256":"b".repeat(64)});
+        let pointer=format!("{name}\n");
+        let artifacts=json!({"remote_output_root":outer,"run_manifest":{"remote_path":format!("{root}/run-manifest.json")},
+            "producer_binding":{"schema":"gpuwm.remote-producer-binding.v1",
+                "parent_manifest":authority(&format!("{outer}/run-manifest.json"),parent),
+                "parent_resolved":authority(&format!("{outer}/events.jsonl"),resolved.clone()),
+                "producer_resolved":authority(&format!("{root}/events.jsonl"),resolved),
+                "chain_pointer":{"remote_path":format!("{outer}/chain/latest-run.txt"),"utf8":pointer,"sha256":crate::companion::digest(pointer.as_bytes())}}});
+        assert_eq!(artifact_producer_root(&artifacts,&manifest).unwrap(),root);
+        let mut wrong=artifacts.clone();wrong["producer_binding"]["chain_pointer"]["utf8"]=json!("../escape");
+        assert!(artifact_producer_root(&wrong,&manifest).is_err());
+        let mut wrong=artifacts.clone();wrong["producer_binding"]["producer_resolved"]["sha256"]=json!("c".repeat(64));
+        assert!(artifact_producer_root(&wrong,&manifest).is_err());
+        let mut foreign=manifest.clone();foreign["pid"]=json!(999);
+        assert!(artifact_producer_root(&artifacts,&foreign).is_err());
+        let mut foreign=manifest;foreign["plan_source"]=json!("gpuwm go /other/case.toml");
+        assert!(artifact_producer_root(&artifacts,&foreign).is_err());
+    }
+    #[test]
+    fn timeline_page_and_explicit_time_args_are_bound_without_opening_a_raw_frame(){
+        let root=std::env::temp_dir().join(format!("arwen-index-control-{}",stamp()));
+        let manifest=json!({"schema":"gpuwm.run-manifest.v1","run_id":"run-1","pid":123,"run_dir":"/owned/run"}).to_string();
+        let reply=json!({"schema":REPLY_SCHEMA,"ok":true,"action":"artifact-index","artifact_index":{
+            "schema":"gpuwm.remote-artifact-index.v1","job_id":"job-1","domain":3,"waiting":false,
+            "run_id":"run-1","remote_pid":123,"remote_output_root":"/owned/run",
+            "run_manifest":{"utf8":manifest,"sha256":crate::companion::digest(manifest.as_bytes())},
+            "entries":[{"sequence":42,"domain":3,"valid_time":"2013-05-31T18:00:00Z"}],"next_after_sequence":null,"latest_sequence":42}});
+        let operation=Operation::ArtifactIndex{job:"job-1".into(),domain:3,after_sequence:40};
+        let args=node().args(&operation).unwrap();assert_eq!(args[0],"artifact-index");
+        assert!(args.contains(&"--after-sequence".into())&&!operation.mutates());
+        let mut controller=Controller::load(&root);
+        assert!(matches!(controller.accept(&operation,reply.clone()),Ok(Update::ArtifactIndexed(_))));
+        let mut wrong=reply.clone();wrong["artifact_index"]["entries"][0]["sequence"]=json!(40);assert!(controller.accept(&operation,wrong).is_err());
+        let mut wrong=reply;wrong["artifact_index"]["next_after_sequence"]=json!(43);assert!(controller.accept(&operation,wrong).is_err());
+        let operation=Operation::SyncArtifacts{job:"job-1".into(),domain:3,cache:root.join("cache"),sequence:Some(42),reader_leases:true};
+        let args=node().args(&operation).unwrap();
+        assert_eq!(args[args.iter().position(|a|a=="--sequence").unwrap()+1],"42");
+        assert!(args.contains(&"--reader-leases".into()));
+    }
+    #[test]
+    fn converted_store_transfer_is_read_only_and_ready_receipts_keep_owned_paths_and_source(){
+        let root=std::env::temp_dir().join(format!("arwen-converted-control-{}",stamp()));fs::create_dir_all(&root).unwrap();let root=root.canonicalize().unwrap();
+        let archive="c".repeat(64);let object=root.join(&archive);let store=object.join("store/identity/rw-store");let hour=store.join("wrf/native/f006.rws");
+        fs::create_dir_all(hour.parent().unwrap()).unwrap();let bytes=b"metadata-validator fixture, not a scientific array";fs::write(&hour,bytes).unwrap();
+        let authority=|path:&str,value:Value|{let utf8=serde_json::to_string(&value).unwrap();json!({"remote_path":path,"sha256":crate::companion::digest(utf8.as_bytes()),"utf8":utf8})};
+        let manifest=authority("/original/run-manifest.json",json!({"schema":"gpuwm.run-manifest.v1","run_id":"native-original","pid":42,"run_dir":"/original","outputs_dir":"/original","events_path":"/original/events.jsonl"}));
+        let mut commit=authority("/original/events.jsonl",json!({"schema_version":"gpuwm.run-plan.event.v1","event":"output_committed","domain":3,"sequence":42,"valid_time":"2013-05-20T06:00:00Z","path":"/original/frame"}));commit["sequence"]=json!(42);
+        let source_sha="b".repeat(64);let frame=json!({"schema":"arwen.companion-store-frame.v1","identity":{"source_sha256":source_sha,"case_id":"native-original"},
+            "store_root":store,"hour_path":hour,"rws_bytes":bytes.len(),"rws_sha256":crate::companion::digest(bytes),"grid_sha256":"d".repeat(64)});
+        let source=json!({"job_id":"saved-job","domain":3,"sequence":42,"run_id":"native-original","source_sha256":source_sha,"run_manifest":manifest,"commit":commit});
+        let result_path=object.join("native-result.json");let result=json!({"schema":"arwen.wrf-process-result.v1","domain":"d03","frame":frame,"remote_source":source});
+        fs::write(&result_path,serde_json::to_vec(&result).unwrap()).unwrap();
+        let value=json!({"schema":"arwen.remote-processed-frame.v1","job_id":"saved-job","domain":3,"sequence":42,"waiting":false,
+            "run_id":"native-original","remote_pid":42,"remote_output_root":"/original","run_manifest":manifest,"commit":commit,"valid_time":"2013-05-20T06:00:00Z",
+            "source_sha256":source_sha,"archive":{"sha256":archive,"size_bytes":123},"frame":frame,"local_result_path":result_path,"transferred_bytes":123,
+            "processing":{"schema":"arwen.native-store-queue.v1","job_id":"saved-job","state":"complete"}});
+        let operation=Operation::SyncProcessedFrame{job:"saved-job".into(),domain:3,sequence:Some(42),cache:root.clone()};
+        let args=node().args(&operation).unwrap();assert_eq!(args[0],"sync-processed-frame");assert!(!operation.mutates());
+        assert_eq!(args[args.iter().position(|arg|arg=="--sequence").unwrap()+1],"42");
+        validate_processed_frame("saved-job",3,&root,Some(42),&value).unwrap();
+        for(key,replacement)in[("job_id",json!("other")),("domain",json!(2)),("sequence",json!(43)),("source_sha256",json!("a".repeat(64))),
+            ("local_result_path",json!(root.join("outside.json")))]{let mut wrong=value.clone();wrong[key]=replacement;assert!(validate_processed_frame("saved-job",3,&root,Some(42),&wrong).is_err(),"{key}");}
+        let mut wrong=value.clone();wrong["commit"]["sha256"]=json!("a".repeat(64));assert!(validate_processed_frame("saved-job",3,&root,Some(42),&wrong).is_err());
+        let mut wrong_result=result;wrong_result["remote_source"]["job_id"]=json!("other");fs::write(&result_path,serde_json::to_vec(&wrong_result).unwrap()).unwrap();
+        assert!(validate_processed_frame("saved-job",3,&root,Some(42),&value).unwrap_err().contains("authority"));
+        let _=fs::remove_dir_all(root);
+    }
+    #[test]
+    fn converted_field_waiting_and_failure_are_explicit_without_a_raw_frame(){
+        let value=json!({"schema":"arwen.remote-processed-frame.v1","job_id":"saved-job","domain":1,"sequence":null,"waiting":true,
+            "processing":{"schema":"arwen.native-store-queue.v1","job_id":"saved-job","state":"processing","committed":57,"ready":12}});
+        validate_processed_frame("saved-job",1,Path::new("uncreated-cache"),None,&value).unwrap();
+        assert!(processed_message(&value).unwrap().contains("12 of 57"));
+        let mut failed=value;failed["processing"]["state"]=json!("failed");failed["processing"]["error"]=json!("source checksum changed");
+        assert!(processed_message(&failed).unwrap_err().contains("source checksum changed"));
+    }
+    #[test]
+    #[ignore="explicit real converted reply/cache; validates existing metadata and lengths without decoding fields or contacting nodes"]
+    fn actual_converted_reply_keeps_its_native_authorities_and_local_store(){
+        let reply_path=PathBuf::from(std::env::var_os("ARWEN_PROCESSED_REPLY").expect("ARWEN_PROCESSED_REPLY"));
+        let cache=PathBuf::from(std::env::var_os("ARWEN_PROCESSED_CACHE").expect("ARWEN_PROCESSED_CACHE"));
+        let job=std::env::var("ARWEN_PROCESSED_JOB").expect("ARWEN_PROCESSED_JOB");
+        let domain=std::env::var("ARWEN_PROCESSED_DOMAIN").unwrap().parse::<u32>().unwrap();
+        let sequence=std::env::var("ARWEN_PROCESSED_SEQUENCE").unwrap().parse::<u64>().unwrap();
+        let reply=crate::companion::read_json(&reply_path,2*1024*1024).unwrap();
+        validate_processed_frame(&job,domain,&cache,Some(sequence),&reply["processed_frame"]).unwrap();
+        assert_eq!(reply["processed_frame"]["waiting"],false);
+        println!("Verified real converted job={job}, domain={domain}, sequence={sequence}, fields={}, local_result={}",
+            reply["processed_frame"]["frame"]["variables"].as_array().unwrap().len(),reply["processed_frame"]["local_result_path"]);
+    }
+    #[test]
+    fn artifact_reply_is_bound_to_job_domain_cache_and_exact_native_commit(){
+        let root=std::env::temp_dir().join(format!("arwen-artifact-control-{}",stamp()));
+        let cache=root.join("cache");fs::create_dir_all(cache.join("objects")).unwrap();
+        let bytes=b"raw protocol fixture; not weather";let hash=crate::companion::digest(bytes);
+        let path=cache.join("objects").join(format!("{hash}.wrf"));fs::write(&path,bytes).unwrap();
+        let manifest=json!({"schema":"gpuwm.run-manifest.v1","run_id":"run-1","pid":123,"run_dir":"/owned/run","events_path":"/owned/run/events.jsonl"}).to_string();
+        let commit=json!({"schema_version":"gpuwm.run-plan.event.v1","event":"output_committed","sequence":4,"domain":2,
+            "path":"/owned/run/wrfout_d02","valid_time":"2026-09-07T18:00:00Z"}).to_string();
+        let reply=json!({"schema":REPLY_SCHEMA,"ok":true,"action":"sync-artifacts","transferred_bytes":bytes.len(),
+            "artifacts":{"schema":"gpuwm.remote-artifacts.v1","job_id":"job-1","waiting":false,"run_id":"run-1","remote_pid":123,"remote_output_root":"/owned/run",
+            "run_manifest":{"utf8":manifest,"sha256":crate::companion::digest(manifest.as_bytes())},
+            "frames":[{"id":"a".repeat(64),"domain":2,"path":path,"remote_path":"/owned/run/wrfout_d02","sha256":hash,"size_bytes":bytes.len(),"valid_time":"2026-09-07T18:00:00Z",
+                "commit":{"utf8":commit,"sha256":crate::companion::digest(commit.as_bytes()),"remote_path":"/owned/run/events.jsonl","sequence":4}}]}});
+        let op=Operation::SyncArtifacts{job:"job-1".into(),domain:2,cache,sequence:None,reader_leases:false};let args=node().args(&op).unwrap();
+        assert_eq!(args[0],"sync-artifacts");assert!(!op.mutates());assert!(!args.contains(&node().config));
+        let mut controller=Controller::load(&root);
+        assert!(matches!(controller.accept(&op,reply.clone()),Ok(Update::ArtifactsSynced(_))));
+        let mut wrong=reply.clone();wrong["artifacts"]["job_id"]=json!("job-2");assert!(controller.accept(&op,wrong).is_err());
+        let mut wrong=reply.clone();wrong["artifacts"]["frames"][0]["domain"]=json!(1);assert!(controller.accept(&op,wrong).is_err());
+        let mut wrong=reply.clone();wrong["artifacts"]["frames"][0]["valid_time"]=json!("2026-09-07T19:00:00Z");assert!(controller.accept(&op,wrong).is_err());
+        let mut wrong=reply;wrong["artifacts"]["frames"][0]["commit"]["utf8"]=json!("{}");assert!(controller.accept(&op,wrong).is_err());
     }
     #[test]
     fn node_paths_are_arguments_and_explicit_products_survive() {
@@ -1643,7 +2110,7 @@ mod tests {
         c.view.last_refresh = Some(Instant::now() - Duration::from_millis(250));
         assert!(panel.should_refresh(&c));
         accept(&mut c, "running", true);
-        c.view.last_refresh = Some(Instant::now() - Duration::from_secs(4));
+        c.view.last_refresh = Some(Instant::now() - Duration::from_millis(500));
         assert!(!panel.should_refresh(&c));
         c.view.last_refresh = Some(Instant::now() - Duration::from_secs(6));
         assert!(panel.should_refresh(&c));

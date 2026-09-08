@@ -10,9 +10,10 @@ use ratatui::{
 use serde_json::Value;
 use std::{
     fs,
-    io::Read,
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, ChildStdin, Command, Stdio},
+    sync::mpsc::{self, Receiver, TryRecvError},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -32,11 +33,19 @@ enum Operation {
     Preview,
 }
 struct Query {
-    child: Child,
-    out: Option<JoinHandle<Vec<u8>>>,
-    err: Option<JoinHandle<Vec<u8>>>,
+    id: u64,
+    args: Vec<String>,
+    sent: bool,
     started: Instant,
     operation: Operation,
+}
+struct Worker {
+    child: Child,
+    input: ChildStdin,
+    responses: Receiver<Result<Value, String>>,
+    err: Option<JoinHandle<Vec<u8>>>,
+    active: Option<u64>,
+    failed: bool,
 }
 fn drain(mut stream: impl Read + Send + 'static) -> JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
@@ -53,21 +62,15 @@ fn drain(mut stream: impl Read + Send + 'static) -> JoinHandle<Vec<u8>> {
         output
     })
 }
-impl Query {
-    fn spawn(
-        python: &Path,
-        cwd: &Path,
-        args: &[String],
-        operation: Operation,
-    ) -> Result<Self, String> {
+impl Worker {
+    fn spawn(python: &Path, cwd: &Path) -> Result<Self, String> {
         let mut command = Command::new(python);
         command
-            .args(["-X", "utf8", "-m", "gpuwm.cli", "case-catalog"])
-            .args(args)
+            .args(["-X", "utf8", "-m", "gpuwm.case_catalog", "--tui-server"])
             .current_dir(cwd)
             .env("GPUWM_NO_LOCAL_GPU", "1")
             .env("PYTHONDONTWRITEBYTECODE", "1")
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         #[cfg(windows)]
@@ -78,58 +81,76 @@ impl Query {
         let mut child = command
             .spawn()
             .map_err(|e| format!("Could not read catalog: {e}"))?;
-        let out = Some(drain(child.stdout.take().unwrap()));
+        let input = child.stdin.take().unwrap();
+        let output = child.stdout.take().unwrap();
+        let (sender, responses) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut output = BufReader::new(output);
+            loop {
+                let mut line = Vec::new();
+                let result = match (&mut output).take(16 * 1024 * 1024 + 1).read_until(b'\n', &mut line) {
+                    Ok(0) => break,
+                    Ok(n) if n > 16 * 1024 * 1024 || !line.ends_with(b"\n") => {
+                        let _ = sender.send(Err("Catalog worker response was incomplete or too large.".into()));
+                        break;
+                    }
+                    Ok(_) => serde_json::from_slice::<Value>(&line)
+                        .map_err(|e| format!("Catalog returned invalid JSON: {e}")),
+                    Err(error) => Err(format!("Could not read catalog response: {error}")),
+                };
+                if sender.send(result).is_err() {
+                    break;
+                }
+            }
+        });
         let err = Some(drain(child.stderr.take().unwrap()));
         Ok(Self {
             child,
-            out,
+            input,
+            responses,
             err,
-            started: Instant::now(),
-            operation,
+            active: None,
+            failed: false,
         })
     }
-    fn poll(&mut self) -> Option<Result<Value, String>> {
-        let status = match self.child.try_wait() {
-            Ok(None) if self.started.elapsed() < Duration::from_secs(60) => return None,
-            Ok(None) => {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
-                return Some(Err("Catalog query timed out. Your selections are preserved; retry or choose another catalog.".into()));
+    fn send(&mut self, query: &mut Query) -> Result<(), String> {
+        let mut payload = serde_json::to_vec(&query.args).map_err(|e| e.to_string())?;
+        payload.push(b'\n');
+        if payload.len() > 64 * 1024 {
+            return Err("Catalog request is too long; shorten the search or path.".into());
+        }
+        self.input.write_all(&payload).and_then(|_| self.input.flush())
+            .map_err(|e| format!("Could not query catalog: {e}"))?;
+        self.active = Some(query.id);
+        query.sent = true;
+        Ok(())
+    }
+    fn poll(&mut self) -> Option<(u64, Result<Value, String>)> {
+        let id = self.active?;
+        let result = match self.responses.try_recv() {
+            Ok(Ok(value)) if value["schema"] == "arwen.case-error.v1" => {
+                Err(string(&value, "error"))
             }
-            Err(e) => return Some(Err(format!("Could not observe catalog query: {e}"))),
-            Ok(Some(status)) => status,
+            Ok(Err(error)) => { self.failed = true; Err(error) },
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return None,
+            Err(TryRecvError::Disconnected) => {
+                self.failed = true;
+                Err("Catalog worker stopped. Retry to reopen the catalog.".into())
+            }
         };
-        let out = self
-            .out
-            .take()
-            .and_then(|t| t.join().ok())
-            .unwrap_or_default();
-        let err = self
-            .err
-            .take()
-            .and_then(|t| t.join().ok())
-            .unwrap_or_default();
-        let parsed = serde_json::from_slice::<Value>(&out);
-        Some(if status.success() {
-            parsed.map_err(|e| format!("Catalog returned invalid JSON: {e}"))
-        } else {
-            Err(parsed
-                .ok()
-                .and_then(|v| v["error"].as_str().map(str::to_owned))
-                .unwrap_or_else(|| {
-                    safe(&String::from_utf8_lossy(&err))
-                        .chars()
-                        .take(1800)
-                        .collect()
-                }))
-        })
+        self.active = None;
+        Some((id, result))
     }
 }
-impl Drop for Query {
+impl Drop for Worker {
     fn drop(&mut self) {
         if matches!(self.child.try_wait(), Ok(None)) {
             let _ = self.child.kill();
             let _ = self.child.wait();
+        }
+        if let Some(err) = self.err.take() {
+            let _ = err.join();
         }
     }
 }
@@ -144,6 +165,8 @@ pub struct Form {
     cwd: PathBuf,
     page: Page,
     query: Option<Query>,
+    worker: Option<Worker>,
+    next_query: u64,
     search_due: Option<Instant>,
     pub notice: String,
     catalog: String,
@@ -158,7 +181,6 @@ pub struct Form {
     source: Option<usize>,
     field: usize,
     out: String,
-    vram: String,
     scroll: u16,
     directory: PathBuf,
     files: Vec<PathBuf>,
@@ -220,23 +242,26 @@ fn pretty(value: &Value) -> String {
 }
 impl Form {
     pub fn new(python: &Path, cwd: &Path) -> Self {
-        let example = cwd.join("gpuwm/data/case-catalog/example.json");
-        Self {
+        Self::with_catalog(
+            python,
+            cwd,
+            std::env::var("GPUWM_TUI_CASE_CATALOG").unwrap_or_default(),
+        )
+    }
+    pub fn from_catalog(python: &Path, cwd: &Path, path: &Path) -> Self {
+        Self::with_catalog(python, cwd, display_path(path))
+    }
+    fn with_catalog(python: &Path, cwd: &Path, catalog: String) -> Self {
+        let mut form = Self {
             python: python.into(),
             cwd: cwd.into(),
-            page: Page::Path,
+            page: Page::List,
             query: None,
+            worker: None,
+            next_query: 0,
             search_due: None,
-            notice:
-                "Open your ZIP, JSON or TOML catalog. The bundled example is explicitly synthetic."
-                    .into(),
-            catalog: std::env::var("GPUWM_TUI_CASE_CATALOG").unwrap_or_else(|_| {
-                if example.is_file() {
-                    display_path(&example)
-                } else {
-                    String::new()
-                }
-            }),
+            notice: String::new(),
+            catalog,
             search: String::new(),
             rows: vec![],
             selected: 0,
@@ -248,24 +273,38 @@ impl Form {
             source: None,
             field: 0,
             out: String::new(),
-            vram: String::new(),
             scroll: 0,
             directory: cwd.into(),
             files: vec![],
             file_selected: 0,
+        };
+        if form.catalog.trim().is_empty() {
+            form.search();
+        } else {
+            form.open();
         }
+        form
     }
     fn start(&mut self, operation: Operation, mut args: Vec<String>) {
         self.query = None;
-        args.extend(["--catalog".into(), self.catalog.clone(), "--json".into()]);
-        match Query::spawn(&self.python, &self.cwd, &args, operation) {
-            Ok(query) => {
-                self.query = Some(query);
-                self.notice =
-                    "Reading catalog and validating selected values... Esc cancels.".into()
-            }
-            Err(error) => self.notice = error,
+        if !self.catalog.is_empty() {
+            args.extend(["--catalog".into(), self.catalog.clone()]);
         }
+        args.push("--json".into());
+        if self.worker.is_none() {
+            match Worker::spawn(&self.python, &self.cwd) {
+                Ok(worker) => self.worker = Some(worker),
+                Err(error) => { self.notice = error; return; }
+            }
+        }
+        self.next_query += 1;
+        self.query = Some(Query { id: self.next_query, args, sent: false,
+            started: Instant::now(), operation });
+        self.notice = match operation {
+            Operation::List => "Loading cases... Esc cancels.",
+            Operation::Detail => "Opening case... Esc cancels.",
+            Operation::Preview => "Checking selection... Esc cancels.",
+        }.into();
     }
     fn search(&mut self) {
         self.search_due = None;
@@ -294,6 +333,7 @@ impl Form {
             &self.cwd,
         );
         if !path.is_file() {
+            self.page = Page::Path;
             self.notice = "Choose an existing ZIP, JSON or TOML catalog file.".into();
             return;
         }
@@ -334,14 +374,48 @@ impl Form {
         if self.search_due.is_some_and(|due| Instant::now() >= due) {
             self.search();
         }
+        let response = self.worker.as_mut().and_then(Worker::poll);
+        if self.worker.as_ref().is_some_and(|worker| worker.failed) {
+            self.worker = None;
+            self.query = None;
+            self.notice = response.and_then(|(_, result)| result.err())
+                .unwrap_or_else(|| "Catalog worker stopped. Retry to reopen the catalog.".into());
+            return;
+        }
         let Some(query) = &mut self.query else { return };
+        if query.started.elapsed() >= Duration::from_secs(60) {
+            self.query = None;
+            self.worker = None;
+            self.notice = "Catalog query timed out. Your selections are preserved; retry or choose another catalog.".into();
+            return;
+        }
+        if !query.sent {
+            if let Some(worker) = &mut self.worker {
+                if worker.active.is_none() {
+                    if let Err(error) = worker.send(query) {
+                        self.query = None;
+                        self.worker = None;
+                        self.notice = error;
+                    }
+                }
+            }
+            return;
+        }
+        let Some((id, result)) = response else { return };
+        self.complete(id, result);
+    }
+    fn complete(&mut self, id: u64, result: Result<Value, String>) {
+        let Some(query) = &self.query else { return };
+        if id != query.id { return; }
         let operation = query.operation;
-        let Some(result) = query.poll() else { return };
         self.query = None;
         match result {
             Err(error) => self.notice = format!("Catalog: {error}"),
             Ok(value) => match operation {
                 Operation::List => {
+                    if let Some(path) = value["provenance"]["source"].as_str() {
+                        self.catalog = path.to_owned();
+                    }
                     self.total = value["total"].as_u64().unwrap_or(0) as usize;
                     self.rows = value["cases"].as_array().cloned().unwrap_or_default();
                     self.selected = 0;
@@ -406,18 +480,9 @@ impl Form {
             display_path(&path),
             "--expected-catalog-sha256".into(),
             string(&self.preview["provenance"], "original_sha256"),
+            "--geometry-only".into(),
             "--json".into(),
         ]);
-        if !self.vram.trim().is_empty() {
-            let value =
-                self.vram.trim().parse::<f64>().map_err(|_| {
-                    "VRAM must be a positive GiB value, or leave it blank to detect."
-                })?;
-            if !value.is_finite() || value <= 0.0 {
-                return Err("VRAM must be a positive, finite GiB value.".into());
-            }
-            args.extend(["--vram-gib".into(), self.vram.trim().into()]);
-        }
         Ok(Request {
             command: "case-catalog".into(),
             args,
@@ -426,6 +491,8 @@ impl Form {
         })
     }
     fn browse(&mut self) {
+        self.query = None;
+        self.search_due = None;
         let candidate = absolute(
             PathBuf::from(super::unquote(self.catalog.trim())),
             &self.cwd,
@@ -467,7 +534,6 @@ impl Form {
             Page::Path => Some(&mut self.catalog),
             Page::List => Some(&mut self.search),
             Page::Detail if self.field == 2 => Some(&mut self.out),
-            Page::Detail if self.field == 3 => Some(&mut self.vram),
             _ => None,
         }
     }
@@ -483,7 +549,7 @@ impl Form {
         match self.page {
             Page::Files => self.file_selected = index.min(self.files.len().saturating_sub(1)),
             Page::List => self.selected = index.min(self.rows.len().saturating_sub(1)),
-            Page::Detail => self.field = index.min(3),
+            Page::Detail => self.field = index.min(2),
             _ => {}
         }
     }
@@ -498,6 +564,14 @@ impl Form {
                 Page::Preview => Page::Detail,
             };
             self.scroll = 0;
+            return Intent::Keep;
+        }
+        if key.code == KeyCode::F(4) {
+            self.catalog.clear();
+            self.search.clear();
+            self.offset = 0;
+            self.page = Page::List;
+            self.search();
             return Intent::Keep;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('u') {
@@ -528,7 +602,7 @@ impl Form {
         }
         match self.page {
             Page::Path => match key.code {
-                KeyCode::Enter => self.open(),
+                KeyCode::Enter if self.query.is_none() => self.open(),
                 KeyCode::F(2) => self.browse(),
                 _ => {}
             },
@@ -558,6 +632,7 @@ impl Form {
                 _ => {}
             },
             Page::List => match key.code {
+                KeyCode::F(2) => self.browse(),
                 KeyCode::Up => self.selected = self.selected.saturating_sub(1),
                 KeyCode::Down => {
                     self.selected = (self.selected + 1).min(self.rows.len().saturating_sub(1))
@@ -578,8 +653,8 @@ impl Form {
                 _ => {}
             },
             Page::Detail => match key.code {
-                KeyCode::Tab | KeyCode::Enter => self.field = (self.field + 1) % 4,
-                KeyCode::BackTab => self.field = (self.field + 3) % 4,
+                KeyCode::Tab | KeyCode::Enter => self.field = (self.field + 1) % 3,
+                KeyCode::BackTab => self.field = (self.field + 2) % 3,
                 KeyCode::Left | KeyCode::Right if self.field < 2 => {
                     let right = key.code == KeyCode::Right;
                     if self.field == 0 {
@@ -626,9 +701,9 @@ impl Form {
     fn content(&self) -> String {
         let case = &self.detail["case"];
         if self.page == Page::Preview {
-            format!("{}{}\nTier: {}\nSource: {}  Cycle UTC: {}\nOutput: {}\nVRAM GiB: {}\n\nGeometry\n{}\n\nPhysics profile\n{}\nNative overrides\n{}\n\nSource guidance\n{}\n\nCatalog recommendations\n{}\n\nCatalog provenance\n{}\n\n{}",
+            format!("{}{}\nTier: {}\nSource: {}  Cycle UTC: {}\nOutput: {}\nGPU memory: checked for the selected target at Review / Run.\n\nGeometry\n{}\n\nPhysics profile\n{}\nNative overrides\n{}\n\nSource guidance\n{}\n\nCatalog recommendations\n{}\n\nCatalog provenance\n{}",
                 if self.preview["synthetic"].as_bool()==Some(true){"SYNTHETIC EXAMPLE — "}else{""},string(&self.preview,"title"),string(&self.preview,"tier"),string(&self.preview,"source"),string(&self.preview,"cycle"),self.out,
-                if self.vram.is_empty(){"detect at creation"}else{&self.vram},pretty(&self.preview["geometry"]),string(&self.preview,"physics_profile"),pretty(&self.preview["native_overrides"]),pretty(&self.preview["source_availability"]),pretty(&self.preview["recommendations"]),pretty(&self.preview["provenance"]),string(&self.preview,"native_admission"))
+                pretty(&self.preview["geometry"]),string(&self.preview,"physics_profile"),pretty(&self.preview["native_overrides"]),pretty(&self.preview["source_availability"]),pretty(&self.preview["recommendations"]),pretty(&self.preview["provenance"]))
         } else {
             format!(
                 "{}{}\n{}\n\nAll catalog details (scroll to read)\n{}",
@@ -652,7 +727,7 @@ impl Form {
     ) {
         match self.page {
             Page::Path => {
-                frame.render_widget(Paragraph::new(format!("Open a case catalog\n\nCatalog path (ZIP, JSON or TOML)\n{}\n\nUse a catalog supplied by its author, or inspect the bundled synthetic format example. Cases keep their listed initializations, domain tiers, physics and research notes. Creation opens an editable TOML configuration.\n\nType or paste; Ctrl+U clears the path.",safe(&self.catalog))).wrap(Wrap{trim:false}),body);
+                frame.render_widget(Paragraph::new(format!("Open another case catalog\n\nCatalog path (ZIP, JSON or TOML)\n{}\n\nThe built-in historical catalog is available with F4. Open another catalog here to use its listed initializations, domain tiers, physics and research notes. Creation opens an editable TOML configuration.\n\nType or paste; Ctrl+U clears the path. Enter opens the file.",safe(&self.catalog))).wrap(Wrap{trim:false}),body);
                 button_bar(
                     frame,
                     hits,
@@ -660,6 +735,7 @@ impl Form {
                     &[
                         ("Open catalog", key_hit(KeyCode::Enter)),
                         ("Browse (F2)", key_hit(KeyCode::F(2))),
+                        ("Built-in (F4)", key_hit(KeyCode::F(4))),
                         ("Close", key_hit(KeyCode::Esc)),
                     ],
                 );
@@ -746,7 +822,7 @@ impl Form {
                     hits,
                     buttons,
                     &[
-                        ("Back", key_hit(KeyCode::Esc)),
+                        (if is_files { "Back" } else { "Change catalog" }, key_hit(KeyCode::Esc)),
                         ("Open (Enter)", key_hit(KeyCode::Enter)),
                         (
                             if is_files { "Parent" } else { "Previous page" },
@@ -763,7 +839,7 @@ impl Form {
             Page::Detail | Page::Preview => {
                 let text_area = if self.page == Page::Detail {
                     let parts =
-                        Layout::vertical([Constraint::Length(4), Constraint::Min(1)]).split(body);
+                        Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(body);
                     let option = self
                         .source
                         .and_then(|i| self.options().get(i))
@@ -785,14 +861,6 @@ impl Form {
                                 &self.out,
                                 usize::from(parts[0].width.saturating_sub(12))
                             )
-                        ),
-                        format!(
-                            "VRAM GiB: {}",
-                            if self.vram.is_empty() {
-                                "detect at creation"
-                            } else {
-                                &self.vram
-                            }
                         ),
                     ];
                     for (index, value) in fields.iter().enumerate() {
@@ -876,7 +944,6 @@ mod tests {
         assert!(form.selection_args("preview").is_err());
         form.source = Some(1);
         form.preview = serde_json::json!({"provenance":{"original_sha256":"abc123"}});
-        form.vram = "12".into();
         let request = form.create_request().unwrap();
         assert_eq!(request.command, "case-catalog");
         assert!(request
@@ -888,17 +955,14 @@ mod tests {
             .windows(2)
             .any(|p| p == ["--expected-catalog-sha256", "abc123"]));
         assert!(!request.args.iter().any(|v| v == "go" || v == "sim"));
+        assert!(request.args.iter().any(|v| v == "--geometry-only"));
+        assert!(!request.args.iter().any(|v| v == "--vram-gib" || v == "--card"));
     }
     #[test]
-    fn invalid_capacity_and_existing_output_are_refused() {
+    fn existing_output_is_refused_before_geometry_creation() {
         let mut form = form();
         form.source = Some(0);
         form.preview = serde_json::json!({});
-        for value in ["NaN", "-1", "inf", "text"] {
-            form.vram = value.into();
-            assert!(form.create_request().is_err());
-        }
-        form.vram = "12".into();
         form.out = "Cargo.toml".into();
         assert!(form.create_request().is_err());
     }
@@ -915,6 +979,26 @@ mod tests {
         assert!(form.page == Page::Detail);
         assert_eq!(form.source, Some(0));
         assert_eq!(form.out, "quoted $(shell) case.toml");
+    }
+    #[test]
+    fn cancelled_and_superseded_catalog_responses_do_not_change_the_current_page() {
+        let mut form = form();
+        form.page = Page::List;
+        form.query = Some(Query { id: 2, args: vec![], sent: true,
+            started: Instant::now(), operation: Operation::List });
+        let list = serde_json::json!({"total":1,"cases":[{"id":"new","title":"New search"}]});
+        form.complete(1, Ok(serde_json::json!({"case":{"id":"stale"}})));
+        assert!(form.page == Page::List);
+        assert_eq!(form.query.as_ref().unwrap().id, 2);
+        form.complete(2, Ok(list.clone()));
+        assert_eq!(form.rows[0]["id"], "new");
+        assert!(form.query.is_none());
+        form.query = Some(Query { id: 3, args: vec![], sent: true,
+            started: Instant::now(), operation: Operation::List });
+        form.browse();
+        form.complete(3, Ok(list));
+        assert!(form.page == Page::Files);
+        assert!(form.query.is_none());
     }
     #[test]
     fn every_case_screen_keeps_actions_and_editable_fields_visible() {
@@ -951,7 +1035,7 @@ mod tests {
                     .iter()
                     .any(|hit| matches!(hit.action, Hit::Key(KeyCode::Esc, _))));
                 if page == Page::Detail {
-                    for index in 0..4 {
+                    for index in 0..3 {
                         assert!(hits
                             .iter()
                             .any(|hit| matches!(hit.action, Hit::CaseItem(i) if i==index)));

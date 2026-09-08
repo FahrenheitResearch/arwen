@@ -182,7 +182,9 @@ Use UTC cycles such as `YYYY-MM-DDTHH`. `latest` may access the network. Public 
 
 `--forecast-start-hour K` begins at lead `K` from a cycle; `--hours N` remains the length of the requested window. Thus `K=12`, `N=6` requires source leads 12 through 18 and initializes from a forecast, not the cycle's analysis. Review both the cycle and the resulting model start time.
 
-ERA5 uses caller-managed CDS retrieval and validation. Follow the request template and source requirements; the presence of a calendar date does not supply credentials or data. Long windows, ensemble members, upper atmospheric coverage, and regional bounds must match the selected source's declaration.
+Go downloads missing ERA5 using the saved `[fetch]` recipe. The default provider is Copernicus CDS, using `~/.cdsapirc`, `CDSAPI_RC`, or `CDSAPI_URL`/`CDSAPI_KEY`. Set `era5_provider = "arco"` in `[fetch]` to use Google's public hourly ARCO archive without a key, and declare `era5-combined.nc` in `[case_data].forcing`; CDS produces `era5-combined.grib` in the same fetch output directory. The Google adapter reads all 37 pressure levels and the required surface and soil fields into native NetCDF for the existing preparation path. Long windows, upper atmospheric coverage, and regional bounds must match the source's available data.
+
+For a separate acquisition, use `gpuwm fetch --source era5 --era5-provider cds --retrieve` or `gpuwm fetch --source era5 --era5-provider arco`, adding the desired `--cycle`, `--hours`, `--area`, `--cadence`, and `--out`. Without `--retrieve` or the ARCO provider, the legacy CDS request-template command remains available.
 
 ### Acquire data separately
 
@@ -197,6 +199,28 @@ gpuwm fetch --source SOURCE --cycle YYYY-MM-DDTHH --hours HOURS --area SOUTH,WES
 Replace every uppercase operand with values admitted for your study. `--area` is a source-data crop, not the forecast grid. Cropping too tightly can omit required boundary or water/terrain donors.
 
 Use a request-specific directory. Existing complete matching files are reused. Reusing a directory for different source requests can be refused; `--force-refetch` deliberately moves previous files aside and downloads again. It is not the first remedy for an unexplained validation error.
+
+### ERA5 lake temperatures
+
+New CDS acquisitions include lake mixed-layer temperature, lake ice
+temperature and lake ice depth at the requested forcing times and source
+grid. When a lake has no usable SST analysis of its own, ArWen uses the
+explicit lake-model water field. This also covers small inland lakes that
+occupy no majority-water ERA5 grid cell. The provider is reported as
+`lake_model_ice_free_water`; it is a modelled lake state, not an observation
+of that individual lake. Existing fields and source-file hashes remain
+part of the forcing provenance.
+
+This provider currently supports ice-free lake water. Every contributing
+bilinear donor must have zero lake-ice depth; a one-sided numerical-zero
+convention admits only tiny negative source roundoff within
+`2.220446049250313e-16 m`, records its use and retains the raw values.
+Any positive depth, unknown depth, or larger negative depth is refused.
+Frozen or partially frozen lake initialization needs a compatible freshwater
+ice route; lake ice is not reinterpreted as sea ice. Old forcing files that
+lack the lake fields remain readable, but an unsupported lake still refuses
+preparation. Acquire the current ERA5 inventory into a new output directory
+to preserve an older run's inputs.
 
 ### Supply an explicit preparation donor
 
@@ -297,7 +321,15 @@ Research creation uses packaged diagnostic metadata and does not need to execute
 
 ### Historical-case catalog
 
-Use your JSON, TOML, or supported ZIP catalog:
+The installed package includes 300 historical cases, combining the original 200 with their newer revisions and 100 additional worldwide cases. Omit `--catalog` to use them:
+
+```text
+gpuwm case-catalog list --limit 20
+gpuwm case-catalog list --query "storm"
+gpuwm case-catalog default --json
+```
+
+Use `--catalog` for another JSON, TOML, or supported ZIP catalog:
 
 ```text
 gpuwm case-catalog list --catalog cases.json --limit 20
@@ -632,7 +664,7 @@ Keep return codes, exact command arguments, configuration copies, and reported o
 | `check` | Configuration and memory/readiness evaluation. | `--explain`, `--json`; `--alloc` explicitly uses the GPU. |
 | `sources` | Inspect forcing routes. | `ID --explain`, `--json`. |
 | `research` | Catalog, hardware, attributes, and new study creation. | `catalog --json`, `hardware --json`. |
-| `case-catalog` | Browse and create from supplied case catalogs. | `list`, `show`, `preview`. |
+| `case-catalog` | Browse built-in or supplied cases and create configurations. | `list`, `show`, `preview`, `default`. |
 | `fetch` | Acquire source data or author supported handoffs. | Source-specific templates/validation; read its help. |
 | `prep` | Prepare caller-supplied inputs. | `--dry-run`, `--show-source`, support reports. |
 | `sim` | Run a finished prepared bundle. | `--print-command`. |

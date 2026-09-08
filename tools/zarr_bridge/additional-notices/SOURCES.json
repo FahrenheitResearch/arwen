@@ -1,0 +1,34 @@
+{
+  "schema": "arwen.supplemental-notices.v1",
+  "sources": [
+    {
+      "file": "LICENSE-c-blosc-1.21.6.txt",
+      "url": "https://raw.githubusercontent.com/Blosc/c-blosc/v1.21.6/LICENSE.txt",
+      "packages": [
+        "blosc-src"
+      ],
+      "bytes": 1644,
+      "sha256": "22623131a9b9f6a86a4dc6b9bccbb1d2aeb390df86bca00fc727af24735c2fae"
+    },
+    {
+      "file": "LICENSE-zarrs-plugin-MIT.txt",
+      "url": "https://raw.githubusercontent.com/zarrs/zarrs/0a473428142e605435c740fceae25e974d3f9c5a/LICENCE-MIT",
+      "packages": [
+        "zarrs_plugin"
+      ],
+      "bytes": 1036,
+      "sha256": "508a77d2e7b51d98adeed32648ad124b7b30241a8e70b2e72c99f92d8e5874d1"
+    },
+    {
+      "file": "LICENSE-netcdf-rust-MIT.txt",
+      "url": "https://raw.githubusercontent.com/roteiro-gis/netcdf-rust/d2d16350c92c0f12c0d30aedd5eeca813fe46a1b/LICENSE-MIT",
+      "packages": [
+        "netcdf-reader",
+        "hdf5-reader"
+      ],
+      "bytes": 1067,
+      "sha256": "24a4eeee33afc227bd3e796f772741250b2c93eae1cdba65e775ef8005dfb4b1"
+    }
+  ],
+  "basis": "Upstream licence files omitted from crate packages. NetCDF readers share the 0.3.0 workspace revision recorded in both registry packages; Zarr plugin uses its .cargo_vcs_info revision; Blosc version1.21.6 is recorded in the vendored blosc.h. Vendor trees remain byte unchanged."
+}

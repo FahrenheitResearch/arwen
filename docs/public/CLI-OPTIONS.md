@@ -61,7 +61,7 @@ Takes no options of its own.
 |---|---|
 | `--ack` | explicit native scientific acknowledgement; never inferred from catalog prose |
 | `--card` | _(the parser declares no help text for this option)_ |
-| `--catalog` | JSON, TOML or ZIP case catalog; never interpreted as commands |
+| `--catalog` | custom JSON, TOML or ZIP catalog; defaults to the bundled historical cases |
 | `--expected-catalog-sha256` | bind creation to the exact original catalog bytes displayed by preview |
 | `--json` | emit compact JSON for the interface or scripts |
 | `--native-overrides` | JSON shared/domains scientific overrides; validated against the native contract |
@@ -71,11 +71,17 @@ Takes no options of its own.
 | `--tier {lower,recommended,upper}` | _(the parser declares no help text for this option)_ |
 | `--vram-gib` | _(the parser declares no help text for this option)_ |
 
+## `gpuwm case-catalog default`
+
+| option | what it does |
+|---|---|
+| `--json` | emit compact JSON for the interface or scripts |
+
 ## `gpuwm case-catalog export`
 
 | option | what it does |
 |---|---|
-| `--catalog` | JSON, TOML or ZIP case catalog; never interpreted as commands |
+| `--catalog` | custom JSON, TOML or ZIP catalog; defaults to the bundled historical cases |
 | `--json` | emit compact JSON for the interface or scripts |
 | `--original` | export the exact original JSON/TOML bytes; default is normalized JSON |
 | `--out` | _(the parser declares no help text for this option)_ |
@@ -84,7 +90,7 @@ Takes no options of its own.
 
 | option | what it does |
 |---|---|
-| `--catalog` | JSON, TOML or ZIP case catalog; never interpreted as commands |
+| `--catalog` | custom JSON, TOML or ZIP catalog; defaults to the bundled historical cases |
 | `--event-kind` | _(the parser declares no help text for this option)_ |
 | `--json` | emit compact JSON for the interface or scripts |
 | `--limit` | _(the parser declares no help text for this option)_ |
@@ -106,7 +112,7 @@ Takes no options of its own.
 
 | option | what it does |
 |---|---|
-| `--catalog` | JSON, TOML or ZIP case catalog; never interpreted as commands |
+| `--catalog` | custom JSON, TOML or ZIP catalog; defaults to the bundled historical cases |
 | `--json` | emit compact JSON for the interface or scripts |
 | `--native-overrides` | JSON shared/domains scientific overrides; validated against the native contract |
 | `--physics-profile` | explicit native profile replacing the catalog's selected profile |
@@ -117,7 +123,7 @@ Takes no options of its own.
 
 | option | what it does |
 |---|---|
-| `--catalog` | JSON, TOML or ZIP case catalog; never interpreted as commands |
+| `--catalog` | custom JSON, TOML or ZIP catalog; defaults to the bundled historical cases |
 | `--event-kind` | _(the parser declares no help text for this option)_ |
 | `--json` | emit compact JSON for the interface or scripts |
 | `--limit` | _(the parser declares no help text for this option)_ |
@@ -133,7 +139,7 @@ Takes no options of its own.
 
 | option | what it does |
 |---|---|
-| `--catalog` | JSON, TOML or ZIP case catalog; never interpreted as commands |
+| `--catalog` | custom JSON, TOML or ZIP catalog; defaults to the bundled historical cases |
 | `--json` | emit compact JSON for the interface or scripts |
 
 ## `gpuwm cases`
@@ -405,6 +411,8 @@ Takes no options of its own.
 
 ## `gpuwm fetch`
 
+CDS credentials can be inspected with `gpuwm cds-credentials --json`; the response shows configuration status, endpoint, and active credential file, never the key. The terminal workspace provides masked key entry. `gpuwm cds-credentials --save --json` accepts an object containing `url` and `key` on standard input, saves to the active credential file, and returns safe status. A blank key preserves the stored token. Environment overrides are shown and must be changed in the environment. These commands do not contact CDS.
+
 | option | what it does |
 |---|---|
 | `--accept-inventory-change` | proceed when the live provider inventory yields a different record count than this ArWen was certified against. Without it such a mismatch is a refusal naming both counts; with it the live count becomes the bar and the fetch manifest records the acceptance |
@@ -413,12 +421,14 @@ Takes no options of its own.
 | `--author-front-door-manifest` | author the front-door input manifest for the fetched series; requires --wps-namelist and --experiment-config (--bridge defaults to the built decoder this install resolves) |
 | `--bridge EXE` | built gfs_grib2_bridge executable; omit it and the same resolver `gpuwm go` uses finds the one this install has (checkout build, libexec, then ~/.gpuwm/bridges -- see gpuwm doctor) |
 | `--cache-dir DIR` | --engine rust only (hrrr, gfs/gdas --mode full-file): wx-core disk cache root, keyed by URL and byte range, so a re-run or an overlapping window re-reads bytes instead of re-downloading them |
-| `--cadence {1,3,6}` | forecast-hour cadence: gfs 1 or 3 (default 3); gdas 1, 3, or 6 (default 3, and it does not apply to --hours 0, which is the analysis alone); era5 template 1, 3, or 6 (default 6); hrrr is hourly. On a table route the accepted cadences and the default are the row's own -- a cadence off the publisher's ladder refuses and names the ladder |
+| `--cadence {1,3,6}` | forecast-hour cadence: gfs 1 or 3 (default 3); gdas 1, 3, or 6 (default 3, and it does not apply to --hours 0, which is the analysis alone); era5 1, 3, or 6 (default 6); hrrr is hourly. On a table route the accepted cadences and the default are the row's own -- a cadence off the publisher's ladder refuses and names the ladder |
 | `--cycle YYYY-MM-DDTHH|latest` | model cycle (UTC); 'latest' resolves the newest cycle this source can serve, from the initialization grid and publication lag its registry row or route declares -- probed against the mirrors where the source publishes objects to probe, and taken from the declared lag where it does not (a reanalysis published on a delay has a latest, and it is that delay). A source that declares neither is refused by name |
 | `--engine {auto,rust,python}` | hrrr, and gfs/gdas --mode full-file: which downloader moves the bytes. 'rust' is the vendored rw_fetch backbone (16 MiB parallel range GETs, .idx coalescing, the cross-process NOMADS rate governor, a disk cache); 'python' is the stdlib transport and always works; 'auto' (default) uses the backbone when it is built |
+| `--era5-provider {cds,arco}` | ERA5 provider: CDS uses configured credentials; ARCO downloads Google's public hourly ERA5 Zarr archive without a key |
+| `--retrieve` | ERA5: download and validate through the selected provider; default CDS. Without this flag or the ARCO provider, write the legacy CDS request template |
 | `--experiment-config TOML` | the experiment TOML the front door will consume |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
-| `--fetch-workers N` | how many FILES are in flight at once (default 6; every source but era5, which is a manual CDS retrieval). Bounded per host on top of the pool: NOMADS is capped at 2 in-flight requests and every request still passes the node-wide 2.5 s spacing governor, so concurrency overlaps service time without raising the request rate against a fragile public host. Every file keeps the exact serial verification -- envelope walk, record bar, sha256 -- and one failed file still refuses by name. 1 is the serial transport: a knob, not a workaround. The manifest receipts files, bytes, workers, wall and the effective speedup under 'concurrency' |
+| `--fetch-workers N` | how many FILES are in flight at once (default 6; every source but era5, whose provider controls retrieval concurrency). Bounded per host on top of the pool: NOMADS is capped at 2 in-flight requests and every request still passes the node-wide 2.5 s spacing governor, so concurrency overlaps service time without raising the request rate against a fragile public host. Every file keeps the exact serial verification -- envelope walk, record bar, sha256 -- and one failed file still refuses by name. 1 is the serial transport: a knob, not a workaround. The manifest receipts files, bytes, workers, wall and the effective speedup under 'concurrency' |
 | `--force-refetch` | move every existing file in --out aside (nothing is deleted) and re-download this request. The receipts go first -- fetch-manifest.json, SHA256SUMS, the series -- so an interrupted force can never leave a manifest behind claiming payloads it has already replaced; then payloads, .idx indexes, stale parts and anything else in the directory. Files already set aside by an earlier quarantine are left untouched, and subdirectories are yours. Required when re-fetching a different area/cycle into the same --out |
 | `--forecast-start-hour K` | every forecast source: the forecast lead the window BEGINS at (default f000, the analysis). --hours stays the window length, so --forecast-start-hour 174 --hours 66 fetches f174..f240 and nothing before it; an experiment whose start_time is cycle+K is then initialized from f{K} with its boundaries from f{K+i}. With --author-front-door-manifest on an already-fetched --out, this authors the manifest over that tail of the existing series instead of re-downloading it |
 | `--hours N` | forecast window length: hours 0..N are fetched. gdas is certified for fetch and decode through f009 -- there is no gdas ingest route, so those files stop at the decoder. --hours 0 is the analysis alone, which gdas accepts and every table route accepts (its f000 is an initial state on its own, and it is also how a hybrid source's donor is fetched). A window past the cycle's own horizon refuses and names both the horizon and which cycles reach farther |

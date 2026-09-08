@@ -1,0 +1,139 @@
+name: build
+
+on:
+  push:
+    branches: ["main", "v[0-9]+.[0-9]+.x"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_and_test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - toolchain: "stable"
+            features: ""
+          - toolchain: "beta"
+            features: ""
+          - toolchain: "nightly"
+            features: ""
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build ${{ matrix.features }}
+      - run: cargo test ${{ matrix.features }}
+      - run: cargo test ${{ matrix.features }} --examples
+  test_windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "stable"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --examples
+  test_macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ["macos-15-intel", "macos-latest"]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "stable"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --examples
+  test_s390x:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup multiarch/qemu-user-static
+        run: |
+          docker run --rm --privileged multiarch/qemu-user-static:register --reset
+      - name: ubuntu-core:s390x-focal
+        uses: docker://multiarch/ubuntu-core:s390x-focal
+        with:
+          args: >
+            bash -c
+            "uname -a &&
+            lscpu | grep Endian 
+            "
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "stable"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --examples
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup component add rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup component add clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -- -D warnings
+  doc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: RUSTDOCFLAGS="--deny warnings" cargo doc --no-deps
+  semver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check semver
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+  minimal-versions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-hack cargo-minimal-versions --locked
+      - run: cargo minimal-versions check --direct
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.82"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-hack cargo-minimal-versions --locked
+      - run: cargo minimal-versions check --direct
+  codecov:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo +nightly install cargo-llvm-cov --locked
+      - run: cargo +nightly llvm-cov --all-features --doctests --lcov --output-path lcov.info
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+            token: ${{ secrets.CODECOV_TOKEN }}

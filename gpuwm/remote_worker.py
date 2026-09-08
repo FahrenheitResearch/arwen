@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import secrets
 import signal
@@ -195,6 +195,14 @@ def _record(directory):
 def _status(directory):
     record = _record(directory)
     job = {key: record[key] for key in ("id", "created_at", "config", "outdir", "runtime", "action")}
+    source = record.get("source")
+    if (record.get("action") == "start-plan" and isinstance(source, dict)
+            and isinstance(source.get("config_sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", source["config_sha256"])
+            and isinstance(source.get("config_path"), str) and 0 < len(source["config_path"]) <= 8192
+            and (Path(source["config_path"]).is_absolute() or PureWindowsPath(source["config_path"]).is_absolute())
+            and not any(ord(character) < 32 for character in source["config_path"])):
+        job["source_config_sha256"] = source["config_sha256"]
+        job["source_config_path"] = source["config_path"]
     job["parent_job"] = record.get("parent_job")
     job["state"] = "starting"
     if (directory / "started.json").exists():
@@ -213,6 +221,14 @@ def _status(directory):
         job.update({key: ended[key] for key in ("state", "exit_code", "ended_at")})
         if ended.get("error"):
             job["error"] = ended["error"]
+    if record.get("action") == "start-plan":
+        try:
+            from gpuwm.remote_artifacts import native_progress
+            job.update(native_progress(record, job))
+        except (OSError, ValueError, KeyError, TypeError):
+            # Durable ownership/state remains authoritative during an atomic
+            # native update or unavailable progress receipt. Never infer exit.
+            pass
     return job
 
 
@@ -410,10 +426,16 @@ def _review(request, workspace):
             if expected is not None and expected != binding[f"{name}_sha256"]:
                 raise ValueError(f"{name} changed since review; review again before restarting")
         argv += ["--restart", str(checkpoint)]
+    from gpuwm.remote_plan import memory_review
+    try:
+        memory = memory_review(source)
+    except Exception as error:
+        memory = {"measured": False, "free_bytes": None, "refuse": False,
+                  "warn": True, "verdict": str(error), "error": str(error)}
     return {"argv": argv, "config": str(source), "outdir": str(outdir), "cwd": str(source.parent if old is None else Path(old["cwd"])),
             "geog_root": geog, "products": products, "checkpoint": None if checkpoint is None else str(checkpoint),
             "prepared_root": None if prepared is None else str(prepared), "wps_namelist": None if wps is None else str(wps),
-            "parent_job": None if old is None else old["id"], "runtime": runtime(), **binding}, sources, snapshots
+            "parent_job": None if old is None else old["id"], "runtime": runtime(), "memory": memory, **binding}, sources, snapshots
 
 
 def _launch(request, workspace, *, command_factory=None, worker_command=None):
@@ -421,12 +443,19 @@ def _launch(request, workspace, *, command_factory=None, worker_command=None):
     review, sources, snapshots = _review(request, workspace)
     if request.get("dry_run", False):
         return {"dry_run": True, "review": review}
+    return _launch_review(request, workspace, review, sources, snapshots,
+                          command_factory=command_factory, worker_command=worker_command)
+
+
+def _launch_review(request, workspace, review, sources, snapshots, *, command_factory=None, worker_command=None):
+    """Shared durable owner for the fixed go and run-plan entry documents."""
     identifier = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + secrets.token_hex(8)
     directory = _store(workspace, create=True) / identifier
     directory.mkdir(mode=0o700)
     inputs = directory / "inputs"
     originals = directory / "original-inputs"
-    snapshot = inputs / Path(review["config"]).name
+    snapshot_config = inputs / Path(review["config"]).name
+    snapshot = inputs / Path(review.get("plan", review["config"])).name
     argv = list(review["argv"])
     argv[6] = str(snapshot)
     if "--wps-namelist" in argv:
@@ -436,7 +465,8 @@ def _launch(request, workspace, *, command_factory=None, worker_command=None):
         argv = command_factory(review, snapshot)
     record = {"schema": "gpuwm.remote.job.v1", "id": identifier, "token": secrets.token_hex(32),
               "created_at": _now(), "action": request["action"], **review, "argv": argv,
-              "snapshot_config": str(snapshot), "snapshot_sha256": _sha(snapshots[snapshot.name]),
+              "snapshot_config": str(snapshot_config), "snapshot_sha256": _sha(snapshots[snapshot_config.name]),
+              "snapshot_plan": str(snapshot) if review.get("plan") else None,
               "snapshot_inputs": {name: _sha(payload) for name, payload in snapshots.items()},
               "snapshot_wps_namelist": (str(inputs / "prepared-inputs" / "namelist.wps") if review["wps_namelist"] is not None else None),
               "original_inputs": {name: f"{index:03d}-{Path(name).name}" for index, name in enumerate(sources)}}
@@ -474,6 +504,14 @@ def _launch(request, workspace, *, command_factory=None, worker_command=None):
         if time.monotonic() >= deadline:
             break
         time.sleep(.02)
+    if record["action"] == "start-plan" and worker_command is None:
+        # Launch from the RPC's process, as a sibling of the durable forecast
+        # owner. The store queue must not become a forecast-owned descendant.
+        try:
+            from gpuwm.remote_processed import ensure
+            ensure(workspace, identifier)
+        except (OSError, ValueError, RuntimeError) as error:
+            print("Native store queue could not start: " + str(error)[:1000], file=sys.stderr)
     return {"job": _status(directory)}
 
 
@@ -534,19 +572,62 @@ def dispatch(request):
         raise ValueError("unsupported remote request schema")
     allowed = {"schema", "action", "workspace", "config", "outdir", "geog_root", "prepared_root", "wps_namelist", "products", "job", "cursor", "limit",
                "from_checkpoint", "dry_run", "expected_config_sha256", "expected_wps_sha256", "expected_input_sha256",
-               "expected_checkpoint_sha256", "expected_checkpoint_set_sha256", "expected_prepared_sha256"}
+               "expected_checkpoint_sha256", "expected_checkpoint_set_sha256", "expected_prepared_sha256",
+               "bundle", "bundle_id", "expected_bundle_sha256", "expected_plan_sha256", "domain", "inputs", "expected_source_blobs_sha256",
+               "sequence", "after_sequence"}
     if set(request) - allowed:
         raise ValueError("unsupported remote request fields: " + ", ".join(sorted(set(request) - allowed)))
     workspace = _workspace(request)
     action = request.get("action")
+    if action == "input-status":
+        from gpuwm.remote_input_transfer import status
+        return status(request, workspace)
+    if action == "artifacts":
+        from gpuwm.remote_artifacts import catalog
+        return {"artifacts": catalog(request, workspace)}
+    if action == "artifact-index":
+        from gpuwm.remote_artifacts import catalog
+        value = catalog(request, workspace, metadata_only=True)
+        from gpuwm.remote_processed import ensure, index_metadata
+        try:
+            ensure(workspace, request["job"])
+            value["processed"] = index_metadata(workspace, request["job"])
+        except (OSError, ValueError, RuntimeError) as error:
+            value["processed"] = {"schema": "arwen.native-store-queue.v1", "job_id": request["job"],
+                                  "state": "failed", "error": str(error)[:2000]}
+        return {"artifact_index": value}
+    if action == "processed-frame":
+        from gpuwm.remote_processed import catalog
+        return {"processed_frame": catalog(request, workspace)}
+    if action in ("stage-plan", "review-plan", "start-plan"):
+        plan_fields = {"schema", "action", "workspace"} | {
+            "stage-plan": {"bundle"},
+            "review-plan": {"bundle_id", "expected_bundle_sha256"},
+            "start-plan": {"bundle_id", "expected_bundle_sha256", "expected_plan_sha256",
+                           "expected_config_sha256", "expected_input_sha256", "expected_source_blobs_sha256"},
+        }[action]
+        if set(request) - plan_fields:
+            raise ValueError("unsupported staged-plan request fields: " + ", ".join(sorted(set(request) - plan_fields)))
+        from gpuwm import remote_plan
+        if action == "stage-plan":
+            return remote_plan.stage(request.get("bundle"), workspace)
+        if action == "review-plan":
+            value, _bundle, _bundle_directory = remote_plan.review(request, workspace)
+            return {"dry_run": True, "review": value}
+        return remote_plan.launch(request, workspace)
     if action == "probe":
         if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
             raise ValueError("remote Python needs Linux pidfd process handles for safe job ownership")
         handle = os.pidfd_open(os.getpid(), 0)
         os.close(handle)
-        return {"runtime": runtime(), "workspace": str(workspace),
+        from gpuwm.remote_plan import hardware_probe
+        probe = hardware_probe()
+        return {"runtime": runtime(), "workspace": str(workspace), "probe": probe,
                 "capabilities": {"durable_jobs": True, "existing_remote_inputs": True, "resume": "manifest-valid route checkpoints",
-                                 "host_key_verification": "OpenSSH strict known_hosts", "process_handles": "Linux pidfd"}}
+                                 "host_key_verification": "OpenSSH strict known_hosts", "process_handles": "Linux pidfd",
+                                 "stage_plan_v1": True, "review_plan_v1": True, "start_plan_v1": True,
+                                 "artifact_sync_v1": True, "artifact_index_v1": True,
+                                 "artifact_sequence_v1": True, "input_stream_v1": True}}
     if action in ("start", "resume"):
         if type(request.get("dry_run", False)) is not bool:
             raise ValueError("dry_run must be a boolean")
@@ -561,7 +642,11 @@ def dispatch(request):
         jobs = []
         for path in paths[:limit]:
             try:
-                jobs.append(_status(_directory(workspace, path.name)))
+                job_summary = _status(_directory(workspace, path.name))
+                # Selected status/logs carry the full native render receipt.
+                # A twenty-job list must not multiply that 64 KiB payload.
+                job_summary.pop("render_summary", None)
+                jobs.append(job_summary)
             except (OSError, ValueError, KeyError) as exc:
                 jobs.append({"id": path.name, "state": "unreadable", "error": str(exc)[:1000]})
         return {"jobs": jobs}
@@ -600,6 +685,10 @@ def run_worker(directory, token):
         for path, digest in record.get("checkpoint_inputs", {}).items():
             if _file_sha(Path(path)) != digest:
                 raise ValueError("checkpoint set changed before the worker started; review again")
+        for name, digest in record.get("external_inputs", {}).items():
+            path = Path(name)
+            if path.is_symlink() or not path.is_file() or _file_sha(path) != digest:
+                raise ValueError("captured raw forcing or its receipt changed before the worker started")
         child = subprocess.Popen(record["argv"], cwd=record["cwd"], stdin=subprocess.DEVNULL,
                                  start_new_session=True, close_fds=True)
         while child.poll() is None:
@@ -641,9 +730,21 @@ def run_worker(directory, token):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rpc", action="store_true")
+    parser.add_argument("--artifact-stream", action="store_true")
+    parser.add_argument("--processed-stream", action="store_true")
+    parser.add_argument("--input-stream", action="store_true")
     parser.add_argument("--run")
     parser.add_argument("--token")
     args = parser.parse_args(argv)
+    if args.processed_stream:
+        from gpuwm.remote_processed import stream_main
+        return stream_main()
+    if args.input_stream:
+        from gpuwm.remote_input_transfer import receive_main
+        return receive_main()
+    if args.artifact_stream:
+        from gpuwm.remote_artifacts import stream_main
+        return stream_main()
     if args.run:
         return run_worker(args.run, args.token)
     action = "unknown"

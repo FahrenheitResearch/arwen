@@ -334,7 +334,7 @@ class FirstProducts:
                     stderr=(completed.stderr or "")[-2000:])
                 return
             render_dir.mkdir(parents=True, exist_ok=True)
-            published: list[dict[str, str]] = []
+            published: list[dict[str, Any]] = []
             paths: list[Path] = []
             for source in written:
                 # The RELATIVE path, not the bare name: since 2.5.0 the
@@ -361,9 +361,16 @@ class FirstProducts:
                 # spelling, so `render_dir / entry["name"]` re-finds it
                 # on any platform when finalize re-checks the digests.
                 published.append({"name": relative.as_posix(),
-                                  "sha256": _sha256_file(target)})
+                                  "sha256": _sha256_file(target),
+                                  "size_bytes": Path(spelled).stat().st_size})
                 paths.append(target)
+            published_unix_ms = int(time.time() * 1000)
             elapsed = time.perf_counter() - started
+            # The render CLI also wrote its exact invocation receipt in scratch.
+            # Preserve/rebase it before cleanup so final aggregation retains
+            # these early images and their native skip/failure outcomes.
+            from gpuwm.render_receipts import relocate_invocations
+            relocate_invocations(scratch, render_dir, published)
         finally:
             shutil.rmtree(fs_path(scratch), ignore_errors=True)
 
@@ -382,7 +389,7 @@ class FirstProducts:
             # see is not a number it can use.  So the receipt carries
             # the absolute instant and every consumer subtracts its own
             # launch from it.
-            "published_unix_ms": int(time.time() * 1000),
+            "published_unix_ms": published_unix_ms,
             "frame": str(frame),
             "domain": int(domain),
             "valid_time": (valid_time.isoformat()

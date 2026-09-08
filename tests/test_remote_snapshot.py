@@ -10,6 +10,13 @@ import pytest
 from gpuwm import remote_worker as rw
 
 
+@pytest.fixture(autouse=True)
+def cpu_only_memory_review(monkeypatch):
+    monkeypatch.setattr("gpuwm.remote_plan.memory_review", lambda *_args, **_kwargs:
+        {"measured": False, "free_bytes": None, "refuse": False, "warn": True,
+         "verdict": "CPU-only snapshot contract test"})
+
+
 def config(tmp_path):
     from gpuwm import domain_wizard as dw
     path = tmp_path / "science's 日本語.toml"

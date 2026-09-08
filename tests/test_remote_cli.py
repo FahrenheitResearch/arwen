@@ -114,3 +114,14 @@ def test_public_parser_has_review_and_reconnect_options():
         "--dry-run", "--expected-input-sha256", "a" * 64, "--json"])
     assert options.func is rc.remote_main
     assert options.from_checkpoint == "latest" and options.dry_run and options.json
+
+
+def test_artifact_parser_and_fixed_binary_stream_keep_selectors_off_the_shell(monkeypatch):
+    from gpuwm.cli import build_parser
+    options = build_parser().parse_args(["remote", "sync-artifacts", "--host", "node", "--python", "/opt/python",
+        "--workspace", "/owned/work", "--job", "job-fixture", "--domain", "2", "--cache-root", "C:/owned/cache", "--json"])
+    assert options.domain == 2 and options.cache_root == "C:/owned/cache"
+    monkeypatch.setattr(rc.shutil, "which", lambda _: "ssh-fixture")
+    command = rc.ssh_command(options, artifact_stream=True)
+    assert shlex.split(command[-1]) == [options.python, "-I", "-m", "gpuwm.remote_worker", "--artifact-stream"]
+    assert options.job not in command[-1] and options.cache_root not in command[-1]

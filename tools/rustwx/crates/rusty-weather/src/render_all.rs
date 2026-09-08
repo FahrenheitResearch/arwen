@@ -557,7 +557,7 @@ pub fn render_hour_products(
 }
 
 /// Outcome of the windowed compute + render pass over the run's stored
-/// hours, anchored at the max stored hour.
+/// hours, anchored at the requested stored hour.
 pub struct WindowedRenderOutcome {
     pub rendered: Vec<RenderedProduct>,
     pub blocked: Vec<StoreRenderSkip>,
@@ -567,8 +567,11 @@ pub struct WindowedRenderOutcome {
 }
 
 /// Compute and render the requested windowed products across the run's
-/// stored hours. `auto` is the "all"-keyword gate: with it set, a run with
-/// at most one stored hour skips the lane entirely (returns `None`).
+/// stored hours through `anchor_hour`. Earlier frames remain available as
+/// accumulation baselines even when only the anchor frame was selected for
+/// rendering. Future frames never change the requested window or its time.
+/// `auto` is the "all"-keyword gate: with it set, a run with at most one
+/// stored hour skips the lane entirely (returns `None`).
 /// `store` only carries the run grid + projection for the render half.
 pub fn render_windowed_products(
     config: &StoreRenderConfig,
@@ -577,18 +580,29 @@ pub fn render_windowed_products(
     model_slug: &str,
     run_slug: &str,
     requested: &[String],
+    anchor_hour: u16,
     auto: bool,
 ) -> Result<Option<WindowedRenderOutcome>, Box<dyn std::error::Error>> {
     let stored_hours = windowed_store::stored_run_hours(store_root, model_slug, run_slug)?;
     if auto && stored_hours.len() <= 1 {
         return Ok(None);
     }
+    if !stored_hours.contains(&anchor_hour) {
+        return Err(format!(
+            "window anchor F{anchor_hour:03} is not stored in {model_slug}/{run_slug}"
+        )
+        .into());
+    }
+    let available_hours: Vec<u16> = stored_hours
+        .into_iter()
+        .filter(|hour| *hour <= anchor_hour)
+        .collect();
     let compute_started = Instant::now();
     let outcome = windowed_store::compute_windowed_products(
         store_root,
         model_slug,
         run_slug,
-        &stored_hours,
+        &available_hours,
         requested,
     )?;
     let compute_ms = compute_started.elapsed().as_millis();
@@ -650,7 +664,7 @@ pub fn render_windowed_products(
             .map(|(slug, reason)| StoreRenderSkip { slug, reason })
             .collect(),
         anchor_hour: outcome.anchor_hour,
-        stored_hours: stored_hours.len(),
+        stored_hours: available_hours.len(),
         compute_ms,
     }))
 }
@@ -714,7 +728,10 @@ mod tests {
             subtitle.ends_with(" | \u{0394}x 333 m"),
             "spacing must ride at the end of the exact-time line: {subtitle}"
         );
-        assert!(subtitle.starts_with("Init 04/03 18Z | +000:30 | Valid "), "{subtitle}");
+        assert!(
+            subtitle.starts_with("Init 04/03 18Z | +000:30 | Valid "),
+            "{subtitle}"
+        );
         // The exact-time suffix is untouched by the spacing segment.
         assert_eq!(
             presentation.output_suffix.as_deref(),

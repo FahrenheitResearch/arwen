@@ -300,8 +300,8 @@ def _published(root: Path, *, strict_single: bool = False):
                 load_domain_artifacts_manifest, _load_static_geometry_receipt)
             artifacts = sorted(load_domain_artifacts_manifest(manifests[0]),
                                key=lambda item: item.grid_id)
-            if [item.grid_id for item in artifacts] != list(range(1, len(artifacts)+1)):
-                raise ValueError("domain artifacts must cover contiguous grids from d01")
+            from gpuwm.wps_domain_ids import validated_domain_ids
+            validated_domain_ids([item.grid_id for item in artifacts])
             declared = {item.prepared_cache / "header.json" for item in artifacts}
             if declared != set(headers):
                 raise ValueError("domain-artifact manifest does not cover every "

@@ -1,0 +1,598 @@
+//! Chunk caching.
+//!
+//! `zarrs` supports three types of chunk caches:
+//! - [`ChunkCacheTypeDecoded`]: caches decoded chunks.
+//!   - Preferred where decoding is expensive and memory is abundant.
+//! - [`ChunkCacheTypeEncoded`]: caches encoded chunks.
+//!   - Preferred where decoding is cheap and memory is scarce, provided that data is well compressed/sparse.
+//! - [`ChunkCacheTypePartialDecoder`]: caches partial decoders.
+//!   - Preferred where chunks are repeatedly *partially retrieved*.
+//!   - Useful for retrieval of subchunks from sharded arrays, as the partial decoder caches shard indexes (but **not** subchunks).
+//!   - Memory usage of this cache is highly dependent on the array codecs and whether the codec chain ([`Array::codecs`]) ends up decoding entire chunks or caching inputs based on their [`PartialDecoderCapability`](zarrs_codec::PartialDecoderCapability).
+//!
+//! `zarrs` implements the following Least Recently Used (LRU) chunk caches:
+//!  - [`ChunkCacheDecodedLruChunkLimit`]: a decoded chunk cache with a fixed chunk capacity..
+//!  - [`ChunkCacheDecodedLruSizeLimit`]: a decoded chunk cache with a fixed size in bytes.
+//!  - [`ChunkCacheEncodedLruChunkLimit`]: an encoded chunk cache with a fixed chunk capacity.
+//!  - [`ChunkCacheEncodedLruSizeLimit`]: an encoded chunk cache with a fixed size in bytes.
+//!  - [`ChunkCachePartialDecoderLruChunkLimit`]: a partial decoder chunk cache with a fixed chunk capacity
+//!  - [`ChunkCachePartialDecoderLruSizeLimit`]: a partial decoder chunk cache with a fixed size in bytes.
+//!
+//! There are also `ThreadLocal` suffixed variants of all of these caches that have a per-thread cache.
+//! `zarrs` consumers can create custom caches by implementing the [`ChunkCache`] trait.
+//!
+//! Chunk caches implement the [`ChunkCache`] trait which has cached versions of the equivalent [`Array`] methods:
+//!  - [`retrieve_chunk`](ChunkCache::retrieve_chunk)
+//!  - [`retrieve_chunks`](ChunkCache::retrieve_chunks)
+//!  - [`retrieve_chunk_subset`](ChunkCache::retrieve_chunk_subset)
+//!  - [`retrieve_array_subset`](ChunkCache::retrieve_array_subset)
+//!
+//! `_elements` and `_ndarray` variants are also available.
+//!
+//! Chunk caching is likely to be effective for remote stores where redundant retrievals are costly.
+//! Chunk caching may not outperform disk caching with a filesystem store.
+//! The above caches use internal locking to support multithreading, which has a performance overhead.
+//! **Prefer not to use a chunk cache if chunks are not accessed repeatedly**.
+//! Aside from [`ChunkCacheTypePartialDecoder`]-based caches, caches do not use partial decoders and any intersected chunk is fully retrieved if not present in the cache.
+//!
+//! For many access patterns, chunk caching may reduce performance.
+//! **Benchmark your algorithm/data.**
+
+use std::sync::Arc;
+
+#[cfg(not(target_arch = "wasm32"))]
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use unsafe_cell_slice::UnsafeCellSlice;
+
+use super::{ArrayBytes, ArrayBytesRaw, ArrayError};
+use crate::array::concurrency::concurrency_chunks_and_codec;
+use crate::array::from_array_bytes::FromArrayBytes;
+use crate::array::{
+    Array, ArrayBytesFixedDisjointView, ArrayIndicesTinyVec, ArraySubsetTraits, ElementOwned,
+    IncompatibleDimensionalityError,
+};
+use crate::iter_concurrent_limit;
+use zarrs_codec::{
+    ArrayPartialDecoderTraits, CodecError, CodecOptions, decode_into_array_bytes_target,
+};
+
+use super::array_bytes_internal::{
+    build_nested_optional_target, merge_chunks_vlen, merge_chunks_vlen_optional,
+    optional_nesting_depth, wrap_optional_masks,
+};
+use zarrs_storage::{MaybeSend, MaybeSync, ReadableStorageTraits};
+
+mod chunk_cache_lru;
+// pub(crate) mod chunk_cache_lru_macros;
+pub use chunk_cache_lru::*;
+
+/// The chunk type of an encoded chunk cache.
+pub type ChunkCacheTypeEncoded = Option<Arc<ArrayBytesRaw<'static>>>;
+
+/// The chunk type of a decoded chunk cache.
+pub type ChunkCacheTypeDecoded = Arc<ArrayBytes<'static>>;
+
+/// The chunk type of a partial decoder chunk cache.
+pub type ChunkCacheTypePartialDecoder = Arc<dyn ArrayPartialDecoderTraits>;
+
+/// A chunk cache type ([`ChunkCacheTypeEncoded`], [`ChunkCacheTypeDecoded`], or [`ChunkCacheTypePartialDecoder`]).
+pub trait ChunkCacheType: MaybeSend + MaybeSync + Clone + 'static {
+    /// The size of the chunk in bytes.
+    fn size(&self) -> usize;
+}
+
+impl ChunkCacheType for ChunkCacheTypeEncoded {
+    fn size(&self) -> usize {
+        self.as_ref().map_or(0, |v| v.len())
+    }
+}
+
+impl ChunkCacheType for ChunkCacheTypeDecoded {
+    fn size(&self) -> usize {
+        ArrayBytes::size(self)
+    }
+}
+
+impl ChunkCacheType for ChunkCacheTypePartialDecoder {
+    fn size(&self) -> usize {
+        self.as_ref().size_held()
+    }
+}
+
+/// Traits for a chunk cache.
+pub trait ChunkCache: MaybeSend + MaybeSync {
+    /// Return the array associated with the chunk cache.
+    fn array(&self) -> Arc<Array<dyn ReadableStorageTraits>>;
+
+    /// Cached variant of [`retrieve_chunk_opt`](Array::retrieve_chunk_opt) returning the cached bytes.
+    #[allow(clippy::missing_errors_doc)]
+    fn retrieve_chunk_bytes(
+        &self,
+        chunk_indices: &[u64],
+        options: &CodecOptions,
+    ) -> Result<ChunkCacheTypeDecoded, ArrayError>;
+
+    /// Cached variant of [`retrieve_chunk_opt`](Array::retrieve_chunk_opt).
+    #[allow(clippy::missing_errors_doc)]
+    fn retrieve_chunk<T: FromArrayBytes>(
+        &self,
+        chunk_indices: &[u64],
+        options: &CodecOptions,
+    ) -> Result<T, ArrayError>
+    where
+        Self: Sized,
+    {
+        let bytes = self.retrieve_chunk_bytes(chunk_indices, options)?;
+        let shape = self
+            .array()
+            .chunk_grid()
+            .chunk_shape_u64(chunk_indices)?
+            .ok_or_else(|| ArrayError::InvalidChunkGridIndicesError(chunk_indices.to_vec()))?;
+        T::from_array_bytes_arc(bytes, &shape, self.array().data_type())
+    }
+
+    #[deprecated(since = "0.23.0", note = "Use retrieve_chunk::<Vec<T>>() instead")]
+    /// Cached variant of [`retrieve_chunk_elements_opt`](Array::retrieve_chunk_elements_opt).
+    #[allow(clippy::missing_errors_doc)]
+    fn retrieve_chunk_elements<T: ElementOwned>(
+        &self,
+        chunk_indices: &[u64],
+        options: &CodecOptions,
+    ) -> Result<Vec<T>, ArrayError>
+    where
+        Self: Sized,
+    {
+        self.retrieve_chunk(chunk_indices, options)
+    }
+
+    #[cfg(feature = "ndarray")]
+    #[deprecated(
+        since = "0.23.0",
+        note = "Use retrieve_chunk::<ndarray::ArrayD<T>>() instead"
+    )]
+    /// Cached variant of [`retrieve_chunk_ndarray_opt`](Array::retrieve_chunk_ndarray_opt).
+    #[allow(clippy::missing_errors_doc)]
+    fn retrieve_chunk_ndarray<T: ElementOwned>(
+        &self,
+        chunk_indices: &[u64],
+        options: &CodecOptions,
+    ) -> Result<ndarray::ArrayD<T>, ArrayError>
+    where
+        Self: Sized,
+    {
+        self.retrieve_chunk(chunk_indices, options)
+    }
+
+    /// Cached variant of [`retrieve_chunk_subset_opt`](Array::retrieve_chunk_subset_opt) returning the cached bytes.
+    #[allow(clippy::missing_errors_doc)]
+    fn retrieve_chunk_subset_bytes(
+        &self,
+        chunk_indices: &[u64],
+        chunk_subset: &dyn ArraySubsetTraits,
+        options: &CodecOptions,
+    ) -> Result<ChunkCacheTypeDecoded, ArrayError>;
+
+    /// Cached variant of [`retrieve_chunk_subset_opt`](Array::retrieve_chunk_subset_opt).
+    #[allow(clippy::missing_errors_doc)]
+    fn retrieve_chunk_subset<T: FromArrayBytes>(
+        &self,
+        chunk_indices: &[u64],
+        chunk_subset: &dyn ArraySubsetTraits,
+        options: &CodecOptions,
+    ) -> Result<T, ArrayError>
+    where
+        Self: Sized,
+    {
+        let bytes = self.retrieve_chunk_subset_bytes(chunk_indices, chunk_subset, options)?;
+        T::from_array_bytes_arc(bytes, &chunk_subset.shape(), self.array().data_type())
+    }
+
+    #[deprecated(
+        since = "0.23.0",
+        note = "Use retrieve_chunk_subset::<Vec<T>>() instead"
+    )]
+    /// Cached variant of [`retrieve_chunk_subset_elements_opt`](Array::retrieve_chunk_subset_elements_opt).
+    #[allow(clippy::missing_errors_doc)]
+    fn retrieve_chunk_subset_elements<T: ElementOwned>(
+        &self,
+        chunk_indices: &[u64],
+        chunk_subset: &dyn ArraySubsetTraits,
+        options: &CodecOptions,
+    ) -> Result<Vec<T>, ArrayError>
+    where
+        Self: Sized,
+    {
+        self.retrieve_chunk_subset(chunk_indices, chunk_subset, options)
+    }
+
+    #[cfg(feature = "ndarray")]
+    #[deprecated(
+        since = "0.23.0",
+        note = "Use retrieve_chunk_subset::<ndarray::ArrayD<T>>() instead"
+    )]
+    /// Cached variant of [`retrieve_chunk_subset_ndarray_opt`](Array::retrieve_chunk_subset_ndarray_opt).
+    #[allow(clippy::missing_errors_doc)]
+    fn retrieve_chunk_subset_ndarray<T: ElementOwned>(
+        &self,
+        chunk_indices: &[u64],
+        chunk_subset: &dyn ArraySubsetTraits,
+        options: &CodecOptions,
+    ) -> Result<ndarray::ArrayD<T>, ArrayError>
+    where
+        Self: Sized,
+    {
+        self.retrieve_chunk_subset(chunk_indices, chunk_subset, options)
+    }
+
+    /// Cached variant of [`retrieve_array_subset_opt`](Array::retrieve_array_subset_opt) returning the cached bytes.
+    #[allow(clippy::missing_errors_doc)]
+    #[allow(clippy::too_many_lines)]
+    fn retrieve_array_subset_bytes(
+        &self,
+        array_subset: &dyn ArraySubsetTraits,
+        options: &CodecOptions,
+    ) -> Result<ChunkCacheTypeDecoded, ArrayError> {
+        let array = self.array();
+        if array_subset.dimensionality() != array.dimensionality() {
+            return Err(ArrayError::InvalidArraySubset(
+                array_subset.to_array_subset(),
+                array.shape().to_vec(),
+            ));
+        }
+
+        // Find the chunks intersecting this array subset
+        let chunks = array.chunks_in_array_subset(array_subset)?;
+        let Some(chunks) = chunks else {
+            return Err(ArrayError::InvalidArraySubset(
+                array_subset.to_array_subset(),
+                array.shape().to_vec(),
+            ));
+        };
+
+        let chunk_shape0 = array.chunk_shape(&vec![0; array.dimensionality()])?;
+
+        let num_chunks = chunks.num_elements_usize();
+        match num_chunks {
+            0 => Ok(ArrayBytes::new_fill_value(
+                array.data_type(),
+                array_subset.num_elements(),
+                array.fill_value(),
+            )
+            .map_err(CodecError::from)
+            .map_err(ArrayError::from)?
+            .into()),
+            1 => {
+                let chunk_indices = chunks.start();
+                let chunk_subset = array.chunk_subset(chunk_indices)?;
+                if chunk_subset == array_subset {
+                    // Single chunk fast path if the array subset domain matches the chunk domain
+                    self.retrieve_chunk_bytes(chunk_indices, options)
+                } else {
+                    let array_subset_in_chunk_subset =
+                        array_subset.relative_to(chunk_subset.start())?;
+                    self.retrieve_chunk_subset_bytes(
+                        chunk_indices,
+                        &array_subset_in_chunk_subset,
+                        options,
+                    )
+                }
+            }
+            _ => {
+                // Calculate chunk/codec concurrency
+                let num_chunks = chunks.num_elements_usize();
+                let codec_concurrency =
+                    array.recommended_codec_concurrency(&chunk_shape0, array.data_type())?;
+                let (chunk_concurrent_limit, options) = concurrency_chunks_and_codec(
+                    options.concurrent_target(),
+                    num_chunks,
+                    options,
+                    &codec_concurrency,
+                );
+
+                // Delegate to appropriate helper based on data type size
+                if array.data_type().is_fixed() {
+                    retrieve_multi_chunk_fixed_impl(
+                        self,
+                        &array,
+                        array_subset,
+                        &chunks,
+                        chunk_concurrent_limit,
+                        &options,
+                    )
+                } else {
+                    retrieve_multi_chunk_variable_impl(
+                        self,
+                        &array,
+                        array_subset,
+                        &chunks,
+                        chunk_concurrent_limit,
+                        &options,
+                    )
+                }
+            }
+        }
+    }
+
+    /// Cached variant of [`retrieve_array_subset_opt`](Array::retrieve_array_subset_opt).
+    #[allow(clippy::missing_errors_doc)]
+    fn retrieve_array_subset<T: FromArrayBytes>(
+        &self,
+        array_subset: &dyn ArraySubsetTraits,
+        options: &CodecOptions,
+    ) -> Result<T, ArrayError>
+    where
+        Self: Sized,
+    {
+        let bytes = self.retrieve_array_subset_bytes(array_subset, options)?;
+        T::from_array_bytes_arc(bytes, &array_subset.shape(), self.array().data_type())
+    }
+
+    #[deprecated(
+        since = "0.23.0",
+        note = "Use retrieve_array_subset::<Vec<T>>() instead"
+    )]
+    /// Cached variant of [`retrieve_array_subset_elements_opt`](Array::retrieve_array_subset_elements_opt).
+    #[allow(clippy::missing_errors_doc)]
+    fn retrieve_array_subset_elements<T: ElementOwned>(
+        &self,
+        array_subset: &dyn ArraySubsetTraits,
+        options: &CodecOptions,
+    ) -> Result<Vec<T>, ArrayError>
+    where
+        Self: Sized,
+    {
+        self.retrieve_array_subset(array_subset, options)
+    }
+
+    #[cfg(feature = "ndarray")]
+    #[deprecated(
+        since = "0.23.0",
+        note = "Use retrieve_array_subset::<ndarray::ArrayD<T>>() instead"
+    )]
+    /// Cached variant of [`retrieve_array_subset_ndarray_opt`](Array::retrieve_array_subset_ndarray_opt).
+    #[allow(clippy::missing_errors_doc)]
+    fn retrieve_array_subset_ndarray<T: ElementOwned>(
+        &self,
+        array_subset: &dyn ArraySubsetTraits,
+        options: &CodecOptions,
+    ) -> Result<ndarray::ArrayD<T>, ArrayError>
+    where
+        Self: Sized,
+    {
+        self.retrieve_array_subset(array_subset, options)
+    }
+
+    /// Cached variant of [`retrieve_chunks_opt`](Array::retrieve_chunks_opt) returning the cached bytes.
+    #[allow(clippy::missing_errors_doc)]
+    fn retrieve_chunks_bytes(
+        &self,
+        chunks: &dyn ArraySubsetTraits,
+        options: &CodecOptions,
+    ) -> Result<ChunkCacheTypeDecoded, ArrayError> {
+        if chunks.dimensionality() != self.array().dimensionality() {
+            return Err(IncompatibleDimensionalityError::new(
+                chunks.dimensionality(),
+                self.array().dimensionality(),
+            )
+            .into());
+        }
+
+        let array_subset = self.array().chunks_subset(chunks)?;
+        self.retrieve_array_subset_bytes(&array_subset, options)
+    }
+
+    /// Cached variant of [`retrieve_chunks_opt`](Array::retrieve_chunks_opt).
+    #[allow(clippy::missing_errors_doc)]
+    fn retrieve_chunks<T: FromArrayBytes>(
+        &self,
+        chunks: &dyn ArraySubsetTraits,
+        options: &CodecOptions,
+    ) -> Result<T, ArrayError>
+    where
+        Self: Sized,
+    {
+        let bytes = self.retrieve_chunks_bytes(chunks, options)?;
+        let array_subset = self.array().chunks_subset(chunks)?;
+        T::from_array_bytes_arc(bytes, array_subset.shape(), self.array().data_type())
+    }
+
+    #[deprecated(since = "0.23.0", note = "Use retrieve_chunks::<Vec<T>>() instead")]
+    /// Cached variant of [`retrieve_chunks_elements_opt`](Array::retrieve_chunks_elements_opt).
+    #[allow(clippy::missing_errors_doc)]
+    fn retrieve_chunks_elements<T: ElementOwned>(
+        &self,
+        chunks: &dyn ArraySubsetTraits,
+        options: &CodecOptions,
+    ) -> Result<Vec<T>, ArrayError>
+    where
+        Self: Sized,
+    {
+        self.retrieve_chunks(chunks, options)
+    }
+
+    #[cfg(feature = "ndarray")]
+    #[deprecated(
+        since = "0.23.0",
+        note = "Use retrieve_chunks::<ndarray::ArrayD<T>>() instead"
+    )]
+    /// Cached variant of [`retrieve_chunks_ndarray_opt`](Array::retrieve_chunks_ndarray_opt).
+    #[allow(clippy::missing_errors_doc)]
+    fn retrieve_chunks_ndarray<T: ElementOwned>(
+        &self,
+        chunks: &dyn ArraySubsetTraits,
+        options: &CodecOptions,
+    ) -> Result<ndarray::ArrayD<T>, ArrayError>
+    where
+        Self: Sized,
+    {
+        self.retrieve_chunks(chunks, options)
+    }
+
+    /// Return the number of chunks in the cache. For a thread-local cache, returns the number of chunks cached on the current thread.
+    #[must_use]
+    fn len(&self) -> usize;
+
+    /// Returns true if the cache is empty. For a thread-local cache, returns if the cache is empty on the current thread.
+    #[must_use]
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Helper function to retrieve multiple chunks with variable-length data.
+/// Also handles optional data types with variable-length inner types (including nested optionals).
+fn retrieve_multi_chunk_variable_impl<CC: ChunkCache + ?Sized>(
+    cache: &CC,
+    array: &Array<dyn ReadableStorageTraits>,
+    array_subset: &dyn ArraySubsetTraits,
+    chunks: &dyn ArraySubsetTraits,
+    chunk_concurrent_limit: usize,
+    options: &CodecOptions,
+) -> Result<ChunkCacheTypeDecoded, ArrayError> {
+    let nesting_depth = optional_nesting_depth(array.data_type());
+
+    // Retrieve chunks for variable-length data
+    let indices = chunks.indices();
+    let chunk_bytes_and_subsets =
+        iter_concurrent_limit!(chunk_concurrent_limit, indices, map, |chunk_indices| {
+            let chunk_subset = array.chunk_subset(&chunk_indices)?;
+            cache
+                .retrieve_chunk_bytes(&chunk_indices, options)
+                .map(|bytes| (bytes, chunk_subset))
+        })
+        .collect::<Result<Vec<_>, ArrayError>>()?;
+
+    if nesting_depth > 0 {
+        let chunk_bytes_and_subsets = chunk_bytes_and_subsets
+            .iter()
+            .map(|(chunk_bytes, chunk_subset)| {
+                (
+                    ArrayBytes::clone(chunk_bytes)
+                        .into_optional()
+                        .expect("run on vlen data"),
+                    chunk_subset.clone(),
+                )
+            })
+            .collect();
+        Ok(ArrayBytes::Optional(merge_chunks_vlen_optional(
+            chunk_bytes_and_subsets,
+            &array_subset.shape(),
+            nesting_depth,
+        )?)
+        .into())
+    } else {
+        let chunk_bytes_and_subsets = chunk_bytes_and_subsets
+            .iter()
+            .map(|(chunk_bytes, chunk_subset)| {
+                (
+                    ArrayBytes::clone(chunk_bytes)
+                        .into_variable()
+                        .expect("run on vlen data"),
+                    chunk_subset.clone(),
+                )
+            })
+            .collect();
+        Ok(ArrayBytes::Variable(merge_chunks_vlen(
+            chunk_bytes_and_subsets,
+            &array_subset.shape(),
+        ))
+        .into())
+    }
+}
+
+/// Helper method to retrieve multiple chunks with fixed-length data types.
+/// Also handles optional data types with fixed-length inner types.
+fn retrieve_multi_chunk_fixed_impl<CC: ChunkCache + ?Sized>(
+    cache: &CC,
+    array: &Array<dyn ReadableStorageTraits>,
+    array_subset: &dyn ArraySubsetTraits,
+    chunks: &dyn ArraySubsetTraits,
+    chunk_concurrent_limit: usize,
+    options: &CodecOptions,
+) -> Result<ChunkCacheTypeDecoded, ArrayError> {
+    // Allocate data buffer and optional mask buffer
+    let data_type_size = array
+        .data_type()
+        .fixed_size()
+        .expect("data_type must have fixed size");
+    let num_elements = array_subset.num_elements_usize();
+    let size_output = num_elements * data_type_size;
+    let nesting_depth = optional_nesting_depth(array.data_type());
+    if size_output == 0 {
+        return Ok(
+            wrap_optional_masks(ArrayBytes::new_flen(vec![]), vec![vec![]; nesting_depth]).into(),
+        );
+    }
+    let mut data_output = Vec::with_capacity(size_output);
+    let mut mask_outputs: Vec<Vec<u8>> = (0..nesting_depth)
+        .map(|_| Vec::with_capacity(num_elements))
+        .collect();
+
+    {
+        let data_output_slice = UnsafeCellSlice::new_from_vec_with_spare_capacity(&mut data_output);
+        let mask_output_slices: Vec<_> = mask_outputs
+            .iter_mut()
+            .map(UnsafeCellSlice::new_from_vec_with_spare_capacity)
+            .collect();
+        let mask_output_slices = mask_output_slices.as_slice();
+
+        let array_subset_start = array_subset.start();
+        let array_subset_shape = array_subset.shape();
+        let retrieve_chunk = |chunk_indices: ArrayIndicesTinyVec| {
+            let chunk_subset = array.chunk_subset(&chunk_indices)?;
+            let chunk_subset_overlap = chunk_subset.overlap(array_subset)?;
+            let chunk_subset_in_array = chunk_subset_overlap.relative_to(&array_subset_start)?;
+
+            // Retrieve the chunk subset bytes
+            let chunk_subset_bytes = cache.retrieve_chunk_subset_bytes(
+                &chunk_indices,
+                &chunk_subset_overlap.relative_to(chunk_subset.start())?,
+                options,
+            )?;
+
+            // Create views for output
+            let mut data_view = unsafe {
+                // SAFETY: chunks represent disjoint array subsets
+                ArrayBytesFixedDisjointView::new(
+                    data_output_slice,
+                    data_type_size,
+                    &array_subset_shape,
+                    chunk_subset_in_array.clone(),
+                )?
+            };
+
+            let mut mask_views: Vec<ArrayBytesFixedDisjointView<'_>> = mask_output_slices
+                .iter()
+                .map(|mask_slice| unsafe {
+                    // SAFETY: chunks represent disjoint array subsets
+                    ArrayBytesFixedDisjointView::new(
+                        *mask_slice,
+                        1, // 1 byte per element for mask
+                        &array_subset_shape,
+                        chunk_subset_in_array.clone(),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let target = build_nested_optional_target(&mut data_view, mask_views.as_mut_slice());
+            decode_into_array_bytes_target(&chunk_subset_bytes, target)
+                .map_err(ArrayError::CodecError)
+        };
+
+        let indices = chunks.indices();
+        iter_concurrent_limit!(
+            chunk_concurrent_limit,
+            indices,
+            try_for_each,
+            retrieve_chunk
+        )?;
+    }
+
+    unsafe { data_output.set_len(size_output) };
+    for mask in &mut mask_outputs {
+        unsafe { mask.set_len(num_elements) };
+    }
+
+    Ok(wrap_optional_masks(ArrayBytes::new_flen(data_output), mask_outputs).into())
+}
+
+// TODO: AsyncChunkCache

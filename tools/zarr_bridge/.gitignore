@@ -1,0 +1,4 @@
+/target/
+/build-errors.log
+!/vendor/**
+/vendor/**/__pycache__/

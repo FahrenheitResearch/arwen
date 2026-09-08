@@ -1580,3 +1580,28 @@ tests/test_install_scripts.py
 
 # Concise Check output must retain the full report's budget verdict and remedy.
 tests/test_check_display.py
+
+# New catalogue/forcing and native lake-state routes must remain reachable
+# from a clean installation, with credential readiness and exact source intent.
+tests/test_cds_acquisition_readiness.py
+tests/test_companion_domains.py
+tests/test_companion_forcing.py
+tests/test_companion_schedule.py
+tests/test_configuration_recovery.py
+tests/test_lake_acquisition.py
+tests/test_lake_temperature.py
+
+# Reviewed remote inputs, raw frame integrity, exact target-device estimates,
+# stable domain identities and native outer-event relay own the new UI routes.
+tests/test_remote_artifact_cache.py
+tests/test_remote_artifacts.py
+tests/test_remote_input_transfer.py
+tests/test_remote_plan.py
+tests/test_runplan_estimate_device.py
+tests/test_runplan_native_parent.py
+tests/test_wps_domain_ids.py
+
+# Remote processed-frame transport must preserve exact request identity and
+# native render receipts must count completed output frames without truncation.
+tests/test_remote_processed.py
+tests/test_render_receipts.py

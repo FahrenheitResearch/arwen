@@ -16,7 +16,7 @@ weights, and results are FP32.
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from types import MappingProxyType
 from typing import Mapping
@@ -29,6 +29,7 @@ from gpuwm.ingest.soil_contract import (
 )
 
 from gpuwm.ingest.grib import Era5Snapshot
+from gpuwm.ingest.lake_temperature import LAKE_FIELDS, map_ice_free_lake_water
 from gpuwm.ingest.source_coverage import (
     SourceCoverageRefusal,
     SourceProjectionRefusal,
@@ -76,8 +77,28 @@ class HorizontalSnapshot:
     water_temperature: np.ndarray | None = None
     water_temperature_source: np.ndarray | None = None
     water_temperature_receipt: Mapping[str, object] | None = None
+    #: Source metadata can select direct specific-humidity initialization.
+    #: Unmarked sources retain WRF's established RH interpolation default.
+    specific_humidity_authority: bool = False
+    #: None preserves the native analyzed-mass inventory contract; an empty
+    #: tuple explicitly declares that the source supplies no analyzed mass.
+    analyzed_species: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.specific_humidity_authority, (bool, np.bool_)):
+            raise TypeError("specific_humidity_authority must be boolean")
+        if self.specific_humidity_authority:
+            missing = sorted({"PRES", "SPFH", "Q2"} - self.fields.keys())
+            if missing:
+                raise KeyError(
+                    f"specific-humidity authority is missing fields: {missing}")
+            if "RH" in self.fields:
+                raise ValueError(
+                    "specific-humidity authority cannot also declare RH")
+            if self.analyzed_species is None:
+                raise ValueError(
+                    "specific-humidity authority must declare analyzed_species "
+                    "(an empty tuple declares no analyzed mass fields)")
         levels = np.asarray(self.levels_hpa)
         if levels.dtype != np.float64 or levels.ndim != 1 or levels.size == 0:
             raise TypeError("levels_hpa must be a non-empty float64 1-D array")
@@ -367,10 +388,8 @@ def orient_global_source_longitudes(snapshot, *target_longitudes):
     take = (start + columns) % period
     rotated = float(longitude[0]) + (start + columns) * increment
     rotated -= 360.0 * np.floor((rotated[0] + 180.0) / 360.0)
-    return Era5Snapshot(
-        valid_time=snapshot.valid_time,
-        levels_hpa=snapshot.levels_hpa,
-        latitude=snapshot.latitude,
+    return replace(
+        snapshot,
         longitude=rotated,
         fields={name: np.asarray(value)[..., take]
                 for name, value in snapshot.fields.items()},
@@ -1440,6 +1459,11 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
     for name, raw in source_fields.items():
         if name in handled:
             continue
+        if name in LAKE_FIELDS:
+            # Lake state has its own phase/validity contract below. Mapping
+            # these as unconstrained scalars could discard the ice evidence.
+            handled.add(name)
+            continue
         if name == "U":
             wind_pair("U", "V", "UU", "VV")
             handled.update(("U", "V"))
@@ -1643,20 +1667,33 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                 "temperature assembly needs a mapped SKINTEMP and this "
                 "source carries none")
         source_sst = snapshot.fields.get("SST")
+        lake_water = map_ice_free_lake_water(
+            snapshot, mass_ty, mass_tx,
+            water_temperature_statics.lake & ~water_temperature_statics.land)
         assembly = assemble_for_route(
             water_temperature_statics,
             mapped_sst=(None if "SST" not in out
                         else _as_host_float64(out["SST"])),
             mapped_skin=_as_host_float64(out["SKINTEMP"]),
+            mapped_lake_water=(None if lake_water is None else lake_water.values),
             source_sst=(None if source_sst is None
                         else _as_host_float64(source_sst)),
             source_lat=np.asarray(snapshot.latitude, dtype=np.float64),
             source_lon=np.asarray(snapshot.longitude, dtype=np.float64),
             target_lat=np.asarray(mass_ty, dtype=np.float64),
-            target_lon=np.asarray(mass_tx, dtype=np.float64))
+            target_lon=np.asarray(mass_tx, dtype=np.float64),
+            diagnostic_context=(
+                f"valid_time={snapshot.valid_time.isoformat()} UTC; "
+                f"domain dx={grid.dx:g} m, dy={grid.dy:g} m, "
+                f"center=({grid.cen_lat:.6f}, {grid.cen_lon:.6f})"),
+            diagnostic_latlon=(mass_lat, mass_lon))
         water_temperature = assembly.values
         water_temperature_source = assembly.provider
         water_temperature_receipt = assembly.receipt
+        if lake_water is not None:
+            out["LAKE_WATER_TEMP"] = lake_water.values
+            water_temperature_receipt = {
+                **water_temperature_receipt, "lake_water_mapping": lake_water.receipt}
         # Once per domain, not once per forcing time: every time of a
         # domain assembles the same providers over the same cells.
         announce_water_temperature(
@@ -1670,6 +1707,9 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
         water_temperature=water_temperature,
         water_temperature_source=water_temperature_source,
         water_temperature_receipt=water_temperature_receipt,
+        specific_humidity_authority=getattr(
+            snapshot, "specific_humidity_authority", False),
+        analyzed_species=getattr(snapshot, "analyzed_species", None),
     )
 
 

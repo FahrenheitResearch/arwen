@@ -47,7 +47,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 #: fixed below: the workspace was unlisted, and the check was
 #: version-blind.
 _WORKSPACES = ("tools/grib1_bridge", "tools/rustwx", "tools/rw_wps",
-               "tools/arwen-launchpad", "tools/arwen-tui")
+               "tools/arwen-launchpad", "tools/arwen-tui", "tools/zarr_bridge")
 
 _PACKAGE_NAME = re.compile(r'^name = "(?P<name>[^"]+)"', re.M)
 _PACKAGE_VERSION = re.compile(r'^version = "(?P<version>[^"]+)"', re.M)
@@ -225,6 +225,26 @@ def test_shared_ui_vendor_contains_every_checksummed_file() -> None:
         actual = tomllib.loads((package / "Cargo.toml").read_text(
             encoding="utf-8"))["package"]
         assert (actual["name"], actual["version"]) == (name, version)
+        assert actual.get("license") == metadata["license"]
+        assert actual.get("license-file") == metadata["license_file"]
+
+
+def test_zarr_vendor_contains_every_checksummed_file_and_locked_grant():
+    import tomllib
+    workspace = _ROOT / "tools/zarr_bridge"
+    lock_bytes = (workspace / "Cargo.lock").read_bytes()
+    manifest = json.loads((workspace / "vendor-manifest.json").read_text())
+    assert hashlib.sha256(lock_bytes).hexdigest() == manifest["lock_sha256"]
+    locked = {(item["name"], item["version"]): item["checksum"]
+              for item in tomllib.loads(lock_bytes.decode())["package"] if "source" in item}
+    recorded = {(item["name"], item["version"]): item for item in manifest["packages"]}
+    assert len(recorded) == len(manifest["packages"]) and recorded.keys() == locked.keys()
+    for (name, version), checksum in locked.items():
+        metadata = recorded[name, version]
+        assert metadata["package_sha256"] == checksum
+        package = workspace / "vendor/crates-io" / f"{name}-{version}"
+        _assert_vendored_files(package, checksum)
+        actual = tomllib.loads((package / "Cargo.toml").read_text(encoding="utf-8"))["package"]
         assert actual.get("license") == metadata["license"]
         assert actual.get("license-file") == metadata["license_file"]
 

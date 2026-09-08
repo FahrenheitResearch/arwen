@@ -1,0 +1,196 @@
+[package]
+name = "zarrs"
+version = "0.23.14"
+authors = ["Lachlan Deakin <ljdgit@gmail.com>"]
+edition = "2024"
+rust-version = "1.91"
+description = "A library for the Zarr storage format for multidimensional arrays and metadata"
+homepage = "https://zarrs.dev"
+documentation = "https://docs.rs/zarrs"
+repository = "https://github.com/zarrs/zarrs"
+license = "MIT OR Apache-2.0"
+keywords = ["zarr", "zarrs", "array"]
+categories = ["encoding", "science"]
+exclude = [".github/", "doc/TODO.md", "tests/"]
+
+[features]
+default = ["filesystem", "ndarray", "blosc", "crc32c", "gzip", "sharding", "transpose", "zstd"]
+filesystem = ["dep:zarrs_filesystem"] # Re-export zarrs_filesystem as zarrs::filesystem
+adler32 = ["dep:simd-adler32"] # Enable the adler32 checksum codec
+bitround = [] # Enable the bitround codec
+blosc = ["dep:blosc-src", "dep:blusc"] # Enable the blosc codec
+bz2 = ["dep:bzip2"] # Enable the bz2 codec
+crc32c = ["dep:crc32c"] # Enable the crc32c checksum codec
+fletcher32 = [] # Enable the fletcher32 checksum codec
+gdeflate = ["dep:gdeflate-sys"] # Enable the experimental gdeflate codec
+gzip = ["dep:flate2"] # Enable the gzip codec
+pcodec = ["dep:pco"] # Enable the pcodec codec
+sharding = [] # Enable the sharding codec
+transpose = ["dep:ndarray"] # Enable the transpose codec
+zfp = ["dep:zfp-sys"] # Enable the zfp codec
+zlib = ["dep:flate2"] # Enable the zlib codec
+zstd = ["dep:zstd"] # Enable the zstd codec
+ndarray = ["dep:ndarray"] # Adds ndarray utility functions to Array
+dlpack =["dep:dlpark"] # Adds dlpack utility functions to Array
+async = ["dep:async-generic", "dep:async-trait", "dep:futures", "moka/future", "zarrs_storage/async", "zarrs_codec/async"] # Enable experimental async API
+jiff = ["dep:jiff"] # Adds support for jiff time array elements
+chrono = ["dep:chrono"] # Adds support for chrono time array elements
+float8 = ["dep:float8"] # Deprecated: Adds support for float8 array elements (use microfloat instead)
+microfloat = ["dep:microfloat"] # Adds support for microfloat array elements
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lib]
+crate-type = ["lib"]
+bench = false
+
+[dependencies]
+async-trait = { version = "0.1.74", optional = true }
+bytemuck = { version = "1.14.0", features = ["extern_crate_alloc", "must_cast", "min_const_generics"] }
+bytes = "1.7.0"
+bzip2 = { version = "0.6.0", optional = true }
+crc32c = { version = "0.6.5", optional = true }
+derive_more = { version = "2.0.0", features = ["deref", "display", "from"] }
+flate2 = { version = "1.1.1", optional = true }
+futures = { version = "0.3.29", optional = true }
+gdeflate-sys = { version = "0.4.1", optional = true }
+half.workspace = true
+inventory.workspace = true
+itertools = "0.14.0"
+lru = "0.16.0"
+moka = { version = "0.12.8", features = ["sync"] }
+ndarray = { version = "0.17.1", optional = true }
+num.workspace = true
+paste = "1.0.15"
+pco = { version = "1.0.0", optional = true }
+rayon = "1.10.0"
+rayon_iter_concurrent_limit = "0.2.0"
+serde = { version = "1.0.203", features = ["derive"] }
+serde_json = { version = "1.0.71", features = ["float_roundtrip", "preserve_order"] }
+thiserror.workspace = true
+thread_local = "1.1.8"
+unsafe_cell_slice = "0.2.0"
+zarrs_chunk_key_encoding.workspace = true
+zarrs_filesystem = { workspace = true, optional = true }
+zarrs_data_type.workspace = true
+zarrs_metadata.workspace = true
+zarrs_plugin.workspace = true
+zarrs_storage.workspace = true
+zfp-sys = {version = "0.4.2", features = ["static"], optional = true }
+dlpark = { version = "0.6.0", features = ["half"], optional = true }
+async-generic = { version = "1.1.2", optional = true }
+async-lock = "3.4.0"
+zarrs_metadata_ext.workspace = true
+jiff = { version = "0.2.15", optional = true }
+chrono = { version = "0.4.39", optional = true }
+float8 = { version = "0.5.0", optional = true, features = ["bytemuck"] }
+microfloat = { version = "0.1.3", optional = true, features = ["bytemuck"] }
+simd-adler32 = { version = "0.3.7", optional = true }
+itoa = "1.0.15"
+log = "0.4.28"
+base64 = "0.22.1"
+zarrs_chunk_grid.workspace = true
+zarrs_codec.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+zstd = { version = "0.13.3", features = ["zstdmt", "experimental"], optional = true }
+blosc-src = { version = "0.3.6", features = ["snappy", "lz4", "zlib", "zstd"], optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+quick_cache = { version = "0.6.16" }
+uuid = { version = "^1.1.0", features = ["v4", "js"] }
+zstd = { version = "0.13.3", optional = true }
+blusc = { version = "0.0.6", optional = true }
+
+# Reference: https://github.com/kylebarron/parquet-wasm/blob/ad18b841a8e788b0d4b17eb9deaca581d02bf887/Cargo.toml#L100C1-L110C18
+[target.'cfg(target_arch = "wasm32")'.dependencies.getrandom_v03]
+package = "getrandom"
+version = "^0.3.1"
+features = ["wasm_js"]
+
+[dependencies.num-complex]
+version = "0.4.3"
+features = ["bytemuck"]
+
+[dev-dependencies]
+chrono = "0.4.39"
+criterion = "0.8.1"
+object_store = { workspace = true, features = ["http"] }
+serial_test = "3.2.0"
+tempfile = "3"
+testing_logger = "0.1.1"
+tokio = { version = "1.34.0", features = ["macros", "rt-multi-thread"] }
+walkdir = "2.3.2"
+zarrs_object_store.workspace = true
+zarrs_filesystem.workspace = true
+
+[build-dependencies]
+libz-sys = "1.1.20" # https://github.com/rust-lang/libz-sys/commit/eb42f72bb4e23ea16b726bc14587d4c5b3d07212
+
+[[example]]
+name = "array_write_read"
+required-features = ["filesystem", "ndarray"]
+doc-scrape-examples = true
+
+[[example]]
+name = "array_write_read_ndarray"
+required-features = ["filesystem", "ndarray"]
+doc-scrape-examples = true
+
+[[example]]
+name = "array_write_read_string"
+required-features = ["filesystem", "ndarray"]
+doc-scrape-examples = true
+
+[[example]]
+name = "async_array_write_read"
+required-features = ["ndarray", "async"]
+doc-scrape-examples = true
+
+[[example]]
+name = "async_http_array_read"
+required-features = ["ndarray", "async"]
+doc-scrape-examples = true
+
+[[example]]
+name = "sync_http_array_read"
+required-features = ["ndarray", "async"]
+doc-scrape-examples = true
+
+[[example]]
+name = "rectilinear_array_write_read"
+required-features = ["filesystem", "ndarray"]
+doc-scrape-examples = true
+
+[[example]]
+name = "sharded_array_write_read"
+required-features = ["filesystem", "ndarray", "sharding"]
+
+[[bench]]
+name = "array_subset"
+harness = false
+
+[[bench]]
+name = "array_uncompressed"
+harness = false
+
+[[bench]]
+name = "array_blosc"
+harness = false
+
+[[bench]]
+name = "codecs"
+harness = false
+
+[[bench]]
+name = "fill_value"
+harness = false
+
+[[bench]]
+name = "sharded_partial_read"
+harness = false
+required-features = ["sharding", "filesystem"]

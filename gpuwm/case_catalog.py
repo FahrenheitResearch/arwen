@@ -2,7 +2,8 @@
 
 Catalog prose never becomes code. Typed scientific overrides are restricted to
 the existing configuration/physics vocabulary and the completed configuration
-passes the same native validation and memory admission as a research workspace.
+passes native configuration and geometry validation. Opening a case can defer
+GPU memory admission to the selected execution target's Review/Run step.
 """
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ import argparse
 from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
 from dataclasses import dataclass, fields
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 import hashlib
 import io
@@ -22,18 +23,37 @@ import re
 import tempfile
 import tomllib
 
+from gpuwm.configuration_recovery import MemoryAdmissionError, error_document, retain_final_candidate
+
 
 SCHEMA = "arwen.case-catalog.v1"
 TIERS = ("lower", "recommended", "upper")
 MAX_CATALOG_BYTES = 128 * 1024 * 1024
 SCHEMA_PATH = Path(__file__).parent / "data" / "case-catalog" / "schema.json"
+BUILTIN_CATALOG_PATH = SCHEMA_PATH.with_name("historical.zip")
 _ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,127}\Z")
+_CONTROL_TEXT = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 _RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
              *(f"lpt{i}" for i in range(1, 10))}
 
 
 class CatalogError(ValueError):
     """An invalid catalog or a selection the native product cannot create."""
+
+
+def builtin_catalog_path() -> Path:
+    """The historical catalog shipped inside every installed engine wheel."""
+    path = BUILTIN_CATALOG_PATH.resolve()
+    if not path.is_file():
+        raise CatalogError("The bundled historical case catalog is missing; reinstall ArWen.")
+    return path
+
+
+def default_catalog_document() -> dict:
+    catalog = load_catalog(builtin_catalog_path())
+    return {"schema": "arwen.case-catalog-default.v1", "path": catalog.source,
+            "title": catalog.document["catalog"]["title"],
+            "case_count": len(catalog.document["cases"]), "provenance": catalog.provenance()}
 
 
 @dataclass(frozen=True)
@@ -65,7 +85,7 @@ def _object(value, label: str, *, allowed=None, required=()) -> dict:
 def _text(value, label: str, *, empty: bool = False) -> str:
     if not isinstance(value, str) or (not empty and not value.strip()):
         raise CatalogError(f"{label} must be {'a string' if empty else 'a nonempty string'}")
-    if any(ord(c) < 32 and c not in "\n\t\r" for c in value):
+    if _CONTROL_TEXT.search(value):
         raise CatalogError(f"{label} contains a control character")
     return value
 
@@ -233,7 +253,8 @@ def _profile(value, label):
 
 
 def validate_catalog(document: dict) -> dict:
-    doc = _json_data(deepcopy(document))
+    # _json_data builds fresh containers while validating every value.
+    doc = _json_data(document)
     _object(doc, "catalog document", allowed={"schema", "catalog", "cases"}, required={"schema", "catalog", "cases"})
     if doc["schema"] != SCHEMA:
         raise CatalogError(f"Unsupported case catalog schema {doc['schema']!r}; expected {SCHEMA}")
@@ -364,13 +385,20 @@ def validate_catalog(document: dict) -> dict:
     return doc
 
 
-def load_catalog(path: str | Path) -> Catalog:
+def _read_catalog_bytes(path: str | Path) -> tuple[Path, bytes]:
     path = Path(path)
     if path.suffix.lower() not in {".json", ".toml", ".zip"}:
         raise CatalogError("Choose a JSON, TOML or ZIP case catalog")
     if path.stat().st_size > MAX_CATALOG_BYTES:
         raise CatalogError("This catalog exceeds 128 MiB; split it into catalog volumes so browsing does not exhaust memory")
-    raw = path.read_bytes()
+    with path.open("rb") as stream:
+        raw = stream.read(MAX_CATALOG_BYTES + 1)
+    if len(raw) > MAX_CATALOG_BYTES:
+        raise CatalogError("This catalog exceeds 128 MiB; split it into catalog volumes so browsing does not exhaust memory")
+    return path, raw
+
+
+def _load_catalog_bytes(path: Path, raw: bytes) -> Catalog:
     try:
         archive_report = None
         if path.suffix.lower() == ".zip":
@@ -388,6 +416,10 @@ def load_catalog(path: str | Path) -> Catalog:
     return Catalog(validate_catalog(document), raw, str(path.absolute()), path.suffix[1:].lower(), hashlib.sha256(raw).hexdigest())
 
 
+def load_catalog(path: str | Path) -> Catalog:
+    return _load_catalog_bytes(*_read_catalog_bytes(path))
+
+
 def _catalog(value: Catalog | str | Path) -> Catalog:
     return value if isinstance(value, Catalog) else load_catalog(value)
 
@@ -402,8 +434,11 @@ def list_cases(catalog, *, query: str = "", source: str | None = None,
     rows = []
     for case in catalog.document["cases"]:
         sources = sorted({row["source"] for row in case["source_options"]})
-        haystack = json.dumps(case, ensure_ascii=False).casefold()
-        if all(word in haystack for word in words) and (not source or source in sources) and (not event_kind or case["event_kind"].casefold() == event_kind.casefold()):
+        matches = True
+        if words:
+            haystack = json.dumps(case, ensure_ascii=False).casefold()
+            matches = all(word in haystack for word in words)
+        if matches and (not source or source in sources) and (not event_kind or case["event_kind"].casefold() == event_kind.casefold()):
             rows.append({k: deepcopy(case[k]) for k in ("id", "title", "event_kind", "synthetic", "summary", "event", "tags") if k in case} | {"sources": sources, "source_option_count": len(case["source_options"])})
     return {"schema": "arwen.case-list.v1", "provenance": catalog.provenance(),
             "total": len(rows), "offset": offset, "limit": limit, "cases": rows[offset:offset + limit]}
@@ -480,7 +515,7 @@ def preview_case(catalog, case_id: str, *, tier: str = "recommended",
             "research_recipe_ids": list(case.get("research_recipe_ids", [])),
             "import_issues": import_issues,
             "import_notes": import_notes,
-            "native_admission": "Configuration, source compatibility and memory are validated during create; catalog recommendations are not scientific verification.",
+            "native_admission": "Opening validates configuration, geometry and source compatibility; GPU memory admission is deferred to target Review/Run. Catalog recommendations are not scientific verification.",
             "forecast_started": False}
 
 
@@ -498,10 +533,86 @@ def _config_text(raw: dict) -> str:
     return "\n".join(parts)
 
 
+def _intent_dimensions(geometry: dict, wizard) -> list[tuple[int, int]]:
+    ratios = geometry["nest_ratios"]
+    return [tuple(int(wizard._round_up_multiple(
+                intent[key] / intent["dx_km"], 2 * (ratios[index - 1] if index else 1)))
+            for key in ("width_km", "height_km"))
+            for index, intent in enumerate(geometry["domain_intents"])]
+
+
+def _write_geometry_case(selection: dict, *, case_id: str, staged: Path,
+                         destination: Path, polygon: Path | None,
+                         acknowledgements: tuple[str, ...]):
+    """Compile declared geometry with native builders, without consulting a GPU."""
+    from gpuwm import domain_wizard as wizard
+    geometry, source = selection["geometry"], selection["source"]
+    wizard._refuse_profile_its_source_cannot_prepare(selection["physics_profile"], source)
+    profile = wizard.resolved_physics_profile(source, selection["physics_profile"])
+    ratios = tuple(geometry["nest_ratios"])
+    root_dx_m = geometry["root_dx_km"] * 1000
+    footprint = wizard.load_polygon_footprint(polygon) if polygon is not None else None
+    if footprint is not None:
+        lat, lon = footprint.center_lat, footprint.center_lon
+    else:
+        first = geometry["domain_intents"][0]
+        lat, lon = first["center_lat"], first["center_lon"]
+    projection = wizard._projection_entries(lat, lon, "auto")
+    buffers = (0.,) * (len(ratios) + 1)
+    dims = (_intent_dimensions(geometry, wizard) if "domain_intents" in geometry else
+            wizard.polygon_ladder_dims(footprint=footprint, projection=projection,
+                ratios=ratios, buffers_km=buffers, root_dx_m=root_dx_m, profile=profile))
+    target = "--polygon" if footprint is not None else "--point"
+    wizard._pole_clearance_refusal(projection, *dims[0], root_dx_m, target_option=target)
+    problem = wizard.source_coverage_refusal(projection, *dims[0], source=source, root_dx_m=root_dx_m)
+    if problem:
+        raise CatalogError(problem)
+    area = wizard.fetch_area_hint(projection, *dims[0], source=source,
+                                   root_dx_m=root_dx_m, target_option=target)
+    cycle = wizard.parse_cycle(selection["cycle"], source)
+    lead = selection["source_option"].get("forecast_start_hour", 0)
+    cadence = selection["source_option"].get("cadence_hours", wizard._fetch_cadence_h(source, lead))
+    data_dir = destination.parent / "data" / destination.stem
+    hints = {"source": source, "cycle": selection["cycle"],
+             "hours": (geometry["run_hours"] if cadence is None else
+                       max(cadence, math.ceil(geometry["run_hours"] / cadence) * cadence)),
+             "out": str(data_dir)}
+    if cadence is not None:
+        hints["cadence"] = cadence
+    if lead:
+        hints["forecast_start_hour"] = lead
+    if wizard.source_fetch_takes_a_crop_box(source):
+        hints["area"] = area
+    case_data = None
+    if source == "era5":
+        case_data = {"forcing": [str(data_dir / "era5-combined.grib")],
+                     "vtable": wizard._PACKAGED_VTABLE.name,
+                     "forcing_interval_s": (cadence * 3600 if cadence is not None else
+                                             wizard.source_forcing_interval_seconds(source)),
+                     "wps_namelist": destination.stem + ".namelist.wps",
+                     "geog_root": "${GPUWM_CASE_DATA_ROOT}/WPS_GEOG",
+                     "sfcp_to_sfcp": True, "output_domain": 1,
+                     "output_title": "gpuwm " + case_id}
+        (staged.parent / wizard._PACKAGED_VTABLE.name).write_bytes(wizard._PACKAGED_VTABLE.read_bytes())
+    text = wizard.render_config(name=case_id, start_time=cycle + timedelta(hours=lead),
+        hours=geometry["run_hours"], projection=projection, dims=dims, ratios=ratios,
+        fetch_hints=hints if wizard.source_has_fetch_front_door(source) else None,
+        case_data=case_data, root_dx_m=root_dx_m, profile=profile,
+        cumulus_requested=selection["physics_profile"] is not None,
+        nz=geometry.get("nz"), history_interval_s=geometry.get("history_interval_s"),
+        nest_history_interval_s=geometry.get("history_interval_s"),
+        acknowledgements=acknowledgements)
+    staged.write_text(text, encoding="utf-8")
+    staged.with_suffix(".namelist.wps").write_text(wizard.render_wps_namelist(
+        projection, dims, ratios, root_dx_m=root_dx_m, source=source,
+        forcing_interval_seconds=cadence * 3600 if cadence is not None else None), encoding="utf-8")
+    return footprint, buffers
+
+
 def create_case(catalog, case_id: str, *, out: str | Path, tier="recommended",
                 source_option=None, physics_profile=None, native_overrides=None,
                 card=None, vram_gib=None, acknowledgements=(), now=None,
-                expected_catalog_sha256: str | None = None) -> dict:
+                expected_catalog_sha256: str | None = None, geometry_only=False) -> dict:
     catalog = _catalog(catalog)
     if expected_catalog_sha256 is not None and catalog.sha256 != expected_catalog_sha256:
         raise CatalogError("The case catalog changed after the preview. Reload the case details before creating the configuration.")
@@ -516,7 +627,9 @@ def create_case(catalog, case_id: str, *, out: str | Path, tier="recommended",
         raise CatalogError("Create requires a new .toml configuration path")
     if os.path.lexists(destination):
         raise FileExistsError(f"The configuration already exists and will be preserved: {destination}")
-    sizing = wizard.resolve_sizing_budget(card, vram_gib)
+    if geometry_only and (card is not None or vram_gib is not None):
+        raise CatalogError("--geometry-only defers GPU memory admission; omit --card and --vram-gib")
+    sizing = None if geometry_only else wizard.resolve_sizing_budget(card, vram_gib)
     geometry = selection["geometry"]
     bounds = geometry.get("bounds_degrees")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -551,12 +664,29 @@ def create_case(catalog, case_id: str, *, out: str | Path, tier="recommended",
             argv.extend([f"--history-interval={geometry['history_interval_s']}", f"--nest-history-interval={geometry['history_interval_s']}"])
         argv.extend("--ack=" + _text(ack, "explicit acknowledgement") for ack in acknowledgements)
         native = parser.parse_args(argv)
+        footprint, buffers = None, ()
         with redirect_stdout(log), redirect_stderr(log):
-            result = wizard.domain_main(native, sizing_budget=sizing)
+            if geometry_only:
+                footprint, buffers = _write_geometry_case(selection, case_id=case_id,
+                    staged=staged, destination=destination,
+                    polygon=polygon if bounds is not None else None,
+                    acknowledgements=tuple(acknowledgements))
+                result = 0
+            else:
+                result = wizard.domain_main(native, sizing_budget=sizing)
         if result:
             raise CatalogError(f"The native domain builder could not create this selection (exit {result}):\n{log.getvalue()}")
         text = staged.read_text(encoding="utf-8").replace(str(stage), str(destination.parent)).replace(stage.as_posix(), destination.parent.as_posix())
         raw = tomllib.loads(text)
+        if "case_data" in raw and "forcing" in raw["case_data"]:
+            # The native builder authored relative inputs from its private
+            # stage. Retain their targets when publishing in the parent.
+            from gpuwm.case_data import _resolve_path
+            forcing = raw["case_data"]["forcing"]
+            entries = forcing if isinstance(forcing, list) else [forcing]
+            resolved = [str(_resolve_path(stage, item, "forcing", str(staged)).resolve())
+                        for item in entries]
+            raw["case_data"]["forcing"] = resolved if isinstance(forcing, list) else resolved[0]
         vtable = stage / wizard._PACKAGED_VTABLE.name
         if vtable.is_file() and "case_data" in raw:
             unique_vtable = stage / (destination.stem + "." + vtable.name)
@@ -573,11 +703,7 @@ def create_case(catalog, case_id: str, *, out: str | Path, tier="recommended",
         if "domain_intents" in geometry:
             from fractions import Fraction
             ratios = tuple(geometry["nest_ratios"])
-            dims = []
-            for index, intent in enumerate(geometry["domain_intents"]):
-                multiple = 2 * (ratios[index - 1] if index else 1)
-                dims.append(tuple(int(wizard._round_up_multiple(intent[key] / intent["dx_km"], multiple))
-                                  for key in ("width_km", "height_km")))
+            dims = _intent_dimensions(geometry, wizard)
             first = raw["domain"][0]
             clock = Fraction(first["time_step"]) + Fraction(first.get("time_step_fract_num", 0), first.get("time_step_fract_den", 1))
             profile = wizard.resolved_physics_profile(selection["source"], selection["physics_profile"])
@@ -608,22 +734,41 @@ def create_case(catalog, case_id: str, *, out: str | Path, tier="recommended",
             domains[row["grid_id"]].update(row["settings"])
         text = _config_text(raw)
         recipe = {"id": case_id, "method": "case catalog selection", "geometry": {"minimum_root_span_km": 0}, "validation_status": "catalog recommendations are not science validation"}
-        with redirect_stdout(log), redirect_stderr(log):
-            experiment, admission = _admission(
-                text, recipe=recipe, source=selection["source"], sizing=sizing, path=destination,
-                retry_hint="Choose a smaller tier from this catalog or make more GPU memory available. "
-                           "Keep the declared capacity equal to the target GPU.")
-            if cadence is not None:
-                phases = wizard._sizing_phases(experiment, free_bytes=sizing.free_bytes,
-                    source=selection["source"], forcing_interval_seconds=cadence * 3600,
-                    vram_gib=sizing.vram_gib, profile=sizing.device_profile)
-                budget = wizard.sizing_budget_bytes(experiment, free_bytes=sizing.free_bytes,
-                    forcing_interval_seconds=cadence * 3600, vram_gib=sizing.vram_gib, profile=sizing.device_profile)
-                if phases.peak_envelope_bytes > budget:
-                    raise CatalogError(f"The requested {cadence}h source cadence and complete domain tree need {phases.peak_envelope_bytes} bytes, beyond the {budget}-byte budget")
-                admission.update(binding_phase=phases.binding_phase, peak_envelope_bytes=phases.peak_envelope_bytes,
-                                 envelope_budget_bytes=budget, remaining_envelope_bytes=budget-phases.peak_envelope_bytes,
-                                 forcing_interval_seconds=cadence * 3600)
+        try:
+            with redirect_stdout(log), redirect_stderr(log):
+                if geometry_only:
+                    experiment = wizard.experiment_from_text(text, source=str(destination))
+                    if footprint is not None:
+                        wizard.verify_polygon_containment(experiment, footprint, buffers)
+                    admission = {"status": "geometry-validated", "memory_admission": "deferred-to-review",
+                                 "source": selection["source"], "forecast_started": False,
+                                 "prepared_inputs_validated": False,
+                                 "note": "Native configuration and geometry validated. Review/Run must admit memory on the selected execution target."}
+                else:
+                    experiment, admission = _admission(
+                        text, recipe=recipe, source=selection["source"], sizing=sizing, path=destination,
+                        retry_hint="Choose a smaller tier from this catalog or make more GPU memory available. "
+                                   "Keep the declared capacity equal to the target GPU.")
+                if cadence is not None and not geometry_only:
+                    phases = wizard._sizing_phases(experiment, free_bytes=sizing.free_bytes,
+                        source=selection["source"], forcing_interval_seconds=cadence * 3600,
+                        vram_gib=sizing.vram_gib, profile=sizing.device_profile)
+                    budget = wizard.sizing_budget_bytes(experiment, free_bytes=sizing.free_bytes,
+                        forcing_interval_seconds=cadence * 3600, vram_gib=sizing.vram_gib, profile=sizing.device_profile)
+                    if phases.peak_envelope_bytes > budget:
+                        raise MemoryAdmissionError(
+                            f"The requested {cadence}h source cadence and complete domain tree need {phases.peak_envelope_bytes} bytes, beyond the {budget}-byte budget",
+                            peak_envelope_bytes=phases.peak_envelope_bytes, budget_bytes=budget,
+                            binding_phase=phases.binding_phase, forcing_interval_seconds=cadence * 3600)
+                    admission.update(binding_phase=phases.binding_phase, peak_envelope_bytes=phases.peak_envelope_bytes,
+                                     envelope_budget_bytes=budget, remaining_envelope_bytes=budget-phases.peak_envelope_bytes,
+                                     forcing_interval_seconds=cadence * 3600)
+        except MemoryAdmissionError as error:
+            retain_final_candidate(error, text=text, requested_path=destination, stage=stage,
+                metadata={"case_id": case_id, "source": selection["source"], "tier": tier,
+                          "source_option": selection["source_option"]["id"],
+                          "catalog_sha256": catalog.sha256})
+            raise
         requested_domains = {row["grid_id"]: row["settings"] for row in selection["native_overrides"]["domains"]}
         actual_settings = []
         for domain in experiment.domains:
@@ -666,29 +811,41 @@ def export_catalog(catalog, out: str | Path, *, original=False) -> dict:
     return {"schema": "arwen.case-export.v1", "path": str(path), "sha256": hashlib.sha256(payload).hexdigest(), "original": original, "provenance": catalog.provenance()}
 
 
+def _catalog_result(args, loaded: Catalog | None = None) -> dict:
+    if args.catalog_command == "native-settings":
+        return native_settings_document()
+    if args.catalog_command == "default":
+        return default_catalog_document()
+    catalog = loaded if loaded is not None else load_catalog(
+        args.catalog if args.catalog is not None else builtin_catalog_path())
+    if args.catalog_command in {"list", "search"}:
+        return list_cases(catalog, query=args.query, source=args.source,
+                          event_kind=args.event_kind, offset=args.offset, limit=args.limit)
+    if args.catalog_command == "show":
+        return case_detail(catalog, args.case_id)
+    if args.catalog_command == "export":
+        return export_catalog(catalog, args.out, original=args.original)
+    overrides = None
+    if args.native_overrides is not None:
+        overrides = json.loads(args.native_overrides.read_text(encoding="utf-8"), object_pairs_hook=_json_object)
+    kwargs = dict(tier=args.tier, source_option=args.source_option,
+                  physics_profile=args.physics_profile, native_overrides=overrides)
+    if args.catalog_command == "create":
+        return create_case(catalog, args.case_id, out=args.out, card=args.card,
+                           vram_gib=args.vram_gib, acknowledgements=args.ack,
+                           expected_catalog_sha256=args.expected_catalog_sha256,
+                           geometry_only=args.geometry_only, **kwargs)
+    return preview_case(catalog, args.case_id, **kwargs)
+
+
 def catalog_main(args) -> int:
     try:
-        if args.catalog_command == "native-settings":
-            result = native_settings_document()
-        else:
-            catalog = load_catalog(args.catalog)
-            if args.catalog_command in {"list", "search"}:
-                result = list_cases(catalog, query=args.query, source=args.source, event_kind=args.event_kind, offset=args.offset, limit=args.limit)
-            elif args.catalog_command == "show":
-                result = case_detail(catalog, args.case_id)
-            elif args.catalog_command == "export":
-                result = export_catalog(catalog, args.out, original=args.original)
-            else:
-                overrides = None
-                if args.native_overrides is not None:
-                    overrides = json.loads(args.native_overrides.read_text(encoding="utf-8"), object_pairs_hook=_json_object)
-                kwargs = dict(tier=args.tier, source_option=args.source_option, physics_profile=args.physics_profile, native_overrides=overrides)
-                if args.catalog_command == "create":
-                    result = create_case(catalog, args.case_id, out=args.out, card=args.card, vram_gib=args.vram_gib, acknowledgements=args.ack, expected_catalog_sha256=args.expected_catalog_sha256, **kwargs)
-                else:
-                    result = preview_case(catalog, args.case_id, **kwargs)
+        result = _catalog_result(args)
         print(json.dumps(result, ensure_ascii=True, indent=None if args.json else 2, allow_nan=False, default=str))
         return 0
+    except MemoryAdmissionError as error:
+        print(json.dumps(error_document(error), ensure_ascii=True, allow_nan=False))
+        return 2
     except (ValueError, OSError) as error:
         import sys
         if args.json:
@@ -700,14 +857,18 @@ def catalog_main(args) -> int:
 
 def register_cli(subparsers) -> None:
     parser = subparsers.add_parser("case-catalog", help="browse historical-case catalogs and create native configurations")
+    _register_commands(parser)
+
+
+def _register_commands(parser) -> None:
     commands = parser.add_subparsers(dest="catalog_command", required=True)
-    for name in ("list", "search", "show", "preview", "create", "export", "native-settings"):
+    for name in ("list", "search", "show", "preview", "create", "export", "native-settings", "default"):
         command = commands.add_parser(name)
         command.add_argument("--json", action="store_true", help="emit compact JSON for the interface or scripts")
         command.set_defaults(func=catalog_main)
-        if name == "native-settings":
+        if name in {"native-settings", "default"}:
             continue
-        command.add_argument("--catalog", type=Path, required=True, help="JSON, TOML or ZIP case catalog; never interpreted as commands")
+        command.add_argument("--catalog", type=Path, help="custom JSON, TOML or ZIP catalog; defaults to the bundled historical cases")
         if name in {"list", "search"}:
             command.add_argument("--query", default="")
             command.add_argument("--source")
@@ -726,7 +887,87 @@ def register_cli(subparsers) -> None:
             command.add_argument("--expected-catalog-sha256", help="bind creation to the exact original catalog bytes displayed by preview")
             command.add_argument("--card")
             command.add_argument("--vram-gib", type=float)
+            command.add_argument("--geometry-only", action="store_true",
+                                 help="validate and open declared geometry; defer GPU memory admission to target Review/Run")
             command.add_argument("--ack", action="append", default=[], help="explicit native scientific acknowledgement; never inferred from catalog prose")
         if name == "export":
             command.add_argument("--out", type=Path, required=True)
             command.add_argument("--original", action="store_true", help="export the exact original JSON/TOML bytes; default is normalized JSON")
+
+
+class _CatalogSession:
+    """One validated catalog retained by the read-only interface worker."""
+
+    def __init__(self):
+        self.key = None
+        self.loaded = None
+
+    def load(self, path: str | Path) -> Catalog:
+        path, raw = _read_catalog_bytes(path)
+        key = (str(path.absolute()), hashlib.sha256(raw).hexdigest())
+        if self.key != key:
+            # Parse exactly the bytes hashed above, including after a file edit.
+            loaded = _load_catalog_bytes(path, raw)
+            self.key, self.loaded = key, loaded
+        return self.loaded
+
+
+class _QueryParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise CatalogError(message)
+
+    def exit(self, status=0, message=None):
+        raise CatalogError(message or "The catalog worker accepts queries, not help requests")
+
+
+def _tui_server(requests=None, responses=None) -> int:
+    """Private NDJSON interface: argument arrays in, one read-only result out."""
+    import sys
+    requests = sys.stdin.buffer if requests is None else requests
+    responses = sys.stdout if responses is None else responses
+    parser = _QueryParser(prog="case-catalog", add_help=False, allow_abbrev=False)
+    _register_commands(parser)
+    session = _CatalogSession()
+    limit = 64 * 1024
+    while line := requests.readline(limit + 1):
+        try:
+            if len(line) > limit:
+                # Keep the next request aligned after an oversized line.
+                while not line.endswith(b"\n"):
+                    line = requests.readline(limit + 1)
+                    if not line:
+                        break
+                raise CatalogError("Catalog query exceeds 64 KiB")
+            argv = json.loads(line.decode("utf-8"))
+            if (not isinstance(argv, list) or not argv or len(argv) > 128
+                    or any(not isinstance(arg, str) for arg in argv)):
+                raise CatalogError("A catalog query must be a JSON array of string arguments")
+            if argv[0] not in {"list", "show", "preview"} or any(arg in {"-h", "--help"} for arg in argv):
+                raise CatalogError("The catalog worker only accepts list, show and preview queries")
+            # Diagnostics must not become extra protocol lines.
+            with redirect_stdout(sys.stderr):
+                args = parser.parse_args(argv)
+                loaded = session.load(args.catalog if args.catalog is not None else builtin_catalog_path())
+                result = _catalog_result(args, loaded)
+            encoded = json.dumps(result, ensure_ascii=True, allow_nan=False, default=str)
+        except (ValueError, OSError, RecursionError, TypeError, KeyError, AttributeError) as error:
+            encoded = json.dumps({"schema": "arwen.case-error.v1", "error": str(error),
+                                  "created": False}, ensure_ascii=True)
+        responses.write(encoded + "\n")
+        responses.flush()
+    return 0
+
+
+def main(argv=None) -> int:
+    """Lightweight module entrypoint using the same catalog command handlers."""
+    import sys
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv == ["--tui-server"]:
+        return _tui_server()
+    parser = argparse.ArgumentParser(prog="python -m gpuwm.case_catalog")
+    _register_commands(parser)
+    return catalog_main(parser.parse_args(argv))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

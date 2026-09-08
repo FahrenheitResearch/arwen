@@ -1,0 +1,6 @@
+[submodule "c-blosc2"]
+	path = c-blosc2
+	url = https://github.com/Blosc/c-blosc2.git
+[submodule "c-blosc"]
+	path = c-blosc
+	url = git@github.com:Blosc/c-blosc.git

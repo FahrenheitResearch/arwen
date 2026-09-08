@@ -24,7 +24,8 @@ IMAGE = ("quay.io/pypa/manylinux_2_28_x86_64@sha256:"
          "53390351aeb4688114b02c36a23b3e6ce1166ee9b7afc5df1a4f776354fc764c")
 RUST_VERSION = "1.94.0"
 WORKSPACES = ("tools/grib1_bridge", "tools/rustwx",
-              "tools/region_global_dealias", "tools/rw_wps", "tools/arwen-tui")
+              "tools/region_global_dealias", "tools/rw_wps", "tools/arwen-tui",
+              "tools/zarr_bridge")
 CONTEXT_NAME = ".arwen-manylinux-build-context.json"
 CONTEXT_SCHEMA = "arwen.manylinux.build-context.v1"
 
@@ -262,8 +263,8 @@ def qualify_artifacts(release: Path, source: Path, revision: str,
     readelf = shutil.which("readelf", path=commands.environment.get("PATH"))
     require(readelf is not None, "readelf is required to verify native compatibility")
     declarations = bridge_assets.BUNDLED_ARTIFACTS
-    require(len(declarations) == 27 and len({a.name for a in declarations}) == 27,
-            "release declaration must contain all 27 distinct native artifacts")
+    require(len(declarations) == 28 and len({a.name for a in declarations}) == 28,
+            "release declaration must contain all 28 distinct native artifacts")
     results = []
     for artifact in declarations:
         path = release / bridge_assets.artifact_filename(artifact, "linux-x86_64")
@@ -405,7 +406,7 @@ def main(argv: list[str] | None = None) -> int:
         require(toolchain_identity(args.rust_toolchain, commands, source) == report["toolchain"],
                 "copied Rust toolchain changed during build")
         report["qualified_output"] = emit_artifacts(args.output, report["artifacts"])
-        report["status"] = "PASS_MANYLINUX_2_28_ALL_27_NATIVE_ARTIFACTS"
+        report["status"] = "PASS_MANYLINUX_2_28_ALL_28_NATIVE_ARTIFACTS"
         returncode = 0
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"

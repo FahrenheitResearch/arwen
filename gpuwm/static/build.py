@@ -181,12 +181,15 @@ class GeogSelection:
         namelist = _parse_wps_namelist(data.wps_namelist)
         values = namelist.get("geog_data_res", ["default"])
         max_dom = int(namelist.get("max_dom", [1])[0])
-        index = int(domain_id) - 1
-        if index < 0:
+        from gpuwm.wps_domain_ids import domain_ids_from_wps_text
+        ids = domain_ids_from_wps_text(
+            Path(data.wps_namelist).read_text(encoding="utf-8-sig"), max_dom)
+        if type(domain_id) is not int or domain_id < 1:
             raise ValueError(f"domain_id must be positive, got {domain_id}")
-        if index >= max_dom:
+        if domain_id not in ids:
             raise ValueError(
-                f"domain_id={domain_id} exceeds namelist.wps max_dom={max_dom}")
+                f"domain_id={domain_id} is absent from namelist.wps domain IDs {ids} (max_dom={max_dom})")
+        index = ids.index(domain_id)
         # WPS v4.6 gridinfo_module.F initializes every array element to
         # 'default', then Fortran namelist assignment replaces only elements
         # explicitly listed.  A single non-default value therefore affects

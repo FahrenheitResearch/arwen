@@ -23,8 +23,8 @@
    }
   }
  ],
- "recorded_at_commit": "f289e056b617cc41dbd96925d1a036bb8924fb76",
- "recorded_on": "2026-09-06",
+ "recorded_at_commit": "7033c37f6cc29b243aafe986fad5ed3702dffb99",
+ "recorded_on": "2026-09-08",
  "legs": {
   "stage1": {
    "list": "tools/battery/stage1_files.txt",
@@ -32,7 +32,7 @@
    "environment": {
     "GPUWM_NO_LOCAL_GPU": "1"
    },
-   "collected_total": 12470,
+   "collected_total": 12946,
    "files": {
     "tests/test_runplan.py": 142,
     "tests/test_nest_spawn_soil.py": 20,
@@ -59,10 +59,10 @@
     "tests/test_mynn_radiation_profiles.py": 24,
     "tests/test_physics_composition_walk.py": 21,
     "tests/test_physics_md_reachability_claims.py": 16,
-    "tests/test_ftz_route_inventory.py": 6,
+    "tests/test_ftz_route_inventory.py": 7,
     "tests/test_provenance_wire.py": 6,
     "tests/test_wrf_legacy_radiation.py": 10,
-    "tests/test_render_rust.py": 62,
+    "tests/test_render_rust.py": 67,
     "tests/test_render_basemap_delivery.py": 22,
     "tests/test_radiation_off_land_surface_guard.py": 13,
     "tests/test_downward_longwave_source.py": 13,
@@ -90,12 +90,12 @@
     "tests/test_tiles_distribution.py": 9,
     "tests/test_multigpu_specified_bc.py": 25,
     "tests/test_streamed_carrier_freshness.py": 16,
-    "tests/test_cargo_gate_manifest.py": 146,
+    "tests/test_cargo_gate_manifest.py": 150,
     "tests/test_verify_release_artifacts.py": 38,
     "tests/test_release_snapshot_front_door.py": 6,
     "tests/test_release_snapshot_machine_paths.py": 20,
     "tests/test_release_snapshot_modes.py": 3,
-    "tests/test_stage1_manifest.py": 671,
+    "tests/test_stage1_manifest.py": 703,
     "tests/test_publish_workflow_state_machine.py": 58,
     "tests/test_verify_source_bridge_pins.py": 9,
     "tests/test_wheel_pin_gate.py": 7,
@@ -151,7 +151,7 @@
     "tests/test_obs_sweeps_odim_v3.py": 4,
     "tests/test_chain_stage_env.py": 3,
     "tests/test_cli.py": 18,
-    "tests/test_bridge_fetch.py": 48,
+    "tests/test_bridge_fetch.py": 49,
     "tests/test_table_fetch.py": 22,
     "tests/test_fetch_geog.py": 41,
     "tests/test_source_adapters.py": 113,
@@ -214,7 +214,7 @@
     "tests/test_kernel_source_freeze_per_module.py": 102,
     "tests/test_cuda_libm_table_copies.py": 37,
     "tests/test_excluded_subsystem_scan_is_armed.py": 18,
-    "tests/test_battery_list_census.py": 1439,
+    "tests/test_battery_list_census.py": 1503,
     "tests/test_fastfix_batched_durations.py": 6,
     "tests/test_tracked_file_writers_keep_lf.py": 34,
     "tests/test_p3_legacy_rrtmg_radii.py": 6,
@@ -311,7 +311,7 @@
     "tests/test_sim_restart.py": 6,
     "tests/test_domain_wizard_default_clock.py": 21,
     "tests/test_follow_window_transport.py": 10,
-    "tests/test_vendored_cargo_registry.py": 12,
+    "tests/test_vendored_cargo_registry.py": 14,
     "tests/test_prepared_followers.py": 12,
     "tests/test_polygon_operation_bounds.py": 19,
     "tests/test_go_prepared_restart.py": 36,
@@ -320,7 +320,7 @@
     "tests/test_wizard_sizing_authority.py": 13,
     "tests/test_domain_polygon.py": 13,
     "tests/test_single_prepared_restart.py": 25,
-    "tests/test_starter_template.py": 26,
+    "tests/test_starter_template.py": 57,
     "tests/test_mapped_owned_field.py": 9,
     "tests/test_trace_gas_overrides.py": 21,
     "tests/test_tiled_run_close.py": 11,
@@ -342,7 +342,7 @@
     "tests/test_ingest_preflight.py": 30,
     "tests/test_tui_products.py": 4,
     "tests/test_tui_sim_products.py": 14,
-    "tests/test_remote_cli.py": 26,
+    "tests/test_remote_cli.py": 27,
     "tests/test_remote_snapshot.py": 23,
     "tests/test_remote_worker_linux.py": 8,
     "tests/test_research_catalog.py": 155,
@@ -351,14 +351,30 @@
     "tests/test_gfs_initial_perturbation.py": 15,
     "tests/test_downscale_archive_guards.py": 24,
     "tests/test_downscale_auto_vram.py": 5,
-    "tests/test_case_catalog.py": 47,
+    "tests/test_case_catalog.py": 65,
     "tests/test_source_availability.py": 16,
     "tests/test_cli_memory_admission.py": 8,
     "tests/test_go_supplements.py": 9,
     "tests/test_hrrr_soil_choice.py": 4,
     "tests/test_static_platform_ci.py": 29,
     "tests/test_install_scripts.py": 12,
-    "tests/test_check_display.py": 5
+    "tests/test_check_display.py": 5,
+    "tests/test_cds_acquisition_readiness.py": 7,
+    "tests/test_companion_domains.py": 78,
+    "tests/test_companion_forcing.py": 15,
+    "tests/test_companion_schedule.py": 18,
+    "tests/test_configuration_recovery.py": 9,
+    "tests/test_lake_acquisition.py": 8,
+    "tests/test_lake_temperature.py": 19,
+    "tests/test_remote_artifact_cache.py": 9,
+    "tests/test_remote_artifacts.py": 56,
+    "tests/test_remote_input_transfer.py": 12,
+    "tests/test_remote_plan.py": 45,
+    "tests/test_runplan_estimate_device.py": 5,
+    "tests/test_runplan_native_parent.py": 6,
+    "tests/test_wps_domain_ids.py": 12,
+    "tests/test_remote_processed.py": 8,
+    "tests/test_render_receipts.py": 10
    }
   },
   "always": {
@@ -367,12 +383,12 @@
    "environment": {
     "GPUWM_NO_LOCAL_GPU": "1"
    },
-   "collected_total": 2867,
+   "collected_total": 2970,
    "files": {
-    "tests/test_stage1_manifest.py": 671,
-    "tests/test_cargo_gate_manifest.py": 146,
+    "tests/test_stage1_manifest.py": 703,
+    "tests/test_cargo_gate_manifest.py": 150,
     "tests/test_tiles_gate_manifest.py": 27,
-    "tests/test_battery_list_census.py": 1439,
+    "tests/test_battery_list_census.py": 1503,
     "tests/test_line_ending_stability.py": 12,
     "tests/test_release_notes_are_public_facing.py": 23,
     "tests/test_case_token_leakage.py": 45,
@@ -381,7 +397,7 @@
     "tests/test_physics_md_reachability_claims.py": 16,
     "tests/test_shipped_acknowledgement_justifications.py": 19,
     "tests/test_evidence_axes.py": 15,
-    "tests/test_ftz_route_inventory.py": 6,
+    "tests/test_ftz_route_inventory.py": 7,
     "tests/test_ftz_claim_consistency.py": 9,
     "tests/test_ftz_render.py": 26,
     "tests/test_provenance_gate.py": 26,
@@ -400,7 +416,7 @@
     "tests/test_tracked_file_writers_keep_lf.py": 34,
     "tests/test_mutation_gate_manifest.py": 12,
     "tests/test_kernel_frame_recordings.py": 7,
-    "tests/test_vendored_cargo_registry.py": 12
+    "tests/test_vendored_cargo_registry.py": 14
    }
   }
  }

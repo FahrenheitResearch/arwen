@@ -648,6 +648,30 @@ def resolved_case_data_paths(raw: dict, *, base_dir: Path, source: str) -> dict:
     return result
 
 
+def forcing_has_glob(value: str) -> bool:
+    """Ignore the literal question mark in a Windows extended-path prefix."""
+    import ntpath
+    # pathlib/canonicalize emit \\?\ drive and UNC paths on Windows. The
+    # prefix identifies the filesystem namespace, not a forcing wildcard.
+    _drive, remainder = ntpath.splitdrive(value)
+    return bool(_GLOB_CHARS & set(remainder))
+
+
+def same_case_data_path(first, second) -> bool:
+    """Compare missing acquisition outputs in equivalent Windows namespaces."""
+    import os
+    def identity(value):
+        path = str(Path(value).resolve())
+        if os.name == "nt":
+            if path[:8].lower() == "\\\\?\\unc\\":
+                path = "\\\\" + path[8:]
+            elif path.startswith("\\\\?\\"):
+                path = path[4:]
+            path = os.path.normcase(path)
+        return path
+    return identity(first) == identity(second)
+
+
 def _resolve_forcing(base_dir: Path, value, source: str, *,
                      require_match: bool = True) -> tuple[Path, ...]:
     entries = value if isinstance(value, list) else [value]
@@ -658,7 +682,7 @@ def _resolve_forcing(base_dir: Path, value, source: str, *,
     resolved: list[Path] = []
     for entry in entries:
         path = _resolve_path(base_dir, entry, "forcing", source)
-        if _GLOB_CHARS & set(str(entry)):
+        if forcing_has_glob(str(entry)):
             matches = sorted(Path(hit) for hit in _glob.glob(str(path)))
             if not matches:
                 # A caller that never opens the forcing (gpuwm static)

@@ -93,6 +93,9 @@ $Manifest = @(
     # The bundled terminal workspace and its doctor --version probe.
     'tools/arwen-tui/target/release/arwen-tui.exe'
 
+    # Regular-grid forcing decode must exercise the native Zarr reader.
+    'tools/zarr_bridge/target/release/rw_zarr.exe'
+
     # GRIB decode + the MET intermediate writer.  The `--engine rust` fetch
     # and prep paths; `gpuwm_preprocess_cpu.dll` is the regrid/transform half.
     'tools/grib1_bridge/target/release/gfs_grib2_bridge.exe'

@@ -712,6 +712,8 @@ def grids_from_wps_namelist(path) -> list[ProjectedGrid]:
     proj = str(v.get("map_proj", ["lambert"])[0]).lower()
     cls = projection_class(proj)
     max_dom = int(v.get("max_dom", [1])[0])
+    from gpuwm.wps_domain_ids import domain_ids_from_wps_text
+    domain_ids_from_wps_text(Path(path).read_text(encoding="utf-8-sig"), max_dom)
     e_we, e_sn = v["e_we"], v["e_sn"]
     # &share/max_dom and the &geogrid per-domain arrays are declared
     # independently in a namelist.wps, so nothing but this check stops
@@ -764,6 +766,8 @@ def grids_from_wps_namelist(path) -> list[ProjectedGrid]:
             e_we=int(e_we[0]), e_sn=int(e_sn[0]))]
     for n in range(1, max_dom):
         parent_id = int(v["parent_id"][n])
+        if not 1 <= parent_id <= n:
+            raise ValueError(f"WPS slot {n + 1} requires an earlier parent slot, got {parent_id}")
         parent = grids[parent_id - 1]
         ratio = int(v["parent_grid_ratio"][n])
         parent_dx, parent_dy = spacing_by_grid_id[parent_id]

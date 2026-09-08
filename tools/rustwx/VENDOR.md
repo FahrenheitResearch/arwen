@@ -87,6 +87,14 @@ command-line bins and their 9.8 MB test fixtures.
    than one whole-hour frame (`windowed_store::windowed_axis_ready`),
    with per-plane availability proven at compute time as ever.  The
    source tree gated the lane on `ModelId::Hrrr`.
+   Windowed exports also follow the requested frame scope: all stored
+   whole-hour anchors for `--frames all`, or the selected stored anchor
+   for `--frames N`. `batch_render` reports each anchor's output or
+   blocker and includes it in work limits; `render_all` passes the
+   stored prefix through that anchor to the unchanged native window
+   computation. Earlier unselected frames remain baseline context and
+   later frames cannot replace the requested valid time. Fixed-hour
+   windows remain refused on exact-time ordinal axes.
 7. `windowed_store::read_source_plane` accepts the wrfout import
    lane's names for physically identical planes: `apcp` (run-total
    APCP) behind `apcp_run_total`, `relative_humidity_2m` behind

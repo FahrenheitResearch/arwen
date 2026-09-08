@@ -316,7 +316,7 @@ def test_a_measured_failure_outranks_an_absent_measurement():
 # ---------------------------------------------------------------------------
 
 def test_the_forcing_decode_is_priced_in_host_bytes(tmp_path):
-    """The arithmetic, on its own: float64 x 204 source fields x the source
+    """The arithmetic, on its own: float64 x 208 source fields x the source
     grid x every decoded valid time x two retained copies."""
     from gpuwm.core.preflight import estimate_ingest
     from gpuwm.experiment import build_experiment
@@ -330,14 +330,14 @@ def test_the_forcing_decode_is_priced_in_host_bytes(tmp_path):
     ingest = estimate_ingest(exp, source="era5",
                              source_grid_points=points,
                              decoded_valid_times=_DECODED_VALID_TIMES)
-    assert ingest.host_fields_per_time == 204     # 37 x (3 + U + V) + 19
-    assert ingest.host_forcing_bytes == 8 * 204 * points * 8 * 2
+    assert ingest.host_fields_per_time == 208     # 37 x (3 + U + V) + 23
+    assert ingest.host_forcing_bytes == 8 * 208 * points * 8 * 2
     # The published worked example, to the hundredth of a GiB.
-    assert round(ingest.host_forcing_bytes / GIB, 2) == 25.25
+    assert round(ingest.host_forcing_bytes / GIB, 2) == 25.74
     # ...and it is HOST memory: no device total moved.
     assert estimate_ingest(exp, source="era5").peak_envelope_bytes \
         == ingest.peak_envelope_bytes
-    # 204 is the NOMINAL inventory and stands in only when no decoded
+    # 208 is the NOMINAL inventory and stands in only when no decoded
     # count is in hand.  A caller holding a catalog passes its own, and
     # that one wins.
     decoded = estimate_ingest(exp, source="era5",
@@ -353,12 +353,12 @@ def test_the_field_count_is_the_decoded_one_not_the_nominal_table(
     """A legal config that decodes less is charged less.
 
     ``SOURCE_ANALYSIS_LEVELS["era5"]`` is 37 and
-    ``SOURCE_ANALYSIS_SURFACE_FIELDS["era5"]`` is 19, but nothing obliges
+    ``SOURCE_ANALYSIS_SURFACE_FIELDS["era5"]`` is 23, but nothing obliges
     a config to match them: the input preflight's ``_check_levels`` asks
     only that the levels be finite, strictly increasing, reach ``p_top``
     and go down to 1000 hPa, and two of the required surface names are
     optional.  A 13-level retrieval decodes 82 fields where the table
-    charges 204 -- a 2.5x over-statement on a figure that gates a
+    charges 208 -- a 2.5x over-statement on a figure that gates a
     REFUSAL, which would refuse a run that would have completed.  The
     exact count is free, because the catalog handed over by the half of
     this command that runs first IS the decoded arrays.
