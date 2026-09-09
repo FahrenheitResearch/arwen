@@ -204,6 +204,7 @@ def _status(directory):
         job["source_config_sha256"] = source["config_sha256"]
         job["source_config_path"] = source["config_path"]
     job["parent_job"] = record.get("parent_job")
+    job["viewer_capabilities"] = {"processed_frame_v2": True, "processed_member_stream_v2": True}
     job["state"] = "starting"
     if (directory / "started.json").exists():
         started = _json(directory / "started.json")
@@ -229,6 +230,19 @@ def _status(directory):
             # Durable ownership/state remains authoritative during an atomic
             # native update or unavailable progress receipt. Never infer exit.
             pass
+        if directory.parent.name == ".arwen-jobs":
+            compact = directory.parent.parent / ".arwen-processed-v2" / record["id"]
+            for key, path, schema in (
+                ("background_maps", compact / "preparation.json", "arwen.native-store-preparation.v1"),
+                ("native_plots", compact / "native-plots" / "status.json", "arwen.native-plot-progress.v1"),
+            ):
+                try:
+                    if path.is_file() and not path.is_symlink() and path.stat().st_size <= 64 * 1024:
+                        value = _json(path)
+                        if value.get("schema") == schema and value.get("job_id") == record["id"]:
+                            job[key] = value
+                except (OSError, ValueError):
+                    pass
     return job
 
 
@@ -504,14 +518,16 @@ def _launch_review(request, workspace, review, sources, snapshots, *, command_fa
         if time.monotonic() >= deadline:
             break
         time.sleep(.02)
-    if record["action"] == "start-plan" and worker_command is None:
-        # Launch from the RPC's process, as a sibling of the durable forecast
-        # owner. The store queue must not become a forecast-owned descendant.
-        try:
-            from gpuwm.remote_processed import ensure
-            ensure(workspace, identifier)
-        except (OSError, ValueError, RuntimeError) as error:
-            print("Native store queue could not start: " + str(error)[:1000], file=sys.stderr)
+    # The RPC caller launches this detached watcher outside the durable job's
+    # descendant tree. It can finish map preparation after integration ends.
+    # The watcher only queues compact 2D maps; full science remains on demand.
+    try:
+        from gpuwm.remote_preparation_v2 import ensure
+        ensure(workspace, identifier)
+        from gpuwm.remote_native_plots import ensure as ensure_plots
+        ensure_plots(workspace, identifier)
+    except (OSError, ValueError) as error:
+        _write(directory / "preparation-start-error.json", {"error": str(error)[:2000], "at": _now()})
     return {"job": _status(directory)}
 
 
@@ -574,7 +590,7 @@ def dispatch(request):
                "from_checkpoint", "dry_run", "expected_config_sha256", "expected_wps_sha256", "expected_input_sha256",
                "expected_checkpoint_sha256", "expected_checkpoint_set_sha256", "expected_prepared_sha256",
                "bundle", "bundle_id", "expected_bundle_sha256", "expected_plan_sha256", "domain", "inputs", "expected_source_blobs_sha256",
-               "sequence", "after_sequence"}
+               "sequence", "after_sequence", "profile", "expected_run_id", "prefetch_sequences"}
     if set(request) - allowed:
         raise ValueError("unsupported remote request fields: " + ", ".join(sorted(set(request) - allowed)))
     workspace = _workspace(request)
@@ -588,14 +604,19 @@ def dispatch(request):
     if action == "artifact-index":
         from gpuwm.remote_artifacts import catalog
         value = catalog(request, workspace, metadata_only=True)
-        from gpuwm.remote_processed import ensure, index_metadata
+        from gpuwm.remote_processed_v2 import index_metadata
         try:
-            ensure(workspace, request["job"])
             value["processed"] = index_metadata(workspace, request["job"])
         except (OSError, ValueError, RuntimeError) as error:
-            value["processed"] = {"schema": "arwen.native-store-queue.v1", "job_id": request["job"],
+            value["processed"] = {"schema": "arwen.native-store-queue.v2", "job_id": request["job"],
                                   "state": "failed", "error": str(error)[:2000]}
         return {"artifact_index": value}
+    if action == "processed-frame-v2":
+        from gpuwm.remote_processed_v2 import catalog
+        return {"processed_frame": catalog(request, workspace)}
+    if action == "native-plots":
+        from gpuwm.remote_native_plots import catalog
+        return {"native_plots": catalog(request, workspace)}
     if action == "processed-frame":
         from gpuwm.remote_processed import catalog
         return {"processed_frame": catalog(request, workspace)}
@@ -627,7 +648,8 @@ def dispatch(request):
                                  "host_key_verification": "OpenSSH strict known_hosts", "process_handles": "Linux pidfd",
                                  "stage_plan_v1": True, "review_plan_v1": True, "start_plan_v1": True,
                                  "artifact_sync_v1": True, "artifact_index_v1": True,
-                                 "artifact_sequence_v1": True, "input_stream_v1": True}}
+                                 "artifact_sequence_v1": True, "input_stream_v1": True,
+                                 "processed_frame_v2": True, "processed_member_stream_v2": True}}
     if action in ("start", "resume"):
         if type(request.get("dry_run", False)) is not bool:
             raise ValueError("dry_run must be a boolean")
@@ -732,10 +754,14 @@ def main(argv=None):
     parser.add_argument("--rpc", action="store_true")
     parser.add_argument("--artifact-stream", action="store_true")
     parser.add_argument("--processed-stream", action="store_true")
+    parser.add_argument("--processed-member-stream-v2", action="store_true")
     parser.add_argument("--input-stream", action="store_true")
     parser.add_argument("--run")
     parser.add_argument("--token")
     args = parser.parse_args(argv)
+    if args.processed_member_stream_v2:
+        from gpuwm.remote_processed_v2 import stream_main
+        return stream_main()
     if args.processed_stream:
         from gpuwm.remote_processed import stream_main
         return stream_main()

@@ -886,7 +886,7 @@ def test_restart_v5_serializes_one_microphysics_set_and_reads_bound_v2_layout(
         payload = {key: data[key] for key in data.files}
     header = json.loads(bytes(bytearray(
         payload[restart._HEADER_KEY])).decode("utf-8"))
-    assert header["format_version"] == 5
+    assert header["format_version"] == restart.RESTART_FORMAT_VERSION
     assert not any(key.startswith("driver/microphysics/")
                    for key in header["array_manifest"])
 
@@ -1365,7 +1365,7 @@ def test_nssl2_restart_contract_pins_exact_canonical_inventory(
     path = restart.write_restart(tmp_path / "nssl2.npz", state, cfg)
     header = restart.read_restart_header(path)
 
-    assert header["format_version"] == 5
+    assert header["format_version"] == restart.RESTART_FORMAT_VERSION
     contract = header["physics_setup"]["microphysics"]["restart_contract"]
     assert contract == {
         "schema_version": restart.NSSL2_RESTART_CONTRACT_VERSION,
@@ -1775,7 +1775,7 @@ def test_restart_header_binds_resolved_physics_and_active_assets(
     header = restart.read_restart_header(path)
     identity = header["physics_setup"]
 
-    assert header["format_version"] == 5
+    assert header["format_version"] == restart.RESTART_FORMAT_VERSION
     assert header["physics_setup_fingerprint"] == \
         restart.physics_setup_fingerprint(state, cfg)
     assert identity["schema_version"] == restart.PHYSICS_SETUP_SCHEMA_VERSION
@@ -2684,6 +2684,15 @@ def test_tree_restart_past_the_stop_tick_refuses_and_names_the_remedy(
 #: a wall-clock stamp, the installed release, and the publish UUID.
 _VOLATILE_CHECKPOINT_HEADER = ("created", "producer", "checkpoint_set_id")
 
+#: The format stamp every historical digest in this file and its two
+#: per-change siblings was harvested under.  v6 declared the 2.7.0 break
+#: (ENG-010 / ENG-011: adaptive + eta_levels echo, fields/ustm, held/gf_*),
+#: so the stamp is normalised back to 5 before hashing: these digests
+#: attribute WHAT ELSE moved, and the stamp is the one header field whose
+#: move is declared rather than attributed.  The live stamp is asserted
+#: separately (test_the_live_format_stamp_is_the_declared_v6_and_v5_is_named).
+_HISTORICAL_FORMAT_VERSION = 5
+
 
 def _canonical_member_digest(path) -> str:
     """One checkpoint member's bytes, minus the volatile header fields."""
@@ -2693,6 +2702,7 @@ def _canonical_member_digest(path) -> str:
             data[restart._HEADER_KEY])).decode("utf-8"))
         for name in _VOLATILE_CHECKPOINT_HEADER:
             header.pop(name, None)
+        header["format_version"] = _HISTORICAL_FORMAT_VERSION
         digest.update(json.dumps(header, sort_keys=True).encode("utf-8"))
         for name in sorted(data.files):
             if name == restart._HEADER_KEY:
@@ -2854,6 +2864,7 @@ def _digest_without_config_keys(path, keys) -> str:
             data[restart._HEADER_KEY])).decode("utf-8"))
         for name in _VOLATILE_CHECKPOINT_HEADER:
             header.pop(name, None)
+        header["format_version"] = _HISTORICAL_FORMAT_VERSION
         for key in keys:
             header["config"].pop(key, None)
         values = {key: value for key, value in header["config"].items()
@@ -2936,6 +2947,48 @@ def test_a_lifecycle_free_tree_checkpoint_is_byte_identical(
     assert _canonical_member_digest(root_path) == _LIFECYCLE_FREE_ROOT_DIGEST
     assert _canonical_member_digest(child_path) == \
         _LIFECYCLE_FREE_CHILD_DIGEST
+
+
+def test_the_live_format_stamp_is_the_declared_v6_and_v5_is_named(
+        monkeypatch, tmp_path):
+    """The break is DECLARED: a real 2.6.5-shaped member is refused by name.
+
+    The member is this build's own root checkpoint re-stamped 5 with the
+    thirteen 2.7.0 config keys removed -- the header a 2.6.5 build wrote --
+    so the refusal is exercised on a real file through the tree reader, not
+    on a dict.  It must name the release, the format and the remedy, and
+    it must fire BEFORE the field-by-field identity walk that would read
+    as "your configuration changed".
+    """
+    from gpuwm.core.model import ADAPTIVE_TIMESTEP_RUN_FIELDS
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
+    root_path = restart.write_tree_restart(
+        tmp_path, source, start + timedelta(seconds=3600))
+    assert restart.read_restart_header(root_path)["format_version"] == 6
+    assert restart.RESTART_FORMAT_VERSION == 6
+    assert 5 in restart.RETIRED_RESTART_FORMAT_VERSIONS
+    for member in tmp_path.glob("gpuwmrst_d0*_*.npz"):
+        with np.load(member, allow_pickle=False) as data:
+            payload = {key: data[key] for key in data.files}
+        header = json.loads(bytes(bytearray(
+            payload[restart._HEADER_KEY])).decode("utf-8"))
+        header["format_version"] = 5
+        for key in ADAPTIVE_TIMESTEP_RUN_FIELDS + ("eta_levels",):
+            header["config"].pop(key, None)
+        payload[restart._HEADER_KEY] = np.frombuffer(
+            json.dumps(header).encode("utf-8"), dtype=np.uint8).copy()
+        np.savez(member, **payload)
+    resumed, _ = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
+    with pytest.raises(restart.RestartMismatchError) as refused:
+        restart.restore_tree_restart(root_path, resumed)
+    message = str(refused.value)
+    assert "2.6.5 checkpoint format 5" in message
+    assert "fields/ustm" in message and "held/gf_rthblten" in message
+    assert "restart from the run's initial conditions" in message
+    assert "absent from the restart file" not in message, (
+        "the identity walk spoke before the version gate")
 
 
 def test_a_lifecycle_free_tree_checkpoint_names_no_lifecycle_key(
@@ -4954,3 +5007,58 @@ def test_a_resume_whose_scheme_publishes_no_olr_ignores_the_key(monkeypatch,
     driver2.olr = None                       # no TOA-flux producer
     restart.restore_restart(target, state2, cfg)         # must not raise
     assert driver2.olr is None
+
+
+class _FakeStreamedDomainForSealedWrite:
+    """A streamed domain that records the gather the sealed route must make."""
+
+    def __init__(self, directory):
+        self.directory = directory
+        self.calls: list = []
+
+    def attach_to(self, state):
+        state._streamed_domain = self
+        self._state = state
+        return self
+
+    def impose_clock(self, seconds):
+        self.calls.append(("impose_clock", float(seconds)))
+
+    def refresh_state(self, state=None):
+        # What members exist at the moment of the gather: must be none.
+        self.calls.append(("refresh_state",
+                           sorted(p.name for p in self.directory.glob("*.npz"))))
+        return 1
+
+    def write_restart(self, *args, **kwargs):
+        raise AssertionError(
+            "the store writer has no sealed route and must not be used for a "
+            "sealed forcing-extension checkpoint")
+
+
+def test_a_streamed_domain_is_gathered_before_a_sealed_forcing_extension_checkpoint(
+        monkeypatch, tmp_path):
+    """The sealed route wrote a streamed domain's STALE resident state.
+
+    A streamed domain's arrays live in its store and its DomainState stopped
+    changing at attach; the sealed route has no store writer and fell
+    through to the resident writer, so a horizon-extension checkpoint of a
+    tiled tree was the analysis-era state under a sealed header, restored
+    into the canonical store as if it were the forecast (ENG-012).  The
+    store is gathered onto the state (refresh_state) with the exact clock
+    imposed BEFORE any validation or member write.
+    """
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
+    stream = _FakeStreamedDomainForSealedWrite(tmp_path).attach_to(
+        source.root.state)
+    root_path = restart.write_tree_restart(
+        tmp_path, source, start + timedelta(seconds=3600),
+        sealed_forcing_extension=True)
+    assert ("impose_clock", 3600.0) in stream.calls
+    refreshes = [call for call in stream.calls if call[0] == "refresh_state"]
+    assert len(refreshes) == 1
+    assert refreshes[0][1] == [], "the gather must precede every member write"
+    assert stream.calls.index(("impose_clock", 3600.0)) < stream.calls.index(refreshes[0])
+    header = restart.read_restart_header(root_path)
+    assert header["forcing_extension_mode"] == restart.SEALED_FORCING_EXTENSION_MODE

@@ -653,6 +653,12 @@ def streaming_advisory(exp, *, machine=None,
                 "walk REFUSES it: " + tree_road.refusal
                 + "  The figures below therefore describe the resident "
                 "tree, which is the only road left to quote.")
+        elif getattr(tree_road, "report_error", None):
+            nested_note = (
+                "  This tree is NESTED and the per-domain pricing walk "
+                "FAILED before it could price it (" + tree_road.report_error
+                + "); that is a defect in the report, not a refusal of the "
+                "tree, so the figures below describe the resident tree.")
         elif not tree_road.streams_any:
             nested_note = (
                 "  This tree is NESTED and the run door's own per-domain "
@@ -5720,6 +5726,10 @@ class ExperimentMemoryEstimate:
     # Mixed variants keep the modern workspace resident during legacy calls.
     # Pure-legacy estimates retain their historical workspace-envelope field.
     legacy_call_peak_by_domain: tuple[int, ...] = ()
+    # Carry the same resolved device into the independent prepared tile
+    # inventory. It is internal pricing context, never an extra GPU query.
+    local_memory_profile: DeviceLocalMemoryProfile | None = None
+    retained_forcing_intervals: int = 0
 
     @property
     def resident_bytes(self) -> int:
@@ -6142,6 +6152,7 @@ class IngestMemoryEstimate:
     context_bytes: int = CUDA_CONTEXT_BYTES
     device_overhead_bytes: int = field(
         default_factory=lambda: platform_projection_constants()[1])
+    preprocess_backend: str = "cuda"
 
     def category_bytes(self, category: str) -> int:
         return sum(item.nbytes for item in self.items
@@ -6206,6 +6217,25 @@ class IngestMemoryEstimate:
                 * int(self.host_retained_copies))
 
     @property
+    def host_preprocess_bytes(self) -> int:
+        """CPU working-set estimate, distinct from the decoded forcing.
+
+        Native CPU preparation keeps FP32 analysis/state arrays on the host.
+        Retain their itemization and setup headroom, plus completed host
+        boundary frames. The decoder's separate retained input footprint can
+        still be unknown; this term must never be presented as all host RAM.
+        """
+        if self.preprocess_backend != "cpu":
+            return 0
+        return self.alloc_estimate_bytes + self.boundary_frame_bytes
+
+    @property
+    def host_peak_estimate_bytes(self) -> int | None:
+        """Known decoder plus CPU working set; unknown decode stays unknown."""
+        forcing = self.host_forcing_bytes
+        return None if forcing is None else forcing + self.host_preprocess_bytes
+
+    @property
     def transient_bytes(self) -> int:
         """Un-enumerated setup temporaries for the ONE domain being built."""
         return math.ceil(
@@ -6230,6 +6260,8 @@ class IngestMemoryEstimate:
         forcing time at a time, keeps ``resident_times`` of them, and
         drops the rest.
         """
+        if self.preprocess_backend == "cpu":
+            return 0
         return (self.alloc_estimate_bytes + self.context_bytes
                 + self.device_overhead_bytes)
 
@@ -6245,6 +6277,7 @@ def estimate_ingest(exp: ExperimentConfig, *, source: str,
                     source_fields_per_time: int | None = None,
                     analysis_shapes_by_domain: Mapping[int, Mapping[str, tuple[int, ...]]] | None = None,
                     sequential_domains: bool = False,
+                    preprocess_backend: str = "cuda",
                     ) -> IngestMemoryEstimate:
     """Itemize the preprocessing phase of ``exp``'s WHOLE DOMAIN TREE.
 
@@ -6266,6 +6299,8 @@ def estimate_ingest(exp: ExperimentConfig, *, source: str,
     """
     if not isinstance(sequential_domains, bool):
         raise TypeError("sequential_domains must be boolean")
+    if preprocess_backend not in ("cpu", "cuda", "auto"):
+        raise ValueError("preprocess backend must be cpu, cuda or auto")
     if analysis_shapes_by_domain is not None:
         if not isinstance(analysis_shapes_by_domain, Mapping) or set(analysis_shapes_by_domain) != {domain.grid_id for domain in exp.domains}:
             raise ValueError("actual analysis inventory must name every experiment domain exactly once")
@@ -6327,10 +6362,12 @@ def estimate_ingest(exp: ExperimentConfig, *, source: str,
             str(source).strip().lower(), 0),
         # This card's context, not the retired flat constant: ingest
         # stands up the same CUDA context the forecast does.
-        context_bytes=(MEASURED_LOCAL_MEMORY_PROFILE if profile is None
-                       else profile).cuda_context_bytes,
-        device_overhead_bytes=platform_projection_constants(
-            vram_gib=vram_gib)[1],
+        context_bytes=(0 if preprocess_backend == "cpu" else
+                       (MEASURED_LOCAL_MEMORY_PROFILE if profile is None
+                        else profile).cuda_context_bytes),
+        device_overhead_bytes=(0 if preprocess_backend == "cpu" else
+                               platform_projection_constants(vram_gib=vram_gib)[1]),
+        preprocess_backend=preprocess_backend,
     )
 
 
@@ -6420,6 +6457,7 @@ class PhaseMemoryEstimate:
     #: report can say what streaming BOUGHT.  Equal to
     #: ``forecast_envelope_bytes`` on a resident run.
     resident_forecast_envelope_bytes: int | None = None
+    preprocess_backend: str = "cuda"
 
     @property
     def ingest_priced(self) -> bool:
@@ -6640,6 +6678,7 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
                     source_fields_per_time: int | None = None,
                     analysis_shapes_by_domain: Mapping[int, Mapping[str, tuple[int, ...]]] | None = None,
                     sequential_domains: bool = False,
+                    preprocess_backend: str | None = None,
                     ) -> PhaseMemoryEstimate:
     """Price every phase of ``exp`` and say which one binds the card.
 
@@ -6653,8 +6692,10 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
     happen -- and the gate built on it refused, by default, the one
     configuration class streaming exists to enable.  When
     :func:`streamed_forecast_envelope` returns a number the forecast term
-    becomes that number; the ingest term is untouched, because preprocessing
-    is not streamed and still has to fit the card on its own.
+    becomes that number. The shared preparation policy selects CPU for GFS
+    host-store tiling declarations; that route retains its host itemization
+    and consumes no GPU memory during preparation. Explicit CUDA/auto and
+    other source contracts retain the existing device envelope.
 
     ``machine`` is only consulted for ``mode = "auto"`` with no pinned
     tiling, where the decision belongs to the planner.
@@ -6664,6 +6705,9 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
     unchanged; they price the ingest phase's HOST residency, which no
     term above touches.
     """
+    from gpuwm.preprocess_policy import resolve_preprocess_backend
+    preprocess_backend = resolve_preprocess_backend(
+        source=source, experiment=exp, requested=preprocess_backend)
     forecast = estimate_experiment(
         exp, column_chunk=column_chunk, forcing_intervals=forcing_intervals,
         forcing_interval_seconds=forcing_interval_seconds,
@@ -6682,7 +6726,8 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
             source_grid_points=source_grid_points,
             decoded_valid_times=decoded_valid_times,
             source_fields_per_time=source_fields_per_time,
-            analysis_shapes_by_domain=analysis_shapes_by_domain, sequential_domains=sequential_domains)
+            analysis_shapes_by_domain=analysis_shapes_by_domain, sequential_domains=sequential_domains,
+            preprocess_backend=preprocess_backend)
     resident_forecast = forecast.peak_envelope_bytes
     tree_road = None
     if len(getattr(exp, "domains", ()) or ()) > 1:
@@ -6718,6 +6763,7 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
                                else ingest.peak_envelope_bytes),
         source=key, streamed=streamed, tree_road=tree_road,
         resident_forecast_envelope_bytes=resident_forecast,
+        preprocess_backend=preprocess_backend,
     )
 
 
@@ -6843,6 +6889,9 @@ def estimate_experiment(
         envelope_family=envelope_platform(vram_gib=vram_gib),
         uses_legacy_radiation=uses_legacy,
         legacy_call_peak_by_domain=legacy_calls if uses_rrtmgp else (),
+        local_memory_profile=(card_local_memory_profile(vram_gib)
+                              if profile is None else profile),
+        retained_forcing_intervals=n_int,
     )
 
 
@@ -8245,6 +8294,21 @@ def check_main(args) -> int:
     declared_free_gib = getattr(args, "free_gib", None)
     declared_memory = args.budget_gib is not None or declared_free_gib is not None
     sampled = getattr(args, "_shared_sizing_budget", None)
+    target_hardware = getattr(args, "_target_hardware_supplied", False)
+    target_machine = getattr(args, "_shared_target_machine", None)
+    if target_hardware:
+        from tilestream.autoplan import Machine
+        if (target_hardware is not True or args.alloc or args.budget_gib is not None
+                or args.rail_mib is not None or declared_free_gib is None
+                or args.vram_gib is None
+                or (target_machine is not None and (
+                    not isinstance(target_machine, Machine)
+                    or target_machine.vram_bytes != int(declared_free_gib * GIB)
+                    or type(target_machine.host_bytes) is not int
+                    or target_machine.host_bytes <= 0))):
+            raise ValueError("The internal target machine must match the check's exact declared GPU budget")
+    elif target_machine is not None:
+        raise ValueError("An internal target machine requires its selected-hardware binding")
     if sampled is not None:
         from gpuwm.domain_wizard import SizingBudget
         if (not isinstance(sampled, SizingBudget) or not sampled.measured
@@ -8258,6 +8322,11 @@ def check_main(args) -> int:
     if args.alloc and declared_memory:
         raise ValueError("--alloc measures this GPU; omit --free-gib and --budget-gib")
     exp = _load_experiment_any(args.config)
+    if (target_hardware and target_machine is None
+            and (getattr(exp.tiles, "mode", "off") != "off"
+                 or any(getattr(getattr(domain, "tiles", None), "mode", "off") != "off"
+                        for domain in exp.domains))):
+        raise ValueError("Selected target host memory is required to check streamed domains")
     # The companion is a base dependency, including for CPU table sizing.
     # Resolve its presence/version before a kernel probe can hide the install
     # failure behind an unrelated GPU refusal. This reads no table arrays.
@@ -8354,7 +8423,8 @@ def check_main(args) -> int:
     #: 5090 profile when a declared budget says the target is elsewhere.
     profile = (sampled.device_profile if sampled is not None else
                None if declared_memory else live_device_local_memory_profile())
-    if sampled is None and profile is None and declares_the_local_card(card_total_gib):
+    if (sampled is None and not target_hardware and profile is None
+            and declares_the_local_card(card_total_gib)):
         # A DECLARED budget for THIS card.  ``--budget-gib`` alone means
         # "the caller states the budget", not "the caller is describing
         # another machine" -- and the wizard's own follow-up check is
@@ -8570,8 +8640,8 @@ def check_main(args) -> int:
         # reader asked about, and neither costs this process a CUDA
         # context.  ``gpuwm go``'s gate builds the same Machine from its
         # out-of-process probe, through the same function.
-        machine=planner_machine(vram_bytes=free,
-                                name="gpuwm check budget"))
+        machine=(target_machine if target_hardware else
+                 planner_machine(vram_bytes=free, name="gpuwm check budget")))
     #: AN UNPRICED INGEST LANE COSTS THE INGEST SECTION, NOT THE PHASE
     #: ESTIMATE.  This used to be ``phases = None``, which threw away the
     #: streamed forecast term along with the ingest one -- and the streamed
@@ -8628,8 +8698,12 @@ def check_main(args) -> int:
     #: refuse a run that fits.  Falling back to a fresh read is correct
     #: for the callers that reach this section without that half, because
     #: nothing has decoded anything on those paths either.
-    host_available = getattr(args, "host_available_at_entry", None)
-    if host_available is None:
+    # A transported host snapshot measures total RAM for tile planning, not
+    # currently available RAM. The desktop's available memory cannot fill in
+    # that unknown for a different target.
+    host_available = (None if target_hardware else
+                      getattr(args, "host_available_at_entry", None))
+    if host_available is None and not target_hardware:
         host_available = host_available_bytes()
     host_over_available = (host_forcing_bytes is not None
                            and host_available is not None
@@ -8699,6 +8773,7 @@ def check_main(args) -> int:
     if args.json:
         payload = {
             "config": str(args.config), "experiment": exp.name,
+            "preprocess_backend": phases.preprocess_backend,
             "gpu_readiness": readiness,
             "column_chunk": estimate.column_chunk,
             "domains": {
@@ -8869,6 +8944,8 @@ def check_main(args) -> int:
             ingest = phases.ingest
             payload["ingest"] = {
                 "source": ingest_source,
+                "preprocess_backend": ingest.preprocess_backend,
+                "allocation_memory": "host" if ingest.preprocess_backend == "cpu" else "device",
                 "forcing_times": ingest.n_forcing_times,
                 "resident_forcing_times": ingest.resident_times,
                 "per_forcing_time_bytes": ingest.per_time_bytes,
@@ -8892,6 +8969,8 @@ def check_main(args) -> int:
                 # visible to this command; the terms beside it say what
                 # the figure would have been made of.
                 "host_forcing_bytes": ingest.host_forcing_bytes,
+                "host_preprocess_bytes": ingest.host_preprocess_bytes,
+                "host_peak_estimate_bytes": ingest.host_peak_estimate_bytes,
                 "host_source_grid_points": ingest.source_grid_points,
                 "host_fields_per_time": ingest.host_fields_per_time,
                 "host_decoded_valid_times": ingest.decoded_valid_times,
@@ -8899,7 +8978,9 @@ def check_main(args) -> int:
                 "alloc_estimate_bytes": ingest.alloc_estimate_bytes,
                 "peak_envelope_bytes": ingest.peak_envelope_bytes,
                 "context_bytes": ingest.context_bytes,
-                "peak_envelope_basis": INGEST_PEAK_ENVELOPE_BASIS,
+                "peak_envelope_basis": (
+                    "CPU preprocessing: no device allocations; host working set and decoder reported separately"
+                    if ingest.preprocess_backend == "cpu" else INGEST_PEAK_ENVELOPE_BASIS),
             }
         # The same document ``run-plan --estimate`` publishes, on the
         # surface that has actually measured the card: a machine-facing
@@ -9098,7 +9179,8 @@ def check_main(args) -> int:
             print("  " + unpriced_ingest_note(args.config, ingest_source))
         else:
             ingest = phases.ingest
-            print(f"  INGEST (preprocessing, --source {ingest_source}): "
+            backend_label = ", backend cpu, host RAM" if ingest.preprocess_backend == "cpu" else ""
+            print(f"  INGEST (preprocessing, --source {ingest_source}{backend_label}): "
                   f"root {ingest.n_forcing_times} forcing times x "
                   f"{_format_bytes(ingest.per_time_bytes)} each "
                   f"(analysis {_format_bytes(ingest.category_bytes('analysis'))}"
@@ -9113,14 +9195,19 @@ def check_main(args) -> int:
                       f"one initial state each, all resident for the single "
                       f"export transaction): {nested} = "
                       f"{_format_bytes(ingest.nest_state_bytes)}")
-            print(f"    INGEST OBSERVED PEAK ENVELOPE "
-                  f"(x{ingest.headroom:.2f} headroom + "
-                  f"{_format_bytes(ingest.context_bytes)} CUDA context; "
-                  f"{INGEST_PEAK_ENVELOPE_BASIS}): "
-                  f"{_format_bytes(ingest.peak_envelope_bytes)}   "
-                  f"[streaming; holding all "
-                  f"{ingest.n_forcing_times} times would resident "
-                  f"{_format_bytes(ingest.unstreamed_resident_bytes)}]")
+            if ingest.preprocess_backend == "cpu":
+                print(f"    INGEST GPU PEAK ENVELOPE: 0.00 GiB (CPU preparation); "
+                      f"HOST preprocessing working set {_format_bytes(ingest.host_preprocess_bytes)} "
+                      f"plus the separately reported forcing decode.")
+            else:
+                print(f"    INGEST OBSERVED PEAK ENVELOPE "
+                      f"(x{ingest.headroom:.2f} headroom + "
+                      f"{_format_bytes(ingest.context_bytes)} CUDA context; "
+                      f"{INGEST_PEAK_ENVELOPE_BASIS}): "
+                      f"{_format_bytes(ingest.peak_envelope_bytes)}   "
+                      f"[streaming; holding all "
+                      f"{ingest.n_forcing_times} times would resident "
+                      f"{_format_bytes(ingest.unstreamed_resident_bytes)}]")
             # HOST RAM, ON THE SAME PAGE AS THE CARD.  Every line above
             # is device memory -- this class says so in its first
             # sentence -- and the decode that feeds them is a host cost

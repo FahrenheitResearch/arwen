@@ -1,5 +1,5 @@
 //! Generic regular-grid Zarr extraction. Provider names belong in request metadata.
-//! zarrs owns codecs/array decoding; Drew's NetCDF writer owns serialization and
+//! zarrs owns codecs/array decoding; the project's NetCDF writer owns serialization and
 //! mapped-engine owns the existing WRF humidity derivations.
 use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use netcdf_writer::{AttrValue, NcFormat, NcType, NcWriter, Schema, VarData};

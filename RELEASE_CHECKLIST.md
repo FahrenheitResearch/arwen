@@ -166,6 +166,16 @@ reproduce them, not because their proofs are optional:
       `tools/verify_source_bridge_pins.py` is a hard gate and stays one by
       owner ruling 2026-08-03: the failure mode is a source archive
       impersonating pinned release bytes.
+- [ ] The pin step is the ONLY working-tree change the build workspace
+      carries when `python -m build` runs. `python
+      tools/verify_release_build_tree.py` proves it immediately before the
+      build (CI `prepare` after its pin step, and an offline desktop build
+      alike): it refuses any other modified, added, deleted or untracked
+      packaged file, refuses a release version whose working pins are still
+      `release: null`, and refuses a COMMITTED pinned document. Origin: the
+      2.7.0 rc2 SDK kit was generated from a tree with 48 dirty files beside
+      wheels built from the tagged commit plus pins, and nothing told the two
+      apart.
 - [ ] `cargo build --release --locked` in `tools/grib1_bridge`, in
       `tools/rustwx`, in `tools/region_global_dealias` and in
       `tools/rw_wps` (the mapped decode engine, which every mapped

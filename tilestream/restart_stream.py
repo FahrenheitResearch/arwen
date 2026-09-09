@@ -703,8 +703,13 @@ def write_streamed_restart(path, store, cfg, *, scalars, setup,
     # Unknown scratch names still raise; missing serialized carriers still
     # fail the exact comparison below. The reader uses this same filter.
     arrays = _checkpoint_carriers(_store_arrays(store), extra_scratch_slots)
-    expected = set(_checkpoint_carriers(
-        _physinv.carrier_manifest(template_state), extra_scratch_slots))
+    template_carriers = _physinv.carrier_manifest(template_state)
+    # Lifecycle-held output scratch is intentionally outside the ordinary
+    # carrier set, but the template and store must name the same opted-in
+    # volume. Use the resident writer's exact selection and shape identity.
+    template_carriers.update(restart._opted_in_scratch_manifest(
+        template_state, extra_scratch_slots))
+    expected = set(_checkpoint_carriers(template_carriers, extra_scratch_slots))
     missing = sorted(expected - set(arrays))
     extra = sorted(set(arrays) - expected)
     if missing or extra:
@@ -861,11 +866,10 @@ def validate_streamed_restart(path, store, cfg, *, setup, template_state,
     absent = sorted(required - set(header))
     if absent:
         raise RestartRefused(f"restart file {path} header is missing {absent}")
-    if header["format_version"] not in restart.READABLE_RESTART_FORMAT_VERSIONS:
-        raise RestartRefused(
-            f"restart file {path} has format version "
-            f"{header['format_version']!r}; this build reads "
-            f"{sorted(restart.READABLE_RESTART_FORMAT_VERSIONS)}")
+    try:
+        restart.require_readable_format_version(header["format_version"], path)
+    except restart.RestartMismatchError as error:
+        raise RestartRefused(str(error)) from error
     with _as_refusal(f"restart file {path} does not match this run"):
         restart._require_config_match(header["config"], cfg, path)
         elapsed = restart._admissible_elapsed_seconds(

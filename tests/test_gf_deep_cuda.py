@@ -4,7 +4,7 @@ Same bar as the CPU side: bitwise identity with the WRF v4.6.1 per-stage
 capture over all 216 committed columns, with fzu PINNED from the oracle
 exactly as tests/test_gf_deep_parity.py pins it.
 
-WHY IT IS PINNED, AND WHAT CHANGED AT 2.6.6.  Through 2.6.5 gf.cu carried a
+WHY IT IS PINNED, AND WHAT CHANGED AT 2.7.0.  Through 2.6.5 gf.cu carried a
 transcription of glibc 2.39's own tgammaf (e_gammaf_r.c with its lgammaf,
 exp2f, expm1f and __gamma_productf dependencies), so the kernel's fzu WAS
 glibc's word and this gate could run the chain with no override anywhere --
@@ -278,7 +278,7 @@ def test_constant_table_survived_ptxas(module):
 # 2. the libm surface: gamma against the 113-bit reference, powf against the
 #    committed answer sheet
 # ==========================================================================
-#: gf_libm_unary_probe is 4 slots since 2.6.6 -- gfk_tgamma, CUDA's builtin
+#: gf_libm_unary_probe is 4 slots since 2.7.0 -- gfk_tgamma, CUDA's builtin
 #: tgammaf (negative control), gfk_exp, gfk_log.  Slots 2/3/4 held
 #: gfk_lgamma_pos / gfk_expm1 / gfk_exp2, whose only caller was the LGPL
 #: gamma block; all four are deleted.
@@ -382,7 +382,7 @@ def test_fzu_bitwise_on_the_pgamma_grid(module):
     reference over the whole probe grid.
 
     The oracle used to be the ``pgamma`` rows of gf-pow-probe.txt, i.e.
-    WRF's own captured fzu.  It is gf-crgamma-fzu.csv since 2.6.6: the same
+    WRF's own captured fzu.  It is gf-crgamma-fzu.csv since 2.7.0: the same
     (alpha, beta) pairs and 26 more, recomputed from a 113-bit gamma with one
     float32 rounding per operation exactly as get_zu_zd_pdf_fim spells it.
     MEASURED: on the 100 pairs the two fixtures share, this reference differs

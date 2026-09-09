@@ -358,6 +358,7 @@ class Footprint:
     # (nz, pressure top, selected common column cap), resolved by the owning
     # experiment. The base measured rung still supplies all other prices.
     classic_lw_context: tuple[int, float, int] | None = None
+    prepared_memory: object | None = None
 
     def classic_call_bytes(self, window_cells: int) -> int:
         if self.classic_lw_context is None:
@@ -371,6 +372,8 @@ class Footprint:
 
     def buffer_bytes(self, window_cells: int) -> float:
         """VRAM one tile buffer of ``window_cells`` costs."""
+        if self.prepared_memory is not None:
+            return self.prepared_memory.buffer_bytes(window_cells)
         return self.buffer_fixed_bytes + self.bytes_per_cell * window_cells
 
     def vram_bytes(self, window_cells: int, nbuffers: int) -> float:
@@ -380,6 +383,8 @@ class Footprint:
         process that already holds one wants :meth:`marginal_bytes`, which
         is this number without the part the process already paid.
         """
+        if self.prepared_memory is not None:
+            return self.prepared_memory.vram_bytes(window_cells, nbuffers)
         raw = (CUDA_CONTEXT_BYTES + self.process_fixed_bytes + self.domain_fixed_bytes
                + nbuffers * self.buffer_bytes(window_cells))
         # The empirical rung already reserves a radiation call separately
@@ -400,6 +405,8 @@ class Footprint:
         this once per domain was worth 3.76 GiB of phantom bytes per extra
         ``full``-rung domain; see MULTIPLE DOMAINS IN ONE PROCESS above.
         """
+        if self.prepared_memory is not None:
+            return self.prepared_memory.process_overhead_bytes
         return (CUDA_CONTEXT_BYTES + self.process_fixed_bytes) * VRAM_SAFETY
 
     def marginal_bytes(self, window_cells: int, nbuffers: int) -> float:
@@ -423,6 +430,10 @@ class Footprint:
         honest answer and also the one that leaves every dry and moist plan
         exactly where it was; see :data:`RADIATION_TRANSIENT_BYTES`.
         """
+        if self.prepared_memory is not None:
+            # Its independently retained unfused LW/SW storage is already
+            # inside vram_bytes, including the actual radiation peak.
+            return 0
         return int(RADIATION_TRANSIENT_BYTES.get(self.rung, 0))
 
     def store_bytes(self, cells: int) -> float:
@@ -685,6 +696,7 @@ class Machine:
     vram_headroom: float = VRAM_HEADROOM
     pinned_fraction: float = PINNED_FRACTION
     host_source: str = "explicit"
+    device_profile: object | None = None
 
     @property
     def vram_budget_bytes(self) -> int:
@@ -723,6 +735,15 @@ class Machine:
         props = cp.cuda.runtime.getDeviceProperties(device)
         name = props["name"].decode() if isinstance(props["name"], bytes) \
             else str(props["name"])
+        profile = None
+        if "multiProcessorCount" in props and "maxThreadsPerMultiProcessor" in props:
+            from gpuwm.core.preflight import DeviceLocalMemoryProfile
+            with selected_device:
+                stack_limit = int(cp.cuda.runtime.deviceGetLimit(0))
+            profile = DeviceLocalMemoryProfile(
+                name, int(props["multiProcessorCount"]),
+                int(props["maxThreadsPerMultiProcessor"]),
+                stack_limit)
 
         source = "explicit"
         if host_bytes is None:
@@ -756,7 +777,8 @@ class Machine:
                     "letting a pinned store be sized from a guess",
                     "host")
         return cls(vram_bytes=int(free if use_free_vram else total),
-                   host_bytes=int(host_bytes), name=name, host_source=source)
+                   host_bytes=int(host_bytes), name=name, host_source=source,
+                   device_profile=profile)
 
 
 def _windows_memory_status() -> tuple[int, int] | None:
@@ -1037,14 +1059,17 @@ class Plan:
     def explain(self) -> str:
         """The plan and the reasoning for it, as text."""
         g = lambda b: f"{b / GIB:.2f} GiB"                      # noqa: E731
+        prepared = self.footprint.prepared_memory
+        pricing = (f"   ({self.footprint.bytes_per_cell:.0f} B/cell of VRAM,"
+                   f" {self.footprint.store_bytes_per_cell:.1f} B/cell of store)"
+                   if prepared is None else
+                   "   (itemized independent prepared buffers, full unfused radiation peak)")
         lines = [
             "ArWen out-of-core plan",
             f"  domain        {self.nx} x {self.ny} x {self.nz}"
             f"  = {self.cells / 1e6:.1f} Mcell"
             f"   ({'periodic' if self.periodic else 'NOT periodic'})",
-            f"  rung          {self.rung}"
-            f"   ({self.footprint.bytes_per_cell:.0f} B/cell of VRAM,"
-            f" {self.footprint.store_bytes_per_cell:.1f} B/cell of store)",
+            f"  rung          {self.rung}{pricing}",
             f"  machine       {self.machine.name}:"
             f" {g(self.machine.vram_bytes)} VRAM"
             f" (budget {g(self.vram_budget_bytes)}),"
@@ -1073,8 +1098,9 @@ class Plan:
                 f"   -> redundancy {self.redundancy:.3f}x",
                 f"  buffers       {self.nbuffers}"
                 f"   ({g(self.footprint.buffer_bytes(self.window_cells))}"
-                f" each above a {g(self.footprint.process_fixed_bytes)}"
-                f" per-process fixed cost)",
+                + (f" each above a {g(self.footprint.process_fixed_bytes)}"
+                   " per-process fixed cost)" if prepared is None else
+                   " of named pool storage each; separate compute streams)"),
                 f"  write mode    {self.write_mode}"
                 f"   (arena {self.arena_bytes / max(self.store_bytes, 1):.1%}"
                 f" of the store)",
@@ -1084,11 +1110,33 @@ class Plan:
                 f" + arena {g(self.arena_bytes)}"
                 f" = {g(self.host_bytes)} of {g(self.host_budget_bytes)}",
             ]
+            if prepared is not None:
+                fixed = prepared.fixed_terms()
+                lines.append(
+                    f"  memory basis  {g(fixed['template_resident_bytes'])} retained loader template; "
+                    f"{g(fixed['cuda_context_bytes'] + fixed['local_memory_bytes'])} CUDA/local memory; "
+                    f"15% allocator headroom and 0.50 GiB residual; "
+                    f"{fixed['loader_rows']}-row initialization peak guarded")
         for note in self.notes:
             lines.append(f"  - {note}")
         for warn in self.warnings:
             lines.append(f"  ! {warn}")
         return "\n".join(lines)
+
+
+def _prepared_memory_basis(fp: Footprint) -> str:
+    """Describe the actual itemized costs in a prepared-buffer refusal."""
+    fixed = fp.prepared_memory.fixed_terms()
+    return (
+        f"The itemized envelope includes {fixed['template_resident_bytes'] / GIB:.2f} "
+        f"GiB for the retained loader template, "
+        f"{(fixed['cuda_context_bytes'] + fixed['local_memory_bytes']) / GIB:.2f} "
+        f"GiB for CUDA context and kernel local memory, "
+        f"{fixed['k_tables_bytes'] / GIB:.2f} GiB of shared lookup tables, "
+        f"each buffer's independent state, scratch and unfused radiation "
+        f"storage, 15% allocator headroom and "
+        f"{fixed['unmodelled_bytes'] / GIB:.2f} GiB of residual allowance. "
+        f"The {fixed['loader_rows']}-row initialization peak is also guarded.")
 
 
 def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
@@ -1173,6 +1221,21 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
         headroom = int(machine.vram_bytes * machine.vram_headroom)
         excess = max(0, fp.radiation_transient_bytes - headroom)
         floor = fp.vram_bytes((2 * halo + 1) ** 2 * nz, 1)
+        if fp.prepared_memory is not None:
+            raise CannotPlan(
+                f"the VRAM allowance is spent before any tile is priced: "
+                f"the planner was handed {machine.vram_bytes / GIB:.2f} GiB "
+                f"and {machine.vram_headroom:.0%} first-use headroom withholds "
+                f"{headroom / GIB:.2f} GiB. The smallest legal compute window "
+                f"at halo {halo} is {2 * halo + 1}^2 x {nz}; its complete "
+                f"one-buffer envelope is {floor / GIB:.2f} GiB. "
+                f"{_prepared_memory_basis(fp)} Free VRAM or raise the allowance "
+                f"before choosing a tile.",
+                "vram", dict(vram_allowance_bytes=int(machine.vram_bytes),
+                             headroom_withheld_bytes=int(headroom),
+                             radiation_transient_bytes=int(fp.radiation_transient_bytes),
+                             radiation_transient_excess_bytes=int(excess),
+                             floor_bytes=float(floor), vram_budget=int(vram_budget)))
         raise CannotPlan(
             f"the VRAM allowance is spent before any tile is priced: the "
             f"planner was handed {machine.vram_bytes / GIB:.2f} GiB, the "
@@ -1300,14 +1363,17 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
                                  periodic_x=periodic_x,
                                  periodic_y=periodic_y))
         floor = fp.vram_bytes((2 * halo + 1) ** 2 * nz, 1)
+        cost_basis = (
+            _prepared_memory_basis(fp) if fp.prepared_memory is not None else
+            f"({fp.process_fixed_bytes / GIB:.2f} GiB of that is the "
+            f"per-process fixed cost of the {fp.rung} rung, which no tile "
+            f"size can reduce).")
         raise CannotPlan(
             f"no tile fits in {vram_budget / GIB:.2f} GiB of VRAM: the "
             f"smallest legal compute window at halo {halo} is "
             f"{2 * halo + 1}^2 x {nz} and one buffer of it already costs "
             f"{floor / GIB:.2f} GiB "
-            f"({fp.process_fixed_bytes / GIB:.2f} GiB of that is the "
-            f"per-process fixed cost of the {fp.rung} rung, which no tile "
-            f"size can reduce).",
+            f"{cost_basis}",
             "vram", dict(vram_budget=vram_budget, floor_bytes=floor))
 
     # A second buffer that costs a smaller tile is still usually worth it, but
@@ -1387,14 +1453,19 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
                 f"to stream it anyway.",
                 "geometry", dict(redundancy=best["redundancy"],
                                  tile=(tile_nx, tile_ny), halo=halo))
+        cost_basis = (
+            f"the {vram_budget / GIB:.2f} GiB budget limits the complete "
+            f"independent-buffer envelope. {_prepared_memory_basis(fp)} "
+            if fp.prepared_memory is not None else
+            f"{fp.process_fixed_bytes / GIB:.2f} GiB of the "
+            f"{vram_budget / GIB:.2f} GiB budget is the {fp.rung} rung's "
+            f"per-process fixed cost before any tile exists. ")
         raise CannotPlan(
             f"the largest tile that fits is {tile_nx}x{tile_ny} inside a "
             f"{best['window_nx']}x{best['window_ny']} window, so "
             f"{best['redundancy']:.2f}x of the necessary work would be done "
             f"on halo cells (limit {max_redundancy:.2f}x).  This is a VRAM "
-            f"problem: {fp.process_fixed_bytes / GIB:.2f} GiB of the "
-            f"{vram_budget / GIB:.2f} GiB budget is the {fp.rung} rung's "
-            f"per-process fixed cost before any tile exists.  Pass "
+            f"problem: {cost_basis} Pass "
             f"max_redundancy=None to run it anyway.",
             "vram", dict(redundancy=best["redundancy"],
                          tile=(tile_nx, tile_ny)))
@@ -1467,6 +1538,8 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
 
 def _max_window_cells(fp: Footprint, nbuffers: int, budget: int) -> int:
     """Largest compute window, in cells, that ``nbuffers`` buffers can hold."""
+    if fp.prepared_memory is not None:
+        return fp.prepared_memory.max_window_cells(nbuffers, budget)
     room = (budget / VRAM_SAFETY - CUDA_CONTEXT_BYTES
             - fp.process_fixed_bytes - fp.domain_fixed_bytes)
     room = room / nbuffers - fp.buffer_fixed_bytes

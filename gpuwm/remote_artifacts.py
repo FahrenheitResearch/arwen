@@ -675,7 +675,11 @@ def stream_main():
         request = json.loads(payload)
         if not isinstance(request, dict):
             raise ValueError("artifact stream request must be a JSON object")
-        stream(request, rw._workspace(request), sys.stdout.buffer)
+        if request.get("action") == "stream-native-plot":
+            from gpuwm.remote_native_plots import stream as native_plot_stream
+            native_plot_stream(request, rw._workspace(request), sys.stdout.buffer)
+        else:
+            stream(request, rw._workspace(request), sys.stdout.buffer)
         return 0
     except (OSError, ValueError, KeyError) as error:
         print("remote artifact: " + str(error)[:4000], file=sys.stderr)

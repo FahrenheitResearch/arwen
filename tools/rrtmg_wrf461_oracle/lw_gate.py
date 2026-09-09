@@ -22,7 +22,7 @@ from lw_fixtures import read_fixture  # noqa: E402
 #: Default fixture location (oracle scratch); override with env var.
 DEFAULT_FIXDIR = os.environ.get(
     "GPUWM_RRTMG_LW_FIXTURES",
-    os.path.expanduser("~/.claude/jobs/fea7a141/tmp/rrtmg_lw/fixtures"),
+    os.path.expanduser("~/.gpuwm/oracle/rrtmg_lw/fixtures"),
 )
 
 #: Raw variable names per band module, as read from RRTMG_LW_DATA by

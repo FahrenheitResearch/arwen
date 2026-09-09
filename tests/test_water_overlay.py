@@ -159,17 +159,22 @@ def test_no_overlay_keeps_the_experiment_fingerprint(monkeypatch):
 
 
 def _without_the_later_eta_key(monkeypatch, exp):
-    """Reconstruct the recorded payload before 80a3009c28e63936a6d1219898fca4ea387ae0c7.
+    """The pre-80a3009c2 payload is what the production rule now produces.
 
-    That later offline-child commit added RunConfig.eta_levels=None. Dropping
-    exactly this inert key reproduces all three original recorded hashes;
-    neither their receipts nor any production identity rule is changed here.
+    ``RunConfig.eta_levels`` landed defaulting to None and, unpopped, moved
+    every recorded fingerprint without changing one number any of them
+    integrates.  ``restart_identity_payload`` now drops it at its default
+    (the absent-stays-absent convention the blocks beside it use), so the
+    three recorded hashes are reached by the writer itself; this helper no
+    longer widens ``RESTART_TOLERATED_RUN_FIELDS`` to get there, it asserts
+    the rule that replaced that monkeypatch.  ``monkeypatch`` is kept in the
+    signature so the three call sites read unchanged.
     """
     import gpuwm.core.model as model
     assert all(domain.run.eta_levels is None for domain in exp.domains)
     assert "eta_levels" not in model.RESTART_TOLERATED_RUN_FIELDS
-    monkeypatch.setattr(model, "RESTART_TOLERATED_RUN_FIELDS", (
-        *model.RESTART_TOLERATED_RUN_FIELDS, "eta_levels"))
+    payload = model.restart_identity_payload(exp)
+    assert all("eta_levels" not in domain["run"] for domain in payload["domains"])
 
 
 def test_current_fingerprint_still_binds_the_later_eta_ladder():

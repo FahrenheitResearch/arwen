@@ -97,7 +97,8 @@ def test_public_tui_arguments_survive_a_real_subprocess(monkeypatch, tmp_path):
     run = subprocess.run
 
     def run_probe(command, **kwargs):
-        assert kwargs == {"check": False, "shell": False}
+        assert kwargs["check"] is False and kwargs["shell"] is False
+        assert kwargs["env"]["PYTHONSAFEPATH"] == "1"
         return run([sys.executable, str(probe), str(received), *command], **kwargs)
 
     monkeypatch.setattr(tui_cli.subprocess, "run", run_probe)
@@ -128,6 +129,8 @@ def test_tui_uses_current_interpreter_despite_ambient_tui_python(monkeypatch):
 
     def run(command, **kwargs):
         commands.append(command)
+        assert kwargs["env"]["PYTHONSAFEPATH"] == "1"
+        assert kwargs["env"]["GPUWM_TUI_PYTHON"] == "another environment/python"
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(tui_cli.subprocess, "run", run)

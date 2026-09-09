@@ -693,7 +693,7 @@ mod tests {
     #[test]
     fn render_mode_reviews_real_history_paths_and_explicit_native_products() {
         let root = std::env::temp_dir().join(format!("arwen-render-guide-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        let history = root.join("Drew's history");
+        let history = root.join("Operator's history");
         std::fs::create_dir_all(history.join("d02")).unwrap();
         for path in [history.join("wrfout_d01_first.nc"), history.join("d02/wrfout_d02_first.nc")] { std::fs::write(path, b"CDF\x01\0\0\0\0native renderer validates the remaining NetCDF").unwrap(); }
         std::fs::write(history.join("report.json"), b"{}").unwrap();
@@ -757,13 +757,13 @@ mod tests {
     #[test]
     fn fitting_uses_existing_template_authority_and_an_explicit_write() {
         let mut g = Guide::new(Kind::Fit, Path::new("."), Path::new("runs"));
-        g.questions[0].value = "Drew's starter.toml".into();
+        g.questions[0].value = "Operator's starter.toml".into();
         g.questions[1].value = "area.geojson".into();
         g.questions[3].value = "2026-09-05T00".into();
         g.questions[6].value = "new-fitted-test-nonexistent.toml".into();
         let r = g.request(Path::new(".")).unwrap();
         assert_eq!(r.command, "domain-fit");
-        assert_eq!(r.args[0], "Drew's starter.toml");
+        assert_eq!(r.args[0], "Operator's starter.toml");
         assert!(r.args.contains(&"--polygon=area.geojson".into()));
         assert!(r.args.contains(&"--write".into()));
         assert!(!r.args.iter().any(|a| a.starts_with("--physics")
@@ -1022,18 +1022,18 @@ print(json.dumps(counts))
     #[test]
     fn historical_downscale_preserves_paths_and_reviews_plan_or_run_explicitly() {
         let mut guide = Guide::new(Kind::Downscale, Path::new("."), Path::new("runs"));
-        guide.questions[0].value = "Drew's history/parent files".into();
+        guide.questions[0].value = "Operator's history/parent files".into();
         guide.questions[1].value = "35.3,-97.5".into();
-        guide.questions[3].value = "Drew's evidence/parent.gpuwmrst".into();
+        guide.questions[3].value = "Operator's evidence/parent.gpuwmrst".into();
         guide.questions[10].value = "child surface.nc".into();
         guide.questions[11].value = "900".into();
         guide.questions[18].value = "new child's output".into();
         let request = guide.request(Path::new(".")).unwrap();
         assert_eq!(request.command, "downscale");
-        assert_eq!(request.args[0], "Drew's history/parent files");
+        assert_eq!(request.args[0], "Operator's history/parent files");
         assert!(request
             .args
-            .contains(&"--parent-restart=Drew's evidence/parent.gpuwmrst".into()));
+            .contains(&"--parent-restart=Operator's evidence/parent.gpuwmrst".into()));
         assert!(request
             .args
             .contains(&"--child-surface-from=child surface.nc".into()));

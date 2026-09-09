@@ -73,7 +73,7 @@ _REL_TOL = 1.0e-6
 #: exists to protect.  The discrete surface is :class:`RelocationConfig`
 #: under ``[relocation]``.  Unlike WRF's per-step ``move_interval``, its
 #: ``cadence_seconds``/``[[relocation.move]]`` schedule names cycle-boundary
-#: OPPORTUNITIES for the discrete mechanism (Drew's storm-following order,
+#: OPPORTUNITIES for the discrete mechanism (ArWen's storm-following order,
 #: leg 2, 2026-08-06 -- superseding leg 1's no-schedule stance for the
 #: runner while the per-step keys stay rejected).
 _MOVING_NEST_KEYS = frozenset({
@@ -1122,7 +1122,7 @@ class ExperimentConfig:
     #: is: it changes no number the model computes.
     output: "object" = history_selection_module.FULL
     #: grid_ids whose ``mix_isotropic`` was CHOSEN BY THE MODEL because
-    #: the config left it unset or wrote the ``"auto"`` sentinel (Drew's
+    #: the config left it unset or wrote the ``"auto"`` sentinel (ArWen's
     #: 2026-08-16 auto-switch ruling; ``resolve_auto_mix_isotropic``).
     #: A provenance LABEL, not a trajectory input: the chosen value sits
     #: on each domain's ``run.mix_isotropic``, which is what the restart
@@ -1201,7 +1201,10 @@ class ExperimentConfig:
 
         if (self.tiles.mode == "auto"
                 or any(dc.tiles is not None and dc.tiles.mode == "auto"
-                       for dc in self.domains)):
+                       for dc in self.domains)
+                or (len(self.domains) == 1 and (self.tiles.enabled
+                    or any(dc.tiles is not None and dc.tiles.enabled
+                           for dc in self.domains)))):
             # Retain the actual scientific/forcing configuration, without a
             # reference back through its tiles options. Pricing stays lazy.
             snapshot = replace(self, tiles=streaming_module.OFF,
@@ -2659,7 +2662,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     _reject_unknown_keys("shared", shared, shared_known, source)
     _reject_axis_authored_keys("shared", shared, physics_mode, source)
 
-    # mix_isotropic's "auto" sentinel (Drew's 2026-08-16 auto-switch
+    # mix_isotropic's "auto" sentinel (ArWen's 2026-08-16 auto-switch
     # ruling): the string means the same as leaving the key unset -- the
     # model chooses -- so it is stripped HERE and its absence is what the
     # domain loop below reads.  Any other string is refused by name;

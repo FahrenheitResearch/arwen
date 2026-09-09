@@ -207,7 +207,7 @@ mod tests {
                 "storm case.toml",
                 "worldwide.ZIP",
                 "café 日本.json",
-                "Drew's case.toml",
+                "Operator's case.toml",
                 "storm$2026(1)#!.toml",
                 "notes.txt",
             ] {
@@ -252,8 +252,8 @@ mod tests {
             Some(expected)
         );
         assert_eq!(
-            paths("& 'Drew''s case.toml'", &files.0),
-            Some(vec![files.0.join("Drew's case.toml")])
+            paths("& 'Operator''s case.toml'", &files.0),
+            Some(vec![files.0.join("Operator's case.toml")])
         );
     }
 

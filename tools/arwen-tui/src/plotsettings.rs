@@ -291,7 +291,7 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir(&directory).unwrap();
-        let path = directory.join("Drew's forecast.toml");
+        let path = directory.join("Operator's forecast.toml");
         fs::write(&path, "# complete science stays here\na=1\n").unwrap();
         path
     }
@@ -391,7 +391,7 @@ mod tests {
 fn query_catalog(python: &Path, cwd: &Path) -> Result<Vec<String>, String> {
     let mut command = Command::new(python);
     command
-        .args(["-m", "gpuwm.tui_products", "--catalog"])
+        .args(["-P", "-B", "-m", "gpuwm.tui_products", "--catalog"])
         .current_dir(cwd)
         .env("GPUWM_NO_LOCAL_GPU", "1");
     #[cfg(windows)]

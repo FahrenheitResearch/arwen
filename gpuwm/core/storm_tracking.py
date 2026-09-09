@@ -219,7 +219,7 @@ GRAVITY_M_S2 = 9.80665
 #: cadence -- change ``history_interval_s`` and the nest goes somewhere
 #: else.  ``uh_follow_window`` is folded from the same columns in the
 #: same pass and is reset by THIS consumer at every evaluation, so its
-#: window is exactly one relocation cadence (Drew's ruling, 2026-08-07).
+#: window is exactly one relocation cadence (ArWen's ruling, 2026-08-07).
 #: A caller that owns a different evaluation rhythm passes its own slot:
 #: gpuwm.core.nest_spawn reads ``uh_spawn_window`` on leg boundaries.
 UH_SLOT = uh_diag.UH_FOLLOW_WINDOW_SLOT

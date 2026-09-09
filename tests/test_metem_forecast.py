@@ -36,10 +36,52 @@ def test_metgrid_context_does_not_spoof_wrf_boundary_representation(tmp_path):
     text=INPUT_TEXT.replace(' use_theta_m = 0,',' use_theta_m = 1,')
     paths=_pair(tmp_path,inp=text)
     _, report=import_namelists(*paths,metgrid_initialization=True)
-    entry=next(item for item in report.fixed if item.key=='use_theta_m')
+    entry=next(item for item in report.substitutions if item.key=='use_theta_m')
     assert 'physical temperature' in entry.reason
     with pytest.raises(ValueError,match='distinct input contracts'):
         import_namelists(*paths,metgrid_initialization=True,wrf_boundary_use_theta_m=1)
+
+
+@pytest.mark.parametrize('spelling', [' use_theta_m = 1,', ''])
+def test_moist_theta_on_the_metem_door_is_a_declared_substitution_the_user_is_told_about(
+        tmp_path, spelling, capsys):
+    """use_theta_m = 1 (explicit, or WRF's omitted default) is not "Fixed by ArWen".
+
+    It selects WRF's moist-theta prognostic for the whole integration and
+    ArWen has no such branch: a first-order dycore difference in a moist
+    forecast.  Booked as a fix it reached the user through nothing but the
+    receipt file, and the doors' no-substitution gate never saw it
+    (ENG-016).  It is a SUBSTITUTION with a reason: the gate admits the
+    declared divergence, the terminal prints the reason, and the receipt
+    lists it under the substitutions heading.
+    """
+    from types import SimpleNamespace
+    from test_namelist_import import INPUT_TEXT, _pair
+    from gpuwm.namelist_import import Substitution, import_namelists
+    from gpuwm.wrfinput_door import require_preserved_wrf_selectors
+    from gpuwm.wrfinput_forecast import announce_wrf_substitutions
+    text=INPUT_TEXT.replace(' use_theta_m = 0,', spelling)
+    toml_text, report=import_namelists(*_pair(tmp_path,inp=text),metgrid_initialization=True)
+    assert not any(item.key=='use_theta_m' for item in report.fixed)
+    entry=next(item for item in report.substitutions if item.key=='use_theta_m')
+    assert (entry.wrf_value, entry.gpuwm_value)==(1, 0)
+    assert 'ArWen integrates dry theta' in entry.reason
+    assert 'not implemented' in entry.reason
+    # The door gate admits the declared divergence (isolated from the
+    # fixture's own mp_physics = 55 package substitution, which it refuses) ...
+    require_preserved_wrf_selectors(SimpleNamespace(substitutions=tuple(
+        item for item in report.substitutions if item.key == 'use_theta_m')))
+    # ... and still refuses a reason-less package replacement.
+    with pytest.raises(ValueError, match='no native implementation'):
+        require_preserved_wrf_selectors(SimpleNamespace(substitutions=(Substitution(
+            key='mp_physics', wrf_value=99, wrf_name='some scheme', gpuwm_key='mp_physics',
+            gpuwm_value=8, gpuwm_name='Thompson'),)))
+    announce_wrf_substitutions(SimpleNamespace(substitution_report=report), tmp_path/'r.json')
+    out=capsys.readouterr().out
+    assert 'use_theta_m=1' in out and 'Declared divergence' in out
+    assert 'ArWen integrates dry theta' in out
+    assert 'Physics substitutions (ratified):' in report.format()
+    assert 'ArWen integrates dry theta' in report.format()
 
 
 def test_shared_deep_soil_formula_preserves_native_bytes():

@@ -127,7 +127,7 @@ pub const LOG_FILL_DECADES: f32 = 6.0;
 
 /// The vertical step every section is put onto, in metres.
 ///
-/// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): the family used to
+/// WHAT BREAKAGE THIS PREVENTS (gate law): the family used to
 /// interpolate onto a 250 m ladder, and a 1 km field drawn on it came out
 /// of the renderer as visible horizontal steps -- the delivered winter
 /// sections read as blocks even though the data under them is 1 km.
@@ -155,7 +155,7 @@ pub fn section_sample_count(length_km: f64, dx_m: f64) -> usize {
 
 /// What counts as the field being THERE, rather than merely defined.
 ///
-/// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): taking DEFINED for
+/// WHAT BREAKAGE THIS PREVENTS (gate law): taking DEFINED for
 /// "there" holds every frame open to the ceiling, because a hydrometeor
 /// field is defined and zero all the way to the model top and a `~log`
 /// fill sits flat on its own floor everywhere the plume is not.
@@ -1027,8 +1027,8 @@ fn color(rgba: Rgba) -> xs::Color {
 /// The weather family a term belongs to, read off the WRF naming
 /// convention alone.  It decides which of the tree's palettes paints the
 /// fill and which saturated ink draws the overlay -- so a new species is
-/// a name in a table, never a code path (the arbitrary acceptance test,
-/// CLAUDE.md).
+/// a name in a table, never a code path (the project's arbitrary
+/// acceptance test).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldFamily {
     /// A carried number concentration or passive tracer.

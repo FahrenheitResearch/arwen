@@ -299,7 +299,7 @@ pub fn build_iso_volumes(
 /// levels -- the same per-column `bracket` + `lerp` walk the five-field
 /// interpolator runs, applied to a single field.  Cells outside a column's
 /// model pressure range stay NaN, exactly like the sounding volumes.
-fn interpolate_field_at_levels(
+pub(crate) fn interpolate_field_at_levels(
     pressure_hpa: &[f64],
     data: &[f64],
     nz: usize,
@@ -492,7 +492,7 @@ fn interpolate_iso_volumes_with_allocations(
     (volumes, surface)
 }
 
-fn check_native_3d_output(
+pub(crate) fn check_native_3d_output(
     out: &VarOutput,
     name: &str,
     nz: usize,
@@ -516,7 +516,7 @@ fn check_native_3d_output(
     Ok(expected)
 }
 
-fn validate_earth_relative_uvmet(
+pub(crate) fn validate_earth_relative_uvmet(
     uvmet: VarOutput,
     nz: usize,
     ny: usize,

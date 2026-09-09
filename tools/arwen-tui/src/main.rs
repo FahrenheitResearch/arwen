@@ -43,7 +43,7 @@ use ratatui::{
 use std::{
     env, fs, io,
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use unicode_segmentation::UnicodeSegmentation;
@@ -214,6 +214,8 @@ struct App {
     cds: cds_credentials::Client,
     companion: companion::Controller,
     companion_remote: Option<CompanionRemoteRequest>,
+    companion_waiting: Option<QueuedCompanionRequest>,
+    focus_logs_pending: Option<(companion::Request, Instant, String)>,
     run_views: run_view::Manager,
     companion_artifacts: Option<serde_json::Value>,
     tui_map_review: Option<companion::Request>,
@@ -232,6 +234,58 @@ struct CompanionRemoteRequest {
     request: companion::Request,
     node: remote::Node,
     source: serde_json::Value,
+}
+
+struct QueuedCompanionRequest {
+    request: companion::Request,
+    session_id: Option<String>,
+    queued_at: Instant,
+}
+const COMPANION_QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn focus_console_window(){
+    #[cfg(all(windows,not(test)))]
+    unsafe {
+        #[link(name="kernel32")]
+        unsafe extern "system" {fn GetConsoleWindow()->*mut std::ffi::c_void;}
+        #[link(name="user32")]
+        unsafe extern "system" {fn IsIconic(window:*mut std::ffi::c_void)->i32;fn ShowWindow(window:*mut std::ffi::c_void,command:i32)->i32;fn SetForegroundWindow(window:*mut std::ffi::c_void)->i32;}
+        let window=GetConsoleWindow();
+        if !window.is_null(){if IsIconic(window)!=0{ShowWindow(window,9);}SetForegroundWindow(window);}
+    }
+}
+
+fn passive_node_operation(operation: &remote::Operation) -> bool {
+    matches!(operation, remote::Operation::Probe | remote::Operation::Logs { .. }
+        | remote::Operation::Status { .. } | remote::Operation::ArtifactIndex { .. }
+        | remote::Operation::SyncArtifacts { .. } | remote::Operation::SyncProcessedFrameV2 { .. } | remote::Operation::SyncNativePlots { .. })
+}
+fn passive_companion_action(action: &companion::Action) -> bool {
+    // SelectTarget only enters the remote request lane for a refresh of the
+    // already selected, SHA-bound SSH target; target changes stay separate.
+    matches!(action, companion::Action::ArtifactIndex { .. } | companion::Action::SyncArtifacts { .. }
+        | companion::Action::SelectTarget | companion::Action::SyncProcessedFrameV2 { .. } | companion::Action::SyncNativePlots { .. })
+}
+fn passive_companion_lane(action: Option<&companion::Action>, operation: Option<&remote::Operation>) -> bool {
+    action.is_none_or(passive_companion_action) && operation.is_none_or(passive_node_operation)
+}
+fn companion_activity_state(local_busy: bool, node_pending: bool) -> &'static str {
+    if local_busy || node_pending { "running" } else { "ready" }
+}
+fn companion_launch_available(
+    local_busy: bool, queued: bool, node: Option<&remote::Node>, job: Option<&serde_json::Value>,
+    action: Option<&companion::Action>, operation: Option<&remote::Operation>,
+) -> bool {
+    if local_busy || queued || !passive_companion_lane(action, operation) { return false; }
+    let Some(node) = node else { return action.is_none() && operation.is_none(); };
+    // A remembered job without its matching terminal status is unresolved.
+    // This is an advisory for the GUI; dispatch still performs its full review.
+    match (node.last_job.as_deref(), job) {
+        (None, None) => true,
+        (Some(id), Some(job)) => job["id"] == id && matches!(job["state"].as_str(),
+            Some("stopped" | "interrupted" | "completed" | "failed" | "cancelled")),
+        _ => false,
+    }
 }
 
 fn safe(text: &str) -> String {
@@ -319,6 +373,8 @@ impl App {
             cds: cds_credentials::Client::default(),
             companion: companion::Controller::default(),
             companion_remote: None,
+            companion_waiting: None,
+            focus_logs_pending: None,
             run_views: run_view::Manager::default(),
             companion_artifacts: None,
             tui_map_review: None,
@@ -864,7 +920,8 @@ impl App {
             "connection_sha256":companion::digest(node.connection_key().as_bytes()),"workspace":node.workspace,
             "remote_geog_root":(!node.geography.is_empty()).then_some(&node.geography),"hardware":hardware,
             "capabilities":{"stage_plan_v1":capability("stage_plan_v1"),"review_plan_v1":capability("review_plan_v1"),"start_plan_v1":capability("start_plan_v1"),"artifact_sync_v1":capability("artifact_sync_v1"),
-                "artifact_index_v1":capability("artifact_index_v1"),"artifact_sequence_v1":capability("artifact_sequence_v1")}})
+                "artifact_index_v1":capability("artifact_index_v1"),"artifact_sequence_v1":capability("artifact_sequence_v1"),
+                "processed_frame_v2":capability("processed_frame_v2"),"processed_member_stream_v2":capability("processed_member_stream_v2")}})
     }
     fn checked_companion_target(&self,target:Option<&companion::Target>)->Result<Option<remote::Node>,String>{
         match (self.nodes.store.selected(),target) {
@@ -891,10 +948,28 @@ impl App {
             "config_path":config,"config_sha256":config_hash}))
     }
     fn begin_companion_remote(&mut self,request:companion::Request)->Result<(),String>{
-        if self.companion_remote.is_some()||self.nodes.pending.is_some(){return Err("A node request is in progress. Wait for it to finish, then retry this action.".into());}
+        if self.companion_waiting.is_some()||self.tui_map_waiting.is_some(){return Err("A forecast action is already waiting for this node. It will continue automatically.".into());}
+        if self.companion_remote.is_some()||self.nodes.pending.is_some(){
+            let interactive=matches!(request.action,companion::Action::ReviewPlan(_)|companion::Action::LaunchPlan(_)|companion::Action::StopJob(_)|companion::Action::SelectTarget);
+            let passive=passive_companion_lane(self.companion_remote.as_ref().map(|pending|&pending.request.action),
+                self.nodes.pending.as_ref().map(|pending|&pending.operation));
+            if !interactive||!passive{return Err("A node request is in progress. Wait for it to finish, then retry this action.".into());}
+            if self.busy(){return Err("A local job is already running.".into());}
+            self.checked_companion_target(request.target.as_ref())?.ok_or("Select an SSH node for this action.")?;
+            if let companion::Action::ReviewPlan(path)|companion::Action::LaunchPlan(path)=&request.action{self.checked_companion_plan(&request,path)?;}
+            let action=match request.action{companion::Action::ReviewPlan(_)=>"Review",companion::Action::LaunchPlan(_)=>"Launch",companion::Action::SelectTarget=>"Hardware refresh",_=>"Stop"};
+            self.status=format!("Waiting for the current node request; {action} will continue automatically.");
+            self.companion_waiting=Some(QueuedCompanionRequest{request,
+                session_id:self.companion.session.as_ref().map(|session|session.id.clone()),queued_at:Instant::now()});
+            return Ok(());
+        }
         let node=self.checked_companion_target(request.target.as_ref())?.ok_or("Select an SSH node for this action.")?;
         let mut source=serde_json::Value::Null;
         let operation=match &request.action {
+            // checked_companion_target above guarantees the exact current
+            // node/connection. Do not call nodes.select: it clears the active
+            // job/log view, even when the requested node is already selected.
+            companion::Action::SelectTarget=>remote::Operation::Probe,
             companion::Action::ReviewPlan(path)=>{
                 if self.busy(){return Err("A local job is already running.".into());}
                 let target=self.companion_target();
@@ -965,12 +1040,47 @@ impl App {
                     .join("processed-store").join(&node.id).join(job);
                 remote::Operation::SyncProcessedFrame{job:job.clone(),domain:*domain,cache,sequence:*sequence}
             }
+            companion::Action::SyncProcessedFrameV2{job,domain,sequence,options,reader_leases,cache_bytes}=>{
+                if node.last_job.as_deref()!=Some(job.as_str())||self.nodes.view.status.as_ref().and_then(|status|status["id"].as_str())!=Some(job.as_str()){
+                    return Err("This viewer frame is not the selected node's current job. Open a saved run through My forecasts.".into());
+                }
+                if self.companion_target()["capabilities"]["processed_frame_v2"]!=true{
+                    return Err("Reconnect the node after installing the compact native viewer update.".into());
+                }
+                let cache=self.output.join(".arwen-viewer-cache").join(&node.id).join(job);
+                remote::Operation::SyncProcessedFrameV2{job:job.clone(),domain:*domain,cache,sequence:*sequence,
+                    options:options.clone(),reader_leases:*reader_leases,cache_bytes:*cache_bytes}
+            }
+            companion::Action::SyncNativePlots{job,domain,sequence}=>{
+                if node.last_job.as_deref()!=Some(job.as_str()){return Err("Open this saved job through My forecasts to retrieve its plots.".into());}
+                remote::Operation::SyncNativePlots{job:job.clone(),domain:*domain,sequence:*sequence,cache:self.output.join(".arwen-native-plots-cache").join(&node.id).join(job)}
+            }
             _=>return Err("Unsupported remote companion operation.".into()),
         };
         self.nodes.begin(operation,&self.python,&self.output,&self.cwd)?;
         self.status="Contacting the selected node; the TUI is retaining the request and its log.".into();
         self.companion_remote=Some(CompanionRemoteRequest{request,node,source});
         Ok(())
+    }
+    fn continue_queued_companion_remote(&mut self){
+        let Some(queued)=self.companion_waiting.as_ref()else{return;};
+        let same_session=queued.session_id==self.companion.session.as_ref().map(|session|session.id.clone());
+        let stale=if !same_session{Some("The companion session changed while the node action was waiting; no action was dispatched.".to_owned())}
+            else if queued.queued_at.elapsed()>=COMPANION_QUEUE_TIMEOUT{Some("The queued node action expired after 30 seconds; no action was dispatched. Retry when the node responds.".to_owned())}
+            else if let Err(error)=self.checked_companion_target(queued.request.target.as_ref()){Some(error)}
+            else if let companion::Action::ReviewPlan(path)|companion::Action::LaunchPlan(path)=&queued.request.action{
+                self.checked_companion_plan(&queued.request,path).err()
+            }else{None};
+        if stale.is_none()&&(self.nodes.pending.is_some()||self.companion_remote.is_some()){return;}
+        let queued=self.companion_waiting.take().expect("checked queued node action");
+        let request=queued.request;
+        let result=match stale{Some(error)=>Err(error),None=>self.begin_companion_remote(request.clone())};
+        if let Err(error)=result{
+            self.status=error.clone();
+            if same_session{if let Some(session)=&self.companion.session{
+                let _=session.respond_with(&request.id,&request.name,Err(error),serde_json::json!({"target":request.target.as_ref().map(companion::Target::value)}));
+            }}
+        }
     }
     fn finish_companion_remote(&mut self,update:&remote::Update){
         let Some(pending)=self.companion_remote.take()else{return;};
@@ -980,6 +1090,7 @@ impl App {
             self.checked_companion_target(pending.request.target.as_ref())?;
             match(update,&pending.request.action){
                 (remote::Update::Failed(error),_)=>Err(error.clone()),
+                (remote::Update::Connected,companion::Action::SelectTarget)=>Ok("The selected node probe completed.".into()),
                 (remote::Update::PlanReviewed(remote_review),companion::Action::ReviewPlan(path))=>{
                     Self::checked_companion_inputs(remote_review)?;
                     if self.checked_companion_plan(&pending.request,path)?!=pending.source{return Err("The local selection changed during the node review.".into());}
@@ -1044,6 +1155,19 @@ impl App {
                     if let Ok(message)=&result{if details["processed_frame"]["processing"].is_object(){details["processed_frame"]["processing"]["message"]=serde_json::json!(message);}}
                     result
                 }
+                (remote::Update::ProcessedFrameSyncedV2(reply),companion::Action::SyncProcessedFrameV2{job,..})=>{
+                    if self.nodes.store.selected().and_then(|node|node.last_job.as_deref())!=Some(job.as_str())||reply["processed_frame"]["job_id"]!=*job{
+                        return Err("The selected viewer job changed during transfer.".into());
+                    }
+                    details["job_id"]=serde_json::json!(job);details["processed_frame"]=reply["processed_frame"].clone();
+                    let result=remote::processed_message(&details["processed_frame"]);
+                    if let Ok(message)=&result{if details["processed_frame"]["processing"].is_object(){details["processed_frame"]["processing"]["message"]=serde_json::json!(message);}}
+                    result
+                }
+                (remote::Update::NativePlotsSynced(reply),companion::Action::SyncNativePlots{job,..})=>{
+                    details["job_id"]=serde_json::json!(job);details["native_plots"]=reply["native_plots"].clone();
+                    Ok(if reply["native_plots"]["waiting"]==true{"Native plots are still being prepared."}else{"Native plot gallery ready."}.into())
+                }
                 _=>Err("The node returned a different operation; no success was assumed.".into()),
             }
         })();
@@ -1090,8 +1214,14 @@ impl App {
         if self.companion.session.is_none() { return; }
         if !force && self.companion.session.as_ref().is_some_and(|session| !session.due()) { return; }
         let mut status = self.companion_context();
-        status["state"] = serde_json::json!(if self.busy()||self.nodes.pending.is_some() { "running" } else { "ready" });
+        status["state"] = serde_json::json!(companion_activity_state(self.busy(),self.nodes.pending.is_some()));
+        status["launch_available"] = serde_json::json!(companion_launch_available(self.busy(),
+            self.companion_waiting.is_some()||self.tui_map_waiting.is_some(),self.nodes.store.selected(),self.nodes.view.status.as_ref(),
+            self.companion_remote.as_ref().map(|pending|&pending.request.action),self.nodes.pending.as_ref().map(|pending|&pending.operation)));
         status["draft_dirty"] = serde_json::json!(self.dirty());
+        status["queued_node_action"]=self.companion_waiting.as_ref().map(|queued|serde_json::json!({
+            "id":queued.request.id,"action":queued.request.name,"state":"waiting","message":self.status,
+            "expires_after_seconds":COMPANION_QUEUE_TIMEOUT.as_secs()})).unwrap_or_default();
         status["job"] = if let Some(node)=self.nodes.store.selected(){
             self.nodes.view.status.as_ref().map(|job|serde_json::json!({"job_id":job["id"],"job_dir":null,
                 "target":{"kind":"ssh","node_id":node.id,"connection_sha256":companion::digest(node.connection_key().as_bytes())},
@@ -1099,6 +1229,7 @@ impl App {
                 "state":job["state"],"exit_code":job["exit_code"],"remote_output_root":job["outdir"],
                 "source_config_path":job["source_config_path"],"source_config_sha256":job["source_config_sha256"],
                 "error":job["error"],"stage":job["stage"],"phase":job["phase"],"phase_updated_unix_ms":job["phase_updated_unix_ms"],"model_elapsed_seconds":job["model_elapsed_seconds"],"valid_time":job["valid_time"],"render_summary":job["render_summary"],"progress":job["progress"],"pipeline_progress":job["pipeline_progress"],
+                "background_maps":job["background_maps"],"native_plots":job["native_plots"],
                 "manifest_ready":false,"log_path":null,"progress_path":null,"events_path":null,"ready_dir":null})).unwrap_or_default()
         }else{self.job.as_ref().map(|job| companion::job_status(job, &self.output)).unwrap_or(serde_json::Value::Null)};
         status["target_connection_error"]=serde_json::json!(self.nodes.view.connection_error);
@@ -1118,8 +1249,38 @@ impl App {
             }
         }
     }
+    fn finish_focus_logs_request(&mut self){
+        let Some((request,started,session_id))=self.focus_logs_pending.take()else{return;};
+        if self.companion.session.as_ref().is_none_or(|session|session.id!=session_id){return;}
+        if started.elapsed()<Duration::from_secs(30)&&(self.nodes.pending.is_some()||self.companion_remote.is_some()||self.companion_waiting.is_some()){
+            self.focus_logs_pending=Some((request,started,session_id));return;
+        }
+        let result=(||{
+            if started.elapsed()>=Duration::from_secs(30){return Err("The node is still busy. Retry opening progress.".into());}
+            let companion::Action::FocusJobLogs(job)=&request.action else{unreachable!()};
+            let Some(companion::Target::Ssh{node_id,connection_sha256})=&request.target else{return Err("Select the saved SSH node for this job.".into());};
+            let node=self.nodes.store.nodes.iter().find(|node|node.id==*node_id).ok_or("The requested node no longer exists.")?;
+            if companion::digest(node.connection_key().as_bytes())!=*connection_sha256{return Err("The saved node connection changed. Refresh before opening its logs.".into());}
+            if self.nodes.store.active.as_ref()!=Some(node_id){self.nodes.select(Some(node_id.clone()))?;}
+            self.nodes.remember_job(job)?;
+            self.nodes.view.log.clear();self.nodes.view.cursor=0;self.nodes.view.status=None;
+            self.nodes.begin(remote::Operation::Logs{job:job.clone(),cursor:0},&self.python,&self.output,&self.cwd)?;
+            self.view(Tab::Logs);focus_console_window();
+            Ok(format!("Progress opened for saved job {job}."))
+        })();
+        if let Some(session)=&self.companion.session{let _=session.respond(&request.id,&request.name,result,None);}
+    }
+
     fn poll_companion_requests(&mut self) {
+        self.finish_focus_logs_request();
         for request in self.companion.requests() {
+            if matches!(request.action,companion::Action::FocusJobLogs(_)){
+                if let Some(session)=&self.companion.session {
+                    if self.focus_logs_pending.is_none(){self.focus_logs_pending=Some((request,Instant::now(),session.id.clone()));}
+                    else{let _=session.respond(&request.id,&request.name,Err("A progress-window request is already pending.".into()),None);}
+                }
+                continue;
+            }
             if run_view::Manager::handles(&request.action){
                 let result=self.companion.session.as_ref().ok_or_else(||"The companion session closed.".to_owned())
                     .and_then(|session|self.run_views.begin(request.clone(),session,&self.nodes.store,&self.python,&self.output,&self.cwd));
@@ -1130,8 +1291,15 @@ impl App {
                 }}
                 continue;
             }
-            let remote_action=matches!(&request.action,companion::Action::ReviewPlan(_)|companion::Action::LaunchPlan(_)|companion::Action::StopJob(_)|companion::Action::SyncArtifacts{..}|companion::Action::SyncProcessedFrame{..}|companion::Action::ArtifactIndex{..})
-                && (self.nodes.store.selected().is_some()||matches!(request.target,Some(companion::Target::Ssh{..})));
+            // Reuse the serialized, expiring foreground queue for a same-node
+            // sizing refresh. Switching targets still follows the ordinary
+            // selection refusal while any node request is in progress. An
+            // already running Probe keeps the existing coalescing response.
+            let sizing_refresh=matches!(request.action,companion::Action::SelectTarget)
+                &&matches!(self.checked_companion_target(request.target.as_ref()),Ok(Some(_)))
+                &&!self.nodes.pending.as_ref().is_some_and(|pending|matches!(pending.operation,remote::Operation::Probe));
+            let remote_action=sizing_refresh||(matches!(&request.action,companion::Action::ReviewPlan(_)|companion::Action::LaunchPlan(_)|companion::Action::StopJob(_)|companion::Action::SyncArtifacts{..}|companion::Action::SyncProcessedFrame{..}|companion::Action::SyncProcessedFrameV2{..}|companion::Action::SyncNativePlots{..}|companion::Action::ArtifactIndex{..})
+                && (self.nodes.store.selected().is_some()||matches!(request.target,Some(companion::Target::Ssh{..}))));
             if remote_action {
                 if let Err(error)=self.begin_companion_remote(request.clone()){
                     self.status=error.clone();if let Some(session)=&self.companion.session{let _=session.respond_with(&request.id,&request.name,Err(error),serde_json::json!({"target":request.target.as_ref().map(companion::Target::value)}));}
@@ -1142,7 +1310,7 @@ impl App {
             let result = match &request.action {
                 companion::Action::BrowseRuns|companion::Action::OpenRun(_)|companion::Action::CloseRun(_)=>Err("Close a saved run through its own read-only viewer.".into()),
                 companion::Action::ReviewPlan(_) => Err("Choose and connect an SSH node before remote review.".into()),
-                companion::Action::SyncArtifacts{..}|companion::Action::SyncProcessedFrame{..}|companion::Action::ArtifactIndex{..}=>Err("Choose and connect the recorded SSH node before retrieving frames.".into()),
+                companion::Action::SyncArtifacts{..}|companion::Action::SyncProcessedFrame{..}|companion::Action::SyncProcessedFrameV2{..}|companion::Action::SyncNativePlots{..}|companion::Action::ArtifactIndex{..}=>Err("Choose and connect the recorded SSH node before retrieving frames.".into()),
                 companion::Action::LaunchPlan(path) => {
                     if self.busy() { Err("A local job is already running.".into()) }
                     else if self.nodes.store.selected().is_some() { Err("Select Local computer before launching a companion plan.".into()) }
@@ -1193,8 +1361,9 @@ impl App {
                 }
                 companion::Action::FocusLogs => {
                     if request.target.is_some()&&self.checked_companion_target(request.target.as_ref()).is_err(){Err("The requested log target changed. Choose the intended node again.".into())}
-                    else{self.view(Tab::Logs);Ok("Logs selected in the control center.".into())}
+                    else{self.view(Tab::Logs);focus_console_window();Ok("Logs selected in the control center.".into())}
                 }
+                companion::Action::FocusJobLogs(_)=>unreachable!("saved job focus is queued before dispatch"),
                 companion::Action::FocusNodes => {self.open_nodes();Ok("Node targets opened in the control center.".into())}
                 companion::Action::FocusSetup => {
                     self.dialog=None;self.dialog_stack.clear();self.view(Tab::Settings);
@@ -1430,14 +1599,16 @@ impl App {
             plan_sha256:Some(companion::digest(&bytes)),config_sha256:Some(config_sha256),review_id:None,review_sha256:None})
     }
     fn review_current_setup_on_node(&mut self)->Result<(),String>{
-        if self.busy()||self.companion_remote.is_some()||self.nodes.pending.as_ref().is_some_and(|p|p.operation.mutates()){
+        if self.busy()||self.companion_waiting.is_some()||self.tui_map_waiting.is_some()
+            ||!passive_companion_lane(self.companion_remote.as_ref().map(|p|&p.request.action),
+                self.nodes.pending.as_ref().map(|p|&p.operation)){
             return Err("Another forecast action is in progress. Follow its status before reviewing this setup.".into());
         }
         let request=self.current_setup_review_request()?;
         self.tui_map_launch=None;self.tui_map_review=Some(request.clone());
-        if self.nodes.pending.is_none()&&self.companion_target()["capabilities"]["review_plan_v1"]==true{
+        if self.companion_target()["capabilities"]["review_plan_v1"]==true{
             self.begin_companion_remote(request)?;
-            self.node_panel.notice="Checking the current saved setup and GPU memory on the selected node…".into();
+            self.node_panel.notice=if self.companion_waiting.is_some(){self.status.clone()}else{"Checking the current saved setup and GPU memory on the selected node…".into()};
         }else{
             if self.nodes.pending.is_none(){self.nodes.begin(remote::Operation::Probe,&self.python,&self.output,&self.cwd)?;}
             self.tui_map_waiting=Some(request);
@@ -1455,6 +1626,7 @@ impl App {
         if let Err(error)=result{self.status=error.clone();self.node_panel.error(error);}
     }
     fn node_request(&mut self, operation: remote::Operation) {
+        if self.companion_waiting.is_some(){self.node_panel.notice="A forecast action is waiting for the current node request and will continue automatically.".into();return;}
         if matches!(operation,remote::Operation::Start{preview:true,..})&&self.current_setup_uses_staged_node(){
             if let Err(error)=self.review_current_setup_on_node(){self.status=error.clone();self.node_panel.error(error);}
             return;
@@ -1741,7 +1913,11 @@ impl App {
             }
             self.continue_current_setup_review(&update);
         }
-        if (matches!(self.dialog, Some(Dialog::Nodes))||self.companion.session.is_some()) && self.node_panel.should_refresh_connected(&self.nodes,self.companion.session.is_some())
+        // Drain a captured interactive request before automatic log refresh can
+        // occupy the serialized node channel again. Expiry is checked even
+        // while an unresponsive read is still pending.
+        self.continue_queued_companion_remote();
+        if self.companion_waiting.is_none()&&(matches!(self.dialog, Some(Dialog::Nodes))||self.companion.session.is_some()) && self.node_panel.should_refresh_connected(&self.nodes,self.companion.session.is_some())
         {
             if let Some(job) = self.nodes.store.selected().and_then(|n| n.last_job.clone()) {
                 self.node_request(remote::Operation::Logs {
@@ -2757,6 +2933,7 @@ impl App {
                     KeyCode::Home => offset = 0,
                     KeyCode::End => offset = usize::MAX,
                     KeyCode::Char('l' | 'L') if self.log_path().is_some() => {
+                        self.local_raw_logs = true;
                         self.view(Tab::Logs);
                         self.log_offset = 0;
                         return;
@@ -5209,6 +5386,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut snapshot_selection = String::from("current");
     let mut open_companion = false;
     let mut connect_node = false;
+    let mut show_progress = false;
     let mut explicit_nodes = false;
     let mut configured = false;
     while let Some(arg) = args.next() {
@@ -5218,6 +5396,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--open-companion" => open_companion = true,
             "--connect-node" => connect_node = true,
+            "--show-progress" => { connect_node = true; show_progress = true; },
             "--nodes-file" => {
                 if explicit_nodes{return Err("--nodes-file may be supplied only once.".into());}
                 app.use_nodes_file(PathBuf::from(args.next().ok_or("--nodes-file needs an absolute profile JSON path")?))?;
@@ -5273,6 +5452,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--help" | "-h" => {
                 println!("Visual workspace: --companion PATH (or ARWEN_COMPANION); --open-companion opens it at startup.\n");
                 println!("Node profiles: --nodes-file ABSOLUTE_JSON selects one explicit profile store; --connect-node opens Nodes and probes its active profile without starting a forecast.\n");
+                println!("Progress window: --show-progress connects the active saved node and opens its current job status without starting a forecast.\n");
                 println!("ArWen terminal workspace (2.7 preview)\nUsage: arwen-tui [--config FILE] [--python EXECUTABLE] [--output DIR] [--prepared DIR] [--geog-root DIR]\n\nStart with W Research to choose a weather question and configuration. I Scenario edits initial-state warm bubbles; D Domains edits following and tracking in an open configuration. Open existing or Continue forecast resumes your own workflow. Click options, tabs and buttons. K opens the built-in historical cases. O accepts TOML configurations and catalog ZIP/JSON files; F2 browses. Drop files to open them without starting a forecast. F/E edits all settings; V shows overview; G opens geography. Ctrl+S saves. F6 reviews the plan; F7 reviews the exact launch command.\nNo command starts automatically. F1 shows all keys; Up/Down or wheel, PgUp/PgDn and Home/End scroll help; Esc closes it.\n\nRead-only capture: --snapshot FILE.html [--snapshot-width COLUMNS] [--snapshot-height ROWS] [--snapshot-screen SCREEN]. Produces styled HTML and FILE.cells.json from the actual terminal cells. SCREEN: home, overview, settings, logs, help, nodes, domains, plots, guide, modes, mode:ID, research:ID, scenario (needs --config), or current. Default size: 120 x 36.");
                 return Ok(());
             }
@@ -5305,6 +5485,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     if connect_node { app.prepare_startup_node()?; }
+    if show_progress { app.view(Tab::Logs); }
     let mut terminal = ratatui::init();
     execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
     if connect_node { app.node_request(remote::Operation::Probe); }
@@ -5348,6 +5529,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })();
     let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
     ratatui::restore();
+    remote::remove_poll_records(&app.output);
     if let Some(job) = &app.job {
         println!(
             "ArWen {}: {}. Logs: {}",
@@ -7614,7 +7796,7 @@ mod tests {
         fs::write(package.join("__init__.py"),"").unwrap();
         fs::write(package.join("tui_worker.py"),include_str!("../../../gpuwm/tui_worker.py")).unwrap();
         fs::write(package.join("cli.py"),"import time\ndef main(argv=None):\n print('benign reset fixture alive', flush=True)\n time.sleep(30)\n return 0\n").unwrap();
-        let owned=Job::start(&python,"benign-reset-fixture",&[],&root.join("job"),&root).unwrap();
+        let owned=Job::start_with_module_path(&python,"benign-reset-fixture",&[],&root.join("job"),&root,Some(&root)).unwrap();
         let directory=owned.dir.clone();app.job=Some(owned);
         app.active_config=Some(app.editor.as_ref().unwrap().path.clone());
         let active=app.active_config.clone();
@@ -7668,6 +7850,314 @@ mod tests {
         assert_eq!(app.tab,Tab::Settings);assert!(app.dialog.is_none());assert!(app.dirty());
         assert_eq!(app.editor.as_ref().unwrap().text(),draft);assert_eq!(app.nodes.store.active,Some(node.id));
         assert_eq!(fs::read(path).unwrap(),original);assert!(app.nodes.pending.is_none()&&app.job.is_none());
+    }
+    #[test]
+    fn companion_launch_available_stays_true_across_passive_poll_activity_cycles(){
+        let mut node=remote::Node::blank();node.last_job=Some("job-1".into());
+        let job=serde_json::json!({"id":"job-1","state":"failed"});
+        let operations=[remote::Operation::Probe,remote::Operation::Status{job:"job-1".into()},
+            remote::Operation::Logs{job:"job-1".into(),cursor:0},
+            remote::Operation::ArtifactIndex{job:"job-1".into(),domain:1,after_sequence:0},
+            remote::Operation::SyncArtifacts{job:"job-1".into(),domain:1,cache:PathBuf::new(),sequence:None,reader_leases:false}];
+        for operation in &operations{
+            for pending in [Some(operation),None,Some(operation),None]{
+                assert_eq!(companion_activity_state(false,pending.is_some()),if pending.is_some(){"running"}else{"ready"});
+                assert!(companion_launch_available(false,false,Some(&node),Some(&job),None,pending));
+            }
+        }
+        for action in [companion::Action::SelectTarget,companion::Action::ArtifactIndex{job:"job-1".into(),domain:1,after_sequence:0},
+            companion::Action::SyncArtifacts{job:"job-1".into(),domain:1,sequence:None,reader_leases:false}]{
+            assert!(companion_launch_available(false,false,Some(&node),Some(&job),Some(&action),Some(&operations[0])));
+        }
+    }
+    #[test]
+    fn companion_launch_available_refuses_foreground_requests_and_preserves_local_ready(){
+        let node=remote::Node::blank();
+        let operations=[remote::Operation::List,
+            remote::Operation::ReviewPlan{plan:PathBuf::new(),plan_sha256:"a".repeat(64),config_sha256:"b".repeat(64),output:"/tmp/review".into()},
+            remote::Operation::StartPlan{review:serde_json::Value::Null},remote::Operation::Stop{job:"job-1".into()},
+            remote::Operation::Start{products:"all".into(),preview:true,binding:None},
+            remote::Operation::Resume{job:"job-1".into(),checkpoint:"/tmp/checkpoint".into(),output:"/tmp/output".into(),preview:false,binding:None},
+            remote::Operation::SyncProcessedFrame{job:"job-1".into(),domain:1,cache:PathBuf::new(),sequence:None}];
+        for operation in &operations{
+            assert!(!companion_launch_available(false,false,Some(&node),None,None,Some(operation)));
+        }
+        for action in [companion::Action::ReviewPlan(PathBuf::new()),companion::Action::LaunchPlan(PathBuf::new()),
+            companion::Action::StopJob("job-1".into()),companion::Action::SyncProcessedFrame{job:"job-1".into(),domain:1,sequence:None}]{
+            assert!(!companion_launch_available(false,false,Some(&node),None,Some(&action),None));
+        }
+        assert!(companion_launch_available(false,false,Some(&node),None,None,None));
+        assert!(!companion_launch_available(true,false,Some(&node),None,None,None));
+        assert!(!companion_launch_available(false,true,Some(&node),None,None,None));
+        assert!(companion_launch_available(false,false,None,None,None,None));
+        assert!(!companion_launch_available(true,false,None,None,None,None));
+        assert!(!companion_launch_available(false,false,None,None,None,Some(&remote::Operation::Probe)));
+    }
+    #[test]
+    fn compact_viewer_queue_does_not_disable_an_otherwise_ready_run_button(){
+        let node=remote::Node::blank();
+        let options=remote::ViewerOptions::from_value(&serde_json::json!({"prefetch_sequences":[2,3]})).unwrap();
+        let action=companion::Action::SyncProcessedFrameV2{job:"job-1".into(),domain:1,sequence:Some(1),options:options.clone(),reader_leases:true,cache_bytes:None};
+        let operation=remote::Operation::SyncProcessedFrameV2{job:"job-1".into(),domain:1,sequence:Some(1),options,reader_leases:true,cache_bytes:None,cache:PathBuf::new()};
+        assert!(passive_companion_action(&action));assert!(passive_node_operation(&operation));
+        assert!(companion_launch_available(false,false,Some(&node),None,Some(&action),Some(&operation)));
+        assert!(!companion_launch_available(false,true,Some(&node),None,Some(&action),Some(&operation)));
+    }
+    #[test]
+    fn companion_launch_available_requires_matching_terminal_remote_job(){
+        let mut node=remote::Node::blank();node.last_job=Some("job-1".into());
+        for state in ["starting","running","stopping","ownership_mismatch","lost","unknown",""]{
+            let job=serde_json::json!({"id":"job-1","state":state});
+            assert!(!companion_launch_available(false,false,Some(&node),Some(&job),None,None),"{state}");
+        }
+        assert!(!companion_launch_available(false,false,Some(&node),None,None,None));
+        for state in ["stopped","interrupted","completed","failed","cancelled"]{
+            let mut job=serde_json::json!({"id":"job-1","state":state});
+            assert!(companion_launch_available(false,false,Some(&node),Some(&job),None,None),"{state}");
+            job["id"]=serde_json::json!("old-job");
+            assert!(!companion_launch_available(false,false,Some(&node),Some(&job),None,None));
+        }
+        node.last_job=None;
+        let unrecorded=serde_json::json!({"id":"job-1","state":"running"});
+        assert!(!companion_launch_available(false,false,Some(&node),Some(&unrecorded),None,None));
+    }
+    #[test]
+    fn companion_launch_available_status_keeps_queue_and_tui_review_exclusive(){
+        let(mut app,request,control)=companion_queue_fixture();
+        app.nodes.store.nodes[0].last_job=Some("job-1".into());
+        app.nodes.view.status=Some(serde_json::json!({"id":"job-1","state":"failed"}));
+        app.publish_companion_status(true);
+        let before=companion::read_json(&control.join("status.json"),65536).unwrap();
+        assert_eq!(before["state"],"ready");assert_eq!(before["launch_available"],true);
+        app.begin_companion_remote(request.clone()).unwrap();
+        app.publish_companion_status(true);
+        let queued=companion::read_json(&control.join("status.json"),65536).unwrap();
+        assert_eq!(queued["state"],"ready");assert_eq!(queued["launch_available"],false);
+        assert_eq!(queued["queued_node_action"]["state"],"waiting");
+        assert!(!control.join("responses/queued-review.json").exists());
+        assert!(app.begin_companion_remote(request.clone()).unwrap_err().contains("already waiting"));
+        app.companion_waiting=None;app.companion_remote=None;app.tui_map_waiting=Some(request);
+        app.publish_companion_status(true);
+        assert_eq!(companion::read_json(&control.join("status.json"),65536).unwrap()["launch_available"],false);
+        assert!(app.nodes.pending.is_none()&&app.job.is_none());
+    }
+    #[test]
+    fn companion_queue_only_yields_read_only_node_operations(){
+        let readonly=[remote::Operation::Probe,remote::Operation::Status{job:"job-1".into()},
+            remote::Operation::Logs{job:"job-1".into(),cursor:0},
+            remote::Operation::ArtifactIndex{job:"job-1".into(),domain:1,after_sequence:0},
+            remote::Operation::SyncArtifacts{job:"job-1".into(),domain:1,cache:PathBuf::new(),sequence:None,reader_leases:false}];
+        assert!(readonly.iter().all(passive_node_operation));
+        let exclusive=[remote::Operation::ReviewPlan{plan:PathBuf::new(),plan_sha256:"a".repeat(64),config_sha256:"b".repeat(64),output:"/tmp/review".into()},
+            remote::Operation::StartPlan{review:serde_json::Value::Null},remote::Operation::Stop{job:"job-1".into()},
+            remote::Operation::SyncProcessedFrame{job:"job-1".into(),domain:1,cache:PathBuf::new(),sequence:None}];
+        assert!(exclusive.iter().all(|operation|!passive_node_operation(operation)));
+    }
+    fn companion_queue_fixture()->(App,companion::Request,PathBuf){
+        let mut app=loaded_app("a=1\n");let config=app.editor.as_ref().unwrap().path.clone();let directory=config.parent().unwrap();
+        app.nodes=remote::Controller::load(directory);
+        let mut node=remote::Node::blank();node.host="fixture-node".into();node.workspace="/node/work".into();
+        app.nodes.store.active=Some(node.id.clone());app.nodes.store.nodes.push(node.clone());
+        let session=companion::Session::test_session(&directory.join("control")).unwrap();
+        let control=session.directory.clone();app.companion.session=Some(session);
+        let plan=directory.join("queued-plan.json");fs::write(&plan,serde_json::to_vec(&serde_json::json!({"schema":"gpuwm.run-plan.v1","config":{"path":config}})).unwrap()).unwrap();
+        let request=companion::Request{id:"queued-review".into(),name:"review_plan".into(),action:companion::Action::ReviewPlan(plan.clone()),
+            target:Some(companion::Target::Ssh{node_id:node.id.clone(),connection_sha256:companion::digest(node.connection_key().as_bytes())}),
+            plan_sha256:Some(companion::digest(&fs::read(plan).unwrap())),config_sha256:Some(companion::digest(&fs::read(config).unwrap())),review_id:None,review_sha256:None};
+        let mut background=request.clone();background.id="background-artifacts".into();background.name="sync_artifacts".into();
+        background.action=companion::Action::SyncArtifacts{job:"job-1".into(),domain:1,sequence:None,reader_leases:false};
+        app.companion_remote=Some(CompanionRemoteRequest{request:background,node,source:serde_json::Value::Null});
+        (app,request,control)
+    }
+    #[test]
+    fn companion_queue_retains_one_interactive_request_without_false_ack(){
+        let(mut app,request,control)=companion_queue_fixture();
+        app.begin_companion_remote(request.clone()).unwrap();
+        assert_eq!(app.companion_waiting.as_ref().unwrap().request.id,request.id);
+        assert_eq!(app.companion_remote.as_ref().unwrap().request.id,"background-artifacts");
+        assert!(app.status.contains("Review will continue automatically"));
+        assert!(!control.join("responses/queued-review.json").exists());
+        app.continue_queued_companion_remote();assert!(app.companion_waiting.is_some());
+        let mut second=request.clone();second.id="second".into();
+        assert!(app.begin_companion_remote(second).unwrap_err().contains("already waiting"));
+        app.node_request(remote::Operation::Logs{job:"job-1".into(),cursor:0});
+        assert!(app.nodes.pending.is_none()&&app.job.is_none());
+        assert_eq!(app.companion_waiting.as_ref().unwrap().request.id,request.id);
+        app.publish_companion_status(true);
+        assert_eq!(companion::read_json(&control.join("status.json"),65536).unwrap()["queued_node_action"]["state"],"waiting");
+    }
+    #[test]
+    fn companion_queue_releases_after_read_and_rechecks_capability_without_dispatch(){
+        let(mut app,request,control)=companion_queue_fixture();app.begin_companion_remote(request).unwrap();
+        app.companion_remote=None;app.continue_queued_companion_remote();
+        // The queue is consumed, then the original remote-review validation
+        // runs. No runtime capability was granted by this CPU-only fixture.
+        assert!(app.companion_waiting.is_none()&&app.companion_remote.is_none());
+        let response=companion::read_json(&control.join("responses/queued-review.json"),65536).unwrap();
+        assert_eq!(response["ok"],false);assert!(response["message"].as_str().unwrap().contains("Connect to the selected node"));
+        assert!(app.nodes.pending.is_none()&&app.job.is_none());
+    }
+    #[test]
+    fn companion_queue_expires_while_read_is_pending_and_never_dispatches_late(){
+        let(mut app,request,control)=companion_queue_fixture();app.begin_companion_remote(request).unwrap();
+        app.companion_waiting.as_mut().unwrap().queued_at=Instant::now()-COMPANION_QUEUE_TIMEOUT;
+        app.continue_queued_companion_remote();
+        assert!(app.companion_waiting.is_none()&&app.companion_remote.is_some());
+        let response=companion::read_json(&control.join("responses/queued-review.json"),65536).unwrap();
+        assert_eq!(response["ok"],false);assert!(response["message"].as_str().unwrap().contains("expired"));
+        app.companion_remote=None;app.continue_queued_companion_remote();
+        assert!(app.nodes.pending.is_none()&&app.job.is_none());
+    }
+    #[test]
+    fn companion_queue_cancels_changed_session_target_and_saved_inputs(){
+        for changed in 0..4{
+            let(mut app,request,control)=companion_queue_fixture();app.begin_companion_remote(request.clone()).unwrap();
+            match changed{
+                0=>{app.companion.session.as_mut().unwrap().id="replacement-session".into();},
+                1=>{app.nodes.store.nodes[0].host="changed-host".into();},
+                2=>{fs::write(&app.editor.as_ref().unwrap().path,"a=2\n").unwrap();},
+                _=>{let companion::Action::ReviewPlan(path)=&request.action else{unreachable!()};fs::write(path,"{}").unwrap();},
+            }
+            app.continue_queued_companion_remote();assert!(app.companion_waiting.is_none());
+            assert!(app.nodes.pending.is_none()&&app.job.is_none());
+            if changed==0{assert!(!control.join("responses/queued-review.json").exists());}
+            else{assert_eq!(companion::read_json(&control.join("responses/queued-review.json"),65536).unwrap()["ok"],false);}
+        }
+    }
+    #[test]
+    fn companion_queue_never_queues_behind_mutation_or_processed_frame_work(){
+        for action in [companion::Action::LaunchPlan(PathBuf::from("plan.json")),companion::Action::SyncProcessedFrame{job:"job-1".into(),domain:1,sequence:None}]{
+            let(mut app,request,_)=companion_queue_fixture();app.companion_remote.as_mut().unwrap().request.action=action;
+            assert!(app.begin_companion_remote(request).unwrap_err().contains("node request is in progress"));
+            assert!(app.companion_waiting.is_none()&&app.nodes.pending.is_none()&&app.job.is_none());
+        }
+    }
+    #[test]
+    fn companion_queue_launch_revalidates_the_completed_review_before_dispatch(){
+        let(mut app,mut request,control)=companion_queue_fixture();
+        let(path,hash)=app.companion.session.as_ref().unwrap().save_review("completed-review",&serde_json::json!({"fixture":"review hash is rechecked before remote execution"})).unwrap();
+        let companion::Action::ReviewPlan(plan)=request.action else{unreachable!()};
+        request.action=companion::Action::LaunchPlan(plan);request.name="launch_plan".into();
+        request.review_id=Some("completed-review".into());request.review_sha256=Some(hash);
+        app.begin_companion_remote(request).unwrap();
+        assert!(!control.join("responses/queued-review.json").exists());
+        fs::write(path,"{}").unwrap();app.companion_remote=None;app.continue_queued_companion_remote();
+        let response=companion::read_json(&control.join("responses/queued-review.json"),65536).unwrap();
+        assert_eq!(response["ok"],false);assert!(response["message"].as_str().unwrap().contains("completed node review changed"));
+        assert!(app.companion_waiting.is_none()&&app.nodes.pending.is_none()&&app.job.is_none());
+    }
+    #[test]
+    fn companion_queue_stop_revalidates_the_recorded_job_before_dispatch(){
+        let(mut app,mut request,control)=companion_queue_fixture();
+        request.action=companion::Action::StopJob("old-job".into());request.name="stop_job".into();
+        app.begin_companion_remote(request).unwrap();
+        app.nodes.store.nodes[0].last_job=Some("new-job".into());app.nodes.view.status=Some(serde_json::json!({"id":"new-job","state":"running"}));
+        app.companion_remote=None;app.continue_queued_companion_remote();
+        let response=companion::read_json(&control.join("responses/queued-review.json"),65536).unwrap();
+        assert_eq!(response["ok"],false);assert!(response["message"].as_str().unwrap().contains("not the selected node's current recorded job"));
+        assert!(app.companion_waiting.is_none()&&app.nodes.pending.is_none()&&app.job.is_none());
+    }
+    fn companion_sizing_refresh_fixture()->(App,companion::Request,PathBuf){
+        let(mut app,mut request,control)=companion_queue_fixture();
+        request.id="sizing-refresh".into();request.name="select_target".into();request.action=companion::Action::SelectTarget;
+        request.plan_sha256=None;request.config_sha256=None;
+        app.nodes.store.nodes[0].last_job=Some("running-user-forecast".into());
+        app.nodes.store.save(&app.nodes.path).unwrap();
+        app.nodes.view.status=Some(serde_json::json!({"id":"running-user-forecast","state":"running","model_elapsed_seconds":120.0}));
+        app.nodes.view.log="Retained forecast progress\n".into();app.nodes.view.cursor=27;
+        app.nodes.view.runtime=Some(serde_json::json!({"probe":{"sizing":{"measured_unix_ms":1}}}));
+        (app,request,control)
+    }
+    #[test]
+    fn companion_sizing_refresh_protocol_queues_without_clearing_the_active_job(){
+        let(mut app,request,control)=companion_sizing_refresh_fixture();
+        let before=fs::read(&app.nodes.path).unwrap();let job=app.nodes.view.status.clone();let runtime=app.nodes.view.runtime.clone();
+        fs::write(control.join("requests/sizing-refresh.json"),serde_json::to_vec(&serde_json::json!({
+            "schema":"arwen.companion-request.v1","session_id":app.companion.session.as_ref().unwrap().id,
+            "id":request.id,"action":"select_target","target":request.target.as_ref().unwrap().value()})).unwrap()).unwrap();
+        app.poll_companion_requests();
+        assert_eq!(app.companion_waiting.as_ref().unwrap().request.id,request.id);
+        assert!(app.status.contains("Hardware refresh will continue automatically"));
+        assert!(!control.join("responses/sizing-refresh.json").exists());
+        assert_eq!(app.nodes.view.status,job);assert_eq!(app.nodes.view.runtime,runtime);
+        assert_eq!(app.nodes.view.log,"Retained forecast progress\n");assert_eq!(app.nodes.view.cursor,27);
+        assert_eq!(fs::read(&app.nodes.path).unwrap(),before);
+        app.node_request(remote::Operation::Logs{job:"running-user-forecast".into(),cursor:27});
+        assert!(app.nodes.pending.is_none()&&app.job.is_none());
+        app.publish_companion_status(true);
+        let status=companion::read_json(&control.join("status.json"),65536).unwrap();
+        assert_eq!(status["queued_node_action"]["action"],"select_target");
+        assert_eq!(status["job"]["job_id"],"running-user-forecast");assert_eq!(status["job"]["state"],"running");
+    }
+    #[test]
+    fn companion_sizing_refresh_expiry_session_and_target_binding_prevent_late_probe(){
+        for changed in 0..3{
+            let(mut app,request,control)=companion_sizing_refresh_fixture();app.begin_companion_remote(request).unwrap();
+            match changed{
+                0=>app.companion_waiting.as_mut().unwrap().queued_at=Instant::now()-COMPANION_QUEUE_TIMEOUT,
+                1=>app.companion.session.as_mut().unwrap().id="replacement-session".into(),
+                _=>app.nodes.store.nodes[0].host="changed-host".into(),
+            }
+            app.continue_queued_companion_remote();
+            assert!(app.companion_waiting.is_none()&&app.companion_remote.is_some());
+            if changed==1{assert!(!control.join("responses/sizing-refresh.json").exists());}
+            else{assert_eq!(companion::read_json(&control.join("responses/sizing-refresh.json"),65536).unwrap()["ok"],false);}
+            app.companion_remote=None;app.continue_queued_companion_remote();
+            assert!(app.nodes.pending.is_none()&&app.job.is_none());
+            assert_eq!(app.nodes.store.nodes[0].last_job.as_deref(),Some("running-user-forecast"));
+            assert_eq!(app.nodes.view.status.as_ref().unwrap()["state"],"running");
+        }
+    }
+    #[test]
+    fn companion_sizing_refresh_dispatches_only_probe_and_preserves_job_on_transport_error(){
+        let(mut app,request,control)=companion_sizing_refresh_fixture();
+        app.python=control.join("missing-python-for-cpu-protocol-test.exe");
+        app.output=control.join("owned-node-requests");app.cwd=control.clone();
+        let job=app.nodes.view.status.clone();let runtime=app.nodes.view.runtime.clone();
+        let before=fs::read(&app.nodes.path).unwrap();
+        app.begin_companion_remote(request).unwrap();app.companion_remote=None;
+        app.continue_queued_companion_remote();
+        // The ordinary launch boundary records its exact argv before the
+        // deliberately absent interpreter refuses. No process or SSH starts.
+        let attempts=fs::read_dir(app.output.join(".arwen-tui")).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
+        assert_eq!(attempts.len(),1);
+        let receipt=companion::read_json(&attempts[0].path().join("job.json"),65536).unwrap();
+        let argv=receipt["command"].as_array().unwrap();
+        assert_eq!(argv[3],"remote");assert_eq!(argv[4],"probe");
+        assert!(!argv.iter().any(|arg|arg=="start"||arg=="start-plan"||arg=="stop"));
+        let response=companion::read_json(&control.join("responses/sizing-refresh.json"),65536).unwrap();
+        assert_eq!(response["ok"],false);
+        assert!(app.nodes.pending.is_none()&&app.companion_waiting.is_none()&&app.companion_remote.is_none()&&app.job.is_none());
+        assert_eq!(app.nodes.view.status,job);assert_eq!(app.nodes.view.runtime,runtime);assert_eq!(fs::read(&app.nodes.path).unwrap(),before);
+        assert_eq!(app.nodes.view.log,"Retained forecast progress\n");assert_eq!(app.nodes.view.cursor,27);
+    }
+    #[test]
+    fn companion_sizing_refresh_completes_only_on_matching_probe_result(){
+        for success in [false,true]{
+            let(mut app,request,control)=companion_sizing_refresh_fixture();
+            let node=app.nodes.store.selected().unwrap().clone();let job=app.nodes.view.status.clone();
+            let target=request.target.as_ref().unwrap().value();
+            app.companion_remote=Some(CompanionRemoteRequest{request,node,source:serde_json::Value::Null});
+            if success{app.finish_companion_remote(&remote::Update::Connected);}
+            else{app.finish_companion_remote(&remote::Update::Failed("fixture probe failure".into()));}
+            let response=companion::read_json(&control.join("responses/sizing-refresh.json"),65536).unwrap();
+            assert_eq!(response["ok"],success);assert_eq!(response["target"],target);
+            assert!(app.companion_remote.is_none()&&app.nodes.pending.is_none()&&app.job.is_none());
+            assert_eq!(app.nodes.view.status,job);assert_eq!(app.nodes.store.nodes[0].last_job.as_deref(),Some("running-user-forecast"));
+        }
+    }
+    #[test]
+    fn companion_sizing_refresh_never_queues_target_switch_or_overlaps_mutation(){
+        let(mut app,mut request,_)=companion_sizing_refresh_fixture();
+        let node=app.nodes.store.selected().unwrap().clone();
+        request.target=Some(companion::Target::Ssh{node_id:node.id.clone(),connection_sha256:"0".repeat(64)});
+        assert!(app.begin_companion_remote(request).is_err());assert!(app.companion_waiting.is_none());
+        for action in [companion::Action::LaunchPlan(PathBuf::from("plan.json")),companion::Action::SyncProcessedFrame{job:"running-user-forecast".into(),domain:1,sequence:None}]{
+            let(mut app,request,_)=companion_sizing_refresh_fixture();
+            app.companion_remote.as_mut().unwrap().request.action=action;
+            assert!(app.begin_companion_remote(request).unwrap_err().contains("node request is in progress"));
+            assert!(app.companion_waiting.is_none()&&app.nodes.pending.is_none()&&app.job.is_none());
+        }
     }
     #[test]
     fn companion_remote_review_is_source_bound_and_does_not_publish_a_job(){
@@ -7901,7 +8391,7 @@ mod tests {
         fs::write(package.join("__init__.py"), "").unwrap();
         fs::write(package.join("tui_worker.py"), include_str!("../../../gpuwm/tui_worker.py")).unwrap();
         fs::write(package.join("cli.py"), "import time\ndef main(argv=None):\n print('benign quit-control fixture started', flush=True)\n time.sleep(30)\n return 0\n").unwrap();
-        app.job = Some(Job::start(&python, "benign-quit-control", &[], &root.join("job"), &root).unwrap());
+        app.job = Some(Job::start_with_module_path(&python, "benign-quit-control", &[], &root.join("job"), &root, Some(&root)).unwrap());
         app.dialog = Some(Dialog::Guide(complete_guide(&app)));
         app.set_viewport(64, 19);
         app.key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
@@ -8097,7 +8587,7 @@ mod tests {
         fs::write(package.join("__init__.py"),"").unwrap();
         fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../gpuwm/tui_worker.py"),package.join("tui_worker.py")).unwrap();
         fs::write(package.join("cli.py"),"def main(argv=None):\n return 0\n").unwrap();
-        app.job=Some(Job::start(&python,"run-plan",&[],&root.join("job"),&root).unwrap());
+        app.job=Some(Job::start_with_module_path(&python,"run-plan",&[],&root.join("job"),&root,Some(&root)).unwrap());
         let raw="native raw fixture log café\n";
         fs::write(app.job.as_ref().unwrap().dir.join("job.log"),raw).unwrap();
         app.tab=Tab::Logs;app.clipboard_hook=Some(record_copy);

@@ -1605,3 +1605,13 @@ tests/test_wps_domain_ids.py
 # native render receipts must count completed output frames without truncation.
 tests/test_remote_processed.py
 tests/test_render_receipts.py
+
+# Desktop v1 retains Build68 preparation, domain sizing and restart behavior;
+# compact completed-frame delivery must remain bounded and byte-verified.
+tests/test_prepared_tile_memory.py
+tests/test_preprocess_policy.py
+tests/test_tiled_gfs_preprocess_routing.py
+tests/test_cyclone_setup.py
+tests/test_domain_target_hardware.py
+tests/test_lifecycle_reflectivity_restart.py
+tests/test_remote_processed_v2.py

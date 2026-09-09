@@ -271,13 +271,46 @@ def test_the_local_lines_are_printed_before_the_index_is_touched(
 
     monkeypatch.setattr(builtins, "print", watched)
     monkeypatch.setattr(version_cli.urllib.request, "urlopen", slow)
-    assert version_cli.version_main(None) == 0
+    from types import SimpleNamespace
+    assert version_cli.version_main(SimpleNamespace(check_pypi=True)) == 0
     monkeypatch.undo()
 
     assert "network" in order, "the index was never asked at all"
     assert order[0] == "print"
     assert order.index("print") < order.index("network")
     assert capsys.readouterr().out.startswith("gpuwm 1.6.2")
+
+
+@pytest.mark.parametrize("args", [
+    None,
+    "SimpleNamespace()",
+    "SimpleNamespace(offline=True)",
+    "SimpleNamespace(check_pypi=False)",
+])
+def test_the_default_never_touches_the_index(tmp_path, monkeypatch, args,
+                                             capsys):
+    """No flag, or the legacy --offline: not one socket.
+
+    The 2.7.0 desktop package's sealed runtime phoned pypi.org on every
+    `gpuwm version`; the lookup is opt-in now, and the wheel upgrade
+    advice -- which used to wait for the index -- prints straight away.
+    """
+    from types import SimpleNamespace  # noqa: F401 - used by eval below
+
+    monkeypatch.setattr(version_cli, "install_shape",
+                        lambda: _shape(tmp_path))
+
+    def never(*args, **kwargs):
+        raise AssertionError("the default reached the network")
+
+    monkeypatch.setattr(version_cli.urllib.request, "urlopen", never)
+    monkeypatch.setattr(version_cli, "pypi_latest", never)
+    namespace = None if args is None else eval(args)
+    assert version_cli.version_main(namespace) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("gpuwm 1.6.2")
+    assert "PyPI" not in out
+    assert "Installed as a wheel; upgrade with:" in out
 
 
 def test_offline_skips_the_index_entirely(tmp_path, monkeypatch):
@@ -290,6 +323,54 @@ def test_offline_skips_the_index_entirely(tmp_path, monkeypatch):
     monkeypatch.setattr(version_cli.urllib.request, "urlopen", never)
     from types import SimpleNamespace
     assert version_cli.version_main(SimpleNamespace(offline=True)) == 0
+
+
+def test_check_pypi_is_what_asks_the_index(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(version_cli, "install_shape",
+                        lambda: _shape(tmp_path, version="1.8.0"))
+    monkeypatch.setattr(version_cli, "pypi_latest", lambda *a, **k: "1.8.0")
+    from types import SimpleNamespace
+    assert version_cli.version_main(SimpleNamespace(check_pypi=True)) == 0
+    assert "PyPI latest is 1.8.0 -- this install is current." in (
+        capsys.readouterr().out)
+
+
+# --- what "ahead of the index" is called ---------------------------------
+
+def test_a_release_wheel_ahead_of_the_index_is_a_release_install(tmp_path,
+                                                                  monkeypatch):
+    """The sealed desktop runtime: a pip-installed wheel whose metadata
+    version is the release.  It was being called a pre-release."""
+    monkeypatch.setattr(version_cli, "pypi_latest", lambda *a, **k: "2.6.5")
+    shape = _shape(tmp_path, version="2.7.0")
+    line = "\n".join(version_cli.pypi_report(shape))
+    assert "ahead of it: a release install newer than the index lists" in line
+    assert "pre-release" not in line and "source" not in line
+
+
+def test_a_prerelease_wheel_ahead_of_the_index_says_pre_release(tmp_path,
+                                                                 monkeypatch):
+    monkeypatch.setattr(version_cli, "pypi_latest", lambda *a, **k: "2.6.5")
+    shape = _shape(tmp_path, version="2.7.0rc1")
+    line = "\n".join(version_cli.pypi_report(shape))
+    assert "ahead of it: a pre-release install" in line
+
+
+def test_an_editable_checkout_ahead_of_the_index_is_a_source_install(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(version_cli, "pypi_latest", lambda *a, **k: "2.6.5")
+    shape = _shape(tmp_path, version="2.7.0", editable=True)
+    line = "\n".join(version_cli.pypi_report(shape))
+    assert "ahead of it: a source install" in line
+
+
+@pytest.mark.parametrize("version,expected", [
+    ("2.7.0", False), ("2.7.0rc1", True), ("2.7.0a1", True),
+    ("2.7.0.dev3", True), ("2.7.0.post1", False), (None, False),
+    ("not-a-version", False),
+])
+def test_prerelease_detection(version, expected):
+    assert version_cli._is_prerelease(version) is expected
 
 
 def test_a_stale_editable_install_gets_the_whole_sentence(tmp_path,

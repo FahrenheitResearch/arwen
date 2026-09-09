@@ -241,12 +241,16 @@ _SOURCE_PHYSICS_PROFILES = MappingProxyType({
     # capabilities receipt and the registry drift check; nothing refuses
     # a suite for being absent from them.  The one real per-source
     # blocker they used to encode -- RUC absent from GFS because a
-    # GFS-initialised RUC forecast prepares in full and then dies on its
-    # first surface-temperature call with `mavail must be finite`
-    # (v1.1.1 field finding; completing that initialisation is a v1.2
-    # item) -- is enforced on the resolved sf_surface_physics selector
-    # by the registry's land-surface route declaration instead, in
-    # ``_validate_physics`` below, for named and unnamed suites alike.
+    # GFS-initialised RUC forecast prepared in full and then died on its
+    # first surface-temperature call with `mavail must be finite` -- was
+    # root-caused, not re-gated: a shoreline land column carrying the
+    # water soil category (SOILTYP 14 under a land LU_INDEX) reached RUC's
+    # soilvegin, which has no arm for it, and `0./0.` went into MAVAIL.
+    # real.exe reconciles that column at initialization
+    # (module_initialize_real.F:3608-3650) and so does every ArWen door
+    # now, through gpuwm/ingest/soil.py:door_reconciled_soil_category
+    # (proven both ways by tests/test_ruc_shoreline_soil_category.py).
+    # No route blocker remains and none is enforced below (ENG-009).
     # Each radiation-bearing MYNN twin follows the MYNN row it mirrors,
     # in the same order the registry route declares it: the drift check in
     # tests/test_physics_registry.py compares these lists to the route's
@@ -6938,12 +6942,13 @@ def run_prepared_forecast(
     tiles_options = getattr(exp, "tiles", None)
     planning_machine = streaming.cold_planning_machine(exp)
     resident_estimate = None
-    if tiles_options is not None and tiles_options.mode == "auto":
+    if tiles_options is not None and tiles_options.enabled:
         from gpuwm.core.preflight import estimate_experiment
         boundary_meta = inputs.cache_reader.header.get("metadata", {}).get("lbc")
         resident_estimate = estimate_experiment(
             exp, forcing_intervals=(None if boundary_meta is None
-                                    else len(boundary_meta["intervals"])))
+                                    else len(boundary_meta["intervals"])),
+            profile=getattr(planning_machine, "device_profile", None))
     stream_decision = (streaming.decide(
         cfg, tiles_options, machine=planning_machine, resident_estimate=resident_estimate)
                        if tiles_options is not None and tiles_options.enabled

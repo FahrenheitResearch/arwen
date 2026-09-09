@@ -48,6 +48,8 @@ def _release_2_5_0() -> tuple[str, ...]:
 
 
 def _release_2_7_0() -> tuple[str, ...]:
+    from gpuwm import upgrade_notes
+
     return (
         "`gpuwm tui` opens the terminal workspace for configuration, "
         "research workspaces, case catalogs, forecasts and plots. "
@@ -65,6 +67,11 @@ def _release_2_7_0() -> tuple[str, ...]:
         "separate caches for changed source, cycle or area. "
         "`gpuwm render --series` uses compatible saved history frames "
         "for time-window products; insufficient windows are reported.",
+        # The default-on result changes and the checkpoint/import breaks,
+        # from the one table CHANGELOG.md is pinned to
+        # (tests/test_upgrade_notes.py), so the doctor's note and the
+        # release notes cannot disagree about what moved.
+        *upgrade_notes.upgrade_note_lines("2.7.0"),
     )
 
 

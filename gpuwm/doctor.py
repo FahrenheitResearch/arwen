@@ -3774,7 +3774,7 @@ def _matplotlib_engine_note() -> str:
 
     It is no longer a FALLBACK in either arm.  ``--engine auto``
     refuses when ``rw_wrfbatch`` is unusable rather than degrading,
-    because the render law (CLAUDE.md, Drew 2026-08-06) reserves
+    because the project render law ( 2026-08-06) reserves
     weather-field product plots for that binary and names exactly one
     permitted fallback, which is not this engine (audit F7).  So the
     honest doctor line is about a WORKAROUND a reader can type, never
@@ -5926,7 +5926,55 @@ def _progress_to_stderr(phase: str) -> None:
           flush=True)
 
 
+def upgrade_note_since(previous: str, installed: str | None = None
+                       ) -> str | None:
+    """The upgrade note for a reader coming from ``previous``, on demand.
+
+    ``gpuwm doctor --since 2.6.5``: the same lines :func:`upgrade_note`
+    prints once after an upgrade, without reading or writing the state
+    file, so a reader who missed the one-time note (or is deciding
+    whether to upgrade a second machine) can ask for it again.  ``None``
+    when nothing recorded lies in ``(previous, installed]``.
+    """
+
+    from gpuwm import whats_changed
+
+    if installed is None:
+        from gpuwm.version_cli import install_shape
+
+        installed = install_shape().get("version")
+    if not installed:
+        # A bare source tree has no distribution to report a version
+        # from; the code's own declaration (pyproject.toml) is what the
+        # provenance receipt already reads for exactly this case.
+        try:
+            from gpuwm.provenance import resolve
+
+            installed = resolve().code_version
+        except Exception:                               # noqa: BLE001
+            installed = None
+    if not installed:
+        return None
+    lines = whats_changed.since(previous, str(installed))
+    if not lines:
+        return None
+    block = [f"gpuwm doctor: this install is {installed}; what changed "
+             f"since {previous}:"]
+    block += [f"  * {line}" for line in lines]
+    return "\n".join(block)
+
+
 def doctor_main(args) -> int:
+    since = getattr(args, "since", None)
+    if since:
+        # A query, not a diagnosis: print the release notes the reader
+        # asked for and stop.  Running the estate checks behind a question
+        # about release notes would cost a minute and hide the answer
+        # under the report.
+        note = upgrade_note_since(str(since))
+        print(note if note is not None
+              else f"gpuwm doctor: nothing recorded as changed since {since}.")
+        return 0
     sources = getattr(args, "source", None) or None
     checks = collect_checks(tuple(sources) if sources else None,
                             progress=_progress_to_stderr)
@@ -5963,7 +6011,12 @@ def _upgrade_note_for_this_install() -> str | None:
     try:
         from gpuwm.version_cli import install_shape
 
-        return upgrade_note(install_shape().get("version"))
+        version = install_shape().get("version")
+        if not version:
+            from gpuwm.provenance import resolve
+
+            version = resolve().code_version
+        return upgrade_note(version)
     except Exception:                                   # noqa: BLE001
         return None
 
@@ -5983,6 +6036,14 @@ def register_cli(subparsers) -> None:
              "the only gaps are degraded or opt-in")
     parser.add_argument("--json", action="store_true",
                         help="emit the checks as JSON")
+    parser.add_argument(
+        "--since", metavar="VERSION",
+        help="print what changed for an existing user between VERSION and "
+             "this install (the results that move on a bare configuration, "
+             "and the checkpoints and namelists that stop loading), then "
+             "exit 0 without running the estate checks.  The same note is "
+             "printed once, automatically, on the first doctor run after "
+             "an upgrade")
     parser.add_argument(
         "--source", action="append", choices=_doctor_sources(),
         metavar="SOURCE",
@@ -6061,7 +6122,7 @@ __all__ = ["Check", "DOCTOR_SOURCES", "DOCTOR_STATE_ENV",
            "collect_checks", "declared_requirements", "doctor_main",
            "format_brief", "format_report", "geography_gaps", "main",
            "register_cli", "severity_census", "state_path",
-           "upgrade_note"]
+           "upgrade_note", "upgrade_note_since"]
 
 
 if __name__ == "__main__":                    # pragma: no cover - the door

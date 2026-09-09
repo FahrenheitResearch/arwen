@@ -64,7 +64,11 @@ def tui_main(args) -> int:
             value = getattr(args, name, None)
             if value is not None:
                 command.extend(("--" + name.replace("_", "-"), str(value)))
-        return subprocess.run(command, check=False, shell=False).returncode
+        # The terminal spawns every engine worker from this interpreter with
+        # -P; PYTHONSAFEPATH covers the same ground for anything else it runs,
+        # so a gpuwm/ folder in the launch directory never shadows the engine.
+        environment = {**os.environ, "PYTHONSAFEPATH": "1"}
+        return subprocess.run(command, check=False, shell=False, env=environment).returncode
     except (OSError, bridges.StaleBridgeError) as error:
         print(f"gpuwm tui: {error}", file=sys.stderr)
         return 2

@@ -512,31 +512,80 @@ def test_an_unset_starting_time_step_keeps_the_configured_step():
 
 # ------------------------------------------------------- the late nest
 
-def test_a_late_nest_takes_its_first_step_through_first_step():
-    """`period == 0` was the gate, and a late nest never sees period 0.
+def _executor_boundary(clocks, root_gid=1):
+    """What execute_schedule does between periods: every clock at the boundary.
 
-    Left that way the nest's controller stayed unstarted for the life of
-    the run, so max_step_increase_pct (adapt_timestep_em.F:168-177) was
-    never applied to it -- and it was driven from its first period with a
-    CFL of zero, which is calc_dt's negligible-CFL branch, so it ratcheted
-    straight to max_dt before its first solve.
+    The root advanced by its step; an unstarted nest is PARKED at the same
+    boundary (clock.py: ``if gid not in started: dom.ticks = boundary``).
+    """
+    boundary = clocks[root_gid].ticks + clocks[root_gid].step_ticks
+    for clock in clocks.values():
+        clock.ticks = boundary
+
+
+def test_a_late_nest_is_not_driven_until_it_starts_and_enters_on_its_ratio_step():
+    """The executor hands the driver EVERY clock; an unstarted nest is parked.
+
+    Two defects met here.  `period == 0` used to gate `first_step`, so a
+    late nest never took it and its growth bound was never armed.  Then the
+    `clocks.get(gid) is None` skip was dead -- the executor never omits a
+    domain -- so from period 1 the nest was driven on cfl_source's (0, 0)
+    for a domain that had folded nothing, ratcheted to max_time_step
+    (16 s on this 10 km/5 nest) before its first solve, and had its
+    node.cfg.run.dt rewritten to that value for initialize_child to read.
     """
     model = _late_nest_tree(root_dt_s=30, ratio=5, start_s=60)
-    d = _driver(model, {1: (0.5, 0.1), 2: (0.0, 0.0)})
-    root_clock = model.node(1).clock
-    child_clock = model.node(2).clock
-    # Periods 0 and 1: the root only.  The nest joins at period 2.
-    d(0, {1: root_clock})
-    d(1, {1: root_clock})
+    # The root sits exactly at target_cfl, so its step holds at 30 s and
+    # the second boundary lands on the nest's 60 s start.
+    d = _driver(model, {1: (1.2, 0.5), 2: (0.0, 0.0)})
+    clocks = {1: model.node(1).clock, 2: model.node(2).clock}
+    child = model.node(2)
     child_ctl = d.controllers[2]
-    assert not child_ctl.started
-    d(2, {1: root_clock, 2: child_clock})
+    configured_child_ticks = clocks[2].step_ticks
+    # Periods 0 and 1: the root only.  The nest joins at period 2 (60 s).
+    for period in (0, 1):
+        d(period, clocks)
+        assert not child_ctl.started, period
+        assert clocks[2].step_ticks == configured_child_ticks, (
+            "an unstarted nest's clock was written by the controller")
+        assert child.cfg.run.dt == 6.0, (
+            "an unstarted nest's cfg.run.dt was rewritten before "
+            "initialize_child could read the configured step")
+        assert child_ctl.last_dt == Fraction(6), (
+            "an unstarted nest's controller was driven on a (0, 0) CFL")
+        _executor_boundary(clocks)
+    assert clocks[2].ticks == 60 * TICK_DEN == clocks[2].spec.start_ticks
+    d(2, clocks)
     assert child_ctl.started, (
         "the nest was driven without ever taking its first step, so its "
         "growth bound was never armed")
     # 6 s configured; the unbounded branch would have taken it to the
-    # 10 km/5 nest's max_time_step of 8*2 = 16 s in one period.
-    assert child_clock.step_ticks <= 6 * TICK_DEN
+    # 10 km/5 nest's max_time_step of 8*2 = 16 s in one period -- the
+    # parent's own step.  The entry step is the configured ratio step,
+    # divided into whatever the parent is taking now.
+    assert clocks[2].step_ticks <= 6 * TICK_DEN
+    assert clocks[1].step_ticks % clocks[2].step_ticks == 0
+    assert clocks[1].step_ticks // clocks[2].step_ticks >= 5
+    assert child_ctl.last_dt == Fraction(6)
+
+
+def test_a_late_nest_under_a_grown_root_still_enters_below_its_ratio_step():
+    """Calm flow lets the root grow before the nest starts; the nest must not
+    inherit the growth."""
+    model = _late_nest_tree(root_dt_s=30, ratio=5, start_s=120)
+    d = _driver(model, {1: (0.0, 0.0), 2: (0.0, 0.0)})     # calm: root grows
+    clocks = {1: model.node(1).clock, 2: model.node(2).clock}
+    period = 0
+    while clocks[2].ticks < clocks[2].spec.start_ticks:
+        d(period, clocks)
+        assert not d.controllers[2].started
+        _executor_boundary(clocks)
+        period += 1
+    assert clocks[1].step_ticks > 30 * TICK_DEN, "the root did grow"
+    d(period, clocks)
+    assert d.controllers[2].started
+    assert clocks[2].step_ticks <= 6 * TICK_DEN
+    assert clocks[1].step_ticks % clocks[2].step_ticks == 0
 
 
 # -------------------------------------------- the physics cadence wire
@@ -605,3 +654,149 @@ def test_cumulus_is_left_alone_when_the_scheme_is_off():
     _stepped(model, 1, physics, 0.0)
     d.before_step(1)
     assert physics.cumulus_due_override is None
+
+
+# ------------------------------------------ the quantiser is not a ratchet
+
+def _three_level_tree(root_dt_s=30, ratios=(5, 3), min_dt_s=3):
+    """10/2/0.667 km: ratio lattice 15, smoothed x4 -> a 0.6 s root grid."""
+    root_ticks = root_dt_s * TICK_DEN
+    root = FakeNode(
+        cfg=FakeCfg(1, FakeRun(1, float(root_dt_s), min_time_step=min_dt_s)),
+        clock=FakeClock(FakeSpec(1, root_ticks)))
+    r1, r2 = ratios
+    child = FakeNode(
+        cfg=FakeCfg(2, FakeRun(2, root_dt_s / r1, dx=10000.0 / r1,
+                               dy=10000.0 / r1), r1),
+        clock=FakeClock(FakeSpec(2, root_ticks // r1)), parent=root)
+    grandchild = FakeNode(
+        cfg=FakeCfg(3, FakeRun(3, root_dt_s / (r1 * r2),
+                               dx=10000.0 / (r1 * r2), dy=10000.0 / (r1 * r2)),
+                    r2),
+        clock=FakeClock(FakeSpec(3, root_ticks // (r1 * r2))), parent=child)
+    root.children = [child]
+    child.children = [grandchild]
+    return FakeModel(root)
+
+
+def test_one_cfl_spike_does_not_park_the_root_at_min_time_step():
+    """The floor is a per-step presentation, not a permanent debit.
+
+    `_quantise_root` floors the root's step to the smoothed lattice (0.6 s
+    on this tree).  Fed back into the controller as the baseline, that
+    floor erased every 5 % growth request smaller than one lattice unit --
+    everything below 12 s here -- so a transient that drove the root down
+    left it integrating at min_time_step for the rest of the run, with
+    every field healthy.  The controller now sees its own proposal, with
+    the measured CFL rescaled to it, and recovers at the documented rate:
+    one max_step_increase_pct growth per root step, ln(30/3)/ln(1.05) = 48
+    periods from the floor back to 30 s.
+    """
+    model = _three_level_tree()
+    clocks = {gid: model.node(gid).clock for gid in (1, 2, 3)}
+    # A PHYSICAL CFL source: flow speed k per domain times the step the
+    # model actually took last period.  Calm k puts the root at exactly
+    # target_cfl for a 30 s step, so 30 s is the steady state.
+    k = {1: 1.2 / 30.0, 2: 0.01, 3: 0.01}
+
+    def cfl(gid):
+        value = k[gid] * clocks[gid].step_ticks / TICK_DEN
+        return value, value * 0.5
+
+    d = AdaptiveClockDriver(model, cfl_source=cfl, tick_den=TICK_DEN)
+    root_dt, root_ticks = [], []
+    for period in range(80):
+        # Six periods of a violent column, then calm forever.
+        k[1] = 6.0 / 30.0 if 1 <= period <= 6 else 1.2 / 30.0
+        d(period, clocks)
+        root_ticks.append(int(clocks[1].step_ticks))
+        root_dt.append(clocks[1].step_ticks / TICK_DEN)
+    assert root_dt[0] == 30.0
+    assert min(root_dt[1:8]) == 3.0, "the spike must reach the floor"
+    # Recovery: back at the pre-spike step within the growth horizon.
+    recovered = [i for i, dt in enumerate(root_dt) if i > 7 and dt == 30.0]
+    assert recovered and recovered[0] <= 7 + 48, root_dt
+    assert all(dt == 30.0 for dt in root_dt[recovered[0]:]), root_dt
+    # Every applied root step sits on the smoothed lattice, as before.
+    assert all(ticks % 60 == 0 for ticks in root_ticks), root_ticks
+
+
+def test_the_controller_baseline_is_the_proposal_not_the_floored_step():
+    """During recovery the applied step is the floor of a larger proposal."""
+    model = _three_level_tree()
+    clocks = {gid: model.node(gid).clock for gid in (1, 2, 3)}
+    k = {1: 1.2 / 30.0, 2: 0.01, 3: 0.01}
+
+    def cfl(gid):
+        value = k[gid] * clocks[gid].step_ticks / TICK_DEN
+        return value, value * 0.5
+
+    d = AdaptiveClockDriver(model, cfl_source=cfl, tick_den=TICK_DEN)
+    for period in range(12):
+        k[1] = 6.0 / 30.0 if 1 <= period <= 6 else 1.2 / 30.0
+        d(period, clocks)
+    ctl = d.controllers[1]
+    applied = Fraction(clocks[1].step_ticks, TICK_DEN)
+    assert ctl.last_dt > applied, (ctl.last_dt, applied)
+    assert ctl.last_dt - applied < Fraction(60, TICK_DEN)
+
+
+# ------------------------------------ the cumulus memory rides the checkpoint
+
+def test_the_cumulus_cadence_memory_is_published_and_restored():
+    """A resume must NOT re-phase cumulus to the resume instant.
+
+    `_cumulus_fired` was the one piece of driver memory absent from
+    `adaptive_state`; on resume `_drive_cumulus_on_time` took its
+    `last is None` arm, fired on the first step and re-phased the whole
+    cudt cadence -- silently, for every cu_physics = 1 run with the default
+    cudt_minutes = 5.  The radiation twin was carried for exactly this
+    reason.  The memory is also re-published after before_step, because
+    the checkpoint is written at the period's END and the fire happens
+    inside the period.
+    """
+    model = _tree(root_dt_s=30)
+    physics = FakePhysics(cudt_minutes=5.0, cudt_seconds=300.0)
+    model.node(1).cfg.run.cu_physics = 1
+    d = _driver(model, {1: (0.5, 0.1), 2: (0.5, 0.1)})
+    clocks = {1: model.node(1).clock, 2: model.node(2).clock}
+    d(0, clocks)
+    assert clocks[1].adaptive_state["cumulus_fired"] is None
+    _stepped(model, 1, physics, 0.0)
+    d.before_step(1)
+    assert physics.cumulus_due_override is True, "the first call fires"
+    # Published INSIDE the period, where the checkpoint writer reads it.
+    checkpoint = dict(clocks[1].adaptive_state)
+    assert checkpoint["cumulus_fired"] == 0.0
+    assert checkpoint["radiation_seen"] is None    # nothing else moved
+
+    # The resume: a fresh driver built from the checkpointed state.
+    resumed = _tree(root_dt_s=30)
+    resumed.node(1).cfg.run.cu_physics = 1
+    resumed.node(1).clock.adaptive_state = checkpoint
+    resumed.node(1).clock.step_ticks = clocks[1].step_ticks
+    r = _driver(resumed, {1: (0.5, 0.1), 2: (0.5, 0.1)})
+    rclocks = {1: resumed.node(1).clock, 2: resumed.node(2).clock}
+    r(1, rclocks)
+    after = FakePhysics(cudt_minutes=5.0, cudt_seconds=300.0)
+    _stepped(resumed, 1, after, 30.0)
+    r.before_step(1)
+    assert after.cumulus_due_override is False, (
+        "the resumed leg re-fired cumulus at the resume instant")
+    _stepped(resumed, 1, after, 290.0)
+    r.before_step(1)
+    assert after.cumulus_due_override is True, (
+        "the next cumulus call time moved across the resume")
+    assert rclocks[1].adaptive_state["cumulus_fired"] == 290.0
+
+
+def test_a_checkpoint_without_the_cumulus_key_still_resumes():
+    """The key is optional on read: absent means "not yet fired"."""
+    model = _tree(root_dt_s=30)
+    model.node(1).cfg.run.cu_physics = 1
+    model.node(1).clock.adaptive_state = {
+        "last_dt_num": 30, "last_dt_den": 1, "last_max_vert_cfl": 0.5,
+        "last_max_horiz_cfl": 0.1, "stepping_to_time": False,
+        "started": True, "radiation_seen": None, "radiation_actual": None}
+    d = _driver(model, {1: (0.5, 0.1), 2: (0.5, 0.1)})
+    assert 1 not in d._cumulus_fired

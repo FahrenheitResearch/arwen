@@ -229,7 +229,6 @@ _CRLF_DEBT = frozenset({
     "tests/test_spawn_runner.py",
     "tests/test_tke_km2.py",
     # tools/
-    "tools/da_nowcast.py",
     "tools/emit_les_route_inputs.py",
     "tools/inflow_fetch_meter.py",
     "tools/obs_battery_score.py",

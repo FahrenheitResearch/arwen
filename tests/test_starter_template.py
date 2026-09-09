@@ -492,10 +492,17 @@ def test_tiles_on_refuses_when_the_canonical_plan_exceeds_reserved_budget(
         tmp_path, tile_machine, capsys):
     from gpuwm.cli import main
     path, _ = tile_starter(tmp_path)
+    # The current itemized streaming policy fits this domain at the ordinary
+    # fixture's 7.72 GiB free. Model a busy card whose reserved budget is
+    # below the minimum complete tile working set instead.
+    tile_machine["probe"]["free_bytes"] = 2 * dw.GIB
     out = tmp_path / "forced-busy" / "tiles.toml"
     assert main(["domain-tiles", str(path), "--out", str(out),
                  "--mode", "on", "--write"]) == 2
-    assert "Tile streaming does not fit" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    refusal = json.loads(captured.out)
+    assert refusal["kind"] == "memory"
+    assert "No fitting automatic tile plan" in captured.err
     assert not out.parent.exists()
 
 

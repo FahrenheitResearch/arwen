@@ -56,7 +56,7 @@ def test_gdas_rides_the_gfs_container_declaration():
             == "filter_gdas_0p25.pl")
 
 
-def test_the_query_differs_only_in_naming():
+def test_the_gdas_query_requests_native_specific_humidity():
     box = dict(left_lon=260.0, right_lon=270.0, bottom_lat=30.0,
                top_lat=40.0)
     cycle = datetime(2026, 7, 29, 12)
@@ -67,7 +67,8 @@ def test_the_query_differs_only_in_naming():
     def selector(url: str) -> list[str]:
         return [part for part in url.split("&")
                 if not part.startswith(("http", "file=", "dir="))]
-    assert selector(gfs) == selector(gdas)
+    assert [part.replace("var_RH=", "var_SPFH=") for part in selector(gfs)] == selector(gdas)
+    assert "var_SPFH=on" in gdas and "var_RH=on" not in gdas
     assert "filter_gdas_0p25.pl" in gdas
     assert "file=gdas.t12z.pgrb2.0p25.f000" in gdas
     assert "gdas.20260729%2F12%2Fatmos" in gdas
@@ -146,7 +147,7 @@ def test_fetch_help_cannot_drift_from_the_registry_gdas_span(capsys):
     assert f"f{registry_max:03d}" in help_text
     # ...and the scope that has to travel with it.
     assert "certified for fetch and decode" in help_text
-    assert "no gdas ingest route" in help_text
+    assert "native mapped GDAS preparation" in help_text
     # The superseded v1.0.1 claim is gone from every fetch help string,
     # not merely relocated.
     assert "analysis-only" not in help_text
@@ -157,8 +158,8 @@ def test_fetch_help_cannot_drift_from_the_registry_gdas_span(capsys):
     # And `gpuwm --help` alone must not leave a reader thinking GDAS
     # initializes a run.
     with pytest.raises(SystemExit):
-        cli.main(["--help"])
-    assert "no ingest route" in " ".join(capsys.readouterr().out.split())
+        cli.main(["--help-all"])
+    assert "native GDAS uses its mapped preparation" in " ".join(capsys.readouterr().out.split())
 
 
 def test_a_gdas_request_past_the_certified_span_refuses_up_front(tmp_path,
@@ -352,15 +353,17 @@ def test_live_gdas_ladder_matches_the_certified_gfs_container(tmp_path):
         assert item["name"].startswith("gdas.t")
         assert (out / item["name"]).is_file()
         # The certified census, verified against the file itself.
-        assert fetch.count_grib2_messages(out / item["name"]) == 124
+        assert fetch.count_grib2_messages(out / item["name"]) == payload["record_bars"][0]["derived"]
 
     # The record bar was derived from the live GDAS index and agreed
     # with the certified GFS constant -- that agreement IS the container
     # claim, so it is the assertion worth making.  (One bar covers the
     # fetch; the per-file census above is what checks each hour.)
     bar = payload["record_bars"][0]
-    assert bar["certified"] == 124
-    assert bar["derived"] == 124, (
+    expected=gfs_transport.record_count_for_levels(len(payload["pressure_levels_hpa"]))
+    assert "var_SPFH" in payload["requested_variables"]
+    assert bar["certified"] == expected
+    assert bar["derived"] == expected, (
         "the live GDAS inventory no longer yields the certified GFS "
         "census; the container has diverged and the mapping must be "
         "re-certified rather than reused")
@@ -399,4 +402,4 @@ def test_live_gdas_ladder_matches_the_certified_gfs_container(tmp_path):
     # ...and the seam still refuses to print an rw-wps command, because
     # there is still no GDAS front door to point at.
     assert not any("rw-wps --source gfs" in line for line in said)
-    assert any("no ingest route" in line for line in said)
+    assert any("native mapped preparation route" in line for line in said)

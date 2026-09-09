@@ -1249,7 +1249,7 @@ def _check_orography(exp, case_data, catalog
         checks.append(
             f"source orography shape/dtype/finiteness d{dc.grid_id:02d}")
         try:
-            # The VALUES come out of Drew's Rust decoder, in the split
+            # The VALUES come out of ArWen's Rust decoder, in the split
             # `gpuwm.downscale._parent_geometry` established: a source
             # orography field is meteorological data whoever wrote the file,
             # and reading one is decode work.  `np.isfinite` below stays in
@@ -1840,7 +1840,9 @@ def _check_command(args) -> int:
     # refuse configurations that fit.
     from gpuwm.core.preflight import host_available_bytes
 
-    args.host_available_at_entry = host_available_bytes()
+    args.host_available_at_entry = (
+        None if getattr(args, "_target_hardware_supplied", False)
+        else host_available_bytes())
     # A legacy RunConfig-shaped TOML has no [case_data] declared-input
     # table, so there is nothing for the input preflight to check.
     # Returning success lets the composed ``gpuwm check`` advance to the

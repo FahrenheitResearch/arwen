@@ -251,7 +251,7 @@ impl CellsKey {
             known_lon: idx.known_lon.to_bits(),
             x0: win.x0,
             y0: win.y0,
-            nz: win.nz,
+            nz: idx.nz() as usize,
             ny: win.ny,
             nx: win.nx,
         }
@@ -270,36 +270,27 @@ pub fn bin_grid_coords(
 ) -> Vec<i64> {
     gx.par_iter()
         .zip(gy.par_iter())
-        .map(|(&gx0, &gy0)| {
-            if !gx0.is_finite() || !gy0.is_finite() {
-                return -1;
-            }
-            let mut gx = gx0;
-            let mut gy = gy0;
-            // Default-REAL Lambert math can leave an analytically
-            // half-cell coordinate a few 1e-5 away from the boundary
-            // before NINT.
-            let hx = gx.floor() + 0.5;
-            let hy = gy.floor() + 0.5;
-            if (gx - hx).abs() < 5e-5 {
-                gx = hx;
-            }
-            if (gy - hy).abs() < 5e-5 {
-                gy = hy;
-            }
-            let ei = (gx + 0.5).floor() as i64 + (halo as i64 - 1);
-            let ej = (gy + 0.5).floor() as i64 + (halo as i64 - 1);
-            if ei >= 0
-                && ei < nxe as i64
-                && ej >= 0
-                && ej < nye as i64
-            {
-                ej * nxe as i64 + ei
-            } else {
-                -1
-            }
-        })
+        .map(|(&gx0, &gy0)| bin_grid_point(gx0, gy0, nxe, nye, halo))
         .collect()
+}
+
+#[inline]
+fn bin_grid_point(gx0: f64, gy0: f64, nxe: usize, nye: usize, halo: usize) -> i64 {
+    if !gx0.is_finite() || !gy0.is_finite() {
+        return -1;
+    }
+    let mut gx = gx0;
+    let mut gy = gy0;
+    // Preserve the existing default-REAL half-cell snap before NINT.
+    let hx = gx.floor() + 0.5;
+    let hy = gy.floor() + 0.5;
+    if (gx - hx).abs() < 5e-5 { gx = hx; }
+    if (gy - hy).abs() < 5e-5 { gy = hy; }
+    let ei = (gx + 0.5).floor() as i64 + (halo as i64 - 1);
+    let ej = (gy + 0.5).floor() as i64 + (halo as i64 - 1);
+    if ei >= 0 && ei < nxe as i64 && ej >= 0 && ej < nye as i64 {
+        ej * nxe as i64 + ei
+    } else { -1 }
 }
 
 /// Extended-grid sampling coordinates for one window, in the precision
@@ -451,6 +442,17 @@ impl<'g> DomainSampler<'g> {
     /// Read the source window covering the extended grid + margin
     /// (`window`).  LANE 2.
     pub fn window(&self, ds: &GeogDataset, margin: i64) -> Result<GeogWindow> {
+        let (x0, x1, y0, y1) = self.window_bounds(ds, margin);
+        ds.read_window(x0, x1, y0, y1)
+    }
+
+    /// Read one original source plane over the identical sampling footprint.
+    pub fn window_plane(&self, ds: &GeogDataset, margin: i64, z: usize) -> Result<GeogWindow> {
+        let (x0, x1, y0, y1) = self.window_bounds(ds, margin);
+        ds.read_window_plane(x0, x1, y0, y1, z)
+    }
+
+    fn window_bounds(&self, ds: &GeogDataset, margin: i64) -> (i64, i64, i64, i64) {
         let mut xs = Vec::with_capacity(self.mesh.lat_c.len());
         let mut ys = Vec::with_capacity(self.mesh.lat_c.len());
         for (&lat, &lon) in self.mesh.lat_c.iter().zip(&self.mesh.lon_c) {
@@ -477,7 +479,7 @@ impl<'g> DomainSampler<'g> {
         let x1 = xmax.ceil() as i64 + margin;
         let y0 = (ymin.floor() as i64 - margin).max(1);
         let y1 = (ymax.ceil() as i64 + margin).min(ds.ny_global);
-        ds.read_window(x0, x1, y0, y1)
+        (x0, x1, y0, y1)
     }
 
     /// Prove every source cell of a mandatory window is tiled
@@ -642,7 +644,10 @@ impl<'g> DomainSampler<'g> {
                 return Ok(cached.clone());
             }
         }
-        let flat = if let Some(fixture) = self.fixture_cells.get(&key) {
+        // A different field no longer needs the previous source-sized map.
+        // Release it before allocating its replacement.
+        self.cells_cache.lock().expect("cells cache poisoned").take();
+        let mut flat = if let Some(fixture) = self.fixture_cells.get(&key) {
             fixture.clone()
         } else {
             let Some(grid) = self.grid else {
@@ -655,23 +660,39 @@ impl<'g> DomainSampler<'g> {
             };
             let nyw = win.ny;
             let nxw = win.nx;
-            let mut coords = vec![(0.0f64, 0.0f64); nyw * nxw];
-            coords
+            let count = nyw.checked_mul(nxw).ok_or_else(||
+                StaticError::Invalid("Geography mapping dimensions overflow".to_string()))?;
+            let mut flat = Vec::new();
+            flat.try_reserve_exact(count).map_err(|_| StaticError::Invalid(format!(
+                "Geography mapping could not allocate {} bytes of system memory", count.saturating_mul(8))))?;
+            flat.resize(count, -1i64);
+            flat
                 .par_iter_mut()
                 .enumerate()
                 .for_each(|(k, slot)| {
                     let i = k % nxw;
                     let j = k / nxw;
+                    let source_x = win.x0 + i as i64;
+                    let source_x = if ds.wraps_x && nxw > ds.nx_global as usize {
+                        (source_x - 1).rem_euclid(ds.nx_global) + 1
+                    } else { source_x };
                     let (lat, lon) = ds.xy_to_latlon(
-                        (win.x0 + i as i64) as f64,
+                        source_x as f64,
                         (win.y0 + j as i64) as f64,
                     );
-                    *slot = grid.latlon_to_ij(lat, lon);
+                    let (gx, gy) = grid.latlon_to_ij(lat, lon);
+                    *slot = bin_grid_point(gx, gy, self.nxe, self.nye, self.halo);
                 });
-            let gx: Vec<f64> = coords.iter().map(|c| c.0).collect();
-            let gy: Vec<f64> = coords.iter().map(|c| c.1).collect();
-            Arc::new(bin_grid_coords(&gx, &gy, self.nxe, self.nye, self.halo))
+            Arc::new(flat)
         };
+        if ds.wraps_x && win.nx > ds.nx_global as usize {
+            // Repeated longitude columns are interpolation padding, not
+            // extra ground area. Each source pixel contributes once to
+            // continuous means and categorical fractions.
+            for row in Arc::make_mut(&mut flat).chunks_exact_mut(win.nx) {
+                row[ds.nx_global as usize..].fill(-1);
+            }
+        }
         *self.cells_cache.lock().expect("cells cache poisoned") =
             Some((key, flat.clone()));
         Ok(flat)
@@ -1344,6 +1365,34 @@ mod tests {
         ));
         let got = bin_grid_coords(&gx, &gy, dom.nxe, dom.nye, dom.halo);
         assert_eq!(got, want, "terrain-window binning");
+    }
+
+    #[test]
+    fn periodic_padding_does_not_bias_area_means_or_category_fractions() {
+        let mut ds = GeogDataset::open(&golden_dir().join("synthetic/syn_wrap"), None).unwrap();
+        ds.index.kind = SourceType::Categorical;
+        ds.index.category_min = Some(1);
+        ds.index.category_max = Some(2);
+        let period = ds.nx_global as usize;
+        assert_eq!(period, 12);
+        for width in [period, period + 7, 3 * period + 7] {
+            let mut win = ds.read_window(1, width as i64, 1, 1).unwrap();
+            win.raw = (0..width).map(|x| if x % period < 3 {1} else {2}).collect();
+            let mesh = SamplerMesh {
+                nxe: 1, nye: 1, lat_lower_e: vec![0.0], lat_e: vec![0.0],
+                lon_e: LonE::F64(vec![0.0]), lon_boundary_band: vec![false],
+                lat_integer_band: vec![false], lat_c: vec![0.0; 4], lon_c: vec![0.0; 4],
+            };
+            let mut fixtures = BTreeMap::new();
+            fixtures.insert(CellsKey::for_window(&ds, &win), Arc::new(vec![0; width]));
+            let dom = DomainSampler::from_parts(None, 1_000_000.0, 0, 1, 1, mesh, fixtures).unwrap();
+            let cells = dom.pixel_cells(&ds, &win).unwrap();
+            assert_eq!(cells.iter().filter(|&&cell| cell >= 0).count(), period);
+            let values: Vec<f64> = win.raw.iter().map(|&value| value as f64).collect();
+            assert_eq!(dom.accum_mean(&cells, &values).data, vec![1.75]);
+            assert_eq!(dom.categorical(&ds, &win, true).unwrap().data, vec![0.25, 0.75]);
+            assert_eq!(win.raw.len(), width, "interpolation padding remains available");
+        }
     }
 
     #[test]

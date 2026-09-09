@@ -264,7 +264,7 @@ mod tests {
             field: 4,
             editing: true,
         };
-        p.paste("/Weather Runs/Drew's Storm.toml");
+        p.paste("/Weather Runs/Operator's Storm.toml");
         let mut terminal = Terminal::new(TestBackend::new(65, 20)).unwrap();
         terminal.draw(|f| p.draw(f, f.area(), &c, "None")).unwrap();
         let r = p
@@ -286,7 +286,7 @@ mod tests {
         let Intent::Save(node) = result else {
             panic!("save button did not save")
         };
-        assert_eq!(node.config, "/Weather Runs/Drew's Storm.toml");
+        assert_eq!(node.config, "/Weather Runs/Operator's Storm.toml");
         assert_eq!(node.last_job.as_deref(), Some("job-1"));
     }
     fn render(panel: &mut Panel, c: &Controller, width: u16, height: u16) -> String {
@@ -446,7 +446,7 @@ mod tests {
         assert!(!panel.should_refresh_connected(&c,true));
         c.view.last_refresh=Some(std::time::Instant::now()-std::time::Duration::from_secs(6));
         assert!(panel.should_refresh_connected(&c,true),"A connected map must keep getting job status while the TUI shows another screen");
-        c.view.last_job_refresh=Some(std::time::Instant::now()-std::time::Duration::from_secs(2));
+        c.view.last_job_refresh=Some(std::time::Instant::now()-std::time::Duration::from_secs(4));
         c.view.last_refresh=Some(std::time::Instant::now());
         assert!(panel.should_refresh_connected(&c,true),"A just-finished timeline request must not postpone a due job-status update");
         c.view.last_job_refresh=Some(std::time::Instant::now());
@@ -553,6 +553,13 @@ fn progress_stage(status:&Value)->String {
 }
 pub(crate) fn job_progress_text(status:&Value,compact:bool)->String {
     let mut lines=vec![progress_stage(status)];
+    for(key,label)in [("background_maps","Map frames"),("native_plots","Native plot frames")]{
+        let background=&status[key];
+        if let(Some(ready),Some(total))=(background["ready"].as_u64(),background["committed"].as_u64().filter(|n|*n>0)){
+            lines.push(format!("{label}: {ready} / {total} ready{}",if background["done"]==true{""}else{" · working in background"}));
+            if let Some(failed)=background["failed"].as_u64().filter(|n|*n>0){lines.push(format!("{label}: {failed} need attention"));}
+        }
+    }
     if let Some(error)=status["error"].as_str(){lines.push(format!("Needs attention: {}",text(error)));}
     let p=&status["progress"];
     let pipeline=&status["pipeline_progress"];
@@ -560,12 +567,13 @@ pub(crate) fn job_progress_text(status:&Value,compact:bool)->String {
     if seconds(&p["model_seconds"]).unwrap_or(0.)==0.&&matches!(stage,"fetch"|"prepare"|"initialize"){
         if pipeline["schema"]=="arwen.pipeline-progress.v1"{
             let phase=pipeline["phase"].as_str().unwrap_or(stage);
-            lines.push(match phase{"cds_queued"=>"CDS is queuing the ERA5 request".into(),"cds_running"=>"CDS is preparing the ERA5 response".into(),"requesting"=>"Requesting ERA5 inputs".into(),"request_completed"=>"An ERA5 response has downloaded".into(),"validating"=>"Validating downloaded weather inputs".into(),"ready"=>"Weather inputs are ready".into(),other=>text(other)});
+            lines.push(match phase{"cds_queued"=>"CDS has queued the ERA5 request".into(),"cds_running"=>"CDS is preparing the ERA5 response".into(),"requesting"=>"Requesting ERA5 inputs".into(),"cds_successful"|"cds_completed"=>"CDS response is ready; starting its download".into(),"downloading"=>"Downloading the prepared ERA5 response".into(),"request_completed"=>"An ERA5 response has downloaded".into(),"validating"=>"Validating downloaded weather inputs".into(),"ready"=>"Weather inputs are ready".into(),other=>text(other)});
+            if matches!(phase,"requesting"|"cds_queued"|"cds_running"){lines.push("CDS prepares each response before its download begins; this can take several minutes.".into());}
             lines.push(format!("Stage elapsed: {}",elapsed(&pipeline["wall_seconds"])));
             let acquisition=&pipeline["acquisition"];
             if let(Some(done),Some(total))=(acquisition["requests_completed"].as_u64(),acquisition["requests_total"].as_u64()){lines.push(format!("ERA5 requests: {done} / {total} complete"));}
             else if let(Some(done),Some(total))=(acquisition["files_completed"].as_u64(),acquisition["files_total"].as_u64()){lines.push(format!("Input files: {done} / {total} complete"));}
-            if let Some(bytes)=acquisition["transferred_bytes"].as_u64(){lines.push(if acquisition["reused"]==true{"Using previously verified input files".into()}else{format!("Received {:.1} MiB",bytes as f64/1_048_576.)});}
+            if let Some(bytes)=acquisition["transferred_bytes"].as_u64().filter(|n|*n>0||!matches!(phase,"requesting"|"cds_queued"|"cds_running")){lines.push(if acquisition["reused"]==true{"Using previously verified input files".into()}else{format!("Received {:.1} MiB",bytes as f64/1_048_576.)});}
             if let Some(times)=acquisition["forcing_times_total"].as_u64(){lines.push(format!("Boundary weather: {times} requested times over {} hours",acquisition["forcing_hours"].as_u64().map(|n|n.to_string()).unwrap_or_else(||"the requested".into())));}
             let prep=&pipeline["preparation"];
             if let(Some(index),Some(total))=(prep["phase_index"].as_u64().or_else(||prep["index"].as_u64()),prep["phases_total"].as_u64().or_else(||prep["count"].as_u64())){lines.push(format!("Preparation operation: {index} / {total}"));}
@@ -712,7 +720,7 @@ impl Panel {
                     "Connected. This node can now be used to start and control ArWen jobs.".into()
             }
             Update::Failed(error) => self.error(error.clone()),
-            Update::Status | Update::Logs | Update::PlanReviewed(_) | Update::ArtifactsSynced(_) | Update::ProcessedFrameSynced(_) | Update::ArtifactIndexed(_) => {}
+            Update::Status | Update::Logs | Update::PlanReviewed(_) | Update::ArtifactsSynced(_) | Update::ProcessedFrameSynced(_) | Update::ProcessedFrameSyncedV2(_) | Update::NativePlotsSynced(_) | Update::ArtifactIndexed(_) => {}
         }
     }
     pub fn should_refresh(&self, c: &Controller) -> bool {
@@ -731,11 +739,11 @@ impl Panel {
         let delay_ms = if c.view.connection_error.is_some() {
             15_000
         } else if c.view.logs_complete_for(job) {
-            return false;
+            if c.view.status.as_ref().is_some_and(|status|["background_maps","native_plots"].iter().any(|key|status[*key]["done"]==false)) { 3_000 } else { return false; }
         } else if c.view.needs_log_drain(job) {
             200
         } else {
-            1_000
+            3_000
         };
         c.view
             .last_job_refresh.or(c.view.last_refresh)
@@ -1355,7 +1363,9 @@ impl Panel {
                 ]);
             }
             Screen::Review { operation, review } => {
-                let content = format!("{} ON {}\n\nRemote configuration: {}\nNew output folder: {}\nPlots: {}\nCheckpoint: {}\n\nExact launch and input hashes:\n{}", operation.action().to_uppercase(), target, string(review, "config"), string(review, "outdir"), string(review, "products"), string(review, "checkpoint"), serde_json::to_string_pretty(review).unwrap_or_default());
+                let mut transport=String::new();
+                if let Some(node)=c.store.selected(){for(label,path)in [("SSH config",&node.ssh_config),("Identity file",&node.identity)]{if !path.is_empty(){transport.push_str(&format!("{label}: {path}\n"));}}}
+                let content = format!("{} ON {}\n\n{transport}Remote configuration: {}\nNew output folder: {}\nPlots: {}\nCheckpoint: {}\n\nExact launch and input hashes:\n{}", operation.action().to_uppercase(), target, string(review, "config"), string(review, "outdir"), string(review, "products"), string(review, "checkpoint"), serde_json::to_string_pretty(review).unwrap_or_default());
                 self.paragraph(frame, rows[1], &content);
                 buttons.extend([
                     ("Enter Start on node", KeyCode::Enter),

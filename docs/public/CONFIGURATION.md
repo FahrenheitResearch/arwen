@@ -559,7 +559,7 @@ pins differ from what WRF assumes for an omitted key.
 | `diff_opt` | 2 | the only mixing form behind `km_opt` |
 | `mix_full_fields` | .true. | full-field mixing only (must be explicit: WRF's omitted default is false) |
 | `non_hydrostatic` | .true. | nonhydrostatic-only |
-| `use_theta_m` | 0 | the engine evolves dry theta; `run --wrfinput` converts validated moist WRF boundary forcing at evaluation time, while standalone namelist import still requires 0 |
+| `use_theta_m` | 0 | the engine evolves dry theta and has no moist-theta branch; `run --wrfinput` and `run --met-em` admit a namelist's `use_theta_m = 1` (WRF's omitted default) as a DECLARED DIVERGENCE announced at the terminal and recorded under "Physics substitutions" in the import receipt: the initial and boundary state is recovered exactly (moist wrfbdy THM/QV/MU converted at each forcing time; metgrid TT is physical temperature) but the integration is dry theta, so it differs from a `use_theta_m = 1` WRF run. Standalone `import-namelist` still requires 0 |
 | `scalar_adv_opt` | 1 | must match `moist_adv_opt` |
 | `w_crit_cfl` | 1.0 | `#define` in `gpuwm/core/kernels/openbc.cu` (Registry default) |
 | `isfflx` | 1 | surface fluxes on |

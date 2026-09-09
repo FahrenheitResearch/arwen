@@ -1,0 +1,8 @@
+{
+  "schema": "gpuwm.run-plan.v1",
+  "name": "My reviewed forecast",
+  "route": "prepared",
+  "config": {"path": "forecast.toml"},
+  "output_root": "./output",
+  "run_options": {"render_products": "composite_reflectivity,2m_temperature,mslp_10m_winds"}
+}

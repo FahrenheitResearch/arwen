@@ -2028,7 +2028,7 @@ struct LegendEntry {
 /// EXACTLY one legend row per thing drawn: the built-in contour set, each
 /// contour overlay, the wind barbs.
 ///
-/// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): the delivered agent
+/// WHAT BREAKAGE THIS PREVENTS (gate law): the delivered agent
 /// section listed "wa" and "T" twice, once for the overlay and again for
 /// its highlighted level.  A highlight is not a second quantity -- it is
 /// one level of the same overlay drawn heavier -- so it folds into that
@@ -2369,7 +2369,7 @@ fn nice_value_ticks(min: f32, max: f32, desired_count: usize) -> Vec<f32> {
     let max = max as f64;
     // No floor of 1.0 on the step.
     //
-    // WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): a supercooled
+    // WHAT BREAKAGE THIS PREVENTS (gate law): a supercooled
     // liquid section runs 0 to about 0.6 g kg-1, and a step floored at one
     // whole unit gave that colourbar exactly two ticks -- its two ends --
     // with nothing in between to read a value against.  `nice_step` already
@@ -2383,7 +2383,7 @@ fn nice_value_ticks(min: f32, max: f32, desired_count: usize) -> Vec<f32> {
 
 /// A tick loop may not run away.
 ///
-/// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): the loop below walks
+/// WHAT BREAKAGE THIS PREVENTS (gate law): the loop below walks
 /// a range by a step, and a range whose ends are enormous (a field with no
 /// data at all, whose min and max both come back as f32::MIN) has a step
 /// too small to advance the accumulator at that magnitude -- so the loop
@@ -2402,7 +2402,7 @@ fn ranged_ticks(start: f64, end: f64, step: f64) -> Vec<f64> {
     // Ticks are rounded against the STEP's own magnitude, not against a
     // fixed thousandth.
     //
-    // WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): a supercooled
+    // WHAT BREAKAGE THIS PREVENTS (gate law): a supercooled
     // liquid section runs to a fraction of a gram per kilogram, so its
     // ticks are ten-thousandths -- and rounding those to 1/1000 collapsed
     // every one of them to 0.0.  The delivered control sections carried a
@@ -2595,7 +2595,7 @@ fn format_scalar_value(value: f32) -> String {
     }
     let magnitude = value.abs();
     if magnitude < 1.0 {
-        // WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): one decimal
+        // WHAT BREAKAGE THIS PREVENTS (gate law): one decimal
         // place turned every tick of a cloud-water colourbar -- 0.02, 0.04,
         // 0.06 g kg-1 -- into the string "0", and a scale whose every label
         // reads zero is not a scale.  The places come from the value.
@@ -3027,7 +3027,7 @@ mod tests {
     /// without visible steps: no two neighbouring fill pixels may jump by
     /// more than a couple of levels of ink.
     ///
-    /// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): the delivered
+    /// WHAT BREAKAGE THIS PREVENTS (gate law): the delivered
     /// winter sections were drawn as per-sample blocks, because one NaN
     /// corner dropped a whole sample quad and eight palette bands stepped
     /// the rest.  A smooth field is the instrument that catches both.

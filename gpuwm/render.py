@@ -18,7 +18,7 @@ Two engines render:
   only by typing ``--engine matplotlib``, and announcing itself as a
   ``WORKAROUND:`` line on every run.
 
-The render law (CLAUDE.md, Drew 2026-08-06) reserves weather-field
+The project render law ( 2026-08-06) reserves weather-field
 product plots for ``rw_wrfbatch`` and names exactly ONE permitted
 fallback, ``tools/da_nowcast_render.py``, which composes multi-panel
 sheets from a DA nowcast case directory and serves none of this door's
@@ -1764,7 +1764,7 @@ def _unresolvable_renderer_refusal(reason: str) -> str:
     """The one refusal both ``auto`` and ``rust`` raise, layered.
 
     THE render-law fix (hidden-scope audit F7, 2026-08-18).  Weather
-    fields belong to ``rw_wrfbatch``; the law (CLAUDE.md, Drew
+    fields belong to ``rw_wrfbatch``; the law (project render law,
     2026-08-06) names exactly one fallback, ``da_nowcast_render.py``,
     and that tool draws multi-panel sheets from a DA case directory --
     it has no product for a wrfout's reflectivity, temperature, wind,
@@ -1824,7 +1824,7 @@ def _unresolvable_renderer_refusal(reason: str) -> str:
 _RENDERER_SUBJECT = "the Rust renderer rw_wrfbatch, through gpuwm.rustwx"
 
 _RENDER_LAW_WHY = (
-    "The render law (CLAUDE.md, Drew 2026-08-06) permits exactly one "
+    "The project render law ( 2026-08-06) permits exactly one "
     "fallback for weather fields, `tools/da_nowcast_render.py`, and that "
     "tool composes multi-panel sheets from a DA nowcast case directory "
     "-- it serves none of this door's products.  `--engine auto` used to "
@@ -2026,7 +2026,7 @@ def matplotlib_workaround_notice(engine: str) -> str | None:
     It is a WORKAROUND now, not a fallback, and the word is the point.
     Nothing degrades into this engine any more (audit F7): it is
     reachable only by typing ``--engine matplotlib``, and "Fixed means
-    default" (Drew 2026-08-10) says an opt-in remedy must be REPORTED as
+    default" (project ruling, 2026-08-10) says an opt-in remedy must be REPORTED as
     a workaround every time it runs.  The prefix is this tree's existing
     spelling for that -- ``gpuwm/static/rust_bridge.py`` prints the same
     ``WORKAROUND:`` line whenever the Python geog reader stands in.

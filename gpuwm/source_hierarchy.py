@@ -384,7 +384,7 @@ def _spatial_coverage_receipt(
     # (:func:`gpuwm.ingest.horiz.source_coordinate_transform`): a
     # geographic source pairs with the target's degrees unchanged, and a
     # source that is regular in its own PROJECTION plane pairs with the
-    # target projected into that plane.  Until 2.6.6 this receipt read
+    # target projected into that plane.  Until 2.7.0 this receipt read
     # the target's geographic degrees against whatever the source's
     # coordinate arrays held, which is the identity only for a
     # geographic source; against a declared Lambert source it compared

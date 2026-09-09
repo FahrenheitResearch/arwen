@@ -490,7 +490,7 @@ INERT_DIAGNOSTIC_IDENTITY_FIELDS = frozenset({
 #: restart identity; only the prepared-cache comparison drops them.
 #: Entries are added deliberately, one per field, by whoever adds the
 #: field, per this module's schema-growth protocol.  Provenance:
-#: controller ruling 2026-08-03 under Drew's standing delegation,
+#: controller ruling 2026-08-03 under ArWen's standing delegation,
 #: recorded in docs/superpowers/receipts/les/
 #: INFLOW-GENERATOR-ACCEPTANCE-V2.md item 10.
 PREPARATION_INERT_RUN_FIELDS = frozenset({

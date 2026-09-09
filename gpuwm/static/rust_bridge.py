@@ -14,7 +14,7 @@ Why ctypes rather than pyo3: same ruling as
 a cdylib behind ctypes; one loading discipline, one staging path, one
 ABI-marker rule, no per-interpreter builds.
 
-Default-on contract (Drew's fixed-means-default law): once a lane
+Default-on contract (ArWen's fixed-means-default law): once a lane
 lands, the bare default path for its entry points is this bridge.  The
 pure-Python implementation stays importable as the parity reference
 and as an explicit fallback (``GPUWM_STATIC_PYTHON=1``), and every use

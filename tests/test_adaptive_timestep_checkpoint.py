@@ -26,7 +26,8 @@ import pytest
 
 import gpuwm.io.restart as restart
 from gpuwm.core.model import ADAPTIVE_TIMESTEP_RUN_FIELDS
-from test_restart import (_VOLATILE_CHECKPOINT_HEADER,
+from test_restart import (_HISTORICAL_FORMAT_VERSION,
+                                _VOLATILE_CHECKPOINT_HEADER,
                                 _canonical_member_digest,
                                 _sealed_tree_fixture)
 
@@ -52,6 +53,8 @@ def _digest_without_the_adaptive_config_keys(path) -> str:
             data[restart._HEADER_KEY])).decode("utf-8"))
         for name in _VOLATILE_CHECKPOINT_HEADER:
             header.pop(name, None)
+        # The v6 stamp is the declared 2.7.0 break, not a config key.
+        header["format_version"] = _HISTORICAL_FORMAT_VERSION
         # eta_levels was appended later (80a3009c2/06c29b747).
         # Unwind that separate config addition to reach the historical
         # pre-adaptive tree; leave every array and non-config header bound.
@@ -159,3 +162,61 @@ def test_a_fixed_clock_still_binds_the_acoustic_substep_count():
             dataclasses.asdict(grown), live, "checkpoint")
     assert (restart._configuration_fingerprint(live)
             != restart._configuration_fingerprint(grown))
+
+
+# ------------------------------ what a fixed-dt checkpoint does not need
+
+def _stored_echo(cfg, *, drop=()):
+    echo = dataclasses.asdict(cfg)
+    for key in drop:
+        echo.pop(key, None)
+    return echo
+
+
+def test_a_fixed_dt_header_without_the_adaptive_echo_matches_the_defaults():
+    """The twelve adaptive fields are optional-with-default when the clock is fixed.
+
+    With the controller off nothing reads them, so a header written without
+    them and a live config holding their defaults describe one clock.  This
+    is the forward-compatibility rule for the v6 line; a 2.6.5 (v5) file is
+    refused by the version gate before this walk runs.
+    """
+    live = _run_cfg()
+    assert not live.use_adaptive_time_step
+    restart._require_config_match(
+        _stored_echo(live, drop=ADAPTIVE_TIMESTEP_RUN_FIELDS), live, "checkpoint")
+
+
+def test_the_adaptive_echo_is_still_required_when_the_clock_is_on_or_retuned():
+    live_on = _run_cfg(use_adaptive_time_step=True)
+    with pytest.raises(restart.RestartMismatchError,
+                       match="use_adaptive_time_step: absent from the restart file"):
+        restart._require_config_match(
+            _stored_echo(live_on, drop=ADAPTIVE_TIMESTEP_RUN_FIELDS), live_on,
+            "checkpoint")
+    retuned = _run_cfg(target_cfl=1.0)
+    with pytest.raises(restart.RestartMismatchError, match="target_cfl"):
+        restart._require_config_match(
+            _stored_echo(retuned, drop=("target_cfl",)), retuned, "checkpoint")
+
+
+def test_eta_levels_absent_matches_only_the_none_default():
+    live = _run_cfg()
+    assert live.eta_levels is None
+    restart._require_config_match(
+        _stored_echo(live, drop=("eta_levels",)), live, "checkpoint")
+    ladder = _run_cfg(eta_levels=tuple(np.linspace(1.0, 0.0, 9)))
+    with pytest.raises(restart.RestartMismatchError, match="eta_levels"):
+        restart._require_config_match(
+            _stored_echo(ladder, drop=("eta_levels",)), ladder, "checkpoint")
+
+
+def test_a_format_5_header_is_refused_by_name_before_the_identity_walk():
+    with pytest.raises(restart.RestartMismatchError) as refused:
+        restart.require_readable_format_version(5, "old.npz")
+    text = str(refused.value)
+    assert "2.6.5 checkpoint format 5" in text
+    assert "complete it on 2.6.5" in text
+    restart.require_readable_format_version(restart.RESTART_FORMAT_VERSION, "new.npz")
+    with pytest.raises(restart.RestartMismatchError, match="this build reads"):
+        restart.require_readable_format_version(99, "future.npz")

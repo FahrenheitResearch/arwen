@@ -10,8 +10,17 @@ Only ice-free lake water is currently compatible with the downstream soil
 route. That route implements sea ice, including ocean-specific constants;
 lake ice must not be relabelled as sea ice. Every contributing interpolation
 donor therefore needs explicit zero lake-ice depth, with the one-sided
-numerical-zero convention declared below. A positive or unknown depth is a
-refusal, never a temperature fallback or an inferred ice fraction.
+numerical-zero convention declared below. A positive or unknown depth, or an
+inadmissible temperature, at any positive-weight donor means the provider
+DECLINES that target cell (NaN in :attr:`LakeWaterMapping.values`), never an
+inferred ice fraction and never a temperature invented here.  The assembly
+(:func:`gpuwm.ingest.water_temperature.assemble_water_temperature`) then
+falls back, per cell, to the source the lake's component had before this
+provider existed -- its coherent skin temperature -- and the receipt counts
+and names every such cell so the preparation report says so.  This
+provider is default-on for every ERA5 run with lake cells, and refusing the
+whole preparation (after the download and the decode) for one frozen
+high-latitude lake was a new blocker on a route that ran in 2.6.5 (ENG-008).
 """
 from __future__ import annotations
 
@@ -33,6 +42,10 @@ LAKE_WATER_PROVIDER = "lake_model_ice_free_water"
 # depth is admitted, and GRIB packingError is deliberately not a phase
 # tolerance: constant zero fields can report packingError=0.5 m.
 ICE_DEPTH_NEGATIVE_ZERO_M = float(np.finfo(np.float64).eps)
+
+#: How many declined cells the receipt lists by (j, i); the count is always
+#: complete.
+MAX_LISTED_DECLINED_CELLS = 64
 
 
 @dataclass(frozen=True)
@@ -118,23 +131,19 @@ def map_ice_free_lake_water(snapshot, target_lat, target_lon, target_lake):
         # A non-donor NaN must never enter the sum through 0*NaN.
         values += weight * np.where(contributes & valid, temperature, 0.0)
     context = f"valid_time={snapshot.valid_time.isoformat()} UTC"
-    if np.any(unknown):
-        raise ValueError(
-            f"{int(unknown.sum())} lake cells have unknown or negative "
-            f"source lake-ice depth ({context}); explicit ice-free lake "
-            "water requires zero depth at every contributing donor")
-    if np.any(frozen):
-        raise ValueError(
-            f"{int(frozen.sum())} lake cells have frozen or partially frozen "
-            f"source lake-state support ({context}). Lake ice needs a "
-            "compatible freshwater-ice initialization route; the current "
-            "sea-ice route cannot consume lake ice temperature/depth. "
-            "No mixed land skin, liquid-water or sea-ice substitute was used")
-    if np.any(invalid):
-        raise ValueError(
-            f"{int(invalid.sum())} lake cells lack admissible source lake "
-            f"water temperature ({context}); all contributing lake-model "
-            "donors must be finite and within 170..400 K")
+    # NOT A REFUSAL.  A frozen or partially frozen donor (lake ice needs a
+    # freshwater-ice route the sea-ice route is not), an unknown depth, or
+    # an inadmissible temperature means the lake model has no ice-free
+    # water to offer THIS cell: the provider declines it (NaN) and the
+    # assembly falls back per cell to the component's skin temperature --
+    # the source this route used before the provider existed -- with the
+    # count and the cells in the receipt.  Refusing the whole preparation
+    # here, after fetch and decode, for one frozen lake was a default-on
+    # blocker on a route that ran in 2.6.5 (ENG-008).
+    declined = active & (unknown | frozen | invalid)
+    values = np.where(active & ~declined, values, np.nan)
+    declined_where = np.argwhere(declined)
+
     def digest(value):
         return hashlib.sha256(np.asarray(value, dtype="<f8").tobytes()).hexdigest()
 
@@ -149,7 +158,17 @@ def map_ice_free_lake_water(snapshot, target_lat, target_lon, target_lake):
         "source_latitude_sha256": digest(snapshot.latitude),
         "source_longitude_sha256": digest(snapshot.longitude),
         "target_lake_cells": int(active.sum()),
-        "ice_phase": "ice_free",
+        "ice_phase": ("ice_free_where_provided" if declined.any()
+                      else "ice_free"),
+        "context": context,
+        # The cells the provider declined, by cause, with their (j, i).
+        "declined_cells": int(declined.sum()),
+        "frozen_cells": int((active & frozen).sum()),
+        "unknown_depth_cells": int((active & unknown).sum()),
+        "invalid_temperature_cells": int((active & invalid).sum()),
+        "declined_cell_indices": [
+            [int(j), int(i)]
+            for j, i in declined_where[:MAX_LISTED_DECLINED_CELLS]],
         "negative_zero_depth_tolerance_m": ICE_DEPTH_NEGATIVE_ZERO_M,
         "negative_zero_depth_donors": count,
         "maximum_negative_zero_depth_m": (
@@ -158,5 +177,6 @@ def map_ice_free_lake_water(snapshot, target_lat, target_lon, target_lake):
 
 
 __all__ = ["LAKE_FIELD_UNITS", "LAKE_FIELDS", "LAKE_WATER_PROVIDER",
-           "ICE_DEPTH_NEGATIVE_ZERO_M", "LakeWaterMapping",
+           "ICE_DEPTH_NEGATIVE_ZERO_M", "MAX_LISTED_DECLINED_CELLS",
+           "LakeWaterMapping",
            "source_lake_fields", "map_ice_free_lake_water"]

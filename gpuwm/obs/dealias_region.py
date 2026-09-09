@@ -17,7 +17,7 @@
 #   licenses/LICENSE-PyART-Argonne-BSD-3-Clause.txt and in the port's own
 #   tree at tools/region_global_dealias/PYART-LICENSE.txt.
 # ======================================================================
-"""The region-global dealiasing engine: Drew's Rust crate behind the seam.
+"""The region-global dealiasing engine: ArWen's Rust crate behind the seam.
 
 :mod:`gpuwm.obs.dealias` said it in its own docstring -- ``dealias_sweep``
 was written against exactly what crosses the ingest seam "so that when the
@@ -27,7 +27,7 @@ that call.
 What it drives
 --------------
 ``region-global-dealias`` (`FahrenheitResearch/region-global-dealias
-<https://github.com/FahrenheitResearch/region-global-dealias>`_) is Drew's
+<https://github.com/FahrenheitResearch/region-global-dealias>`_) is ArWen's
 Rust port of Py-ART's ``dealias_region_based`` (Helmus & Collis 2016), which
 is itself the Jing & Wiener (1993) region method with a dynamic network
 reduction over the region graph.  The crate is vendored verbatim under
@@ -51,7 +51,7 @@ process would mean writing 48 MB to disk and reading it back per volume to
 avoid a data copy the library route does not make at all.  The crate already
 exports the C ABI this needs (``region_global_dealias.h``, ``bw_dealias`` and
 ``bw_dealias_rift_v1``), so the library route is also the one that requires
-no wrapper crate around Drew's code: gpuwm calls his exported symbols
+no wrapper crate around ArWen's code: gpuwm calls his exported symbols
 directly.
 
 The ABI handshake is :func:`bw_abi_version`, checked against
@@ -126,7 +126,7 @@ UPSTREAM_URL: Final[str] = (
 #: The upstream commit ``tools/region_global_dealias`` was taken at.  This
 #: is the provenance of the *algorithm*, so it is recorded here beside the
 #: code that calls it and again in the vendor directory's own note -- a
-#: reader asking "which version of Drew's solver produced these winds"
+#: reader asking "which version of ArWen's solver produced these winds"
 #: must not have to diff two trees to find out.
 UPSTREAM_COMMIT: Final[str] = "a7d4baf6b8a11ca5602fe44a533efd8200ef6cea"
 

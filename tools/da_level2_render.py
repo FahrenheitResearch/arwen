@@ -475,7 +475,7 @@ class Level2Gallery:
                   "wave1")
 
     def wave1(self, single_path: Path, multi_path: Path):
-        # DEPRECATED FALLBACK, under the render law (CLAUDE.md, Drew
+        # DEPRECATED FALLBACK, under the project render law (
         # 2026-08-06).  Every field these four figures show is drawn
         # natively by ``rw_obsgrid`` from the same
         # ``gpuwm-obs.radar-grid.v1`` files -- column-max Z, coverage

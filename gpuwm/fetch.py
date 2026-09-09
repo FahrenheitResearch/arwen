@@ -1697,7 +1697,7 @@ def gfs_available_levels(cycle: datetime, *, progress=print, opener=None,
         index_text = gfs_live_index(cycle, progress=progress, opener=opener,
                                     source=source)
     if index_text is not None:
-        levels = transport.available_levels_from_index(index_text)
+        levels = transport.available_levels_from_index(index_text, model=source)
         if levels:
             return levels
         progress(f"fetch {source}: the live inventory names no isobaric "
@@ -1744,7 +1744,7 @@ def gfs_derived_record_bar(cycle: datetime, *, progress=print,
     if levels_hpa is None:
         levels_hpa = transport.PRESSURE_LEVELS_HPA
     return count_index_selection(index_text, nomads_selector_pairs(
-        transport.NOMADS_VARIABLES, transport.NOMADS_LEVELS, levels_hpa))
+        transport.nomads_variables(source), transport.NOMADS_LEVELS, levels_hpa))
 
 
 def fetch_gfs(*, cycle: datetime, hours: tuple[int, ...], area: Area,
@@ -1840,7 +1840,7 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
     index_text = gfs_live_index(cycle, progress=progress, source=source)
     available = available_levels(cycle, progress=progress, source=source,
                                  index_text=index_text)
-    if all_levels:
+    if all_levels or source == "gdas" and top_pressure_pa is None:
         levels = tuple(float(level) for level in available)
         progress(f"fetch {source}: --all-levels takes the whole published "
                  f"ladder, {len(levels)} isobaric levels "
@@ -1875,6 +1875,11 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
         # force must never leave a manifest behind that still claims a
         # payload it has already replaced.
         _force_quarantine_output(out, progress, source)
+    if source == "gdas" and not force and any(out.glob("gdas.*.subset.grib2")):
+        previous_path = out / FETCH_MANIFEST_NAME
+        previous = json.loads(previous_path.read_text(encoding="utf-8")) if previous_path.is_file() else {}
+        if previous.get("requested_variables") != list(transport.nomads_variables(source)):
+            raise ValueError("This GDAS cache predates the native specific-humidity selection. Use a new output directory or --force-refetch to preserve it and acquire the required fields.")
     prior_digests = _prior_manifest_digests(out)
     box = area.as_nomads()
     longitude_amplification = area.nomads_longitude_amplification
@@ -1933,6 +1938,7 @@ def _fetch_gfs_locked(*, cycle: datetime, hours: tuple[int, ...], area: Area,
         # fall back FROM, so nobody inherited anything here.
         payload["engine_selection"] = "python-requested"
         payload["mode"] = "nomads-cgi-subset"
+        payload["requested_variables"] = list(transport.nomads_variables(source))
         payload["record_bars"] = [bar.as_manifest()]
         if pool_summary:
             # The completed run's concurrency receipt: files, bytes,
@@ -2618,10 +2624,10 @@ def _write_gfs_front_door_files(out: Path, *, source: str, cycle: datetime,
         ]
     else:
         header.extend((
-            f"# no ingest route: `gpuwm prep --source {source}` refuses,",
-            "# because that adapter declares no field/level/cadence",
-            f"# mapping.  `gpuwm prep --show-source {source}` states the",
-            "# same thing in machine form.",
+            f"# Native mapped preparation: gpuwm prep --source {source}.",
+            "# Supply an ordered --input-list, the full pressure ladder,",
+            "# and --supplement gdas_pgrb2_in_band_surface=FILE for each input.",
+            f"# See gpuwm prep --show-source {source} for the complete contract.",
         ))
         body = []
     _atomic_write_text(command_path,
@@ -2870,12 +2876,10 @@ def author_gfs_front_door_manifest(
         # and printing `--source {source}` would be a dead end.  See
         # GDAS_MAX_FORECAST_HOUR above and docs/public/DATA.md.
         progress(
-            f"fetch {source}: no ingest route -- `rw-wps --source "
-            f"{source}` refuses, because that adapter declares no "
-            "field/level/cadence mapping.  The manifest above is real "
-            "and digest-bound; what is missing is the front door, not "
-            "the data.  `rw-wps --show-source "
-            f"{source}` states the same thing in machine form.")
+            f"fetch {source}: the native mapped preparation route uses "
+            "an --input-list and each file's in-band terrain supplement. "
+            "Use the complete pressure ladder and specific humidity. "
+            f"See `gpuwm prep --show-source {source}` for the contract.")
         return path, digest
     progress(
         "fetch gfs: feed the GFS front door with:\n"
@@ -5185,15 +5189,11 @@ def fetch_main(args) -> int:
             manifest_out=args.manifest_out, source=source,
             forecast_start_hour=None)
     elif source == "gdas":
-        # No `next:` here on purpose.  Every step past this one ends in
-        # `rw-wps --source gdas`, which refuses; a next: that leads to a
-        # refusal is a worse experience than an honest full stop.
-        print(f"fetch {source}: the files above are verified and "
-              "digest-bound, but this ArWen has no GDAS ingest route: "
-              "`rw-wps --source gdas` refuses, because that adapter "
-              "declares no field/level/cadence mapping.  For a runnable "
-              "single-domain front door today use `--source gfs`.  See "
-              "`rw-wps --show-source gdas`.")
+        print(f"fetch {source}: verified files are ready for the native mapped "
+              "GDAS preparation route. The packaged profile requires all 33 "
+              "pressure levels (--all-levels) and each input's in-band terrain "
+              "binding (--supplement gdas_pgrb2_in_band_surface=FILE). "
+              "See `gpuwm prep --show-source gdas` for the input contract.")
     else:
         # A template with GFS_GRIB2_BRIDGE_EXE, NAMELIST_WPS and
         # EXPERIMENT_TOML in it was presented as "next" and does not run
@@ -5441,8 +5441,8 @@ def register_cli(subparsers) -> None:
     parser = subparsers.add_parser(
         "fetch",
         help="download initialization/boundary data for any registered "
-             "source with public bytes; download and decode only (GDAS -- "
-             "no ingest route); retrieve ERA5 with configured CDS credentials")
+             "source with public bytes; native GDAS uses its mapped preparation "
+             "profile; retrieve ERA5 with configured CDS credentials")
     parser.add_argument("--retrieve", action="store_true",
         help="ERA5: download and validate with the selected provider (default CDS); otherwise write a CDS retrieval template")
     parser.add_argument("--era5-provider", choices=("cds", "arco"), default=None,
@@ -5478,8 +5478,8 @@ def register_cli(subparsers) -> None:
         "--hours", type=int, default=None, metavar="N",
         help="forecast window length: hours 0..N are fetched.  gdas is "
              "certified for fetch and decode through "
-             f"f{GDAS_MAX_FORECAST_HOUR:03d} -- there is no gdas ingest "
-             "route, so those files stop at the decoder.  --hours 0 is "
+             f"f{GDAS_MAX_FORECAST_HOUR:03d}; native mapped GDAS preparation "
+             "uses the complete pressure ladder and specific humidity. --hours 0 is "
              "the analysis alone, which gdas accepts and every table "
              "route accepts (its f000 is an initial state on its own, and "
              "it is also how a hybrid source's donor is fetched).  A "

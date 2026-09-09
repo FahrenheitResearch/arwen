@@ -103,7 +103,14 @@ _REL_TOL = 1.0e-6
 
 @dataclass(frozen=True)
 class Substitution:
-    """One ratified physics substitution applied by the importer."""
+    """One ratified physics substitution applied by the importer.
+
+    ``reason`` is set on a DECLARED DIVERGENCE: the WRF value is admitted
+    and ArWen integrates something else, for a stated reason the user must
+    see (the terminal prints it, the receipt carries it).  A substitution
+    without a reason is a package replacement, which the WRF doors refuse
+    (:func:`gpuwm.wrfinput_door.require_preserved_wrf_selectors`).
+    """
 
     key: str            # WRF namelist key
     wrf_value: object
@@ -111,6 +118,7 @@ class Substitution:
     gpuwm_key: str      # resolved TOML key
     gpuwm_value: object
     gpuwm_name: str     # gpuwm scheme name
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -205,7 +213,8 @@ class SubstitutionReport:
             for s in self.substitutions:
                 lines.append(
                     f"  {s.key} {s.wrf_value} ({s.wrf_name}) -> "
-                    f"{s.gpuwm_key} {s.gpuwm_value} ({s.gpuwm_name})")
+                    f"{s.gpuwm_key} {s.gpuwm_value} ({s.gpuwm_name})"
+                    + (f": {s.reason}" if s.reason else ""))
         else:
             lines.append("  (none)")
         if self.fixed:
@@ -1118,16 +1127,26 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                 "UP_HELI_MAX running-max diagnostic).")
         nwp_diagnostics = value
 
+    # WRF's Registry default is .true. for EVERY element -- Registry.EM_COMMON:
+    # `rconfig logical input_from_file namelist,time_control max_domains
+    # .true.` -- so an omitted key and an omitted tail both import (the
+    # ordinary single-domain namelist never names it), and it is the
+    # shipped documentation's pin (docs/public/CONFIGURATION.md).  The
+    # importer briefly read the default as .false. and refused every
+    # namelist that left the key out, with a message asserting the
+    # opposite of the Registry (ENG-015).  Only an EXPLICIT .false. is
+    # refused, and the refusal names why.
     input_from_file = _require_bools(
         "time_control", "input_from_file",
-        tc.registry_col("input_from_file", max_dom, False))
+        tc.registry_col("input_from_file", max_dom, True))
     if not all(input_from_file):
         raise _err("time_control", "input_from_file", input_from_file,
-                   "this entry route requires a file initial condition for each domain; "
-                   "WRF defaults omitted entries (including an omitted tail) to .false. "
-                   "Parent-interpolated initialization is not wired to this route. "
-                   "To use each domain's supplied files, set input_from_file=.true. "
-                   "explicitly for each domain in namelist.input.")
+                   "this entry route requires a file initial condition for each domain. "
+                   "WRF's Registry default is .true. for every domain (Registry.EM_COMMON), "
+                   "so an omitted key or an omitted tail imports; an explicit .false. "
+                   "selects parent-interpolated (ndown-style) initialization, which is "
+                   "not wired to this route. Set input_from_file=.true. for that domain "
+                   "or drop the entry.")
     fix("time_control", "input_from_file", input_from_file, True,
         "per-domain file initialization implements the input_from_file=T "
         "branch (med_nest_initial, share/mediation_integrate.F:509-952)")
@@ -2580,12 +2599,39 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             "unsupported: the moist-theta branch (use_theta_m = 1, also "
             "the WRF Registry default when omitted) is not implemented; "
             "gpuwm requires use_theta_m = 0.")
-    fix("dynamics", "use_theta_m", use_theta_m_values, 0,
-        ("metgrid TT is physical temperature; native initialization constructs the shared dry-theta state and boundaries"
-         if metgrid_initialization else
-         "WRF initial T is dry; moist boundary THM/QV/MU are converted at "
-         "each forcing time into the shared dry-theta state" if use_theta_m == 1
-         else "gpuwm transcribes the non-moist-theta use_theta_m=0 branch"))
+    if use_theta_m == 1:
+        # A SUBSTITUTION, NOT A FIX.  use_theta_m = 1 (WRF's Registry default
+        # when omitted) selects the moist-theta prognostic for the whole
+        # integration; ArWen integrates dry theta and has no such branch.
+        # The initial and boundary fields are recovered exactly on both doors
+        # (metgrid TT is physical temperature; a moist wrfbdy's THM/QV/MU are
+        # converted at each forcing time), but the INTEGRATION differs, so
+        # this is booked where the doors' no-substitution gate and the
+        # terminal announcement can see it, with the reason -- not in the
+        # bucket reserved for keys with exactly one implemented value, where
+        # it reached the user through nothing but the receipt file (ENG-016).
+        substitutions.append(Substitution(
+            key="use_theta_m", wrf_value=1,
+            wrf_name="moist potential temperature (theta_m) prognostic",
+            gpuwm_key="use_theta_m", gpuwm_value=0,
+            gpuwm_name="dry potential temperature",
+            reason=(
+                "WRF would integrate moist theta; ArWen integrates dry theta and "
+                "the moist-theta branch is not implemented.  "
+                + ("metgrid TT is physical temperature, so the initial and "
+                   "boundary state is recovered exactly"
+                   if metgrid_initialization else
+                   "the moist wrfbdy THM/QV/MU are converted exactly at each "
+                   "forcing time into the dry-theta state")
+                + "; the integration itself differs from a use_theta_m = 1 WRF run.  "
+                "Set use_theta_m = 0 in the producing namelist to run WRF on the "
+                "same variable.")))
+    else:
+        fix("dynamics", "use_theta_m", use_theta_m_values, 0,
+            ("metgrid TT is physical temperature; native initialization "
+             "constructs the shared dry-theta state and boundaries"
+             if metgrid_initialization else
+             "gpuwm transcribes the non-moist-theta use_theta_m=0 branch"))
     top_lid_values = dyn.col("top_lid", max_dom)
     if top_lid_values is None:
         # NOT WRF's Registry default.  gpuwm's open-top branch is

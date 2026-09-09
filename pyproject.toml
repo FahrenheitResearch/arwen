@@ -438,10 +438,9 @@ arwen-mcp = "gpuwm.mcp.server:main"
 # they are stale FORKS of live modules (boxdelta-forks/driver.py,
 # rings.py, bench.py ... against tilestream/driver.py et al.), so the sweep
 # was shipping a second, silently diverging copy of the transport inside
-# the same wheel.  skeptic/ also carries .py (one-shot probe scripts, not
-# forks of anything live); it ships today and is recorded here rather than
-# swept quietly -- excluding it too is a smaller argument than the forks
-# were, and it can join the exclude list when someone makes it.
+# the same wheel.  skeptic/ contains one-shot fault-injection and remote
+# mutation probes used to qualify development builds. It remains in the
+# repository but is excluded from the operational package as well.
 # tests/test_tiles_distribution.py gates the rescued-tools exclusion in
 # both directions (declaration and setuptools measurement).
 #
@@ -524,7 +523,7 @@ include = ["gpuwm", "gpuwm.*", "tools", "tilestream*", "configs*", "docs", "mpas
 # form, and a partial copy is worse than either whole answer: see the
 # measurement above and MANIFEST.in, which prunes the same directory out
 # of the sdist for the same reason.
-exclude = ["tilestream.rescued-tools*", "gpuwm-data*"]
+exclude = ["tilestream.rescued-tools*", "tilestream.skeptic*", "gpuwm-data*"]
 
 # Recursive globs, never an enumeration of filenames. The previous per-directory
 # enumeration had drifted 52 files behind the tree -- including parameter tables
@@ -576,7 +575,7 @@ gpuwm = [
 # reader cannot validate is a receipt they have to take on trust.
 "gpuwm.certify" = ["*.json"]
 "gpuwm.ingest" = ["*.md"]
-tools = ["prepare_hrrr_*.sh"]
+tools = ["prepare_hrrr_*.sh", "release/*.json", "release/*.py", "release/*.cmd"]
 # The one non-Python file under tilestream/ that a shipped module OPENS:
 # make_plots.py and make_output_json.py both resolve it as
 # `Path(__file__).with_name("output-scaling.json")`, which in an install

@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
 
-OUT = Path("/tmp/claude-1000/-home-drew-bowecho-dea/"
-           "12456cae-783d-4a37-9cd5-d2db7c7bd8da/scratchpad/out")
+#: Where the probe runs wrote their artefacts; the campaign passes it in.
+OUT = Path(os.environ.get("LES1M_PROBE_OUT", "les1m-probe-out"))
 
 
 def load(name):

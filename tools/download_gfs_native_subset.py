@@ -73,7 +73,7 @@ class TopPressureUnavailable(ValueError):
     """
 
 
-def available_levels_from_index(index_text: str) -> tuple[float, ...]:
+def available_levels_from_index(index_text: str, *, model: str = "gfs") -> tuple[float, ...]:
     """The isobaric levels this object publishes for every 3-D field.
 
     A level counts only when all five of :data:`PRESSURE_FIELDS` appear
@@ -82,7 +82,8 @@ def available_levels_from_index(index_text: str) -> tuple[float, ...]:
     bar and fail at ingest.
     """
 
-    per_field: dict[str, set[float]] = {name: set() for name in PRESSURE_FIELDS}
+    required = tuple("SPFH" if model == "gdas" and name == "RH" else name for name in PRESSURE_FIELDS)
+    per_field: dict[str, set[float]] = {name: set() for name in required}
     for line in index_text.splitlines():
         fields = line.strip().split(":")
         if len(fields) < 6:
@@ -169,6 +170,11 @@ NOMADS_VARIABLES = (
     "var_PRES", "var_WEASD", "var_SNOD", "var_LAND", "var_ICEC",
     "var_TSOIL", "var_SOILW",
 )
+
+
+def nomads_variables(model: str = "gfs") -> tuple[str, ...]:
+    """The native GDAS mapping consumes specific humidity, including 2 m."""
+    return tuple("var_SPFH" if model == "gdas" and name == "var_RH" else name for name in NOMADS_VARIABLES)
 
 
 def _sha256(path: Path) -> str:
@@ -260,7 +266,7 @@ def nomads_query(
     parameters.extend(
         (_level_parameter(level), "on") for level in pressure_levels_hpa)
     parameters.extend((name, "on") for name in NOMADS_LEVELS)
-    parameters.extend((name, "on") for name in NOMADS_VARIABLES)
+    parameters.extend((name, "on") for name in nomads_variables(model))
     parameters.append((
         "dir", f"/{prefix}.{cycle:%Y%m%d}/{hour}/atmos",
     ))

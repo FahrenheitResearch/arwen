@@ -73,6 +73,7 @@ from gpuwm.da.enprod import register_cli as enprod_register_cli
 from gpuwm.cycle.cli import register_cli as cycle_register_cli
 from gpuwm.doctor import register_cli as doctor_register_cli
 from gpuwm.domain_wizard import register_cli as domain_register_cli
+from gpuwm.cyclone_setup import register_cli as cyclone_setup_register_cli
 from gpuwm.downscale import register_cli as downscale_register_cli
 from gpuwm import domain_interactive
 from gpuwm.experiment import (is_experiment_toml,  # noqa: F401 - API compat
@@ -373,6 +374,7 @@ def build_parser() -> argparse.ArgumentParser:
     stream_register_cli(sub)
     geog_register_cli(sub)
     domain_register_cli(sub)
+    cyclone_setup_register_cli(sub)
     from gpuwm.research_workspaces import register_cli as research_register_cli
     research_register_cli(sub)
     from gpuwm.case_catalog import register_cli as case_catalog_register_cli

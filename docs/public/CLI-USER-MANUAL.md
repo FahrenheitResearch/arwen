@@ -2,7 +2,7 @@
 
 ArWen's `gpuwm` command creates configurations, acquires forcing, prepares model inputs, integrates forecasts, and renders saved history. You can run the complete workflow with `go` or use each stage independently.
 
-This manual describes the 2.7 interface. Check your executing version with `gpuwm version --offline`. For the keyboard-and-mouse interface, see the [terminal workspace user manual](TUI-USER-MANUAL.md).
+This manual describes the 2.7 interface. Check your executing version with `gpuwm version`; the command makes no network request unless `--check-pypi` is given. For the keyboard-and-mouse interface, see the [terminal workspace user manual](TUI-USER-MANUAL.md).
 
 ## Contents
 
@@ -80,7 +80,7 @@ For a CUDA-13-only installation, use `gpuwm[all-cu13]` instead. For a machine us
 Then stage the release's native tools and reference tables:
 
 ```text
-gpuwm version --offline
+gpuwm version
 gpuwm setup
 gpuwm doctor
 ```
@@ -678,7 +678,7 @@ Keep return codes, exact command arguments, configuration copies, and reported o
 | `remote` | Durable Linux-node jobs. | `probe`; `start/resume --dry-run`; `list/status/logs`. |
 | `doctor` | Inspect the installed environment and remedies. | `--explain`, `--source ID`. |
 | `setup` | Stage verified native artifacts and physics tables. | Geography is explicit with `--with-geog`. |
-| `version` / `update` | Identify the environment / print its upgrade command. | `version --offline` avoids the package-index lookup; `update` does not install. |
+| `version` / `update` | Identify the environment / print its upgrade command. | `version` asks the package index only with `--check-pypi`; `update` does not install. |
 | `report` | Write a diagnostic archive for a run. | `--dry-run`. |
 | `run-plan` | Structured orchestration. | `--resolve`, `--estimate`, `--sources`, `--physics-profiles`. |
 
@@ -688,7 +688,7 @@ Specialist surfaces such as ensembles, observations, verification campaigns, cyc
 
 | Failure | What to check |
 |---|---|
-| Wrong version or missing command | `gpuwm version --offline`; ensure the intended environment is activated. Use `python -m gpuwm.cli` to bind the interpreter explicitly. |
+| Wrong version or missing command | `gpuwm version`; ensure the intended environment is activated. Use `python -m gpuwm.cli` to bind the interpreter explicitly. |
 | Missing or mismatched `gpuwm-data` | Install the companion matching the main package's exact version. In a checkout, install the local `gpuwm-data` before the main editable package. |
 | Missing native tool or wrong render contract | Run Doctor and stage the release's matching artifacts with `fetch-bridges`, or build the correct checkout workspace. |
 | Missing geography | Use `fetch-geog` or point the route at a valid existing WPS_GEOG tree. |

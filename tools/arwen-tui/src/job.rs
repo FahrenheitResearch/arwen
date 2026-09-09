@@ -31,6 +31,22 @@ impl Job {
         directory: &Path,
         cwd: &Path,
     ) -> io::Result<Self> {
+        Self::start_with_module_path(python, action, args, directory, cwd, None)
+    }
+
+    /// `module_path`, when given, becomes the worker's PYTHONPATH. Only tests
+    /// pass one, to substitute a fixture `gpuwm` package explicitly; the
+    /// product passes None. The worker runs with `-P`, so the launch folder
+    /// (`cwd`) is never on its import path and a `gpuwm/` directory there
+    /// cannot shadow the installed engine.
+    pub fn start_with_module_path(
+        python: &Path,
+        action: &str,
+        args: &[String],
+        directory: &Path,
+        cwd: &Path,
+        module_path: Option<&Path>,
+    ) -> io::Result<Self> {
         fs::create_dir_all(directory)?;
         let dir = directory.canonicalize()?;
         let cwd = cwd.canonicalize()?;
@@ -62,12 +78,21 @@ impl Job {
         let mut launch = Command::new(python);
         #[cfg(windows)]
         let owner = windows::Owner::new()?;
+        // -P (Python 3.11+) keeps sys.path[0] off the launch folder without
+        // -I's side effect of discarding PYTHONPATH and PYTHONUTF8, which the
+        // development route and the desktop launcher rely on. -B keeps the
+        // worker from writing __pycache__ into an installed package tree.
         launch
+            .arg("-P")
+            .arg("-B")
             .arg("-u")
             .arg("-m")
             .arg("gpuwm.tui_worker")
             .arg("--job-dir")
             .arg(&dir);
+        if let Some(path) = module_path {
+            launch.env("PYTHONPATH", path);
+        }
         #[cfg(windows)]
         launch.arg("--windows-job").arg(&owner.name);
         launch

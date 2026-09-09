@@ -20,17 +20,21 @@ So this command answers four questions the version number alone cannot:
     tree, with the path;
   * WHETHER pip can move it -- an editable install cannot be upgraded by
     ``pip install --upgrade``, and saying so is the whole point;
-  * WHAT the index has -- one PyPI lookup, so "am I behind" does not
-    require a second tool.
+  * WHAT the index has -- one PyPI lookup, ONLY when asked for with
+    ``--check-pypi``, so "am I behind" does not require a second tool.
 
-The network is strictly optional and strictly last.  Every identity
-line is printed BEFORE the lookup is attempted, the lookup has a short
-timeout, and any failure at all -- offline, proxy, DNS, a 404, a slow
-index -- prints nothing rather than an error.  A version command that
-cannot answer on a plane is a broken version command.  The one line
-that waits for the lookup is the wheel upgrade advice, because on an
-install AHEAD of the index that advice points backwards and is dropped
-(UX finding N16); a silent index keeps it, one timeout later.
+The network is opt-in, and when opted into it is strictly last.  A
+version command is run inside self-contained installs (the desktop
+package's sealed runtime, air-gapped nodes) where an outbound request on
+every invocation is a privacy and reproducibility defect, so the default
+asks nothing.  With ``--check-pypi`` every identity line is still printed
+BEFORE the lookup is attempted, the lookup has a short timeout, and any
+failure at all -- offline, proxy, DNS, a 404, a slow index -- prints
+nothing rather than an error.  The one line that waits for the lookup is
+the wheel upgrade advice, because on an install AHEAD of the index that
+advice points backwards and is dropped (UX finding N16); a silent index
+keeps it, one timeout later.  ``--offline`` is kept as a no-op so scripts
+that passed it keep working.
 
 Like :mod:`gpuwm.update_cli`, this prints and never executes: replacing
 a package's files under the process importing them is how a
@@ -324,6 +328,46 @@ def _wheel_upgrade_advice(shape: dict) -> str | None:
             f"{upgrade_command(shape['distribution'])}")
 
 
+def _is_prerelease(version: str | None) -> bool:
+    """PEP 440 pre-release (``2.7.0rc1``, ``2.7.0a1``, ``2.7.0.dev3``)?
+
+    ``False`` when the answer cannot be given: an unparsable version, or
+    no ``packaging`` on the box, must not turn a release wheel into a
+    "pre-release" in the sentence below.
+    """
+
+    if not version:
+        return False
+    try:
+        from packaging.version import InvalidVersion, Version
+
+        try:
+            return Version(version).is_prerelease
+        except InvalidVersion:
+            return False
+    except ImportError:
+        return False
+
+
+def _ahead_label(shape: dict) -> str:
+    """What an install that is newer than the index actually IS.
+
+    Read off the shape, never inferred from the comparison alone: a wheel
+    pip installed (the sealed desktop runtime, a wheel from a release
+    asset, a PyPI upload the index has not surfaced yet) whose metadata
+    version is a plain release number is a RELEASE install that is newer
+    than what the index lists.  A pre-release number is a pre-release
+    install whatever its shape.  An editable checkout or a bare source
+    tree is a source install.
+    """
+
+    if _is_prerelease(shape.get("version")):
+        return "a pre-release install"
+    if shape.get("distribution") is None or shape.get("editable"):
+        return "a source install"
+    return "a release install newer than the index lists"
+
+
 #: "No latest was passed in" -- distinct from None, which is a real
 #: answer meaning the index did not answer.
 _ASK_THE_INDEX = object()
@@ -348,14 +392,16 @@ def pypi_report(shape: dict, *, timeout: float = PYPI_TIMEOUT_S,
     behind = _is_behind(shape["version"], latest)
     line = f"  PyPI latest is {latest}"
     if _is_ahead(shape["version"], latest):
-        # Ahead is not "current": it is a source or pre-release install,
-        # and saying "current" against an older index number reads as a
-        # broken comparison (measured, UX finding N16).  Each version
-        # number appears once in the sentence: the first spelling of it
-        # said the index's number twice in eleven words, which reads as
-        # a template that forgot to substitute.
+        # Ahead is not "current": saying "current" against an older index
+        # number reads as a broken comparison (measured, UX finding N16).
+        # Each version number appears once in the sentence: the first
+        # spelling of it said the index's number twice in eleven words,
+        # which reads as a template that forgot to substitute.  WHAT kind
+        # of ahead is read off the install, not guessed: the 2.7.0 desktop
+        # package -- a release wheel whose metadata version is the release
+        # -- was being told it was "a source or pre-release install".
         return [f"{line} -- this install is {shape['version']}, ahead of "
-                "it: a source or pre-release install."]
+                f"it: {_ahead_label(shape)}."]
     if behind is False:
         return [f"{line} -- this install is current."]
     if behind is None:
@@ -367,20 +413,25 @@ def pypi_report(shape: dict, *, timeout: float = PYPI_TIMEOUT_S,
 
 
 def version_main(args=None) -> int:
-    """Print local lines first, then try the index.  Never fails.
+    """Print the local lines; ask the index only with ``--check-pypi``.
 
-    One exception to local-first, and it is one line: the wheel
-    upgrade-advice waits for the index's answer, because on an install
-    that is AHEAD of PyPI that advice points backwards and is dropped
-    (UX finding N16).  The identity lines still print before the
-    lookup, and the advice still prints -- after at most the lookup's
-    two-second timeout -- whenever the index is silent, refused, or
-    reports the install behind or current.  ``--offline`` skips the
-    lookup and keeps the advice, exactly as before.
+    Never fails.  The default is the whole local answer and no network:
+    the command runs inside sealed and air-gapped installs, and an
+    outbound request nobody asked for is a defect there (measured on the
+    2.7.0 desktop package, whose every `gpuwm version` phoned PyPI).
+
+    With ``--check-pypi`` there is one exception to local-first, and it
+    is one line: the wheel upgrade-advice waits for the index's answer,
+    because on an install that is AHEAD of PyPI that advice points
+    backwards and is dropped (UX finding N16).  The identity lines still
+    print before the lookup, and the advice still prints -- after at most
+    the lookup's two-second timeout -- whenever the index is silent,
+    refused, or reports the install behind or current.  ``--offline`` is
+    accepted and changes nothing: it names the default.
     """
 
     shape = install_shape()
-    offline = getattr(args, "offline", False)
+    offline = not getattr(args, "check_pypi", False)
     advice = None if offline else _wheel_upgrade_advice(shape)
     for line in local_report(shape):
         if advice is not None and line == advice:
@@ -406,12 +457,20 @@ def register_cli(subparsers):
              "whether it is an editable install pip cannot upgrade, its "
              "git identity, and how that compares to PyPI")
     parser.add_argument(
+        "--check-pypi", action="store_true", dest="check_pypi",
+        help="also ask pypi.org for the latest published version and say "
+             "whether this install is behind, current or ahead of it.  Off "
+             "by default: `gpuwm version` makes no network request unless "
+             "this flag is given, and a lookup that does not answer prints "
+             "nothing rather than an error")
+    parser.add_argument(
         "--offline", action="store_true",
-        help="skip the PyPI lookup entirely (it is already skipped "
-             "silently whenever the network does not answer)")
+        help="accepted for older scripts; names the default (no PyPI "
+             "lookup) and changes nothing")
     parser.add_argument(
         "--pypi-timeout", type=float, default=PYPI_TIMEOUT_S,
         metavar="SECONDS", dest="pypi_timeout",
-        help=f"seconds to wait for the index (default {PYPI_TIMEOUT_S})")
+        help=f"seconds to wait for the index under --check-pypi (default "
+             f"{PYPI_TIMEOUT_S})")
     parser.set_defaults(func=version_main)
     return parser

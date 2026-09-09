@@ -844,6 +844,7 @@ def test_run_start_refuses_a_forcing_product_missing_required_variables():
 
     class _Catalog:
         inventory = ("Z", "T", "U", "V", "RH")
+        snapshots = ()
 
     missing = _missing_required_inventory(_Catalog())
     assert set(missing) == _REQUIRED_SURFACE
@@ -865,5 +866,6 @@ def test_a_complete_forcing_inventory_is_not_gated():
     class _Catalog:
         inventory = tuple(sorted(
             _REQUIRED_PRESSURE | _REQUIRED_SURFACE | {"PMSL", "SOILGEO"}))
+        snapshots = ()
 
     assert _missing_required_inventory(_Catalog()) == []

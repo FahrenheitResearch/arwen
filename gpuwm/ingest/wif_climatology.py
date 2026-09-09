@@ -45,7 +45,7 @@ projection records, the model grid's lat/lon and base state).  Porting it
 therefore serves every input source at once; there is no per-source branch
 anywhere in this module.
 
-ENGINE (2.5.0 data-path law): the data path is Drew's Rust.  Decode,
+ENGINE (2.5.0 data-path law): the data path is ArWen's Rust.  Decode,
 horizontal interpolation and vertical interpolation run in the packaged
 CPU bridge (``tools/grib1_bridge``, cdylib ``gpuwm_preprocess_cpu``) --
 ``gpuwm_wps_intermediate_read``, ``gpuwm_regular_cyclic_bilinear_f32``

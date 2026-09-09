@@ -1,4 +1,4 @@
-"""A whole-file classic NetCDF product, written through Drew's Rust.
+"""A whole-file classic NetCDF product, written through ArWen's Rust.
 
 :mod:`gpuwm.io.wrfout` drives :mod:`gpuwm.io.nc_writer_bridge` as a *tape*:
 one unlimited record dimension, frames appended over time, the header frozen

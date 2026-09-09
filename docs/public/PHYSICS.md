@@ -1154,7 +1154,7 @@ branch flips). The CUDA path holds that boundary with the beta-shape
 normalisation `fzu` PINNED from the capture, exactly as the CPU suite
 pins it: its transcribed glibc-2.39 float32 `logf`/`expf`/`powf` are
 bitwise against the live-glibc sweeps, but **gamma is a deliberate
-divergence since 2.6.6** and is graded against a 113-bit oracle
+divergence since 2.7.0** and is graded against a 113-bit oracle
 instead. That matters because one ULP of `fzu` moves the deep mass
 flux by up to 7.3 percent, so it cannot be a tolerance question -- the
 pin puts it back to zero at that one seam. Read

@@ -51,3 +51,7 @@ Moving nests need forcing and static coverage at their future positions. A
 directory containing only initial footprints cannot supply that coverage;
 prepare a native statics corridor for those requests. These rectangular WRF
 files do not establish compatibility with other mesh layouts.
+
+## `use_theta_m` on the WRF doors
+
+Both `run --wrfinput` and `run --met-em` accept a namelist that selects `use_theta_m = 1` (WRF's default when the key is omitted), and both announce it at the terminal as a declared divergence: ArWen integrates dry potential temperature and has no moist-theta branch. The initial and boundary state is recovered exactly on either door, but the integration differs from what WRF would do with `use_theta_m = 1`. The import receipt (`input/wrf-import.json` or `input/metgrid-import.json`) lists it under "Physics substitutions" with the reason. Set `use_theta_m = 0` in the producing namelist to run WRF on the same variable.

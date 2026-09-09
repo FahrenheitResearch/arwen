@@ -32,8 +32,8 @@
 #   powershell -File tools\moving_nest_demo_20110427.ps1 -Launch    # run both arms
 #
 param(
-    [string]$Era5   = "$env:LOCALAPPDATA\Temp\claude\C--Users-drew-gpuwm\fea7a141-0924-4ca3-8cc3-0d448f2facae\scratchpad\tdcrash\era5-nest\era5-combined.grib",
-    [string]$Vtable = "$env:LOCALAPPDATA\Temp\claude\C--Users-drew-gpuwm\fea7a141-0924-4ca3-8cc3-0d448f2facae\scratchpad\tdcrash\local-case\Vtable.ERA5_CDO",
+    [Parameter(Mandatory=$true)][string]$Era5,
+    [Parameter(Mandatory=$true)][string]$Vtable,
     [string]$OutRoot = "out\moving-nest-demo-20110427",
     [int]$Device = 0,
     [switch]$Launch

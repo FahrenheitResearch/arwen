@@ -629,7 +629,10 @@ pub fn cached_volume_path(
     for segment in key.split('/') {
         path.push(segment);
     }
-    let under_root = path.strip_prefix(&root).is_ok_and(|tail| {
+    // Windows separators and drive/stream syntax must remain refusals when
+    // a cache is prepared on Unix and later used on Windows.
+    let portable_key = !key.contains('\\') && !key.contains(':');
+    let under_root = portable_key && path.strip_prefix(&root).is_ok_and(|tail| {
         tail.components()
             .all(|component| matches!(component, Component::Normal(_)))
     });
@@ -743,7 +746,8 @@ pub fn download_object(
 pub fn publish_volume(source: &Path, out_dir: &Path, key: &str) -> Result<PathBuf, Box<dyn Error>> {
     let name = object_filename(key);
     let target = out_dir.join(name);
-    let one_name_under_out_dir = target.strip_prefix(out_dir).is_ok_and(|tail| {
+    let portable_name = !name.contains('\\') && !name.contains(':');
+    let one_name_under_out_dir = portable_name && target.strip_prefix(out_dir).is_ok_and(|tail| {
         let mut components = tail.components();
         matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
     });
@@ -4572,10 +4576,17 @@ mod tests {
         // A segment carrying a drive prefix is the case a string check of
         // the tail would miss: `Path::push` does not append it, it REPLACES
         // the whole path with it.
-        let err = cached_volume_path(&root, DEFAULT_BUCKET, "2026/C:/KTLX20260729_000234_V06")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("does not name a file under the cache directory"), "{err}");
+        for key in [
+            "2026/C:/KTLX20260729_000234_V06",
+            "2026/C:KTLX20260729_000234_V06",
+            "2026/..\\KTLX20260729_000234_V06",
+            "2026/KTLX20260729_000234_V06:stream",
+        ] {
+            let err = cached_volume_path(&root, DEFAULT_BUCKET, key)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("does not name a file under the cache directory"), "{err}");
+        }
 
         // And `publish_volume` holds the same rule one directory deep: the
         // key's last segment is a file name in the requested directory or it
@@ -4584,7 +4595,10 @@ mod tests {
         let published = publish_volume(&target, &out, key).unwrap();
         assert_eq!(published, out.join("KTLX20260729_000234_V06"));
         assert_eq!(std::fs::read(&published).unwrap(), b"volume bytes");
-        for key in ["2026/07/29/KTLX/..", "..", "2026/07/29/KTLX/..\\escaped"] {
+        for key in [
+            "2026/07/29/KTLX/..", "..", "2026/07/29/KTLX/..\\escaped",
+            "2026/07/29/KTLX/C:escaped", "2026/07/29/KTLX/name:stream",
+        ] {
             let err = publish_volume(&target, &out, key).unwrap_err().to_string();
             assert!(
                 err.contains("not a file directly inside the requested output directory"),

@@ -215,3 +215,55 @@ def test_reorientation_keeps_the_axis_uniform_and_increasing():
     # The same set of source meridians, re-cut, not resampled.
     np.testing.assert_allclose(np.sort(axis % 360.0),
                                np.sort(longitude % 360.0), atol=1e-9)
+
+
+def test_saved_south_atlantic_domain_uses_an_unused_circular_gap_for_all_staggerings():
+    """The old first-point unwrap cut the actual1109x710 target at35.5E."""
+    from gpuwm.ingest.horiz import _regular_longitude_index
+    from gpuwm.ingest.soil_contract import MAPPED_SOIL_MOISTURE
+    grid = LambertGrid(ref_lat=-47.492926370816726,
+        ref_lon=18.40321295624244, truelat1=-30.6, truelat2=-50.6,
+        stand_lon=-37.20916030534397, dx=12000., dy=12000.,
+        e_we=1110, e_sn=711)
+    latitude = -89.75 + np.arange(475, dtype=np.float64) * .25
+    longitude = np.arange(1440, dtype=np.float64) * .25
+    targets = (grid.latlon_mass(), grid.latlon_u(), grid.latlon_v())
+    mark = np.broadcast_to(longitude[None, :], (475, 1440)).copy()
+    original = Era5Snapshot(CYCLE, np.array([850., 500.]), latitude, longitude,
+        {"LONMARK": mark, "T": np.stack((mark + 1000., mark + 2000.)),
+         MAPPED_SOIL_MOISTURE: np.stack([mark + k for k in range(4)])})
+    old_axis = 35.5 + longitude
+    failed = _regular_longitude_index(old_axis, targets[0][1])
+    assert failed[5, 328] == pytest.approx(-.085, abs=5e-4)
+    with pytest.raises(ValueError, match="fall outside the source grid"):
+        _regular_coordinates(latitude, old_axis, *targets[0])
+    oriented = orient_global_source_longitudes(original, *(lon for _, lon in targets))
+    assert oriented.longitude[0] == 153.75
+    assert oriented.longitude.size == 1440  # Every physical source column once.
+    take = (615 + np.arange(1440)) % 1440
+    for name, values in original.fields.items():
+        np.testing.assert_array_equal(oriented.fields[name], values[..., take])
+        assert not oriented.fields[name].flags.writeable
+    np.testing.assert_array_equal(oriented.latitude, latitude)
+    np.testing.assert_array_equal(oriented.levels_hpa, original.levels_hpa)
+    assert oriented.valid_time == original.valid_time
+    for target in targets:
+        y, x = _regular_coordinates(latitude, oriented.longitude, *target)
+        assert [int(np.floor(x).min())-1, int(np.floor(x).max())+2] == [245, 1195]
+        assert int(np.floor(y).min()) - 1 >= 0
+        assert int(np.floor(y).max()) + 2 < latitude.size
+    assert orient_global_source_longitudes(oriented, *(lon for _, lon in targets)) is oriented
+
+
+@pytest.mark.parametrize("longitudes", [
+    [-120., -60., 0., 60., 120.], [120., -120., -60., 0., 60.],
+])
+def test_broad_target_cut_does_not_depend_on_its_first_point(longitudes):
+    latitude = np.arange(-30., 31., dtype=np.float64)
+    snapshot = _snapshot(np.arange(360., dtype=np.float64), latitude)
+    target = np.array(longitudes)
+    oriented = orient_global_source_longitudes(snapshot, target)
+    y, x = _regular_coordinates(latitude, oriented.longitude, np.zeros(target.shape), target)
+    assert int(np.floor(x).min()) - 1 >= 0
+    assert int(np.floor(x).max()) + 2 < oriented.longitude.size
+    np.testing.assert_array_equal(oriented.fields["LONMARK"][np.rint(y).astype(int), np.rint(x).astype(int)] % 360., target % 360.)

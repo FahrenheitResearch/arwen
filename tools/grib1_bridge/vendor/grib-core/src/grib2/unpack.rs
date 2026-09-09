@@ -109,6 +109,20 @@ impl<'a> BitReader<'a> {
     }
 }
 
+// A simple-packed, explicitly all-missing bitmap has no coded values in
+// Sections 5/7. Keep the missing field, without inventing its reference value.
+// A missing/malformed bitmap or nonempty payload is still a decode error.
+fn all_missing_simple_field(msg: &Grib2Message, num_points: usize) -> bool {
+    num_points > 0
+        && num_points <= 100_000_000
+        && msg.data_rep.template == 0
+        && msg.data_rep.section5_num_data_points == 0
+        && msg.raw_data.is_empty()
+        && msg.bitmap.as_ref().is_some_and(|bitmap| {
+            bitmap.len() == num_points && bitmap.iter().all(|present| !present)
+        })
+}
+
 /// Unpack a GRIB2 message's data section to floating-point values.
 pub fn unpack_message(msg: &Grib2Message) -> crate::Result<Vec<f64>> {
     let dr = &msg.data_rep;
@@ -143,6 +157,9 @@ pub fn unpack_message(msg: &Grib2Message) -> crate::Result<Vec<f64>> {
     }
     let declared_values = dr.section5_num_data_points as usize;
     if declared_values == 0 {
+        if all_missing_simple_field(msg, num_points) {
+            return Ok(vec![f64::NAN; num_points]);
+        }
         return Err(crate::GribError::Unpack(
             "Section 5 declares 0 data points".to_string(),
         ));
@@ -366,6 +383,9 @@ pub fn unpack_message_scan_normalized_row_window(
     let dr = &msg.data_rep;
     let declared_values = dr.section5_num_data_points as usize;
     if declared_values == 0 {
+        if all_missing_simple_field(msg, nx.checked_mul(ny).unwrap_or(usize::MAX)) {
+            return Ok(vec![f64::NAN; nx * (y_end - y_start)]);
+        }
         return Err(crate::GribError::Unpack(
             "Section 5 declares 0 data points".to_string(),
         ));

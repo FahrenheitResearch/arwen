@@ -2589,6 +2589,7 @@ class _GoObserver:
 
     def __init__(self, observer: RunObserver):
         self._observer = observer
+        self.failure: dict[str, Any] | None = None
 
     # -- gpuwm go's chain hooks ---------------------------------------
 
@@ -2617,11 +2618,17 @@ class _GoObserver:
             model_seconds=float(model_seconds),
             status=progress.get("status"))
 
+    def stage_failed(self, *, label: str, exit_code: int, diagnostic: str) -> None:
+        self.failure = {"stage": label, "exit_code": exit_code,
+                        "diagnostic": diagnostic}
+
     def stage_end(self, *, label: str, exit_code: int, ok: bool,
                   elapsed_seconds: float, progress) -> None:
         if label == "render" and isinstance(progress, dict) and progress.get("schema") == "gpuwm.render-summary.v1":
             self._observer._render_summary = dict(progress)
         if not ok:
+            if self.failure is None:
+                self.failure = {"stage": label, "exit_code": exit_code}
             self._observer.warn(
                 "chain_stage_failed",
                 f"`gpuwm go` stage {label!r} exited {exit_code}; no later "
@@ -3719,12 +3726,19 @@ def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
     # multi-domain config to the tree runner, so this front door and
     # the interactive one now enter the same chain by the same call.
     relay = _PreparedRunRelay(observer, plan.run_dir / "chain", Path(config_path))
+    chain_observer = _GoObserver(observer)
     token = _PREPARED_PARENT.set(relay)
     try:
-        code = go_main(args, observer=_GoObserver(observer))
+        code = go_main(args, observer=chain_observer)
     finally:
         _PREPARED_PARENT.reset(token)
     if code:
+        if chain_observer.failure is not None:
+            failure = chain_observer.failure
+            detail = ((relay.failure or {}).get("message") or failure.get("diagnostic"))
+            raise RuntimeError(
+                f"The {failure['stage']} stage failed (exit {failure['exit_code']}). "
+                "No later stage ran." + (f"\n{detail}" if detail else ""))
         raise RuntimeError(
             f"`{' '.join(tokens)}` exited {code}; the stage that stopped "
             "the chain is named in the failed event's warning above" +
@@ -4535,6 +4549,57 @@ def _streamed_vram_section(estimate, streamed) -> dict[str, Any]:
     return section
 
 
+def _execution_estimate(phases, exp, machine) -> dict[str, Any]:
+    """Describe the selected memory estimate without mistaking fallback for resident."""
+    from gpuwm.core import streaming
+
+    options = getattr(exp, "tiles", None) or streaming.OFF
+    road = getattr(phases, "tree_road", None)
+    refusal = None if road is None else road.refusal
+    streamed = phases.streamed
+    resolved = streamed is not None and refusal is None
+    reason = None
+    if not resolved and refusal is None:
+        if road is not None:
+            resolved = bool(road.priced)
+        elif len(exp.domains) == 1:
+            if options.mode == "off":
+                resolved = True
+            elif machine is not None:
+                # Reuse the estimate's observation and resident arithmetic.
+                # Never probe again to distinguish a resident auto decision
+                # from the conservative fallback after a planner refusal.
+                try:
+                    decision = streaming.decide(
+                        exp.domains[0].run, options, machine=machine,
+                        resident_estimate=phases.forecast)
+                    resolved = not decision.stream
+                    if decision.stream:
+                        reason = "The selected tile plan could not be priced."
+                except Exception as error:
+                    refusal = str(error)
+        elif options.mode == "off" and all(
+                streaming.options_for_domain(d, options).mode == "off"
+                for d in exp.domains):
+            resolved = True
+    if not resolved and refusal is None and reason is None:
+        reason = "The execution plan is unavailable for this memory estimate."
+    return {
+        "schema": "arwen.execution-memory.v1",
+        "configured_mode": options.mode,
+        "configured_tiles": options.to_mapping(),
+        "resolved": resolved,
+        "streamed_forecast": (streamed is not None if resolved else None),
+        "planner_refusal": refusal,
+        "unresolved_reason": reason,
+        "selected_forecast_envelope_bytes": (int(phases.forecast_envelope_bytes)
+                                              if resolved else None),
+        "resident_reference_bytes": int(phases.forecast.peak_envelope_bytes),
+        "host_bytes": (None if streamed is None else int(streamed.host_bytes)),
+        "tree_road": None if road is None else road.to_json(),
+    }
+
+
 def estimate_plan(plan: RunPlan) -> dict[str, Any]:
     """What this plan will cost, from measured machinery only.
 
@@ -4624,6 +4689,7 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
     return {
         "schema": ESTIMATE_SCHEMA,
         "plan": resolution["plan"],
+        "execution": _execution_estimate(phases, exp, machine),
         "vram": {
             **_vram_estimate(estimate, streamed, exp),
             "phase_scope": "forecast",

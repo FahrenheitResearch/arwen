@@ -249,8 +249,18 @@ def check_projection_agreement(experiment, metadata: Mapping[
 
 
 def require_preserved_wrf_selectors(report):
-    """A reachable WRF door must not replace an explicit physics package."""
+    """A reachable WRF door must not replace an explicit physics package.
+
+    Only ``use_theta_m = 1`` to ``use_theta_m = 0`` is an admitted declared
+    divergence, and it must carry the reason announced at the terminal by
+    ``announce_wrf_substitutions``. A reason explains a change; it does not
+    authorize replacing any other requested physics selector.
+    """
     for item in report.substitutions:
+        if (item.key == item.gpuwm_key == "use_theta_m"
+                and item.wrf_value == 1 and item.gpuwm_value == 0
+                and item.reason):
+            continue
         if item.wrf_value != item.gpuwm_value:
             raise ValueError(
                 f"the requested {item.wrf_name} ({item.key}={item.wrf_value}) has no native implementation; "

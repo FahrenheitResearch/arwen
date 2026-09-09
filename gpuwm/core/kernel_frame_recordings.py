@@ -149,7 +149,7 @@ class KernelFrameRecording:
         return (self.compute_capability, self.nvrtc_build)
 
 
-#: The reading every shipped row came from: Drew's Windows desktop
+#: The reading every shipped row came from: the development Windows desktop
 #: while the RTX 5090 was in it (the card moved to weather-node-2 on
 #: 2026-08-16, so this exact box no longer exists and the table can no
 #: longer be regenerated on it).  Rows were taken 2026-07-26 and
@@ -160,7 +160,7 @@ class KernelFrameRecording:
 #: which is why this recording is INCOMPLETE rather than carrying a
 #: zero nobody measured.
 SM120_NVRTC_13_0_48 = KernelFrameRecording(
-    box='drew-desktop (RTX 5090 era)',
+    box='development-desktop (RTX 5090 era)',
     device='NVIDIA GeForce RTX 5090',
     compute_capability='120',
     nvrtc_build='13.0.48',
@@ -348,7 +348,7 @@ SM120_NVRTC_13_3_33 = KernelFrameRecording(
     }),
 )
 
-#: Drew's Windows desktop as it stands now: RTX 3080, sm_86, on the
+#: The development Windows desktop as it stands now: RTX 3080, sm_86, on the
 #: same NVRTC 13.0.48 the first recording used.  Holding the compiler
 #: fixed is what isolates the architecture half: ``gf`` 22,416 ->
 #: 23,984, ``noah`` 176 -> 224 and ``thompson_aerosol_warm`` 0 -> 112
@@ -357,7 +357,7 @@ SM120_NVRTC_13_3_33 = KernelFrameRecording(
 #: (0.17 GiB together, at 68 SMs x 1,536 threads) until the ceiling
 #: took them up.
 SM86_NVRTC_13_0_48 = KernelFrameRecording(
-    box='drew-desktop',
+    box='development-desktop',
     device='NVIDIA GeForce RTX 3080',
     compute_capability='86',
     nvrtc_build='13.0.48',
@@ -632,7 +632,7 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
     # A partial recording of the new boundary module, independently measured
     # through the production loader on local WSL. No other module was read.
     KernelFrameRecording(
-        box='drew-desktop (WSL2)',
+        box='development-desktop (WSL2)',
         device='NVIDIA GeForce RTX 3080',
         compute_capability='86',
         nvrtc_build='12.8.93',

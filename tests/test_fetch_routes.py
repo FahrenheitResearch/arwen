@@ -13,6 +13,7 @@ The live smoke -- one small real object per route -- is
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 import json
 
 import pytest
@@ -210,8 +211,10 @@ def test_rrfs_pairs_prslev_with_the_2dfld_supplement():
     assert roles == ["prslev", "2dfld", "prslev", "2dfld"]
     assert plan.objects[0].url.endswith(
         "rrfs.20260817/00/rrfs.t00z.prslev.3km.f000.conus.grib2")
-    # The 2dfld files are the composition's declared surface supplement,
-    # not extra primaries.
+    # Both files supply canonical fields: prslev has upper air, while
+    # 2dfld has surface and soil state as well as the terrain supplement.
+    assert len(plan.primary_files) == 4
+    assert {path.name for path in plan.primary_files} == {Path(obj.relpath).name for obj in plan.objects}
     assert [path.name for path in plan.supplement_files] == [
         "rrfs.t00z.2dfld.3km.f000.conus.grib2",
         "rrfs.t00z.2dfld.3km.f001.conus.grib2",
@@ -537,9 +540,9 @@ def test_the_handoff_binds_the_input_list_and_the_supplement_role(tmp_path):
                           progress=lambda *_: None)
     inputs, command = fetch_routes.write_handoff(plan, tmp_path)
     listed = inputs.read_text().splitlines()
-    assert len(listed) == 2
-    assert all(line.endswith(".grib2") and "prslev" in line
-               for line in listed)
+    assert len(listed) == 4
+    assert all(line.endswith(".grib2") and ("prslev" in line or "2dfld" in line) for line in listed)
+    assert sum("prslev" in line for line in listed) == sum("2dfld" in line for line in listed) == 2
     text = command.read_text()
     assert "gpuwm prep \\" in text
     assert "--source rrfs" in text

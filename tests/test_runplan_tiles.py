@@ -686,6 +686,10 @@ def test_the_estimate_of_a_streamed_plan_is_the_streamed_envelope(
     assert estimate["vram"]["peak_envelope_bytes"] == int(streamed.vram_bytes)
     assert estimate["vram"]["peak_envelope_gib"] == round(
         streamed.vram_bytes / 1024 ** 3, 4)
+    assert estimate["execution"]["resolved"] is True
+    assert estimate["execution"]["streamed_forecast"] is True
+    assert estimate["execution"]["host_bytes"] == streamed.host_bytes
+    assert estimate["execution"]["selected_forecast_envelope_bytes"] == estimate["vram"]["peak_envelope_bytes"]
     # The basis names the estimator that produced it, so a reader who gets
     # a figure they did not expect can find out why.
     assert "estimate_phases" in estimate["vram"]["basis"]
@@ -708,3 +712,34 @@ def test_the_estimate_of_a_resident_plan_is_unchanged(tmp_path):
             == resident.alloc_estimate_bytes)
     assert estimate["vram"]["estimate_gib"] == round(
         resident.alloc_estimate_bytes / 1024 ** 3, 4)
+    assert estimate["execution"]["resolved"] is True
+    assert estimate["execution"]["streamed_forecast"] is False
+
+
+@pytest.mark.parametrize("outcome", ["resident", "refused", "unpriced", "unmeasured"])
+def test_execution_label_does_not_treat_resident_fallback_as_a_selected_plan(tmp_path, monkeypatch, outcome):
+    from gpuwm.core import preflight, streaming
+    from types import SimpleNamespace
+
+    config = _config(tmp_path, tiles='[tiles]\nmode = "auto"\n')
+    exp = load_experiment(config)
+    resident = preflight.estimate_experiment(exp)
+    phases = preflight.PhaseMemoryEstimate(resident, None, resident.peak_envelope_bytes, None)
+    machine = SimpleNamespace()
+    calls = []
+    def decide(*args, **kwargs):
+        calls.append(kwargs)
+        if outcome == "refused":
+            raise streaming.StreamingRefused("No tile fits this memory budget")
+        return streaming.StreamingDecision(outcome == "unpriced", outcome)
+    monkeypatch.setattr(streaming, "decide", decide)
+    result = runplan_module._execution_estimate(phases, exp, None if outcome == "unmeasured" else machine)
+    assert result["resolved"] is (outcome == "resident")
+    assert result["streamed_forecast"] is (False if outcome == "resident" else None)
+    assert result["selected_forecast_envelope_bytes"] == (resident.peak_envelope_bytes if outcome == "resident" else None)
+    if outcome == "unmeasured":
+        assert not calls
+    else:
+        assert len(calls) == 1 and calls[0]["machine"] is machine and calls[0]["resident_estimate"] is resident
+    if outcome == "refused":
+        assert "No tile fits" in result["planner_refusal"]

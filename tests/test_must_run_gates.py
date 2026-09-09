@@ -13,9 +13,9 @@ way coverage most often leaves.
 The worked example is in this tree.  ``tools/rrtmg_wrf461_oracle/lw_gate.py
 :23-26`` resolves the RRTMG longwave fixture root to
 
-    os.path.expanduser("~/.claude/jobs/fea7a141/tmp/rrtmg_lw/fixtures")
+    os.path.expanduser("~/.gpuwm/oracle/rrtmg_lw/fixtures")
 
--- one agent job's scratch directory on one machine -- and
+-- an oracle scratch directory that no clone carries -- and
 ``tests/test_rrtmg_lw_numpy.py:38`` is a whole-module ``skipif`` on that
 directory existing.  It exists in no clone, so 100% of the longwave gates
 skip everywhere, inside a module whose own line 92 reads *"this gate must

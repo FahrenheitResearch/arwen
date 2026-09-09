@@ -340,6 +340,13 @@ def orient_global_source_longitudes(snapshot, *target_longitudes):
     at the array edge is also exactly what WPS's own search operators do
     at the edge of any finite crop, so an untouched cut outside the read
     region is established behaviour rather than a latent defect.
+
+    A broad target can cross the reference longitude's opposite meridian;
+    unwrapping around its first point then puts the guessed cut inside the
+    target. If that guess is still unsafe, use the largest circular gap
+    between target longitudes, and accept it only after checking all donor
+    stencils. This remains a permutation of one source ring: no repeated
+    source pixels or different masked-search semantics are introduced.
     """
 
     from gpuwm.ingest.grib import Era5Snapshot
@@ -379,15 +386,32 @@ def orient_global_source_longitudes(snapshot, *target_longitudes):
 
     start = int(round((centre - 180.0 - float(longitude[0])) / increment))
     start %= period
+    columns = np.arange(longitude.size, dtype=np.int64)
+
+    def axis_for(first):
+        axis = float(longitude[0]) + (first + columns) * increment
+        return axis - 360.0 * np.floor((axis[0] + 180.0) / 360.0)
+
+    rotated = axis_for(start)
+    proposed = _regular_longitude_index(rotated, pooled)
+    if not (float(proposed.min()) >= 1.0
+            and float(proposed.max()) <= longitude.size - 3.0):
+        circular = np.sort(np.mod(pooled, 360.0))
+        gaps = np.diff(circular, append=circular[:1] + 360.0)
+        widest = int(np.argmax(gaps))
+        cut = float(circular[widest] + gaps[widest] / 2.0)
+        candidate = int(round((cut - float(longitude[0])) / increment)) % period
+        candidate_axis = axis_for(candidate)
+        candidate_x = _regular_longitude_index(candidate_axis, pooled)
+        if (float(candidate_x.min()) >= 1.0
+                and float(candidate_x.max()) <= longitude.size - 3.0):
+            start, rotated = candidate, candidate_axis
     if start == 0:
         return snapshot
     from gpuwm.ingest.atmospheric_window import WindowedAtmosphericSnapshot
     if isinstance(snapshot, WindowedAtmosphericSnapshot):
         snapshot = snapshot.full_snapshot()
-    columns = np.arange(longitude.size, dtype=np.int64)
     take = (start + columns) % period
-    rotated = float(longitude[0]) + (start + columns) * increment
-    rotated -= 360.0 * np.floor((rotated[0] + 180.0) / 360.0)
     return replace(
         snapshot,
         longitude=rotated,

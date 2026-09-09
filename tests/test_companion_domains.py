@@ -212,6 +212,147 @@ def test_move_nested_grid_clamps_to_parent_and_keeps_descendants(tmp_path):
     assert candidate["shared"] == original["shared"]
 
 
+@pytest.mark.parametrize("ratio,nx,ny,expected", [
+    (3, 164, 218, (165, 219)),  # The saved southern-hemisphere Add nest request.
+    (3, 163, 217, (162, 216)), (3, 165, 219, (165, 219)),
+    (2, 165, 219, (166, 220)), (4, 166, 218, (168, 220)),
+])
+def test_add_drawn_nest_saves_ratio_aligned_mass_cells_and_native_placement(
+        tmp_path, ratio, nx, ny, expected):
+    source, raw = configured_case(tmp_path, (0,))
+    raw["domain"][0].update(nx=802, ny=537)
+    raw["projection"] = dict(map_proj="lambert", ref_lat=-46.719424874125096,
+        ref_lon=-9.895900721668568, truelat1=-30.6, truelat2=-50.6,
+        stand_lon=-37.20916030534397)
+    source.write_text(emit_experiment_toml(raw))
+    before = source.read_bytes()
+    target = (-40.5992279334933, -37.20916030534397)
+    request = request_for(source, 1)
+    request["action"] = {"kind": "add_nest", "parent_id": 1, "nx": nx, "ny": ny,
+        "parent_grid_ratio": ratio, "parent_time_step_ratio": 3,
+        "history_interval_s": 300.0,
+        "placement": {"kind": "center", "latitude": target[0], "longitude": target[1]}}
+    result = editor.edit_configuration(request)
+    candidate = tomllib.loads(Path(result["config_path"]).read_text())
+    child = candidate["domain"][1]
+    assert (child["nx"], child["ny"]) == expected
+    assert child["parent_grid_ratio"] == ratio and child["parent_time_step_ratio"] == 3
+    assert child["history_interval_s"] == 300.0
+    assert candidate["domain"][0] == raw["domain"][0]
+    assert candidate["shared"] == raw["shared"]
+    assert candidate["projection"] == raw["projection"]
+    assert candidate["experiment"] == raw["experiment"]
+    exp = editor._build(candidate, Path(result["config_path"]))
+    assert exp.domain(2).run.dx == 12000.0 / ratio
+    assert exp.domain(2).run.dt == 20.0
+    bridge, grids = editor._native_grids(exp)
+    actual_center = result["configuration"]["domains"][1]["center_latlon"]
+    actual, requested = editor._transform(bridge, grids[1], 1, [actual_center, target])
+    assert abs(actual[0] - requested[0]) <= .5 + 1e-8
+    assert abs(actual[1] - requested[1]) <= .5 + 1e-8
+    wps = parse_namelist_text(Path(result["wps_path"]).read_text())["geogrid"]
+    assert wps["e_we"] == [803, expected[0] + 1]
+    assert wps["e_sn"] == [538, expected[1] + 1]
+    assert source.read_bytes() == before
+    assert result["forecast_started"] is False
+
+
+@pytest.mark.parametrize("overrides,match", [
+    ({"nx": 0}, "integer"), ({"nx": True}, "integer"),
+    ({"nx": 164.5}, "integer"), ({"parent_grid_ratio": 0}, "integer"),
+    ({"parent_grid_ratio": 1}, "must be >= 2"),
+    ({"parent_time_step_ratio": 1}, "must be >= 2"),
+    ({"nx": 3000}, "parent-row clearance"),
+    ({"history_interval_s": 301.0}, "whole number"),
+])
+def test_add_nest_snapping_preserves_engine_refusals_and_publishes_nothing(tmp_path, overrides, match):
+    source, _ = configured_case(tmp_path, (0,))
+    before = source.read_bytes()
+    request = request_for(source, 1)
+    request["action"] = {"kind": "add_nest", "parent_id": 1, "nx": 164, "ny": 218,
+        "parent_grid_ratio": 3, "parent_time_step_ratio": 3,
+        "history_interval_s": 300.0,
+        "placement": {"kind": "parent_cells", "i_parent_start": 20, "j_parent_start": 20},
+        **overrides}
+    with pytest.raises(ValueError, match=match):
+        editor.edit_configuration(request)
+    assert source.read_bytes() == before
+    assert not (source.parent / "candidate.toml").exists()
+    assert not (source.parent / "candidate.namelist.wps").exists()
+
+
+@pytest.mark.parametrize("ratio,boundary,relax,expected", [
+    (3, 5, 4, 12), (2, 5, 4, 12), (5, 5, 4, 15),
+    (3, 8, 4, 18), (3, 9, 8, 21),
+])
+def test_tiny_add_nest_uses_the_same_boundary_and_stencil_minimum_as_resize(
+        tmp_path, ratio, boundary, relax, expected):
+    source, raw = configured_case(tmp_path, (0,))
+    raw["experiment"]["spec_bdy_width"] = boundary
+    raw["shared"]["relax_zone"] = relax
+    source.write_text(emit_experiment_toml(raw))
+    before = source.read_bytes()
+    request = request_for(source, 1)
+    request["action"] = {"kind": "add_nest", "parent_id": 1, "nx": 1, "ny": 2,
+        "parent_grid_ratio": ratio, "parent_time_step_ratio": 3,
+        "history_interval_s": 300.0,
+        "placement": {"kind": "parent_cells", "i_parent_start": 20, "j_parent_start": 20}}
+    result = editor.edit_configuration(request)
+    candidate = tomllib.loads(Path(result["config_path"]).read_text())
+    child = candidate["domain"][1]
+    assert (child["nx"], child["ny"]) == (expected, expected)
+    assert (child["i_parent_start"], child["j_parent_start"]) == (20, 20)
+    assert candidate["domain"][0] == raw["domain"][0]
+    assert candidate["shared"] == raw["shared"]
+    assert candidate["projection"] == raw["projection"]
+    assert candidate["experiment"] == raw["experiment"]
+    assert source.read_bytes() == before
+    exp = editor._build(candidate, Path(result["config_path"]))
+    editor._apply(candidate, {"kind": "resize_domain_cells", "grid_id": 2,
+        "handle": "ne", "nx": 1, "ny": 2}, Path(result["config_path"]))
+    assert (candidate["domain"][1]["nx"], candidate["domain"][1]["ny"]) == (expected, expected)
+    assert exp.domain(2).run.dx == 12000.0 / ratio
+
+
+@pytest.mark.parametrize("kind", ["resize_domain_cells", "resize_domain_edges", "resize_domain"])
+@pytest.mark.parametrize("grid_id", [1, 2])
+def test_resizing_wps_dimension_aliases_matches_equivalent_mass_counts(tmp_path, kind, grid_id):
+    outputs = []
+    for representation in ("mass", "wps"):
+        folder = tmp_path / representation
+        folder.mkdir()
+        source, raw = configured_case(folder, (0, 1))
+        if representation == "wps":
+            for row in raw["domain"]:
+                row["e_we"] = row.pop("nx") + 1
+                row["e_sn"] = row.pop("ny") + 1
+            source.write_text(emit_experiment_toml(raw))
+        before = source.read_bytes()
+        if kind == "resize_domain_cells":
+            domain = editor._build(raw, source).domain(grid_id)
+            action = {"kind": kind, "grid_id": grid_id, "handle": "e",
+                      "nx": domain.run.nx + 12, "ny": domain.run.ny}
+        elif kind == "resize_domain_edges":
+            action = native_edge_action(raw, source, grid_id, "ne", di=12, dj=9)
+        else:
+            action = {"kind": kind, "grid_id": grid_id,
+                      "bounds": {"south": 34., "west": -99., "north": 36., "east": -97.}}
+        result, candidate = edit_action(source, action)
+        exp = editor._build(candidate, Path(result["config_path"]))
+        changed = candidate["domain"][grid_id-1]
+        if representation == "wps":
+            assert changed["e_we"] == changed["nx"] + 1
+            assert changed["e_sn"] == changed["ny"] + 1
+        assert candidate["shared"] == raw["shared"]
+        assert candidate["experiment"] == raw["experiment"]
+        assert source.read_bytes() == before
+        wps = parse_namelist_text(Path(result["wps_path"]).read_text())["geogrid"]
+        outputs.append((candidate["projection"],
+            [(d.run.nx, d.run.ny, d.i_parent_start, d.j_parent_start) for d in exp.domains],
+            wps["e_we"], wps["e_sn"], result["configuration"]["domains"]))
+    assert outputs[0] == outputs[1]
+
+
 def test_resize_root_keeps_child_sizes_and_clamps_their_placement(tmp_path):
     source, original = configured_case(tmp_path)
     result, candidate = edit_action(source, {"kind": "resize_domain", "grid_id": 1,
@@ -288,6 +429,85 @@ def test_native_edge_resize_snaps_and_clamps_without_moving_the_opposite_anchor(
     for old, new in zip(original["domain"], candidate["domain"]):
         assert {k: v for k, v in old.items() if k not in ("nx", "ny", "i_parent_start", "j_parent_start")} == {
             k: v for k, v in new.items() if k not in ("nx", "ny", "i_parent_start", "j_parent_start")}
+
+
+def test_preview_cell_resize_grows_both_axes_for_the_saved_southern_ne_drag(tmp_path):
+    """The exact SH projection/gesture collapsed 464x372 into1121x11."""
+    source, raw = configured_case(tmp_path, (0,))
+    raw["domain"][0].update(nx=464, ny=372)
+    raw["projection"] = dict(map_proj="lambert", ref_lat=-40.5992279334933,
+        ref_lon=-37.20916030534397, truelat1=-30.6, truelat2=-50.6,
+        stand_lon=-37.20916030534397)
+    source.write_text(emit_experiment_toml(raw))
+    old = deepcopy(raw)
+    exp = editor._build(raw, source)
+    bridge, grids = editor._native_grids(exp)
+    grid = grids[1]
+    start = {"latitude": -15.882002819497671, "longitude": 5.50403489663114}
+    end = {"latitude": 4.520443921526862, "longitude": 87.41286804820913}
+    native = editor._transform(bridge, grid, 1,
+        [(start["latitude"], start["longitude"]), (end["latitude"], end["longitude"])])
+    assert native[1][0] - native[0][0] == pytest.approx(657.0959317655961)
+    assert native[1][1] - native[0][1] == pytest.approx(-584.8133361646708)
+    # Preserve the old action's public meaning; it really is a native-point
+    # delta, which is why the map's rectangular preview must use another door.
+    legacy = deepcopy(raw)
+    editor._apply(legacy, {"kind": "resize_domain_edges", "grid_id": 1,
+                          "handle": "ne", "start": start, "end": end}, source)
+    assert (legacy["domain"][0]["nx"], legacy["domain"][0]["ny"]) == (1121, 11)
+    # Actual flat MapLibre preview ratios for this same saved gesture and
+    # native perimeter:895x502, independently pinned by the Companion test.
+    result, candidate = edit_action(source, {"kind": "resize_domain_cells", "grid_id": 1,
+                                            "handle": "ne", "nx": 895, "ny": 502})
+    assert (candidate["domain"][0]["nx"], candidate["domain"][0]["ny"]) == (895, 502)
+    after = editor._build(candidate, Path(result["config_path"]))
+    after_bridge, after_grids = editor._native_grids(after)
+    old_anchor = editor._transform(bridge, grid, 0, [(.5, .5)])[0]
+    new_anchor = editor._transform(after_bridge, after_grids[1], 0, [(.5, .5)])[0]
+    assert new_anchor == pytest.approx(old_anchor, abs=1e-8)
+    assert candidate["shared"] == old["shared"]
+    assert {k:v for k,v in candidate["domain"][0].items() if k not in ("nx", "ny")} == {
+        k:v for k,v in old["domain"][0].items() if k not in ("nx", "ny")}
+    assert "resize_domain_cells" in editor.capabilities()["actions"]
+
+
+@pytest.mark.parametrize("grid_id,handle,requested_nx,expected_nx,expected_start", [
+    (1, "e", 192, 192, 1), (2, "e", 80, 81, 20),
+    (2, "w", 64, 63, 23), (2, "e", 2000, 453, 20),
+    (2, "w", 2000, 99, 11),
+])
+def test_preview_cell_resize_uses_existing_native_quantization_and_opposite_anchor(
+        tmp_path, grid_id, handle, requested_nx, expected_nx, expected_start):
+    source, original = configured_case(tmp_path)
+    ny = original["domain"][grid_id-1]["ny"]
+    result, candidate = edit_action(source, {"kind": "resize_domain_cells", "grid_id": grid_id,
+        "handle": handle, "nx": requested_nx, "ny": ny})
+    before = editor._build(original, source)
+    after = editor._build(candidate, Path(result["config_path"]))
+    domain = after.domain(grid_id)
+    assert (domain.run.nx, domain.run.ny, domain.i_parent_start) == (expected_nx, ny, expected_start)
+    old_bridge, old_grids = editor._native_grids(before)
+    new_bridge, new_grids = editor._native_grids(after)
+    old_x = .5 if handle == "e" else before.domain(grid_id).run.nx + .5
+    new_x = .5 if handle == "e" else domain.run.nx + .5
+    for old_point, new_point in zip(
+        editor._transform(old_bridge, old_grids[grid_id], 0, [(old_x, .5), (old_x, ny+.5)]),
+        editor._transform(new_bridge, new_grids[grid_id], 0, [(new_x, .5), (new_x, ny+.5)])):
+        assert new_point == pytest.approx(old_point, abs=1e-8)
+    assert candidate["shared"] == original["shared"]
+
+
+@pytest.mark.parametrize("patch", [dict(nx=True), dict(nx=0), dict(ny=1.5),
+                                   dict(handle="north"), dict(handle="e", ny=161)])
+def test_invalid_preview_dimensions_publish_nothing(tmp_path, patch):
+    source, _ = configured_case(tmp_path)
+    before = source.read_bytes()
+    action = {"kind": "resize_domain_cells", "grid_id": 1, "handle": "ne", "nx": 200, "ny": 180}
+    action.update(patch)
+    with pytest.raises(ValueError):
+        edit_action(source, action)
+    assert source.read_bytes() == before
+    assert not (source.parent / "candidate.toml").exists()
 
 
 @pytest.mark.parametrize("action", [

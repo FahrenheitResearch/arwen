@@ -166,7 +166,7 @@ the driver's own mixed precision (max 34 ULP, 3.8e-6 relative, no branch flips).
 The CUDA path holds that boundary with the beta-shape normalisation `fzu` PINNED
 from the capture, as the CPU suite pins it: transcribed glibc-2.39 float32
 `logf`/`expf`/`powf` bitwise against the live-glibc sweeps, while **gamma is a
-deliberate divergence since 2.6.6** -- ArWen's is correctly rounded and glibc's,
+deliberate divergence since 2.7.0** -- ArWen's is correctly rounded and glibc's,
 which gfortran binds WRF's `gamma()` to, is not on 39.44 percent of its domain --
 and is graded against a 113-bit oracle instead. One ULP of `fzu` moves the deep
 mass flux by up to 7.3 percent, so it is pinned rather than tolerated; the whole

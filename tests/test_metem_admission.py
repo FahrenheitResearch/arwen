@@ -188,3 +188,28 @@ def test_explicit_package_is_not_replaced_by_announced_substitution(tmp_path):
     text=INPUT_TEXT.replace('mp_physics = 55, 55','mp_physics = 10, 10')
     _,report=import_namelists(*_pair(tmp_path,inp=text),rrtmg_variant=None)
     require_preserved_wrf_selectors(report)
+
+
+@pytest.mark.parametrize("changes", [
+    {"key": "mp_physics", "gpuwm_key": "mp_physics", "wrf_value": 55,
+     "gpuwm_value": 8},
+    {"key": "mp_physics"},
+    {"gpuwm_key": "mp_physics"},
+    {"wrf_value": 2},
+    {"gpuwm_value": 2},
+    {"reason": None},
+    {"reason": ""},
+])
+def test_a_reason_only_admits_the_declared_theta_m_change(changes):
+    from dataclasses import replace
+    from gpuwm.namelist_import import Substitution
+    from gpuwm.wrfinput_door import require_preserved_wrf_selectors
+
+    declared = Substitution(
+        key="use_theta_m", wrf_value=1, wrf_name="moist theta",
+        gpuwm_key="use_theta_m", gpuwm_value=0, gpuwm_name="dry theta",
+        reason="The engine integrates dry theta.")
+    require_preserved_wrf_selectors(SimpleNamespace(substitutions=(declared,)))
+    with pytest.raises(ValueError, match="no native implementation"):
+        require_preserved_wrf_selectors(SimpleNamespace(
+            substitutions=(replace(declared, **changes),)))

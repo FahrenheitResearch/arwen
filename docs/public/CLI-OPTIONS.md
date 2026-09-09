@@ -63,6 +63,7 @@ Takes no options of its own.
 | `--card` | _(the parser declares no help text for this option)_ |
 | `--catalog` | custom JSON, TOML or ZIP catalog; defaults to the bundled historical cases |
 | `--expected-catalog-sha256` | bind creation to the exact original catalog bytes displayed by preview |
+| `--geometry-only` | validate and open declared geometry; defer GPU memory admission to target Review/Run |
 | `--json` | emit compact JSON for the interface or scripts |
 | `--native-overrides` | JSON shared/domains scientific overrides; validated against the native contract |
 | `--out` | new experiment .toml; existing files are preserved |
@@ -149,6 +150,14 @@ Takes no options of its own.
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--json` | emit the registry as JSON for a front end |
 
+## `gpuwm cds-credentials`
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--json` | return safe credential status as JSON |
+| `--save` | read endpoint and key as JSON from stdin and save privately |
+
 ## `gpuwm cells`
 
 | option | what it does |
@@ -228,6 +237,34 @@ Takes no options of its own.
 | `--reserve-gib GIB` | override the calibrated reserve policy with a flat reserve |
 | `--vram-gib GIB` | physical VRAM total of the card being sized for. A CEILING on the free figure, never a source of one: a declared --budget-gib plus the reserve can otherwise synthesise more free VRAM than the card physically has |
 
+## `gpuwm companion-domains`
+
+| option | what it does |
+|---|---|
+| `--capabilities` | _(the parser declares no help text for this option)_ |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--repairs` | check compatible physics replacements without writing a candidate |
+| `--request` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm companion-forcing`
+
+| option | what it does |
+|---|---|
+| `--capabilities` | _(the parser declares no help text for this option)_ |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--request` | _(the parser declares no help text for this option)_ |
+| `--schedule-request` | _(the parser declares no help text for this option)_ |
+
+## `gpuwm companion-query`
+
+| argument | what it does |
+|---|---|
+| `config` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+
 ## `gpuwm cycle`
 
 | option | what it does |
@@ -267,12 +304,31 @@ Takes no options of its own.
 | `--retire-below-strength` | a child with less than this much signal under it is retired and its reservation returns to the pool. Required with a placement provider and deliberately has NO default: its units are the trigger field's, so a default would be a hardcoded threshold for somebody else's field |
 | `--root` | cycle root; the ledger, anchors and per-cycle receipts all live here |
 
+## `gpuwm cyclone-setup`
+
+| option | what it does |
+|---|---|
+| `--card {12gb,16gb,24gb,32gb}` | _(the parser declares no help text for this option)_ |
+| `--cycle` | _(the parser declares no help text for this option)_ |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--hardware-json` | _(the parser declares no help text for this option)_ |
+| `--hours` | _(the parser declares no help text for this option)_ |
+| `--json` | emit the JSON result (the default) |
+| `--latest-map` | _(the parser declares no help text for this option)_ |
+| `--name` | _(the parser declares no help text for this option)_ |
+| `--out` | _(the parser declares no help text for this option)_ |
+| `--point` | _(the parser declares no help text for this option)_ |
+| `--target-host-memory-json` | _(the parser declares no help text for this option)_ |
+| `--tiles {off,auto,on}` | _(the parser declares no help text for this option)_ |
+| `--vram-gib` | _(the parser declares no help text for this option)_ |
+
 ## `gpuwm doctor`
 
 | option | what it does |
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--json` | emit the checks as JSON |
+| `--since VERSION` | print what changed for an existing user between VERSION and this install (the results that move on a bare configuration, and the checkpoints and namelists that stop loading), then exit 0 without running the estate checks. The same note is printed once, automatically, on the first doctor run after an upgrade |
 | `--source {20crv3,20crv3-cf,aifs,aigefs,aigfs,ecmwf-open-data,era5,era5-l137,gdas,gefs,gem-gdps,gfs,hgefs,hiresw,href,hrrr,hrrr-ak,hrrr-prs,icon-eu,mapped,nam,nbm,rap,refs,rrfs,rrfs-a,rrfs-firewx,rrfs-public,rtma,sref,urma,wrf}` | report only this data route's own resolution (repeatable) alongside the shared estate: what its preparation will decode with, and the byte transport its fetch will use. The choices are the source registry -- the same list `gpuwm fetch` and `gpuwm prep` take. Omitted, every route this build knows is reported |
 
 ## `gpuwm domain`
@@ -281,7 +337,7 @@ Takes no options of its own.
 |---|---|
 | `--ack ID` | declare a governed experiment, written verbatim into the emitted [experiment].acknowledgements. Repeatable. This door used to write the nocturnal declaration for you, which silenced the load guard at check/run/go/run-plan and both prepared runners for the life of the file; it no longer does, and refuses instead. The id it accepts is asymmetric-radiation-nocturnal-window-v1: a longwave-OFF suite over a window that includes local night, which you are running deliberately as a daytime validation experiment |
 | `--buffer-km KM[,KM...]` | with --polygon, nonnegative geometry buffer in kilometres; one value applies to every domain, or supply exactly one outer-to-inner value per level. With --ladder auto, a multi-value list selects the preset of that depth (default: zero) |
-| `--card {12gb,16gb,24gb,32gb}` | GPU tier; sets the VRAM budget with no local probe. With neither --card nor --vram-gib the wizard MEASURES the local card's capacity (short-lived probe, suppressed by GPUWM_NO_LOCAL_GPU) and refuses, naming both flags, when there is nothing to measure |
+| `--card {12gb,16gb,24gb,32gb}` | GPU tier; sets the VRAM budget with no local probe. With no --card, --vram-gib or --hardware-json the wizard MEASURES the local card's capacity (short-lived probe, suppressed by GPUWM_NO_LOCAL_GPU) and refuses, naming both flags, when there is nothing to measure |
 | `--chain R1,R2,...` | custom nest refinement ratios, integers in [2, 8] (e.g. --root-dx 3 --chain 4 for 3 km -> 750 m); omit for a single domain at --root-dx. Sized by the same estimator fit loop as the presets |
 | `--cycle YYYY-MM-DDTHH|latest` | the forcing CYCLE (UTC), which is the run's start time unless --forecast-start-hour moves it; 'latest' probes the public mirrors for the newest complete gfs/hrrr cycle covering the whole window and prints what it picked (needs network; era5 must name an explicit time) |
 | `--data-dir DIR` | explicit forcing directory; automatic go launches otherwise manage request-specific downloads. Manual acquisition and ERA5 paths default to data/<name> |
@@ -289,6 +345,7 @@ Takes no options of its own.
 | `--forcing GRIB` | era5: explicit forcing GRIB path(s) already on disk (default <data-dir>/era5-combined.grib) |
 | `--forecast-start-hour K` | gfs/gdas/hrrr: initialize the run from the cycle's f{K} FORECAST lead instead of its analysis, so start_time = cycle + K h and the boundaries come from f{K+i}. This is how a window deep in a forecast (say f174..f240) is reached without integrating from f000. The initial condition is then itself a K-hour forecast, and every receipt says so |
 | `--geog-root DIR` | staged WPS_GEOG tree (default ${GPUWM_CASE_DATA_ROOT}/WPS_GEOG) |
+| `--hardware-json` | selected target hardware snapshot with measured GPU capacity, available memory and device profile; no local GPU probe |
 | `--history-interval SECONDS` | how often the ROOT domain writes a wrfout, in seconds (default 3600). Must be a whole number of seconds and a whole number of that domain's time steps -- the loader checks both against the exact rational dt and refuses the emitted file otherwise, before it is written |
 | `--hours N` | forecast length (run_seconds = N*3600) |
 | `--ladder {12,12-3,12-3-1,12-3-1-0.5,auto}` | preset nest dx chain in km (default: 12 -- one 12 km domain, the shape `gpuwm go` runs end to end, same as the interactive session). Nest trees are explicit opt-in: a deeper preset, `auto` (the deepest preset that fits the card), or --root-dx / --chain for anything else; their closing block names the tree runner they route to |
@@ -302,7 +359,8 @@ Takes no options of its own.
 | `--projection {auto,lambert,mercator,polar}` | map projection override (default: auto by center latitude; all three are oracle-gated against WRF v4.6.1 module_llxy) |
 | `--root-dx KM` | custom root grid spacing in km [0.05, 200]; use with --chain instead of --ladder |
 | `--source SOURCE` | forcing source: any registered source id or alias -- hrrr, hrrr-prs, gem-gdps, icon-eu, gfs, gdas, gefs, aigfs, aigefs, ecmwf-open-data, aifs, rap, rrfs, era5, era5-l137, 20crv3, 20crv3-cf today (`gpuwm prep --list-sources` lists the whole registry). It sets the boundary cadence written into the companion namelist.wps, bounds the domain by the source's own grid where that grid is regional, and (era5) declares [case_data]. A source `gpuwm fetch` cannot download yet emits the same geometry with the acquisition step named instead of a [fetch] table |
-| `--tiles {off,auto,on}` | streaming mode (bare --tiles means auto); sizes with the forecast planner using the declared GPU and this host's RAM; on forces streaming |
+| `--target-host-memory-json` | selected target host-memory snapshot for an explicit --card or --vram-gib budget; no local RAM sizing |
+| `--tiles {off,auto,on}` | streaming mode (bare --tiles means auto); sizes with the forecast planner using the selected target's GPU and RAM when supplied, otherwise local hardware or an explicit card budget; on forces streaming |
 | `--vram-gib N` | total VRAM in GiB (alternative to --card) |
 | `--vtable` | era5: Vtable override (default: the packaged Vtable.ERA5_CDO, copied beside the TOML) |
 
@@ -314,15 +372,17 @@ Takes no options of its own.
 
 | option | what it does |
 |---|---|
-| `--buffer-km` | polygon buffer(s), outer to inner |
+| `--buffer-km` | one polygon buffer, or one per domain in the template's parent-before-child order |
 | `--card` | existing named GPU tier |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--hardware-json` | selected node hardware snapshot with measured capacity, available memory and device profile |
 | `--hours` | explicit new duration; otherwise preserve template |
 | `--out` | new ordinary TOML path |
 | `--point` | center LAT,LON; fit largest centered layout |
 | `--polygon` | GeoJSON area; preserve its entire footprint |
 | `--source` | input source, required only without [fetch].source |
 | `--start-time` | explicit new UTC start; otherwise preserve template |
+| `--target-host-memory-json` | selected target host-memory snapshot for an explicit --card or --vram-gib budget |
 | `--vram-gib` | target total VRAM capacity in GiB; omit device flags to detect this machine's GPU |
 | `--write` | write reviewed TOML, WPS and fit receipt |
 
@@ -411,8 +471,6 @@ Takes no options of its own.
 
 ## `gpuwm fetch`
 
-CDS credentials can be inspected with `gpuwm cds-credentials --json`; the response shows configuration status, endpoint, and active credential file, never the key. The terminal workspace provides masked key entry. `gpuwm cds-credentials --save --json` accepts an object containing `url` and `key` on standard input, saves to the active credential file, and returns safe status. A blank key preserves the stored token. Environment overrides are shown and must be changed in the environment. These commands do not contact CDS.
-
 | option | what it does |
 |---|---|
 | `--accept-inventory-change` | proceed when the live provider inventory yields a different record count than this ArWen was certified against. Without it such a mismatch is a refusal naming both counts; with it the live count becomes the bar and the fetch manifest records the acceptance |
@@ -424,21 +482,22 @@ CDS credentials can be inspected with `gpuwm cds-credentials --json`; the respon
 | `--cadence {1,3,6}` | forecast-hour cadence: gfs 1 or 3 (default 3); gdas 1, 3, or 6 (default 3, and it does not apply to --hours 0, which is the analysis alone); era5 1, 3, or 6 (default 6); hrrr is hourly. On a table route the accepted cadences and the default are the row's own -- a cadence off the publisher's ladder refuses and names the ladder |
 | `--cycle YYYY-MM-DDTHH|latest` | model cycle (UTC); 'latest' resolves the newest cycle this source can serve, from the initialization grid and publication lag its registry row or route declares -- probed against the mirrors where the source publishes objects to probe, and taken from the declared lag where it does not (a reanalysis published on a delay has a latest, and it is that delay). A source that declares neither is refused by name |
 | `--engine {auto,rust,python}` | hrrr, and gfs/gdas --mode full-file: which downloader moves the bytes. 'rust' is the vendored rw_fetch backbone (16 MiB parallel range GETs, .idx coalescing, the cross-process NOMADS rate governor, a disk cache); 'python' is the stdlib transport and always works; 'auto' (default) uses the backbone when it is built |
-| `--era5-provider {cds,arco}` | ERA5 provider: CDS uses configured credentials; ARCO downloads Google's public hourly ERA5 Zarr archive without a key |
-| `--retrieve` | ERA5: download and validate through the selected provider; default CDS. Without this flag or the ARCO provider, write the legacy CDS request template |
+| `--era5-product {reanalysis,ensemble_members}` | ERA5 product: reanalysis (default), or ten-member EDA with explicit --member 0..9 --cadence 3 --retrieve |
+| `--era5-provider {cds,arco}` | ERA5 provider: cds uses Copernicus credentials; arco downloads Google's public hourly ERA5 Zarr archive without a key |
 | `--experiment-config TOML` | the experiment TOML the front door will consume |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
-| `--fetch-workers N` | how many FILES are in flight at once (default 6; every source but era5, whose provider controls retrieval concurrency). Bounded per host on top of the pool: NOMADS is capped at 2 in-flight requests and every request still passes the node-wide 2.5 s spacing governor, so concurrency overlaps service time without raising the request rate against a fragile public host. Every file keeps the exact serial verification -- envelope walk, record bar, sha256 -- and one failed file still refuses by name. 1 is the serial transport: a knob, not a workaround. The manifest receipts files, bytes, workers, wall and the effective speedup under 'concurrency' |
+| `--fetch-workers N` | how many FILES are in flight at once (default 6; every source but era5, which is a manual CDS retrieval). Bounded per host on top of the pool: NOMADS is capped at 2 in-flight requests and every request still passes the node-wide 2.5 s spacing governor, so concurrency overlaps service time without raising the request rate against a fragile public host. Every file keeps the exact serial verification -- envelope walk, record bar, sha256 -- and one failed file still refuses by name. 1 is the serial transport: a knob, not a workaround. The manifest receipts files, bytes, workers, wall and the effective speedup under 'concurrency' |
 | `--force-refetch` | move every existing file in --out aside (nothing is deleted) and re-download this request. The receipts go first -- fetch-manifest.json, SHA256SUMS, the series -- so an interrupted force can never leave a manifest behind claiming payloads it has already replaced; then payloads, .idx indexes, stale parts and anything else in the directory. Files already set aside by an earlier quarantine are left untouched, and subdirectories are yours. Required when re-fetching a different area/cycle into the same --out |
 | `--forecast-start-hour K` | every forecast source: the forecast lead the window BEGINS at (default f000, the analysis). --hours stays the window length, so --forecast-start-hour 174 --hours 66 fetches f174..f240 and nothing before it; an experiment whose start_time is cycle+K is then initialized from f{K} with its boundaries from f{K+i}. With --author-front-door-manifest on an already-fetched --out, this authors the manifest over that tail of the existing series instead of re-downloading it |
-| `--hours N` | forecast window length: hours 0..N are fetched. gdas is certified for fetch and decode through f009 -- there is no gdas ingest route, so those files stop at the decoder. --hours 0 is the analysis alone, which gdas accepts and every table route accepts (its f000 is an initial state on its own, and it is also how a hybrid source's donor is fetched). A window past the cycle's own horizon refuses and names both the horizon and which cycles reach farther |
+| `--hours N` | forecast window length: hours 0..N are fetched. gdas is certified for fetch and decode through f009; native mapped GDAS preparation uses the complete pressure ladder and specific humidity. --hours 0 is the analysis alone, which gdas accepts and every table route accepts (its f000 is an initial state on its own, and it is also how a hybrid source's donor is fetched). A window past the cycle's own horizon refuses and names both the horizon and which cycles reach farther |
 | `--manifest-out JSON` | manifest path (default <out>/gfs-input-manifest.json) |
-| `--member ID` | ensemble routes (gefs, aigefs): which member to fetch (default the control). Member identity is a PATH component for these products, so the files land under their declared upstream-relative paths and `gpuwm-member-prep --inputs` reads the directory as published |
+| `--member ID` | ERA5 EDA: required encoded member 0..9. Ensemble routes (gefs, aigefs): which member to fetch (default the control). Member identity is a PATH component for these products, so the files land under their declared upstream-relative paths and `gpuwm-member-prep --inputs` reads the directory as published |
 | `--mode {auto,full-file,idx-subset}` | the byte transport. hrrr (--engine rust): 'full-file' is the default -- the whole object in parallel range GETs, which is the pipeline this product is built on; 'idx-subset' is the opt-in bandwidth saver: it selects records instead of taking the file, saves transfer volume, costs wall clock, and refuses rather than silently degrading when the index cannot carry the selection; 'auto' is the probe rule -- take the whole file when the .idx is absent, malformed, or provably shorter than the object -- which is what an install without the rust backbone falls back to. gfs/gdas: 'full-file' takes the whole pgrb2.0p25 objects from the S3 archive (either engine); omitted, the NOMADS grib-filter crop remains the default, and 'auto'/'idx-subset' refuse -- .idx record subsetting of the raw objects is not a certified GFS route |
 | `--out DIR` | output directory (created; complete files are skipped on re-run) |
 | `--p-top-pa PA` | gfs/gdas only: the model top (Pa) the fetched atmosphere must reach. The pressure ladder is extended upward along whatever the live inventory publishes until a level sits at or above it, so --p-top-pa 5000 fetches the 70 and 50 hPa levels the certified 100 hPa ladder stops short of. Omitted, the certified 21-level ladder is fetched exactly as before (a 10000 Pa source top). A top the product cannot serve refuses and names the deepest it can |
 | `--point LAT,LON` | center point; requires --radius-km |
 | `--radius-km KM` | half-width of the box around --point |
+| `--retrieve` | ERA5: download and validate with the selected provider (default CDS); otherwise write a CDS retrieval template |
 | `--source MODEL` | public data source: aifs, aigefs, aigfs, ecmwf-open-data, era5, gdas, gefs, gem-gdps, gfs, hrrr, hrrr-prs, icon-eu, rap, rrfs. Registry aliases work too (gdps, ifs, hrrr-wrfprs). A registered source with no public bytes -- the 20CRv3 every-member archive, the generic 'mapped' adapter -- refuses by name and points at `gpuwm prep --source-root` |
 | `--static-input NPZ` | optional prebuilt static cache (with --static-receipt); omit when the front door builds statics from --geog-root |
 | `--static-receipt JSON` | receipt for --static-input |
@@ -758,6 +817,21 @@ Takes no options of its own.
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 
+## `gpuwm remote artifact-index`
+
+| option | what it does |
+|---|---|
+| `--after-sequence` | last native sequence from the previous timeline page |
+| `--domain` | selected committed domain, 1..999 |
+| `--host` | existing SSH alias or user@host |
+| `--identity` | existing local SSH identity path; contents are never copied |
+| `--job` | job ID returned by start or list |
+| `--json` | one versioned JSON result line; exit 0 or 2 |
+| `--port` | SSH port (otherwise SSH configuration applies) |
+| `--python` | absolute remote Python path with ArWen installed |
+| `--ssh-config` | existing local OpenSSH configuration path |
+| `--workspace` | existing absolute remote workspace directory |
+
 ## `gpuwm remote list`
 
 | option | what it does |
@@ -820,6 +894,23 @@ Takes no options of its own.
 | `--ssh-config` | existing local OpenSSH configuration path |
 | `--workspace` | existing absolute remote workspace directory |
 
+## `gpuwm remote review-plan`
+
+| option | what it does |
+|---|---|
+| `--expected-config-sha256` | _(the parser declares no help text for this option)_ |
+| `--expected-plan-sha256` | _(the parser declares no help text for this option)_ |
+| `--geog-root` | existing remote geography directory |
+| `--host` | existing SSH alias or user@host |
+| `--identity` | existing local SSH identity path; contents are never copied |
+| `--json` | one versioned JSON result line; exit 0 or 2 |
+| `--outdir` | new absolute remote output directory |
+| `--plan` | saved local run-plan JSON to stage |
+| `--port` | SSH port (otherwise SSH configuration applies) |
+| `--python` | absolute remote Python path with ArWen installed |
+| `--ssh-config` | existing local OpenSSH configuration path |
+| `--workspace` | existing absolute remote workspace directory |
+
 ## `gpuwm remote start`
 
 | option | what it does |
@@ -842,6 +933,24 @@ Takes no options of its own.
 | `--ssh-config` | existing local OpenSSH configuration path |
 | `--workspace` | existing absolute remote workspace directory |
 | `--wps-namelist` | with --prepared-root: exact absolute remote WPS authority required by a single-domain bundle |
+
+## `gpuwm remote start-plan`
+
+| option | what it does |
+|---|---|
+| `--bundle-id` | _(the parser declares no help text for this option)_ |
+| `--expected-bundle-sha256` | _(the parser declares no help text for this option)_ |
+| `--expected-config-sha256` | _(the parser declares no help text for this option)_ |
+| `--expected-input-sha256` | _(the parser declares no help text for this option)_ |
+| `--expected-plan-sha256` | _(the parser declares no help text for this option)_ |
+| `--host` | existing SSH alias or user@host |
+| `--identity` | existing local SSH identity path; contents are never copied |
+| `--json` | one versioned JSON result line; exit 0 or 2 |
+| `--port` | SSH port (otherwise SSH configuration applies) |
+| `--python` | absolute remote Python path with ArWen installed |
+| `--source-inputs-file` | completed local review whose selected raw inputs must still match |
+| `--ssh-config` | existing local OpenSSH configuration path |
+| `--workspace` | existing absolute remote workspace directory |
 
 ## `gpuwm remote status`
 
@@ -866,6 +975,77 @@ Takes no options of its own.
 | `--json` | one versioned JSON result line; exit 0 or 2 |
 | `--port` | SSH port (otherwise SSH configuration applies) |
 | `--python` | absolute remote Python path with ArWen installed |
+| `--ssh-config` | existing local OpenSSH configuration path |
+| `--workspace` | existing absolute remote workspace directory |
+
+## `gpuwm remote sync-artifacts`
+
+| option | what it does |
+|---|---|
+| `--cache-root` | owned local cache for this job's raw frame objects |
+| `--domain` | selected committed domain, 1..999 |
+| `--host` | existing SSH alias or user@host |
+| `--identity` | existing local SSH identity path; contents are never copied |
+| `--job` | job ID returned by start or list |
+| `--json` | one versioned JSON result line; exit 0 or 2 |
+| `--port` | SSH port (otherwise SSH configuration applies) |
+| `--python` | absolute remote Python path with ArWen installed |
+| `--reader-leases` | the visual reader retains shared OS leases for every frame clone |
+| `--sequence` | exact native output commit sequence; omit for latest |
+| `--ssh-config` | existing local OpenSSH configuration path |
+| `--workspace` | existing absolute remote workspace directory |
+
+## `gpuwm remote sync-native-plots`
+
+| option | what it does |
+|---|---|
+| `--cache-root` | local folder for selected native PNG galleries |
+| `--domain` | selected committed domain, 1..999 |
+| `--host` | existing SSH alias or user@host |
+| `--identity` | existing local SSH identity path; contents are never copied |
+| `--job` | job ID returned by start or list |
+| `--json` | one versioned JSON result line; exit 0 or 2 |
+| `--port` | SSH port (otherwise SSH configuration applies) |
+| `--python` | absolute remote Python path with ArWen installed |
+| `--sequence` | exact native output commit sequence |
+| `--ssh-config` | existing local OpenSSH configuration path |
+| `--workspace` | existing absolute remote workspace directory |
+
+## `gpuwm remote sync-processed-frame`
+
+| option | what it does |
+|---|---|
+| `--cache-root` | owned local directory for immutable native processed stores |
+| `--domain` | selected committed domain, 1..999 |
+| `--host` | existing SSH alias or user@host |
+| `--identity` | existing local SSH identity path; contents are never copied |
+| `--job` | job ID returned by start or list |
+| `--json` | one versioned JSON result line; exit 0 or 2 |
+| `--port` | SSH port (otherwise SSH configuration applies) |
+| `--python` | absolute remote Python path with ArWen installed |
+| `--sequence` | exact native output commit sequence; omit for latest |
+| `--ssh-config` | existing local OpenSSH configuration path |
+| `--workspace` | existing absolute remote workspace directory |
+
+## `gpuwm remote sync-processed-frame-v2`
+
+| option | what it does |
+|---|---|
+| `--cache-bytes` | local viewer cache budget in bytes; default 2 GiB |
+| `--cache-root` | owned bounded local cache for compact native fields |
+| `--domain` | selected committed domain, 1..999 |
+| `--expected-run-id` | require this exact native producer run identity |
+| `--host` | existing SSH alias or user@host |
+| `--identity` | existing local SSH identity path; contents are never copied |
+| `--job` | job ID returned by start or list |
+| `--json` | one versioned JSON result line; exit 0 or 2 |
+| `--port` | SSH port (otherwise SSH configuration applies) |
+| `--prefetch-sequences` | up to eight committed loop sequences separated by commas |
+| `--products` | canonical native viewer product slugs separated by commas |
+| `--profile {viewer-2d-v1,full-science-v1}` | _(the parser declares no help text for this option)_ |
+| `--python` | absolute remote Python path with ArWen installed |
+| `--reader-leases` | viewer retains shared native-store object leases |
+| `--sequence` | exact committed sequence; omit for latest |
 | `--ssh-config` | existing local OpenSSH configuration path |
 | `--workspace` | existing absolute remote workspace directory |
 
@@ -1286,9 +1466,10 @@ Takes no options of its own.
 
 | option | what it does |
 |---|---|
+| `--check-pypi` | also ask pypi.org for the latest published version and say whether this install is behind, current or ahead of it. Off by default: `gpuwm version` makes no network request unless this flag is given, and a lookup that does not answer prints nothing rather than an error |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
-| `--offline` | skip the PyPI lookup entirely (it is already skipped silently whenever the network does not answer) |
-| `--pypi-timeout SECONDS` | seconds to wait for the index (default 2.0) |
+| `--offline` | accepted for older scripts; names the default (no PyPI lookup) and changes nothing |
+| `--pypi-timeout SECONDS` | seconds to wait for the index under --check-pypi (default 2.0) |
 
 ## `gpuwm-mapped-inspect`
 

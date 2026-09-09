@@ -2103,6 +2103,27 @@ def _quote_command(command: list[str]) -> str:
     return shlex.join(value.replace("\\", "/") for value in command)
 
 
+def _apply_configuration_preprocess_default(args: argparse.Namespace) -> None:
+    """Use the same tiled-GFS preparation road that admission prices."""
+    if getattr(args, "preprocess_backend", None) is not None:
+        return
+    if getattr(args, "source", None) != "gfs":
+        return
+    path = getattr(args, "experiment_config", None)
+    if path is None:
+        return
+    import tomllib
+    from gpuwm.config_authority import read_config_authority
+    from gpuwm.preprocess_policy import resolve_preprocess_backend
+
+    tables = tomllib.loads(read_config_authority(path).payload.decode("utf-8-sig"))
+    selected = resolve_preprocess_backend(source="gfs", tables=tables)
+    if selected == "cpu":
+        args.preprocess_backend = selected
+        print("prep: CPU preprocessing for the tiled GFS configuration.",
+              file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     from gpuwm.progress import line_buffer_stdout
 
@@ -2613,6 +2634,13 @@ def dispatch(args: argparse.Namespace, *,
               f"front-door input manifest itself: {manifest_path} "
               f"(sha256 {manifest_digest}); the --source-manifest pair "
               f"pins an existing one instead", file=sys.stderr)
+
+    try:
+        _apply_configuration_preprocess_default(args)
+    except (OSError, ValueError, RuntimeError) as error:
+        print(f"Cannot resolve preprocessing from --experiment-config: {error}",
+              file=sys.stderr)
+        return EXIT_CONFIG
 
     if authoring_twentycr:
         try:

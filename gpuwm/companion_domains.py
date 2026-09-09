@@ -255,10 +255,32 @@ def _move_domain(raw, action, output):
             row[key] = _clamp_start(proposed, parent_size, size, domain.parent_grid_ratio, clearance)
 
 
+def _minimum_domain_axis(exp, run):
+    """The same boundary/stencil floor for every authored domain size."""
+    from gpuwm.grid_requirements import FIFTH_ORDER_STENCIL_AXIS, boundary_axis
+    return max(boundary_axis(exp.spec_bdy_width, interior_points=1),
+               boundary_axis(max(run.spec_zone, run.relax_zone), interior_points=1),
+               FIFTH_ORDER_STENCIL_AXIS if run.h_sca_adv_order == 5 else 1)
+
+
+def _resize_row(raw, domain):
+    """Read mass counts from the validated config, including WPS aliases."""
+    row = _domain_table(raw, domain.grid_id)
+    for key in ("nx", "ny"):
+        row[key] = getattr(domain.run, key)
+    return row
+
+
+def _set_domain_axis(row, key, size):
+    row[key] = size
+    alias = "e_we" if key == "nx" else "e_sn"
+    if alias in row:
+        row[alias] = size + 1
+
+
 def _resize_domain(raw, action, output):
     """Resize one registered native grid, retaining spacing and the domain tree."""
     from gpuwm.core.storm_tracking import _round_cells
-    from gpuwm.grid_requirements import FIFTH_ORDER_STENCIL_AXIS, boundary_axis
     _exact_keys(action, {"kind", "grid_id", "bounds"}, {"kind", "grid_id", "bounds"}, where="resize_domain")
     grid_id = _integer(action["grid_id"], "grid_id")
     bounds = action["bounds"]
@@ -272,7 +294,7 @@ def _resize_domain(raw, action, output):
         raise ValueError("Resize longitude bounds must span less than 180 degrees")
     exp = _build(raw, output)
     domain = exp.domain(grid_id)
-    row = _domain_table(raw, grid_id)
+    row = _resize_row(raw, domain)
     bridge, grids = _native_grids(exp)
     grid = grids[grid_id]
     # Sample only rectangle edges. The native bridge owns the projection;
@@ -290,9 +312,7 @@ def _resize_domain(raw, action, output):
     clearance = exp.spec_bdy_width + exp.blend_width
     children = [child for child in exp.domains if child.parent_id == grid_id]
     quantum = domain.parent_grid_ratio if domain.parent_id else 1
-    minimum = max(boundary_axis(exp.spec_bdy_width, interior_points=1),
-                  boundary_axis(max(domain.run.spec_zone, domain.run.relax_zone), interior_points=1),
-                  FIFTH_ORDER_STENCIL_AXIS if domain.run.h_sca_adv_order == 5 else 1)
+    minimum = _minimum_domain_axis(exp, domain.run)
     parent = exp.domain(domain.parent_id) if domain.parent_id else None
     for axis, key in enumerate(("nx", "ny")):
         min_size = max([minimum] + [getattr(child.run, key) // child.parent_grid_ratio + 2 * clearance
@@ -306,7 +326,7 @@ def _resize_domain(raw, action, output):
             shift = (center[axis] - (old_size + 1) / 2 + (old_size - size) / 2) / quantum
             proposed = row[start_key] + _round_cells(shift)
             row[start_key] = _clamp_start(proposed, getattr(parent.run, key), size, quantum, clearance)
-        row[key] = size
+        _set_domain_axis(row, key, size)
     if parent is None:
         latitude, longitude = _transform(bridge, grid, 0, [center])[0]
         raw["projection"].update(ref_lat=latitude, ref_lon=longitude)
@@ -325,7 +345,6 @@ def _resize_domain(raw, action, output):
 def _resize_domain_edges(raw, action, output):
     """Apply pointer movement on the original native lattice, anchoring opposite edges."""
     from gpuwm.core.storm_tracking import _round_cells
-    from gpuwm.grid_requirements import FIFTH_ORDER_STENCIL_AXIS, boundary_axis
     required = {"kind", "grid_id", "handle", "start", "end"}
     _exact_keys(action, required, required, where="resize_domain_edges")
     handle = action["handle"]
@@ -343,7 +362,7 @@ def _resize_domain_edges(raw, action, output):
     grid_id = _integer(action["grid_id"], "grid_id")
     exp = _build(raw, output)
     domain = exp.domain(grid_id)
-    row = _domain_table(raw, grid_id)
+    row = _resize_row(raw, domain)
     bridge, grids = _native_grids(exp)
     grid = grids[grid_id]
     start, end = _transform(bridge, grid, 1, points)
@@ -351,13 +370,56 @@ def _resize_domain_edges(raw, action, output):
     moves = [_round_cells((end[axis] - start[axis]) / quantum) * quantum
              if any(side in handle for side in sides) else 0
              for axis, sides in enumerate(("we", "sn"))]
+    _apply_domain_edge_moves(raw, output, exp, domain, row, bridge, grid,
+                             handle, moves)
+
+
+def _resize_domain_cells(raw, action, output):
+    """Apply the native dimensions requested by a rectangular map preview.
+
+    Screen north/east are not native Lambert axes: in the southern example
+    a northeast screen drag projected to +657,-585 cells and collapsed the
+    saved height. The UI now sends its preview's dimensions explicitly. The
+    original lattice still owns quantization, minimum size and edge anchors.
+    """
+    from gpuwm.core.storm_tracking import _round_cells
+    required = {"kind", "grid_id", "handle", "nx", "ny"}
+    _exact_keys(action, required, required, where="resize_domain_cells")
+    handle = action["handle"]
+    if not isinstance(handle, str) or handle not in ("nw", "n", "ne", "e", "se", "s", "sw", "w"):
+        raise ValueError("Resize handle must be nw, n, ne, e, se, s, sw or w")
+    grid_id = _integer(action["grid_id"], "grid_id")
+    requested = [_integer(action[key], key) for key in ("nx", "ny")]
+    exp = _build(raw, output)
+    domain = exp.domain(grid_id)
+    row = _resize_row(raw, domain)
+    quantum = domain.parent_grid_ratio if domain.parent_id else 1
+    moves = []
+    for axis, (key, sides, low_side) in enumerate((("nx", "we", "w"), ("ny", "sn", "s"))):
+        old = getattr(domain.run, key)
+        if not any(side in handle for side in sides):
+            if requested[axis] != old:
+                raise ValueError(f"Resize handle {handle!r} must preserve {key}={old}")
+            moves.append(0)
+            continue
+        delta = requested[axis] - old
+        moves.append(_round_cells(delta / quantum) * quantum
+                     * (-1 if low_side in handle else 1))
+    bridge, grids = _native_grids(exp)
+    _apply_domain_edge_moves(raw, output, exp, domain, row, bridge,
+                             grids[grid_id], handle, moves)
+
+
+def _apply_domain_edge_moves(raw, output, exp, domain, row, bridge, grid,
+                             handle, moves):
+    """Shared native anchor/clamp rule for geographic and dimension actions."""
+    grid_id = domain.grid_id
+    quantum = domain.parent_grid_ratio if domain.parent_id else 1
     if not any(moves):
         return  # An unchanged or sub-cell gesture preserves exact saved geometry.
     clearance = exp.spec_bdy_width + exp.blend_width
     children = [child for child in exp.domains if child.parent_id == grid_id]
-    minimum = max(boundary_axis(exp.spec_bdy_width, interior_points=1),
-                  boundary_axis(max(domain.run.spec_zone, domain.run.relax_zone), interior_points=1),
-                  FIFTH_ORDER_STENCIL_AXIS if domain.run.h_sca_adv_order == 5 else 1)
+    minimum = _minimum_domain_axis(exp, domain.run)
     parent = exp.domain(domain.parent_id) if domain.parent_id else None
     low_shift = [0, 0]
     changed = False
@@ -381,7 +443,7 @@ def _resize_domain_edges(raw, action, output):
             low_shift[axis] = old_size - size
             if parent is not None:
                 row[start_key] += low_shift[axis] // quantum
-        row[key] = size
+        _set_domain_axis(row, key, size)
         changed |= size != old_size
     if not changed:
         return
@@ -405,7 +467,7 @@ def capabilities():
     from gpuwm.core.nest_lifecycle import DOMAIN_FOLLOW_EXTRA_KEYS
     from gpuwm.core.nest_spawn import SPAWN_KEYS, SPAWN_TRIGGERS
     return {"schema": "arwen.companion-domain-capabilities.v1",
-        "actions": ["add_nest", "remove_nest", "move_domain", "resize_domain", "resize_domain_edges", "set_output", "set_tiles", "set_placement", "set_activation", "set_follow", "set_spawn", "set_targets", "set_physics"],
+        "actions": ["add_nest", "remove_nest", "move_domain", "resize_domain", "resize_domain_edges", "resize_domain_cells", "set_output", "set_tiles", "set_placement", "set_activation", "set_follow", "set_spawn", "set_targets", "set_physics"],
         "output_policy": {"history_interval_s": "Saved forecast output interval in seconds for the selected domain; positive.",
                           "restart_interval_s": "Restart checkpoint interval in seconds for the whole experiment; 0 disables checkpoints, omitted or null preserves the existing value.",
                           "validation": "The engine validates whole-second output timestamps, exact domain time-step multiples and existing tracking cadence requirements."},
@@ -548,6 +610,8 @@ def _apply(raw, action, output):
         _resize_domain(raw, action, output)
     elif kind == "resize_domain_edges":
         _resize_domain_edges(raw, action, output)
+    elif kind == "resize_domain_cells":
+        _resize_domain_cells(raw, action, output)
     elif kind == "set_physics":
         _exact_keys(action, {"kind", "grid_id", "settings"}, {"kind", "grid_id", "settings"}, where=kind)
         from gpuwm.case_catalog import validate_native_overrides, _native_contract
@@ -569,6 +633,7 @@ def _apply(raw, action, output):
         _exact_keys(action, {"kind", "grid_id", "include_children"}, {"kind", "grid_id", "include_children"}, where=kind)
         _remove_nest(raw, _integer(action["grid_id"], "grid_id"), action["include_children"])
     elif kind == "add_nest":
+        from gpuwm.core.storm_tracking import _round_cells
         required = {"kind", "parent_id", "nx", "ny", "parent_grid_ratio", "parent_time_step_ratio",
                     "history_interval_s", "placement"}
         _exact_keys(action, required, required, where="add_nest")
@@ -581,6 +646,15 @@ def _apply(raw, action, output):
                "j_parent_start": exp.spec_bdy_width + exp.blend_width + 1}
         for key in ("nx", "ny", "parent_grid_ratio", "parent_time_step_ratio"):
             row[key] = _integer(action[key], key)
+        # A drawn rectangle supplies mass-cell counts, while a WPS child must
+        # span whole parent cells (e_we/e_sn = n * ratio + 1). Snap before the
+        # first child build; the same boundary/stencil minimum as resizing
+        # prevents a tiny gesture from authoring an unusable grid. The parser
+        # still owns containment, time-step and physics admission.
+        ratio = row["parent_grid_ratio"]
+        minimum = math.ceil(_minimum_domain_axis(exp, parent.run) / ratio) * ratio
+        for key in ("nx", "ny"):
+            row[key] = max(minimum, _round_cells(row[key] / ratio) * ratio)
         row["history_interval_s"] = _number(action["history_interval_s"], "history_interval_s")
         raw["domain"].append(row)
         exp = _build(raw, output)
@@ -837,7 +911,12 @@ def main(args):
                 path = Path(args.request)
                 if not path.is_file() or path.stat().st_size > 256 * 1024:
                     raise ValueError("Domain edit request must be a JSON file no larger than 256 KiB")
-                result = edit_configuration(json.loads(path.read_text(encoding="utf-8-sig")))
+                request = json.loads(path.read_text(encoding="utf-8-sig"))
+                if args.repairs:
+                    from gpuwm.companion_physics import repairs
+                    result = repairs(request)
+                else:
+                    result = edit_configuration(request)
         print(_json(result), end="")
         return 0
     except Exception as error:
@@ -849,6 +928,7 @@ def register_cli(subparsers):
     parser = subparsers.add_parser("companion-domains", help="create a candidate domain edit using native geometry")
     parser.add_argument("--request", type=Path)
     parser.add_argument("--capabilities", action="store_true")
+    parser.add_argument("--repairs", action="store_true", help="check compatible physics replacements without writing a candidate")
     parser.set_defaults(func=main)
 
 
@@ -856,4 +936,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--request", type=Path)
     parser.add_argument("--capabilities", action="store_true")
+    parser.add_argument("--repairs", action="store_true")
     raise SystemExit(main(parser.parse_args()))

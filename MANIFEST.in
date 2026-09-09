@@ -61,7 +61,29 @@ prune gpuwm-data
 # tests/test_sdist_excludes_staged_bridges.py measures both halves.
 prune gpuwm/libexec/bridges
 
+# Development fault-injection probes are not part of the operational package.
+prune tilestream/skeptic
+
+# The pytest suites and the six skeptic_*.py probes that live BESIDE
+# tilestream's operational modules.  `prune tilestream/skeptic` above named
+# a sub-directory that does not exist, so the 2.7.0 candidate's sdist and
+# all three wheels shipped 42 tilestream/test_*.py suites and six probes at
+# import top level (measured on the built artifacts).  This line is the
+# sdist half; setup.py's build_py filter (DEVELOPMENT_MODULE_GLOBS) is the
+# wheel half, and tests/test_operational_package_excludes_probes.py measures
+# both.
+recursive-exclude tilestream test_*.py skeptic_*.py
+
+# RELEASE-EXCLUDE.txt drops this test with the campaign harness it drives
+# (tools/n5s/**) from the public tree, but that manifest governs the
+# snapshot builders only and `python -m build` never read it: the 2.7.0
+# candidate's sdist carried the test without the harness it imports.  Named
+# here so the sdist and the public tree agree; the harness itself is not a
+# package in `packages.find` and never reached either artifact.
+exclude tests/test_n5s_toolchain.py
+
 # Keep the user manuals and their directly linked workflow references
 # available to readers of the source distribution.
 include docs/public/*-USER-MANUAL.md
 include docs/public/TILES.md docs/install.md docs/run-plan.md
+recursive-include docs/integration-kit *.md *.json *.py

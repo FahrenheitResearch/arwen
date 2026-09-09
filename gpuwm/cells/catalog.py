@@ -39,7 +39,7 @@ FT_PER_MIN_PER_MPS = 196.85
 #: Cloud: any condensate above this mixing ratio, kg/kg.
 CLOUD_THRESHOLD_KG_KG = 1.0e-6
 
-#: The isotherm levels a seeding decision reads, degrees C.
+#: The isotherm levels the cell catalog records, degrees C.
 ISOTHERMS_C = (0.0, -5.0, -10.0, -15.0, -20.0)
 
 #: Column name -> (unit, provenance).  The order here is the CSV order.

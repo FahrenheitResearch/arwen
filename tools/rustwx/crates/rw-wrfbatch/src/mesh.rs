@@ -1,7 +1,7 @@
 //! `mesh:` and `meshdiff:` products: an unstructured model mesh drawn CELL BY
 //! CELL, straight from a history frame and its grid file.
 //!
-//! WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): a mesh forecast
+//! WHAT BREAKAGE THIS PREVENTS (gate law): a mesh forecast
 //! resampled onto a lat/lon frame before it is drawn.  Every other family
 //! here starts from a structured `(ny, nx)` plane, so a Voronoi mesh reaches
 //! them through a regrid, and the regrid invents values between cell centres,

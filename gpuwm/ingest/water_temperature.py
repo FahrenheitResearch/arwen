@@ -52,10 +52,11 @@ What this module guarantees
   import another basin's water.
 * Every water cell is attributed in ``WATER_TEMP_SOURCE``.
 * A source can additionally declare lake-model water and ice state. Where
-  the lake has no usable analysis of its own, an explicitly ice-free model
-  water field supplies the entire component. This represents the source
-  model's local lake state even where its grid does not resolve that lake;
-  it is not mixed land-cell skin or a search for another basin's water.
+  the lake has no usable analysis of its own, explicitly ice-free model
+  water supplies the cells where that provider is admissible. Declined
+  cells use the component skin field and are counted in the receipt. This
+  represents the source model's local lake state even where its grid does
+  not resolve that lake, without searching for another basin's water.
 
 Where the guarantee is enforced
 -------------------------------
@@ -75,7 +76,9 @@ from types import MappingProxyType
 from typing import Mapping
 
 import numpy as np
-from gpuwm.ingest.lake_temperature import LAKE_WATER_PROVIDER
+from gpuwm.ingest.lake_temperature import (
+    LAKE_WATER_PROVIDER, MAX_LISTED_DECLINED_CELLS,
+)
 
 #: The MODIS inland-water category.  Kept as documentation of the value the
 #: MODIS land-use tables carry; NOTHING selects lakes with it.  The lake
@@ -459,9 +462,10 @@ def assemble_water_temperature(
     """Return ``(water_temperature, water_temperature_source, receipt)``.
 
     ``water_temperature`` is finished: every water cell carries a physical
-    temperature chosen by ONE provider for its whole connected body.  Land
-    cells carry the mapped skin temperature so the array is total, and the
-    soil reconciler still decides what land does with it.
+    temperature attributed to its provider. Analysis is chosen for a whole
+    connected body; optional lake-model water falls back to component skin
+    at declined cells. Land cells carry mapped skin so the array is total,
+    and the soil reconciler still decides what land does with it.
 
     The optional diagnostic context and geographic latitude/longitude pair
     are used only to explain a refusal; they never enter interpolation.
@@ -517,6 +521,8 @@ def assemble_water_temperature(
     on_analysis = 0
     on_skin = 0
     on_lake_water = 0
+    lake_fallback = 0
+    lake_fallback_cells: list = []
     component_rows = []
 
     have_source = (source_sst is not None and source_lat is not None
@@ -554,15 +560,29 @@ def assemble_water_temperature(
                 if coverage >= MIN_COMPONENT_COVERAGE:
                     filled = _fill_within_component(estimate, selection)
                     chosen = filled
-        if chosen is None and classes[label] == "lake" and lake_water is not None:
-            # The provider is an explicitly decoded lake-model water state,
-            # whose phase contract was checked before interpolation. Tiny
-            # inland lakes can have no majority-water source cell at all.
-            # Choose this one provider for the entire component, never fill
-            # individual missing lake values from mixed land-cell skin.
-            values[selection] = lake_water[selection]
-            source[selection] = SOURCE_LAKE_WATER
-            per_provider[SOURCE_NAMES[SOURCE_LAKE_WATER]] += cells
+        provided = (selection & np.isfinite(lake_water)
+                    if classes[label] == "lake" and lake_water is not None
+                    else None)
+        if chosen is None and provided is not None and np.any(provided):
+            # The provider is an explicitly decoded lake-model water state.
+            # Tiny inland lakes can have no majority-water source cell at
+            # all, so it is chosen for the component wherever it answers.
+            # Where it DECLINED a cell (a frozen or unknown-depth donor, an
+            # inadmissible temperature -- see lake_temperature) that cell
+            # falls back to the source this component had before the
+            # provider existed, its coherent skin temperature, and is
+            # counted and named in the receipt: refusing the preparation
+            # for it was a default-on blocker on a route that ran in 2.6.5
+            # (ENG-008).  Nothing here invents a temperature.
+            values[provided] = lake_water[provided]
+            source[provided] = SOURCE_LAKE_WATER
+            per_provider[SOURCE_NAMES[SOURCE_LAKE_WATER]] += int(provided.sum())
+            declined = selection & ~provided
+            if np.any(declined):
+                values[declined] = skin[declined]
+                source[declined] = SOURCE_COMPONENT_SKIN
+                per_provider[SOURCE_NAMES[SOURCE_COMPONENT_SKIN]] += int(
+                    declined.sum())
             on_lake_water += 1
             provider_name = SOURCE_NAMES[SOURCE_LAKE_WATER]
         elif chosen is None:
@@ -586,6 +606,18 @@ def assemble_water_temperature(
             per_provider[SOURCE_NAMES[SOURCE_ANALYSIS]] += int(usable.sum())
             on_analysis += 1
             provider_name = SOURCE_NAMES[SOURCE_ANALYSIS]
+        if chosen is None and provided is not None:
+            # Count partial and wholly declined components alike. A frozen
+            # lake commonly takes the all-skin branch above; it must still
+            # be named by the preparation advisory. Limit the cell list for
+            # the whole domain, rather than separately for every lake.
+            declined = selection & ~provided
+            lake_fallback += int(declined.sum())
+            remaining = MAX_LISTED_DECLINED_CELLS - len(lake_fallback_cells)
+            if remaining > 0:
+                lake_fallback_cells.extend(
+                    [int(j), int(i)]
+                    for j, i in np.argwhere(declined)[:remaining])
         component_rows.append({
             "label": int(label), "class": classes[label], "cells": cells,
             "donors": donor_count, "coverage": float(coverage),
@@ -616,6 +648,8 @@ def assemble_water_temperature(
     }
     if lake_water is not None:
         receipt["components_on_lake_water"] = on_lake_water
+        receipt["lake_fallback_cells"] = lake_fallback
+        receipt["lake_fallback_cell_indices"] = lake_fallback_cells
     return values, source, receipt
 
 
@@ -821,6 +855,21 @@ def water_temperature_advisory(receipt):
                   "inland water is classed with the ocean here and a lake "
                   "joined to the sea by a coarse coastline can share its "
                   "provider.")
+    # NAMED, never silent: every lake cell the lake-model provider declined
+    # (frozen or unknown ice depth, inadmissible temperature) and that kept
+    # the component skin temperature the pre-lake-model route used (ENG-008).
+    fallback = int(receipt.get("lake_fallback_cells") or 0)
+    if fallback:
+        listed = receipt.get("lake_fallback_cell_indices") or []
+        cells = ", ".join(f"({j}, {i})" for j, i in listed)
+        more = ("" if len(listed) >= fallback
+                else f" and {fallback - len(listed)} more")
+        caveat += (
+            f" {fallback} lake cell(s) had no ice-free lake-model water "
+            "(frozen or unknown ice depth, or an out-of-range temperature; "
+            "see lake_water_mapping in the receipt) and kept the component "
+            f"skin temperature the pre-lake-model route used: cells (j, i) "
+            f"{cells}{more}.")
     return (
         f"water temperature: policy era5_class_coherent{where} over "
         f"{receipt['water_cells']} water cells in {receipt['components']} "

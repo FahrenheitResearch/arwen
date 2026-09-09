@@ -1,7 +1,7 @@
 //! The polygon-mesh layer: one filled polygon per model cell, with a
 //! hairline along every cell edge.
 //!
-//! WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): an unstructured mesh
+//! WHAT BREAKAGE THIS PREVENTS (gate law): an unstructured mesh
 //! drawn as a raster lies about where its numbers are.  Every other product
 //! family in this crate starts from a structured `(ny, nx)` field and
 //! rasterises it; putting a Voronoi mesh through that door needs a regrid

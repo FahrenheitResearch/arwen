@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pixel-regression gate for the vendored Rust renderer's EXISTING products.
 
-WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): a shared change made for
+WHAT BREAKAGE THIS PREVENTS (gate law): a shared change made for
 a NEW lane -- a ``StaticPlotDesign`` tweak, a style-ladder entry, a frame
 aspect-ratio adjustment, an extra field published by the import -- silently
 restyles or renames every product ``rw_wrfbatch`` already draws.  Nothing

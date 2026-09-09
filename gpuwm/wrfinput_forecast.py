@@ -218,10 +218,17 @@ def prepare_wrf_run(run, directory: Path, *, run_seconds: float | None = None) -
 
 
 def announce_wrf_substitutions(run, receipt_path):
-    """Show the actual scheme changes; retain the full translator record."""
+    """Show the actual scheme changes; retain the full translator record.
+
+    A declared divergence (``item.reason``) prints its reason: the user is
+    handing over a WRF run and must read, at the terminal, that ArWen will
+    integrate a different variable and why.
+    """
     for item in run.substitution_report.substitutions:
         print(f'WRF import: {item.wrf_name} ({item.key}={item.wrf_value}) '
-              f'→ {item.gpuwm_name} ({item.gpuwm_key}={item.gpuwm_value}).', flush=True)
+              f'→ {item.gpuwm_name} ({item.gpuwm_key}={item.gpuwm_value}).'
+              + (f'  Declared divergence: {item.reason}' if item.reason else ''),
+              flush=True)
     if run.substitution_report.substitutions:
         print(f'WRF import details: {receipt_path}', flush=True)
 

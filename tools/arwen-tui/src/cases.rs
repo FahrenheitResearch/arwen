@@ -66,7 +66,7 @@ impl Worker {
     fn spawn(python: &Path, cwd: &Path) -> Result<Self, String> {
         let mut command = Command::new(python);
         command
-            .args(["-X", "utf8", "-m", "gpuwm.case_catalog", "--tui-server"])
+            .args(["-P", "-B", "-X", "utf8", "-m", "gpuwm.case_catalog", "--tui-server"])
             .current_dir(cwd)
             .env("GPUWM_NO_LOCAL_GPU", "1")
             .env("PYTHONDONTWRITEBYTECODE", "1")

@@ -118,7 +118,7 @@ UH_WORK_USE_SLOT = "uh_diag_use"
 #: run: 232x232 -> 236x236, 6.61 -> 6.71 GiB).
 UH_DIAGNOSTIC_HALO_CELLS = 2
 
-#: CONSUMER-OWNED tracking windows (Drew's ruling, 2026-08-07).
+#: CONSUMER-OWNED tracking windows (ArWen's ruling, 2026-08-07).
 #:
 #: Same operator as UP_HELI_MAX and the same fold below -- what differs is
 #: WHO RESETS.  UP_HELI_MAX is zeroed by the history writer, so its window
@@ -510,7 +510,7 @@ def device_fold_window(uh, use, window) -> None:
 def reset_tracker_window(state, slot: str) -> None:
     """Zero one consumer's window, immediately after that consumer read it.
 
-    EVERY evaluation resets, accepted or held (Drew's ruling,
+    EVERY evaluation resets, accepted or held (ArWen's ruling,
     2026-08-07).  Letting the window grow across holds would make a move
     more likely simply because more time passed since the last one, which
     is cadence dependence coming back in through the reset rule instead of

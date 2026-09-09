@@ -301,7 +301,7 @@ All on gfortran 13.3.0 / glibc 2.39, at -O0:
   `__gamma_productf`", and phase 3 did exactly that.  Both files are
   FSF-copyright LGPL-2.1-or-later with no permissive upstream, so an
   Apache-2.0 distribution cannot carry them; the transcription was deleted at
-  2.6.6 and **must not be re-created**.  ArWen's gamma is now correctly
+  2.7.0 and **must not be re-created**.  ArWen's gamma is now correctly
   rounded -- right where glibc is wrong on 39.44 per cent of [0.25, 36] --
   and the resulting divergence from WRF is a documented deliberate one:
   read `docs/gf_gamma_known_delta.md` before touching anything in this

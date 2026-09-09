@@ -15,7 +15,7 @@ import time
 SCHEMA = "gpuwm.remote.result.v1"
 MAX_REPLY = 128 * 1024
 MAX_REQUEST = 128 * 1024
-ACTIONS = ("probe", "start", "list", "status", "logs", "stop", "resume", "review-plan", "start-plan", "sync-artifacts", "artifact-index", "sync-processed-frame")
+ACTIONS = ("probe", "start", "list", "status", "logs", "stop", "resume", "review-plan", "start-plan", "sync-artifacts", "artifact-index", "sync-processed-frame", "sync-processed-frame-v2", "sync-native-plots")
 
 
 def result(action: str, *, ok: bool = True, **data) -> dict:
@@ -30,14 +30,33 @@ def remote_path(value, name: str) -> str:
     return value
 
 
-def ssh_command(args, *, artifact_stream=False, input_stream=False, processed_stream=False) -> list[str]:
+def ssh_executable(*, environ=None, windows=None) -> str | None:
+    """Prefer Windows' own OpenSSH client, then PATH.
+
+    PATH order on a developer desktop puts Git's MSYS ssh.EXE first; it cannot
+    reach the Windows OpenSSH agent service, so a passphrase-protected key
+    fails under BatchMode=yes with an opaque "Permission denied (publickey)".
+    shutil.which also honours PATHEXT, so an ssh.bat earlier on PATH would win.
+    """
+    environ = os.environ if environ is None else environ
+    windows = (os.name == "nt") if windows is None else windows
+    if windows:
+        system_root = environ.get("SystemRoot") or environ.get("SYSTEMROOT") or environ.get("WINDIR")
+        if system_root:
+            candidate = Path(system_root) / "System32" / "OpenSSH" / "ssh.exe"
+            if candidate.is_file():
+                return str(candidate)
+    return shutil.which("ssh", path=environ.get("PATH"))
+
+
+def ssh_command(args, *, artifact_stream=False, input_stream=False, processed_stream=False, processed_member_stream_v2=False) -> list[str]:
     host = args.host
     if (not isinstance(host, str) or len(host) > 255
             or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.@:\[\]-]*", host)):
         raise ValueError("--host must be an SSH alias or user@host without shell syntax")
     python = remote_path(args.python, "--python")
     remote_path(args.workspace, "--workspace")
-    ssh = shutil.which("ssh")
+    ssh = ssh_executable()
     if ssh is None:
         raise ValueError("OpenSSH client 'ssh' is unavailable; install it and retry")
     command = [ssh, "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
@@ -49,14 +68,19 @@ def ssh_command(args, *, artifact_stream=False, input_stream=False, processed_st
         command += ["-p", str(args.port)]
     for flag, value in (("-F", args.ssh_config), ("-i", args.identity)):
         if value is not None:
-            path = Path(value).expanduser().resolve(strict=True)
+            path = Path(value).expanduser()
+            if not path.is_absolute():
+                # ssh runs a ProxyCommand from -F before any host-key check; a
+                # relative path would let the current folder supply that file.
+                raise ValueError(f"{flag} must be an absolute local path, not one relative to the current folder")
+            path = path.resolve(strict=True)
             if not path.is_file():
                 raise ValueError(f"{flag} must name an existing local file")
             command += [flag, str(path)]
     # ssh passes its command through the remote shell. Only these fixed words
     # and the quoted interpreter enter that shell; request data travels on stdin.
     command += ["--", host, shlex.join([python, "-I", "-m", "gpuwm.remote_worker",
-                                     "--input-stream" if input_stream else "--processed-stream" if processed_stream else "--artifact-stream" if artifact_stream else "--rpc"])]
+                                     "--input-stream" if input_stream else "--processed-member-stream-v2" if processed_member_stream_v2 else "--processed-stream" if processed_stream else "--artifact-stream" if artifact_stream else "--rpc"])]
     return command
 
 
@@ -111,7 +135,10 @@ def _transport(command: list[str], request: dict, *, timeout: float = 40) -> dic
         lines = [line for line in text.splitlines() if line.strip()]
         if len(lines) != 1:
             detail = bytes(chunks["stderr"]).decode("utf-8", errors="replace").strip()
-            raise ValueError("SSH did not return one ArWen response" + (f": {detail[:2000]}" if detail else ""))
+            # The node never answered, so the client that ran is the fact the
+            # user needs: which ssh spoke, and therefore which agent and keys.
+            raise ValueError("SSH did not return one ArWen response" + (f": {detail[:2000]}" if detail else "")
+                             + f" (ssh client: {command[0]})")
         reply = json.loads(lines[0])
         if (not isinstance(reply, dict) or reply.get("schema") != SCHEMA
                 or type(reply.get("ok")) is not bool
@@ -129,8 +156,10 @@ def _transport(command: list[str], request: dict, *, timeout: float = 40) -> dic
 
 def remote_main(args) -> int:
     action = args.remote_action
+    ssh_client = None
     try:
         command = ssh_command(args)
+        ssh_client = command[0]
         request = {"schema": "gpuwm.remote.request.v1", "action": action,
                    "workspace": args.workspace}
         for name in ("config", "outdir", "geog_root", "prepared_root", "wps_namelist", "products", "job", "cursor",
@@ -147,9 +176,15 @@ def remote_main(args) -> int:
         elif action == "sync-processed-frame":
             from gpuwm.remote_processed import sync
             reply = result(action, **sync(args, command, ssh_command(args, processed_stream=True)))
+        elif action == "sync-processed-frame-v2":
+            from gpuwm.remote_processed_cache_v2 import sync
+            reply = result(action, **sync(args, command, ssh_command(args, processed_member_stream_v2=True)))
         elif action == "artifact-index":
             from gpuwm.remote_artifacts import index
             reply = result(action, **index(args, command))
+        elif action == "sync-native-plots":
+            from gpuwm.remote_native_plots import sync
+            reply = result(action, **sync(args, command, ssh_command(args, artifact_stream=True)))
         elif action == "review-plan":
             from gpuwm.remote_plan import build_bundle
             from gpuwm.remote_input_transfer import transfer_bundle_inputs, source_blobs, verify_sources
@@ -180,6 +215,8 @@ def remote_main(args) -> int:
                      else _transport(command, request))
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         reply = result(action, ok=False, error={"type": type(error).__name__, "message": str(error)})
+    # Every record (status, plan review, refusal) names the ssh client that ran.
+    reply["ssh_client"] = ssh_client
     if args.json:
         output = json.dumps(reply, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
         if hasattr(sys.stdout, "buffer"):
@@ -211,6 +248,8 @@ def register_cli(subparsers) -> None:
             "start-plan": "start the exact reviewed staged plan with the durable job owner",
             "sync-artifacts": "retrieve one exact or latest committed raw WRF frame for a domain",
             "sync-processed-frame": "retrieve a native processed store for one committed domain and forecast time",
+            "sync-processed-frame-v2": "derive compact fields for selected loop frames and retrieve their native store members",
+            "sync-native-plots": "retrieve the native PNG gallery for one exact committed forecast frame",
             "artifact-index": "read a bounded page of native committed forecast times without opening WRF files"}[action])
         command.add_argument("--host", required=True, help="existing SSH alias or user@host")
         command.add_argument("--python", required=True, help="absolute remote Python path with ArWen installed")
@@ -219,17 +258,29 @@ def register_cli(subparsers) -> None:
         command.add_argument("--identity", help="existing local SSH identity path; contents are never copied")
         command.add_argument("--ssh-config", help="existing local OpenSSH configuration path")
         command.add_argument("--json", action="store_true", help="one versioned JSON result line; exit 0 or 2")
-        if action in ("status", "logs", "stop", "resume", "sync-artifacts", "artifact-index", "sync-processed-frame"):
+        if action in ("status", "logs", "stop", "resume", "sync-artifacts", "artifact-index", "sync-processed-frame", "sync-processed-frame-v2", "sync-native-plots"):
             command.add_argument("--job", required=True, help="job ID returned by start or list")
-        if action in ("sync-artifacts", "artifact-index", "sync-processed-frame"):
+        if action in ("sync-artifacts", "artifact-index", "sync-processed-frame", "sync-processed-frame-v2", "sync-native-plots"):
             command.add_argument("--domain", type=int, default=1, help="selected committed domain, 1..999")
         if action == "sync-artifacts":
             command.add_argument("--cache-root", required=True, help="owned local cache for this job's raw frame objects")
             command.add_argument("--sequence", type=int, help="exact native output commit sequence; omit for latest")
             command.add_argument("--reader-leases", action="store_true", help="the visual reader retains shared OS leases for every frame clone")
+        if action == "sync-native-plots":
+            command.add_argument("--cache-root", required=True, help="local folder for selected native PNG galleries")
+            command.add_argument("--sequence", type=int, required=True, help="exact native output commit sequence")
         if action == "sync-processed-frame":
             command.add_argument("--cache-root", required=True, help="owned local directory for immutable native processed stores")
             command.add_argument("--sequence", type=int, help="exact native output commit sequence; omit for latest")
+        if action == "sync-processed-frame-v2":
+            command.add_argument("--cache-root", required=True, help="owned bounded local cache for compact native fields")
+            command.add_argument("--sequence", type=int, help="exact committed sequence; omit for latest")
+            command.add_argument("--profile", choices=("viewer-2d-v1", "full-science-v1"), default="viewer-2d-v1")
+            command.add_argument("--products", help="canonical native viewer product slugs separated by commas")
+            command.add_argument("--prefetch-sequences", help="up to eight committed loop sequences separated by commas")
+            command.add_argument("--expected-run-id", help="require this exact native producer run identity")
+            command.add_argument("--reader-leases", action="store_true", help="viewer retains shared native-store object leases")
+            command.add_argument("--cache-bytes", type=int, help="local viewer cache budget in bytes; default 2 GiB")
         if action == "artifact-index":
             command.add_argument("--after-sequence", type=int, default=0, help="last native sequence from the previous timeline page")
         if action in ("start", "resume"):

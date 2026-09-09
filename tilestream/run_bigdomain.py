@@ -40,7 +40,7 @@ def _write_snapshot_wrfout(npz_path, snap: dict, cfg, tag: str, *, grid=None):
     draw this run.
 
     Default-on, because "fixed" means a bare default run stops showing the
-    defect (CLAUDE.md), and the defect here is that a tile-streamed
+    defect (project rule), and the defect here is that a tile-streamed
     forecast could not be drawn by ``rw_wrfbatch`` at all -- which is why
     ``tilestream/bigdomain_render.py`` exists and draws weather fields in
     matplotlib.  ``--no-wrfout`` is the escape.

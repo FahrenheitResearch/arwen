@@ -6,7 +6,7 @@ static cache, and a small geometry receipt.  A frozen WRF-v4.6.1 declaration
 contract supplies only NetCDF metadata; all gridded state is derived from the
 native inputs.
 
-Who writes the bytes: Drew's Rust.  The DEFAULT engine is the classic
+Who writes the bytes: ArWen's Rust.  The DEFAULT engine is the classic
 writer at ``tools/rustwx/crates/netcdf-writer``, driven through
 :mod:`gpuwm.io.nc_writer_bridge` and the shared
 :class:`gpuwm.io.classic_tape.ClassicTape` facade -- the same seam the
@@ -1658,7 +1658,7 @@ def _open_for_validation(path: Path, engine: str):
     """Open the written pair for its read-back, on the matching reader.
 
     The default engine's file is a classic container and is read by
-    :mod:`gpuwm.netcdf_bridge` -- ``rw_netcdf``, Drew's Rust -- in a
+    :mod:`gpuwm.netcdf_bridge` -- ``rw_netcdf``, ArWen's Rust -- in a
     metadata-only pass that decodes no value.
 
     The netCDF4 workaround engine's file is an HDF5 container, and there

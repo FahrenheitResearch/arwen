@@ -293,7 +293,7 @@ impl ScalarSection {
     /// corners keep their bilinear weights, the missing ones give theirs
     /// up, and the second value reports how much of the quad was finite.
     ///
-    /// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): the strict
+    /// WHAT BREAKAGE THIS PREVENTS (gate law): the strict
     /// [`Self::bilinear_sample`] drops the WHOLE quad the moment one corner
     /// is NaN.  On a `~log` fill, whose floor IS a NaN, and on any field
     /// that ends inside the domain, that turned a smooth plume edge into a

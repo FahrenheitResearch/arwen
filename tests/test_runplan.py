@@ -610,6 +610,47 @@ def test_a_failed_chain_stage_is_named_in_a_warning(tmp_path):
     assert warning["exit_code"] == 2
 
 
+@pytest.mark.parametrize("channel", ["stderr", "stdout", "empty"])
+def test_failed_preparation_carries_subprocess_diagnostic_into_final_event(
+        tmp_path, monkeypatch, channel):
+    """A remote client reading only job.error still receives the stage's cause."""
+    import sys
+    import gpuwm.go_cli as go_cli
+    from gpuwm import capabilities
+
+    # The fake chain stops in a CPU subprocess before any model execution.
+    monkeypatch.setattr(capabilities, "require", lambda *args, **kwargs: None)
+
+    diagnostic = 'GFS Rust bridge failed: Section 5 declares 0 data points'
+    script = "import sys; "
+    if channel != "empty":
+        script += f"print({diagnostic!r}, file=sys.{channel}); "
+    script += "sys.exit(2)"
+
+    def fake_go_main(args, *, observer=None, **_):
+        try:
+            go_cli.run_stage("prepare", [sys.executable, "-c", script],
+                             explain=False, observer=observer)
+        except go_cli.GoStageFailed:
+            return 2
+        pytest.fail("The failed preparation must stop the chain")
+
+    monkeypatch.setattr(go_cli, "go_main", fake_go_main)
+    plan = load_plan(_prepared_plan(tmp_path, tmp_path / "run"))
+    plan.run_dir.mkdir(parents=True, exist_ok=True)
+    with EventStream(plan.run_dir / EVENTS_FILENAME, mirror=None) as events:
+        assert execute_plan(plan, events=events) == 1
+    records = read_events(plan.run_dir / EVENTS_FILENAME)
+    failed = records[-1]
+    assert failed["event"] == "failed"
+    assert failed["stage"] == "prepare"
+    assert "The prepare stage failed (exit 2)." in failed["message"]
+    assert "No later stage ran." in failed["message"]
+    assert (diagnostic in failed["message"]) is (channel != "empty")
+    assert not any(row["event"] == "stage_started" and row["stage"] == "forecast"
+                   for row in records)
+
+
 def test_go_runs_the_forecast_in_process_only_for_an_observer(monkeypatch,
                                                               tmp_path):
     """The subprocess default is what keeps a CUDA failure in one stage."""

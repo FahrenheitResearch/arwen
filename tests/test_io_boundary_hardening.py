@@ -177,7 +177,8 @@ def test_producer_identity_is_the_installed_distribution():
     identity = producer_identity()
     assert identity["distribution"] == gpuwm.DISTRIBUTION_NAME
     assert identity["version"] == gpuwm.__version__
-    assert identity["restart_format_version"] == "5"
+    from gpuwm.io.restart import RESTART_FORMAT_VERSION
+    assert identity["restart_format_version"] == str(RESTART_FORMAT_VERSION) == "6"
 
 
 # ---------------------------------------------------------------------------

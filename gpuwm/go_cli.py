@@ -777,6 +777,15 @@ def prepare_command(plan: dict, bridge: Path, *, manifest: Path,
     behind ``--explain``.
     """
 
+    preprocessing = []
+    if plan["source"] == "gfs":
+        import tomllib
+        from gpuwm.config_authority import read_config_authority
+        from gpuwm.preprocess_policy import resolve_preprocess_backend
+        tables = tomllib.loads(read_config_authority(plan["config"]).payload.decode("utf-8-sig"))
+        if resolve_preprocess_backend(source="gfs", tables=tables) == "cpu":
+            preprocessing = ["--preprocess-backend", "cpu"]
+
     return [sys.executable, "-m", "gpuwm.source_cli",
             "--source", plan["source"],
             "--gfs-series", str(plan["data"] / f"{plan['source']}-series.tsv"),
@@ -794,6 +803,7 @@ def prepare_command(plan: dict, bridge: Path, *, manifest: Path,
             # written and its verification status reported.
             *_profile_flags(plan),
             "--geog-root", str(geog_root),
+            *preprocessing,
             # The config declared a follow source, so the bundle must
             # carry the sealed statics corridor or stage 5 refuses it.
             *(["--statics-corridor"] if plan.get("statics_corridor")
@@ -1452,6 +1462,12 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
             print(f"    {line}")
         print(f"go: stopped at {label}; every later stage consumes this "
               "one's output, so nothing after it ran.")
+        # Carry the same diagnostic into machine-facing failures. Desktop and
+        # remote clients cannot rely on a separate terminal's preceding lines.
+        diagnostic = (completed.stderr or "").strip() or (completed.stdout or "").strip()
+        _notify(observer, "stage_failed", label=label,
+                exit_code=completed.returncode,
+                diagnostic="\n".join(diagnostic.splitlines()[-8:])[-8192:])
         _notify(observer, "stage_end", label=label,
                 exit_code=completed.returncode, ok=False,
                 elapsed_seconds=time.monotonic() - started,
@@ -1647,6 +1663,47 @@ def memory_refusal_text(gate: dict) -> str:
         "  # gpuwm go CONFIG --no-memory-gate runs it anyway")
 
 
+#: The planner's memory resources.  A refusal carrying one of these was
+#: computed against a card's numbers; the others ("geometry", None) are
+#: statements about the configuration alone.
+_PLANNER_MEMORY_RESOURCES = frozenset({"vram", "host", "memory"})
+
+
+def planner_gate(tree_road, *, card_seen: bool) -> tuple[bool, str | None]:
+    """``(refuse, note)`` from the tile-planning report, for the go gate.
+
+    Three things arrive on ``tree_road`` and only one of them is a refusal:
+
+    * ``report_error`` -- the pricing REPORT raised (a ``TypeError`` in the
+      walk, say).  Never a refusal: a defect in a report is not a fact
+      about the tree, and the run proceeds under the pre-existing
+      admission rule with the failure said out loud.  This function exists
+      because a bare ``except Exception`` used to fill the same attribute
+      a genuine refusal filled, and ``gpuwm go`` hard-refused runnable
+      trees on the report's own exception (ENG-014).
+    * a refusal whose ``refusal_resource`` is a MEMORY resource -- computed
+      against the card's numbers.  Refuses when the card was measured;
+      when it was not, "never refuse on a card we cannot see" holds, as the
+      comment beside the no-probe branch has always promised.
+    * a refusal about the configuration itself (``geometry``, or the
+      walk's non-memory route refusal) -- refuses regardless of the card,
+      because the run door's own walk would refuse it after the download.
+    """
+    report_error = getattr(tree_road, "report_error", None)
+    if report_error:
+        return False, ("tile-planning report failed (" + str(report_error)
+                       + "); admission decided by the resident price alone")
+    refusal = getattr(tree_road, "refusal", None)
+    if not refusal:
+        return False, None
+    resource = getattr(tree_road, "refusal_resource", None)
+    if not card_seen and resource in _PLANNER_MEMORY_RESOURCES:
+        return False, ("native tile planner refused against an unmeasured "
+                       "card, not refusing on a card we cannot see: "
+                       + str(refusal))
+    return True, "native tile planner refused this configuration: " + str(refusal)
+
+
 def memory_gate(plan: dict, *, vram_gib: float | None = None,
                 experiment=None) -> dict:
     """Price every phase of ``plan`` against this card, before the fetch.
@@ -1723,7 +1780,8 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
         forcing_interval_seconds=(forcing_interval if forcing_interval is not None
                                   else DEFAULT_FORCING_INTERVAL_SECONDS),
         ingest_forcing_interval_seconds=forcing_interval)
-    planner_refusal = getattr(getattr(phases, "tree_road", None), "refusal", None)
+    tree_road = getattr(phases, "tree_road", None)
+    planner_refuse, planner_note = planner_gate(tree_road, card_seen=probe is not None)
 
     if probe is None:
         # No numbers: price the phases and print the verdict, but never
@@ -1736,11 +1794,12 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
         # function is reached; the reason is still carried here so a
         # caller reading the gate's own dict is not told a fiction.
         verdict = f"{phases.verdict(None)} ({probe_reason})" if probe_reason else phases.verdict(None)
-        if planner_refusal and str(planner_refusal) not in verdict:
-            verdict += "; native tile planner refused this configuration: " + str(planner_refusal)
+        if planner_note and planner_note not in verdict:
+            verdict += "; " + planner_note
         return {"verdict": verdict,
-                "refuse": bool(planner_refusal), "warn": False, "free_bytes": None,
-                "probe_reason": probe_reason, "phases": phases, "device_probe": probe}
+                "refuse": planner_refuse, "warn": False, "free_bytes": None,
+                "probe_reason": probe_reason, "phases": phases, "device_probe": probe,
+                "planner_report_error": getattr(tree_road, "report_error", None)}
     free = int(probe["free_bytes"])
     # The budget the ENVELOPE is compared against, from the wizard's own
     # seam so the two doors cannot disagree about one card.  It is free
@@ -1759,9 +1818,10 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
     verdict = phases.verdict(budget)
     # A resident reference number cannot admit a configuration for which the
     # native tree planner explicitly refused the configured execution road.
-    refuse = peak > free or bool(planner_refusal)
-    if planner_refusal and str(planner_refusal) not in verdict:
-        verdict += "; native tile planner refused this configuration: " + str(planner_refusal)
+    # A planning REPORT that died is not such a refusal (planner_gate).
+    refuse = peak > free or planner_refuse
+    if planner_note and planner_note not in verdict:
+        verdict += "; " + planner_note
     # THE PINNED STORE IS A REFUSAL TOO, and only for a streamed run: the
     # domain lives in host RAM there, so a config whose store cannot be
     # page-locked dies at attach -- after the download, which is exactly
@@ -1789,6 +1849,7 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
         "probe_reason": None,
         "phases": phases,
         "device_probe": probe,
+        "planner_report_error": getattr(tree_road, "report_error", None),
     }
 
 

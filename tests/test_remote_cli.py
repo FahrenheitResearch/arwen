@@ -40,6 +40,59 @@ def test_only_quoted_python_and_fixed_protocol_words_enter_remote_shell(monkeypa
     assert command[command.index("-p") + 1] == "2222"
 
 
+def test_windows_prefers_the_system_openssh_client_and_the_record_names_it(monkeypatch, tmp_path):
+    system = tmp_path / "Windows"
+    openssh = system / "System32" / "OpenSSH" / "ssh.exe"
+    openssh.parent.mkdir(parents=True)
+    openssh.write_bytes(b"")
+    git_bin = tmp_path / "Git" / "usr" / "bin"
+    git_bin.mkdir(parents=True)
+    (git_bin / "ssh.EXE").write_bytes(b"")
+    environ = {"SystemRoot": str(system), "PATH": str(git_bin), "PATHEXT": ".EXE;.BAT"}
+    assert rc.ssh_executable(environ=environ, windows=True) == str(openssh)
+    # Without the system client, PATH order decides, as before.
+    openssh.unlink()
+    assert Path(rc.ssh_executable(environ=environ, windows=True)) == git_bin / "ssh.EXE"
+    # Linux never consults SystemRoot.
+    assert Path(rc.ssh_executable(environ=environ, windows=False)) == git_bin / "ssh.EXE"
+    # The resolved client rides on every record, including a refusal.
+    monkeypatch.setattr(rc, "ssh_executable", lambda: str(openssh))
+    command = rc.ssh_command(args())
+    assert command[0] == str(openssh)
+
+
+def test_records_and_ssh_level_failures_name_the_client_that_ran(monkeypatch, capsys, tmp_path):
+    transport = rc._transport
+    monkeypatch.setattr(rc, "ssh_executable", lambda: "C:/Windows/System32/OpenSSH/ssh.exe")
+    monkeypatch.setattr(rc, "_transport", lambda command, request, **kwargs: rc.result("probe", runtime={}, capabilities={}))
+    assert rc.remote_main(args()) == 0
+    reply = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert reply["ok"] is True and reply["ssh_client"] == "C:/Windows/System32/OpenSSH/ssh.exe"
+    # An authentication failure is an SSH-level failure: the node never
+    # answered, and the message says which client asked.
+    monkeypatch.setattr(rc, "_transport", transport)
+    program = _program(tmp_path, "sys.stderr.write('Permission denied (publickey).\\n')\nraise SystemExit(255)\n")
+    with pytest.raises(ValueError, match=r"Permission denied \(publickey\).*\(ssh client: ") as failure:
+        rc._transport(program, {"action": "probe"})
+    assert str(failure.value).endswith(f"(ssh client: {program[0]})")
+    monkeypatch.setattr(rc, "ssh_command", lambda options, **kwargs: program)
+    assert rc.remote_main(args()) == 2
+    reply = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert reply["ok"] is False and reply["ssh_client"] == program[0]
+    assert "Permission denied (publickey)" in reply["error"]["message"] and program[0] in reply["error"]["message"]
+
+
+@pytest.mark.parametrize("field", ["ssh_config", "identity"])
+def test_relative_ssh_config_and_identity_paths_are_refused(monkeypatch, tmp_path, field):
+    (tmp_path / "sshconf").write_text("Host *\n  ProxyCommand planted\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(rc.shutil, "which", lambda name: "ssh-fixture")
+    with pytest.raises(ValueError, match="absolute local path"):
+        rc.ssh_command(args(**{field: "sshconf"}))
+    command = rc.ssh_command(args(**{field: str(tmp_path / "sshconf")}))
+    assert command[command.index("-F" if field == "ssh_config" else "-i") + 1] == str((tmp_path / "sshconf").resolve())
+
+
 @pytest.mark.parametrize("python,workspace,port", [("python", "/srv/x", None),
     ("/bin/python\nnext", "/srv/x", None), ("/bin/python", "relative", None),
     ("/bin/python", "/srv/x", 0), ("/bin/python", "/srv/x", 65536)])

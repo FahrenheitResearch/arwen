@@ -1,7 +1,7 @@
 //! The footer strip: a band drawn UNDER a finished panel carrying a logo and
 //! two caption lines.
 //!
-//! WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): a delivered sheet that
+//! WHAT BREAKAGE THIS PREVENTS (gate law): a delivered sheet that
 //! does not say what it is.  The panel's own title row is sized and placed by
 //! the plot layout and carries the product and the valid time in the
 //! renderer's voice; a gallery handed to a reader also has to carry the
@@ -250,7 +250,7 @@ fn text_factors(height: u32) -> (f32, f32) {
 }
 
 /// A strip at least this many pixels tall for every 1800 pixels of image
-/// width: the band Drew rejected was 64 px under an 1800 px sheet.
+/// width: the band the reviewer rejected was 64 px under an 1800 px sheet.
 const STRIP_MIN_PX_AT_1800: f32 = 110.0;
 
 /// The strip is at least this fraction of the image's own height.
@@ -261,9 +261,9 @@ const WORDMARK_HEIGHT_FRACTION: f32 = 0.70;
 
 /// The strip's height and its wordmark's height for an image of this size.
 ///
-/// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): the theme named ONE
+/// WHAT BREAKAGE THIS PREVENTS (gate law): the theme named ONE
 /// pixel height and every sheet got it, so a 64-pixel band with small type
-/// hung under an 1800-pixel delivery and read, in Drew's words, as a bar so
+/// hung under an 1800-pixel delivery and read, in the reviewer's words, as a bar so
 /// tiny you cannot see anything.  The geometry is the image's now; the
 /// theme's own `height` and `logo_height` survive as FLOORS, so a theme may
 /// ask for a taller band or a bigger mark and can no longer ask for a
@@ -383,7 +383,7 @@ mod strip_tests {
         }
     }
 
-    /// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): the theme named
+    /// WHAT BREAKAGE THIS PREVENTS (gate law): the theme named
     /// ONE pixel height and every sheet got it, so a 64-pixel band with
     /// small type hung under an 1800-pixel delivery.
     #[test]

@@ -91,6 +91,11 @@ pub struct WrfProcessOptions {
     pub only: Vec<String>,
     #[serde(default)]
     pub skip: Vec<String>,
+    /// Explicit live-view profile: chart planes only, no sounding volumes.
+    #[serde(default)]
+    pub viewer_2d: bool,
+    #[serde(default)]
+    pub chart_selectors: Vec<FieldSelector>,
 }
 
 impl Default for WrfProcessOptions {
@@ -103,6 +108,8 @@ impl Default for WrfProcessOptions {
             stored_planes: true,
             only: Vec::new(),
             skip: Vec::new(),
+            viewer_2d: false,
+            chart_selectors: Vec::new(),
         }
     }
 }
@@ -111,6 +118,8 @@ impl WrfProcessOptions {
     pub fn normalized(mut self) -> Self {
         self.only = normalize_filter_tokens(self.only);
         self.skip = normalize_filter_tokens(self.skip);
+        self.chart_selectors.sort_by_key(|selector| selector.key());
+        self.chart_selectors.dedup();
         self
     }
 
@@ -129,7 +138,9 @@ impl WrfProcessOptions {
         }
         // Isobaric sounding volumes ride along with the core group (they are
         // gated on `core_fields` in `read_wrf_products`).
-        if self.core_fields {
+        if self.viewer_2d {
+            names.extend(self.chart_selectors.iter().map(|selector| selector.key()));
+        } else if self.core_fields {
             for iso in ISO_VOLUME_NAMES {
                 names.push((*iso).to_string());
             }
@@ -703,7 +714,7 @@ fn process_paths_with_target(
                                     values: field.values.as_slice(),
                                 }),
                         );
-                        let volume_inputs = if options.core_fields {
+                        let volume_inputs = if options.core_fields && !options.viewer_2d {
                             volumes.iter().map(IsoVolume::as_input).collect::<Vec<_>>()
                         } else {
                             Vec::new()
@@ -1220,7 +1231,28 @@ fn read_wrf_products(
     // clears the cache right after its LAST getvar (the hour's last), so the
     // interpolation loop and the store write below run without the ~5 GB of
     // dead intermediates.
-    if options.core_fields {
+    if options.viewer_2d {
+        match isolate_panics("selected isobaric chart planes", || {
+            crate::wrf_chart_planes::build_chart_planes(
+                file,
+                timeidx,
+                shape.len(),
+                &options.chart_selectors,
+                progress,
+            )
+        }) {
+            Ok(planes) => push_isobaric_recipe_planes(
+                &mut fields,
+                &grid,
+                projection.clone(),
+                planes.iter(),
+                options,
+            ),
+            Err(error) => fields.notes.push(format!(
+                "Selected isobaric chart planes unavailable: {error}"
+            )),
+        }
+    } else if options.core_fields {
         // Isolated for the same reason as `compute_var`: the volume builder's
         // `getvar` reads must degrade to a note, not kill the hour.
         // Preflight outside the isolated builder as well as inside it so this
@@ -2399,7 +2431,16 @@ fn processing_profile_suffix(options: &WrfProcessOptions) -> String {
             hash = profile_hash_update(hash, token.as_bytes());
         }
     }
-    format!("full_{WRF_PROCESS_SCIENCE_MARKER}_{hash:016x}")
+    if normalized.viewer_2d {
+        hash = profile_hash_update(hash, b"viewer-2d-v1\0");
+        for selector in &normalized.chart_selectors {
+            hash = profile_hash_update(hash, selector.key().as_bytes());
+            hash = profile_hash_update(hash, b"\0");
+        }
+        format!("viewer2d_{WRF_PROCESS_SCIENCE_MARKER}_{hash:016x}")
+    } else {
+        format!("full_{WRF_PROCESS_SCIENCE_MARKER}_{hash:016x}")
+    }
 }
 
 fn profile_hash_update(mut hash: u64, bytes: &[u8]) -> u64 {

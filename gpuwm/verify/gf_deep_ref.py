@@ -251,7 +251,7 @@ def _logf(x):
 
 
 def _tgammaf(x):
-    """The CORRECTLY ROUNDED float32 gamma -- and, since 2.6.6, the shipped
+    """The CORRECTLY ROUNDED float32 gamma -- and, since 2.7.0, the shipped
     kernel's answer too.
 
     It is NOT glibc's ``tgammaf``, and this docstring used to describe it as

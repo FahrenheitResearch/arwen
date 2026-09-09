@@ -2447,10 +2447,28 @@ def test_shinhong_parent_chain_round_trips_per_domain_without_remap(
 
 
 @pytest.mark.parametrize("replacement", ["", " input_from_file = .true.,"])
-def test_input_from_file_omission_and_short_tail_keep_registry_false(tmp_path, replacement):
+def test_input_from_file_omission_and_short_tail_take_the_registry_true(tmp_path, replacement):
+    """WRF's Registry default is .true. for every element (Registry.EM_COMMON).
+
+    The ordinary single-domain namelist never names the key, and a short
+    column leaves its tail at the Registry value, so both import.  The
+    importer briefly read the default as .false. and refused them with a
+    message asserting the opposite of the Registry (ENG-015).
+    """
     inp = INPUT_TEXT.replace(" input_from_file = .true., .true.,", replacement)
-    with pytest.raises(ValueError, match="WRF defaults omitted entries"):
+    toml_text, report = import_namelists(*_pair(tmp_path, inp=inp))
+    assert toml_text
+    # The resolved per-domain column is the Registry value on every element.
+    entry = next(f for f in report.fixed if f.key == "input_from_file")
+    assert entry.values == (True, True)
+
+
+def test_an_explicit_false_input_from_file_is_refused_with_the_registry_named(tmp_path):
+    inp = INPUT_TEXT.replace(" input_from_file = .true., .true.,",
+                             " input_from_file = .true., .false.,")
+    with pytest.raises(ValueError, match="Registry default is .true.") as refused:
         import_namelists(*_pair(tmp_path, inp=inp))
+    assert "parent-interpolated" in str(refused.value)
 
 
 def test_parsed_control_inventory_does_not_claim_value_equivalence(tmp_path):

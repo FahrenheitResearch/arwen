@@ -427,7 +427,7 @@ FROZEN_MODULE_DIGESTS = {
         'bd555be10ccade5a5bdddcaf4c56b7f4353dae1208fc48a5586fb7ce7d32d643',
         'f1913fe0054adb74188effa6499b799e989cfb1e96ecd676edcd43df0083030e'),
     'noahmp_energy': (
-        # RE-PINNED at 2.6.6 by the licence cut.  `nmpe_tanhf` loses glibc's
+        # RE-PINNED at 2.7.0 by the licence cut.  `nmpe_tanhf` loses glibc's
         # redundant `if (ix == 0) return x;` -- the one edit in the FDLIBM
         # group attributable to reading glibc's text and to nothing else, so
         # it is expression this Apache-2.0 distribution should not carry.
@@ -444,7 +444,7 @@ FROZEN_MODULE_DIGESTS = {
         'eef473608e9d1c0176574c6bd72183659249b42a022f8d63d77c611de506f4ed',
         '4ae139ef5d31234b5e9fdbc04c4cfd3c5156cd91d0326e5544b5b78f7c17fb31'),
     'noahmp_leaves': (
-        # RE-PINNED at 2.6.6 by the licence cut, and for the same reason as
+        # RE-PINNED at 2.7.0 by the licence cut, and for the same reason as
         # noahmp_energy above.  `r_log10`'s zero path was glibc's
         # `-two25 / fabsf(x)`, a division whose only work is to raise
         # divide-by-zero on the way to -inf; FDLIBM divides by a `zero`

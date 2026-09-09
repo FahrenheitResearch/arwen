@@ -7,7 +7,7 @@ frozen map-spec records below; this module owns only reusable readers,
 scorers, diagnostics, and the seam that drives the renderer.
 
 MAP LAYOUT, LABELS AND FILENAMES ARE NO LONGER THIS MODULE'S.  Every
-panel here is a weather field, the render law (CLAUDE.md, Drew
+panel here is a weather field, the project render law (
 2026-08-06) reserves those for the production Rust renderer
 ``rw_wrfbatch`` driven through :mod:`gpuwm.rustwx`, and until the
 2026-08-18 hidden-scope audit they were drawn with
@@ -308,8 +308,8 @@ class SynopticMapSpec:
 
     ``products`` are slugs in ``rw_wrfbatch``'s OWN catalog, and that is
     the whole spec.  It used to carry a filename and a title per figure,
-    because this module drew the figures; under the render law (CLAUDE.md,
-    Drew 2026-08-06) it does not, and titles, palettes, projections and
+    because this module drew the figures; under the project render law
+    (2026-08-06) it does not, and titles, palettes, projections and
     filenames all belong to the renderer that the campaign product sheets
     were proven pixel-identical against.  What stays case-owned is WHICH
     charts a case wants.

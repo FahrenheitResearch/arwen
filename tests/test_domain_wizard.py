@@ -478,22 +478,9 @@ def test_margined_span_over_180_is_never_emitted_as_a_flipped_box():
                     margin_deg=_fetch_margin_deg("gfs"))
 
 
-def test_a_card_filling_layout_is_sized_down_to_one_servable_crop(
+def test_a_card_filling_gfs_layout_uses_existing_full_longitude_coverage(
         tmp_path, capsys):
-    """...and the fit is what has to hit it -- by never getting there.
-
-    Same reproduction point, driven through the real front door at
-    ``--vram-gib 64``.  The sizer used to choose the largest layout the
-    CARD afforded and only then ask whether the forcing box could be
-    fetched, so a legally-sized domain died at emission with rc 2 and no
-    fallback.  On Linux that was not an exotic flag: the peak envelope
-    carries no WDDM floor there, so the same card buys a much bigger
-    grid, and a plain ``--vram-gib 32`` at 12 km crossed the limit.
-
-    The servable-crop bound is a fit constraint now, beside the
-    source-coverage one, so the wizard emits the largest layout that CAN
-    be forced and the printed --area round-trips as the box it names.
-    """
+    """A GFS forcing band may widen without resizing the forecast to fit it."""
     out = tmp_path / "area.toml"
     rc = cli_main([
         "domain", "--point=34,0", "--vram-gib", "64", "--ladder", "12",
@@ -501,10 +488,7 @@ def test_a_card_filling_layout_is_sized_down_to_one_servable_crop(
     assert rc == 0, capsys.readouterr().out
     area = tomllib.loads(out.read_text(encoding="utf-8"))["fetch"]["area"]
     south, west, north, east = (float(v) for v in area.split(","))
-    assert east - west <= 180.0, area
-    # Genuinely up against the bound: the fit shrank to fit it, it did
-    # not stop somewhere comfortable for an unrelated reason.
-    assert east - west > 170.0, area
+    assert (west, east) == (-180.0, 180.0), area
     from gpuwm.fetch import parse_area
     parsed = parse_area(area)
     assert not parsed.crosses_antimeridian
@@ -528,12 +512,39 @@ def test_the_servable_crop_bound_is_the_same_arithmetic_as_the_gate():
     for nx in range(560, 900, 8):
         refused = fetch_crop_refusal(projection, nx, 704, source="gfs")
         try:
-            _fetch_area(projection, nx, 704, margin_deg=margin)
+            _fetch_area(projection, nx, 704, margin_deg=margin,
+                        allow_full_longitude=True)
         except ValueError as error:
             assert refused is not None, nx
             assert "180 degrees" in str(error)
         else:
             assert refused is None, (nx, refused)
+
+
+def test_saved_southern_gfs_polygon_widens_only_forcing_longitude():
+    from gpuwm.domain_wizard import (fetch_area_hint, fetch_crop_refusal,
+                                     _projection_entries, _root_grid,
+                                     _fetch_margin_deg, max_fetch_abs_lat)
+    from gpuwm.fetch import parse_area, validate_fetch_hints
+    projection = _projection_entries(-39.91377935078366, -23.72743785729405)
+    before = dict(projection)
+    notes = []
+    hint = fetch_area_hint(projection, 874, 574, source="gfs",
+                           root_dx_m=12000.0, target_option="--polygon", notes=notes)
+    area = parse_area(hint)
+    assert (area.lon_west, area.lon_east, area.longitude_span_degrees) == (-180.0, 180.0, 360.0)
+    box = area.as_nomads()
+    assert (box["left_lon"], box["right_lon"]) == (0.0, 360.0)
+    lat, _ = _root_grid(projection, 874, 574, 12000.0).latlon_c()
+    margin = _fetch_margin_deg("gfs")
+    pole = max_fetch_abs_lat(12000.0)
+    assert area.lat_south == pytest.approx(max(-pole, float(lat.min()) - margin), abs=.005)
+    assert area.lat_north == pytest.approx(min(pole, float(lat.max()) + margin), abs=.005)
+    validate_fetch_hints({"source": "gfs", "cycle": "2026-09-08T18", "hours": 6,
+                          "area": hint, "out": "unused", "cadence": 3}, source="<global-band-test>")
+    assert fetch_crop_refusal(projection, 874, 574, source="gfs", root_dx_m=12000.0) is None
+    assert any("only forcing coverage is expanded" in note for note in notes)
+    assert projection == before
 
 
 def test_fetch_area_just_under_the_limit_round_trips_unflipped():

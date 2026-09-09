@@ -937,9 +937,8 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     bubbles leave every boundary strip byte-identical).  This is the
     coarse/single domain, so a bubble center outside the grid refuses.
     """
-    from gpuwm.core.landuse import reconciled_soil_category
-    from gpuwm.ingest.soil import (reconciler_soil_temperature,
-                                   reconciler_sst, soil_source_orography)
+    from gpuwm.ingest.soil import (door_reconciled_soil_category,
+                                   soil_source_orography)
 
     times = tuple(forcing_times)
     if not times or times[0] != start_time:
@@ -1092,7 +1091,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     # (module_initialize_real.F:2844-2866, :2898-2906).  The router forwards
     # this exact argument list to preprocess_noah_soil for Noah-geometry
     # schemes, so their soil state is unchanged by the LSM dispatch seam.
-    # ONE RULEBOOK (Drew's ruling, 2026-08-06).  The soil column and the
+    # ONE RULEBOOK (ArWen's ruling, 2026-08-06).  The soil column and the
     # liquid water derived from it must be built with the SAME category the
     # physics driver integrates, so ask for the reconciled ISLTYP here
     # rather than reading the raw geogrid SCT_DOM.  WRF gets this ordering
@@ -1106,14 +1105,8 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     # here knew only the mapped and classic per-layer names, which is the
     # same gap that aborted the native-HRRR and nested-GFS lanes.
     soil_orography = soil_source_orography(source_orography, soil_fields)
-    reconciled_soil_type = reconciled_soil_category(
-        static["LU_INDEX"], soil_type=static["SCT_DOM"],
-        xice=soil_fields.get("XICE", 0.0),
-        iswater=int(landuse_attrs["ISWATER"]),
-        islake=int(landuse_attrs["ISLAKE"]),
-        isice=int(landuse_attrs["ISICE"]),
-        soil_temperature=reconciler_soil_temperature(soil_fields),
-        sst=reconciler_sst(soil_fields))
+    reconciled_soil_type = door_reconciled_soil_category(
+        static, soil_fields, landuse_attrs)
     soil = preprocess_land_surface_soil(
         soil_fields, sf_surface_physics=int(cfg.sf_surface_physics),
         num_soil_layers=soil_layer_count(cfg),
@@ -3147,7 +3140,7 @@ def _exchange_consumer_planes(model, steppers, direction: str,
 
     ``names`` is THIS consumer's slots and no one else's, on the same
     reasoning that gave the two consumers separate windows in the first place
-    (Drew's ruling, 2026-08-07): the relocation runner resets the follow
+    (ArWen's ruling, 2026-08-07): the relocation runner resets the follow
     window on its own cadence, from inside ``execute_experiment``, and a
     spawn boundary that published or adopted that window as well could undo a
     reset the tracker had already made or hand it a window measured against a

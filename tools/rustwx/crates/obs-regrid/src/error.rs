@@ -1,4 +1,4 @@
-//! The error taxonomy, seeded from `rustwx-regrid::error` in Drew's
+//! The error taxonomy, seeded from `rustwx-regrid::error` in the project's
 //! consolidated Rust (`crates/rustwx-regrid/src/error.rs`): the same
 //! four failure classes, because they are the same four things that can
 //! be wrong with a remap request.  `UnsupportedGeometry` is dropped --

@@ -22,7 +22,7 @@ name = "gpuwm-data"
 description = "Physics reference tables for gpuwm (RRTMGP k-distributions, Thompson microphysics lookups)"
 readme = "README.md"
 license = "Apache-2.0"
-# `licenses/*` joined at 2.6.6.  A `pip install gpuwm-data` used to
+# `licenses/*` joined at 2.7.0.  A `pip install gpuwm-data` used to
 # receive LICENSE and NOTICE and none of the texts the NOTICE names, which
 # performs no reproduction condition at all.  The three that apply to what
 # this distribution actually ships -- WRF's public-domain dedication for

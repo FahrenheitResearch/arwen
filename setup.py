@@ -39,6 +39,7 @@ import sys
 from pathlib import Path
 
 from setuptools import setup
+from setuptools.command.build_py import build_py as _BuildPy
 from setuptools.command.sdist import sdist as _Sdist
 from setuptools.dist import Distribution
 
@@ -312,5 +313,42 @@ class _SourceDistribution(_Sdist):
         super().finalize_options()
 
 
+#: Module-name globs, per package, that are development material and never
+#: reach a wheel: the pytest suites and the fault-injection probes that live
+#: BESIDE tilestream's operational modules rather than under tests/.
+#:
+#: The breakage this prevents was measured on the 2.7.0 candidate: all
+#: three gpuwm wheels carried 42 ``tilestream/test_*.py`` suites (one of
+#: them 136,872 B) and the six ``tilestream/skeptic_*.py`` probes at import
+#: top level, because ``[tool.setuptools.packages.find] exclude`` matches
+#: PACKAGES (``tilestream.skeptic*`` named a sub-package that does not
+#: exist) and ``exclude-package-data`` matches data files, and neither can
+#: name a MODULE.  ``build_py.find_package_modules`` is the one place a
+#: module is selected for the wheel, so the filter lives there.  MANIFEST.in
+#: carries the matching ``recursive-exclude`` for the sdist; both halves
+#: are measured by tests/test_operational_package_excludes_probes.py.
+DEVELOPMENT_MODULE_GLOBS: dict[str, tuple[str, ...]] = {
+    "tilestream": ("test_*", "skeptic_*"),
+}
+
+
+def is_development_module(package: str, module: str) -> bool:
+    """Is ``package.module`` development material that never ships?"""
+
+    import fnmatch
+
+    return any(fnmatch.fnmatchcase(module, pattern)
+               for pattern in DEVELOPMENT_MODULE_GLOBS.get(package, ()))
+
+
+class _OperationalBuildPy(_BuildPy):
+    """Copies every module of a package into the wheel EXCEPT the probes."""
+
+    def find_package_modules(self, package, package_dir):  # noqa: D102
+        return [row for row in super().find_package_modules(package, package_dir)
+                if not is_development_module(row[0], row[1])]
+
+
 setup(distclass=_BinaryDistribution,
-      cmdclass={"bdist_wheel": _PlatformWheel, "sdist": _SourceDistribution})
+      cmdclass={"bdist_wheel": _PlatformWheel, "sdist": _SourceDistribution,
+                "build_py": _OperationalBuildPy})

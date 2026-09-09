@@ -540,6 +540,16 @@ def restart_identity_payload(exp) -> dict:
         run = domain.get("run", {})
         for name in RESTART_TOLERATED_RUN_FIELDS:
             run.pop(name, None)
+        # ``eta_levels`` on the absent-stays-absent convention of the
+        # blocks above: its default ``None`` means "inherit the ladder the
+        # source carries", which is exactly and only what every experiment
+        # written before the field existed did, so at its default it
+        # carries no trajectory information and binding it was pure
+        # identity churn -- the prepared-cache table already tolerated it
+        # and this payload did not (ENG-010).  A DECLARED ladder binds,
+        # value for value: a child on its own eta grid is a different run.
+        if run.get("eta_levels") is None:
+            run.pop("eta_levels", None)
         # Scheme-scoped knobs leave the identity of every domain that does
         # not select their scheme (:data:`SCHEME_SCOPED_RUN_FIELDS`).
         selected = run.get("mp_physics")

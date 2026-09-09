@@ -413,6 +413,84 @@ def test_read_window_wraps_in_x(tmp_path):
     np.testing.assert_array_equal(v, (x + 100 * y).astype(np.float64))
 
 
+@pytest.mark.parametrize("x0,x1", [(-2, 11), (4, 18), (-19, 23)])
+def test_periodic_global_window_keeps_full_band_and_interpolation_halos(tmp_path, x0, x1):
+    ds = _synthetic(tmp_path, nz=3, bdr=1)
+    window = ds.read_window(x0, x1, 1, 4)
+    # Independent scalar oracle: every requested column is the corresponding
+    # known periodic source cell, including negative starts and >2 circuits.
+    expected = np.array([[[((x - 1) % 8 + 1) + 100*y + 1000*z
+                           for x in range(x0, x1 + 1)]
+                          for y in range(1, 5)] for z in range(3)])
+    np.testing.assert_array_equal(window.raw, expected)
+    assert window.coverage.all()
+    assert (window.x0, window.x1, window.y0, window.y1) == (x0, x1, 1, 4)
+    receipt = _DomainSampler.require_source_coverage(ds, window, field="landuse")
+    assert receipt["required_cells"] == (x1-x0+1) * 4
+    assert receipt["required_tile_count"] == 4  # repeated columns reuse tiles
+
+
+def test_periodic_full_band_preserves_missing_tiles_and_polar_fill(tmp_path):
+    _synthetic(tmp_path, missing_value=-999)
+    (tmp_path / "00001-00004.00001-00002").unlink()
+    ds = GeogDataset(tmp_path, sparse=True)
+    window = ds.read_window(-2, 11, 0, 5)
+    expected = np.array([[(-999 if y < 1 or y > 4 or
+                          (y <= 2 and (x-1) % 8 + 1 <= 4) else
+                          (x-1) % 8 + 1 + 100*y)
+                         for x in range(-2, 12)] for y in range(6)])
+    np.testing.assert_array_equal(window.raw[0], expected)
+    np.testing.assert_array_equal(window.coverage, expected != -999)
+    with pytest.raises(FileNotFoundError, match="mandatory source coverage failed"):
+        _DomainSampler.require_source_coverage(ds, window, field="landuse")
+    dense = GeogDataset(tmp_path, sparse=False)
+    with pytest.raises(FileNotFoundError, match="unexplained fill"):
+        dense.read_window(-2, 11, 1, 4)
+
+
+def test_nonperiodic_wide_window_retains_existing_refusal(tmp_path):
+    ds = _synthetic(tmp_path, dx=1.0, dy=1.0)
+    assert ds.wraps_x is False
+    with pytest.raises(ValueError, match="window wider than the global grid"):
+        ds.read_window(-2, 11, 1, 4)
+
+
+@pytest.mark.parametrize("x0,width", [(-2, 15), (4, 15), (-19, 43)])
+def test_periodic_padding_does_not_reweight_area_means_or_category_fractions(tmp_path, x0, width):
+    from types import SimpleNamespace
+    # One coarse model cell contains every physical source pixel. This
+    # deliberately makes duplicated seam pixels visible in weighted results.
+    dom = _DomainSampler.__new__(_DomainSampler)
+    dom.grid = SimpleNamespace(dx=1e8, latlon_to_ij=lambda lat, lon:
+        (np.ones(np.broadcast_shapes(np.shape(lat), np.shape(lon))),
+         np.ones(np.broadcast_shapes(np.shape(lat), np.shape(lon)))))
+    dom.nxe = dom.nye = 1
+    dom.halo = 0
+    dom._cells_cache = {}
+    for kind in ("continuous", "categorical"):
+        folder = tmp_path / kind
+        folder.mkdir()
+        kv = _write_index(folder, type=kind, dx=45.0, dy=45.0,
+                          known_lat=-67.5, known_lon=-157.5,
+                          category_min=1, category_max=2)
+        values = np.arange(1, 9) if kind == "continuous" else np.array([1, 1, 1, 2, 2, 2, 2, 2])
+        _write_tiles(folder, np.tile(values, (1, 4, 1)), kv)
+        ds = GeogDataset(folder)
+        single = ds.read_window(x0, x0 + 7, 1, 4)
+        padded = ds.read_window(x0, x0 + width - 1, 1, 4)
+        bins = dom.pixel_cells(ds, padded).reshape(4, width)
+        assert np.count_nonzero(bins >= 0) == 32
+        assert (bins[:, 8:] == -1).all()
+        if kind == "continuous":
+            expected = np.array([[4.5]])
+            np.testing.assert_array_equal(dom.continuous(ds, single), expected)
+            np.testing.assert_array_equal(dom.continuous(ds, padded), expected)
+        else:
+            expected = np.array([[[3/8]], [[5/8]]])
+            np.testing.assert_array_equal(dom.categorical(ds, single), expected)
+            np.testing.assert_array_equal(dom.categorical(ds, padded), expected)
+
+
 def test_read_window_crops_tile_border(tmp_path):
     ds = _synthetic(tmp_path, bdr=1)
     v = ds.read_window(1, 8, 1, 4).values(0)

@@ -1,0 +1,236 @@
+{
+  "schema": "arwen.desktop-runtime-inputs.v1",
+  "python": {
+    "version": "3.13.7",
+    "filename": "python-3.13.7-embed-amd64.zip",
+    "url": "https://www.python.org/ftp/python/3.13.7/python-3.13.7-embed-amd64.zip",
+    "sha256": "f6cca216a359be84797cabb54149ce5e062afb16cc7567eb7fc51cacb2d86b65"
+  },
+  "dependencies": [
+    {
+      "filename": "attrs-26.1.0-py3-none-any.whl",
+      "sha256": "c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309",
+      "bytes": 67548
+    },
+    {
+      "filename": "cdsapi-0.7.7-py2.py3-none-any.whl",
+      "sha256": "384c1658572d6dc53f4111f6dd46fcdfe6fea54a688af9756d71f6fe9118b66d",
+      "bytes": 12293
+    },
+    {
+      "filename": "certifi-2026.7.22-py3-none-any.whl",
+      "sha256": "62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775",
+      "bytes": 136983
+    },
+    {
+      "filename": "cftime-1.6.5-cp313-cp313-win_amd64.whl",
+      "sha256": "6c27add8f907f4a4cd400e89438f2ea33e2eb5072541a157a4d013b7dbe93f9c",
+      "bytes": 465364
+    },
+    {
+      "filename": "charset_normalizer-3.5.1-cp313-cp313-win_amd64.whl",
+      "sha256": "aea996a6aba25260827c9ea511d1addfde2da9eb686ac961838509086188b7e6",
+      "bytes": 199295
+    },
+    {
+      "filename": "colorama-0.4.6-py2.py3-none-any.whl",
+      "sha256": "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6",
+      "bytes": 25335
+    },
+    {
+      "filename": "contourpy-1.3.3-cp313-cp313-win_amd64.whl",
+      "sha256": "1cadd8b8969f060ba45ed7c1b714fe69185812ab43bd6b86a9123fe8f99c3263",
+      "bytes": 226578
+    },
+    {
+      "filename": "cuda_pathfinder-1.8.1-py3-none-any.whl",
+      "sha256": "ae0137ff9e56ea97499bcbf54f5f2778ec25f3266715ac86da192a795af982a8",
+      "bytes": 62552
+    },
+    {
+      "filename": "cuda_toolkit-13.3.1-py2.py3-none-any.whl",
+      "sha256": "2ceda460a540323d52469bcfde48b48c1861f6482e4b5ea3cb5bdac00a1b11bd",
+      "bytes": 2656
+    },
+    {
+      "filename": "cupy_cuda13x-14.2.0-cp313-cp313-win_amd64.whl",
+      "sha256": "f9a2a55abf889f6df68b5f62cd5f3ec4a2f305ac57ed09becd52e16201edcd86",
+      "bytes": 35965490
+    },
+    {
+      "filename": "cycler-0.12.1-py3-none-any.whl",
+      "sha256": "85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30",
+      "bytes": 8321
+    },
+    {
+      "filename": "ecmwf_datastores_client-0.5.3-py3-none-any.whl",
+      "sha256": "c840fdfd5ddfac07ba4f536b4b79c870096371d3f3e33acf74a8f791c64497dd",
+      "bytes": 26165
+    },
+    {
+      "filename": "fonttools-4.64.0-cp313-cp313-win_amd64.whl",
+      "sha256": "e4812f71c39d77ec5041348dafa400532adf7bf8f1fffa9aa6495fce5876d7b8",
+      "bytes": 2480199
+    },
+    {
+      "filename": "idna-3.19-py3-none-any.whl",
+      "sha256": "815e7be7a7806d54abb586dc943addc79e8b2ee16915059658cbeff4b1b43bf4",
+      "bytes": 68550
+    },
+    {
+      "filename": "jsonschema-4.26.0-py3-none-any.whl",
+      "sha256": "d489f15263b8d200f8387e64b4c3a75f06629559fb73deb8fdfb525f2dab50ce",
+      "bytes": 90630
+    },
+    {
+      "filename": "jsonschema_specifications-2025.9.1-py3-none-any.whl",
+      "sha256": "98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe",
+      "bytes": 18437
+    },
+    {
+      "filename": "kiwisolver-1.5.1-cp313-cp313-win_amd64.whl",
+      "sha256": "dc23390afe9f4ef9ac3bcc72a03a56eebbde03f4c571a32cb38f859cff9a6524",
+      "bytes": 70758
+    },
+    {
+      "filename": "matplotlib-3.11.1-cp313-cp313-win_amd64.whl",
+      "sha256": "68408341f2312836fbbdf6b3c78047f65b2d8752f5fd221c3e72d348f5b34f8b",
+      "bytes": 9334074
+    },
+    {
+      "filename": "multiurl-0.3.9-py3-none-any.whl",
+      "sha256": "5acedb53343bb47ff6188405dc33e10c1f1713591de8929a69b966d4d395d88e",
+      "bytes": 22610
+    },
+    {
+      "filename": "netcdf4-1.7.4-cp311-abi3-win_amd64.whl",
+      "sha256": "9476e1f23161ae5159cd1548c50c8a37922e77d76583e247133f256ef7b825fc",
+      "bytes": 21299637
+    },
+    {
+      "filename": "numpy-2.5.3-cp313-cp313-win_amd64.whl",
+      "sha256": "71cad2b2a7451ab79d8f5e71b453485b6775963d5cf794179144a7463fe6e8ec",
+      "bytes": 12560965
+    },
+    {
+      "filename": "nvidia_cublas-13.6.0.2-py3-none-win_amd64.whl",
+      "sha256": "3b5bcd6bfb6f65010ebf195851bcb9b2aa34b9fe08479432002991c1fe84b67d",
+      "bytes": 394568225
+    },
+    {
+      "filename": "nvidia_cuda_nvrtc-13.3.33-py3-none-win_amd64.whl",
+      "sha256": "7d2af818851c0c224d5f92221e9226e51ee23c236df4b51f9194563979c888be",
+      "bytes": 45319163
+    },
+    {
+      "filename": "nvidia_cuda_runtime-13.3.29-py3-none-win_amd64.whl",
+      "sha256": "0667ec61c3d897388efa305ed4f7609ace88849a753ba9c6311d06dca55fff4f",
+      "bytes": 2630354
+    },
+    {
+      "filename": "nvidia_cufft-12.3.0.29-py3-none-win_amd64.whl",
+      "sha256": "510036a2bbab5c83ae93dc5c907c3a49d3518e3066ac3a2052ff0f7f9b27dfc4",
+      "bytes": 183939745
+    },
+    {
+      "filename": "nvidia_curand-10.4.3.29-py3-none-win_amd64.whl",
+      "sha256": "34b18d5a2a8e5db4c3846475ae4eef0cacdf3ac5e9c501f3a4efb422f137a74e",
+      "bytes": 55429221
+    },
+    {
+      "filename": "nvidia_cusolver-12.2.6.9-py3-none-win_amd64.whl",
+      "sha256": "1dbb828e0fb27701c084a8fb80f770c562cb9a6d29b6f001320e6f542c6d024f",
+      "bytes": 236912336
+    },
+    {
+      "filename": "nvidia_cusparse-12.8.2.51-py3-none-win_amd64.whl",
+      "sha256": "2ee59291cd362038f3d40d57c7cd09b26d689f3873ae5c94b31c3270772d41b8",
+      "bytes": 152492210
+    },
+    {
+      "filename": "nvidia_nvjitlink-13.3.33-py3-none-win_amd64.whl",
+      "sha256": "4297ee49639b4f2e07255a1d69b3acc7ab2d011bb892b403e91ac98368962e3b",
+      "bytes": 37766359
+    },
+    {
+      "filename": "packaging-26.3-py3-none-any.whl",
+      "sha256": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c",
+      "bytes": 129956
+    },
+    {
+      "filename": "pillow-12.3.0-cp313-cp313-win_amd64.whl",
+      "sha256": "1cca606cd25738df4ed873d5ad46bbdb3d83b5cbca291f6b4ff13a4df6b0bbe8",
+      "bytes": 7239691
+    },
+    {
+      "filename": "pip-25.2-py3-none-any.whl",
+      "sha256": "6d67a2b4e7f14d8b31b8b52648866fa717f45a1eb70e83002f4331d07e953717",
+      "bytes": 1752557
+    },
+    {
+      "filename": "pyparsing-3.3.2-py3-none-any.whl",
+      "sha256": "850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d",
+      "bytes": 122781
+    },
+    {
+      "filename": "pyshp-3.1.6-py3-none-any.whl",
+      "sha256": "be8cd9436dcbde477c63ea789f7dcdea3af19f17ea84f2744bfc12efe9145d1e",
+      "bytes": 73744
+    },
+    {
+      "filename": "python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+      "sha256": "a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427",
+      "bytes": 229892
+    },
+    {
+      "filename": "pytz-2026.3.post1-py2.py3-none-any.whl",
+      "sha256": "dd95840dd199baea12d9cc096a1d452caa6596a1c1e4b5f3dbd1541855d5e815",
+      "bytes": 508283
+    },
+    {
+      "filename": "referencing-0.37.0-py3-none-any.whl",
+      "sha256": "381329a9f99628c9069361716891d34ad94af76e461dcb0335825aecc7692231",
+      "bytes": 26766
+    },
+    {
+      "filename": "requests-2.34.2-py3-none-any.whl",
+      "sha256": "2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0",
+      "bytes": 73075
+    },
+    {
+      "filename": "rpds_py-2026.6.3-cp313-cp313-win_amd64.whl",
+      "sha256": "9250a9a0a6fd4648b3f868da8d91a4c52b5811a62df58e753d50ae4454a36f80",
+      "bytes": 219454
+    },
+    {
+      "filename": "scipy-1.18.1-cp313-cp313-win_amd64.whl",
+      "sha256": "559ed65f60c1af5a03f3912605a1b5114f522c7c32fb23c3376ae8f03219fe28",
+      "bytes": 36622841
+    },
+    {
+      "filename": "six-1.17.0-py2.py3-none-any.whl",
+      "sha256": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274",
+      "bytes": 11050
+    },
+    {
+      "filename": "tqdm-4.70.0-py3-none-any.whl",
+      "sha256": "7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953",
+      "bytes": 80184
+    },
+    {
+      "filename": "typing_extensions-4.16.0-py3-none-any.whl",
+      "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+      "bytes": 45571
+    },
+    {
+      "filename": "urllib3-2.7.0-py3-none-any.whl",
+      "sha256": "9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897",
+      "bytes": 131087
+    },
+    {
+      "filename": "wrf_rust-0.2.39-cp313-cp313-win_amd64.whl",
+      "sha256": "fd9d5c5827ec6990ebca48a13d1a2696395cc7076adbe03518556c49d43fedec",
+      "bytes": 995679
+    }
+  ]
+}

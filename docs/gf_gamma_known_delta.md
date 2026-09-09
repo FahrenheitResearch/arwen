@@ -4,7 +4,7 @@ Read this before quoting any GF parity number, and before treating a
 non-bitwise `fzu`, `xmb`, `raincv` or `pratec` against a WRF capture as a
 port defect. It is not one. It is this.
 
-**Status:** landed in ArWen 2.6.6, in the shipped default of `cu_physics = 3`.
+**Status:** landed in ArWen 2.7.0, in the shipped default of `cu_physics = 3`.
 The physics registry's `cumulus_options["grell-freitas"]` warnings cite this
 file, as do `gpuwm/core/kernels/gf.cu`, `gpuwm/core/kernels/glibc_flt32.cuh`,
 `gpuwm/core/gf.py`, `gpuwm/verify/gf_deep_ref.py`,
@@ -29,7 +29,7 @@ about `fzu` — deliberately, with ArWen on the correct side.
 
 ## 0. What actually changed
 
-| | through 2.6.5 | 2.6.6 onward |
+| | through 2.6.5 | 2.7.0 onward |
 | --- | --- | --- |
 | `gfk_tgamma` | transcription of glibc `e_gammaf_r.c` + `gamma_productf.c` | ArWen's own gamma, `glibc_flt32.cuh` |
 | licence of that code | LGPL-2.1-or-later, FSF copyright | Apache-2.0, original work |
@@ -315,7 +315,7 @@ per-column `scin` slot:
 | --- | --- |
 | `gf_deep_stage` | `INS_fzu_up`, `INS_fzu_dn` |
 | `gf_shallow_stage` | `SINS_fzu_sh` |
-| `gf_gfdrv_stage` | `DINS_fzu_up`, `DINS_fzu_dn`, `DINS_fzu_sh` (added 2.6.6) |
+| `gf_gfdrv_stage` | `DINS_fzu_up`, `DINS_fzu_dn`, `DINS_fzu_sh` (added 2.7.0) |
 
 The CPU reference has used the same override since the port landed
 (`tests/test_gf_driver_parity.py`). To compare a run against a WRF capture

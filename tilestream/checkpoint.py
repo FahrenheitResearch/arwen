@@ -564,10 +564,7 @@ def read_store_restart(path, store, setup: DomainSetup, cfg, *,
         raise _restart.RestartMismatchError(
             f"restart file {path} header is missing {missing_header}")
     version = header.get("format_version")
-    if version not in _restart.READABLE_RESTART_FORMAT_VERSIONS:
-        raise _restart.RestartMismatchError(
-            f"restart file {path} has format version {version!r}; this "
-            f"build reads {sorted(_restart.READABLE_RESTART_FORMAT_VERSIONS)}")
+    _restart.require_readable_format_version(version, path)
     _restart._require_config_match(header["config"], cfg, path)
 
     live_lbc_clock = setup.lbc_clock_identity(cfg)

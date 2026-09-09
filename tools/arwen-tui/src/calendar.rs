@@ -187,7 +187,7 @@ impl Query {
     ) -> Result<Self, String> {
         let mut command = Command::new(python);
         command
-            .args(["-m", "gpuwm.source_availability"])
+            .args(["-P", "-B", "-m", "gpuwm.source_availability"])
             .args(arguments)
             .current_dir(cwd)
             .stdin(Stdio::null())

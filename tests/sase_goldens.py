@@ -100,7 +100,7 @@ GOLDEN_F_DEVICE = 0.9325844702650841           # rel 4.42e-9 vs FP64
 # COL e 5.1e-4, F 1.4e-4, u/v/w <= 1.1e-5 (the stretched column's
 # shallow geometry engages the BL89 bounds harder at step 1).  Same
 # fixture, same construction; formulation change registered in the
-# S3-6h adjudication (jet-coupling diagnosis, Drew-ratified option 2,
+# S3-6h adjudication (jet-coupling diagnosis, ratified option 2,
 # ledger 2026-07-21 ~01:0x).  The f = 1 LES limb is pinned bitwise
 # elsewhere (test_split_step_les_limb_f1_bitwise_under_bl89): these
 # RANS-side shifts are the expected and registered signature.
@@ -149,7 +149,7 @@ GOLDEN_F_DEVICE = 0.9325844702650841           # rel 4.42e-9 vs FP64
 # (stable-limit coefficient decoupling, ledger 2026-07-21 ~01:5x);
 # C_KS = 0.25 calibrated at the promoted jet-decoupling fixture.
 #
-# RE-PINNED for S3-9c (GUSTINESS-CORRECTED surface drag; codex
+# RE-PINNED for S3-9c (GUSTINESS-CORRECTED surface drag; the
 # S3-6h/6i/6j adversarial review IMPORTANT-1, task S3-9c): the drag
 # conductance gains the audited YSU factor (spd1/max(wspd, 1e-9))^2
 # (authority module docstring, S3-9c section; npref.py:6495-6496),
@@ -175,7 +175,7 @@ GOLDEN_F_DEVICE = 0.9325844702650841           # rel 4.42e-9 vs FP64
 # the no-gustiness identity; the identity pin test asserts the
 # supplied-no-gust case bitwise too).  Same seeds, same construction
 # otherwise; tolerances untouched; formulation change registered in
-# the S3-9c task (codex review fix; report
+# the S3-9c task (adversarial review fix; report
 # .superpowers/sdd/task-s3-9c-report.md).
 #
 # RE-PINNED for S3-9 (geometric dissipation-length blend; F-Y1 Lake

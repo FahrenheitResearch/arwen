@@ -407,6 +407,12 @@ class AdaptiveClockDriver:
         #: fire.  Cumulus gets the same TIME cadence radiation does, for
         #: the same reason; see _drive_cumulus_on_time.
         self._cumulus_fired: dict[int, float] = {}
+        #: grid_id -> the step the MODEL actually took last period, as
+        #: distinct from the step the CONTROLLER proposed.  The two differ
+        #: by the root quantiser's floor and the nest divide's ceiling, and
+        #: the controller must only ever see its own proposal -- see the
+        #: rescale in __call__ (ENG-017).
+        self._last_applied: dict[int, Fraction] = {}
 
         for gid in self.order:
             node = model.node(gid)
@@ -462,6 +468,15 @@ class AdaptiveClockDriver:
                 if resumed.get("radiation_actual") is not None:
                     self._radiation_actual[gid] = float(
                         resumed["radiation_actual"])
+                # THE CUMULUS CADENCE MEMORY.  Absent, the first resumed
+                # step takes _drive_cumulus_on_time's `last is None` arm,
+                # fires cumulus NOW and re-phases the whole cudt cadence to
+                # the resume instant -- a silent trajectory divergence for
+                # every cu_physics = 1 run with cudt_minutes > 0 (the
+                # default 5.0).  Carried beside the radiation twin, which
+                # was carried for exactly this reason (ENG-019).
+                if resumed.get("cumulus_fired") is not None:
+                    self._cumulus_fired[gid] = float(resumed["cumulus_fired"])
                 # THE CFL MEMORY, which WRF does not checkpoint.  Without
                 # it the first step after a resume reads cfl ~ 0, takes
                 # calc_dt's `max_cfl < 0.001` branch, grows by the full
@@ -473,6 +488,12 @@ class AdaptiveClockDriver:
                 ctl.last_max_horiz_cfl = float(resumed["last_max_horiz_cfl"])
                 ctl.stepping_to_time = bool(resumed["stepping_to_time"])
                 ctl.started = bool(resumed["started"])
+                # The step the checkpoint's last period actually took, so
+                # the first resumed CFL is rescaled the way every other
+                # period's is.
+                if int(node.clock.step_ticks) > 0:
+                    self._last_applied[gid] = Fraction(
+                        int(node.clock.step_ticks), self.tick_den)
             self.controllers[gid] = ctl
 
     # -- the executor's hook ------------------------------------------
@@ -497,11 +518,52 @@ class AdaptiveClockDriver:
         root_stepping = False
         for gid in self.order:
             node = self.model.node(gid)
-            clock = clocks.get(gid)
-            if clock is None:            # a nest not yet started
+            clock = clocks[gid]
+            # A NEST THAT HAS NOT STARTED IS NOT DRIVEN.  The executor
+            # hands this hook EVERY domain's clock (execute_schedule
+            # validates the dict against the whole schedule), and parks an
+            # unstarted nest's clock at each period boundary until the
+            # boundary reaches its start_ticks -- so "not yet started" is
+            # `ticks < spec.start_ticks`, never a missing key.  The
+            # previous `clocks.get(gid) is None` test was a branch the
+            # executor could not reach: from period 1 the nest's controller
+            # was fed cfl_source's (0, 0) for a domain that had folded
+            # nothing, took calc_dt's negligible-CFL branch every period,
+            # and reached its first solve at max_time_step -- its parent's
+            # step, up to parent_time_step_ratio times its own -- with
+            # node.cfg.run.dt already rewritten to that value for
+            # initialize_child to read (ENG-018).  Skipped here, the nest
+            # enters through `first_step` on its activation period with its
+            # configured ratio step and is divided into its parent's step
+            # like any other period.
+            if int(clock.ticks) < int(clock.spec.start_ticks):
                 continue
             ctl = self.controllers[gid]
             vert, horiz = self.cfl_source(gid)
+            # THE CONTROLLER SEES ITS OWN PROPOSAL, NEVER THE QUANTISED
+            # STEP.  The CFL just measured was measured on the step the
+            # model TOOK -- the proposal floored to the root lattice, or
+            # the parent's step divided by a ceiling -- while `last_dt` is
+            # what the controller PROPOSED.  CFL is linear in dt, so the
+            # measurement is rescaled to the proposal and the pair
+            # (last_dt, cfl) the controller reasons from is consistent.
+            #
+            # Feeding it the applied step instead made the floor a
+            # permanent debit: below 0.8 * lattice seconds the 5 % growth
+            # the controller asked for was smaller than one lattice unit,
+            # the floor erased it, and `accept` stored the floored value
+            # as the new baseline -- so one CFL spike parked dt at
+            # min_time_step for the rest of the run, with every field
+            # healthy (ENG-017).  Skipped after a step shortened to land
+            # on a time: next_dt reaches back to the previous memory there
+            # and the vertical clobber keeps upstream's asymmetry as
+            # transcribed.
+            applied_before = self._last_applied.get(gid)
+            if (ctl.started and not ctl.stepping_to_time
+                    and applied_before is not None and applied_before > 0
+                    and applied_before != ctl.last_dt):
+                scale = float(ctl.last_dt / applied_before)
+                vert, horiz = vert * scale, horiz * scale
 
             # NOT `period == 0 and ...`: a nest whose first period is
             # not zero -- any domain with start_ticks > 0 -- would never
@@ -548,6 +610,10 @@ class AdaptiveClockDriver:
             # than surfacing as "nest step must be positive" two calls
             # deeper with no mention of the remedy.
             self._refuse_sub_tick(node, dt)
+            # What the controller asked for, before the lattice and the
+            # divide have their say.  This, not the applied step, is what
+            # the controller is handed back below.
+            proposed = dt
 
             if node.parent is None:
                 dt = self._quantise_root(dt)
@@ -565,11 +631,16 @@ class AdaptiveClockDriver:
                 dt = Fraction(ticks, self.tick_den)
 
             self._apply(node, clock, dt, baseline=ctl.last_dt)
+            self._last_applied[gid] = dt
             if _TRACE:
                 print(f"ADT p{period:04d} d{gid:02d} cfl_v={vert:.4f} "
                       f"cfl_h={horiz:.4f} dt={float(dt):.4f} "
+                      f"proposed={float(proposed):.4f} "
                       f"ticks={clock.step_ticks}", flush=True)
-            ctl.accept(dt, max_vert_cfl=vert, max_horiz_cfl=horiz,
+            # The PROPOSAL is committed as the baseline; the model took
+            # `dt`.  See the rescale at the top of this loop for why the
+            # two are kept apart.
+            ctl.accept(proposed, max_vert_cfl=vert, max_horiz_cfl=horiz,
                        stepping_to_time=(stepping or (
                            root_stepping and node.parent is not None)))
             # PUBLISH the controller's memory where the checkpoint writer
@@ -577,23 +648,36 @@ class AdaptiveClockDriver:
             # memory, which is why its MOVING tree needs a special first
             # step after a restart (docs/ADAPTIVE-TIMESTEP.md section 5).
             # Storing both makes the resume ordinary instead of special.
-            clock.adaptive_state = {
-                "last_dt_num": ctl.last_dt.numerator,
-                "last_dt_den": ctl.last_dt.denominator,
-                "last_max_vert_cfl": float(ctl.last_max_vert_cfl),
-                "last_max_horiz_cfl": float(ctl.last_max_horiz_cfl),
-                "stepping_to_time": bool(ctl.stepping_to_time),
-                "started": bool(ctl.started),
-                # THE DRIVER'S OWN MEMORY, not the controller's.  Without
-                # it a resume cannot drive radiation on time -- it has no
-                # idea when the producer last ran -- and falls back to the
-                # step-count predicate, which fires at a different instant
-                # and diverges the trajectory.  Measured: dt reproduced
-                # EXACTLY across a resume and the fields still differed,
-                # which is what pointed here.
-                "radiation_seen": self._radiation_seen.get(gid),
-                "radiation_actual": self._radiation_actual.get(gid),
-            }
+            clock.adaptive_state = self._published_state(gid, ctl)
+
+    def _published_state(self, gid: int, ctl) -> dict:
+        """The controller's AND the driver's memory, for the checkpoint.
+
+        Written at the top of every period and again after every
+        ``before_step``: the driver's own memory (radiation seen, cumulus
+        fired) moves INSIDE the period, and a checkpoint is written at the
+        period's end -- a state published only at the period's start
+        carried the previous period's memory (ENG-019).
+        """
+        return {
+            "last_dt_num": ctl.last_dt.numerator,
+            "last_dt_den": ctl.last_dt.denominator,
+            "last_max_vert_cfl": float(ctl.last_max_vert_cfl),
+            "last_max_horiz_cfl": float(ctl.last_max_horiz_cfl),
+            "stepping_to_time": bool(ctl.stepping_to_time),
+            "started": bool(ctl.started),
+            # THE DRIVER'S OWN MEMORY, not the controller's.  Without
+            # it a resume cannot drive radiation on time -- it has no
+            # idea when the producer last ran -- and falls back to the
+            # step-count predicate, which fires at a different instant
+            # and diverges the trajectory.  Measured: dt reproduced
+            # EXACTLY across a resume and the fields still differed,
+            # which is what pointed here.
+            "radiation_seen": self._radiation_seen.get(gid),
+            "radiation_actual": self._radiation_actual.get(gid),
+            # The cumulus twin, for the same reason; see __init__.
+            "cumulus_fired": self._cumulus_fired.get(gid),
+        }
 
     def before_step(self, grid_id: int) -> None:
         """Re-assert the physics cadence immediately before a solve.
@@ -626,6 +710,9 @@ class AdaptiveClockDriver:
         _refresh_physics_cadence(node, ctl.last_dt, observed=observed)
         self._drive_radiation_on_time(int(grid_id), node)
         self._drive_cumulus_on_time(int(grid_id), node)
+        # The driver's memory just moved; re-publish so a checkpoint
+        # written at this period's end carries it (ENG-019).
+        node.clock.adaptive_state = self._published_state(int(grid_id), ctl)
 
     def _drive_radiation_on_time(self, grid_id: int, node) -> None:
         """Fire radiation on a TIME cadence, not a step count.

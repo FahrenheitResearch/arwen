@@ -78,10 +78,26 @@ fn real_node2_runs_ipc_preserves_node1_draft_and_target(){
 
     // The normal one-second timeline cadence keeps running while the
     // independent two-second status request clock continues to advance.
+    // Transient polls rotate their request directories on completion, so
+    // they are observed while in flight (each lives for a Python import
+    // plus an SSH round trip, far longer than this 20 ms scan).
+    let mut transports=std::collections::BTreeMap::new();
+    let control_root=app.output.join(".arwen-tui");
+    let scan_transports=|transports:&mut std::collections::BTreeMap<PathBuf,Value>|{
+        for entry in fs::read_dir(&control_root).unwrap().filter_map(Result::ok){
+            let name=entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("remote-")||transports.contains_key(&entry.path()){continue;}
+            let Ok(launch)=companion::read_json(&entry.path().join("job.json"),128*1024) else{continue};
+            let command=launch["command"].as_array().unwrap();
+            let action=command[4].as_str().unwrap();assert!(matches!(action,"list"|"status"|"artifact-index"|"sync-artifacts"),"{launch}");
+            let host=command.iter().position(|value|value=="--host").unwrap()+1;assert_eq!(command[host],node.host);
+            transports.insert(entry.path(),json!({"directory":entry.path(),"action":action,"command":command}));
+        }
+    };
     for poll in 0..5{
         let id=format!("fair-index-{poll}");submit(&viewer,viewer_id,&id,"artifact_index",json!({"target":target.value(),"job_id":expected_job,"domain":1,"after_sequence":sequence}));
         let answer=wait_response(&mut app,&viewer,&id);assert_eq!(answer["ok"],true,"{answer}");
-        let until=Instant::now()+Duration::from_secs(1);while Instant::now()<until{app.poll_run_views();std::thread::sleep(Duration::from_millis(20));}
+        let until=Instant::now()+Duration::from_secs(1);while Instant::now()<until{app.poll_run_views();scan_transports(&mut transports);std::thread::sleep(Duration::from_millis(20));}
     }
     for (id,action,payload) in [("reject-stop","stop_job",json!({"target":target.value(),"job_id":expected_job})),("reject-select","select_target",json!({"target":target.value()})),
         ("reject-reset","reset_setup",json!({})),("reject-open","open_config",json!({"config_path":draft}))]{
@@ -98,15 +114,11 @@ fn real_node2_runs_ipc_preserves_node1_draft_and_target(){
     assert_eq!(before,after);assert_eq!(app.editor.as_ref().unwrap().text(),draft_text);assert!(app.dirty());assert!(app.job.is_none()&&app.nodes.pending.is_none());
     assert_eq!(app.nodes.store.nodes,node_state);assert_eq!(app.nodes.store.active.as_deref(),Some(main_node.id.as_str()));
     assert_eq!(fs::read(&profiles).unwrap(),original_profiles);assert_eq!(fs::read(&copied_profiles).unwrap(),original_profiles);assert_eq!(fs::read(&draft).unwrap(),saved_draft);
-    let mut transports=Vec::new();
-    for entry in fs::read_dir(app.output.join(".arwen-tui")).unwrap().filter_map(Result::ok){
-        if entry.file_name().to_string_lossy().starts_with("remote-"){
-            let launch=companion::read_json(&entry.path().join("job.json"),128*1024).unwrap();let command=launch["command"].as_array().unwrap();
-            let action=command[4].as_str().unwrap();assert!(matches!(action,"list"|"status"|"artifact-index"|"sync-artifacts"),"{launch}");
-            let host=command.iter().position(|value|value=="--host").unwrap()+1;assert_eq!(command[host],node.host);
-            transports.push(json!({"directory":entry.path(),"action":action,"command":command}));
-        }
-    }
+    scan_transports(&mut transports);
+    let retained=fs::read_dir(app.output.join(".arwen-tui")).unwrap().filter_map(Result::ok)
+        .filter(|entry|entry.file_name().to_string_lossy().starts_with("remote-last-")).count();
+    assert!(retained<=1,"transient polls keep at most one retained record per node, found {retained}");
+    let transports:Vec<Value>=transports.into_values().collect();
     let status_polls=transports.iter().filter(|row|row["action"]=="status").count();assert!(status_polls>=3,"status polls starved: {transports:?}");
     let report=json!({"schema":"arwen.runs-viewer-real-ipc-proof.v1","status":"PASS","process_id":std::process::id(),"qa_dir":qa,
         "main_target_before":before["target"],"main_target_after":after["target"],"main_config_path":before["config_path"],"main_unsaved_draft_sha256":companion::digest(draft_text.as_bytes()),

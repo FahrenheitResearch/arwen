@@ -18,7 +18,7 @@ consent gates.
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from copy import copy
 from datetime import datetime, timedelta
 import hashlib
@@ -548,15 +548,16 @@ class PreparedTreeInputs:
     source: str
     #: Per-domain identity fields accepted as schema growth rather
     #: than as a match -- empty on a cache written by this release.
-    tolerated_identity_fields: Mapping[str, tuple[str, ...]] = (
-        MappingProxyType({}))
+    tolerated_identity_fields: Mapping[str, tuple[str, ...]] = field(
+        default_factory=lambda: MappingProxyType({}))
     #: The verified statics corridor
     #: (:class:`gpuwm.static.corridor.ChildStaticsCorridor`) when the
     #: experiment configures a [relocation] follow source, else ``None``.
     statics_corridor: object | None = None
     #: The corridor cache file, for the unchanged-during-run re-hash.
     statics_corridor_cache_path: Path | None = None
-    mapped_authority_paths: Mapping[str, Path] = MappingProxyType({})
+    mapped_authority_paths: Mapping[str, Path] = field(
+        default_factory=lambda: MappingProxyType({}))
 
 
 def _prepared_planning_nodes(inputs):

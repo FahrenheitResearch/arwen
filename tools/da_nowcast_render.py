@@ -1,7 +1,7 @@
 """Map-styled gallery for a ``tools/da_nowcast.py`` case directory.
 
 DEPRECATED FALLBACK for its weather fields, under the render law
-(CLAUDE.md, Drew 2026-08-06).  Every WEATHER FIELD this module draws is
+(project render law, 2026-08-06).  Every WEATHER FIELD this module draws is
 now drawable by the production Rust renderer, MEASURED 2026-08-17 on this
 lane's own real inputs:
 

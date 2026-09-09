@@ -99,7 +99,7 @@ DEFAULT_ENGINE_BLOCKER = None
 #: the entries missing below with class ``not_implemented`` in its own
 #: words, so without this table a bare run of a composed source -- which
 #: is how most staged sources reach a complete canonical frame -- would
-#: refuse where it used to decode, and Drew's refusal law is that a
+#: refuse where it used to decode, and ArWen's refusal law is that a
 #: refusal has to name breakage it PREVENTS.  An unported path prevents
 #: nothing; it is unfinished work, and unfinished work does not get to
 #: break a route that already ships.

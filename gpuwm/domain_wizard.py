@@ -66,6 +66,7 @@ Sizing conventions (all documented, none silent):
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import shlex
@@ -2733,7 +2734,10 @@ def fetch_crop_refusal(projection: dict, nx: int, ny: int, *, source: str,
     _, lon_c = _root_grid(projection, nx, ny, root_dx_m).latlon_c()
     _, span = _margined_longitude_span(
         lon_c, float(projection["ref_lon"]), margin_deg)
-    if span <= 180.0:
+    if span <= 180.0 or str(source).strip().lower() == "gfs":
+        # GFS already supports an explicit -180..180 longitude band. The
+        # emitted hint widens forcing coverage instead of shrinking the grid
+        # or letting parse_area select the complementary narrow box.
         return None
     return (
         f"the {nx}x{ny} root's forcing box spans {span:.1f} degrees of "
@@ -2751,6 +2755,7 @@ def _fetch_area(projection: dict, nx: int, ny: int,
                 coverage: tuple[float, float, float, float] | None = None,
                 coverage_label: str = "the source grid",
                 coverage_notes: list[str] | None = None,
+                allow_full_longitude: bool = False,
                 ) -> tuple[float, float, float, float]:
     """Forcing bbox (S, W, N, E) = root corners + margin, worldwide.
 
@@ -2760,8 +2765,9 @@ def _fetch_area(projection: dict, nx: int, ny: int,
     signed convention, producing W > E for a crossing box (the
     ``gpuwm fetch`` contract; NOMADS and CDS both consume it).  The
     latitude edges clamp to [-90, 90].  A footprint wider than 180
-    degrees of longitude is refused (genuine limit: no source crop can
-    serve it as one box).  The refusal is checked on the MARGINED span
+    degrees of longitude is refused unless the source explicitly supports
+    a full-longitude band. That opt-in widens only the forcing coverage to
+    -180..180. The refusal is checked on the MARGINED span
     -- the margin is part of the emitted box, and a box whose margined
     width exceeds 180 degrees would be read back by
     :func:`gpuwm.fetch.parse_area` as the complementary
@@ -2787,7 +2793,8 @@ def _fetch_area(projection: dict, nx: int, ny: int,
     lat_c, lon_c = _root_grid(projection, nx, ny, root_dx_m).latlon_c()
     center = float(projection["ref_lon"])
     lon_u, span = _margined_longitude_span(lon_c, center, margin_deg)
-    if span > 180.0:
+    full_longitude = span > 180.0 and allow_full_longitude
+    if span > 180.0 and not full_longitude:
         raise ValueError(
             f"the root domain's forcing footprint spans {span:.1f} "
             "degrees of longitude; boxes wider than 180 degrees cannot "
@@ -2812,6 +2819,13 @@ def _fetch_area(projection: dict, nx: int, ny: int,
     lon_e = float(_wrap180(float(lon_u.max()) + margin_deg))
     if lon_e == -180.0:
         lon_e = 180.0
+    if full_longitude:
+        lon_w, lon_e = -180.0, 180.0
+        if notes is not None:
+            notes.append(
+                f"the {span:.1f}-degree forcing footprint uses the source's "
+                "full longitude band (-180..180); only forcing coverage "
+                "is expanded, with the forecast grid and latitude bounds preserved")
     if coverage is not None and lon_w <= lon_e:
         # A crossing box (W > E) cannot lie inside a non-crossing
         # envelope; it is left for the emission-time proof to refuse
@@ -2870,7 +2884,8 @@ def fetch_area_hint(projection: dict, nx: int, ny: int, *, source: str,
         projection, nx, ny, margin_deg=_fetch_margin_deg(source),
         notes=notes, root_dx_m=root_dx_m, target_option=target_option,
         coverage=source_coverage_envelope(source),
-        coverage_label=source.upper(), coverage_notes=coverage_notes)
+        coverage_label=source.upper(), coverage_notes=coverage_notes,
+        allow_full_longitude=str(source).strip().lower() == "gfs")
     return ",".join(f"{value:.{AREA_HINT_DECIMALS}f}" for value in area)
 
 
@@ -3431,14 +3446,19 @@ def _sizing_phases(exp, *, free_bytes: int, machine=None, **kwargs):
         raise DomainFitError(
             "--tiles needs host RAM available to the shared planner; "
             "run the wizard on the forecast host or use --tiles off")
+    # Build the same configured, device-profiled estimate used by the phase
+    # gate before asking whether auto can stay resident. Falling back inside
+    # decide() discards this caller's measured card and prices a 68-SM 3080
+    # against the 170-SM reference before the correct phase estimate can run.
+    phases = estimate_phases(exp, machine=machine, **kwargs)
     decision = None
     if len(exp.domains) == 1:
         try:
             decision = streaming.decide(exp.domains[0].run, options,
-                                        machine=machine)
+                                        machine=machine,
+                                        resident_estimate=phases.forecast)
         except (streaming.StreamingRefused, CannotPlan) as error:
             raise DomainFitError(f"--tiles {options.mode}: {error}") from error
-    phases = estimate_phases(exp, machine=machine, **kwargs)
     if len(exp.domains) > 1:
         road = phases.tree_road
         if road is None or not road.priced or road.refusal:
@@ -4270,6 +4290,11 @@ def _print_sizing_table(exp: ExperimentConfig, estimate,
               f"{phases.source} -- that lane is the native-hybrid-level "
               "ingest, which this estimator does not model; the envelope "
               "above is the forecast phase only")
+    elif phases is not None and getattr(phases, "preprocess_backend", "cuda") == "cpu":
+        print("  ingest (preprocessing): CPU; no GPU allocation in this phase")
+        host = getattr(phases.ingest, "host_preprocess_bytes", None)
+        if host is not None:
+            print(f"    CPU preprocessing working-set estimate: {host / GIB:.2f} GiB of system RAM")
     elif phases is not None:
         ingest = phases.ingest
         nest_ingest = (
@@ -4650,19 +4675,66 @@ def _supplied_forcing_schedule(args, start_time):
     return paths, float(interval), count
 
 
-def _check_emitted_config(out: Path, sizing: SizingBudget) -> int:
+def _check_emitted_config(out: Path, sizing: SizingBudget, *,
+                          target_machine=None, remote_hardware=False) -> int:
     """Check with the same sizing sample, retaining its measured device profile."""
     from gpuwm.cli import build_parser, main as cli_main
 
     argv = ["check", str(out), "--free-gib", f"{sizing.free_bytes / GIB:.17g}",
             "--vram-gib", f"{sizing.vram_gib:.17g}"]
-    if not sizing.measured:
+    if not sizing.measured and not remote_hardware:
         return cli_main(argv)
     # This is an in-process handoff, not a new CLI option. The composed
     # handler still runs input preflight before the memory check.
     args = build_parser().parse_args(argv)
-    args._shared_sizing_budget = sizing
+    if sizing.measured:
+        args._shared_sizing_budget = sizing
+    if remote_hardware:
+        args._shared_target_machine = target_machine
+        args._target_hardware_supplied = True
     return args.func(args)
+
+
+def _domain_target_hardware(args, sizing_budget=None):
+    """Reuse domain-fit's measured target contract without a local probe."""
+    hardware = getattr(args, "hardware_json", None)
+    host_path = getattr(args, "target_host_memory_json", None)
+    if hardware is not None and (args.card is not None or args.vram_gib is not None
+                                 or sizing_budget is not None):
+        raise ValueError("Choose the selected hardware snapshot or an explicit card capacity, not both")
+    if hardware is not None and host_path is not None:
+        raise ValueError("The selected hardware snapshot already carries target host memory; choose only one host measurement")
+    if host_path is not None and args.card is None and args.vram_gib is None:
+        raise ValueError("--target-host-memory-json requires an explicit --card or --vram-gib budget")
+    identity = None
+    if hardware is not None:
+        from gpuwm.starter_template import hardware_sizing
+        sizing, identity = hardware_sizing(hardware)
+    else:
+        sizing = (sizing_budget if sizing_budget is not None
+                  else resolve_sizing_budget(args.card, args.vram_gib))
+    if host_path is not None:
+        from gpuwm.target_hardware import validate_host_memory
+        host_path = Path(host_path).expanduser().resolve(strict=True)
+        if not host_path.is_file() or host_path.stat().st_size > 512 * 1024:
+            raise ValueError("Selected target host snapshot must be a JSON file no larger than 512 KiB")
+        payload = host_path.read_bytes()
+        document = json.loads(payload)
+        if not isinstance(document, dict):
+            raise ValueError("Selected target host snapshot must contain a JSON object")
+        identity = {"path": str(host_path), "sha256": hashlib.sha256(payload).hexdigest(),
+                    "host_memory": validate_host_memory(document.get("host_memory", document))}
+    target_machine = None
+    if identity is not None:
+        from gpuwm.target_hardware import validate_host_memory
+        host = identity.get("host_memory")
+        if host is not None or getattr(args, "tiles", None) not in (None, "off"):
+            host = validate_host_memory(host)
+            from tilestream.autoplan import Machine
+            target_machine = Machine(vram_bytes=sizing.free_bytes,
+                host_bytes=host["total_bytes"], name="selected forecast target",
+                host_source="probe", device_profile=sizing.device_profile)
+    return sizing, target_machine, identity is not None
 
 
 def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
@@ -4691,8 +4763,8 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
         raise ValueError("--card and --vram-gib are mutually exclusive")
     _refuse_profile_its_source_cannot_prepare(
         getattr(args, "physics_profile", None), args.source)
-    sizing = (sizing_budget if sizing_budget is not None
-              else resolve_sizing_budget(args.card, args.vram_gib))
+    sizing, target_machine, remote_hardware = _domain_target_hardware(
+        args, sizing_budget)
     vram_gib, device_profile, budget_sentence = (
         sizing.vram_gib, sizing.device_profile, sizing.note)
     if budget_sentence is not None:
@@ -4883,6 +4955,7 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                 profile=profile, cumulus_requested=cumulus_requested,
                 vram_gib=vram_gib,
                 device_profile=device_profile,
+                target_machine=target_machine,
                 acknowledgements=acknowledgements, nz=nz, tiles=tiles,
                 forcing_interval_seconds=forcing_interval_seconds,
                 forcing_intervals=forcing_intervals,
@@ -4899,6 +4972,7 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                 profile=profile, cumulus_requested=cumulus_requested,
                 vram_gib=vram_gib,
                 device_profile=device_profile,
+                target_machine=target_machine,
                 acknowledgements=acknowledgements, nz=nz, tiles=tiles,
                 forcing_interval_seconds=forcing_interval_seconds,
                 forcing_intervals=forcing_intervals,
@@ -4935,6 +5009,7 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                         cumulus_requested=cumulus_requested,
                         vram_gib=vram_gib,
                         device_profile=device_profile,
+                        target_machine=target_machine,
                         acknowledgements=acknowledgements, nz=nz, tiles=tiles,
                         forcing_interval_seconds=forcing_interval_seconds,
                         forcing_intervals=forcing_intervals,
@@ -4952,6 +5027,7 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                         source=args.source, name=name, profile=profile,
                         cumulus_requested=cumulus_requested,
                         vram_gib=vram_gib, device_profile=device_profile,
+                        target_machine=target_machine,
                         acknowledgements=acknowledgements, nz=nz, tiles=tiles,
                         forcing_interval_seconds=forcing_interval_seconds,
                         forcing_intervals=forcing_intervals,
@@ -5102,7 +5178,7 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
         forcing_interval_seconds=interval, vram_gib=vram_gib,
         profile=device_profile)
     phases = _sizing_phases(
-        exp, forcing_intervals=forcing_intervals,
+        exp, machine=target_machine, forcing_intervals=forcing_intervals,
         free_bytes=free_bytes, source=args.source,
         forcing_interval_seconds=interval,
         vram_gib=vram_gib, profile=device_profile)
@@ -5389,7 +5465,8 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                 "front door validates its own inputs.")
         # Pass the same free VRAM used by the fit planner. Reconstructing
         # it from an allocation budget changes the streamed route and verdict.
-        rc = _check_emitted_config(out, sizing)
+        rc = _check_emitted_config(out, sizing, target_machine=target_machine,
+                                   remote_hardware=remote_hardware)
         if rc != 0:
             print(f"gpuwm check FAILED (rc {rc}) on the emitted config.  "
                   "The files above were still written, so nothing is "
@@ -5412,7 +5489,8 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                     print(f"  missing {item}")
                 _print_geog_help()
         else:
-            rc = _check_emitted_config(out, sizing)
+            rc = _check_emitted_config(out, sizing, target_machine=target_machine,
+                                       remote_hardware=remote_hardware)
             if rc != 0:
                 print(f"gpuwm check FAILED (rc {rc}) on the emitted "
                       "config.  The files above were still written, so "
@@ -5539,8 +5617,8 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--card", choices=sorted(CARD_VRAM_GIB),
                         default=None,
                         help="GPU tier; sets the VRAM budget with no "
-                             "local probe.  With neither --card nor "
-                             "--vram-gib the wizard MEASURES the local "
+                             "local probe. With no --card, --vram-gib or "
+                             "--hardware-json the wizard MEASURES the local "
                              "card's capacity (short-lived probe, "
                              "suppressed by GPUWM_NO_LOCAL_GPU) and "
                              "refuses, naming both flags, when there is "
@@ -5548,14 +5626,20 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--vram-gib", type=float, default=None,
                         metavar="N",
                         help="total VRAM in GiB (alternative to --card)")
+    parser.add_argument("--hardware-json", type=Path,
+                        help="selected target hardware snapshot with measured GPU capacity, available memory and device profile; no local GPU probe")
+    parser.add_argument("--target-host-memory-json", type=Path,
+                        help="selected target host-memory snapshot for an explicit --card or --vram-gib budget; no local RAM sizing")
     parser.add_argument("--nz", type=int, default=None, metavar="N",
                         help="vertical mass levels (default: 49); resamples "
                              "the default eta ladder while preserving its stretching")
     parser.add_argument("--tiles", nargs="?", const="auto", default=None,
                         choices=("off", "auto", "on"),
                         help="streaming mode (bare --tiles means auto); sizes "
-                             "with the forecast planner using the declared GPU "
-                             "and this host's RAM; on forces streaming")
+                             "with the forecast planner using the selected "
+                             "target's GPU and RAM when supplied, otherwise "
+                             "local hardware or an explicit card budget; "
+                             "on forces streaming")
     parser.add_argument("--ladder", default=None,
                         choices=(*LADDER_RATIOS, "auto"),
                         help="preset nest dx chain in km (default: 12 -- "

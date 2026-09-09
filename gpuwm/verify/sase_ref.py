@@ -397,11 +397,11 @@ the pre-S3-6h lengths -- see that section -- so the historical
 measurements stay bitwise.)
 
 S3-6h amendment (Bougeault-Lacarrere displacement lengths in the RANS
-limb; jet-coupling diagnosis, Drew-ratified option 2, controller
+limb; jet-coupling diagnosis, ratified option 2, controller
 ledger 2026-07-21 ~01:0x, registered before implementation).  The
 smoke-c/d obs arbitration (the surface-observation arbitration record
 filed with the campaign evidence; an 8-station surface-observation
-table) plus Drew's independent spun-up CPU WRF frame
+table) plus an independent spun-up CPU WRF frame
 established that the SASE inner-nest 10 m wind amplification (13:30Z
 mean 14.03 m/s vs observed ~5.7, ramping while obs held) is SPURIOUS,
 and
@@ -466,7 +466,7 @@ dissipation length; l_eps <= l_mix always).  Wiring
   binding).
 
 RED evidence obligation (jet-decoupling fixture, test_sase.py): the
-single-column scoring-box mean profile from Drew's CPU WRF frame
+single-column scoring-box mean profile from the reference CPU WRF frame
 (the trusted reference forecast frame at 13:08Z; the jet-profile
 fixture module carries the code-generated constant table with
 provenance) -- a
@@ -520,7 +520,7 @@ coefficient change is RANS-limb-only).  Properties, each pinned:
   engine is bitwise untouched -- l_s never binds in a neutral column
   (asserted in the fixture).
 * CONTINUITY ACROSS THE NEUTRAL<->STABLE TRANSITION (claim narrowed
-  in S3-9c per the codex review, Minor 3): approaching N = 0 with
+  in S3-9c per the adversarial review, Minor 3): approaching N = 0 with
   l_B binding, rho = l_B*N/(LS_COEF*sqrt(e)) is linear in N, so with
   CKS_BLEND_EXP = 2 the coefficient deficit C_KV - C_r ~ N^2 = n2.
   Parameterized by the signed frequency N = sqrt(n2) the blend is
@@ -958,7 +958,7 @@ string: LD_BLEND_FORM = "geometric" (config-ID-bound).  The device
 twin ``launch_sase_step`` mirrors the blend in S3-9b; until then the
 GPU parity suite mismatches the authority BY DESIGN.
 
-S3-9c amendment (GUSTINESS-CORRECTED surface drag; codex S3-6h/6i/6j
+S3-9c amendment (GUSTINESS-CORRECTED surface drag; the S3-6h/6i/6j
 adversarial review IMPORTANT-1, task S3-9c).  THE DEFECT: sfclay's
 u* is computed against its gust-ENHANCED speed
 wspd = max(sqrt(wspd0^2 + vconv^2 + vsgd^2), 0.1) (convective
@@ -966,7 +966,7 @@ velocity + subgrid gustiness; authority ``npref.np_sfclay``,
 npref.py:4257-4266, device twin kernels/sfclay.cu:221-231), but the
 S3-6j drag row applied that u* against the RESOLVED level-1 wind
 alone -- over-damping every column where gustiness inflates u* (the
-codex-measured SASE/YSU stress ratio exceeded 2 in 10.3% of
+review-measured SASE/YSU stress ratio exceeded 2 in 10.3% of
 outer-nest interior cells at 13Z, 95th percentile 9.54 -- the
 registered outer-nest low-side/calm-tail bias of the first 12 h run).
 THE AUDITED FORM:
@@ -2503,7 +2503,7 @@ C_KS = 0.25
 #: exponent 1 would leave a kink in K(N) at N = 0).  In the MODEL
 #: INPUT n2 the blend is C^0 only -- the deficit is LINEAR in n2 at
 #: onset, so dK_v/d(n2) jumps at neutral (claim narrowed in S3-9c
-#: per the codex review, Minor 3; module docstring, S3-6i section).
+#: per the adversarial review, Minor 3; module docstring, S3-6i section).
 #: :func:`stable_limit_coefficient` has the form.
 CKS_BLEND_EXP = 2.0
 #: S3-6k DECOUPLED STABLE-LIMB DISSIPATION COEFFICIENT (module
@@ -2728,7 +2728,7 @@ LD_ADDITIVE_CHANNEL = "deardorff-c2-neutral-reference-length-v1"
 #: module_sf_sfclayrev ``wspd = amax1(wspd, 0.1)``, carried by
 #: ``npref.np_sfclay`` (max(..., 0.1)) and kernels/sfclay.cu (fmaxf
 #: against 0.1f) -- so the SASE drag row can never divide by a
-#: vanishing surface wind.  S3-9c clarification (codex review,
+#: vanishing surface wind.  S3-9c clarification (adversarial review,
 #: IMPORTANT-1): sfclay's own floor lives on its gust-ENHANCED wspd,
 #: which enters this module as the S3-9c correction-factor
 #: denominator (``wspd_sfc``); this constant regularizes the resolved

@@ -461,13 +461,15 @@ def test_the_ahead_sentence_names_each_version_once(monkeypatch, capsys,
     monkeypatch.setattr(version_cli, "install_shape",
                         lambda: _wheel_shape(tmp_path, "2.5.0"))
     monkeypatch.setattr(version_cli, "pypi_latest", lambda *a, **k: "2.4.1")
-    assert cli_main(["version"]) == 0
+    assert cli_main(["version", "--check-pypi"]) == 0
     line = next(row for row in capsys.readouterr().out.splitlines()
                 if "ahead of" in row)
 
     assert line.count("2.4.1") == 1, line
     assert line.count("2.5.0") == 1, line
-    assert "source or pre-release install" in line
+    # A wheel whose metadata version is a plain release number is a
+    # release install, not "a source or pre-release install".
+    assert "a release install newer than the index lists" in line
 
 
 # ---------------------------------------------------------------------------

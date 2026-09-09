@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Drive the two new Rust renderer binaries against real inputs.
 
-The demo leg for `rw_ensbatch` and `rw_obsgrid` (CLAUDE.md: "a capability
+The demo leg for `rw_ensbatch` and `rw_obsgrid` (project rule: "a capability
 with no front door and no demo is not a feature").  Everything it feeds
 them is written by the PROJECT'S OWN writers -- ``gpuwm.io.wrfout``'s
 ``WrfoutWriter`` for the ensemble members, ``gpuwm.obs.radar_grid``'s

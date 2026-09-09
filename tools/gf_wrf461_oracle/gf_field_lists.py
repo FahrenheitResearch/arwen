@@ -123,7 +123,7 @@ DRV_ISCA_FIELDS = [
 DRV_IN_LEV = ["u", "v", "w", "t", "qv", "p", "pi", "rho", "dz8w", "p8w",
               "rthften", "rqvften", "rthraten", "rthblten", "rqvblten"]
 #: gf.cu's DINS_ order.  The last three are the per-column ``fzu`` override
-#: ("<= 0 means compute"), added at 2.6.6 when gamma stopped reproducing
+#: ("<= 0 means compute"), added at 2.7.0 when gamma stopped reproducing
 #: glibc's tgammaf (docs/gf_gamma_known_delta.md).  The shipped forecast path
 #: leaves them 0; a run graded against a WRF capture pins them from it, which
 #: is what ``drv_scalar_inputs(fixture, pin_fzu=True)`` below builds.

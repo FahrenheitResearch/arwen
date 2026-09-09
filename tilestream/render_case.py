@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render a real case run: NWS reflectivity, UH, 10 m wind, precip.
 
-DEPRECATED FALLBACK, under the render law (CLAUDE.md, Drew 2026-08-06).
+DEPRECATED FALLBACK, under the project render law ( 2026-08-06).
 This module draws WEATHER FIELDS in matplotlib and its inputs are
 ordinary wrfouts, which is exactly what ``rw_wrfbatch`` reads -- so
 ``python -m tilestream.render_case_rust`` renders the same case through

@@ -1,0 +1,1787 @@
+{
+  "certification_rule": "certified_stock_wrf requires implemented field/level/cadence policies plus acceptance by unchanged stock wrf.exe within the declared source/domain envelope",
+  "gpuwm_version": "2.7.0",
+  "readiness_rule": "runnable means the strict implementation route exists; stock-WRF certification is a separate exact evidence status",
+  "registry_schema": "gpuwm-native-source-adapters-v1",
+  "routes": {
+    "experiment": "the config-driven experiment route: one experiment TOML with its [case_data] inputs, prepared and integrated in this process (what `gpuwm run CONFIG` executes)",
+    "prepared": "the native prepared-cache route: authority, fetch, manifest, preparation, forecast and render, in the documented order (what `gpuwm go CONFIG` executes) -- for sources the config-driven route cannot decode"
+  },
+  "runnable_source_count": 18,
+  "schema": "gpuwm.run-plan.sources.v1",
+  "source_count": 32,
+  "sources": [
+    {
+      "aliases": [],
+      "composition_requirement": null,
+      "coverage": {
+        "centre_lat": 38.49724665100055,
+        "centre_lon": -97.50597669104206,
+        "describe": "1799x1059 Lambert grid at 3000 m, truelat 38.5/38.5, stand_lon -97.5",
+        "east": -60.91719277183785,
+        "grid": {
+          "dx_m": 3000.0,
+          "earth_radius_m": 6371229.0,
+          "lat1": 21.138123,
+          "lon1": -122.719528,
+          "nx": 1799,
+          "ny": 1059,
+          "stand_lon": -97.5,
+          "truelat1": 38.5,
+          "truelat2": 38.5
+        },
+        "kind": "LambertGridWindow",
+        "north": 52.61565330680793,
+        "south": 21.13812300000002,
+        "west": -134.09547973426317
+      },
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "sfc",
+      "display_name": "HRRR (native hybrid levels)",
+      "fetch": {
+        "kind": "legacy_transport",
+        "refusal": null,
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 3600.0,
+      "maturity": {
+        "cadence_mapping": "consecutive-hourly-f00-f12-v1",
+        "field_mapping": "hrrr-native-state-v1",
+        "level_mapping": "native-input-to-explicit-wrf-eta-v2",
+        "runnable": true,
+        "status": "certified_stock_wrf",
+        "stock_wrf_gate": "wrf-v4.6.1-pass-full-f00-f12-dynamic-lambert-geometry"
+      },
+      "max_forecast_hour": 48,
+      "member_set": null,
+      "notes": "Certified slice: one CONUS Lambert specified domain, WSM6, YSU, classic MM5 surface layer (option 91), Noah, and an explicit validated shared eta grid; the accepted 49-level profile remains the stock-WRF authority while unlike counts are covered by structural gates; stock-WRF proofs cover 192x160 at 3 km in Oklahoma and Ohio and 1000x1000 at 1 km in Oklahoma.",
+      "packaged_profile": null,
+      "required_products": [
+        "sfc",
+        "nat"
+      ],
+      "run_plan": {
+        "intent_chain": "prepared:hrrr",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true
+      },
+      "runner": "hrrr_f00_f12_v1",
+      "source_id": "hrrr",
+      "source_kind": "deterministic_state",
+      "title": "HRRR (native hybrid levels)",
+      "upstream_ingest": "full",
+      "upstream_model_id": "hrrr",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "hrrr-pressure",
+        "hrrr-wrfprs"
+      ],
+      "composition_requirement": null,
+      "coverage": {
+        "centre_lat": 38.49724665100055,
+        "centre_lon": -97.50597669104206,
+        "describe": "1799x1059 Lambert grid at 3000 m, truelat 38.5/38.5, stand_lon -97.5",
+        "east": -60.91719277183785,
+        "grid": {
+          "dx_m": 3000.0,
+          "earth_radius_m": 6371229.0,
+          "lat1": 21.138123,
+          "lon1": -122.719528,
+          "nx": 1799,
+          "ny": 1059,
+          "stand_lon": -97.5,
+          "truelat1": 38.5,
+          "truelat2": 38.5
+        },
+        "kind": "LambertGridWindow",
+        "north": 52.61565330680793,
+        "south": 21.13812300000002,
+        "west": -134.09547973426317
+      },
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "packaged HRRR pressure-level profile + vendored rusty-weather GRIB2 bridges",
+      "default_product": "wrfprs",
+      "display_name": "HRRR (pressure levels)",
+      "fetch": {
+        "kind": "table_route",
+        "refusal": null,
+        "route_id": "hrrr-prs"
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 3600.0,
+      "maturity": {
+        "cadence_mapping": "uniform-hourly-forecast-series-v1",
+        "field_mapping": "packaged-rw-wps-hrrr-prs-grib2-v1",
+        "level_mapping": "39-pressure-level-to-explicit-wrf-eta-v2",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 48,
+      "member_set": null,
+      "notes": "HRRR's public wrfprs product through the GENERIC mapped route: one wrfprs file per valid time carries the 39-level pressure state, the surface/2m/10m fields, in-band terrain and the nine-node RUC soil column.  The Lambert CONUS grid, the grid-relative wind rotation and the node soil geometry are declared in the packaged mapping/composition documents -- there is no HRRR decode code on this route.  Distinct from --source hrrr, the certified native hybrid-level route: this profile initialises from the pressure-level analysis, which is smoother near terrain than native levels, and it is not yet accepted by unchanged stock WRF.",
+      "packaged_profile": "hrrr-prs-grib2-v1",
+      "required_products": [
+        "wrfprs"
+      ],
+      "run_plan": {
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "hrrr-prs",
+      "source_kind": "deterministic_state",
+      "title": "HRRR (pressure levels)",
+      "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+      "upstream_model_id": "hrrr",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "gem",
+        "gdps",
+        "gem-global"
+      ],
+      "composition_requirement": null,
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "packaged GDPS pressure-level profile + vendored rusty-weather GRIB2 bridges",
+      "default_product": "15km-latlon0.15",
+      "display_name": "GEM GDPS (Canadian global)",
+      "fetch": {
+        "kind": "table_route",
+        "refusal": null,
+        "route_id": "gem-gdps"
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 10800.0,
+      "maturity": {
+        "cadence_mapping": "uniform-three-hour-forecast-series-v1",
+        "field_mapping": "packaged-rw-wps-gem-gdps-grib2-v1",
+        "level_mapping": "33-pressure-level-to-explicit-wrf-eta-v2",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 240,
+      "member_set": null,
+      "notes": "ECCC's GDPS (GEM global) through the GENERIC mapped route: MSC Datamart's 15 km regular lat-lon GRIB2 product, one single-message JPEG2000-packed file per variable-level, concatenable per valid time.  33 pressure levels (1015..1 hPa), surface/2 m/10 m state, in-band terrain and the single 0-10 cm ISBA soil layer are declared in the packaged mapping/composition documents -- there is no GDPS decode code on this route.  GDPS publishes orography, land mask and the ice analysis at analysis time only; the profile declares them once-per-cycle invariants and the generic engine broadcasts the proven analysis record.  Soil moisture is published as volumetric content, so the anticipated layer-mass derivation was not needed.  Model state is three-hourly; not yet accepted by unchanged stock WRF.",
+      "packaged_profile": "gem-gdps-grib2-v1",
+      "required_products": [
+        "15km-latlon0.15"
+      ],
+      "run_plan": {
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "gem-gdps",
+      "source_kind": "deterministic_state",
+      "title": "GEM GDPS (Canadian global)",
+      "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+      "upstream_model_id": "gem",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "dwd-icon-eu",
+        "icon-eu-regular"
+      ],
+      "composition_requirement": null,
+      "coverage": {
+        "centre_lat": 50.0,
+        "centre_lon": 19.5,
+        "describe": "regular lat/lon window lat 29.5..70.5, lon -23.5..62.5",
+        "east": 62.5,
+        "grid": {
+          "east": 62.5,
+          "north": 70.5,
+          "nx": 1377,
+          "ny": 657,
+          "south": 29.5,
+          "west": -23.5
+        },
+        "kind": "RegularLatLonWindow",
+        "north": 70.5,
+        "south": 29.5,
+        "west": -23.5
+      },
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "packaged ICON-EU regular-lat-lon profile + vendored rusty-weather GRIB2 bridges",
+      "default_product": "regular-lat-lon-pressure-level",
+      "display_name": "ICON-EU (DWD regional)",
+      "fetch": {
+        "kind": "table_route",
+        "refusal": null,
+        "route_id": "icon-eu"
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 3600.0,
+      "maturity": {
+        "cadence_mapping": "uniform-hourly-forecast-series-v1",
+        "field_mapping": "packaged-rw-wps-icon-eu-regular-grib2-v1",
+        "level_mapping": "20-pressure-level-to-explicit-wrf-eta-v2",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 120,
+      "member_set": null,
+      "notes": "DWD open data's ICON-EU regular-lat-lon product set through the GENERIC mapped route: one bz2-wrapped GRIB2 object per field per lead (the acquisition codec stages them transparently), the 20-level pressure ladder, once-per-cycle invariant FR_LAND and HSURF broadcast to every valid time, and the TERRA soil column -- temperature at nine depth nodes, soil water as column-integrated kg m-2 over the eight layers whose exact midpoints are those interior nodes, converted and surface-extended through the closed derivation catalog.  Everything model-shaped is rows in the packaged mapping/composition documents; there is no ICON decode code on this route.  The native icosahedral product set (GDT 101) is refused by the decoder with the grid family named.  Not yet accepted by unchanged stock WRF.",
+      "packaged_profile": "icon-eu-regular-grib2-v1",
+      "required_products": [
+        "pressure-level",
+        "single-level",
+        "soil-level",
+        "time-invariant"
+      ],
+      "run_plan": {
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "icon-eu",
+      "source_kind": "deterministic_state",
+      "title": "ICON-EU (DWD regional)",
+      "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+      "upstream_model_id": "icon-eu",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "hrrrak",
+        "hrrr-alaska"
+      ],
+      "composition_requirement": null,
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "sfc",
+      "display_name": "HRRR Alaska",
+      "fetch": {
+        "kind": "none",
+        "refusal": "--source hrrr-ak: no fetch route.\n  why: the registry row is not runnable (adapter_mapping_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources hrrr-ak` for this row in full.",
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": null,
+      "maturity": {
+        "cadence_mapping": "pending",
+        "field_mapping": "pending",
+        "level_mapping": "pending",
+        "runnable": false,
+        "status": "adapter_mapping_required",
+        "stock_wrf_gate": "not_run"
+      },
+      "max_forecast_hour": 48,
+      "member_set": null,
+      "notes": "Alaska grid/projection and field contract are not yet mapped.",
+      "packaged_profile": null,
+      "required_products": [
+        "sfc",
+        "nat"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "the registry row for 'hrrr-ak' declares no runnable implementation route (status 'adapter_mapping_required'), so there is nothing for an intent to drive",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": null,
+      "source_id": "hrrr-ak",
+      "source_kind": "deterministic_state",
+      "title": "HRRR Alaska",
+      "upstream_ingest": "registry_only",
+      "upstream_model_id": "hrrr-ak",
+      "wizard_planable": false
+    },
+    {
+      "aliases": [
+        "gfs-0p25",
+        "gfs-0.25"
+      ],
+      "composition_requirement": null,
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "pgrb2.0p25",
+      "display_name": "GFS (global, 0.25 degree)",
+      "fetch": {
+        "kind": "legacy_transport",
+        "refusal": null,
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 10800.0,
+      "maturity": {
+        "cadence_mapping": "uniform-gfs-forecast-series-v1",
+        "field_mapping": "gfs-pgrb2-raw-code-to-native-state-v1",
+        "level_mapping": "21-pressure-level-to-explicit-wrf-eta-v2",
+        "runnable": true,
+        "status": "certified_stock_wrf",
+        "stock_wrf_gate": "wrf-v4.6.1-pass-gfs-20260720-00z-250x200x49-f000-f003"
+      },
+      "max_forecast_hour": 384,
+      "member_set": null,
+      "notes": "Certified slice: one specified Lambert domain, GFS pgrb2.0p25 with complete 1000..100-hPa state and exact four Noah soil layers, WSM6, YSU, classic MM5 surface layer (option 91), Noah, and any explicit eta grid whose model top is covered by GFS. Numeric GRIB2 identifiers and both soil fixed surfaces are validated before decode; unchanged stock WRF v4.6.1 accepted the f000/f003 proof and completed a finite model step. The same named-source implementation now accepts namelist-bound static one-way Lambert hierarchies through at least d06; that broader envelope is runnable but remains separately stock-WRF gated.",
+      "packaged_profile": null,
+      "required_products": [
+        "pgrb2.0p25"
+      ],
+      "run_plan": {
+        "intent_chain": "prepared:go",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true
+      },
+      "runner": "gfs_pgrb2_0p25_v1",
+      "source_id": "gfs",
+      "source_kind": "deterministic_state",
+      "title": "GFS (global, 0.25 degree)",
+      "upstream_ingest": "full",
+      "upstream_model_id": "gfs",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "gdas-0p25",
+        "gdas-0.25"
+      ],
+      "composition_requirement": null,
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "packaged GDAS pgrb2 0.25-degree profile + vendored rusty-weather GRIB2 bridges",
+      "default_product": "pgrb2.0p25",
+      "display_name": "GDAS analysis (0.25 degree)",
+      "fetch": {
+        "kind": "legacy_transport",
+        "refusal": null,
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 3600.0,
+      "maturity": {
+        "cadence_mapping": "uniform-hourly-forecast-series-v1",
+        "field_mapping": "packaged-rw-wps-gdas-pgrb2-0p25-grib2-v1",
+        "level_mapping": "33-pressure-level-to-explicit-wrf-eta-v2",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 9,
+      "member_set": null,
+      "notes": "NCEP's analysis cycle through the GENERIC mapped route as a packaged profile: one pgrb2.0p25 file per hourly valid time (f000..f009 -- f010 is a measured 404), each carrying the 33-level isobaric state with direct specific humidity, the surface/2m/10m fields, in-band terrain and the four Noah soil layers bound by their scaled type-106 depth pairs (the integer level key collides between the 0-0.1 m and 0.1-0.4 m layers, so depth-pair rows are the identity).  Soil moisture is an NCEP local-table row selected by octets; no table is asked to name it.  The catalogue is record-for-record byte-identical to GFS pgrb2.0p25 (696/696 MEASURED), so this profile is the GFS shape at a different acquisition path with analysis-cycle semantics: the bytes stamp even f000 a FORECAST (generating process 81 at hour 0, 96 after), and the one analysis-stamped product (pgrb2.1p00.anl) lacks all soil, the land mask and every 2 m/10 m field -- it is not an initialization route and this row does not claim it.  Publication lags the cycle by ~7 h (delayed-cutoff cycle), far later than GFS.  Not yet accepted by unchanged stock WRF.",
+      "packaged_profile": "gdas-pgrb2-0p25-grib2-v1",
+      "required_products": [
+        "pgrb2.0p25"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "'gdas' is acquired over a legacy transport, which publishes no bound mapped-prep handoff (prep-arguments.json); the staged chain composes its preparation from that handoff, so this source needs a table acquisition route before an intent can drive it",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "gdas",
+      "source_kind": "deterministic_state",
+      "title": "GDAS analysis (0.25 degree)",
+      "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+      "upstream_model_id": "gdas",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "gefs-ensemble"
+      ],
+      "composition_requirement": "Initialize from one verified member's pgrb2a+pgrb2b pair; ensemble means/spread are not trajectory states.",
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "packaged GEFS ensemble-member profile + vendored rusty-weather GRIB2 bridges",
+      "default_product": "pgrb2a+pgrb2b/member",
+      "display_name": "GEFS (global ensemble member)",
+      "fetch": {
+        "kind": "table_route",
+        "refusal": null,
+        "route_id": "gefs"
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 10800.0,
+      "maturity": {
+        "cadence_mapping": "uniform-three-hour-forecast-series-v1",
+        "field_mapping": "packaged-rw-wps-gefs-ensemble-grib2-v1",
+        "level_mapping": "31-pressure-level-to-explicit-wrf-eta-v2",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 384,
+      "member_set": "gefs-ensemble-grib2-members-v1",
+      "notes": "One MEMBER of NCEP's global ensemble through the GENERIC mapped route.  The member axis is table work: the packaged member set declares all 31 forecasts (control + 30 perturbed), the filename patterns, the byte verification triple, the encoded-size convention (30 EXCLUDES the control) and the geavg/gespr statistic namespace, and `gpuwm-member-prep` stages a verified member with a hash-pinned receipt.  The field axis is table work too: the packaged profile's 31-level ladder is the measured exact union of the pgrb2a and pgrb2b isobaric sets (zero overlap on every variable), so a preparation needs BOTH files of the SAME member per valid time -- pass each pair with --input and the SAME pair again as --supplement: terrain is in band but MIGRATES products (measured: the analysis publishes orography in pgrb2a, every forecast step publishes it in pgrb2b), so only the pair carries it at every valid time.  Every selector pins PDT 1, so a statistic file (PDT 2) or an accumulation twin (PDT 11) can never satisfy a state selector, and the frame assembler's one-GRIB-member rule refuses a cross-member mix.  Noah soil rides the pair under the measured 66-percent ocean bitmap (layer 1 in pgrb2a, layers 2-4 in pgrb2b).  Not yet accepted by unchanged stock WRF.",
+      "packaged_profile": "gefs-ensemble-grib2-v1",
+      "required_products": [
+        "pgrb2a",
+        "pgrb2b"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "the registry row for 'gefs' declares member set 'gefs-ensemble-grib2-members-v1': member selection and verification belong to `gpuwm-member-prep`, and an intent carries no member axis, so a chain composed here would prepare an unselected ensemble",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "gefs",
+      "source_kind": "ensemble_members",
+      "title": "GEFS (global ensemble member)",
+      "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+      "upstream_model_id": "gefs",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "ai-gfs"
+      ],
+      "composition_requirement": "AIGFS publishes no soil temperature or moisture, no land-sea mask, no orography, no skin temperature, no surface pressure (PRMSL only) and no 2 m humidity; the hybrid profile borrows exactly that state from the SAME CYCLE's GDAS 0.25-degree analysis (the caller's one supplement) through the cross-source composition, and a donor from any other cycle or grid refuses by name.",
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "packaged AIGFS operational profile + vendored rusty-weather GRIB2 bridges",
+      "default_product": "pres",
+      "display_name": "AIGFS (NOAA AI global forecast)",
+      "fetch": {
+        "kind": "table_route",
+        "refusal": null,
+        "route_id": "aigfs"
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 21600.0,
+      "maturity": {
+        "cadence_mapping": "uniform-six-hour-forecast-series-v1",
+        "field_mapping": "packaged-rw-wps-aigfs-gdas-hybrid-grib2-v1",
+        "level_mapping": "13-pressure-level-atmosphere-only-v1",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 384,
+      "member_set": null,
+      "notes": "NCEP's GraphCast-based 0.25-degree AI forecast as pure table data, RUNNABLE as a HYBRID: the operational atmosphere (six 3-D fields on 13 pressure levels topping at 50 hPa, plus 2 m temperature and 10 m wind) rides the generic mapped route while the seven canonicals the product does not publish are composition_bound to the same-cycle GDAS analysis donor, decoded through the donor's own SHA-256-pinned mapping under the source_cycle_analysis_broadcast clock (one analysis record, carried to every lead, carried times named in the receipt).  The atmosphere-only profile aigfs-nomads-grib2-v1 remains shipped as the solo-refusal record.  ACQUISITION IDENTITY IS PART OF THE PRODUCT: operational bytes are NOMADS-only (SCN 25-89; 10-day rolling window, no filter CGI, no operational S3 mirror), stamped subCentre 0, while the noaa-nws-graphcastgfs-pds bucket serves a DIFFERENT experimental run under identical filenames stamped subCentre 2 -- every profile selector pins subcenter=0, so the imposter refuses by named identity octet instead of silently mixing model versions.  Deterministic (PDT 0/8 only); the PDT-8 precipitation windows are deliberately unselected (duplicate byte-identical tp at f006, shared paramId/level/step from f012).  Not flagged AI in-band: genProcId 137 and the front door are the identity.",
+      "packaged_profile": "aigfs-gdas-hybrid-grib2-v1",
+      "required_products": [
+        "pres",
+        "sfc"
+      ],
+      "run_plan": {
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "aigfs",
+      "source_kind": "deterministic_state",
+      "title": "AIGFS (NOAA AI global forecast)",
+      "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+      "upstream_model_id": "aigfs",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "ai-gefs"
+      ],
+      "composition_requirement": "Select a member and combine pressure/surface products; averages are not member states.",
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "packaged AI-ensemble member-hybrid profile + vendored rusty-weather GRIB2 bridges",
+      "default_product": "pres/member",
+      "display_name": "AIGEFS (NOAA AI global ensemble member)",
+      "fetch": {
+        "kind": "table_route",
+        "refusal": null,
+        "route_id": "aigefs"
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 21600.0,
+      "maturity": {
+        "cadence_mapping": "uniform-six-hour-forecast-series-v1",
+        "field_mapping": "packaged-rw-wps-aigefs-member-hybrid-grib2-v1",
+        "level_mapping": "13-pressure-level-to-explicit-wrf-eta-v2",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 384,
+      "member_set": "aigefs-ensemble-grib2-members-v1",
+      "notes": "NCEP's operational AI global ensemble (Project EAGLE), 31 members, through the GENERIC mapped route as a CROSS-SOURCE packaged profile.  The member product is a 13-level 0.25-degree dry-dynamical + humidity atmosphere and NOTHING else -- no soil, no land mask, no orography, no skin temperature, no 2 m humidity -- so the packaged mapping declares those six gaps composition_bound and the packaged composition binds them to the shipped physical-analysis donor mapping under source_cycle_analysis_broadcast: the borrowed land state is the SAME cycle's analysis record, carried to every lead and named in the receipt.  Pass --input with ONE member's pres+sfc files (stage them through `gpuwm-member-prep`, whose receipt carries the member identity the byte-identical leaf filenames cannot) and --supplement with the same cycle's 0.25-degree analysis file.  Every packaged selector pins PDT 1, the individual-member template, so deterministic bytes and ensemble mean/spread files refuse at the mapped decode; the packaged member set separately declares the verification contract (typeOfEnsembleForecast 3 on EVERY member including the control -- perturbationNumber 0 is the only control discriminator -- encoded ensemble size 31, octet INCLUDES the control) and the NOMADS-only ensstat statistic namespace.  The mapped route itself cannot know WHICH member a caller intended: that identity lives in the member-prep receipt, not the leaf name.  Runnable, not stock-WRF certified, and the receipt says so.",
+      "packaged_profile": "aigefs-member-hybrid-grib2-v1",
+      "required_products": [
+        "sfc/member",
+        "pres/member"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "the registry row for 'aigefs' declares member set 'aigefs-ensemble-grib2-members-v1': member selection and verification belong to `gpuwm-member-prep`, and an intent carries no member axis, so a chain composed here would prepare an unselected ensemble",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "aigefs",
+      "source_kind": "ensemble_members",
+      "title": "AIGEFS (NOAA AI global ensemble member)",
+      "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+      "upstream_model_id": "aigefs",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "hybrid-gefs"
+      ],
+      "composition_requirement": "Select a member and combine pressure/surface products; averages are not member states.",
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "sfc/avg",
+      "display_name": "Hybrid GEFS",
+      "fetch": {
+        "kind": "none",
+        "refusal": "--source hgefs: no fetch route.\n  why: the registry row is not runnable (member_selection_and_mapping_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources hgefs` for this row in full.",
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": null,
+      "maturity": {
+        "cadence_mapping": "pending",
+        "field_mapping": "pending",
+        "level_mapping": "pending",
+        "runnable": false,
+        "status": "member_selection_and_mapping_required",
+        "stock_wrf_gate": "not_run"
+      },
+      "max_forecast_hour": 240,
+      "member_set": null,
+      "notes": "",
+      "packaged_profile": null,
+      "required_products": [
+        "sfc/member",
+        "pres/member"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "the registry row for 'hgefs' declares no runnable implementation route (status 'member_selection_and_mapping_required'), so there is nothing for an intent to drive",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": null,
+      "source_id": "hgefs",
+      "source_kind": "ensemble_members",
+      "title": "Hybrid GEFS",
+      "upstream_ingest": "registry_only",
+      "upstream_model_id": "hgefs",
+      "wizard_planable": false
+    },
+    {
+      "aliases": [
+        "ecmwf",
+        "ifs"
+      ],
+      "composition_requirement": null,
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "packaged ECMWF open-data oper profile + vendored rusty-weather GRIB2 bridges",
+      "default_product": "oper",
+      "display_name": "ECMWF IFS (open data, 0.25 degree)",
+      "fetch": {
+        "kind": "table_route",
+        "refusal": null,
+        "route_id": "ecmwf-open-data"
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 10800.0,
+      "maturity": {
+        "cadence_mapping": "uniform-three-hour-forecast-series-v1",
+        "field_mapping": "packaged-rw-wps-ecmwf-open-data-oper-grib2-v1",
+        "level_mapping": "14-pressure-level-to-explicit-wrf-eta-v2",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 360,
+      "member_set": null,
+      "notes": "ECMWF's open-data IFS oper product through the GENERIC mapped route: one 0.25-degree global GDT-0 GRIB2 file per three-hourly step carries the 14-level pressure state, the surface/2 m/10 m fields, in-band surface geopotential for terrain (converted to metres by the declared unit scale) and the four IFS soil layers, which the source addresses by ordinal on fixed-surface type 151 -- declared through the composition's indexed selector_depth_binding, not code.  2 m humidity derives from the published dewpoint.  Winds are earth-relative; CCSDS (DRT 42) packing decodes through the converged bridge.  LICENSING: this profile is authored against the 0.25-degree open-data distribution (CC-BY-4.0); ECMWF's native 9 km HRES is access-restricted -- a data-licensing fact, not a capability gap.  Snow and sea-ice fields remain policy-controlled (local-table/bitmap semantics not yet bound), and the route is not yet accepted by unchanged stock WRF.",
+      "packaged_profile": "ecmwf-open-data-oper-grib2-v1",
+      "required_products": [
+        "oper"
+      ],
+      "run_plan": {
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "ecmwf-open-data",
+      "source_kind": "deterministic_state",
+      "title": "ECMWF IFS (open data, 0.25 degree)",
+      "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+      "upstream_model_id": "ecmwf-open-data",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "aifs-v2",
+        "aifs-single"
+      ],
+      "composition_requirement": null,
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "packaged AIFS single profile + vendored rusty-weather GRIB2 bridges",
+      "default_product": "oper",
+      "display_name": "ECMWF AIFS single (open data)",
+      "fetch": {
+        "kind": "table_route",
+        "refusal": null,
+        "route_id": "aifs"
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 21600.0,
+      "maturity": {
+        "cadence_mapping": "uniform-six-hour-forecast-series-v1",
+        "field_mapping": "packaged-rw-wps-aifs-single-grib2-v1",
+        "level_mapping": "13-pressure-level-to-explicit-wrf-eta-v2",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 360,
+      "member_set": null,
+      "notes": "ECMWF's AI forecast (AIFS single, open data 0.25-degree GRIB2) through the GENERIC mapped route: one file per six-hourly step carries the 13-level pressure state (50-1000 hPa; the extra 10 hPa surfaces outside the declared ladder are admitted-and-ignored, and specific humidity is not published there), the surface/2 m/10 m fields and the two-layer ordinal soil column; the land mask and surface geopotential ride the 0-hour file alone and are declared cycle-invariant.  THREE limits a reader must know.  (1) The soil column reaches 0.28 m: Noah's four layers are WRF's own shallow-column interpolation bracketed by the skin temperature at 0 m and the static deep-soil temperature at 3 m, smoother than a full-depth soil analysis.  (2) No snow state and no sea-ice fraction are published, so runs start bare-ground and open-water everywhere; a winter or polar case should not initialise from this product.  (3) An AI emulator publishes no hydrometeors and its fields are not constrained by a dynamical balance, so spin-up behaviour is not the certified-source baseline.  Not yet accepted by unchanged stock WRF.",
+      "packaged_profile": "aifs-single-grib2-v1",
+      "required_products": [
+        "oper"
+      ],
+      "run_plan": {
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "aifs",
+      "source_kind": "deterministic_state",
+      "title": "ECMWF AIFS single (open data)",
+      "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+      "upstream_model_id": "aifs",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "rap-awip32"
+      ],
+      "composition_requirement": null,
+      "coverage": {
+        "centre_lat": 48.80676751769597,
+        "centre_lon": -106.78301914069448,
+        "describe": "349x277 Lambert grid at 32463 m, truelat 50/50, stand_lon -107",
+        "east": 179.97900632602773,
+        "grid": {
+          "dx_m": 32463.0,
+          "earth_radius_m": 6371229.0,
+          "lat1": 1.0,
+          "lon1": -145.5,
+          "nx": 349,
+          "ny": 277,
+          "stand_lon": -107.0,
+          "truelat1": 50.0,
+          "truelat2": 50.0
+        },
+        "kind": "LambertGridWindow",
+        "north": 85.33311425350938,
+        "south": 0.8975592208546459,
+        "west": -179.88535884726122
+      },
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "packaged RAP awip32 profile + vendored rusty-weather GRIB2 bridges",
+      "default_product": "awip32",
+      "display_name": "RAP (32 km North America)",
+      "fetch": {
+        "kind": "table_route",
+        "refusal": null,
+        "route_id": "rap"
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 3600.0,
+      "maturity": {
+        "cadence_mapping": "uniform-hourly-forecast-series-v1",
+        "field_mapping": "packaged-rw-wps-rap-awip32-grib2-v1",
+        "level_mapping": "39-pressure-level-to-explicit-wrf-eta-v2",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 51,
+      "member_set": null,
+      "notes": "RAP through the GENERIC mapped route as a packaged profile: one awip32 file (AWIPS grid 221, 32 km Lambert, North America) per hourly valid time carries the 39-level pressure state (the HRRR wrfprs ladder, byte for byte), the surface/2m/10m fields, in-band terrain and the nine-node RUC soil column.  Pressure-level humidity is RH and rides the declared RH-to-specific-humidity derivation the GFS profile proved.  There is no RAP decode code on this route.  The 13 km CONUS Lambert products are NOT reachable as tables today and this row does not claim them: awp130pgrb carries no soil/land state, and pairing it with awp130bgrb refuses because both products publish byte-identical surface records that no selector octet separates; the native rotated lat-lon wrfprs product (GDT 32769) is outside the declared grid families.  Not yet accepted by unchanged stock WRF.",
+      "packaged_profile": "rap-awip32-grib2-v1",
+      "required_products": [
+        "awip32"
+      ],
+      "run_plan": {
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "rap",
+      "source_kind": "deterministic_state",
+      "title": "RAP (32 km North America)",
+      "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+      "upstream_model_id": "rap",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [],
+      "composition_requirement": null,
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "awip12",
+      "display_name": "NAM (12 km North America)",
+      "fetch": {
+        "kind": "none",
+        "refusal": "--source nam: no fetch route.\n  why: the registry row is not runnable (adapter_mapping_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources nam` for this row in full.",
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": null,
+      "maturity": {
+        "cadence_mapping": "pending",
+        "field_mapping": "pending",
+        "level_mapping": "pending",
+        "runnable": false,
+        "status": "adapter_mapping_required",
+        "stock_wrf_gate": "not_run"
+      },
+      "max_forecast_hour": 84,
+      "member_set": null,
+      "notes": "",
+      "packaged_profile": null,
+      "required_products": [
+        "awip12"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "the registry row for 'nam' declares no runnable implementation route (status 'adapter_mapping_required'), so there is nothing for an intent to drive",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": null,
+      "source_id": "nam",
+      "source_kind": "deterministic_state",
+      "title": "NAM (12 km North America)",
+      "upstream_ingest": "registry_only",
+      "upstream_model_id": "nam",
+      "wizard_planable": false
+    },
+    {
+      "aliases": [
+        "hires"
+      ],
+      "composition_requirement": "Select the concrete ARW/FV3 member before initialization.",
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "arw_2p5km/conus",
+      "display_name": "HiResW (high-resolution window)",
+      "fetch": {
+        "kind": "none",
+        "refusal": "--source hiresw: no fetch route.\n  why: the registry row is not runnable (member_selection_and_mapping_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources hiresw` for this row in full.",
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": null,
+      "maturity": {
+        "cadence_mapping": "pending",
+        "field_mapping": "pending",
+        "level_mapping": "pending",
+        "runnable": false,
+        "status": "member_selection_and_mapping_required",
+        "stock_wrf_gate": "not_run"
+      },
+      "max_forecast_hour": 48,
+      "member_set": null,
+      "notes": "",
+      "packaged_profile": null,
+      "required_products": [
+        "arw_2p5km/conus"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "the registry row for 'hiresw' declares no runnable implementation route (status 'member_selection_and_mapping_required'), so there is nothing for an intent to drive",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": null,
+      "source_id": "hiresw",
+      "source_kind": "ensemble_members",
+      "title": "HiResW (high-resolution window)",
+      "upstream_ingest": "registry_only",
+      "upstream_model_id": "hiresw",
+      "wizard_planable": false
+    },
+    {
+      "aliases": [
+        "href-conus"
+      ],
+      "composition_requirement": "Use a constituent deterministic member; spread/probability products cannot initialize WRF.",
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "ensprod/conus/sprd",
+      "display_name": "HREF (high-resolution ensemble products)",
+      "fetch": {
+        "kind": "none",
+        "refusal": "--source href: no fetch route.\n  why: the registry row is not runnable (explicit_composition_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources href` for this row in full.",
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": null,
+      "maturity": {
+        "cadence_mapping": "pending",
+        "field_mapping": "pending",
+        "level_mapping": "pending",
+        "runnable": false,
+        "status": "explicit_composition_required",
+        "stock_wrf_gate": "not_run"
+      },
+      "max_forecast_hour": 48,
+      "member_set": null,
+      "notes": "",
+      "packaged_profile": null,
+      "required_products": [
+        "ensprod/conus/sprd"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "the registry row for 'href' declares no runnable implementation route (status 'explicit_composition_required'), so there is nothing for an intent to drive",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": null,
+      "source_id": "href",
+      "source_kind": "ensemble_statistic",
+      "title": "HREF (high-resolution ensemble products)",
+      "upstream_ingest": "registry_only",
+      "upstream_model_id": "href",
+      "wizard_planable": false
+    },
+    {
+      "aliases": [],
+      "composition_requirement": "Use a constituent member; the ensemble mean is not a dynamically balanced member state.",
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "ensprod/pgrb212/mean_3hrly",
+      "display_name": "SREF (short-range ensemble products)",
+      "fetch": {
+        "kind": "none",
+        "refusal": "--source sref: no fetch route.\n  why: the registry row is not runnable (explicit_composition_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources sref` for this row in full.",
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": null,
+      "maturity": {
+        "cadence_mapping": "pending",
+        "field_mapping": "pending",
+        "level_mapping": "pending",
+        "runnable": false,
+        "status": "explicit_composition_required",
+        "stock_wrf_gate": "not_run"
+      },
+      "max_forecast_hour": 87,
+      "member_set": null,
+      "notes": "",
+      "packaged_profile": null,
+      "required_products": [
+        "ensprod/pgrb212/mean_3hrly"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "the registry row for 'sref' declares no runnable implementation route (status 'explicit_composition_required'), so there is nothing for an intent to drive",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": null,
+      "source_id": "sref",
+      "source_kind": "ensemble_statistic",
+      "title": "SREF (short-range ensemble products)",
+      "upstream_ingest": "registry_only",
+      "upstream_model_id": "sref",
+      "wizard_planable": false
+    },
+    {
+      "aliases": [],
+      "composition_requirement": "Provide a complete 3-D atmosphere source; RTMA may replace declared surface fields only.",
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "2dvaranl_ndfd",
+      "display_name": "RTMA (real-time mesoscale analysis)",
+      "fetch": {
+        "kind": "none",
+        "refusal": "--source rtma: no fetch route.\n  why: the registry row is not runnable (explicit_composition_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources rtma` for this row in full.",
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": null,
+      "maturity": {
+        "cadence_mapping": "pending",
+        "field_mapping": "pending",
+        "level_mapping": "pending",
+        "runnable": false,
+        "status": "explicit_composition_required",
+        "stock_wrf_gate": "not_run"
+      },
+      "max_forecast_hour": 0,
+      "member_set": null,
+      "notes": "",
+      "packaged_profile": null,
+      "required_products": [
+        "2dvaranl_ndfd"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "the registry row for 'rtma' declares no runnable implementation route (status 'explicit_composition_required'), so there is nothing for an intent to drive",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": null,
+      "source_id": "rtma",
+      "source_kind": "surface_analysis",
+      "title": "RTMA (real-time mesoscale analysis)",
+      "upstream_ingest": "registry_only",
+      "upstream_model_id": "rtma",
+      "wizard_planable": false
+    },
+    {
+      "aliases": [],
+      "composition_requirement": "Provide a complete 3-D atmosphere source; URMA may replace declared surface fields only.",
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "2dvaranl_ndfd",
+      "display_name": "URMA (unrestricted mesoscale analysis)",
+      "fetch": {
+        "kind": "none",
+        "refusal": "--source urma: no fetch route.\n  why: the registry row is not runnable (explicit_composition_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources urma` for this row in full.",
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": null,
+      "maturity": {
+        "cadence_mapping": "pending",
+        "field_mapping": "pending",
+        "level_mapping": "pending",
+        "runnable": false,
+        "status": "explicit_composition_required",
+        "stock_wrf_gate": "not_run"
+      },
+      "max_forecast_hour": 0,
+      "member_set": null,
+      "notes": "",
+      "packaged_profile": null,
+      "required_products": [
+        "2dvaranl_ndfd"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "the registry row for 'urma' declares no runnable implementation route (status 'explicit_composition_required'), so there is nothing for an intent to drive",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": null,
+      "source_id": "urma",
+      "source_kind": "surface_analysis",
+      "title": "URMA (unrestricted mesoscale analysis)",
+      "upstream_ingest": "registry_only",
+      "upstream_model_id": "urma",
+      "wizard_planable": false
+    },
+    {
+      "aliases": [
+        "blend"
+      ],
+      "composition_requirement": "Provide a complete 3-D analysis/forecast state; NBM is postprocessed guidance.",
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "core/co",
+      "display_name": "NBM (National Blend of Models)",
+      "fetch": {
+        "kind": "none",
+        "refusal": "--source nbm: no fetch route.\n  why: the registry row is not runnable (explicit_composition_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources nbm` for this row in full.",
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": null,
+      "maturity": {
+        "cadence_mapping": "pending",
+        "field_mapping": "pending",
+        "level_mapping": "pending",
+        "runnable": false,
+        "status": "explicit_composition_required",
+        "stock_wrf_gate": "not_run"
+      },
+      "max_forecast_hour": 264,
+      "member_set": null,
+      "notes": "",
+      "packaged_profile": null,
+      "required_products": [
+        "core/co"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "the registry row for 'nbm' declares no runnable implementation route (status 'explicit_composition_required'), so there is nothing for an intent to drive",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": null,
+      "source_id": "nbm",
+      "source_kind": "postprocessed_guidance",
+      "title": "NBM (National Blend of Models)",
+      "upstream_ingest": "registry_only",
+      "upstream_model_id": "nbm",
+      "wizard_planable": false
+    },
+    {
+      "aliases": [
+        "rrfs-ops"
+      ],
+      "composition_requirement": null,
+      "coverage": {
+        "centre_lat": 38.49724665100055,
+        "centre_lon": -97.50597669104206,
+        "describe": "1799x1059 Lambert grid at 3000 m, truelat 38.5/38.5, stand_lon -97.5",
+        "east": -60.91719277183785,
+        "grid": {
+          "dx_m": 3000.0,
+          "earth_radius_m": 6371229.0,
+          "lat1": 21.138123,
+          "lon1": -122.719528,
+          "nx": 1799,
+          "ny": 1059,
+          "stand_lon": -97.5,
+          "truelat1": 38.5,
+          "truelat2": 38.5
+        },
+        "kind": "LambertGridWindow",
+        "north": 52.61565330680793,
+        "south": 21.13812300000002,
+        "west": -134.09547973426317
+      },
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "packaged RRFS prslev+2dfld profile + vendored rusty-weather GRIB2 bridges",
+      "default_product": "prslev",
+      "display_name": "RRFS (operational 3 km CONUS)",
+      "fetch": {
+        "kind": "table_route",
+        "refusal": null,
+        "route_id": "rrfs"
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 3600.0,
+      "maturity": {
+        "cadence_mapping": "uniform-hourly-forecast-series-v1",
+        "field_mapping": "packaged-rw-wps-rrfs-prslev-2dfld-grib2-v1",
+        "level_mapping": "45-pressure-level-to-explicit-wrf-eta-v2",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 84,
+      "member_set": null,
+      "notes": "RRFS -- HRRR's operational successor, flowing today on noaa-rrfs-ops-pds and NOMADS rrfs/v1.0 (implementation date 2026-10-06) -- through the GENERIC mapped route as a packaged profile.  The 3 km CONUS grid is bit-for-bit HRRR's Lambert (every geolocating octet identical, measured from real bytes), so the HRRR wrfprs machinery carries it; RRFS's own facts are table data: a 45-level pressure ladder (70 hPa where HRRR has 75, 2 hPa top, no 1013.2 hPa entry) and the state split across a prslev/2dfld file PAIR -- prslev alone carries zero surface fields and zero soil, so both products are required and both files are passed per valid time.  SPFH is direct; the nine-node RUC soil column is octet-identical to HRRR's.  There is no RRFS decode code on this route.  NOT reachable today and not claimed by this row: the natlev native-level product, the 3 km North-America rotated grid, the thinned subset files and every per-member ensemble file exist only in the frozen prototype bucket noaa-rrfs-pds (halted 2026-08-12 by design) with no live front door; the relocatable firewx nest changes grid daily.  The ops bucket currently lists 6 days and whether that is rolling retention or feed age is not yet distinguishable.  Not yet accepted by unchanged stock WRF.",
+      "packaged_profile": "rrfs-prslev-2dfld-grib2-v1",
+      "required_products": [
+        "prslev",
+        "2dfld"
+      ],
+      "run_plan": {
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "rrfs",
+      "source_kind": "deterministic_state",
+      "title": "RRFS (operational 3 km CONUS)",
+      "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+      "upstream_model_id": "rrfs",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "rrfsa"
+      ],
+      "composition_requirement": null,
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "prs-conus",
+      "display_name": "RRFS-A (frozen prototype feed)",
+      "fetch": {
+        "kind": "none",
+        "refusal": "--source rrfs-a: no fetch route.\n  why: the registry row is not runnable (adapter_mapping_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources rrfs-a` for this row in full.",
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": null,
+      "maturity": {
+        "cadence_mapping": "pending",
+        "field_mapping": "pending",
+        "level_mapping": "pending",
+        "runnable": false,
+        "status": "adapter_mapping_required",
+        "stock_wrf_gate": "not_run"
+      },
+      "max_forecast_hour": 60,
+      "member_set": null,
+      "notes": "Frozen prototype feed (noaa-rrfs-pds, halted 2026-08-12 by design); the live operational feed is the `rrfs` row.  rusty-weather ingest is mature; WRF state/soil mapping remains gated.",
+      "packaged_profile": null,
+      "required_products": [
+        "prs-conus"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "the registry row for 'rrfs-a' declares no runnable implementation route (status 'adapter_mapping_required'), so there is nothing for an intent to drive",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": null,
+      "source_id": "rrfs-a",
+      "source_kind": "deterministic_state",
+      "title": "RRFS-A (frozen prototype feed)",
+      "upstream_ingest": "full",
+      "upstream_model_id": "rrfs-a",
+      "wizard_planable": false
+    },
+    {
+      "aliases": [],
+      "composition_requirement": null,
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "prs-conus",
+      "display_name": "RRFS public prototype",
+      "fetch": {
+        "kind": "none",
+        "refusal": "--source rrfs-public: no fetch route.\n  why: the registry row is not runnable (adapter_mapping_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources rrfs-public` for this row in full.",
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": null,
+      "maturity": {
+        "cadence_mapping": "pending",
+        "field_mapping": "pending",
+        "level_mapping": "pending",
+        "runnable": false,
+        "status": "adapter_mapping_required",
+        "stock_wrf_gate": "not_run"
+      },
+      "max_forecast_hour": 60,
+      "member_set": null,
+      "notes": "",
+      "packaged_profile": null,
+      "required_products": [
+        "prs-conus"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "the registry row for 'rrfs-public' declares no runnable implementation route (status 'adapter_mapping_required'), so there is nothing for an intent to drive",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": null,
+      "source_id": "rrfs-public",
+      "source_kind": "deterministic_state",
+      "title": "RRFS public prototype",
+      "upstream_ingest": "registry_only",
+      "upstream_model_id": "rrfs-public",
+      "wizard_planable": false
+    },
+    {
+      "aliases": [
+        "rrfs-ensemble"
+      ],
+      "composition_requirement": "Use a constituent RRFS member; mean/PMMN/spread products cannot initialize a member.",
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "mean-conus",
+      "display_name": "REFS (RRFS ensemble products)",
+      "fetch": {
+        "kind": "none",
+        "refusal": "--source refs: no fetch route.\n  why: the registry row is not runnable (explicit_composition_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources refs` for this row in full.",
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": null,
+      "maturity": {
+        "cadence_mapping": "pending",
+        "field_mapping": "pending",
+        "level_mapping": "pending",
+        "runnable": false,
+        "status": "explicit_composition_required",
+        "stock_wrf_gate": "not_run"
+      },
+      "max_forecast_hour": 60,
+      "member_set": null,
+      "notes": "",
+      "packaged_profile": null,
+      "required_products": [
+        "mean-conus"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "the registry row for 'refs' declares no runnable implementation route (status 'explicit_composition_required'), so there is nothing for an intent to drive",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": null,
+      "source_id": "refs",
+      "source_kind": "ensemble_statistic",
+      "title": "REFS (RRFS ensemble products)",
+      "upstream_ingest": "registry_only",
+      "upstream_model_id": "refs",
+      "wizard_planable": false
+    },
+    {
+      "aliases": [
+        "firewx"
+      ],
+      "composition_requirement": "Combine the 2-D fire-weather product with a complete pressure/native atmosphere and soil state.",
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "2dfld-firewx",
+      "display_name": "RRFS fire-weather nest",
+      "fetch": {
+        "kind": "none",
+        "refusal": "--source rrfs-firewx: no fetch route.\n  why: the registry row is not runnable (explicit_composition_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources rrfs-firewx` for this row in full.",
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": null,
+      "maturity": {
+        "cadence_mapping": "pending",
+        "field_mapping": "pending",
+        "level_mapping": "pending",
+        "runnable": false,
+        "status": "explicit_composition_required",
+        "stock_wrf_gate": "not_run"
+      },
+      "max_forecast_hour": 36,
+      "member_set": null,
+      "notes": "",
+      "packaged_profile": null,
+      "required_products": [
+        "2dfld-firewx",
+        "prs-firewx"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "the registry row for 'rrfs-firewx' declares no runnable implementation route (status 'explicit_composition_required'), so there is nothing for an intent to drive",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": null,
+      "source_id": "rrfs-firewx",
+      "source_kind": "deterministic_state",
+      "title": "RRFS fire-weather nest",
+      "upstream_ingest": "registry_only",
+      "upstream_model_id": "rrfs-firewx",
+      "wizard_planable": false
+    },
+    {
+      "aliases": [
+        "wrf-gdex",
+        "wrf-arw"
+      ],
+      "composition_requirement": "Map a compatible WRF archive state, vertical coordinate, physics state, and boundary source.",
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/rustwx-io",
+      "default_product": "surface",
+      "display_name": "WRF archive (ARW history)",
+      "fetch": {
+        "kind": "none",
+        "refusal": "--source wrf: no fetch route.\n  why: the registry row is not runnable (wrf_archive_mapping_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources wrf` for this row in full.",
+        "route_id": null
+      },
+      "file_family": "NetCDF",
+      "forcing_interval_seconds": null,
+      "maturity": {
+        "cadence_mapping": "pending",
+        "field_mapping": "pending",
+        "level_mapping": "pending",
+        "runnable": false,
+        "status": "wrf_archive_mapping_required",
+        "stock_wrf_gate": "not_run"
+      },
+      "max_forecast_hour": 0,
+      "member_set": null,
+      "notes": "",
+      "packaged_profile": null,
+      "required_products": [
+        "surface"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "the registry row for 'wrf' declares no runnable implementation route (status 'wrf_archive_mapping_required'), so there is nothing for an intent to drive",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": null,
+      "source_id": "wrf",
+      "source_kind": "wrf_archive",
+      "title": "WRF archive (ARW history)",
+      "upstream_ingest": "registry_only",
+      "upstream_model_id": "wrf",
+      "wizard_planable": false
+    },
+    {
+      "aliases": [],
+      "composition_requirement": null,
+      "coverage": null,
+      "credentials": {
+        "items": [
+          {
+            "absent_message": "No Copernicus CDS key at <USER_HOME>\\.cdsapirc: the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent.  Obtain one at https://cds.climate.copernicus.eu.",
+            "breakage": "the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent",
+            "credential_id": "copernicus-cds-api-key",
+            "display_name": "Copernicus CDS key",
+            "location": ".cdsapirc",
+            "location_display": "<USER_HOME>\\.cdsapirc",
+            "location_kind": "home_file",
+            "needed_for": "acquisition",
+            "obtain_url": "https://cds.climate.copernicus.eu",
+            "present": false,
+            "present_message": "Copernicus CDS key is present (<USER_HOME>\\.cdsapirc); acquisition can proceed.",
+            "status_message": "No Copernicus CDS key at <USER_HOME>\\.cdsapirc: the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent.  Obtain one at https://cds.climate.copernicus.eu."
+          }
+        ],
+        "required": true,
+        "summary": "this registry row declares 1 credential: Copernicus CDS key (<USER_HOME>\\.cdsapirc), needed for acquisition"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "pressure-level+single-level",
+      "display_name": "ERA5 reanalysis (ECMWF)",
+      "fetch": {
+        "kind": "legacy_transport",
+        "refusal": null,
+        "route_id": null
+      },
+      "file_family": "GRIB1",
+      "forcing_interval_seconds": 21600.0,
+      "maturity": {
+        "cadence_mapping": "uniform-local-grib-time-series-v1",
+        "field_mapping": "era5-grib1-vtable-to-native-state-v1",
+        "level_mapping": "pressure-level-to-explicit-wrf-eta-v2",
+        "runnable": true,
+        "status": "certified_stock_wrf",
+        "stock_wrf_gate": "wrf-v4.6.1-pass-201ffde-250x200x49-12km-12h"
+      },
+      "max_forecast_hour": 0,
+      "member_set": null,
+      "notes": "Certified slice: one specified Lambert domain, WSM6, YSU, classic MM5 surface layer (option 91), Noah, an explicit validated eta coordinate, a model top covered by the supplied pressure levels, a uniformly spaced combined GRIB1 series beginning at f00, and explicit hash-bound WPS geometry/static/orography inputs. Unchanged stock WRF v4.6.1 accepted the 250x200 at 12 km, 12-hour proof products and completed a finite model step. The named-source hierarchy route now accepts namelist-bound static one-way Lambert layouts through at least d06 using invariant SOILGEO or exact per-domain source orography; that broader envelope is not yet stock-WRF certified.",
+      "packaged_profile": null,
+      "required_products": [
+        "pressure-level",
+        "single-level",
+        "invariants"
+      ],
+      "run_plan": {
+        "intent_chain": "experiment",
+        "intent_refusal": null,
+        "intent_routes": [
+          "experiment"
+        ],
+        "intent_supported": true
+      },
+      "runner": "era5_combined_grib1_v1",
+      "source_id": "era5",
+      "source_kind": "deterministic_state",
+      "title": "ERA5 reanalysis (ECMWF)",
+      "upstream_ingest": "gpuwm_native_existing",
+      "upstream_model_id": null,
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "era5-model-level",
+        "era5-ml"
+      ],
+      "composition_requirement": "ERA5's model-level product publishes the prognostic atmosphere only; the land-surface and near-surface state -- surface pressure, orography, land fraction, skin temperature, the 2 m and 10 m diagnostics and the four-layer soil column -- is borrowed from the SAME HOUR's ERA5 pressure-level/single-level analysis, so a preparation takes two files and refuses by name if the donor hour disagrees.",
+      "coverage": null,
+      "credentials": {
+        "items": [
+          {
+            "absent_message": "No Copernicus CDS key at <USER_HOME>\\.cdsapirc: the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent.  Obtain one at https://cds.climate.copernicus.eu.",
+            "breakage": "the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent",
+            "credential_id": "copernicus-cds-api-key",
+            "display_name": "Copernicus CDS key",
+            "location": ".cdsapirc",
+            "location_display": "<USER_HOME>\\.cdsapirc",
+            "location_kind": "home_file",
+            "needed_for": "acquisition",
+            "obtain_url": "https://cds.climate.copernicus.eu",
+            "present": false,
+            "present_message": "Copernicus CDS key is present (<USER_HOME>\\.cdsapirc); acquisition can proceed.",
+            "status_message": "No Copernicus CDS key at <USER_HOME>\\.cdsapirc: the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent.  Obtain one at https://cds.climate.copernicus.eu."
+          }
+        ],
+        "required": true,
+        "summary": "this registry row declares 1 credential: Copernicus CDS key (<USER_HOME>\\.cdsapirc), needed for acquisition"
+      },
+      "decoder": "packaged ERA5 model-level profile + vendored rusty-weather GRIB2/GRIB1 bridges",
+      "default_product": "model-level+pressure-level-surface",
+      "display_name": "ERA5 reanalysis (native 137 model levels)",
+      "fetch": {
+        "kind": "refused",
+        "refusal": "--source era5-l137: no fetch route.\n  why: ERA5 model-level data is served by the Copernicus Climate Data Store as a queued MARS request (dataset reanalysis-era5-complete, levtype=ml, levelist=1/to/137), not as files at a predictable URL: there is no cycle-and-lead path for a fetch to resolve, and the request runs under your own CDS account. The same is true of the pressure-level/single-level analysis this source borrows its land surface from, so both files arrive the same way.\n  remedy: bring the bytes yourself -- `gpuwm prep --source era5-l137 --source-root DIR --source-manifest DIR/SHA256SUMS --source-manifest-sha256 <digest>` is the designed door for a source this ArWen cannot download.",
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 3600.0,
+      "maturity": {
+        "cadence_mapping": "uniform-hourly-analysis-series-v1",
+        "field_mapping": "packaged-rw-wps-era5-model-level-l137-grib2-v1",
+        "level_mapping": "137-hybrid-sigma-pressure-model-level-to-explicit-wrf-eta-v1",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 0,
+      "member_set": null,
+      "notes": "The native vertical state, as pure table data: 137 hybrid sigma-pressure model levels whose A/B interface coefficients ride IN BAND in the GRIB2 Section-4 coordinate-values (pv) octets -- 276 values, read from the producer's own record rather than from a per-model coefficient table.  Pressure is materialized as p = A + B*ps against the borrowed surface pressure and geopotential height is integrated hydrostatically from the borrowed terrain, because the model-level product publishes z only at level 1 and a 3-D height borrow would be cross-ladder.  lnsp is NOT consumed: unit transforms are affine, there is no exp, and surface pressure is borrowed exactly instead of approximated.  Measured on real Copernicus CDS bytes: the Rust engine and the Python reference produce byte-identical air_pressure and geopotential_height (max ULP 0) and the preparation reaches rc 0 with wrfinput/wrfbdy written.  Not yet accepted by unchanged stock WRF, and this row does not certify ERA5 model-level requests on other grids or level subsets: the mapping's ladder is the full 1..137 set.",
+      "packaged_profile": "era5-model-level-l137-grib2-v1",
+      "required_products": [
+        "model-level atmosphere (all 137 levels)",
+        "same-hour pressure-level/single-level analysis"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "no acquisition route is registered for 'era5-l137' (`gpuwm fetch --source era5-l137` refuses), so the chain's fetch stage has no way to bring its bytes",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "era5-l137",
+      "source_kind": "deterministic_state",
+      "title": "ERA5 reanalysis (native 137 model levels)",
+      "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+      "upstream_model_id": null,
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "20cr",
+        "twentycrv3",
+        "20crv3-member"
+      ],
+      "composition_requirement": null,
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "packaged exact 20CRv3 member profile + vendored rusty-weather GRIB2 bridges",
+      "default_product": "every-member-pressure+surface",
+      "display_name": "20CRv3 reanalysis (member, GRIB2)",
+      "fetch": {
+        "kind": "refused",
+        "refusal": "--source 20crv3: no fetch route.\n  why: the 20CRv3 every-member GRIB2 archive is not published on an anonymously readable public endpoint; only the ensemble-MEAN NetCDF distribution is, and a member state is not a mean.\n  remedy: bring the bytes yourself -- `gpuwm prep --source 20crv3 --source-root DIR --source-manifest DIR/SHA256SUMS --source-manifest-sha256 <digest>` is the designed door for a source this ArWen cannot download.",
+        "route_id": null
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 10800.0,
+      "maturity": {
+        "cadence_mapping": "uniform-paired-three-hour-member-series-v1",
+        "field_mapping": "packaged-rw-wps-20crv3-member-grib2-v1",
+        "level_mapping": "23-pressure-level-to-explicit-wrf-eta-v2",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 0,
+      "member_set": null,
+      "notes": "Runnable exact-member profile with filename-plus-hash-manifest member identity, packaged mapping/composition/provenance authorities, paired pressure/surface inputs, and native one-way Lambert hierarchy export through the mapping's max_dom=4. The route is not yet accepted by unchanged stock WRF and does not certify other 20CR products, arbitrary members mixed in one run, or a larger domain count.",
+      "packaged_profile": "20crv3-member-grib2-v1",
+      "required_products": [
+        "pressure-level",
+        "surface",
+        "one exact member"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "no acquisition route is registered for '20crv3' (`gpuwm fetch --source 20crv3` refuses), so the chain's fetch stage has no way to bring its bytes",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": "twentycrv3_member_grib2_v1",
+      "source_id": "20crv3",
+      "source_kind": "ensemble_members",
+      "title": "20CRv3 reanalysis (member, GRIB2)",
+      "upstream_ingest": "filename_member_manifest_v1",
+      "upstream_model_id": null,
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "20crv3-netcdf",
+        "20cr-netcdf",
+        "20cr-cf"
+      ],
+      "composition_requirement": null,
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "packaged 20CRv3 NetCDF profile + rw_netcdf/netcrust (gpuwm.netcdf_bridge)",
+      "default_product": "si-subdaily-pressure+surface+subsurface",
+      "display_name": "20CRv3 reanalysis (ensemble mean, NetCDF)",
+      "fetch": {
+        "kind": "refused",
+        "refusal": "--source 20crv3-cf: no fetch route.\n  why: the NOAA PSL 20CRv3 NetCDF distribution is a per-year, per-variable reanalysis archive with no cycle and no forecast lead, so --cycle/--hours describe nothing in it. It is also missing orography and a land mask entirely, which the packaged profile recovers with tools/build_pressure_level_invariant_supplement.py from files you already hold.\n  remedy: bring the bytes yourself -- `gpuwm prep --source 20crv3-cf --source-root DIR --source-manifest DIR/SHA256SUMS --source-manifest-sha256 <digest>` is the designed door for a source this ArWen cannot download.",
+        "route_id": null
+      },
+      "file_family": "NetCDF-CF",
+      "forcing_interval_seconds": 10800.0,
+      "maturity": {
+        "cadence_mapping": "uniform-three-hour-analysis-series-v1",
+        "field_mapping": "packaged-rw-wps-20crv3-si-netcdf-v1",
+        "level_mapping": "21-pressure-level-to-explicit-wrf-eta-v2",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 0,
+      "member_set": null,
+      "notes": "The publicly downloadable form of 20CRv3: NOAA PSL's sub-daily NetCDF SI series, decoded through the Rust rw_netcdf bridge with no per-source decode code -- the mapping, composition and provenance documents are packaged and pinned by SHA-256. Three-hourly analyses on 21 common pressure levels (1000-100 hPa; the humidity file stops at 100 hPa while the others reach 1 hPa, and the mapping declares the intersection), a complete surface state, and the exact four Noah soil layers. TWO limits a reader must know. (1) It is the ENSEMBLE MEAN analysis, not a member: it is smoother than any single 20CRv3 trajectory, and where a member state is wanted the route is --source 20crv3 over the every-member GRIB2 archive. The registry's refusal of GEFS/HREF/SREF means does not apply here for a stated reason -- those are FORECAST ensembles whose mean is not a dynamically balanced trajectory, while this is an analysis at its own valid time and is the only 20CRv3 form NOAA distributes as NetCDF -- but the difference is a judgement worth reading before a study depends on it. (2) PSL publishes no orography and no land mask for 20CRv3, so both are recovered from 20CRv3's own published fields by tools/build_pressure_level_invariant_supplement.py and carried as a supplement whose provenance document states the method and the divergence. Not yet accepted by unchanged stock WRF.",
+      "packaged_profile": "20crv3-netcdf-v1",
+      "required_products": [
+        "prsSI",
+        "sfcSI",
+        "2mSI",
+        "10mSI",
+        "subsfcSI",
+        "recovered invariant supplement"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "no acquisition route is registered for '20crv3-cf' (`gpuwm fetch --source 20crv3-cf` refuses), so the chain's fetch stage has no way to bring its bytes",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "20crv3-cf",
+      "source_kind": "ensemble_statistic",
+      "title": "20CRv3 reanalysis (ensemble mean, NetCDF)",
+      "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+      "upstream_model_id": null,
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "generic-mapped",
+        "mapping-v1"
+      ],
+      "composition_requirement": null,
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rw-wps.mapping.v1 + gpuwm.mapped_source + vendored rusty-weather GRIB bridges",
+      "default_product": "mapping-declared-inputs",
+      "display_name": "Generic mapped source (rw-wps mapping v1)",
+      "fetch": {
+        "kind": "refused",
+        "refusal": "--source mapped: no fetch route.\n  why: `mapped` is the generic declarative adapter, not a product: it names no publisher, no bucket and no file grammar, so there is nothing for a fetch to resolve. It is the door for bytes you already have.\n  remedy: bring the bytes yourself -- `gpuwm prep --source mapped --source-root DIR --source-manifest DIR/SHA256SUMS --source-manifest-sha256 <digest>` is the designed door for a source this ArWen cannot download.",
+        "route_id": null
+      },
+      "file_family": "GRIB1/GRIB2/NetCDF",
+      "forcing_interval_seconds": null,
+      "maturity": {
+        "cadence_mapping": "mapping-declared-uniform-series",
+        "field_mapping": "rw-wps.mapping.v1-executable-consumer",
+        "level_mapping": "mapping-declared-source-to-canonical-frame",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "exact-mapping-composition-hash-evidence-required"
+      },
+      "max_forecast_hour": 0,
+      "member_set": null,
+      "notes": "Strict canonical decoding, exact-subset mixed-product composition, source-frame packing, native initialization, and atomic WRF export are implemented. Historical v1 ERA5 GRIB1, GFS GRIB2, and ERA5 NetCDF single-domain gates passed unchanged WRF v4.6.1. The current canonical-LF GFS GRIB2 contract also passed an unchanged WRF v4.6.1 d01 through d04 gate after replacing 2 m dewpoint with the downloaded RH2 contract and binding GRIB2 local-table authority. The superseded GFS hierarchy evidence remains explicitly invalidated. New mappings remain fail-closed to the explicit field, selector, soil, cadence, target, decoder, manifest, and composition contracts. General explicit descriptor/Vtable import and exact manifest authoring are available without adding a named adapter, but their result is validated, not automatically stock-WRF certified; this is not a claim that arbitrary undeclared GRIB/NetCDF is scientifically complete.",
+      "packaged_profile": null,
+      "required_products": [
+        "mapping-declared-inputs"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "the registry row for 'mapped' declares no forcing_interval_seconds, so `gpuwm domain` has no boundary cadence to write into an emitted namelist.wps and cannot plan it",
+        "intent_routes": [],
+        "intent_supported": false
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "mapped",
+      "source_kind": "deterministic_state",
+      "title": "Generic mapped source (rw-wps mapping v1)",
+      "upstream_ingest": "declarative_mapping_v1",
+      "upstream_model_id": null,
+      "wizard_planable": false
+    }
+  ]
+}

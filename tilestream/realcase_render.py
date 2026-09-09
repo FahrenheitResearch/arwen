@@ -1,6 +1,6 @@
 """Render a streamed real-case forecast, on ArWen's own product-map frame.
 
-DEPRECATED FALLBACK, under the render law (CLAUDE.md, Drew 2026-08-06).
+DEPRECATED FALLBACK, under the project render law ( 2026-08-06).
 The streamed frames this reads now become real wrfouts by default
 (``tilestream/run_bigdomain.py`` -> :mod:`gpuwm.io.surface_wrfout`), so
 the field below is drawable by ``rw_wrfbatch``:

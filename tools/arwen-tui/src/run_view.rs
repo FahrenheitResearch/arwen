@@ -330,7 +330,8 @@ impl Viewer {
             endpoint["name"] = json!(node.name); endpoint["workspace"] = json!(node.workspace);
             // This broker implements only the committed read APIs. It never
             // advertises or probes forecast/review/GPU capabilities.
-            endpoint["capabilities"] = json!({"artifact_index_v1":true,"artifact_sync_v1":true,"artifact_sequence_v1":true,"sync_processed_frame_v1":true});
+            endpoint["capabilities"] = json!({"artifact_index_v1":true,"artifact_sync_v1":true,"artifact_sequence_v1":true,"sync_processed_frame_v1":true,
+                "processed_frame_v2":status["viewer_capabilities"]["processed_frame_v2"]==true});
         }
         let context = json!({"read_only":true,"config_path":status["source_config_path"],"config_sha256":status["source_config_sha256"],
             "python":client.python,"cwd":client.cwd,"output_root":client.output,"geog_root":null,"prepared_root":null,
@@ -354,7 +355,7 @@ impl Viewer {
     fn begin(&mut self, request: &companion::Request) -> Result<String, String> {
         if request.target.as_ref() != Some(&self.target) { return Err("This viewer is bound to a different original run target.".into()); }
         let requested_job = match &request.action {
-            Action::ArtifactIndex { job, .. } | Action::SyncArtifacts { job, .. } | Action::SyncProcessedFrame { job, .. } | Action::CloseRun(job) => job,
+            Action::ArtifactIndex { job, .. } | Action::SyncArtifacts { job, .. } | Action::SyncProcessedFrame { job, .. } | Action::SyncProcessedFrameV2 { job, .. } | Action::SyncNativePlots { job, .. } | Action::CloseRun(job) => job,
             _ => return Err("Runs viewers are read-only. Draft edits, target selection and job control stay in the control center.".into()),
         };
         if requested_job != self.job_id() { return Err("This request names a different saved job.".into()); }
@@ -370,6 +371,13 @@ impl Viewer {
             },
             Action::SyncProcessedFrame { job, domain, sequence } => remote::Operation::SyncProcessedFrame {
                 job:job.clone(),domain:*domain,sequence:*sequence,cache:self.session.directory.join("processed-store").join(&node.id).join(job),
+            },
+            Action::SyncProcessedFrameV2 { job, domain, sequence, options, reader_leases, cache_bytes } => remote::Operation::SyncProcessedFrameV2 {
+                job:job.clone(),domain:*domain,sequence:*sequence,options:options.clone(),reader_leases:*reader_leases,cache_bytes:*cache_bytes,
+                cache:self.client.output.join(".arwen-viewer-cache").join(&node.id).join(job),
+            },
+            Action::SyncNativePlots { job, domain, sequence } => remote::Operation::SyncNativePlots {
+                job:job.clone(),domain:*domain,sequence:*sequence,cache:self.client.output.join(".arwen-native-plots-cache").join(&node.id).join(job),
             },
             _ => unreachable!(),
         };
@@ -393,7 +401,12 @@ impl Viewer {
                         let reply = reply.ok_or("Frame request ended without a reply.")?;
                         let Source::Remote { node, binding } = &mut self.source else { unreachable!() };
                         remote::validate_readonly_reply(node, &pending.transport.operation, &reply)?;
-                        if matches!(pending.request.action,Action::SyncProcessedFrame{..}){
+                        if matches!(pending.request.action,Action::SyncNativePlots{..}) {
+                            binding.authority(&reply["native_plots"])?;
+                            details["native_plots"]=reply["native_plots"].clone();
+                            return Ok(if reply["native_plots"]["waiting"]==true {"Native plots are still being prepared."}else{"Native plot gallery is ready."}.into());
+                        }
+                        if matches!(pending.request.action,Action::SyncProcessedFrame{..}|Action::SyncProcessedFrameV2{..}){
                             binding.authority(&reply["processed_frame"])?;
                             details["processed_frame"]=reply["processed_frame"].clone();
                             let result=remote::processed_message(&details["processed_frame"]);

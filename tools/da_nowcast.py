@@ -157,7 +157,7 @@ DEFAULT_MEMBERS = 10
 #: (:data:`gpuwm.hrrr_route_inputs.ROUTE_DEFAULT_PHYSICS_PROFILE`):
 #: Thompson microphysics with legacy RRTMG longwave AND shortwave and no
 #: cumulus parameterization.  Chosen because the nowcast's background is
-#: HRRR permanently (Drew ruling 2026-08-06) and a product must not
+#: HRRR permanently (project ruling, 2026-08-06) and a product must not
 #: default to a different suite from the route that prepares its
 #: background.  It is not free -- RRTMG on a 12-minute cadence per member
 #: instead of a 1-minute shortwave-only call, and mp8 carries more
@@ -506,7 +506,7 @@ def plan_window(window_end: datetime, *, cycles: int, cycle_seconds: int,
     cadence, publication lag and horizon pick the cycle.  The parameter
     default stays ``gfs`` so a receipt replay and this function's own
     tests keep meaning what they said; the FRONT DOOR's default is
-    ``hrrr`` and is named once, at the CLI (Drew ruling, 2026-08-06).
+    ``hrrr`` and is named once, at the CLI (project ruling, 2026-08-06).
     """
 
     if cycles < 1:
@@ -1918,7 +1918,7 @@ def build_parser() -> argparse.ArgumentParser:
                      choices=("hrrr", "gfs"),
                      help="background source. Default hrrr -- the "
                           "convection-allowing background is the "
-                          "nowcast's background, permanently (Drew "
+                          "nowcast's background, permanently (project "
                           "ruling, 2026-08-06); gfs is retained for "
                           "archival reproduction of pre-HRRR runs "
                           "only. Both names are gpuwm.da.background "

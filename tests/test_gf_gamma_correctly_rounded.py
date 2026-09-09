@@ -382,7 +382,7 @@ def test_host_compiled_gfk_tgamma_is_correctly_rounded(tmp_path_factory):
     IEEE-754 semantics when built with contraction off, which is the whole
     premise of tools/gf_wrf461_oracle/gf_host_parity.py.
 
-    Since 2.6.6 this builds the harness itself rather than skipping without
+    Since 2.7.0 this builds the harness itself rather than skipping without
     one -- see :func:`_host_harness`."""
     lib = _host_harness(tmp_path_factory.mktemp("gf-host-harness"))
     assert hasattr(lib, "gf_host_tgamma"), (

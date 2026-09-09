@@ -191,6 +191,53 @@ def reconciler_sst(fields: Mapping[str, object]):
     return _first_present(fields, SST_RECONCILER_NAMES)
 
 
+def door_reconciled_soil_category(static, fields: Mapping[str, object],
+                                  landuse_attrs, *, route: str | None = None):
+    """ISLTYP as the physics driver will integrate it, for a door's soil ingest.
+
+    ONE assembly of :func:`gpuwm.core.landuse.reconciled_soil_category`'s
+    arguments from what every front door already holds -- the static
+    fields, the initial met fields and the selected land-use table -- so
+    the ERA5 config door, the GFS door, the mapped door and the nested
+    child all reconcile the same way.  The GFS and mapped doors handed the
+    RAW ``SCT_DOM`` to ``preprocess_land_surface_soil`` after the GFS+RUC
+    route refusal was retired, so a shoreline column carrying the water
+    soil category under a land ``LU_INDEX`` reached RUC and evaluated
+    ``0./0.`` into MAVAIL on the first surface call -- the exact death the
+    retired refusal existed to avoid, now fixed where real.exe fixes it
+    (``module_initialize_real.F:3608-3650``), at initialization (ENG-009).
+
+    ``landuse_attrs`` is ``None`` only for a prebuilt static cache with no
+    geography tree beside it: there is no ISWATER/ISLAKE/ISICE to reconcile
+    against, so the raw category is returned and, when ``route`` names the
+    caller, the fact is printed rather than assumed away.
+    """
+    soil_type = static["SCT_DOM"]
+    if landuse_attrs is None:
+        if route:
+            import sys
+
+            print(
+                f"{route}: the prebuilt static cache carries no land-use "
+                "metadata (ISWATER/ISLAKE/ISICE), so the soil category is "
+                "not reconciled against LU_INDEX the way real.exe does "
+                "(module_initialize_real.F:3608-3650); a land column carrying "
+                "the water soil category would reach the land-surface scheme "
+                "as written.  Pass --geog-root, which is read only for the "
+                "land-use index, to reconcile it.", file=sys.stderr)
+        return soil_type
+    from gpuwm.core.landuse import reconciled_soil_category
+
+    return reconciled_soil_category(
+        static["LU_INDEX"], soil_type=soil_type,
+        xice=fields.get("XICE", 0.0),
+        iswater=int(landuse_attrs["ISWATER"]),
+        islake=int(landuse_attrs["ISLAKE"]),
+        isice=int(landuse_attrs["ISICE"]),
+        soil_temperature=reconciler_soil_temperature(fields),
+        sst=reconciler_sst(fields))
+
+
 def _require_same_shape(fields: Mapping[str, object], names) -> tuple[int, int]:
     missing = [name for name in names if name not in fields]
     if missing:

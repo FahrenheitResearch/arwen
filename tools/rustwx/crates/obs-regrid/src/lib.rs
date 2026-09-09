@@ -1,12 +1,12 @@
 //! Putting an observation and a forecast on one grid, in Rust.
 //!
 //! The port target is `gpuwm/verify/obs/regrid.py`, the remap the
-//! observation battery scores through.  Drew's Python boundary names
+//! observation battery scores through.  the project's Python boundary names
 //! "regrid/transform" as data-path processing, and this crate is where
 //! that half of the battery now runs; the Python module keeps its
 //! signatures and routes here by default.
 //!
-//! **Seeded from Drew's Rust.**  `crates/rustwx-regrid` in the
+//! **Seeded from the project's Rust.**  `crates/rustwx-regrid` in the
 //! consolidated workspace supplies the shape of this crate rather than
 //! its arithmetic: the plan-as-data discipline (a remap between two
 //! fixed grids is a fixed mapping, built once and applied many times),

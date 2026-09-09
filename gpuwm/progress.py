@@ -433,6 +433,7 @@ class _Transfer:
         on_disk = 0
         if self.path is not None:
             for candidate in (self.path.with_name(self.path.name + ".part"),
+                              self.path.with_name(self.path.name + ".download"),
                               self.path):
                 try:
                     on_disk = max(on_disk, candidate.stat().st_size)

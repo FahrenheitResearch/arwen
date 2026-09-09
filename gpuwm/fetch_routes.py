@@ -70,7 +70,7 @@ ROUTE_TABLE_SCHEMA = "gpuwm-fetch-routes-v1"
 #: resolving a key shape nothing was measured against.  Kept in sync by
 #: ``tests/test_fetch_routes.py``.
 ROUTE_TABLE_SHA256 = (
-    "cad041195e608d29af6c6d7f0f74b0b5c40d72faed3564ea55cef5e90be28521"
+    "5adb0486a1973d92f420111c7ce7e59cbcde7a34cd4f4851c6bedbee3a2532d1"
 )
 
 #: Sources whose acquisition predates the route table and keeps its own

@@ -72,7 +72,7 @@ for every rejection.
 
 Relationship to BowEcho
 -----------------------
-Drew's Rust radar stack (BowEcho, ``crates/render2d``) already carries four
+ArWen's Rust radar stack (BowEcho, ``crates/render2d``) already carries four
 dealiasing engines, and steps 1-2 here are deliberately the same algorithm
 and the same constants as its shared ``region_core`` -- ``REGION_JOIN_FRAC``
 0.5, ``REGION_MAX_FOLD`` 5, the same vote convention, the same
@@ -98,7 +98,7 @@ not by a rewrite.
 
 Engines
 -------
-That call now exists.  :mod:`gpuwm.obs.dealias_region` drives Drew's Rust
+That call now exists.  :mod:`gpuwm.obs.dealias_region` drives ArWen's Rust
 ``region-global-dealias`` crate -- a port of Py-ART's
 ``dealias_region_based`` -- through a C ABI, and
 :attr:`DealiasParams.engine` selects between them:

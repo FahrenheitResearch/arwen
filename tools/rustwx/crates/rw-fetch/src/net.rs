@@ -135,7 +135,7 @@ impl Fetcher {
     /// message and nothing else, the index provably ends where the
     /// object ends.  If it returns one extra byte, the object carries
     /// records the index never mentions -- a mid-publish `.idx`, and
-    /// the case Drew's rule exists for.  Both answers cost one bounded
+    /// the case the project rule exists for.  Both answers cost one bounded
     /// range GET whose bytes the cache keeps for the transfer that
     /// follows.
     pub fn probe_object(

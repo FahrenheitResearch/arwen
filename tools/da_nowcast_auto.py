@@ -914,7 +914,7 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
                         choices=("hrrr", "gfs"),
                         help="background source for every epoch's "
                              "prepared case. Default hrrr, permanently "
-                             "(Drew ruling, 2026-08-06); gfs is "
+                             "(project ruling, 2026-08-06); gfs is "
                              "retained for archival reproduction only. "
                              "The roster is gpuwm.da.background's "
                              "registry -- the next source (RRFS) is a "

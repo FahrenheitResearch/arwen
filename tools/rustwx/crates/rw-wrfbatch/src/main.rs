@@ -29,10 +29,12 @@ mod postproc_severe;
 mod wrf_process;
 #[path = "wrf_volumes.rs"]
 mod wrf_volumes;
+mod wrf_chart_planes;
 #[path = "mesh.rs"]
 mod mesh;
 #[path = "section.rs"]
 mod section;
+mod store_render;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -1185,7 +1187,7 @@ struct SectionArgs {
 /// The size a SECTION is drawn at: what the caller asked for, or landscape
 /// 2:1 at the map's width.
 ///
-/// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): the pair tool handed
+/// WHAT BREAKAGE THIS PREVENTS (gate law): the pair tool handed
 /// sections the MAP's size and a 1800x1464 near-square map produced a
 /// 1800x1464 near-square section -- a vertical cut, which is 100 km wide
 /// and 6 km tall, drawn in a portrait-ish frame.
@@ -1591,7 +1593,7 @@ fn list_products(
 mod tests {
     use super::*;
 
-    /// WHAT BREAKAGE THIS PREVENTS (gate law, CLAUDE.md): the pair tool
+    /// WHAT BREAKAGE THIS PREVENTS (gate law): the pair tool
     /// handed a section the MAP's size, so a 1800x1464 near-square map
     /// produced a 1800x1464 near-square section -- a cut 100 km wide and
     /// 6 km tall drawn in a portrait-ish frame.
@@ -1995,6 +1997,9 @@ fn dispatch() -> Result<(), CliError> {
 
 fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
+    if let Some(result) = store_render::try_cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
+        return match result { Ok(()) => ExitCode::SUCCESS, Err(message) => { eprintln!("{message}"); ExitCode::FAILURE } };
+    }
     if let Some(result) = rw_wrfbatch::process_request::try_cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
         return match result { Ok(()) => ExitCode::SUCCESS, Err(message) => { eprintln!("{message}"); ExitCode::FAILURE } };
     }

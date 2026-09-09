@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import math
 import sys
 from pathlib import Path
@@ -94,8 +95,8 @@ for dt in (0.006, 0.005, 0.004, 0.003):
     trial(100.0, dt, "emdiv+adv5+d6", emdiv=0.01, h_sca_adv_order=5,
           diff_6th_opt=2, diff_6th_factor=0.12)
 
-with open("/tmp/claude-1000/-home-drew-bowecho-dea/"
-          "12456cae-783d-4a37-9cd5-d2db7c7bd8da/scratchpad/out/"
-          "cflsweep.json", "w") as fh:
+os.makedirs(os.environ.get("LES1M_PROBE_OUT", "les1m-probe-out"), exist_ok=True)
+with open(os.path.join(os.environ.get("LES1M_PROBE_OUT", "les1m-probe-out"),
+                       "cflsweep.json"), "w") as fh:
     json.dump({"nstep": NSTEP, "rows": ROWS}, fh, indent=1, default=float)
 print("DONE", flush=True)

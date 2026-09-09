@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 #[path="local_progress.rs"]
-mod local_progress;
+pub(crate) mod local_progress;
 
 pub fn now_ms() -> u128 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() }
 pub fn digest(bytes: &[u8]) -> String { format!("{:x}", Sha256::digest(bytes)) }
@@ -45,10 +45,13 @@ pub enum Action {
     StopJob(String),
     SyncArtifacts { job: String, domain: u32, sequence: Option<u64>, reader_leases: bool },
     SyncProcessedFrame { job: String, domain: u32, sequence: Option<u64> },
+    SyncProcessedFrameV2 { job: String, domain: u32, sequence: Option<u64>, options: crate::remote::ViewerOptions, reader_leases: bool, cache_bytes: Option<u64> },
+    SyncNativePlots { job: String, domain: u32, sequence: u64 },
     ArtifactIndex { job: String, domain: u32, after_sequence: u64 },
     OpenConfig(PathBuf),
     ResetSetup,
     FocusLogs,
+    FocusJobLogs(String),
     FocusNodes,
     FocusSetup,
     SelectTarget,
@@ -75,7 +78,7 @@ fn parse_request(value: &Value, id: &str, session: &str) -> Result<Request, Stri
         return Err("Request schema, session or ID does not match this control queue.".into());
     }
     let name = value["action"].as_str().ok_or("Request action is missing.")?;
-    let field = match name { "review_plan" | "launch_plan" => Some("plan_path"), "stop_job" | "sync_artifacts" | "sync_processed_frame" | "artifact_index" | "open_run" | "close_run" => Some("job_id"), "open_config" => Some("config_path"), "reset_setup" | "focus_logs" | "focus_nodes" | "focus_setup" | "select_target" | "browse_runs" => None,
+    let field = match name { "review_plan" | "launch_plan" => Some("plan_path"), "stop_job" | "sync_artifacts" | "sync_processed_frame" | "sync_processed_frame_v2" | "sync_native_plots" | "artifact_index" | "open_run" | "close_run" => Some("job_id"), "open_config" => Some("config_path"), "reset_setup" | "focus_logs" | "focus_nodes" | "focus_setup" | "select_target" | "browse_runs" => None,
         _ => return Err("Unsupported companion action.".into()) };
     let object = value.as_object().ok_or("Request must be a JSON object.")?;
     let plan_action = matches!(name, "review_plan" | "launch_plan");
@@ -84,6 +87,9 @@ fn parse_request(value: &Value, id: &str, session: &str) -> Result<Request, Stri
         && !(matches!(name,"sync_artifacts"|"sync_processed_frame"|"artifact_index") && key=="domain")
         && !(name=="sync_artifacts" && matches!(key.as_str(),"sequence"|"reader_leases"))
         && !(name=="sync_processed_frame" && key=="sequence")
+        && !(name=="sync_native_plots" && matches!(key.as_str(),"domain"|"sequence"))
+        && !(name=="focus_logs" && key=="job_id")
+        && !(name=="sync_processed_frame_v2" && matches!(key.as_str(),"domain"|"sequence"|"profile"|"products"|"expected_run_id"|"prefetch_sequences"|"reader_leases"|"cache_bytes"))
         && !(name=="artifact_index" && key=="after_sequence")
         && !(plan_action && ["plan_sha256","config_sha256"].contains(&key.as_str()))
         && !(name=="launch_plan" && ["review_id","review_sha256"].contains(&key.as_str()))
@@ -115,18 +121,23 @@ fn parse_request(value: &Value, id: &str, session: &str) -> Result<Request, Stri
         return Err("A remote plan needs the saved plan and configuration SHA-256 bindings.".into());
     }
     if name=="review_plan"&&!ssh {return Err("Remote review requires an explicit SSH target.".into());}
-    if matches!(name,"sync_artifacts"|"sync_processed_frame"|"artifact_index")&&!ssh {return Err("Remote artifacts require an explicit SSH target.".into());}
+    if matches!(name,"sync_artifacts"|"sync_processed_frame"|"sync_processed_frame_v2"|"sync_native_plots"|"artifact_index")&&!ssh {return Err("Remote artifacts require an explicit SSH target.".into());}
     if ssh&&name=="launch_plan"&&(review_id.is_none()||review_sha256.is_none()) {return Err("A remote launch needs its completed node review.".into());}
     let argument = field.map(|key| value[key].as_str().filter(|s| !s.is_empty() && s.len() <= 8192 && !s.chars().any(char::is_control))
         .ok_or_else(|| "Request needs a valid absolute path.".to_owned())).transpose()?;
-    if argument.is_some_and(|value| !(matches!(name,"stop_job"|"sync_artifacts"|"sync_processed_frame"|"artifact_index"|"open_run"|"close_run")&&ssh) && !Path::new(value).is_absolute()) {
+    if argument.is_some_and(|value| !(matches!(name,"stop_job"|"sync_artifacts"|"sync_processed_frame"|"sync_processed_frame_v2"|"sync_native_plots"|"artifact_index"|"open_run"|"close_run")&&ssh) && !Path::new(value).is_absolute()) {
         return Err("Companion paths must be absolute.".into());
     }
-    if matches!(name,"stop_job"|"sync_artifacts"|"sync_processed_frame"|"artifact_index"|"open_run"|"close_run")&&ssh {crate::remote::valid_job(argument.unwrap())?;}
+    if matches!(name,"stop_job"|"sync_artifacts"|"sync_processed_frame"|"sync_processed_frame_v2"|"sync_native_plots"|"artifact_index"|"open_run"|"close_run")&&ssh {crate::remote::valid_job(argument.unwrap())?;}
     let domain=||match value.get("domain"){
         None=>Ok(1),Some(value)=>value.as_u64().filter(|n|(1..=999).contains(n)).map(|n|n as u32).ok_or("Artifact domain must be an integer between 1 and 999."),
     };
     let action = match name {
+        "focus_logs" if value.get("job_id").is_some()=>{
+            if !ssh{return Err("A saved remote job log requires an explicit SSH target.".into());}
+            let job=value["job_id"].as_str().ok_or("A saved job log requires its job ID.")?;
+            crate::remote::valid_job(job)?;Action::FocusJobLogs(job.into())
+        },
         "browse_runs" => Action::BrowseRuns,
         "open_run" => Action::OpenRun(argument.unwrap().to_owned()),
         "close_run" => Action::CloseRun(argument.unwrap().to_owned()),
@@ -138,6 +149,12 @@ fn parse_request(value: &Value, id: &str, session: &str) -> Result<Request, Stri
             reader_leases:match value.get("reader_leases"){None=>false,Some(value)=>value.as_bool().ok_or("Reader leases must be a boolean.")?}},
         "sync_processed_frame" => Action::SyncProcessedFrame { job:argument.unwrap().to_owned(),domain:domain()?,
             sequence:value.get("sequence").map(|v|v.as_u64().filter(|n|*n>0&&*n<=i64::MAX as u64).ok_or("Frame sequence must be a positive integer.")).transpose()? },
+        "sync_processed_frame_v2" => Action::SyncProcessedFrameV2 {job:argument.unwrap().to_owned(),domain:domain()?,
+            sequence:value.get("sequence").map(|v|v.as_u64().filter(|n|*n>0&&*n<=i64::MAX as u64).ok_or("Frame sequence must be a positive integer.")).transpose()?,
+            options:crate::remote::ViewerOptions::from_value(value)?,
+            reader_leases:value.get("reader_leases").map(|v|v.as_bool().ok_or("Reader leases must be a boolean.")).transpose()?.unwrap_or(false),
+            cache_bytes:value.get("cache_bytes").map(|v|v.as_u64().filter(|n|(64*1024*1024..=1024_u64.pow(4)).contains(n)).ok_or("Viewer cache must be 64 MiB to 1 TiB.")).transpose()?},
+        "sync_native_plots"=>Action::SyncNativePlots{job:argument.unwrap().to_owned(),domain:domain()?,sequence:value["sequence"].as_u64().filter(|n|*n>0&&*n<=i64::MAX as u64).ok_or("Native plots require an exact positive frame sequence.")?},
         "artifact_index"=>Action::ArtifactIndex{job:argument.unwrap().to_owned(),domain:domain()?,
             after_sequence:match value.get("after_sequence"){None=>0,Some(value)=>value.as_u64().filter(|n|*n<=i64::MAX as u64).ok_or("Artifact cursor must be a nonnegative integer.")?}},
         "open_config" => Action::OpenConfig(PathBuf::from(argument.unwrap())),
@@ -148,6 +165,105 @@ fn parse_request(value: &Value, id: &str, session: &str) -> Result<Request, Stri
         _ => Action::FocusLogs,
     };
     Ok(Request { id: id.into(), name: name.into(), action, target, plan_sha256, config_sha256, review_id, review_sha256 })
+}
+
+/// A claim older than this in a session that is closed or has stopped
+/// heartbeating is abandoned. Matches COMPANION_QUEUE_TIMEOUT (main.rs) and the
+/// worker readiness limit (job.rs); the visual workspace waits 120-240 s.
+const ABANDONED_CLAIM: Duration = Duration::from_secs(30);
+
+fn claimed_action(value: Option<&Value>) -> String {
+    value.and_then(|value| value["action"].as_str()).filter(|name| valid_id(name)).unwrap_or("unknown").to_owned()
+}
+
+/// The one response writer. Every claimed request id ends in exactly this
+/// document, whichever session (current or a previous, dead one) answers it.
+fn write_response(directory:&Path,session_id:&str,id:&str,action:&str,result:Result<String,String>,details:Value)->Result<(),String>{
+    let ok = result.is_ok();
+    let message = match result { Ok(message) | Err(message) => message };
+    let mut response=json!({
+        "schema":"arwen.companion-response.v1", "session_id":session_id, "id":id, "action":action,
+        "ok":ok, "message":message, "job_id":null, "job_dir":null, "tui_version":TUI_VERSION,
+    });
+    if let Some(fields)=details.as_object(){for(key,value)in fields{
+        if !["target","job_id","job_dir","remote_output_root","review_id","review_sha256","review_path",
+            "artifact_manifest_path","artifact_manifest_sha256","artifact_index_path","artifact_index_sha256",
+            "transferred_bytes","waiting","cache_recovery","jobs","handoff","processed_frame","native_plots"].contains(&key.as_str()) {return Err("Unsupported companion response detail.".into());}
+        response[key]=value.clone();
+    }}
+    atomic_json(&directory.join("responses").join(format!("{id}.json")), &response).map_err(|e|e.to_string())
+}
+
+fn unix_ms(time: SystemTime) -> u128 { time.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() }
+
+/// This terminal's own release; travels with every status, response and
+/// handoff so a GUI can tell a 2.6.x terminal (no sync_processed_frame_v2)
+/// from the one it was packaged with.
+pub const TUI_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The installed engine's version as the configured interpreter reports it
+/// (`gpuwm.__version__`, from distribution metadata; "0+unknown" for an
+/// uninstalled source tree). None when the interpreter cannot answer:
+/// missing executable, no gpuwm, or a reply that is not a plain version
+/// token. Bounded by importing only `gpuwm`, which costs tens of
+/// milliseconds; -P keeps the launch folder off its path.
+pub fn engine_version(python: &Path) -> Option<String> {
+    let mut command = Command::new(python);
+    command.args(["-P", "-B", "-c", "import gpuwm,sys;sys.stdout.write(gpuwm.__version__)"])
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
+    let output = command.output().ok()?;
+    if !output.status.success() { return None; }
+    let version = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    (!version.is_empty() && version.len() <= 64 && version.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'+' | b'-' | b'_')))
+        .then_some(version)
+}
+
+/// A previous control session is dead once it published `closed`, or once its
+/// status heartbeat (500 ms cadence) is older than ABANDONED_CLAIM, or when it
+/// never published a status and is older than that limit.
+fn session_dead(directory: &Path, now: u128) -> bool {
+    let limit = ABANDONED_CLAIM.as_millis();
+    match read_json(&directory.join("status.json"), 1024 * 1024) {
+        Ok(status) => status["state"] == "closed"
+            || status["heartbeat_unix_ms"].as_u64().is_none_or(|beat| now.saturating_sub(u128::from(beat)) >= limit),
+        Err(_) => fs::metadata(directory).and_then(|meta| meta.modified()).map(unix_ms)
+            .is_ok_and(|created| now.saturating_sub(created) >= limit),
+    }
+}
+
+/// Answer every claim a dead previous session left without a response. Only
+/// sibling `companion-*` sessions under the same `.arwen-tui` are visited; the
+/// current session is skipped. Best effort: an unwritable response changes
+/// nothing, the next start tries again.
+fn reap_abandoned_claims(parent: &Path, current_id: &str) {
+    let Ok(sessions) = fs::read_dir(parent) else { return; };
+    let now = now_ms();
+    for session in sessions.filter_map(Result::ok).take(4096) {
+        let directory = session.path();
+        let Some(name) = directory.file_name().and_then(|name| name.to_str()) else { continue; };
+        let Some(session_id) = name.strip_prefix("companion-") else { continue; };
+        if session_id == current_id || !directory.is_dir() || !session_dead(&directory, now) { continue; }
+        let Ok(claims) = fs::read_dir(directory.join("claimed")) else { continue; };
+        for claim in claims.filter_map(Result::ok).take(4096) {
+            let path = claim.path();
+            let Some(id) = path.file_stem().and_then(|name| name.to_str()).filter(|id| valid_id(id)) else { continue; };
+            if !path.extension().is_some_and(|extension| extension == "json") { continue; }
+            if directory.join("responses").join(format!("{id}.json")).exists() { continue; }
+            let evidence = read_json(&path, 64 * 1024).ok();
+            let claimed = evidence.as_ref().and_then(|value| value["claimed_unix_ms"].as_u64()).map(u128::from)
+                .or_else(|| fs::metadata(&path).and_then(|meta| meta.modified()).ok().map(unix_ms));
+            if claimed.is_some_and(|at| now.saturating_sub(at) < ABANDONED_CLAIM.as_millis()) { continue; }
+            let action = claimed_action(evidence.as_ref().map(|value| &value["request"]));
+            let _ = write_response(&directory, session_id, id, &action,
+                Err("This request was claimed by a previous control center session that did not respond. Retry it in the current session.".into()),
+                Value::Null);
+        }
+    }
 }
 
 pub struct Session {
@@ -169,6 +285,7 @@ impl Session {
         fs::create_dir(&directory).map_err(|e| e.to_string())?;
         let directory = directory.canonicalize().map_err(|e| e.to_string())?;
         for child in ["requests", "responses", "claimed"] { fs::create_dir(directory.join(child)).map_err(|e| e.to_string())?; }
+        reap_abandoned_claims(&parent, &id);
         Ok(Self { id, handoff: directory.join("handoff.json"), directory,
             last_status: Value::Null, published: Instant::now() - Duration::from_secs(1) })
     }
@@ -177,6 +294,7 @@ impl Session {
         status["schema"] = json!("arwen.companion-status.v1");
         status["session_id"] = json!(self.id);
         status["tui_pid"] = json!(std::process::id());
+        status["tui_version"] = json!(TUI_VERSION);
         status["heartbeat_unix_ms"] = json!(now_ms());
         atomic_json(&self.directory.join("status.json"), &status).map_err(|e| e.to_string())?;
         self.last_status = status;
@@ -188,6 +306,11 @@ impl Session {
         context["schema"]=json!("arwen.companion-handoff.v1");
         context["session_id"]=json!(self.id);context["tui_pid"]=json!(std::process::id());
         context["control_dir"]=json!(self.directory);context["status_path"]=json!(self.directory.join("status.json"));
+        // Additive: the schema string is unchanged, so a current GUI still
+        // parses the handoff. The GUI side is expected to read and compare
+        // these before it assumes which actions the terminal understands.
+        context["tui_version"]=json!(TUI_VERSION);
+        context["engine_version"]=context["python"].as_str().and_then(|python|engine_version(Path::new(python))).map_or(Value::Null,Value::String);
         atomic_json(&self.handoff,&context).map_err(|error|error.to_string())?;
         Ok(context)
     }
@@ -204,13 +327,19 @@ impl Session {
             if self.directory.join("responses").join(format!("{id}.json")).exists() { continue; }
             let claim = self.directory.join("claimed").join(format!("{id}.json"));
             let Ok(mut claimed) = fs::OpenOptions::new().write(true).create_new(true).open(claim) else { continue; };
+            // From here the id is claimed: every exit below writes a response,
+            // because a claim without a response is skipped forever by this
+            // loop and the visual workspace can only wait out its timeout.
             let value = read_json(&path, 64 * 1024);
             let evidence = json!({"id": id, "claimed_unix_ms": now_ms(), "request": value.as_ref().ok()});
-            if serde_json::to_writer(&mut claimed, &evidence).and_then(|_| claimed.sync_all().map_err(serde_json::Error::io)).is_err() { continue; }
-            let parsed = value.and_then(|value| parse_request(&value, id, &self.id));
+            let recorded = serde_json::to_writer(&mut claimed, &evidence).and_then(|_| claimed.sync_all().map_err(serde_json::Error::io))
+                .map_err(|error| format!("The control center could not record its claim on this request: {error}"));
+            drop(claimed);
+            let action = claimed_action(value.as_ref().ok());
+            let parsed = recorded.and_then(|_| value).and_then(|value| parse_request(&value, id, &self.id));
             match parsed {
                 Ok(request) => requests.push(request),
-                Err(error) => { let _ = self.respond(id, "unknown", Err(error), None); }
+                Err(error) => { let _ = self.respond(id, &action, Err(error), None); }
             }
         }
         requests
@@ -219,19 +348,7 @@ impl Session {
         self.respond_with(id,action,result,json!({"job_id":job,"job_dir":job}))
     }
     pub fn respond_with(&self,id:&str,action:&str,result:Result<String,String>,details:Value)->Result<(),String>{
-        let ok = result.is_ok();
-        let message = match result { Ok(message) | Err(message) => message };
-        let mut response=json!({
-            "schema":"arwen.companion-response.v1", "session_id":self.id, "id":id, "action":action,
-            "ok":ok, "message":message, "job_id":null, "job_dir":null,
-        });
-        if let Some(fields)=details.as_object(){for(key,value)in fields{
-            if !["target","job_id","job_dir","remote_output_root","review_id","review_sha256","review_path",
-                "artifact_manifest_path","artifact_manifest_sha256","artifact_index_path","artifact_index_sha256",
-                "transferred_bytes","waiting","cache_recovery","jobs","handoff","processed_frame"].contains(&key.as_str()) {return Err("Unsupported companion response detail.".into());}
-            response[key]=value.clone();
-        }}
-        atomic_json(&self.directory.join("responses").join(format!("{id}.json")), &response).map_err(|e|e.to_string())
+        write_response(&self.directory,&self.id,id,action,result,details)
     }
     pub fn save_review(&self,id:&str,review:&Value)->Result<(PathBuf,String),String>{
         let path=self.review_path(id)?;
@@ -379,6 +496,15 @@ pub(crate) fn saved_job_status(directory:&Path)->Result<Value,String>{
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn compact_viewer_request_keeps_explicit_target_exact_frame_and_prefetch(){
+        let mut value=serde_json::json!({"schema":"arwen.companion-request.v1","session_id":"s","id":"compact-1","action":"sync_processed_frame_v2",
+            "target":{"kind":"ssh","node_id":"node-2","connection_sha256":"a".repeat(64)},"job_id":"job-1","domain":2,"sequence":42,
+            "profile":"viewer-2d-v1","products":["mslp_10m_winds"],"expected_run_id":"run-1","reader_leases":true,"prefetch_sequences":[43,44]});
+        assert!(matches!(super::parse_request(&value,"compact-1","s").unwrap().action,super::Action::SyncProcessedFrameV2{domain:2,sequence:Some(42),reader_leases:true,..}));
+        value["prefetch_sequences"]=serde_json::json!([1,2,3,4,5,6,7,8,9]);assert!(super::parse_request(&value,"compact-1","s").is_err());
+        value["prefetch_sequences"]=serde_json::json!([]);value["target"]=serde_json::json!({"kind":"local"});assert!(super::parse_request(&value,"compact-1","s").is_err());
+    }
     use super::*;
     #[test]
     fn runs_and_converted_field_requests_keep_explicit_targets_and_bounded_selectors(){
@@ -492,5 +618,85 @@ mod tests {
         assert!(verified.starts_with(env::temp_dir().canonicalize().unwrap()));
         assert!(verified.file_name().unwrap().to_string_lossy().starts_with("arwen-companion-check-"));
         fs::remove_dir_all(verified).unwrap();
+    }
+    #[test]
+    fn handoff_status_and_responses_carry_the_terminal_and_engine_versions() {
+        let root = env::temp_dir().join(format!("arwen-companion-versions-{}-{}", std::process::id(), now_ms()));
+        let mut session = Session::create(&root).unwrap();
+        let missing = root.join("no-such-interpreter");
+        let handoff = session.publish_handoff(json!({"python":missing,"cwd":root})).unwrap();
+        assert_eq!(handoff["schema"], "arwen.companion-handoff.v1");
+        assert_eq!(handoff["tui_version"], env!("CARGO_PKG_VERSION"));
+        assert!(handoff["engine_version"].is_null(), "{handoff}");
+        assert_eq!(read_json(&session.handoff, 64 * 1024).unwrap()["tui_version"], env!("CARGO_PKG_VERSION"));
+        session.publish(json!({"state":"idle"}), true).unwrap();
+        assert_eq!(read_json(&session.directory.join("status.json"), 64 * 1024).unwrap()["tui_version"], env!("CARGO_PKG_VERSION"));
+        session.respond("v", "focus_logs", Ok("Shown".into()), None).unwrap();
+        assert_eq!(read_json(&session.directory.join("responses/v.json"), 64 * 1024).unwrap()["tui_version"], env!("CARGO_PKG_VERSION"));
+        assert!(engine_version(&missing).is_none());
+        if let Some(python) = env::var_os("GPUWM_TUI_TEST_PYTHON").map(PathBuf::from) {
+            let version = engine_version(&python).expect("the test interpreter reports gpuwm.__version__");
+            assert!(version.chars().next().is_some_and(|c| c.is_ascii_digit()), "{version}");
+            let handoff = session.publish_handoff(json!({"python":python,"cwd":root})).unwrap();
+            assert_eq!(handoff["engine_version"], version);
+        }
+        drop(session);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_claimed_request_that_cannot_be_parsed_still_gets_an_error_response() {
+        let root = env::temp_dir().join(format!("arwen-companion-malformed-{}-{}", std::process::id(), now_ms()));
+        let mut session = Session::create(&root).unwrap();
+        fs::write(session.directory.join("requests/broken.json"), br#"{"schema":"arwen.companion-request.v1","action":"focus_logs","#).unwrap();
+        fs::write(session.directory.join("requests/foreign.json"), serde_json::to_vec(&json!({"schema":"arwen.companion-request.v1","session_id":"someone-else","id":"foreign","action":"focus_logs"})).unwrap()).unwrap();
+        assert!(session.requests().is_empty());
+        for id in ["broken", "foreign"] {
+            assert!(session.directory.join("claimed").join(format!("{id}.json")).is_file());
+            let response = read_json(&session.directory.join("responses").join(format!("{id}.json")), 64 * 1024).unwrap();
+            assert_eq!(response["schema"], "arwen.companion-response.v1");
+            assert_eq!(response["session_id"], session.id);
+            assert_eq!(response["id"], id);
+            assert_eq!(response["ok"], false);
+            assert!(response["message"].as_str().is_some_and(|text| !text.is_empty()), "{response}");
+        }
+        assert_eq!(read_json(&session.directory.join("responses/broken.json"), 64 * 1024).unwrap()["action"], "unknown");
+        assert_eq!(read_json(&session.directory.join("responses/foreign.json"), 64 * 1024).unwrap()["action"], "focus_logs");
+        // Already answered: the next poll neither re-claims nor re-answers.
+        assert!(session.requests().is_empty());
+        drop(session);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_new_session_answers_claims_abandoned_by_dead_sessions_only() {
+        let root = env::temp_dir().join(format!("arwen-companion-reaper-{}-{}", std::process::id(), now_ms()));
+        let stale = now_ms() - 2 * ABANDONED_CLAIM.as_millis();
+        let mut dead = Session::create(&root).unwrap();
+        for id in ["lost", "answered"] {
+            fs::write(dead.directory.join("claimed").join(format!("{id}.json")),
+                serde_json::to_vec(&json!({"id":id,"claimed_unix_ms":stale,"request":{"action":"launch_plan"}})).unwrap()).unwrap();
+        }
+        dead.respond("answered", "launch_plan", Ok("Run plan accepted.".into()), None).unwrap();
+        dead.publish(json!({"state":"idle"}), true).unwrap();
+        let dead_directory = dead.directory.clone();
+        let dead_id = dead.id.clone();
+        drop(dead); // publishes state "closed"
+        let mut live = Session::create(&root).unwrap();
+        fs::write(live.directory.join("claimed/inflight.json"),
+            serde_json::to_vec(&json!({"id":"inflight","claimed_unix_ms":stale,"request":{"action":"review_plan"}})).unwrap()).unwrap();
+        live.publish(json!({"state":"busy"}), true).unwrap();
+        let next = Session::create(&root).unwrap();
+        let reaped = read_json(&dead_directory.join("responses/lost.json"), 64 * 1024).unwrap();
+        assert_eq!(reaped["schema"], "arwen.companion-response.v1");
+        assert_eq!(reaped["session_id"], dead_id);
+        assert_eq!(reaped["id"], "lost");
+        assert_eq!(reaped["action"], "launch_plan");
+        assert_eq!(reaped["ok"], false);
+        assert!(reaped["message"].as_str().unwrap().contains("previous control center session"));
+        assert_eq!(read_json(&dead_directory.join("responses/answered.json"), 64 * 1024).unwrap()["ok"], true);
+        assert!(!live.directory.join("responses/inflight.json").exists(), "a heartbeating session keeps its in-flight claim");
+        assert!(next.directory.join("responses").read_dir().unwrap().next().is_none());
+        drop(next);
+        drop(live);
+        fs::remove_dir_all(root).unwrap();
     }
 }

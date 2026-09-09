@@ -240,6 +240,9 @@ pub struct GeogWindow {
     pub index: GeogIndex,
     pub x0: i64,
     pub y0: i64,
+    /// Original source-plane index of the first stored plane. Monthly
+    /// preparation can hold one plane while interpolation keeps its source z.
+    pub first_plane: usize,
     pub nz: usize,
     pub ny: usize,
     pub nx: usize,
@@ -264,7 +267,9 @@ impl GeogWindow {
     /// Missing-masked, scaled plane as f64/NaN (`GeogWindow.values`).
     pub fn values(&self, z: usize) -> Vec<f64> {
         let n = self.ny * self.nx;
-        let plane = &self.raw[z * n..(z + 1) * n];
+        let local_z = z.checked_sub(self.first_plane).expect("source plane precedes this window");
+        assert!(local_z < self.nz, "source plane is not stored in this window");
+        let plane = &self.raw[local_z * n..(local_z + 1) * n];
         let missing = self.index.missing_value;
         let scale = self.index.scale_factor;
         plane
@@ -314,9 +319,11 @@ pub struct GeogDataset {
     pub ny_global: i64,
     pub wraps_x: bool,
     pub extent_basis: &'static str,
-    /// Decoded-tile cache, keyed `(xs, ys, include_border)` exactly like
-    /// the Python `_tile_cache` (None = sparse absent tile).
+    /// Decoded-tile cache, keyed `(xs, ys, include_border)`. Bound retained
+    /// decoded bytes: a full-band source must not remain cached beside its
+    /// mosaic. Larger individual tiles are read normally but not retained.
     cache: Mutex<HashMap<(i64, i64, bool), Option<Arc<Tile>>>>,
+    cache_limit_bytes: usize,
 }
 
 /// `XSTART-XEND.YSTART-YEND` filename match (`_TILE_RE`): each field is
@@ -501,6 +508,7 @@ impl GeogDataset {
             wraps_x,
             extent_basis,
             cache: Mutex::new(HashMap::new()),
+            cache_limit_bytes: 128 * 1024 * 1024,
         })
     }
 
@@ -578,6 +586,19 @@ impl GeogDataset {
         out
     }
 
+    fn cache_tile(&self, key: (i64, i64, bool), tile: Option<Arc<Tile>>) {
+        let bytes = tile.as_ref().map_or(0, |tile| tile.data.len() * std::mem::size_of::<i64>());
+        let mut cache = self.cache.lock().expect("tile cache poisoned");
+        let retained: usize = cache.values().filter_map(Option::as_ref)
+            .map(|tile| tile.data.len() * std::mem::size_of::<i64>()).sum();
+        if retained.saturating_add(bytes) > self.cache_limit_bytes || cache.len() >= 1024 {
+            cache.clear();
+        }
+        if bytes <= self.cache_limit_bytes {
+            cache.insert(key, tile);
+        }
+    }
+
     /// Read tile with 1-based origin `(xs, ys)` (`_read_tile`): interior
     /// only by default, duplicated border halo retained with
     /// `include_border`.  `None` for a sparse missing tile.
@@ -597,10 +618,7 @@ impl GeogDataset {
             return Ok(hit.clone());
         }
         let Some(file) = self.tiles.get(&(xs, ys)) else {
-            self.cache
-                .lock()
-                .expect("tile cache poisoned")
-                .insert(key, None);
+            self.cache_tile(key, None);
             return Ok(None);
         };
         let idx = &self.index;
@@ -610,6 +628,7 @@ impl GeogDataset {
         let nz = idx.nz() as usize;
         let bytes = std::fs::read(file)?;
         let mut raw = self.decode_words(&bytes);
+        drop(bytes);
         let plane_words = ny * nx;
         let expect = nz * plane_words;
         if raw.len() != expect {
@@ -680,10 +699,7 @@ impl GeogDataset {
             nx: out_nx,
             data,
         });
-        self.cache
-            .lock()
-            .expect("tile cache poisoned")
-            .insert(key, Some(tile.clone()));
+        self.cache_tile(key, Some(tile.clone()));
         Ok(Some(tile))
     }
 
@@ -702,6 +718,7 @@ impl GeogDataset {
             index: self.index.clone(),
             x0: xs - b,
             y0: ys - b,
+            first_plane: 0,
             nz: tile.nz,
             ny: tile.ny,
             nx: tile.nx,
@@ -868,13 +885,31 @@ impl GeogDataset {
         y0: i64,
         y1: i64,
     ) -> Result<GeogWindow> {
+        self.read_window_planes(x0, x1, y0, y1, 0, self.index.nz() as usize)
+    }
+
+    /// Mosaic one original source plane without allocating other months.
+    pub fn read_window_plane(
+        &self, x0: i64, x1: i64, y0: i64, y1: i64, z: usize,
+    ) -> Result<GeogWindow> {
+        if z >= self.index.nz() as usize {
+            return Err(StaticError::Invalid(format!(
+                "source plane {z} is outside the dataset's {} planes", self.index.nz())));
+        }
+        self.read_window_planes(x0, x1, y0, y1, z, 1)
+    }
+
+    fn read_window_planes(
+        &self, x0: i64, x1: i64, y0: i64, y1: i64,
+        first_plane: usize, nz: usize,
+    ) -> Result<GeogWindow> {
         let idx = self.index.clone();
         if x1 < x0 || y1 < y0 {
             return Err(StaticError::Invalid("empty window".to_string()));
         }
         let nxw = (x1 - x0 + 1) as usize;
         let nyw = (y1 - y0 + 1) as usize;
-        if nxw as i64 > self.nx_global {
+        if nxw as i64 > self.nx_global && !self.wraps_x {
             return Err(StaticError::Invalid(
                 "window wider than the global grid".to_string(),
             ));
@@ -904,11 +939,11 @@ impl GeogDataset {
                 )));
             }
         }
+        drop(extent);
         let fill = idx
             .missing_value
             .map(|m| cast_fill(m, idx.wordsize, idx.signed))
             .unwrap_or(0);
-        let nz = idx.nz() as usize;
         let mut out = vec![fill; nz * nyw * nxw];
 
         // Split the x range into wrap-contiguous segments of absolute
@@ -948,7 +983,7 @@ impl GeogDataset {
                             let rows = (oy1 - oy0 + 1) as usize;
                             for z in 0..nz {
                                 for r in 0..rows {
-                                    let src = z * tile.ny * tile.nx
+                                    let src = (first_plane + z) * tile.ny * tile.nx
                                         + ((oy0 - ys) as usize + r) * tile.nx
                                         + (ox0 - xs) as usize;
                                     let dst = z * nyw * nxw
@@ -970,6 +1005,7 @@ impl GeogDataset {
             index: idx,
             x0,
             y0,
+            first_plane,
             nz,
             ny: nyw,
             nx: nxw,
@@ -1170,6 +1206,86 @@ mod tests {
         }
     }
 
+    fn check_periodic_window(ds: &GeogDataset, x0: i64, x1: i64, y0: i64, y1: i64) {
+        assert!(ds.wraps_x);
+        let one = ds.read_window(1, ds.nx_global, y0, y1).unwrap();
+        let wide = ds.read_window(x0, x1, y0, y1).unwrap();
+        let nx = (x1 - x0 + 1) as usize;
+        let ny = (y1 - y0 + 1) as usize;
+        let period = ds.nx_global as usize;
+        for z in 0..ds.index.nz() as usize {
+            for y in 0..ny {
+                for x in 0..nx {
+                    let sx = (x0 + x as i64 - 1).rem_euclid(ds.nx_global) as usize;
+                    assert_eq!(wide.raw[(z * ny + y) * nx + x], one.raw[(z * ny + y) * period + sx]);
+                    assert_eq!(wide.coverage.as_ref().unwrap()[y * nx + x], one.coverage.as_ref().unwrap()[y * period + sx]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn periodic_windows_repeat_source_cells_across_multiple_cycles_and_polar_fill() {
+        let ds = GeogDataset::open(&golden_dir().join("synthetic/syn_wrap"), None).unwrap();
+        check_periodic_window(&ds, -2, 15, 1, 6);
+        check_periodic_window(&ds, -2 * ds.nx_global - 3, 3 * ds.nx_global + 4, 0, ds.ny_global + 1);
+        let regional = GeogDataset::open(&golden_dir().join("synthetic/syn_i2_big_bdr"), None).unwrap();
+        assert!(!regional.wraps_x);
+        assert!(regional.read_window(1, regional.nx_global + 1, 1, 1).unwrap_err().to_string().contains("window wider than the global grid"));
+    }
+
+    #[test]
+    fn individual_source_planes_match_full_windows_without_other_plane_storage() {
+        let root = golden_dir();
+        let manifest = json(&root.join("synthetic_expected/manifest.json"));
+        let mut compared = 0;
+        let mut nonzero_planes = 0;
+        for (name, entry) in manifest.as_object().unwrap() {
+            if !entry["window"].is_object() { continue; }
+            let ds = GeogDataset::open(&root.join("synthetic").join(name), None).unwrap();
+            let (x0, x1, y0, y1) = args4(&entry["window"]["args"]);
+            let full = ds.read_window(x0, x1, y0, y1).unwrap();
+            for z in 0..full.nz {
+                let single = ds.read_window_plane(x0, x1, y0, y1, z).unwrap();
+                assert_eq!(single.first_plane, z);
+                assert_eq!(single.nz, 1);
+                assert_eq!(single.raw.len(), full.ny * full.nx);
+                assert_eq!(single.raw, full.raw[z * full.ny * full.nx..(z + 1) * full.ny * full.nx], "{name}/{z}: raw");
+                assert_eq!(single.coverage, full.coverage, "{name}/{z}: coverage");
+                assert_bits_f64(&single.values(z), &full.values(z), &format!("{name}/{z}: values"));
+                compared += 1;
+                nonzero_planes += usize::from(z > 0);
+            }
+            assert!(ds.read_window_plane(x0, x1, y0, y1, full.nz).is_err());
+        }
+        assert!(compared > 5 && nonzero_planes > 0);
+    }
+
+    #[test]
+    fn decoded_tile_cache_evicts_to_byte_limit_without_changing_live_values() {
+        let mut ds = GeogDataset::open(&golden_dir().join("synthetic/syn_i2_big_bdr"), None).unwrap();
+        let origins: Vec<_> = ds.tiles.keys().copied().collect();
+        assert!(origins.len() > 1);
+        let first = ds.read_tile(origins[0].0, origins[0].1, false).unwrap().unwrap();
+        ds.cache_limit_bytes = first.data.len() * std::mem::size_of::<i64>();
+        let expected = first.data.clone();
+        let weak = Arc::downgrade(&first);
+        drop(first);
+        let second = ds.read_tile(origins[1].0, origins[1].1, false).unwrap().unwrap();
+        assert!(weak.upgrade().is_none(), "the first decoded tile must be released on eviction");
+        let retained: usize = ds.cache.lock().unwrap().values().filter_map(Option::as_ref)
+            .map(|t| t.data.len() * std::mem::size_of::<i64>()).sum();
+        assert!(retained <= ds.cache_limit_bytes);
+        assert!(!second.data.is_empty());
+        let reread = ds.read_tile(origins[0].0, origins[0].1, false).unwrap().unwrap();
+        assert_eq!(reread.data, expected);
+        ds.cache_limit_bytes = 1;
+        ds.cache.lock().unwrap().clear();
+        let uncached = ds.read_tile(origins[0].0, origins[0].1, false).unwrap().unwrap();
+        assert_eq!(uncached.data, expected);
+        assert!(ds.cache.lock().unwrap().is_empty(), "oversized tiles remain readable but are not retained");
+    }
+
     #[test]
     fn synthetic_datasets_match_the_python_reference() {
         let root = golden_dir();
@@ -1181,6 +1297,10 @@ mod tests {
                 .unwrap_or_else(|err| panic!("{name}: open refused: {err}"));
             check_index(&ds.index, &entry["index"], name);
             check_inventory(&ds, &entry["inventory"], name);
+            if entry["periodic_window"].is_object() {
+                let (x0, x1, y0, y1) = args4(&entry["periodic_window"]["args"]);
+                check_periodic_window(&ds, x0, x1, y0, y1);
+            }
             if entry["window"].is_object() {
                 check_window(&ds, &entry["window"], &exp_dir, name);
             }

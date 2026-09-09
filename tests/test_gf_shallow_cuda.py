@@ -4,7 +4,7 @@ Same bar as tests/test_gf_shallow_parity.py: bitwise identity with the WRF
 v4.6.1 per-case capture (gf-shallow-levels.csv / gf-shallow-surface.csv, 18
 cases) with fzu PINNED from that capture, exactly as the CPU suite pins it.
 
-WHY IT IS PINNED, AND WHAT CHANGED AT 2.6.6.  Through 2.6.5 gfk_tgamma was a
+WHY IT IS PINNED, AND WHAT CHANGED AT 2.7.0.  Through 2.6.5 gfk_tgamma was a
 transcription of glibc 2.39's LGPL e_gammaf_r.c, so the kernel returned
 glibc's own words and this gate could run the chain unpinned -- the notch
 past the CPU suite.  The transcription is gone (an Apache-2.0 distribution

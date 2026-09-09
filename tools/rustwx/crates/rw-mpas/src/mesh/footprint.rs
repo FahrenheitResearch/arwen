@@ -398,7 +398,7 @@ pub static CARDS: &[Card] = &[
             }],
             measured_on: "2026-08-21",
             provenance:
-                "weather-node-1, sm_120, float32, nVertLevels 55, full physics, 6 steps, rc 0, \
+                "sm_120, float32, nVertLevels 55, full physics, 6 steps, rc 0, \
                  status passed. The 8,768.0 MiB peak is the run under memory pressure: VRAM was \
                  held down in a separate process so the run saw 9,656.7 MiB free, and four \
                  separate runs across a 2.6 GiB band of held-down budgets all peaked at exactly \

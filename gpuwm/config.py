@@ -2374,7 +2374,7 @@ def anisotropic_w_mixing_advice(*, where: str, km_opt: int,
 
     ``forced`` says the configuration WROTE ``mix_isotropic = 0`` -- as
     opposed to inheriting it -- and appends the override state to the
-    over-the-limit sentence.  Since the auto-switch (Drew, 2026-08-16;
+    over-the-limit sentence.  Since the auto-switch (project ruling, 2026-08-16;
     :func:`auto_mix_isotropic_selection`), a domain that reaches this
     advisory over the limit through the experiment loader can ONLY have
     written the value: an unset ``mix_isotropic`` resolves to 1 there
@@ -2510,7 +2510,7 @@ def warn_anisotropic_w_mixing(*, where: str, km_opt: int, mix_isotropic: int,
     and the tier, and ``tests/test_shipped_configs_mixing_stability.py``
     keeps the shipped set out of the exposed state entirely.
 
-    THE DEFAULT IS THE AUTO-SWITCH (Drew, 2026-08-16; supersedes the
+    THE DEFAULT IS THE AUTO-SWITCH (project ruling, 2026-08-16; supersedes the
     recipe-only half of the 2.5.0 "where the default moved" ruling).
     "Fixed means default" makes an opt-in remedy for a correctness
     criterion a workaround, and an advisory that a bare config scrolls

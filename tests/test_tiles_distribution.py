@@ -385,6 +385,8 @@ def test_rescued_tools_is_excluded_from_the_declaration():
         "[tool.setuptools.packages.find] no longer excludes "
         "tilestream.rescued-tools*; the wheel would ship stale forks of "
         "tilestream/driver.py and friends again")
+    assert "tilestream.skeptic*" in exclude, (
+        "development fault-injection and remote mutation probes must remain repository-only")
 
 
 def test_rescued_tools_is_excluded_from_the_build_and_not_vacuously():
@@ -418,6 +420,9 @@ def test_rescued_tools_is_excluded_from_the_build_and_not_vacuously():
         "with the exclude lifted, discovery no longer finds rescued-tools "
         "at all -- the directory moved or was emptied, so the exclusion "
         "pins nothing; update or retire it together with this gate")
+    assert not [p for p in shipped if p.startswith("tilestream.skeptic")]
+    assert [p for p in unexcluded if p.startswith("tilestream.skeptic")], (
+        "the skeptic exclusion must be tested against actual development probe files")
 
 
 def test_an_installed_gpuwm_can_import_tilestream_from_any_directory():

@@ -98,7 +98,10 @@ def test_bulk_acquisition_selects_native_identity_and_reuses_only_matching_recei
     real = (Path(__file__).resolve().parents[1] / "tools/grib1_bridge/tests/fixtures/era5-eda-ten-t2m.grib").read_bytes()
     calls = []
     class Client:
-        def retrieve(self, dataset, request, destination):
+        def retrieve(self, dataset, request, destination=None):
+            if destination is None:
+                from types import SimpleNamespace
+                return SimpleNamespace(download=lambda path: self.retrieve(dataset, request, path))
             calls.append((dataset, request))
             assert request["product_type"] == ["ensemble_members"]
             assert "number" not in request and "member" not in request
@@ -173,22 +176,37 @@ def test_member_bridge_rejects_incomplete_lake_capabilities(monkeypatch, change)
 
 def test_cds_progress_exposes_actual_request_counts_and_bytes_without_raw_client_details(tmp_path, monkeypatch):
     from types import SimpleNamespace
+    import threading
     from gpuwm import progress as progress_mod
     events=[]
+    partial_seen = threading.Event()
     class Client:
         def __init__(self, information):self.information=information
-        def retrieve(self,dataset,request,destination):
+        def retrieve(self,dataset,request):
             self.information("fetch era5: CDS request queued")
             self.information("fetch era5: CDS request running")
-            Path(destination).write_bytes(b"metadata transfer fixture")
+            def download(destination):
+                partial_seen.clear()
+                partial = Path(destination + ".download")
+                partial.write_bytes(b"metadata")
+                assert partial_seen.wait(3), "No byte update arrived before the CDS file completed"
+                partial.write_bytes(b"metadata transfer fixture")
+                partial.rename(destination)
+            return SimpleNamespace(content_length=len(b"metadata transfer fixture"), download=download)
     monkeypatch.setattr(era5_acquisition,"_client",lambda information:Client(information))
     monkeypatch.setattr(era5_acquisition,"_validate",lambda *args,**kwargs:SimpleNamespace(checks=("protocol-only validation fixture",)))
-    with progress_mod.event_sink(lambda event,**fields:events.append({"event":event,**fields})):
+    def observe(event, **fields):
+        events.append({"event":event,**fields})
+        if event == "fetch_progress" and fields.get("bytes") == len(b"metadata"):
+            partial_seen.set()
+    with progress_mod.event_sink(observe):
         target=era5_acquisition.retrieve_era5(cycle=datetime(1997,5,27),hours=3,cadence=1,area="30,-99,31,-98",out=tmp_path,progress=lambda message:None)
     completed=[e for e in events if e["event"]=="fetch_completed"]
     assert len(completed)==2 and all(e["bytes"]==len(b"metadata transfer fixture") for e in completed)
     snapshots=[e["acquisition"] for e in events if "acquisition" in e]
     assert any(e["phase"]=="cds_queued" for e in snapshots)
+    assert any(e["phase"]=="downloading" for e in snapshots)
+    assert any(e.get("bytes")==len(b"metadata") and e.get("expected_bytes")==len(b"metadata transfer fixture") for e in events)
     assert snapshots[-1]["phase"]=="ready"
     assert snapshots[-1]["requests_completed"]==snapshots[-1]["requests_total"]==2
     assert snapshots[-1]["forcing_times_completed"]==snapshots[-1]["forcing_times_total"]==4

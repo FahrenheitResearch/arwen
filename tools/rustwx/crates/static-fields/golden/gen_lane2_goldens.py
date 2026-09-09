@@ -282,9 +282,8 @@ def gen_synthetic():
                              (60.0, -179.99), (0.0, 15.0))],
         "required_origins": [list(o)
                              for o in ds.required_tile_origins(-2, 8, 0, 7)],
-        "too_wide": {
+        "periodic_window": {
             "args": [-2, 15, 1, 6],
-            "contains": "window wider than the global grid",
         },
     }
     record("syn_wrap", ds, entry)

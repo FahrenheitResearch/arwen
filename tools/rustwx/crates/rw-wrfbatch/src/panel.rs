@@ -185,7 +185,7 @@ pub fn render_panel(request: PanelRequest<'_>) -> Result<PathBuf, String> {
 
 /// `<out_dir>/<domain>/<product>/<valid-day>/<stem>.png`.
 ///
-/// The render folder layout is a standing ruling (CLAUDE.md: "case folder
+/// The render folder layout is a standing project ruling ("case folder
 /// -> domain -> product subfolders, organised at render time"), and 2.5.0's
 /// `<out>/<domain>/<product>/<valid-day>/` extends it.  Filing at write
 /// time rather than sorting afterwards is the whole point of the ruling, so

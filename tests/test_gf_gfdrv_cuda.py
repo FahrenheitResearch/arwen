@@ -7,7 +7,7 @@ neg_check and the output algebra per column, one thread per column, with
 the WRF-faithful k22 flag set, since the reference being graded against is
 WRF.
 
-fzu IS PINNED HERE, and that changed at 2.6.6.  Through 2.6.5 gfk_tgamma was
+fzu IS PINNED HERE, and that changed at 2.7.0.  Through 2.6.5 gfk_tgamma was
 a transcription of glibc's LGPL e_gammaf_r.c, so the kernel returned glibc's
 own words and this gate could compute fzu on the device.  The transcription
 is gone; ArWen's gamma is CORRECTLY ROUNDED and glibc's is not (39.44 per

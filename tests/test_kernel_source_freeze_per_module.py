@@ -124,7 +124,7 @@ BASELINE_PINNED: dict[str, str] = {
     # d0c23dad0 feat(cumulus): New Tiedtke joins as cu_physics = 16 -- the glibc
     # float32 transcendentals leave gf.cu for the shared glibc_flt32.cuh the
     # loader prepends; a move, not an edit (517 non-trivial lines out, 517 in)
-    # RE-PINNED at 2.6.6 by the gamma licence cut.  What moved, and the
+    # RE-PINNED at 2.7.0 by the gamma licence cut.  What moved, and the
     # measurement that says the new behaviour is right:
     #   * the LGPL transcription of glibc's tgammaf is gone from the header
     #     this unit prepends, replaced by ArWen's own gamma, which is

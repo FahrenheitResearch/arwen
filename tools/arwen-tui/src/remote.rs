@@ -97,6 +97,16 @@ impl Node {
         }
         posix_absolute(&self.python, "Python on node")?;
         posix_absolute(&self.workspace, "Node workspace")?;
+        for (label, value) in [
+            ("Identity file on this computer", &self.identity),
+            ("SSH config on this computer", &self.ssh_config),
+        ] {
+            if !value.is_empty() && !Path::new(value).is_absolute() {
+                return Err(format!(
+                    "{label} must be an absolute path. A relative path resolves against the folder the terminal was opened in, so that folder could supply an SSH configuration whose ProxyCommand runs a local program when you connect."
+                ));
+            }
+        }
         if !self.port.is_empty() && self.port.parse::<u16>().ok().filter(|p| *p > 0).is_none() {
             return Err("SSH port must be between 1 and 65535.".into());
         }
@@ -232,6 +242,11 @@ impl Node {
                 }
                 if *reader_leases{args.push("--reader-leases".into());}
             }
+            Operation::SyncNativePlots{job,domain,cache,sequence}=>{
+                valid_job(job)?;
+                if !(1..=999).contains(domain)||!cache.is_absolute()||*sequence==0||*sequence>i64::MAX as u64{return Err("Native plots need a valid domain, exact frame sequence and absolute cache.".into());}
+                args.extend(["--job".into(),job.clone(),"--domain".into(),domain.to_string(),"--sequence".into(),sequence.to_string(),"--cache-root".into(),cache.to_string_lossy().into_owned()]);
+            }
             Operation::ArtifactIndex{job,domain,after_sequence}=>{
                 valid_job(job)?;
                 if !(1..=999).contains(domain)||*after_sequence>i64::MAX as u64{return Err("Invalid artifact timeline selector.".into());}
@@ -245,6 +260,15 @@ impl Node {
                     if *sequence==0||*sequence>i64::MAX as u64{return Err("Converted frame sequence must be a positive integer.".into());}
                     args.extend(["--sequence".into(),sequence.to_string()]);
                 }
+            }
+            Operation::SyncProcessedFrameV2{job,domain,cache,sequence,options,reader_leases,cache_bytes}=>{
+                valid_job(job)?;
+                if !(1..=999).contains(domain)||!cache.is_absolute(){return Err("Viewer fields need a valid domain and absolute owned cache.".into());}
+                args.extend(["--job".into(),job.clone(),"--domain".into(),domain.to_string(),"--cache-root".into(),cache.to_string_lossy().into_owned()]);
+                if let Some(sequence)=sequence{if *sequence==0||*sequence>i64::MAX as u64{return Err("Viewer frame sequence must be positive.".into());}args.extend(["--sequence".into(),sequence.to_string()]);}
+                options.args(&mut args);
+                if *reader_leases{args.push("--reader-leases".into());}
+                if let Some(bytes)=cache_bytes{if !(64*1024*1024..=1024_u64.pow(4)).contains(bytes){return Err("Viewer cache must be 64 MiB to 1 TiB.".into());}args.extend(["--cache-bytes".into(),bytes.to_string()]);}
             }
             Operation::Start {
                 products,
@@ -555,7 +579,107 @@ fn validate_processed_frame(job:&str,domain:u32,cache:&Path,sequence:Option<u64>
     Ok(())
 }
 
+fn validate_processed_frame_v2(job:&str,domain:u32,cache:&Path,sequence:Option<u64>,options:&ViewerOptions,value:&Value)->Result<(),String>{
+    if value["schema"]!="arwen.remote-processed-frame.v2"||value["job_id"]!=job||value["domain"]!=domain
+        ||!value["waiting"].is_boolean()||value["profile"]!=options.profile
+        ||options.expected_run_id.as_ref().is_some_and(|id|!value["run_id"].is_null()&&value["run_id"]!=*id){
+        return Err("Native viewer reply belongs to another job, run, domain or profile.".into());
+    }
+    let returned_sequence=value["sequence"].as_u64().filter(|n|*n>0&&*n<=i64::MAX as u64);
+    if sequence.is_some_and(|wanted|returned_sequence!=Some(wanted)){return Err("Native viewer selected another committed time.".into());}
+    if value["processing"]["schema"]!="arwen.native-store-queue.v2"||value["processing"]["job_id"]!=job{
+        return Err("Native viewer progress belongs to another job or schema.".into());
+    }
+    if !options.products.is_empty(){
+        let mut expected=options.products.clone();expected.sort();expected.dedup();
+        if options.profile=="viewer-2d-v1"&&value["selection_products"]!=json!(expected){return Err("Native viewer products changed during the request.".into());}
+    }
+    let authority=|record:&Value|->Result<Value,String>{
+        let raw=record["utf8"].as_str().filter(|text|text.len()<=128*1024).ok_or("Viewer authority is missing or excessive.")?;
+        if record["sha256"]!=crate::companion::digest(raw.as_bytes()){return Err("Viewer source authority checksum changed.".into());}
+        serde_json::from_str(raw).map_err(|_|"Viewer source authority is not JSON.".into())
+    };
+    if !value["run_manifest"].is_null(){
+        let manifest=authority(&value["run_manifest"])?;let root=artifact_producer_root(value,&manifest)?;
+        if manifest["schema"]!="gpuwm.run-manifest.v1"||manifest["run_id"]!=value["run_id"]||manifest["pid"]!=value["remote_pid"]
+            ||manifest["pid"].as_u64().is_none_or(|pid|pid==0)||manifest["run_dir"]!=root||manifest["outputs_dir"]!=root{
+            return Err("Viewer reply lost its original native producer.".into());
+        }
+        if !value["commit"].is_null(){
+            let commit=authority(&value["commit"])?;
+            if commit["schema_version"]!="gpuwm.run-plan.event.v1"||commit["event"]!="output_committed"||commit["domain"]!=domain
+                ||commit["sequence"].as_u64()!=returned_sequence||value["commit"]["sequence"].as_u64()!=returned_sequence
+                ||commit["valid_time"]!=value["valid_time"]||manifest["events_path"]!=value["commit"]["remote_path"]{
+                return Err("Viewer reply lost its selected native frame commit.".into());
+            }
+        }else if value["waiting"]!=true{return Err("Ready viewer frame has no source commit.".into());}
+    }else if value["waiting"]!=true{return Err("Ready viewer frame has no run manifest.".into());}
+    if value["waiting"]==true{
+        if !value["local_result_path"].is_null(){return Err("Pending viewer frame supplied a ready local receipt.".into());}
+        return Ok(());
+    }
+    let publication=value["publication_sha256"].as_str().ok_or("Viewer publication has no immutable identity.")?;
+    valid_sha(publication,"viewer publication")?;valid_sha(value["source_sha256"].as_str().unwrap_or(""),"viewer source")?;
+    let cache=cache.canonicalize().map_err(|e|e.to_string())?;let root=cache.join("objects").join(publication);
+    let canonical=|value:&Value|->Result<PathBuf,String>{
+        let path=PathBuf::from(value.as_str().ok_or("Viewer local file has no path.")?);
+        if !path.is_absolute()||path.is_symlink(){return Err("Viewer local path is not an owned absolute file.".into());}
+        path.canonicalize().map_err(|e|e.to_string())
+    };
+    if root.is_symlink()||root.canonicalize().map_err(|e|e.to_string())?!=root||canonical(&value["cache_root"])?!=cache||canonical(&value["object_root"])?!=root{
+        return Err("Viewer publication escaped its bounded local cache.".into());
+    }
+    let lease_path=cache.join("leases").join(format!("{publication}.lock"));
+    if canonical(&value["cache_lease_path"])?!=lease_path{return Err("Viewer reader lease belongs to another cache object.".into());}
+    let lease=OpenOptions::new().read(true).write(true).open(&lease_path).map_err(|e|e.to_string())?;
+    lease.lock_shared().map_err(|e|e.to_string())?;
+    let path=canonical(&value["local_result_path"])?;
+    if path!=root.join("native-result.json"){return Err("Viewer result receipt escaped its object directory.".into());}
+    let result=crate::companion::read_json(&path,512*1024)?;let frame=&result["frame"];let source=&result["remote_source"];
+    if result["schema"]!=if options.profile=="viewer-2d-v1"{"arwen.wrf-process-result.v2"}else{"arwen.wrf-process-result.v1"}
+        ||result["domain"]!=format!("d{domain:02}")||frame!=&value["frame"]||frame["schema"]!="arwen.companion-store-frame.v1"
+        ||frame["identity"]["source"]!="arwen"||frame["identity"]["model"]!=format!("wrf-d{domain:02}")||!frame["identity"]["member"].is_null()
+        ||frame["identity"]["case_id"]!=value["run_id"]||frame["identity"]["source_sha256"]!=value["source_sha256"]
+        ||canonical(&frame["cache_lease_path"])?!=lease_path{
+        return Err("Local viewer result changed its source, native frame or reader lease.".into());
+    }
+    for key in ["job_id","run_id","domain","sequence","source_sha256","run_manifest","commit","publication_sha256"]{
+        if source[key]!=value[key]{return Err(format!("Local viewer result lost its {key} authority."));}
+    }
+    let valid=frame["identity"]["valid_unix"].as_i64().ok_or("Viewer frame has no exact valid UTC.")?;
+    let lead=frame["identity"]["lead_seconds"].as_u64().ok_or("Viewer frame has no exact lead seconds.")?;
+    let utc=crate::companion::local_progress::utc_ms(value["valid_time"].as_str().ok_or("Viewer frame has no committed valid time.")?)?;
+    if i128::from(valid)*1000!=i128::from(utc)||value["lead_seconds"].as_u64()!=Some(lead)
+        ||value["initialization_unix"].as_i64().map(i128::from)!=Some(i128::from(valid)-i128::from(lead)){
+        return Err("Viewer frame changed its exact UTC initialization, lead or valid time.".into());
+    }
+    let members=value["members"].as_array().filter(|rows|!rows.is_empty()&&rows.len()<=16).ok_or("Viewer member catalog is missing or excessive.")?;
+    let local=result["files"].as_array().filter(|rows|rows.len()==members.len()).ok_or("Local viewer member catalog changed.")?;
+    let mut keys=std::collections::BTreeSet::new();
+    for member in members{
+        let key=member["key"].as_str().ok_or("Viewer member key is missing.")?;
+        if !keys.insert(key){return Err("Viewer member key is duplicated.".into());}
+        valid_sha(member["sha256"].as_str().unwrap_or(""),"viewer member")?;
+        if member["grid_sha256"]!=frame["grid_sha256"]||member["bytes"].as_u64().is_none_or(|n|n==0||n>4*1024_u64.pow(3)){return Err("Viewer member has invalid size or moving-grid identity.".into());}
+        let item=local.iter().find(|item|item["key"]==key).ok_or("Local viewer member is missing.")?;
+        let path=canonical(&item["path"])?;
+        if !path.starts_with(root.join("store"))||item["relative_path"]!=member["relative_path"]||fs::metadata(&path).map_err(|e|e.to_string())?.len()!=item["bytes"].as_u64().unwrap_or(0){return Err("Local viewer member escaped its store or changed length.".into());}
+        if member["kind"]!="metadata"&&(item["sha256"]!=member["sha256"]||item["bytes"]!=member["bytes"]){return Err("Native weather member changed during local transfer.".into());}
+        use sha2::{Digest,Sha256};let mut file=fs::File::open(path).map_err(|e|e.to_string())?;let mut hash=Sha256::new();let mut bytes=[0_u8;65536];
+        loop{let count=file.read(&mut bytes).map_err(|e|e.to_string())?;if count==0{break;}hash.update(&bytes[..count]);}
+        if item["sha256"]!=format!("{:x}",hash.finalize()){return Err("Local viewer member checksum changed.".into());}
+    }
+    valid_sha(frame["grid_sha256"].as_str().unwrap_or(""),"viewer grid")?;
+    Ok(())
+}
+
 pub(crate) fn processed_message(value:&Value)->Result<String,String>{
+    if value["schema"]=="arwen.remote-processed-frame.v2"{
+        if value["state"]=="failed"{return Err(format!("Viewer derivation failed: {}",value["error"].as_str().unwrap_or("the native processor reported a failure")));}
+        if value["state"]=="backpressure"{return Ok(value["error"].as_str().unwrap_or("Viewer derivation is waiting for cache space.").to_owned());}
+        if value["waiting"]==true{return Ok(match value["state"].as_str(){Some("deriving")=>"Deriving the selected viewer fields on the node CPU.",Some("evicted")=>"Rebuilding the selected fields from retained WRF history.",Some("waiting_for_output")=>"Waiting for a committed forecast frame.",_=>"The selected viewer fields are queued on the node CPU."}.into());}
+        return Ok("Selected native viewer fields are ready.".into());
+    }
     if value["processing"]["state"]=="failed"{
         return Err(format!("Native field conversion could not finish: {}",value["processing"]["error"].as_str().unwrap_or("the node reported a conversion failure")));
     }
@@ -700,6 +824,37 @@ impl Store {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewerOptions {
+    pub profile: String,
+    pub products: Vec<String>,
+    pub expected_run_id: Option<String>,
+    pub prefetch_sequences: Vec<u64>,
+}
+impl ViewerOptions {
+    pub(crate) fn from_value(value:&Value)->Result<Self,String>{
+        let profile=value.get("profile").map(|v|v.as_str().ok_or("Viewer profile must be a string.")).transpose()?.unwrap_or("viewer-2d-v1");
+        if !matches!(profile,"viewer-2d-v1"|"full-science-v1"){return Err("Unsupported native viewer profile.".into());}
+        let products=match value.get("products"){
+            None=>vec![],Some(value)=>{
+                let rows=value.as_array().filter(|rows|!rows.is_empty()&&rows.len()<=96).ok_or("Choose 1..96 canonical viewer products.")?;
+                rows.iter().map(|v|v.as_str().filter(|s|!s.is_empty()&&s.len()<=96&&s.bytes().all(|c|c.is_ascii_lowercase()||c.is_ascii_digit()||matches!(c,b'_'|b'-')))
+                    .map(str::to_owned).ok_or_else(||"Invalid native viewer product slug.".to_owned())).collect::<Result<Vec<_>,_>>()?
+            }};
+        let expected_run_id=value.get("expected_run_id").map(|v|v.as_str().filter(|s|!s.is_empty()&&s.len()<=256&&!s.chars().any(char::is_control)).map(str::to_owned).ok_or("Invalid native run identity.")).transpose()?;
+        let prefetch_sequences=match value.get("prefetch_sequences"){
+            None=>vec![],Some(value)=>value.as_array().filter(|rows|rows.len()<=8).ok_or("Loop prefetch supports at most eight frames.")?.iter()
+                .map(|v|v.as_u64().filter(|n|*n>0&&*n<=i64::MAX as u64).ok_or_else(||"Loop prefetch needs positive committed sequences.".to_owned())).collect::<Result<Vec<_>,_>>()?};
+        Ok(Self{profile:profile.into(),products,expected_run_id,prefetch_sequences})
+    }
+    fn args(&self,args:&mut Vec<String>){
+        args.extend(["--profile".into(),self.profile.clone()]);
+        if !self.products.is_empty(){args.extend(["--products".into(),self.products.join(",")]);}
+        if let Some(run)=&self.expected_run_id{args.extend(["--expected-run-id".into(),run.clone()]);}
+        if !self.prefetch_sequences.is_empty(){args.extend(["--prefetch-sequences".into(),self.prefetch_sequences.iter().map(u64::to_string).collect::<Vec<_>>().join(",")]);}
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Operation {
     Probe,
     List,
@@ -707,6 +862,8 @@ pub enum Operation {
     StartPlan { review: Value },
     SyncArtifacts { job: String, domain: u32, cache: PathBuf, sequence: Option<u64>, reader_leases: bool },
     SyncProcessedFrame { job: String, domain: u32, cache: PathBuf, sequence: Option<u64> },
+    SyncProcessedFrameV2 { job: String, domain: u32, cache: PathBuf, sequence: Option<u64>, options: ViewerOptions, reader_leases: bool, cache_bytes: Option<u64> },
+    SyncNativePlots { job: String, domain: u32, cache: PathBuf, sequence: u64 },
     ArtifactIndex { job: String, domain: u32, after_sequence: u64 },
     Start {
         products: String,
@@ -827,6 +984,8 @@ impl Operation {
             Self::StartPlan { .. } => "start-plan",
             Self::SyncArtifacts { .. } => "sync-artifacts",
             Self::SyncProcessedFrame { .. } => "sync-processed-frame",
+            Self::SyncProcessedFrameV2 { .. } => "sync-processed-frame-v2",
+            Self::SyncNativePlots { .. } => "sync-native-plots",
             Self::ArtifactIndex { .. } => "artifact-index",
             Self::Start { .. } => "start",
             Self::Status { .. } => "status",
@@ -843,6 +1002,40 @@ impl Operation {
                 | Self::Stop { .. }
                 | Self::Resume { preview: false, .. }
         )
+    }
+    /// Polling reads whose launch record is not evidence of anything the
+    /// user decided: connect, job list, status, log chunk, timeline page.
+    /// Their request directories are rotated, not accumulated.
+    pub fn transient(&self) -> bool {
+        matches!(
+            self,
+            Self::Probe | Self::List | Self::Status { .. } | Self::Logs { .. } | Self::ArtifactIndex { .. }
+        )
+    }
+}
+
+/// One retained record per node for transient polls: the completed request
+/// directory replaces `remote-last-<node>`; the previous record is removed.
+/// In-flight requests keep unique `remote-<stamp>` directories, so concurrent
+/// pollers on one node (the Nodes panel, each Runs viewer) never collide; a
+/// lost rename race removes the completed directory instead.
+fn retain_last_poll(directory: &Path, node_id: &str) {
+    let Some(parent) = directory.parent() else { return; };
+    let last = parent.join(format!("remote-last-{node_id}"));
+    let _ = fs::remove_dir_all(&last);
+    if fs::rename(directory, &last).is_err() {
+        let _ = fs::remove_dir_all(directory);
+    }
+}
+
+/// Remove every retained poll record under `<logs>/.arwen-tui` when the
+/// terminal closes. Reviewed and mutating request records are kept.
+pub fn remove_poll_records(logs: &Path) {
+    let Ok(entries) = fs::read_dir(logs.join(".arwen-tui")) else { return; };
+    for entry in entries.filter_map(Result::ok) {
+        if entry.file_name().to_string_lossy().starts_with("remote-last-") {
+            let _ = fs::remove_dir_all(entry.path());
+        }
     }
 }
 
@@ -875,7 +1068,15 @@ impl Request {
         let Some(code) = self.job.poll().map_err(|e| e.to_string())? else {
             return Ok(None);
         };
-        let file = fs::File::open(self.job.dir.join("job.log")).map_err(|e| e.to_string())?;
+        let outcome = Self::completed(&self.job.dir, self.operation.action(), code);
+        if self.operation.transient() {
+            retain_last_poll(&self.job.dir, &self.node.id);
+        }
+        outcome
+    }
+
+    fn completed(directory: &Path, action: &str, code: i32) -> Result<Option<Value>, String> {
+        let file = fs::File::open(directory.join("job.log")).map_err(|e| e.to_string())?;
         let mut bytes = Vec::new();
         file.take(MAX_REPLY_BYTES + 1)
             .read_to_end(&mut bytes)
@@ -886,7 +1087,7 @@ impl Request {
             );
         }
         let text = String::from_utf8(bytes).map_err(|_| "Node reply was not UTF-8.".to_string())?;
-        let reply = parse_reply(&text, self.operation.action())?;
+        let reply = parse_reply(&text, action)?;
         if code != 0 || reply["ok"] != true {
             let error = reply["error"]["message"]
                 .as_str()
@@ -962,6 +1163,8 @@ pub enum Update {
     PlanReviewed(Value),
     ArtifactsSynced(Value),
     ProcessedFrameSynced(Value),
+    ProcessedFrameSyncedV2(Value),
+    NativePlotsSynced(Value),
     ArtifactIndexed(Value),
     Started(String),
     Stopped(String),
@@ -969,7 +1172,9 @@ pub enum Update {
 }
 
 impl Controller {
-    /// Shared user preferences, with one-time import of older workspace files.
+    /// Shared user preferences. Nothing is read from the launch folder: a
+    /// `.arwen-nodes.json` there is untrusted input and is only opened through
+    /// an explicit `--nodes-file ABSOLUTE_PATH`.
     pub fn load_user(cwd: &Path) -> Self {
         let base = if cfg!(windows) {
             std::env::var_os("APPDATA").map(PathBuf::from)
@@ -981,46 +1186,22 @@ impl Controller {
                 .map(|base| base.join("arwen"))
         };
         match base.filter(|path| path.is_absolute()) {
-            Some(base) => Self::load_shared(cwd, base.join("nodes.json")),
-            None => {
-                let mut controller = Self::load(cwd);
-                controller.load_error = Some("ArWen cannot locate your user configuration folder. Set HOME (Linux) or APPDATA (Windows); existing node files are preserved.".into());
-                controller
-            }
+            Some(base) => Self::load_shared(base.join("nodes.json")),
+            None => Self {
+                store: Store::default(),
+                path: cwd.join(".arwen-nodes.json"),
+                view: View::default(),
+                pending: None,
+                load_error: Some("ArWen cannot locate your user configuration folder. Set HOME (Linux) or APPDATA (Windows); no node profiles were loaded from this folder.".into()),
+            },
         }
     }
 
-    fn load_shared(cwd: &Path, path: PathBuf) -> Self {
-        let mut controller = Self::load_path(path);
-        if controller.load_error.is_some() { return controller; }
-        let legacy_path = cwd.join(".arwen-nodes.json");
-        if !legacy_path.is_file() { return controller; }
-        let key = legacy_path.canonicalize().unwrap_or(legacy_path.clone()).to_string_lossy().into_owned();
-        let key = if cfg!(windows) { key.to_lowercase() } else { key };
-        if controller.store.legacy_imports.contains(&key) { return controller; }
-        let legacy = match Store::load(&legacy_path) {
-            Ok(legacy) => legacy,
-            Err(error) => {
-                controller.load_error = Some(format!("Could not import older node profiles from {}: {error}. The original file is preserved.", legacy_path.display()));
-                return controller;
-            }
-        };
-        let previous = controller.store.clone();
-        let new_store = controller.store.loaded_bytes.is_none();
-        for node in legacy.nodes {
-            if !controller.store.nodes.iter().any(|known| known.id == node.id) {
-                controller.store.nodes.push(node);
-            }
-        }
-        if new_store { controller.store.active = legacy.active; }
-        controller.store.legacy_imports.push(key);
-        if let Err(error) = controller.store.save(&controller.path) {
-            controller.store = previous;
-            controller.load_error = Some(format!("Could not retain imported node profiles: {error}. The older workspace file is preserved."));
-        }
-        controller
+    fn load_shared(path: PathBuf) -> Self {
+        Self::load_path(path)
     }
 
+    #[cfg(test)]
     pub fn load(cwd: &Path) -> Self {
         Self::load_path(cwd.join(".arwen-nodes.json"))
     }
@@ -1288,6 +1469,14 @@ impl Controller {
                 validate_processed_frame(job,*domain,cache,*sequence,&reply["processed_frame"])?;
                 Ok(Update::ProcessedFrameSynced(reply))
             }
+            Operation::SyncProcessedFrameV2{job,domain,cache,sequence,options,..}=>{
+                validate_processed_frame_v2(job,*domain,cache,*sequence,options,&reply["processed_frame"])?;
+                Ok(Update::ProcessedFrameSyncedV2(reply))
+            }
+            Operation::SyncNativePlots{job,domain,cache,sequence}=>{
+                validate_native_plots(job,*domain,cache,*sequence,&reply["native_plots"])?;
+                Ok(Update::NativePlotsSynced(reply))
+            }
             Operation::ArtifactIndex{job,domain,after_sequence}=>{
                 let index=&reply["artifact_index"];
                 if index["schema"]!="gpuwm.remote-artifact-index.v1"||index["job_id"]!=*job||index["domain"]!=*domain||!index["waiting"].is_boolean(){
@@ -1406,12 +1595,36 @@ impl Controller {
 /// Reuse the native receipt validator for an independent read-only session.
 /// The ephemeral controller never loads, selects or persists a user profile.
 pub(crate) fn validate_readonly_reply(node:&Node,operation:&Operation,reply:&Value)->Result<(),String>{
-    if !matches!(operation,Operation::List|Operation::Status{..}|Operation::ArtifactIndex{..}|Operation::SyncArtifacts{..}|Operation::SyncProcessedFrame{..}){
+    if !matches!(operation,Operation::List|Operation::Status{..}|Operation::ArtifactIndex{..}|Operation::SyncArtifacts{..}|Operation::SyncProcessedFrame{..}|Operation::SyncProcessedFrameV2{..}|Operation::SyncNativePlots{..}){
         return Err("This run viewer only accepts read-only job and artifact requests.".into());
     }
     let mut store=Store::default();store.nodes.push(node.clone());store.active=Some(node.id.clone());
     let mut controller=Controller{store,path:PathBuf::new(),view:View::default(),pending:None,load_error:None};
     controller.accept(operation,reply.clone()).map(|_|())
+}
+
+fn validate_native_plots(job:&str,domain:u32,cache:&Path,sequence:u64,value:&Value)->Result<(),String>{
+    if value["schema"]!="arwen.native-plots.v1"||value["job_id"]!=job||value["domain"]!=domain
+        ||value["sequence"]!=sequence||!value["waiting"].is_boolean(){return Err("Native plots belong to a different job, domain or forecast time.".into());}
+    if value["waiting"]==true{return Ok(());}
+    for authority in [&value["run_manifest"],&value["commit"]]{
+        let raw=authority["utf8"].as_str().ok_or("Native plots have no exact source authority.")?;
+        if authority["sha256"]!=crate::companion::digest(raw.as_bytes()){return Err("Native plot authority changed.".into());}
+    }
+    let manifest:Value=serde_json::from_str(value["run_manifest"]["utf8"].as_str().unwrap()).map_err(|e|e.to_string())?;
+    let commit:Value=serde_json::from_str(value["commit"]["utf8"].as_str().unwrap()).map_err(|e|e.to_string())?;
+    let root=artifact_producer_root(value,&manifest)?;
+    if manifest["schema"]!="gpuwm.run-manifest.v1"||manifest["run_id"]!=value["run_id"]||manifest["pid"]!=value["remote_pid"]||manifest["run_dir"]!=root
+        ||manifest["events_path"]!=value["commit"]["remote_path"]||commit["event"]!="output_committed"||commit["sequence"]!=sequence
+        ||commit["domain"]!=domain||commit["valid_time"]!=value["valid_time"]{return Err("Native plots disagree with the committed forecast frame.".into());}
+    let path=PathBuf::from(value["gallery_path"].as_str().ok_or("Native gallery has no local path.")?);
+    let owned=cache.canonicalize().map_err(|e|e.to_string())?;
+    let resolved=path.canonicalize().map_err(|e|e.to_string())?;
+    if !path.is_absolute()||path.is_symlink()||!resolved.starts_with(&owned)||path.file_name().and_then(|p|p.to_str())!=Some("index.html")
+        ||fs::metadata(&path).map_err(|e|e.to_string())?.len()>512*1024{return Err("Native gallery is outside its owned cache.".into());}
+    let bytes=fs::read(&path).map_err(|e|e.to_string())?;
+    if value["gallery_sha256"]!=crate::companion::digest(&bytes){return Err("Native gallery checksum changed.".into());}
+    Ok(())
 }
 
 fn job_identity(job: &Value) -> Result<String, String> {
@@ -1467,6 +1680,44 @@ impl View {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn compact_viewer_options_pin_run_products_and_eight_frame_prefetch(){
+        let options=ViewerOptions::from_value(&json!({"profile":"viewer-2d-v1","products":["mslp_10m_winds"],"expected_run_id":"run-1","prefetch_sequences":[43,44]})).unwrap();
+        let operation=Operation::SyncProcessedFrameV2{job:"job-1".into(),domain:2,sequence:Some(42),cache:std::env::temp_dir().join("viewer-cache"),options,reader_leases:true,cache_bytes:None};
+        let args=node().args(&operation).unwrap();
+        assert_eq!(args[0],"sync-processed-frame-v2");assert!(!operation.mutates());
+        for (flag,wanted) in [("--sequence","42"),("--expected-run-id","run-1"),("--prefetch-sequences","43,44"),("--products","mslp_10m_winds")]{
+            assert_eq!(args[args.iter().position(|arg|arg==flag).unwrap()+1],wanted);
+        }
+        assert!(args.iter().any(|arg|arg=="--reader-leases"));
+        assert!(ViewerOptions::from_value(&json!({"prefetch_sequences":[0]})).is_err());
+        assert!(ViewerOptions::from_value(&json!({"prefetch_sequences":[1,2,3,4,5,6,7,8,9]})).is_err());
+        assert!(ViewerOptions::from_value(&json!({"profile":"unknown"})).is_err());
+        assert_eq!(ViewerOptions::from_value(&json!({"profile":"full-science-v1"})).unwrap().profile,"full-science-v1");
+    }
+    #[test]
+    fn compact_viewer_pending_reply_cannot_change_selected_run_time_or_profile(){
+        let options=ViewerOptions::from_value(&json!({"expected_run_id":"run-1"})).unwrap();
+        let value=json!({"schema":"arwen.remote-processed-frame.v2","job_id":"job-1","domain":2,"sequence":42,
+            "waiting":true,"state":"queued","profile":"viewer-2d-v1","run_id":"run-1",
+            "processing":{"schema":"arwen.native-store-queue.v2","job_id":"job-1","state":"idle"}});
+        assert!(validate_processed_frame_v2("job-1",2,Path::new("unused"),Some(42),&options,&value).is_ok());
+        for (key,wrong) in [("run_id",json!("other-run")),("domain",json!(1)),("sequence",json!(43)),("profile",json!("full-science-v1"))]{
+            let mut changed=value.clone();changed[key]=wrong;
+            assert!(validate_processed_frame_v2("job-1",2,Path::new("unused"),Some(42),&options,&changed).is_err(),"{key}");
+        }
+    }
+    #[test]
+    #[ignore="Requires ARWEN_COMPACT_READY pointing to the Python member-transport protocol fixture"]
+    fn compact_viewer_python_transport_fixture_passes_tui_validation(){
+        let path=PathBuf::from(std::env::var_os("ARWEN_COMPACT_READY").expect("explicit Python protocol fixture"));
+        let value:Value=serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        let options=ViewerOptions::from_value(&json!({"profile":value["profile"],"expected_run_id":value["run_id"],"products":value["selection_products"]})).unwrap();
+        let cache=PathBuf::from(value["cache_root"].as_str().unwrap());
+        validate_processed_frame_v2(value["job_id"].as_str().unwrap(),value["domain"].as_u64().unwrap() as u32,&cache,value["sequence"].as_u64(),&options,&value).unwrap();
+        let mut changed=value.clone();changed["members"][0]["grid_sha256"]=json!("f".repeat(64));
+        assert!(validate_processed_frame_v2(value["job_id"].as_str().unwrap(),value["domain"].as_u64().unwrap() as u32,&cache,value["sequence"].as_u64(),&options,&changed).is_err());
+    }
     fn node() -> Node {
         let mut node = Node::blank();
         node.host = "research-node".into();
@@ -1630,7 +1881,7 @@ mod tests {
     fn node_paths_are_arguments_and_explicit_products_survive() {
         let mut node = node();
         node.python = "/opt/ArWen env/bin/python".into();
-        node.identity = "C:\\ArWen\\Operator's Keys\\weather key".into();
+        node.identity = if cfg!(windows) { "C:\\ArWen\\Operator's Keys\\weather key".into() } else { "/opt/ArWen/Operator's Keys/weather key".into() };
         for products in ["none", "all", "t2m,total_qpf"] {
             let operation = Operation::Start {
                 products: products.into(),
@@ -1767,51 +2018,56 @@ mod tests {
         assert!(Operation::Stop { job: "x".into() }.mutates());
     }
     #[test]
-    fn shared_profiles_follow_the_user_and_import_legacy_jobs_once() {
+    fn shared_profiles_ignore_node_files_in_the_launch_folder() {
         let root = std::env::temp_dir().join(format!("arwen-shared-nodes-{}", stamp()));
-        let first = root.join("storms");
-        let second = root.join("another-folder");
+        let planted_folder = root.join("storms");
         let shared = root.join("preferences/nodes.json");
-        let mut old = Controller::load(&first);
+        // A folder the user merely opened the terminal in carries a profile
+        // whose active node points at an SSH configuration of its own.
+        let mut planted = Controller::load(&planted_folder);
         let mut n = node();
-        n.last_job = Some("ongoing-forecast".into());
-        old.save_node(n.clone()).unwrap();
-        old.select(Some(n.id.clone())).unwrap();
-        let original = fs::read(&old.path).unwrap();
-        let mut imported = Controller::load_shared(&first, shared.clone());
-        assert!(imported.load_error.is_none());
-        assert_eq!(imported.store.selected(), Some(&n));
-        let reopened = Controller::load_shared(&second, shared.clone());
-        assert_eq!(reopened.store.selected(), Some(&n));
-        assert_eq!(fs::read(&old.path).unwrap(), original);
-        imported.remove_node(&n.id).unwrap();
-        assert!(imported.store.selected().is_none());
-        // The preserved old file cannot resurrect a deliberately removed profile.
-        let reopened = Controller::load_shared(&first, shared);
-        assert!(reopened.store.nodes.is_empty());
-        assert_eq!(fs::read(&old.path).unwrap(), original);
+        n.name = "Linux node".into();
+        n.ssh_config = if cfg!(windows) { "C:\\planted\\sshconf".into() } else { "/planted/sshconf".into() };
+        planted.save_node(n.clone()).unwrap();
+        planted.select(Some(n.id.clone())).unwrap();
+        let original = fs::read(&planted.path).unwrap();
+        let shared_store = Controller::load_shared(shared.clone());
+        assert!(shared_store.load_error.is_none());
+        assert!(shared_store.store.nodes.is_empty());
+        assert!(shared_store.store.selected().is_none());
+        assert!(!shared.exists(), "nothing was merged or written");
+        assert_eq!(fs::read(&planted.path).unwrap(), original);
+        // The explicit --nodes-file route still opens exactly that file.
+        let explicit = Controller::load_path(planted.path.clone());
+        assert!(explicit.load_error.is_none());
+        assert_eq!(explicit.store.selected(), Some(&n));
     }
     #[test]
-    fn importing_another_workspace_preserves_the_newer_shared_profile() {
-        let root = std::env::temp_dir().join(format!("arwen-merge-nodes-{}", stamp()));
-        let shared = root.join("preferences/nodes.json");
-        let mut live = Controller::load_shared(&root.join("empty"), shared.clone());
+    fn identity_and_ssh_config_paths_must_be_absolute() {
         let mut n = node();
-        n.last_job = Some("newer-job".into());
-        live.save_node(n.clone()).unwrap();
-        let legacy_dir = root.join("old");
-        let mut old = Controller::load(&legacy_dir);
-        let mut stale = n.clone();
-        stale.last_job = Some("older-job".into());
-        old.save_node(stale).unwrap();
-        let mut other = node();
-        other.id = stamp();
-        old.save_node(other.clone()).unwrap();
-        let imported = Controller::load_shared(&legacy_dir, shared);
-        assert!(imported.load_error.is_none());
-        assert_eq!(imported.store.nodes.len(), 2);
-        assert_eq!(imported.store.nodes.iter().find(|row| row.id == n.id), Some(&n));
-        assert_eq!(imported.store.nodes.iter().find(|row| row.id == other.id), Some(&other));
+        n.identity = "keys/weather".into();
+        let error = n.validate(false).unwrap_err();
+        assert!(error.contains("Identity file on this computer must be an absolute path"), "{error}");
+        assert!(error.contains("ProxyCommand"), "{error}");
+        n.identity.clear();
+        n.ssh_config = "sshconf".into();
+        let error = n.validate(false).unwrap_err();
+        assert!(error.contains("SSH config on this computer must be an absolute path"), "{error}");
+        n.ssh_config = if cfg!(windows) { "C:\\ArWen\\ssh\\config".into() } else { "/opt/arwen/ssh/config".into() };
+        n.identity = if cfg!(windows) { "C:\\ArWen\\ssh\\weather".into() } else { "/opt/arwen/ssh/weather".into() };
+        n.validate(false).unwrap();
+        // A saved store carrying a relative path is refused with the same
+        // message and the file is preserved for the user to correct.
+        let path = std::env::temp_dir().join(format!("arwen-relative-identity-{}", stamp())).join("nodes.json");
+        let mut store = Store { nodes: vec![n.clone()], active: None, loaded_bytes: None, legacy_imports: Vec::new() };
+        store.save(&path).unwrap();
+        let mut planted: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        planted["nodes"][0]["identity"] = json!("weather");
+        fs::write(&path, serde_json::to_vec(&planted).unwrap()).unwrap();
+        let loaded = Controller::load_path(path.clone());
+        assert!(loaded.load_error.as_deref().is_some_and(|error| error.contains("absolute path")), "{:?}", loaded.load_error);
+        assert!(loaded.store.nodes.is_empty());
+        assert_eq!(serde_json::from_slice::<Value>(&fs::read(&path).unwrap()).unwrap(), planted);
     }
     #[test]
     fn removing_a_profile_preserves_a_concurrent_external_change() {
@@ -2119,6 +2375,13 @@ mod tests {
         assert!(panel.should_refresh(&c)); // First terminal sample still needs final tail.
         accept(&mut c, "completed", true);
         c.view.last_refresh = Some(Instant::now() - Duration::from_secs(60));
+        assert!(!panel.should_refresh(&c));
+        c.view.status.as_mut().unwrap()["native_plots"]=json!({"done":false});
+        assert!(panel.should_refresh(&c));
+        c.view.last_refresh=Some(Instant::now()-Duration::from_secs(1));
+        assert!(!panel.should_refresh(&c));
+        c.view.status.as_mut().unwrap()["native_plots"]=json!({"done":true});
+        c.view.last_refresh=Some(Instant::now()-Duration::from_secs(60));
         assert!(!panel.should_refresh(&c));
         c.view.connection_error = Some("transport lost".into());
         c.view.last_refresh = Some(Instant::now() - Duration::from_secs(14));

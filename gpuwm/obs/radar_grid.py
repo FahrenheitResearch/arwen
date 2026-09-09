@@ -53,7 +53,7 @@ first thing a consumer should read.
 
 Which library moves the bytes
 -----------------------------
-Both halves are Drew's Rust on the bare default.  The file is WRITTEN by the
+Both halves are ArWen's Rust on the bare default.  The file is WRITTEN by the
 classic writer at ``tools/rustwx/crates/netcdf-writer`` through
 :mod:`gpuwm.obs.grid_product`, in the CDF-5 container;
 ``GPUWM_OBS_GRID_WRITER=python`` reaches the netCDF4/HDF5 writer this schema

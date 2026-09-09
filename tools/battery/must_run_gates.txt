@@ -88,6 +88,8 @@ tests/test_thompson_oracle_provenance.py
 tests/test_tui_cli.py
 
 # --- DECLARED-SKIPPING-BEGIN -------------------------------------------------
+# Release-source checks need an external Git executable to construct real repositories.
+tests/test_verify_release_build_tree.py  needs Git on PATH; it checks real tracked and untracked build state.
 #
 # Below this line: every module in the test tree that carries a MODULE-LEVEL
 # skip -- a `pytestmark` skipif or a `pytest.skip(allow_module_level=True)` --

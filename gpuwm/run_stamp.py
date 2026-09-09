@@ -19,7 +19,7 @@ run writes::
     <out>/<run-stamp>/run/report.json
     <out>/<run-stamp>/prepared/, authority/
 
-It EXTENDS Drew's 2026-08-06 render ruling rather than replacing any
+It EXTENDS ArWen's 2026-08-06 render ruling rather than replacing any
 part of it: ``<domain>/<product>/<valid-day>`` survives byte for byte
 underneath, in the same order, spelled by the same module
 (:mod:`gpuwm.render_layout`).  Nothing here inverts that tree back to

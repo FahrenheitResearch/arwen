@@ -37,6 +37,7 @@ from gpuwm.ingest.preprocess_backend import (
     resolve_preprocess_backend,
 )
 from gpuwm.ingest.real import initialize_real
+from gpuwm.ingest.soil import door_reconciled_soil_category
 from gpuwm.ingest.source_coverage import (
     PreparationRefusal,
     RunInputRefusal,
@@ -1009,12 +1010,18 @@ def prepare_mapped_wrf(
         # elevation lapse on skin and soil temperature inputs.  The router
         # forwards this exact argument list to preprocess_noah_soil for
         # Noah-geometry schemes.
+        # The reconciled category, on the one rulebook every door follows
+        # (gpuwm/ingest/soil.py: door_reconciled_soil_category); the raw
+        # SCT_DOM let a land column carry the water soil category into RUC
+        # (ENG-009).
         soil = preprocess_land_surface_soil(
             initial_met.fields,
             sf_surface_physics=int(cfg.sf_surface_physics),
             # Resolved, not defaulted: see gpuwm/ingest/hrrr_physics.py.
             num_soil_layers=soil_layer_count(cfg),
-            soil_type=static["SCT_DOM"],
+            soil_type=door_reconciled_soil_category(
+                static, initial_met.fields, selection.landuse_global_attrs(),
+                route="mapped source"),
             deep_soil_temperature=static["TMN"],
             soil_layer_contract=bundle.soil_layer_contract,
             landmask=static["LANDMASK"],

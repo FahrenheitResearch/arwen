@@ -50,7 +50,7 @@ fn await_started(job: &mut job::Job) {
 fn real_cli_help_failure_and_raw_logs() {
     let root = scratch("cli");
     let cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut help = job::Job::start(&python(), "--help", &[], &root.join("help"), &cwd).unwrap();
+    let mut help = job::Job::start_with_module_path(&python(), "--help", &[], &root.join("help"), &cwd, Some(&cwd)).unwrap();
     assert_eq!(wait(&mut help), 0);
     assert!(help.log_tail(200).contains("usage:"));
     assert_eq!(help.command[2], "gpuwm.cli");
@@ -61,17 +61,17 @@ fn real_cli_help_failure_and_raw_logs() {
         serde_json::from_slice(&fs::read(help.dir.join("process.json")).unwrap()).unwrap();
     assert_eq!(process["pid"], result["pid"]);
     assert_eq!(process["cli_args"], result["cli_args"]);
-    let mut bad = job::Job::start(
+    let mut bad = job::Job::start_with_module_path(
         &python(),
         "not-an-arwen-command",
         &[],
         &root.join("bad"),
-        &cwd,
+        &cwd, Some(&cwd),
     )
     .unwrap();
     assert_eq!(wait(&mut bad), 2);
     assert!(bad.log_tail(200).contains("invalid choice"));
-    assert!(job::Job::start(&python(), "--help", &[], &help.dir, &cwd).is_err());
+    assert!(job::Job::start_with_module_path(&python(), "--help", &[], &help.dir, &cwd, Some(&cwd)).is_err());
 }
 // Only the fixture CLI is substituted. The worker is copied byte for byte;
 // the actual process group / JobObject and file logging run on this machine.
@@ -168,7 +168,7 @@ fn detach_keeps_worker_and_logs_alive() {
         "日本語".into(),
     ];
     let mut running =
-        job::Job::start(&python(), "fixture-finish", &args, &directory, &root).unwrap();
+        job::Job::start_with_module_path(&python(), "fixture-finish", &args, &directory, &root, Some(&root)).unwrap();
     await_started(&mut running);
     assert!(running.poll().unwrap().is_none());
     drop(running);
@@ -198,7 +198,7 @@ fn stop_covers_grandchild_and_leaves_unrelated_process_running() {
         .unwrap();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut running =
-            job::Job::start(&python(), "fixture-wait", &[], &root.join("job"), &root).unwrap();
+            job::Job::start_with_module_path(&python(), "fixture-wait", &[], &root.join("job"), &root, Some(&root)).unwrap();
         await_started(&mut running);
         let heartbeat = root.join("grandchild.log");
         await_file(&heartbeat);
@@ -232,18 +232,18 @@ fn memory_recovery_requires_the_matching_worker_receipt_and_actual_refusal() {
                 directory.join("result.json").to_string_lossy().into_owned(),
             ];
             let mut running =
-                job::Job::start(&python(), command, &args, &directory, &root).unwrap();
+                job::Job::start_with_module_path(&python(), command, &args, &directory, &root, Some(&root)).unwrap();
             assert!(!running.memory_refused);
             assert_eq!(wait(&mut running), if command == "go" { 2 } else { 4 });
             assert_eq!(running.memory_refused, mode == "valid", "{command} {mode}");
         }
     }
-    let mut unrelated = job::Job::start(
+    let mut unrelated = job::Job::start_with_module_path(
         &python(),
         "go",
         &["fits-toml".into()],
         &root.join("fits-toml"),
-        &root,
+        &root, Some(&root),
     )
     .unwrap();
     assert_eq!(wait(&mut unrelated), 2);
@@ -251,7 +251,7 @@ fn memory_recovery_requires_the_matching_worker_receipt_and_actual_refusal() {
     for mode in ["valid", "missing", "corrupt", "mismatch", "mixed", "linux", "linux-mixed", "compact"] {
         let directory = root.join(format!("check1-{mode}"));
         let args = vec![format!("memory1-{mode}"), directory.join("result.json").to_string_lossy().into_owned()];
-        let mut running = job::Job::start(&python(), "check", &args, &directory, &root).unwrap();
+        let mut running = job::Job::start_with_module_path(&python(), "check", &args, &directory, &root, Some(&root)).unwrap();
         assert_eq!(wait(&mut running), 1);
         assert_eq!(running.memory_refused, matches!(mode, "valid" | "linux" | "compact"), "check1 {mode}");
     }
@@ -264,8 +264,8 @@ fn shared_configuration_recovery_does_not_depend_on_the_creator_command_name() {
     for creator in ["case-catalog", "research", "future-configuration-creator"] {
         for mode in ["valid", "ordinary", "success", "mismatch", "no-draft"] {
             let directory = root.join(format!("{creator}-{mode}"));
-            let mut running = job::Job::start(&python(), creator,
-                &["shared-recovery".into(), mode.into()], &directory, &root).unwrap();
+            let mut running = job::Job::start_with_module_path(&python(), creator,
+                &["shared-recovery".into(), mode.into()], &directory, &root, Some(&root)).unwrap();
             assert_eq!(wait(&mut running), if mode == "success" { 0 } else { 2 });
             assert_eq!(running.memory_refused, matches!(mode, "valid" | "no-draft"));
             assert_eq!(running.configuration_recovery().is_some(), mode == "valid");
@@ -284,7 +284,7 @@ fn os_zero_without_matching_receipt_is_never_success() {
         let directory = root.join("job");
         let action = format!("fixture-receipt-{mode}");
         let args = vec![directory.join("result.json").to_string_lossy().into_owned()];
-        let mut running = job::Job::start(&python(), &action, &args, &directory, &root).unwrap();
+        let mut running = job::Job::start_with_module_path(&python(), &action, &args, &directory, &root, Some(&root)).unwrap();
         assert_eq!(wait(&mut running), 1);
         assert!(running
             .log_tail(30)
@@ -311,8 +311,8 @@ fn a_diagnostic_write_failure_still_delivers_the_terminal_result() {
     let directory = root.join("job");
     fs::create_dir(&directory).unwrap();
     fs::write(directory.join("launcher-result.tmp"), "preserve existing bytes").unwrap();
-    let mut running = job::Job::start(
-        &python(), "fixture-receipt-missing", &[], &directory, &root).unwrap();
+    let mut running = job::Job::start_with_module_path(
+        &python(), "fixture-receipt-missing", &[], &directory, &root, Some(&root)).unwrap();
     assert_eq!(wait(&mut running), 1);
     assert_eq!(running.poll().unwrap(), Some(1));
     assert!(running.completion_notice.as_ref().unwrap().contains("Could not save"));
@@ -325,8 +325,8 @@ fn an_ignored_interrupt_escalates_automatically_or_on_an_explicit_retry() {
     for retry in [false, true] {
         let root = scratch(if retry { "stop-retry" } else { "stop-grace" });
         fixture(&root);
-        let mut running = job::Job::start(
-            &python(), "fixture-ignore-stop", &[], &root.join("job"), &root).unwrap();
+        let mut running = job::Job::start_with_module_path(
+            &python(), "fixture-ignore-stop", &[], &root.join("job"), &root, Some(&root)).unwrap();
         await_started(&mut running);
         let heartbeat = root.join("grandchild.log");
         await_file(&heartbeat);
@@ -354,8 +354,8 @@ fn slow_python_startup_keeps_input_responsive_and_can_stop_before_the_cli() {
     fixture(&root);
     fs::write(root.join("gpuwm/__init__.py"), "import time\ntime.sleep(3)\n").unwrap();
     let started = Instant::now();
-    let mut running = job::Job::start(
-        &python(), "fixture-finish", &[], &root.join("job"), &root).unwrap();
+    let mut running = job::Job::start_with_module_path(
+        &python(), "fixture-finish", &[], &root.join("job"), &root, Some(&root)).unwrap();
     assert!(started.elapsed() < Duration::from_secs(2), "UI waited for the delayed interpreter");
     assert!(running.poll().unwrap().is_none());
     assert!(!running.dir.join("start").exists());
@@ -370,8 +370,8 @@ fn an_unready_worker_times_out_without_releasing_the_command() {
     let root = scratch("startup-deadline");
     fixture(&root);
     fs::write(root.join("gpuwm/__init__.py"), "import time\ntime.sleep(3)\n").unwrap();
-    let mut running = job::Job::start(
-        &python(), "fixture-finish", &[], &root.join("job"), &root).unwrap();
+    let mut running = job::Job::start_with_module_path(
+        &python(), "fixture-finish", &[], &root.join("job"), &root, Some(&root)).unwrap();
     running.started = Instant::now() - Duration::from_secs(31);
     assert_ne!(wait(&mut running), 0);
     assert!(!running.dir.join("start").exists());

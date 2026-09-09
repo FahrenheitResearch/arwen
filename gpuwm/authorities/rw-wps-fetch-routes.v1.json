@@ -122,7 +122,7 @@
         },
         {
           "role": "2dfld",
-          "primary": false,
+          "primary": true,
           "leads": "all",
           "path": "rrfs.{YYYYMMDD}/{HH}/rrfs.t{HH}z.2dfld.3km.f{FFF}.conus.grib2",
           "idx_sidecar": ".idx"

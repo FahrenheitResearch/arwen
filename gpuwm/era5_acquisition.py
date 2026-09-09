@@ -28,10 +28,10 @@ def _client(progress):
         state = [None]
         def information(message, *args, **kwargs):
             text = str(message).lower()
-            for name in ("queued", "running", "successful", "completed"):
+            for name in ("accepted", "queued", "running", "successful", "completed"):
                 if name in text and name != state[0]:
                     state[0] = name
-                    progress(f"fetch era5: CDS request {name}")
+                    progress(f"fetch era5: CDS request {'queued' if name == 'accepted' else name}")
                     break
         return cdsapi.Client(quiet=True, debug=False, progress=False,
             info_callback=information, warning_callback=_silent,
@@ -188,16 +188,23 @@ def retrieve_era5(*, cycle: datetime | str, hours: int, area,
         with tempfile.TemporaryDirectory(prefix=".era5-cds-", dir=out) as temporary:
             stage = Path(temporary)
             parts = []
-            with progress_mod.TransferMonitor("fetch era5", interval=1.0) as monitor:
+            with progress_mod.TransferMonitor("fetch era5", interval=0.25) as monitor:
                 for index, request in enumerate(requests):
                     part = stage / f"part-{index:04d}.grib"
                     day = request["request"]
                     progress(f"fetch era5: CDS request {index + 1}/{len(requests)} "
                              f"{request['dataset']} {day['year'][0]}-{day['month'][0]}-{day['day'][0]}")
                     publish("requesting", request_index=index + 1, dataset=request["dataset"])
-                    monitor.start(part.name, path=part)
                     try:
-                        client.retrieve(request["dataset"], request["request"], str(part))
+                        # The provider prepares the response before any bytes
+                        # can move. Its result supplies the actual file size;
+                        # CDS/multiurl writes .download while streaming it.
+                        result = client.retrieve(request["dataset"], request["request"])
+                        expected = getattr(result, "content_length", None)
+                        expected = expected if type(expected) is int and expected > 0 else None
+                        monitor.start(part.name, path=part, expected_bytes=expected)
+                        publish("downloading")
+                        result.download(str(part))
                     except Exception:
                         monitor.finish(part.name, failed=True)
                         publish("failed")

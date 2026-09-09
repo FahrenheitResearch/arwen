@@ -1314,6 +1314,7 @@ fn write_field(
     message: &Grib2Message,
     writer: &mut BufWriter<File>,
     spec: FieldSpec,
+    all_water_source: bool,
 ) -> Result<FieldSummary, Box<dyn Error>> {
     let (values, present) = scan_normalized(message)?;
     let expected = message.grid.nx as usize * message.grid.ny as usize;
@@ -1325,11 +1326,12 @@ fn write_field(
         )
         .into());
     }
-    emit_values(
+    emit_values_with_surface_support(
         &values,
         present.as_deref(),
         spec,
         field_quantum(message),
+        all_water_source,
         writer,
     )
 }
@@ -1337,11 +1339,23 @@ fn write_field(
 /// Bound-check, clamp, and emit one decoded field.  Split from
 /// `write_field` so the decision this patch changed can be exercised on
 /// bare values, without a hand-packed GRIB2 record standing in the way.
+#[cfg(test)]
 fn emit_values<W: Write>(
     values: &[f64],
     present: Option<&[bool]>,
     spec: FieldSpec,
     quantum: f64,
+    writer: &mut W,
+) -> Result<FieldSummary, Box<dyn Error>> {
+    emit_values_with_surface_support(values, present, spec, quantum, false, writer)
+}
+
+fn emit_values_with_surface_support<W: Write>(
+    values: &[f64],
+    present: Option<&[bool]>,
+    spec: FieldSpec,
+    quantum: f64,
+    all_water_source: bool,
     writer: &mut W,
 ) -> Result<FieldSummary, Box<dyn Error>> {
     let bounds = spec.bounds();
@@ -1401,7 +1415,13 @@ fn emit_values<W: Write>(
         writer.write_all(&output.to_le_bytes())?;
     }
     if finite == 0 {
-        return Err(format!("{} has no finite support", spec.name).into());
+        if !(all_water_source && spec.allow_missing && missing > 0 && missing == values.len()) {
+            return Err(format!("{} has no finite support", spec.name).into());
+        }
+        // Soil and snow have no support on an ocean-only crop. Retain the
+        // complete missing array and an honest missing range in its receipt.
+        minimum = f64::NAN;
+        maximum = f64::NAN;
     }
     Ok(FieldSummary {
         finite,
@@ -1475,6 +1495,24 @@ fn decoded_f32_bits(
             }
         })
         .collect()
+}
+
+fn source_is_all_water(file: &Grib2File, inventory: &Inventory) -> Result<bool, Box<dyn Error>> {
+    let fields: Vec<_> = inventory.selected.iter().filter(|field| field.name == "LANDSEA").collect();
+    let [field] = fields.as_slice() else {
+        return Err("source water support requires one validated LANDSEA field".into());
+    };
+    let message = &file.messages[field.index];
+    let (values, _) = scan_normalized(message)?;
+    if values.is_empty() {
+        return Err("source LANDSEA has no grid values".into());
+    }
+    for value in values {
+        if normalize_for_output(value, field.spec, field_quantum(message))? != 0.0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn require_exact_invariance(
@@ -1598,6 +1636,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         invariant_fingerprints.push((name, fnv1a64(&reference)));
     }
+    // LANDSEA is already proven byte-for-byte invariant across the series.
+    // Only an entirely water crop may have no finite soil/snow support.
+    let all_water_source = source_is_all_water(&loaded[0].0, &inventories[0])?;
 
     let parent = output.parent().unwrap_or_else(|| Path::new("."));
     let stem = output
@@ -1721,7 +1762,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 let mut writer = BufWriter::new(File::create(&path)?);
                 for selected in inv.selected.iter().filter(|field| field.name == name) {
                     let message = &file.messages[selected.index];
-                    let summary = write_field(message, &mut writer, selected.spec)?;
+                    let summary = write_field(message, &mut writer, selected.spec, all_water_source)?;
                     clamp_census
                         .entry(name)
                         .or_default()
@@ -1979,6 +2020,80 @@ mod tests {
             .join(name);
         Grib2File::open(path.to_str().expect("fixture path is UTF-8"))
             .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+    }
+
+    fn all_missing_ocean_fixture() -> Grib2Message {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/gfs-all-water/gfs-20260909t00z-f000-tsoil-ocean.grib2");
+        let bytes = fs::read(path).unwrap();
+        assert_eq!(hex_sha256(&bytes), "c336254c3adac4689ff670d2618a8b5770d6469dfcbf8d5565d28299e9faeff6");
+        let mut file = Grib2File::from_bytes(&bytes).unwrap();
+        assert_eq!(file.messages.len(), 1);
+        file.messages.remove(0)
+    }
+
+    #[test]
+    fn all_missing_ocean_record_preserves_full_grid_and_row_window_missing_values() {
+        let message = all_missing_ocean_fixture();
+        assert_eq!(message.grid.num_data_points, 43584);
+        assert_eq!(message.data_rep.section5_num_data_points, 0);
+        assert_eq!(message.data_rep.template, 0);
+        assert!(message.raw_data.is_empty());
+        let (values, present) = scan_normalized(&message).unwrap();
+        assert_eq!(values.len(), 43584);
+        assert!(values.iter().all(|value| value.is_nan()));
+        assert!(present.unwrap().iter().all(|value| !value));
+        let window = grib_core::grib2::unpack_message_scan_normalized_row_window(&message, 2, 4).unwrap();
+        assert_eq!(window.len(), 2 * message.grid.nx as usize);
+        assert!(window.iter().all(|value| value.is_nan()));
+    }
+
+    #[test]
+    fn all_missing_ocean_record_does_not_relax_corrupt_bitmap_or_payload_checks() {
+        for change in 0..5 {
+            let mut message = all_missing_ocean_fixture();
+            match change {
+                0 => message.bitmap = None,
+                1 => { message.bitmap.as_mut().unwrap().pop(); },
+                2 => message.bitmap.as_mut().unwrap()[0] = true,
+                3 => message.raw_data.push(0),
+                _ => message.data_rep.template = 40,
+            }
+            assert!(unpack_message(&message).is_err(), "corruption {change}");
+            assert!(grib_core::grib2::unpack_message_scan_normalized_row_window(&message, 0, 1).is_err(), "window corruption {change}");
+        }
+    }
+
+    #[test]
+    fn all_missing_soil_is_emitted_only_with_confirmed_water_only_source() {
+        let message = all_missing_ocean_fixture();
+        let (values, present) = scan_normalized(&message).unwrap();
+        let mut bytes = Vec::new();
+        assert!(emit_values(&values, present.as_deref(), SOIL_SPECS[0], 0.0, &mut bytes).is_err());
+        bytes.clear();
+        let summary = emit_values_with_surface_support(&values, present.as_deref(), SOIL_SPECS[0], 0.0, true, &mut bytes).unwrap();
+        assert_eq!((summary.finite, summary.missing), (0, 43584));
+        assert!(summary.minimum.is_nan() && summary.maximum.is_nan());
+        assert_eq!(bytes.len(), 4 * 43584);
+        assert!(bytes.chunks_exact(4).all(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()).is_nan()));
+        assert!(emit_values_with_surface_support(&values, present.as_deref(), PRESSURE_SPECS[0], 0.0, true, &mut Vec::new()).is_err());
+        let mut incorrect = present.unwrap(); incorrect[0] = true;
+        assert!(emit_values_with_surface_support(&values, Some(&incorrect), SOIL_SPECS[0], 0.0, true, &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn all_water_source_requires_decoded_land_mask_codes_and_accepts_legacy_water() {
+        for (parameter, code, expected) in [(192, 0.0, true), (192, 1.0, false), (0, 2.0, true), (0, 1.0, false)] {
+            let mut message = valid_message(parameter);
+            message.data_rep.section5_num_data_points = 4;
+            message.data_rep.reference_value = code;
+            let mut spec = *SURFACE_SPECS.iter().find(|spec| spec.name == "LANDSEA").unwrap();
+            spec.parameter.number = parameter;
+            let inv = Inventory { grid: GridFingerprint::from_grid(&message.grid), land_mask_parameter: parameter,
+                selected: vec![Selected { index: 0, name: "LANDSEA", level: 0.0, spec }] };
+            let file = Grib2File { messages: vec![message] };
+            assert_eq!(source_is_all_water(&file, &inv).unwrap(), expected);
+        }
     }
 
     fn gdas_process_fixture(name: &str) -> (Vec<u8>, Grib2File) {

@@ -515,7 +515,8 @@ def _resident_admission(options, machine, estimate=None):
         return None
     from gpuwm.core import preflight
     if estimate is None:
-        estimate = preflight.estimate_experiment(context.experiment)
+        estimate = preflight.estimate_experiment(
+            context.experiment, profile=getattr(machine, "device_profile", None))
     budget = (int(options.vram_budget_bytes)
               if options.vram_budget_bytes is not None else
               max(0, int(machine.vram_bytes) - preflight.EXTERNAL_MARGIN_BYTES))
@@ -638,6 +639,11 @@ def decide(cfg, options: StreamingOptions | None = None, *, machine=None,
             pinned_fraction=1.0, host_source="explicit")
 
     admission = None
+    if resident_estimate is None and options.resident_context is not None:
+        from gpuwm.core import preflight
+        resident_estimate = preflight.estimate_experiment(
+            options.resident_context.experiment,
+            profile=getattr(machine, "device_profile", None))
     if options.mode == "auto" and allow_resident is None:
         admission = _resident_admission(options, machine, resident_estimate)
         if admission is not None:
@@ -662,7 +668,9 @@ def decide(cfg, options: StreamingOptions | None = None, *, machine=None,
 
     try:
         plan = _plan_with_efficiency_advice(cfg, machine, mode=options.mode,
-                             footprint=radiation_footprint(cfg, options),
+                             footprint=radiation_footprint(
+                                 cfg, options, resident_estimate=resident_estimate,
+                                 machine=machine),
                              minimum_halo=need,
                              prefer_resident=prefer_resident,
                              write_mode=options.write_mode)
@@ -884,7 +892,13 @@ def streamed_envelope(cfg, options: "StreamingOptions | None" = None, *,
     if not decision.stream:
         return None
 
-    fp = radiation_footprint(cfg, options)
+    if resident_estimate is None and getattr(options, "resident_context", None) is not None:
+        from gpuwm.core import preflight
+        resident_estimate = preflight.estimate_experiment(
+            options.resident_context.experiment,
+            profile=getattr(machine, "device_profile", None))
+    fp = radiation_footprint(cfg, options, resident_estimate=resident_estimate,
+                             machine=machine)
     nx, ny, nz = int(cfg.nx), int(cfg.ny), int(cfg.nz)
     halo = int(decision.halo if decision.halo is not None else _halo_for(cfg))
     tile_nx = int(decision.tile_nx or nx)
@@ -1898,7 +1912,18 @@ class StreamedDomain:
                 "is nothing to exchange whole-domain carriers with")
         names = tuple(names)
         store = self.store
-        live = _physics.streaming_manifest(self._state)
+        # Use the same inventory that owns this store, including explicitly
+        # transported held output scratch such as lifecycle reflectivity.
+        # The ordinary manifest omits those slots and would refuse their
+        # exact store-to-state publication at a checkpoint.
+        from gpuwm.core.streamed_state import CanonicalStoreState
+        if isinstance(self._state, CanonicalStoreState):
+            # This view already aliases full canonical host arrays. Walking
+            # its proxy metadata as a resident DomainState is invalid.
+            live = self._state._canonical_store
+        else:
+            take = self.inventory_fn or _physics.streaming_inventory
+            live = take(self._state, None)
         missing = [n for n in names if n not in store or n not in live]
         if missing:
             raise StreamingRefused(
@@ -4087,14 +4112,23 @@ def store_domain_builder(bundle, *, clock=DERIVE_CLOCK, node=None, seam: str = "
     return build
 
 
-def radiation_footprint(cfg, options=None):
-    """The existing footprint with this experiment's classic execution cap."""
+def radiation_footprint(cfg, options=None, *, resident_estimate=None, machine=None):
+    """One footprint for planning, explicit tiles and admission reports."""
+    from dataclasses import replace
     from tilestream import autoplan
     context = getattr(options, "radiation_context", None)
     follower_context = getattr(options, "follower_context", None)
     extra = {} if follower_context is None else {"follower_slots": follower_context.slots}
-    return (autoplan.footprint_for(cfg, **extra) if context is None else
-            autoplan.footprint_for(cfg, radiation_context=context, **extra))
+    fp = (autoplan.footprint_for(cfg, **extra) if context is None else
+          autoplan.footprint_for(cfg, radiation_context=context, **extra))
+    from gpuwm.core.prepared_tile_memory import for_options
+    profile = (getattr(resident_estimate, "local_memory_profile", None)
+               or getattr(machine, "device_profile", None))
+    prepared = for_options(cfg, options, profile=profile, estimate=resident_estimate)
+    if prepared is not None:
+        fp = replace(fp, prepared_memory=prepared,
+                     source="itemized independent prepared buffers; unfused RTE peak retained per stream")
+    return fp
 
 
 def options_for_domain(domain_cfg, tree_options: "StreamingOptions | None"
@@ -4670,6 +4704,28 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
     options = OFF if options is None else options
     nodes = list(nodes)
     per_domain = [options_for_domain(node.cfg, options) for node in nodes]
+    # A single prepared root is the same question decide()/check/go answered.
+    # The empirical nested-tree walk has its own shared intercept/reserve and
+    # must not add those older terms to this independent-buffer inventory.
+    if len(nodes) == 1 and resident_estimate is not None:
+        node, choice = nodes[0], per_domain[0]
+        fp = radiation_footprint(node.cfg.run, choice,
+                                resident_estimate=resident_estimate, machine=machine)
+        if fp.prepared_memory is not None:
+            decision = decide(node.cfg.run, choice, machine=machine,
+                              resident_estimate=resident_estimate)
+            env = streamed_envelope(node.cfg.run, choice, machine=machine,
+                                    resident_estimate=resident_estimate, decision=decision)
+            peak = (resident_estimate.peak_envelope_bytes if env is None
+                    else env.peak_vram_bytes)
+            host = 0 if env is None else env.host_bytes
+            if decisions is not None:
+                decisions[int(node.cfg.grid_id)] = decision
+            return TreeDecision(
+                [(node, node.cfg.run, choice, machine, decision)], True,
+                0, 0, int(decision.budget_bytes or 0), int(peak), int(host),
+                None if machine is None else machine.host_budget_bytes,
+                int(peak) if env is None else 0, int(peak))
     auto_ids = [int(node.cfg.grid_id) for node, choice in zip(nodes, per_domain)
                 if choice.mode == "auto"]
     context_options = next((choice for choice in per_domain
@@ -5250,6 +5306,14 @@ class TreeRoadPlan:
     resident_subset_envelope_bytes: int = 0
     configured_mixed_envelope_bytes: int = 0
     refusal_resource: str | None = None
+    #: The REPORT died, the tree was not refused.  Set when the walk raised
+    #: something that is neither a :class:`StreamingRefused` nor the
+    #: planner's ``CannotPlan`` -- a ``TypeError`` in the pricing code, say
+    #: -- and ``refusal`` is then None, because a defect in a report is not
+    #: a statement about the configuration.  ``gpuwm go`` used to read the
+    #: two through one attribute and hard-refused a runnable tree on the
+    #: report's own exception (ENG-014).
+    report_error: str | None = None
 
     @property
     def peak_vram_bytes(self) -> int:
@@ -5422,6 +5486,7 @@ def tree_road_plan(exp, *, machine=None, resident_estimate=None) -> TreeRoadPlan
     decisions: dict = {}
     refusal = None
     refusal_resource = None
+    report_error = None
     outcome = None
     try:
         outcome = decide_tree(nodes, options, machine=machine,
@@ -5430,12 +5495,20 @@ def tree_road_plan(exp, *, machine=None, resident_estimate=None) -> TreeRoadPlan
         refusal = str(error)
         refusal_resource = error.resource
     except Exception as error:              # a report never dies on its estimate
-        # ``autoplan.CannotPlan`` for a domain no road can carry lands
-        # here: streaming would not have saved this tree either, and the
-        # planner's sentence says why.
-        refusal = str(error)
         if isinstance(error, _CannotPlan()):
+            # ``autoplan.CannotPlan`` for a domain no road can carry lands
+            # here: streaming would not have saved this tree either, and
+            # the planner's sentence says why.  A REFUSAL, with its resource.
+            refusal = str(error)
             refusal_resource = error.resource
+        else:
+            # Anything else is the REPORT failing, not the tree being
+            # refused, and the two must not share an attribute: read
+            # through ``refusal`` alone, a TypeError in the pricing walk
+            # became a ``gpuwm go`` hard refusal of a tree that runs
+            # (ENG-014).  Named as the report's failure so every surface
+            # that prints it says what happened.
+            report_error = f"{type(error).__name__}: {error}"
     rows = _plan_rows(decisions)
     # PRICED FROM THE WALK'S OWN DECISION, never re-derived: the root's
     # envelope has to describe the road this walk chose for it, and a
@@ -5458,7 +5531,7 @@ def tree_road_plan(exp, *, machine=None, resident_estimate=None) -> TreeRoadPlan
             vram_hold_bytes=0, radiation_transient_bytes=0, host_bytes=0,
             total_budget_bytes=0, process_overhead_bytes=0,
             host_budget_bytes=None, root_envelope=root_envelope,
-            refusal_resource=refusal_resource)
+            refusal_resource=refusal_resource, report_error=report_error)
     return TreeRoadPlan(
         rows=rows, refusal=refusal, priced=outcome.priced,
         streams_any=any(row["road"] == "streamed" for row in rows),

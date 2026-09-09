@@ -1124,7 +1124,8 @@ class _DomainSampler:
             xs_use = xs_abs
             if getattr(ds, "wraps_x", False):
                 nxg = int(ds.nx_global)
-                xs_use = np.where(xs_abs > nxg, xs_abs - nxg, xs_abs)
+                xs_use = ((xs_abs - 1) % nxg + 1 if nxw > nxg else
+                          np.where(xs_abs > nxg, xs_abs - nxg, xs_abs))
             lat, lon = ds.xy_to_latlon(xs_use[None, :], yy[:, None])
             # The accumulation path was already oracle-matched in float64;
             # only target-point stencil selection needs WPS's real precision.
@@ -1139,6 +1140,11 @@ class _DomainSampler:
             ej = np.floor(gy + 0.5).astype(np.int64) + (self.halo - 1)
             ok = ((ei >= 0) & (ei < self.nxe)
                   & (ej >= 0) & (ej < self.nye))
+            if getattr(ds, "wraps_x", False) and nxw > ds.nx_global:
+                # Keep periodic padding for point interpolation, but count
+                # each physical source column only once in area averages
+                # and category fractions. Later circuits duplicate pixels.
+                ok &= np.arange(nxw)[None, :] < ds.nx_global
             flat[j0:j1][ok] = (ej * self.nxe + ei)[ok]
         flat = flat.ravel()
         self._cells_cache = {key: flat}          # keep only the last mapping

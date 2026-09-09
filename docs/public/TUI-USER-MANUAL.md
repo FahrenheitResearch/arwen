@@ -325,7 +325,7 @@ Choose **L Local computer** to return to local work. **Delete** reviews removal 
 | Linux with XDG configuration | `$XDG_CONFIG_HOME/arwen/nodes.json` |
 | Linux default | `~/.config/arwen/nodes.json` |
 
-Profiles and their node preferences are shared across launch folders. Existing `.arwen-nodes.json` profiles are imported once with the original file preserved. Profiles store paths and reconnect IDs, not passwords or private-key contents. SSH retains strict known-host verification.
+Profiles and their node preferences are shared across launch folders. A `.arwen-nodes.json` in the folder you opened the terminal in is not read: open such a file deliberately with `--nodes-file ABSOLUTE_PATH`, or add the node in **R Nodes**. Identity and SSH config paths must be absolute paths on this computer. Profiles store paths and reconnect IDs, not passwords or private-key contents. SSH retains strict known-host verification.
 
 ## 16. Key reference
 

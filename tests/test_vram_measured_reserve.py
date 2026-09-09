@@ -192,6 +192,77 @@ def test_the_wizard_prices_the_card_it_measured(monkeypatch):
     assert seen == {}
 
 
+def _auto_morrison_domain(edge):
+    from gpuwm import domain_wizard as dw
+    from gpuwm.physics_compat import MORRISON_PROFILE_ID
+
+    text = dw.render_config(
+        name="auto-measured-card", start_time=datetime(2026, 9, 8, 18),
+        hours=6, projection=dw._projection_entries(37.0, -92.0, "lambert"),
+        dims=[(edge, edge)], ratios=(), fetch_hints={}, case_data=None,
+        root_dx_m=12000.0, profile=MORRISON_PROFILE_ID, tiles="auto")
+    return dw.experiment_from_text(text, source="<auto-measured-card>")
+
+
+@pytest.mark.parametrize("free_gib", [6.535, 6.54, 6.545])
+def test_auto_keeps_the_measured_card_in_its_resident_decision(monkeypatch, free_gib):
+    """The 6.54-GiB display's whole rounding interval keeps the 68-SM card.
+
+    This bounded geometry fits the real profile but not the 170-SM fallback.
+    The historical coarse tile model refused this fallback at a 3.81-GiB
+    floor; the resident decision must still retain the measured card.
+    """
+    from gpuwm import domain_wizard as dw
+    from gpuwm.core import streaming
+    from tilestream.autoplan import Machine
+
+    exp = _auto_morrison_domain(280)
+    profile = _profile("NVIDIA GeForce RTX 3080")
+    free = int(free_gib * GIB)
+    machine = Machine(vram_bytes=free, host_bytes=64 * GIB, name="measured3080")
+    options = dict(source="gfs", forcing_interval_seconds=10800.0,
+                   vram_gib=10.0, profile=profile)
+    actual = pf.estimate_experiment(exp, profile=profile,
+                                    forcing_interval_seconds=10800.0, vram_gib=10.0)
+    fallback = pf.estimate_experiment(exp)
+    budget = free - pf.EXTERNAL_MARGIN_BYTES
+    assert profile.multiprocessor_count == 68
+    assert pf.MEASURED_LOCAL_MEMORY_PROFILE.multiprocessor_count == 170
+    assert actual.peak_envelope_bytes < budget < fallback.peak_envelope_bytes
+    seen = []
+    real_decide = streaming.decide
+    def capture(*args, **kwargs):
+        seen.append(kwargs.get("resident_estimate"))
+        return real_decide(*args, **kwargs)
+    monkeypatch.setattr(streaming, "decide", capture)
+    monkeypatch.setattr(dw, "device_memory_probe_subprocess",
+                        lambda: pytest.fail("a supplied measured profile must not re-probe the GPU"))
+    phases = dw._sizing_phases(exp, free_bytes=free, machine=machine, **options)
+    assert phases.peak_envelope_bytes <= budget
+    assert phases.streamed is None
+    assert phases.forecast.non_pool_device_bytes == actual.non_pool_device_bytes
+    assert len(seen) == 2 and all(value is phases.forecast for value in seen)
+    assert (exp.root.run.nx, exp.root.run.ny, exp.root.run.nz) == (280, 280, 49)
+    assert exp.root.run.mp_physics == 10 and exp.tiles.mode == "auto"
+
+
+def test_auto_still_refuses_a_geometry_that_does_not_fit_the_measured_card():
+    from gpuwm import domain_wizard as dw
+    from tilestream.autoplan import Machine
+
+    exp = _auto_morrison_domain(350)
+    profile = _profile("NVIDIA GeForce RTX 3080")
+    free = int(2.0 * GIB)
+    estimate = pf.estimate_experiment(exp, profile=profile,
+                                      forcing_interval_seconds=10800.0, vram_gib=10.0)
+    assert estimate.peak_envelope_bytes > free - pf.EXTERNAL_MARGIN_BYTES
+    machine = Machine(vram_bytes=free, host_bytes=64 * GIB, name="measured3080")
+    with pytest.raises(dw.DomainFitError, match="no tile fits"):
+        dw._sizing_phases(exp, free_bytes=free, machine=machine,
+                          source="gfs", forcing_interval_seconds=10800.0,
+                          vram_gib=10.0, profile=profile)
+
+
 # ---------------------------------------------------------------------------
 # 3. the pool-slack term is a pool property, not a driver-model one
 # ---------------------------------------------------------------------------

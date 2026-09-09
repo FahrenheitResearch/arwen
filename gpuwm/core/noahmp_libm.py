@@ -399,7 +399,7 @@ def log10f(x) -> np.float32:
             # glibc spells log10(+-0) as ``-two25 / fabsf(x)``, a division
             # whose only purpose is to raise divide-by-zero on the way to
             # -inf; FDLIBM divides by a ``zero`` variable instead.  ArWen
-            # returns the -inf.  Dropped at 2.6.6 -- the two forms were
+            # returns the -inf.  Dropped at 2.7.0 -- the two forms were
             # compared on all 4,294,967,296 float32 bit patterns and differ
             # on none.
             return F(-np.inf)
@@ -741,7 +741,7 @@ def tanhf(x) -> np.float32:
     if ix < 0x41B00000:                                 # |x| < 22
         # glibc guards zero here with ``if (ix == 0) return x;``.  FDLIBM does
         # not, and it is redundant: the |x| < 2**-55 branch below returns
-        # x*(1+x), which is x for both signed zeros.  Dropped at 2.6.6 -- the
+        # x*(1+x), which is x for both signed zeros.  Dropped at 2.7.0 -- the
         # two forms were compared on all 4,294,967,296 float32 bit patterns
         # and differ on none.
         if ix < 0x24000000:                             # |x| < 2**-55

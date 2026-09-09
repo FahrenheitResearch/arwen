@@ -2,7 +2,7 @@
 //! `gpuwm/verify/obs/regrid.py`.
 //!
 //! The plan-as-data discipline is seeded from `rustwx-regrid::plan` in
-//! Drew's consolidated Rust -- a remap between two fixed grids is a
+//! the project's consolidated Rust -- a remap between two fixed grids is a
 //! fixed mapping, built once and applied many times, and applying it
 //! writes into a caller-owned buffer.  The OPERATORS are gpuwm's, and
 //! they are not the ones that crate carries:

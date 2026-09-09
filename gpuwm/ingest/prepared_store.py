@@ -62,6 +62,7 @@ import numpy as np
 __all__ = [
     "PreparedStore",
     "PreparedStoreError",
+    "default_slab_rows",
     "store_from_prepared_cache",
 ]
 
@@ -412,15 +413,40 @@ def _boundaries_from_cache(reader, metadata):
     return _reader_boundaries(reader)
 
 
+def default_slab_rows(nx: int, ny: int) -> int:
+    """Bound default loader slabs by columns as the requested domain widens.
+
+    A fixed 64-row slab grows without bound with nx, defeating store-direct
+    initialization before its first tile exists. Reuse the engine's standard
+    column batch as the loader's column ceiling, retaining at least one full
+    row and at most the old 64 rows. This partitions the same cache bytes;
+    it changes neither the grid nor any physics/vertical operand.
+
+    The memory model calls this same function before choosing a tile. Its
+    normal peak guard therefore includes both the selected slab and the
+    actual final slab that remains as the factory's template.
+    """
+    from gpuwm.config import DEFAULT_COLUMN_CHUNK
+    nx, ny = int(nx), int(ny)
+    if nx < 1 or ny < 1:
+        raise PreparedStoreError("prepared-store dimensions must be positive")
+    return min(64, ny, max(1, DEFAULT_COLUMN_CHUNK // nx))
+
+
 def store_from_prepared_cache(path, *, expected_identity, cfg, static,
                               landuse_attrs, grid, valid_time,
-                              rows_per_slab: int = 64,
+                              rows_per_slab: int | None = None,
                               budget_bytes: int | None = None,
                               verify_payload: bool = True,
                               center_lat=None, constant_glw_wm2=None,
                               inventory_fn=None, physics_initializer=None,
                               log=print) -> PreparedStore:
     """Load a prepared cache into pinned host arrays, slab by slab.
+
+    An omitted row count uses :func:`default_slab_rows`, whose bounded
+    column count keeps a wide grid's initialization within the same memory
+    contract its tiles are planned against. Explicit counts remain available
+    to partition/parity probes and callers with their own priced policy.
 
     ``physics_initializer`` optionally initializes a caller's existing
     physics contract on each row window. It receives the same inputs as
@@ -466,6 +492,8 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
     from tilestream import realdata as _realdata
 
     nz, ny, nx = int(cfg.nz), int(cfg.ny), int(cfg.nx)
+    if rows_per_slab is None:
+        rows_per_slab = default_slab_rows(nx, ny)
     reader = PreparedCacheReader(path, expected_identity=expected_identity)
     metadata = reader.header["metadata"]
 

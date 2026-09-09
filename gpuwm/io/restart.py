@@ -101,7 +101,8 @@ from gpuwm.supervisor import _fsync_directory, fsync_file, unique_temp_path
 from gpuwm.physics_compat import (RRTMG_VARIANT_LEGACY,
                                   RRTMG_VARIANT_RTE_RRTMGP, rrtmg_variant)
 from gpuwm.core.adaptive_clock import ADAPTIVE_DERIVED_RUN_FIELDS
-from gpuwm.core.model import ADAPTIVE_POLICY_RUN_FIELDS
+from gpuwm.core.model import (ADAPTIVE_POLICY_RUN_FIELDS,
+                              ADAPTIVE_TIMESTEP_RUN_FIELDS)
 from gpuwm.core.uh_diag import (
     TRACKER_WINDOW_SLOTS as _TRACKER_WINDOW_SLOTS,
     UH_FOLLOW_WINDOW_PREFIX as _UH_FOLLOW_WINDOW_PREFIX,
@@ -134,11 +135,47 @@ from gpuwm.state_serialization_contract import (
 #: the driver now aliases the serialized scratch/mp_* accumulator set.  v4
 #: binds the resolved physics/radiation setup and every active packaged data
 #: asset, including an explicit above-atmosphere radiation policy.  v5 adds
-#: KF's independently held ice/snow rates and coupled snow tendency.  The reader
-#: retains a byte-equality-checked v2 array-layout shim, but an old unbound v2
-#: file is rejected because the v4 identity header is mandatory.
-RESTART_FORMAT_VERSION = 5
+#: KF's independently held ice/snow rates and coupled snow tendency.  v6 is the
+#: 2.7.0 line: the config echo gains the adaptive-timestep block and
+#: ``eta_levels``, every MM5 surface-layer run carries ``fields/ustm``, and
+#: every GF / New Tiedtke run carries ``held/gf_*`` -- each of which a v5 file
+#: lacks, so a 2.6.5 checkpoint cannot be read by this build and is REFUSED BY
+#: NAME (:data:`RETIRED_RESTART_FORMAT_VERSIONS`) instead of by a field-by-field
+#: identity mismatch that reads as "your configuration changed" (ENG-010,
+#: ENG-011).  The reader retains a byte-equality-checked v2 array-layout shim,
+#: but an old unbound v2 file is rejected because the v4 identity header is
+#: mandatory.
+RESTART_FORMAT_VERSION = 6
 READABLE_RESTART_FORMAT_VERSIONS = frozenset({2, RESTART_FORMAT_VERSION})
+
+#: Format versions this build recognises and refuses with the reason, so an
+#: operator holding a checkpoint from the previous release reads WHY it is
+#: refused and what to do, rather than a list of "absent" configuration
+#: fields.  A declared break, not a migration: the members a v6 file adds
+#: are real state a v5 file never had (see the v6 note above).
+RETIRED_RESTART_FORMAT_VERSIONS = {
+    5: ("2.6.5 checkpoint format 5: 2.7.0 adds the adaptive-timestep and "
+        "eta_levels configuration echo, the fields/ustm surface-layer member "
+        "and the held/gf_rthblten, held/gf_rqvblten cumulus forcing members; "
+        "restart from the run's initial conditions or complete it on 2.6.5"),
+}
+
+
+def require_readable_format_version(format_version, path) -> None:
+    """Refuse a checkpoint format this build cannot read, by name.
+
+    One gate for the single-domain reader, the tree reader and both
+    ``tilestream`` readers, so a retired version is refused with the same
+    sentence everywhere it can arrive.
+    """
+    if format_version in READABLE_RESTART_FORMAT_VERSIONS:
+        return
+    retired = RETIRED_RESTART_FORMAT_VERSIONS.get(format_version)
+    if retired is not None:
+        raise RestartMismatchError(f"restart file {path} is a {retired}")
+    raise RestartMismatchError(
+        f"restart file {path} has format version {format_version!r}; this "
+        f"build reads {sorted(READABLE_RESTART_FORMAT_VERSIONS)}")
 
 #: MP18 extends the existing v5 physics-identity object rather than creating
 #: another archive format.  This nested contract is independently versioned:
@@ -712,6 +749,13 @@ CARRIED_SCRATCH_SLOTS = frozenset({
 #: .is_tracker_window_slot`` already answers this question for the rest of
 #: the model, and the two answering differently is what made this partial.
 CARRIED_SCRATCH_PREFIXES = (_UH_FOLLOW_WINDOW_PREFIX,)
+
+#: Output scratch whose last actual producer value is also lifecycle state.
+#: Ordinary restart and transport inventories retain their existing classes:
+#: streaming may prime a zero transport buffer before any diagnostic exists.
+#: A lifecycle checkpoint explicitly opts in the produced held volume, once,
+#: while the consumed PhysicsDriver handoff pointer remains rebuilt.
+LIFECYCLE_HELD_SCRATCH_SLOTS = frozenset({"refl_10cm"})
 
 #: Driver-manifest members a CHECKPOINT carries and a SWEEP must not.
 #:
@@ -1563,7 +1607,8 @@ def _restorable_scratch_slot(slot: str) -> bool:
     :func:`classify_scratch_slot`.
     """
     return (classify_scratch_slot(slot) == "serialize"
-            or _is_tracker_window_slot(slot))
+            or _is_tracker_window_slot(slot)
+            or slot in LIFECYCLE_HELD_SCRATCH_SLOTS)
 
 
 def setup_fingerprint(state) -> str:
@@ -2652,11 +2697,14 @@ def _opted_in_scratch_manifest(state, slots) -> dict[str, object]:
     every run -- including runs with no consumer to read one, whose
     checkpoints would then differ from every checkpoint they have on disk.
     A nest-lifecycle run opts its own windows in, per member, here.
+    It also opts in named held output scratch: the last microphysics-time
+    reflectivity volume can be consumed by a tracker before the next step.
     """
     pool = getattr(state, "_scratch", {})
     manifest: dict[str, object] = {}
     for slot in sorted(set(slots)):
-        if classify_scratch_slot(slot) != "carry":
+        if (classify_scratch_slot(slot) != "carry"
+                and slot not in LIFECYCLE_HELD_SCRATCH_SLOTS):
             raise RestartManifestError(
                 f"the checkpoint writer opted scratch slot {slot!r} in, but "
                 f"it classifies as {classify_scratch_slot(slot)!r}: a "
@@ -3078,6 +3126,20 @@ def read_restart_header(path) -> dict:
     return _load_restart(Path(path), with_arrays=False)[0]
 
 
+def _run_config_default(key: str):
+    """The ``RunConfig`` default for ``key``, or a value equal to nothing."""
+    from gpuwm.config import RunConfig
+
+    for field in dataclasses.fields(RunConfig):
+        if field.name != key:
+            continue
+        if field.default is not dataclasses.MISSING:
+            return field.default
+        if field.default_factory is not dataclasses.MISSING:
+            return field.default_factory()
+    return object()
+
+
 def _require_config_match(stored_config: dict, cfg, path) -> None:
     live_config = dataclasses.asdict(cfg)
     absent = object()
@@ -3157,6 +3219,22 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
             # mismatches the live config stays fail-closed below --
             # never infer legacy, never widen.
             stored = RRTMG_VARIANT_RTE_RRTMGP
+        if stored is absent and key == "eta_levels" and live is None:
+            # ABSENT STAYS ABSENT: ``eta_levels = None`` means "inherit the
+            # source's ladder", which is exactly and only what every
+            # checkpoint written before the field existed describes.  A
+            # declared ladder still binds value for value below.
+            continue
+        if (stored is absent and key in ADAPTIVE_TIMESTEP_RUN_FIELDS
+                and not live_config.get("use_adaptive_time_step")
+                and live == _run_config_default(key)):
+            # A FIXED-dt checkpoint does not need the adaptive echo: with
+            # the controller off none of these fields is read by anything,
+            # so a header written without them and a live config holding
+            # their defaults describe one clock.  A live config that turns
+            # the controller ON against such a header still refuses below
+            # (the flag itself is compared), as does any non-default value.
+            continue
         if stored is not live and stored != live:
             # Name an ABSENT side rather than repr()-ing the sentinel.
             # The concrete breakage this replaces: `absent` is a bare
@@ -3456,7 +3534,8 @@ def _validate_nssl2_stored_restart_state(
     # nwp_diagnostics = 1 and resumed under 0 reaches the generic
     # drop-with-a-note instead of refusing here on an inventory count.
     optional_scratch = {key for key in stored_scratch
-                        if _is_tracker_window_slot(key[len("scratch/"):])}
+                        if (_is_tracker_window_slot(key[len("scratch/"):])
+                            or key == "scratch/refl_10cm")}
     missing_scratch = sorted(expected_scratch - stored_scratch)
     extra_scratch = sorted(stored_scratch - expected_scratch - optional_scratch)
     if missing_scratch or extra_scratch:
@@ -3780,6 +3859,63 @@ def lifecycle_window_slots(state) -> tuple[str, ...]:
                         if _is_tracker_window_slot(slot)))
 
 
+def _lifecycle_checkpoint_slots(state) -> tuple[str, ...]:
+    """Actual held signals and windows selected for a lifecycle checkpoint.
+
+    Keep ``lifecycle_window_slots`` restricted to 2-D UH windows: streaming
+    uses it to allocate those windows on each tile. Reflectivity is a 3-D
+    microphysics-time volume, already allocated by its producer or transport.
+    No new plane is fabricated here, and the driver handoff stays consumed.
+    """
+    slots = set(lifecycle_window_slots(state))
+    pool = getattr(state, "_scratch", {})
+    slots.update(slot for slot in LIFECYCLE_HELD_SCRATCH_SLOTS
+                 if pool.get(slot) is not None)
+    return tuple(sorted(slots))
+
+
+def _require_held_lifecycle_reflectivity(model, nodes, headers, validated,
+                                        stored_slots) -> None:
+    """Reject pre-persistence checkpoints before a primed zero can steer.
+
+    After the parent's first microphysics-time history diagnostic, a UH
+    fallback or reflectivity consumer requires that exact held value. A
+    streamed destination's allocation is transport capacity, never evidence
+    that the old checkpoint carried a producer value. Before the first due
+    history, no held value exists yet and normal production creates it.
+    """
+    parents = set()
+    for gid, runner in lifecycle_followers(model).items():
+        follow = getattr(runner.config, "follow", None)
+        if getattr(follow, "field", None) not in ("uh", "reflectivity"):
+            continue
+        node = nodes.get(gid)
+        if node is not None and node.parent is not None:
+            parents.add(int(node.parent.cfg.grid_id))
+    exp = getattr(model, "_declared_experiment", None)
+    for domain in getattr(exp, "domains", ()):
+        if any(getattr(getattr(domain, name, None), "trigger", None)
+               == "reflectivity" for name in ("spawn", "retire")):
+            parents.add(int(domain.parent_id))
+    for gid in sorted(parents & set(nodes)):
+        spec = nodes[gid].clock.spec
+        history_ticks = getattr(spec, "history_ticks", None)
+        # Reduced state-only callers have no diagnostic production clock.
+        if history_ticks is None:
+            continue
+        first_due = int(spec.start_ticks) + int(history_ticks)
+        if int(headers[gid]["elapsed_ticks"]) < first_due:
+            continue
+        if ("refl_10cm" not in stored_slots.get(str(gid), ())
+                or "scratch/refl_10cm" not in validated[gid].stored):
+            raise RestartMismatchError(
+                f"checkpoint predates held lifecycle reflectivity on d{gid:02d}: "
+                "the configured consumer needs the actual microphysics-time "
+                "scratch/refl_10cm volume, which this file did not persist; "
+                "a primed zero or recomputed field is not a continuation. "
+                "Restart from the prepared state; no domain was restored")
+
+
 def lifecycle_followers(model) -> dict[int, object]:
     """``{grid_id: runner}`` for every follower this run drives.
 
@@ -3898,7 +4034,7 @@ def _publish_streamed_lifecycle_windows(nodes) -> None:
         streamed = getattr(node.state, "_streamed_domain", None)
         if streamed is None:
             continue
-        names = tuple(f"scratch/{slot}" for slot in lifecycle_window_slots(node.state))
+        names = tuple(f"scratch/{slot}" for slot in _lifecycle_checkpoint_slots(node.state))
         present = _streaming.allocated_planes(node.state, names)
         if present:
             streamed.publish(present)
@@ -3968,7 +4104,7 @@ def _nest_lifecycle_header(model, nodes) -> dict | None:
         "window_slots": {
             str(int(node.cfg.grid_id)): list(slots)
             for node in nodes
-            for slots in (lifecycle_window_slots(node.state),) if slots},
+            for slots in (_lifecycle_checkpoint_slots(node.state),) if slots},
     }
 
 
@@ -4372,13 +4508,30 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
         _publish_streamed_lifecycle_windows(nodes)
         nest_lifecycle = _nest_lifecycle_header(model, nodes)
         window_slots_by_gid = {
-            int(node.cfg.grid_id): lifecycle_window_slots(node.state)
+            int(node.cfg.grid_id): _lifecycle_checkpoint_slots(node.state)
             for node in nodes}
     if sealed_forcing_extension:
+        # A STREAMED domain lives in its store; ``node.state`` is the
+        # snapshot ``attach`` filled the store from, and nothing writes back
+        # to it.  The sealed route has no store writer
+        # (``StreamedDomain.write_restart`` takes no
+        # ``sealed_forcing_extension``), so below it falls through to the
+        # resident writer -- which, read off that snapshot, checkpointed the
+        # ANALYSIS-era state under a horizon-extension header and restored
+        # a trajectory that never happened: no NaN, no shape mismatch, no
+        # refusal (ENG-012).  Gather the store onto the state first
+        # (``refresh_state``: the whole-domain copy a history frame already
+        # costs), with the exact domain clock imposed, so both the prefix
+        # validation and the writer read the domain as it is.
+        sealed_elapsed = ticks / tick_den
+        for node in nodes:
+            streamed = getattr(node.state, "_streamed_domain", None)
+            if streamed is not None:
+                streamed.impose_clock(sealed_elapsed)
+                streamed.refresh_state()
         # Validate the whole generation before assigning its UUID or writing
         # even a child member.  A malformed root prefix must never leave an
         # orphan child that looks like part of a publish attempt.
-        sealed_elapsed = ticks / tick_den
         for node in nodes:
             _require_sealable_forcing_prefix(
                 node.state, node.cfg.run,
@@ -4494,6 +4647,8 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
                     tree_header=tree_header,
                     extra_scratch_slots=window_slots_by_gid.get(gid, ())).path
             else:
+                # Resident, or streamed under the sealed extension -- where
+                # node.state was refreshed from the store above (ENG-012).
                 paths[gid] = write_restart(
                     path, node.state, node.cfg.run,
                     run_trackers=trackers.get(gid), tree_header=tree_header,
@@ -4580,6 +4735,11 @@ def restore_tree_restart(path, model, *,
     nodes = {int(node.cfg.grid_id): node
              for node in model.walk_parent_first()}
     paths = _tree_restart_paths(path, set(nodes))
+    stored_lifecycle_slots = {}
+    if _declares_nest_lifecycle(model):
+        root_header = read_restart_header(paths[int(model.root.cfg.grid_id)])
+        stored_lifecycle_slots = dict(
+            (root_header.get(NEST_LIFECYCLE_HEADER_KEY) or {}).get("window_slots", {}))
     # Load every payload and hoist restore_restart's config/setup/manifest/
     # inventory/boundary refusal checks across the COMPLETE member set before
     # touching any live domain.  The validated objects retain the exact host
@@ -4600,13 +4760,29 @@ def restore_tree_restart(path, model, *,
         for gid, node in nodes.items():
             streamed = getattr(node.state, "_streamed_domain", None)
             if streamed is not None:
-                options = ({"extra_scratch_slots": lifecycle_window_slots(node.state)}
+                options = ({"extra_scratch_slots": tuple(stored_lifecycle_slots.get(str(gid), ()))}
                            if _declares_nest_lifecycle(model) else {})
                 validated[gid] = streamed.validate_restart(
                     paths[gid], node.cfg.run, **options)
             else:
                 validated[gid] = _validate_restart(paths[gid], node.state, node.cfg.run)
     headers = {gid: member.header for gid, member in validated.items()}
+    _require_held_lifecycle_reflectivity(
+        model, nodes, headers, validated, stored_lifecycle_slots)
+    # The root audit names the held signals this generation wrote. Verify
+    # those members across the complete set before applying any domain.
+    for header in headers.values():
+        lifecycle = header.get(NEST_LIFECYCLE_HEADER_KEY)
+        if lifecycle is None:
+            continue
+        for raw_gid, slots in lifecycle["window_slots"].items():
+            gid = int(raw_gid)
+            for slot in slots:
+                key = f"scratch/{slot}"
+                if gid not in validated or key not in validated[gid].stored:
+                    raise RestartMismatchError(
+                        f"lifecycle checkpoint declares d{gid:02d} {key} "
+                        "but its member is missing; no domain was restored")
 
     # A checkpoint set written after a nest relocation carries the ruled
     # posture on itself.  A restore that reads one is BY DEFINITION a
@@ -4630,6 +4806,7 @@ def restore_tree_restart(path, model, *,
     checkpoint_set_ids = set()
     for gid, node in nodes.items():
         header = headers[gid]
+        require_readable_format_version(header.get("format_version"), paths[gid])
         if header.get("format_version") != RESTART_FORMAT_VERSION:
             raise RestartMismatchError(
                 f"tree restart d{gid:02d} must be "
@@ -4808,6 +4985,10 @@ def restore_tree_restart(path, model, *,
 def _validate_scratch_target(state, slot: str, host: np.ndarray,
                              key: str) -> None:
     """Prove a scratch copy can be applied without creating a live slot."""
+    if slot == "refl_10cm":
+        # This carried diagnostic has the native mass-grid volume layout.
+        # Check it even when the restored state has not allocated it yet.
+        _check_array(host, state.p, key)
     target = getattr(state, "_scratch", {}).get(slot)
     if target is not None:
         _check_array(host, target, key)
@@ -5191,11 +5372,7 @@ def _validate_restart(path, state, cfg, *,
         raise RestartMismatchError(
             f"restart file {path} header is missing {missing_header}")
     format_version = header.get("format_version")
-    if format_version not in READABLE_RESTART_FORMAT_VERSIONS:
-        raise RestartMismatchError(
-            f"restart file {path} has format version "
-            f"{format_version!r}; this build reads "
-            f"{sorted(READABLE_RESTART_FORMAT_VERSIONS)}")
+    require_readable_format_version(format_version, path)
     _require_config_match(header["config"], cfg, path)
     live_lbc_clock = root_external_lbc_clock_identity(state, cfg)
     if live_lbc_clock is not None:
@@ -5702,6 +5879,7 @@ __all__ = [
     "SURFACE_LAYER_ALGORITHM_IDENTITIES",
     "READABLE_RESTART_FORMAT_VERSIONS", "REBUILT_SCRATCH_SLOTS",
     "RESTART_FORMAT_VERSION", "RESTART_MEMBER_NAMESPACES",
+    "RETIRED_RESTART_FORMAT_VERSIONS", "require_readable_format_version",
     "ROOT_EXTERNAL_LBC_CLOCK_IDENTITY",
     "ROOT_EXTERNAL_LBC_CLOCK_LEGACY", "RestartInfo", "TreeRestartInfo",
     "SEALED_FORCING_EXTENSION_MODE",

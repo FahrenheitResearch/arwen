@@ -1098,7 +1098,7 @@ class RelocationRunner:
         # This consumer's window is "max since I last looked", so it is
         # zeroed HERE -- immediately after the look, before any branch on
         # what the look returned, and on HELD evaluations exactly as on
-        # accepted ones (Drew's ruling, 2026-08-07).  Resetting only when
+        # accepted ones (ArWen's ruling, 2026-08-07).  Resetting only when
         # a move is accepted would let the window grow across holds and
         # cooldowns, which makes the next move more likely just because
         # more time passed: cadence dependence coming back in through the

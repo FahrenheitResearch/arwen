@@ -1,6 +1,6 @@
 """Figures from a streamed big-domain forecast.
 
-DEPRECATED FALLBACK, under the render law (CLAUDE.md, Drew 2026-08-06):
+DEPRECATED FALLBACK, under the project render law ( 2026-08-06):
 weather-field product plots come from the real Rust renderer
 ``rw_wrfbatch`` driven through :mod:`gpuwm.rustwx`.  This module's
 matplotlib panels are the fallback, reachable only with

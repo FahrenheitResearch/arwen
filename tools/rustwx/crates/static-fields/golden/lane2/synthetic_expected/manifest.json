@@ -271,14 +271,13 @@
     4
    ]
   ],
-  "too_wide": {
+  "periodic_window": {
    "args": [
     -2,
     15,
     1,
     6
-   ],
-   "contains": "window wider than the global grid"
+   ]
   },
   "index": {
    "type": "continuous",

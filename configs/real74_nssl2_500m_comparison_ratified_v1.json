@@ -1,7 +1,7 @@
 {
   "authority": {
     "approved_at_utc": "2026-07-22T22:18:03Z",
-    "approved_by": "Codex GPUWM validation task under the user's explicit finish-and-validate mandate",
+    "approved_by": "release validation task under an explicit finish-and-validate mandate",
     "basis": [
       "GPUWM's official-WRF per-process oracle gates establish formula-level NSSL-2 fidelity before any production trajectory is admitted",
       "gpuwm.verify.nest_gates.REFL_10CM_FSS_FAMILY supplies the repository's preregistered 20/30/40 dBZ event thresholds and 5 km neighborhood family",

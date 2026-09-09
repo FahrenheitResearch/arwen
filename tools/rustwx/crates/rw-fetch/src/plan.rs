@@ -224,7 +224,7 @@ pub enum Decision {
 
 /// Choose a byte transport from probe facts alone.
 ///
-/// The rule is Drew's, and it has no time constants in it: **if the
+/// The rule is the project's, and it has no time constants in it: **if the
 /// GRIB is there and its `.idx` is absent, unusable, or shorter than
 /// the GRIB implies, take the full file.**  A `.idx` that provably ends
 /// where the object ends is the only case that earns a range subset.

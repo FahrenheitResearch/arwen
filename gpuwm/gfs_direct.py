@@ -57,7 +57,8 @@ from gpuwm.ingest.preprocess_backend import (
 )
 from gpuwm.ingest.real import initialize_real
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
-from gpuwm.ingest.soil import soil_source_orography
+from gpuwm.ingest.soil import (door_reconciled_soil_category,
+                               soil_source_orography)
 from gpuwm.ingest.water_temperature import (
     MODIS_LAKE_CATEGORY, WaterTemperatureStatics,
     announce_water_temperature, assemble_for_route)
@@ -1479,11 +1480,19 @@ def prepare_gfs_wrf(
         # "SOURCE_OROGRAPHY,LANDSEA".  Resolved through the one shared
         # resolver, with no declared artifact on this route.
         soil_orography = soil_source_orography(None, initial_met.fields)
+        # THE RECONCILED CATEGORY, never the raw geogrid SCT_DOM: the one
+        # rulebook the ERA5 door and the nested child already follow
+        # (gpuwm/ingest/soil.py: door_reconciled_soil_category).  Raw, a
+        # shoreline land column with the water soil category killed a RUC
+        # run on its first surface call (`mavail must be finite`) after a
+        # full preparation -- the death the retired GFS+RUC route refusal
+        # used to pre-empt (ENG-009).
         soil = preprocess_land_surface_soil(
             initial_met.fields,
             sf_surface_physics=int(cfg.sf_surface_physics),
             num_soil_layers=int(cfg.num_soil_layers),
-            soil_type=static["SCT_DOM"],
+            soil_type=door_reconciled_soil_category(
+                static, initial_met.fields, landuse_attrs, route="GFS"),
             deep_soil_temperature=static["TMN"], lake_mask=lake_mask,
             lake_skin_temperature=lake_skin,
             landmask=static["LANDMASK"],

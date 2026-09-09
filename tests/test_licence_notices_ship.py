@@ -2,7 +2,7 @@
 
 THE BREAKAGE THIS PREVENTS
 --------------------------
-The 2.6.6 licence lane found two present breaches of PERMISSIVE licences --
+The 2.7.0 licence lane found two present breaches of PERMISSIVE licences --
 NumPy's BSD-3-Clause and MPAS's -- in a tree that already carried a careful
 NOTICE, a licenses/ directory and a 670 KB binary-form notice.  Neither was
 found by the licence census, because the census sorted third-party code into
@@ -10,7 +10,7 @@ found by the licence census, because the census sorted third-party code into
 FIRST-PARTY CRATES THAT PORT THIRD-PARTY CODE INTO THEMSELVES.
 ``static-fields`` ports four NumPy SIMD kernels; ``rw-mpas`` is 44,768 lines
 of MPAS-Atmosphere v8.4.1.  Both ship compiled, in the release bundles and in
-platform wheels, and until 2.6.6 neither appeared in any notice.
+platform wheels, and until 2.7.0 neither appeared in any notice.
 
 Nothing checked any of it.  Before this file, ``grep -rIln 'licenses/' tests/``
 returned one unrelated hit: no test asserted that ``licenses/*`` exists, that
@@ -37,7 +37,7 @@ WHAT THIS FILE ASSERTS
 6.  Every first-party crate carrying a third-party licence marker, and every
     upstream Fortran project a first-party crate cites, is named in the NOTICE.
     This is the check that would have caught NumPy and MPAS.
-7.  The LGPL gamma transcription deleted at 2.6.6 stays deleted, and so do the
+7.  The LGPL gamma transcription deleted at 2.7.0 stays deleted, and so do the
     two glibc-only libm fragments removed with it.
 
 It reads text.  No CUDA, no compiler, no network, no device.
@@ -124,7 +124,7 @@ def test_the_notice_names_every_grant_that_conditions_reproduction() -> None:
 
     Each entry is a grant whose text this distribution is required to
     reproduce, and the token is the shortest string that identifies its
-    section.  MPAS and NumPy are on the list because 2.6.6 is when they were
+    section.  MPAS and NumPy are on the list because 2.7.0 is when they were
     found missing, and a checklist that only holds what was already right
     would have held in 2.6.5 too.
     """
@@ -224,7 +224,7 @@ def test_the_binary_form_notice_covers_the_first_party_ports() -> None:
 # 3.  the per-file notices survive an edit
 # ---------------------------------------------------------------------------
 #: Files that open with a THIRD-PARTY NOTICE block because they carry
-#: transcribed work.  Measured on the 2.6.6 tree; a file that carries
+#: transcribed work.  Measured on the 2.7.0 tree; a file that carries
 #: transcription joins the list, and a file that loses its header fails.
 NOTICE_CARRIERS: tuple[str, ...] = (
     "gpuwm/core/kernels/glibc_flt32.cuh",
@@ -352,7 +352,7 @@ def test_the_fdlibm_scope_list_matches_the_tree() -> None:
 # 5.  first-party crates that carry third-party expression
 # ---------------------------------------------------------------------------
 #: Source roots ArWen WROTE.  Not vendor trees and not pip dependencies --
-#: the third category, which is where both 2.6.6 breaches were.
+#: the third category, which is where both 2.7.0 breaches were.
 _FIRST_PARTY_ROOTS = (
     "tools/rustwx/crates", "tools/rw_wps/crates", "tools/grib1_bridge/src",
     "tools/region_global_dealias/src", "tools/mpas_render_bridge",
@@ -401,7 +401,7 @@ def test_first_party_code_announcing_a_foreign_copyright_is_notified() -> None:
         "these first-party files announce a third-party copyright or licence "
         "and no NOTICE entry is mapped to them.  A first-party crate that "
         "ports third-party code is in neither the vendor census nor the pip "
-        f"census, which is how NumPy went unnotified until 2.6.6: {unknown}")
+        f"census, which is how NumPy went unnotified until 2.7.0: {unknown}")
     for relative, token in MARKER_FILES.items():
         assert (ROOT / relative).is_file(), f"{relative} is gone"
         assert token in notice, (
@@ -466,7 +466,7 @@ def test_every_upstream_a_first_party_crate_transcribes_is_notified() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6.  what 2.6.6 removed stays removed
+# 6.  what 2.7.0 removed stays removed
 # ---------------------------------------------------------------------------
 _LGPL_GAMMA_DEFINITION = re.compile(
     r"^\s*(?:__device__|static|float|double)\s+.*"
@@ -509,7 +509,7 @@ def test_the_two_glibc_only_libm_fragments_stay_removed() -> None:
                 else _decommented(raw))
         assert fragment not in text, (
             f"{relative} has taken glibc's {fragment!r} back; it is "
-            "expression this Apache-2.0 distribution removed at 2.6.6")
+            "expression this Apache-2.0 distribution removed at 2.7.0")
 
     python_tanh = re.sub(r"#[^\n]*", "",
                          _read(ROOT / "gpuwm/core/noahmp_libm.py"))

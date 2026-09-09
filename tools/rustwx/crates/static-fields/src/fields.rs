@@ -121,21 +121,22 @@ pub fn build_static_with_sampler(
 
     // --- terrain: average_gcell(4.0)+four_pt+average_4pt, fill 0, one
     //     smoother-desmoother pass (choice arbitrated by geo_em HGT_M).
-    let topo = GeogDataset::open(&paths.terrain, None)?;
-    let win = dom.window(&topo, 3)?;
-    require(&mut set, "terrain", &topo, &win)?;
-    let hgt_e = dom.continuous(
-        &topo,
-        &win,
-        0,
-        &[InterpOp::FourPt, InterpOp::Average4Pt],
-        0.0,
-        true,
-        None,
-    )?;
-    let hgt_e = smth_desmth_special(&hgt_e, 1)?;
-    let hgt = crop_grid(dom, &hgt_e);
-    drop(win);
+    let hgt = {
+        let topo = GeogDataset::open(&paths.terrain, None)?;
+        let win = dom.window(&topo, 3)?;
+        require(&mut set, "terrain", &topo, &win)?;
+        let hgt_e = dom.continuous(
+            &topo,
+            &win,
+            0,
+            &[InterpOp::FourPt, InterpOp::Average4Pt],
+            0.0,
+            true,
+            None,
+        )?;
+        let hgt_e = smth_desmth_special(&hgt_e, 1)?;
+        crop_grid(dom, &hgt_e)
+    }; // Release terrain source, decoded tiles and extended planes together.
 
     // --- landuse -> LANDUSEF / LANDMASK / LU_INDEX ---------------------
     let lu_ds = GeogDataset::open(&paths.landuse, None)?;
@@ -161,6 +162,8 @@ pub fn build_static_with_sampler(
     let lu_index =
         lu_index_from_landusef(&luf, &landmask, iswater, islake)?;
     drop(win);
+    drop(lu_ds);
+    drop(luf_e);
 
     // --- soil categories ----------------------------------------------
     let mut soils: Vec<(&str, &str, &PathBuf)> = Vec::new();
@@ -191,8 +194,6 @@ pub fn build_static_with_sampler(
                        mask_fill: f64|
      -> Result<Stack3> {
         let ds = GeogDataset::open(path, None)?;
-        let win = dom.window(&ds, 3)?;
-        require(set, field, &ds, &win)?;
         let nz = ds.index.nz() as usize;
         let mut months = Stack3 {
             planes: nz,
@@ -201,6 +202,11 @@ pub fn build_static_with_sampler(
             data: Vec::with_capacity(nz * dom.ny * dom.nx),
         };
         for z in 0..nz {
+            let win = dom.window_plane(&ds, 3, z)?;
+            if z == 0 {
+                // Coverage is geometric and identical for every source month.
+                require(set, field, &ds, &win)?;
+            }
             let plane = dom.continuous(
                 &ds,
                 &win,

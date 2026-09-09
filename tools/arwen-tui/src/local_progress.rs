@@ -92,7 +92,15 @@ fn read(directory:&Path,command:&[String])->Result<Value,String>{
     let next=if native.is_object(){
         if native["schema"]!="gpuwm.native-run-binding.v1"||native["pid"].as_u64()!=Some(pid)||native["config_sha256"]!=config_sha||!same(text(native,"config_source")?,&config){return Err("Native child binding does not match this local job".into());}
         Some(owned(text(native,"run_dir")?,&root)?)
-    }else if parent["route"]=="prepared"&&root.join("chain").is_dir(){pointed(&canonical(&root.join("chain"))?)?}else{None};
+    }else if parent["route"]=="prepared"&&root.join("chain").is_dir(){
+        // Preparation publishes its stamped directory before a native run
+        // exists. Keep the validated outer fetch/preparation events until
+        // that child has a manifest. Explicit bindings above still require it.
+        match pointed(&canonical(&root.join("chain"))?)?{
+            Some(path)=>if path.join("run-manifest.json").try_exists().map_err(|e|e.to_string())?{Some(path)}else{None},
+            None=>None,
+        }
+    }else{None};
     let (root,manifest,manifest_bytes,start)=if let Some(next)=next{
         if next.parent()!=Some(canonical(&root.join("chain"))?.as_path()){return Err("Native child is outside this job's owned chain".into());}
         let (value,bytes,start)=manifest(&next,pid,parent_started,ended)?;
@@ -114,7 +122,7 @@ fn read(directory:&Path,command:&[String])->Result<Value,String>{
 fn leap(year:i64)->bool{year%4==0&&(year%100!=0||year%400==0)}
 fn month_days(year:i64,month:u8)->i64{match month{2=>if leap(year){29}else{28},4|6|9|11=>30,_=>31}}
 fn before_year(year:i64)->i64{let previous=year-1;365*previous+previous/4-previous/100+previous/400}
-fn utc_ms(value:&str)->Result<i64,String>{
+pub(crate) fn utc_ms(value:&str)->Result<i64,String>{
     let parsed=value.parse::<toml_edit::Datetime>().map_err(|_|"Invalid UTC timestamp in native metadata")?;
     let date=parsed.date.ok_or("Native timestamp has no date")?;let time=parsed.time.ok_or("Native timestamp has no time")?;
     let year=i64::from(date.year);
@@ -292,6 +300,30 @@ mod tests{
         fs::write(&f.config,b"# externally changed saved configuration").unwrap();assert!(read(&f.job,&f.command).unwrap_err().contains("configuration receipt"));
         let f=fixture(false);let mut p=read_json(&f.job.join("process.json"),65536).unwrap();p["pid"]=json!(9999);write(&f.job.join("process.json"),&p);assert!(read(&f.job,&f.command).unwrap_err().contains("process and output"));
         let f=fixture(true);let path=f.run.join("chain/run-20260907-000002Z_i201305200000Z/run-manifest.json");let mut p=read_json(&path,65536).unwrap();p["name"]=json!("changed");write(&path,&p);assert!(read(&f.job,&f.command).unwrap_err().contains("changed after its parent"));
+    }
+    fn partial_prepared()->(Fixture,PathBuf){
+        let f=fixture(false);let path=f.run.join("run-manifest.json");let mut parent=read_json(&path,65536).unwrap();parent["route"]=json!("prepared");write(&path,&parent);
+        let name="run-20260907-000002Z_i201305200000Z";let child=f.run.join("chain").join(name);fs::create_dir_all(&child).unwrap();fs::write(f.run.join("chain/latest-run.txt"),format!("{name}\n")).unwrap();
+        write(&child.join("prepared.progress.json"),&json!({"schema":"gpuwm.prepare-progress/v1","status":"PREPARING_STATIC_BUILD"}));
+        (f,child)
+    }
+    #[test]
+    fn partial_prepared_child_keeps_outer_fetch_preparation_and_failure_progress(){
+        for stage in ["fetch","prepare"]{
+            let(f,child)=partial_prepared();let path=f.run.join("events.jsonl");let first=events(&path,false).unwrap().remove(0);let started=first["emitted_unix_ms"].as_i64().unwrap();
+            let phase=if stage=="fetch"{"downloading"}else{"static_build"};
+            let mut stream=vec![first,json!({"schema_version":"gpuwm.run-plan.event.v1","sequence":2,"emitted_unix_ms":started+1000,"event":"stage_started","stage":stage,"phase":phase})];
+            fs::write(&path,stream.iter().map(|e|serde_json::to_string(e).unwrap()+"\n").collect::<String>()).unwrap();
+            let progress=read(&f.job,&f.command).unwrap();assert_eq!(progress["run_dir"],json!(f.run));assert_eq!(progress["stage"],stage);assert_eq!(progress["phase"],phase);assert_eq!(progress["manifest_ready"],true);assert!(progress["progress"]["model_seconds"].is_null());
+            stream.push(json!({"schema_version":"gpuwm.run-plan.event.v1","sequence":3,"emitted_unix_ms":started+3000,"event":"failed","stage":stage,"message":"Preparation stopped: window wider than the global grid"}));
+            fs::write(&path,stream.iter().map(|e|serde_json::to_string(e).unwrap()+"\n").collect::<String>()).unwrap();
+            let failure=read(&f.job,&f.command).unwrap();assert_eq!(failure["run_dir"],json!(f.run));assert_eq!(failure["stage"],stage);assert_eq!(failure["error"],"Preparation stopped: window wider than the global grid");assert_eq!(failure["pipeline_progress"]["stage"],stage);assert!(!child.join("run-manifest.json").exists());
+        }
+    }
+    #[test]
+    fn invalid_pointed_child_and_missing_explicitly_bound_manifest_still_refuse(){
+        let(f,child)=partial_prepared();fs::write(child.join("run-manifest.json"),b"not JSON").unwrap();assert!(read(&f.job,&f.command).unwrap_err().contains("manifest is not JSON"));
+        let f=fixture(true);let path=f.run.join("chain/run-20260907-000002Z_i201305200000Z/run-manifest.json");fs::remove_file(&path).unwrap();assert!(read(&f.job,&f.command).unwrap_err().contains("run-manifest.json"));
     }
     #[test]
     fn ordinary_go_accepts_canonical_path_spelling_and_publishes_the_same_job_summary(){

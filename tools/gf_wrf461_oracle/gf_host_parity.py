@@ -26,7 +26,7 @@ the oracle's own toolchain): 83/83 level fields, 69/69 float scalars and
 on the gf-libm sweeps, the 254 powf answer-sheet rows, the pgamma fzu rows
 and the 123-word constant table.
 
-fzu IS PINNED from the WRF capture, and that changed at 2.6.6: the LGPL
+fzu IS PINNED from the WRF capture, and that changed at 2.7.0: the LGPL
 transcription of glibc's tgammaf was removed, ArWen's gamma is correctly
 rounded and glibc's is not, so the computed fzu is deliberately not WRF's
 (docs/gf_gamma_known_delta.md).  The pin is the same fzu_override the CPU
@@ -222,7 +222,7 @@ def main():
             print(f"INT {name}: differs on {neq} columns")
     print(f"int fields exact: {len(ISCA_FIELDS) - fail_i}/{len(ISCA_FIELDS)}")
 
-    # The unary probe is 4 slots since 2.6.6: gfk_tgamma, CUDA's builtin (a
+    # The unary probe is 4 slots since 2.7.0: gfk_tgamma, CUDA's builtin (a
     # negative control with no meaning on the host), gfk_exp, gfk_log.
     # gfk_lgamma_pos / gfk_expm1 / gfk_exp2 and their gf-libm sweeps went
     # with the LGPL gamma block that was their only caller.  tgammaf is

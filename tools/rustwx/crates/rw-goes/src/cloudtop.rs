@@ -27,7 +27,7 @@
 //!
 //! Two packs per scan, deliberately.
 //!
-//! Recorded ruling, 2026-08-06 (coordinator; surfaced to Drew in the
+//! Recorded ruling, 2026-08-06 (coordinator; surfaced to the owner in the
 //! morning summary): SEPARATE PACK, the bridge never regrids to make one.
 
 use std::collections::BTreeMap;

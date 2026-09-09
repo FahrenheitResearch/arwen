@@ -478,7 +478,10 @@ class GeogDataset:
         if x1 < x0 or y1 < y0:
             raise ValueError("empty window")
         nxw, nyw = x1 - x0 + 1, y1 - y0 + 1
-        if nxw > self.nx_global:
+        # A complete longitude band plus interpolation margins legitimately
+        # repeats seam columns. Periodic mosaics already split every wrap
+        # below; only a nonperiodic dataset has a hard single-width limit.
+        if nxw > self.nx_global and not self.wraps_x:
             raise ValueError("window wider than the global grid")
         coverage = self.tile_coverage_mask(x0, x1, y0, y1)
         unexplained = ~coverage & self._extent_mask(x0, x1, y0, y1)

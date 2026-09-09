@@ -477,18 +477,22 @@ def test_externalized_assets_match_the_fetch_contract() -> None:
     root_manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
     rules = [line for line in root_manifest.splitlines()
              if line.startswith(("exclude ", "prune "))]
-    # What this test is actually about is the EXCLUDES: every size- and
-    # license-driven `exclude` moved to gpuwm-data/MANIFEST.in with the
+    # What this test is actually about is the size- and license-driven
+    # EXCLUDES: every one of them moved to gpuwm-data/MANIFEST.in with the
     # directory it named, and one left behind here would be a rule nobody
-    # is enforcing.  So the excludes must be empty.
-    assert not [rule for rule in rules if rule.startswith("exclude ")], (
-        "the root MANIFEST.in still carries a size- or license-driven "
-        "`exclude`.  Every one of them moved to gpuwm-data/MANIFEST.in "
-        "with the directory it named in 2.5.0, and an exclude naming a "
-        f"path that no longer exists is enforced by nobody; found {rules}")
-    # The prunes are a different question, and there are two.  Each one
-    # keeps a tree that belongs to a DIFFERENT artifact out of gpuwm's
-    # sdist, and neither subsumes the other:
+    # is enforcing.  The single `exclude` that remains names a development
+    # test RELEASE-EXCLUDE.txt already drops from the public tree (its
+    # campaign harness, tools/n5s/**, is not a package and never shipped);
+    # tests/test_operational_package_excludes_probes.py measures that the
+    # sdist really lacks it.
+    assert ([rule for rule in rules if rule.startswith("exclude ")]
+            == ["exclude tests/test_n5s_toolchain.py"]), (
+        "the root MANIFEST.in's `exclude` lines drifted.  Size- and "
+        "license-driven excludes belong in gpuwm-data/MANIFEST.in with the "
+        "directory they name (moved there in 2.5.0); the only root exclude "
+        f"is the RELEASE-EXCLUDE'd n5s test; found {rules}")
+    # The prunes keep other artifacts and development-only probes out of
+    # the operational source distribution:
     #
     #   gpuwm-data          -- the companion distribution's source.  A
     #     fragment of it in gpuwm's own sdist is worse than either whole
@@ -498,14 +502,19 @@ def test_externalized_assets_match_the_fetch_contract() -> None:
     #     payload.  Measured on the 2.5.0 Linux shakeout: an sdist built
     #     after staging swept the staged native ELF executables in -- the
     #     18 declared at that commit -- for +19.67 MB.
+    #   tilestream/skeptic -- one-shot fault-injection/remote mutation
+    #     helpers. The public/Build68 package did not carry these scripts.
+    #     (The six skeptic_*.py MODULES beside tilestream's code are the
+    #     `recursive-exclude` line, measured by
+    #     tests/test_operational_package_excludes_probes.py.)
     #
-    # Pinned as a SET so a third prune has to be justified here, and so
-    # that neither can be dropped silently.
-    assert set(rules) == {"prune gpuwm-data", "prune gpuwm/libexec/bridges"}, (
-        "the root MANIFEST.in's prunes drifted.  Both rules keep another "
-        "artifact's tree out of gpuwm's sdist -- the companion "
-        "distribution's source, and the staged platform binaries -- and "
-        f"a cut has shipped the wrong bytes for each of them; found {rules}")
+    # Pin the complete set so exclusions cannot drift silently.
+    assert {rule for rule in rules if rule.startswith("prune ")} == {
+        "prune gpuwm-data", "prune gpuwm/libexec/bridges",
+        "prune tilestream/skeptic"}, (
+        "the root MANIFEST.in's prunes drifted: keep the companion source, "
+        "staged platform binaries and development fault-injection probes "
+        f"out of the operational source distribution; found {rules}")
 
 
 def test_the_renderer_asset_tree_is_delivered_by_a_declared_mechanism(
@@ -873,7 +882,7 @@ def test_license_metadata_is_an_spdx_expression_not_the_pasted_text() -> None:
         "project.license must be the bare SPDX expression string; a table "
         "(file= or text=) puts the whole license text into `pip show`")
 
-    # `licenses/*` joined the list at 2.6.6 and is not decoration: MIT
+    # `licenses/*` joined the list at 2.7.0 and is not decoration: MIT
     # (Arm), the FDLIBM/SunPro notice, BSD-3-Clause (AER RRTMG, RTE+RRTMGP,
     # Py-ART/Argonne, MPAS, NumPy) and SIL OFL 1.1 each condition
     # redistribution on their text travelling with the copy, and a wheel

@@ -793,7 +793,7 @@ class SpawnRunner:
         events = self.controller.evaluate_all(
             parent_states, t, active_footprints=active_footprints)
         # Every watch has now looked at every parent it watches, so every
-        # spawn window is zeroed -- fired, held or excluded alike (Drew's
+        # spawn window is zeroed -- fired, held or excluded alike (ArWen's
         # ruling, 2026-08-07: the window is "max since I last looked").
         # This is the spawn consumer's OWN slot; the relocation runner
         # resets a different one on its own cadence, so neither can blind

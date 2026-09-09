@@ -1085,7 +1085,7 @@ def finalize_prepared_child(
     # disagreement with a ~31 km source and feel it most.
     child_orography = soil_source_orography(
         prepared.declared_orography, horizontal.fields)
-    # ONE RULEBOOK (Drew's ruling, 2026-08-06): build the child's soil
+    # ONE RULEBOOK (ArWen's ruling, 2026-08-06): build the child's soil
     # column and its SH2O with the SAME reconciled ISLTYP the child's Noah
     # integrates, exactly as the root path does.  Nests are the finest
     # grids and so carry the most land/water-disagreeing shoreline cells.
@@ -1103,14 +1103,10 @@ def finalize_prepared_child(
         # aborted with mismatch_landmask_ivgtyp instead of reading it.
         # Nests are the finest grids, so they carry the most disagreeing
         # shoreline and inland-water columns and feel this first.
-        child_soil_type = reconciled_soil_category(
-            static_fields["LU_INDEX"], soil_type=child_soil_type,
-            xice=horizontal.fields.get("XICE", 0.0),
-            iswater=int(child_attrs["ISWATER"]),
-            islake=int(child_attrs["ISLAKE"]),
-            isice=int(child_attrs["ISICE"]),
-            soil_temperature=reconciler_soil_temperature(horizontal.fields),
-            sst=reconciler_sst(horizontal.fields))
+        from gpuwm.ingest.soil import door_reconciled_soil_category
+
+        child_soil_type = door_reconciled_soil_category(
+            static_fields, horizontal.fields, child_attrs)
     from gpuwm.config import soil_layer_count
 
     soil = preprocess_land_surface_soil(
