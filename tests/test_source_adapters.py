@@ -1942,6 +1942,7 @@ def test_cli_gfs_accepts_every_newly_reachable_profile(
         profile, acknowledgement, capsys):
     arguments = [
         "--source", "gfs",
+        "--preprocess-backend", "cpu",
         "--gfs-series", "/source/gfs-series.tsv",
         "--cycle", "2026-07-20_00:00:00",
         "--bridge", "/bin/gfs_grib2_bridge",
@@ -1969,6 +1970,7 @@ def test_cli_gfs_accepts_every_newly_reachable_profile(
 def test_cli_gfs_noahmp_warns_without_expert_acknowledgement(capsys):
     result = main([
         "--source", "gfs",
+        "--preprocess-backend", "cpu",
         "--gfs-series", "/source/gfs-series.tsv",
         "--cycle", "2026-07-20_00:00:00",
         "--bridge", "/bin/gfs_grib2_bridge",
@@ -2184,6 +2186,7 @@ def test_cli_named_source_static_cache_pair_is_atomic(source, capsys):
 def test_cli_named_source_refuses_parallel_cuda_hierarchy(source, capsys):
     common = [
         "--source", source,
+        "--preprocess-backend", "cuda",
         "--bridge", "/bin/source_bridge",
         "--wps-namelist", "/case/namelist.wps",
         "--experiment-config", "/case/experiment.toml",
@@ -2299,6 +2302,8 @@ def test_cli_gfs_uses_distribution_bridge_environment(monkeypatch, capsys):
         [
             "--source",
             "gfs",
+            "--preprocess-backend",
+            "cpu",
             "--gfs-series",
             "/source/gfs-series.tsv",
             "--cycle",
