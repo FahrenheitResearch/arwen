@@ -131,7 +131,7 @@ pub(crate) fn utc_ms(value:&str)->Result<i64,String>{
     let offset=match parsed.offset{Some(toml_edit::Offset::Custom{minutes})=>i64::from(minutes)*60_000,_=>0};
     Ok((days*86400+i64::from(time.hour)*3600+i64::from(time.minute)*60+i64::from(time.second))*1000+i64::from(time.nanosecond/1_000_000)-offset)
 }
-fn utc_text(milliseconds:i64)->Result<String,String>{
+pub(crate) fn utc_text(milliseconds:i64)->Result<String,String>{
     let days=milliseconds.div_euclid(86_400_000)+before_year(1970);let within=milliseconds.rem_euclid(86_400_000);
     if days<0||days>=before_year(10000){return Err("Forecast time is outside the supported calendar".into());}
     let(mut low,mut high)=(1,10000);while low+1<high{let middle=(low+high)/2;if before_year(middle)<=days{low=middle}else{high=middle}}

@@ -10,7 +10,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "arwen-tui"
-version = "2.7.1"
+version = "2.7.2"
 dependencies = [
  "crossterm",
  "libc",

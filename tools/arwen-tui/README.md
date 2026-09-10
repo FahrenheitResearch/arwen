@@ -16,6 +16,30 @@ without an interactive terminal. The controller services the same handoff and
 request queue, and keeps polling an owned forecast after the visual window
 closes until the worker completes. This mode cannot be combined with a snapshot.
 
+Adding `--desktop-console` (Windows only, and only with `--headless-companion`)
+makes the controller run the full terminal workspace inside the console window
+it was started in. That window is hidden at startup and titled `ArWen terminal`;
+the desktop's progress, node and settings actions reveal it, and **Ctrl+Q** or the
+**Hide** button hides it again while the controller keeps serving the desktop.
+Its close button and Alt+F4 are disabled and Ctrl+C / Ctrl+Break do not end
+the process; closing it from the taskbar or Task Manager still ends the
+controller and any forecast it owns. The controller exits on its own once the
+visual workspace has closed, no job is running and the window is hidden. Without an attached console, or with stdin/stdout redirected, the
+controller notes that in `<output>/.arwen-tui/controller.log` and runs the
+terminal-less loop instead. That log also receives every fatal controller error
+in `--headless-companion` mode, because stderr there is a hidden console at best.
+
+Only one controller runs per output root: a second `--headless-companion` start
+finds the live controller through its `.arwen-tui/companion-*/status.json`
+heartbeat, sends it an `open_workspace` request (the workspace is opened or its
+window brought to the front) and exits 0 after logging
+`ArWen is already running; its workspace was reopened.` If that controller
+refuses (an earlier terminal does not know the request) or does not answer
+while it keeps heartbeating, the second start exits with that reason instead of
+becoming a second owner of the same forecast. A controller that is closed,
+silent for 30 s or a read-only run viewer is not reused; a session directory
+younger than 30 s without a status is waited for.
+
 - New forecast asks five essentials (location, source, start cycle, duration, new filename), then shows every setting in an editable summary. Ctrl+A opens that summary early. Its visible source recommendation is read from the installed guided CLI; any source ID or alias can replace it. It collects exact native `domain` arguments, shows them before execution, and opens the emitted TOML with **Review launch plan** selected. The full TOML remains editable, including all settings outside the questions.
 - **Calendar (F3)** in a cycle/start-time question shows the selected source's UTC hours, current forecast horizons, publication guidance and documented archive bounds. Click a day and hour, use arrows/Tab, change month with PgUp/PgDn (Ctrl changes year), or type/paste an exact date. New forecast starts with `latest`: Next opens an asynchronous check through the ordinary acquisition resolver, then **Use date** keeps the exact selected cycle. **Latest complete (F4)** checks required final-hour objects where public probes exist. ERA5 instead says **Latest expected**, accounts for the whole requested analysis window behind its approximate publication delay, and labels recent ERA5T data and account requirements. Unknown archive bounds stay unknown; historical file versions still undergo normal acquisition/compatibility checks. Esc cancels the lookup and preserves the original guide value.
 - Open existing asks what you have: an ArWen TOML file, WRF `real.exe` inputs, or WPS `met_em` inputs. Paths are typed or pasted; the optional browser is separate.

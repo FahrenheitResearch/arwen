@@ -202,6 +202,9 @@ struct App {
     local_raw_logs: bool,
     exit: bool,
     exit_after_job: bool,
+    /// Running in the desktop launcher's hidden console: Quit hides the window
+    /// and the controller keeps serving the desktop.
+    desktop_console: bool,
     input_enabled: bool,
     // Canonical path consumed by the active job, cleared on observed exit.
     active_config: Option<PathBuf>,
@@ -243,15 +246,130 @@ struct QueuedCompanionRequest {
 }
 const COMPANION_QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
 
-fn focus_console_window(){
+/// Win32 entry points for the console this controller lives in and for the
+/// visual workspace's window, declared by hand like the clipboard and job code
+/// so the desktop console adds no dependency feature.
+#[cfg(windows)]
+#[cfg_attr(test, allow(dead_code))]
+mod win32 {
+    use std::ffi::c_void;
+    #[link(name="kernel32")]
+    unsafe extern "system" {
+        pub fn GetConsoleWindow()->*mut c_void;
+        pub fn SetConsoleTitleW(title:*const u16)->i32;
+        pub fn SetConsoleCtrlHandler(handler:Option<unsafe extern "system" fn(u32)->i32>,add:i32)->i32;
+    }
+    #[link(name="user32")]
+    unsafe extern "system" {
+        pub fn IsIconic(window:*mut c_void)->i32;
+        pub fn IsWindowVisible(window:*mut c_void)->i32;
+        pub fn ShowWindow(window:*mut c_void,command:i32)->i32;
+        pub fn SetForegroundWindow(window:*mut c_void)->i32;
+        pub fn GetSystemMenu(window:*mut c_void,revert:i32)->*mut c_void;
+        pub fn DeleteMenu(menu:*mut c_void,position:u32,flags:u32)->i32;
+        pub fn EnumWindows(callback:Option<unsafe extern "system" fn(*mut c_void,isize)->i32>,parameter:isize)->i32;
+        pub fn GetWindowThreadProcessId(window:*mut c_void,process:*mut u32)->u32;
+        pub fn GetClassNameW(window:*mut c_void,class:*mut u16,count:i32)->i32;
+        pub fn GetWindow(window:*mut c_void,command:u32)->*mut c_void;
+    }
+    pub const GW_OWNER:u32=4;
+    pub const SW_HIDE:i32=0; pub const SW_SHOWNA:i32=8; pub const SW_RESTORE:i32=9;
+    pub const SC_CLOSE:u32=0xF060; pub const MF_BYCOMMAND:u32=0;
+    pub const CTRL_C_EVENT:u32=0; pub const CTRL_BREAK_EVENT:u32=1;
+    /// Shows a hidden window, restores a minimized one, then asks for the
+    /// foreground; true when the window is visible afterwards. A process's first
+    /// ShowWindow call ignores its argument when the launcher supplied a startup
+    /// show state, and SW_SHOW leaves a hidden console hidden in that case, so
+    /// the reveal restores first and falls back to SW_SHOWNA.
+    pub unsafe fn reveal(window:*mut c_void)->bool{
+        unsafe{
+            if IsWindowVisible(window)==0||IsIconic(window)!=0{ShowWindow(window,SW_RESTORE);}
+            if IsWindowVisible(window)==0{ShowWindow(window,SW_SHOWNA);}
+            SetForegroundWindow(window);
+            IsWindowVisible(window)!=0
+        }
+    }
+}
+
+/// Brings this controller's console to the front: shown when the desktop
+/// console keeps it hidden, restored when minimized. Nothing without a console.
+/// False only when a console exists and stayed hidden.
+fn focus_console_window()->bool{
     #[cfg(all(windows,not(test)))]
     unsafe {
-        #[link(name="kernel32")]
-        unsafe extern "system" {fn GetConsoleWindow()->*mut std::ffi::c_void;}
-        #[link(name="user32")]
-        unsafe extern "system" {fn IsIconic(window:*mut std::ffi::c_void)->i32;fn ShowWindow(window:*mut std::ffi::c_void,command:i32)->i32;fn SetForegroundWindow(window:*mut std::ffi::c_void)->i32;}
-        let window=GetConsoleWindow();
-        if !window.is_null(){if IsIconic(window)!=0{ShowWindow(window,9);}SetForegroundWindow(window);}
+        let window=win32::GetConsoleWindow();
+        if !window.is_null(){return win32::reveal(window);}
+    }
+    true
+}
+
+/// Brings the visual workspace's top-level window to the front, so a second
+/// desktop launch lands on the workspace that already exists instead of
+/// leaving the user with no visible change.
+fn focus_process_window(pid:u32){
+    #[cfg(all(windows,not(test)))]
+    unsafe {
+        struct Search{pid:u32,window:*mut std::ffi::c_void}
+        unsafe extern "system" fn visit(window:*mut std::ffi::c_void,parameter:isize)->i32{
+            unsafe{
+                let search=&mut *(parameter as *mut Search);
+                let mut owner=0u32;
+                win32::GetWindowThreadProcessId(window,&mut owner);
+                // The workspace's main window: visible and unowned. Its hidden
+                // helper windows and tooltips belong to the same process.
+                if owner!=search.pid||win32::IsWindowVisible(window)==0||!win32::GetWindow(window,win32::GW_OWNER).is_null(){return 1;}
+                search.window=window;
+            }
+            0
+        }
+        let mut search=Search{pid,window:std::ptr::null_mut()};
+        win32::EnumWindows(Some(visit),&mut search as *mut Search as isize);
+        if !search.window.is_null(){win32::reveal(search.window);}
+    }
+    #[cfg(not(all(windows,not(test))))]
+    let _=pid;
+}
+
+/// The classic console the Windows desktop launcher starts this controller in
+/// (`--desktop-console`). The full terminal UI draws there; the window stays
+/// hidden until a desktop action reveals it and Ctrl+Q hides it again.
+#[cfg(windows)]
+mod desktop_console {
+    use super::win32::*;
+    use std::ffi::c_void;
+    /// Ctrl+C and Ctrl+Break already reach the terminal UI as key events (raw
+    /// mode); the console's default handler would otherwise end the controller
+    /// and orphan the forecast it owns. Close, logoff and shutdown keep theirs.
+    unsafe extern "system" fn keep_running(event:u32)->i32{ i32::from(matches!(event,CTRL_C_EVENT|CTRL_BREAK_EVENT)) }
+    pub struct Console(*mut c_void);
+    impl Console {
+        /// Hides and claims the console. `Err` names why the terminal UI cannot
+        /// run in it, and the caller falls back to the terminal-less loop.
+        pub fn prepare()->Result<Self,String>{
+            use std::io::IsTerminal;
+            let window=unsafe{GetConsoleWindow()};
+            if window.is_null(){return Err("no console window is attached to this process".into());}
+            if !std::io::stdin().is_terminal()||!std::io::stdout().is_terminal(){return Err("stdin or stdout is redirected away from the console".into());}
+            // A terminal host (Windows Terminal) answers GetConsoleWindow with a
+            // pseudo window that ignores show and hide; only the classic console
+            // window can be kept hidden and revealed.
+            let mut class=[0u16;64];
+            let length=unsafe{GetClassNameW(window,class.as_mut_ptr(),class.len() as i32)};
+            let class=String::from_utf16_lossy(&class[..length.max(0) as usize]);
+            if class!="ConsoleWindowClass"{return Err(format!("the console is hosted by a {class} window, not a classic console window"));}
+            let title:Vec<u16>="ArWen terminal".encode_utf16().chain(std::iter::once(0)).collect();
+            unsafe{
+                ShowWindow(window,SW_HIDE);
+                SetConsoleTitleW(title.as_ptr());
+                // Without a Close item the title-bar X cannot end the controller
+                // that owns the desktop's forecast; the desktop closes it.
+                DeleteMenu(GetSystemMenu(window,0),SC_CLOSE,MF_BYCOMMAND);
+                SetConsoleCtrlHandler(Some(keep_running),1);
+            }
+            Ok(Self(window))
+        }
+        pub fn visible(&self)->bool{ unsafe{IsWindowVisible(self.0)!=0} }
+        pub fn hide(&self){ unsafe{ShowWindow(self.0,SW_HIDE);} }
     }
 }
 
@@ -386,6 +504,7 @@ impl App {
             #[cfg(test)]
             clipboard_hook: None,
             exit_after_job: false,
+            desktop_console: false,
         };
         if let Some(error) = app.nodes.load_error.clone() {
             app.open_nodes();
@@ -413,6 +532,10 @@ impl App {
         self.dialog = self.dialog_stack.pop();
     }
     fn request_quit(&mut self) {
+        // In the desktop console Quit only hides the window (the frame loop
+        // does that); the controller and any forecast it owns keep running for
+        // the desktop, so no stop review opens here.
+        if self.desktop_console { self.exit = true; return; }
         if matches!(self.dialog, Some(Dialog::Quit)) { return; }
         if self.busy() || self.dirty() || self.dialog.is_some() || !self.saved_guides.is_empty() {
             self.overlay(Dialog::Quit);
@@ -1217,22 +1340,95 @@ impl App {
         if self.companion.child_status().is_err() { return Err(self.status.clone()); }
         loop {
             self.poll();
-            let workspace = self.companion.child_status();
             // Keep releasing/polling an owned worker even if its GUI closes.
             // The only operation that stops that worker is an explicit request.
-            if workspace.as_ref().is_ok_and(|status| status.is_none()) || self.busy() {
+            if self.workspace_open() || self.busy() {
                 std::thread::sleep(Duration::from_millis(150));
                 continue;
             }
-            remote::remove_poll_records(&self.output);
-            return match workspace {
-                Ok(Some(status)) if status.success() => Ok(()),
-                Ok(Some(status)) => Err(format!("The visual workspace closed with {status}. Diagnostic log: {}",
-                    self.companion.session.as_ref().map(|session| session.directory.join("companion.log").display().to_string()).unwrap_or_else(|| "unavailable".into()))),
-                Err(error) => Err(format!("Cannot read the visual workspace status: {error}")),
-                Ok(None) => unreachable!("a running workspace keeps the controller alive"),
-            };
+            return self.workspace_outcome();
         }
+    }
+    /// Reveals the terminal window for a desktop action and records the one
+    /// failure the user would otherwise never learn about: a window that stayed hidden.
+    fn reveal_console(&self) {
+        if !focus_console_window() && self.desktop_console {
+            companion::controller_log(&self.output, "The ArWen terminal window could not be shown for a desktop action.");
+        }
+    }
+    /// True while the visual workspace process this controller spawned is alive.
+    fn workspace_open(&mut self) -> bool { self.companion.child_status().is_ok_and(|status| status.is_none()) }
+    /// The controller's exit once its workspace has closed and no owned job
+    /// remains: the workspace's own outcome, with its diagnostic log on failure.
+    fn workspace_outcome(&mut self) -> Result<(), String> {
+        remote::remove_poll_records(&self.output);
+        match self.companion.child_status() {
+            Ok(Some(status)) if status.success() => Ok(()),
+            Ok(Some(status)) => Err(format!("The visual workspace closed with {status}. Diagnostic log: {}",
+                self.companion.session.as_ref().map(|session| session.directory.join("companion.log").display().to_string()).unwrap_or_else(|| "unavailable".into()))),
+            Err(error) => Err(format!("Cannot read the visual workspace status: {error}")),
+            Ok(None) => unreachable!("a running workspace keeps the controller alive"),
+        }
+    }
+    /// The desktop launcher's entry. One controller per output root: a live
+    /// controller is asked to reopen its workspace and this process exits.
+    /// Otherwise this controller runs in the hidden desktop console when it
+    /// has one, or without a terminal.
+    fn run_desktop_controller(&mut self, connect_node: bool, desktop_console: bool) -> Result<(), String> {
+        match companion::reopen_live_controller(&self.output) {
+            Some(Ok(_)) => { companion::controller_log(&self.output, "ArWen is already running; its workspace was reopened."); return Ok(()); }
+            // A live controller that refused or stayed silent still owns this
+            // root; a second controller could neither see nor stop its forecast.
+            Some(Err(reason)) => return Err(reason),
+            None => {}
+        }
+        if connect_node { self.prepare_startup_node()?; }
+        if desktop_console { if let Some(outcome) = self.run_desktop_console() { return outcome; } }
+        self.run_headless_companion()
+    }
+    #[cfg(windows)]
+    fn run_desktop_console(&mut self) -> Option<Result<(), String>> {
+        match desktop_console::Console::prepare() {
+            Ok(console) => Some(self.drive_desktop_console(console)),
+            Err(reason) => { companion::controller_log(&self.output, &format!("--desktop-console: {reason}; the controller runs without a terminal window.")); None }
+        }
+    }
+    #[cfg(not(windows))]
+    fn run_desktop_console(&mut self) -> Option<Result<(), String>> { None }
+    /// The full terminal UI inside the hidden desktop console. Frames are drawn
+    /// only while the window is visible, the first one after a reveal on a
+    /// cleared screen. Quit hides the window while the workspace is open or a
+    /// job runs. The controller ends once the workspace has closed, no job is
+    /// busy and the window is hidden, or when Quit is asked in that state.
+    #[cfg(windows)]
+    fn drive_desktop_console(&mut self, console: desktop_console::Console) -> Result<(), String> {
+        self.desktop_console = true;
+        // The terminal's panic hook restores the console; the launcher reads
+        // this log for the reason, since stderr is the hidden console itself.
+        let previous = std::panic::take_hook();
+        let output = self.output.clone();
+        std::panic::set_hook(Box::new(move |info| { companion::controller_log(&output, &format!("The ArWen terminal stopped unexpectedly: {info}")); previous(info); }));
+        self.open_companion();
+        if self.companion.child_status().is_err() { return Err(self.status.clone()); }
+        let mut was_visible = false;
+        let session = interactive_session(self, |app, terminal| {
+            let serving = app.workspace_open() || app.busy();
+            if app.exit {
+                if !serving { return Ok(None); }
+                app.exit = false;
+                console.hide();
+            }
+            let visible = console.visible();
+            if !visible && !serving { return Ok(None); }
+            if visible && !was_visible { terminal.clear()?; }
+            was_visible = visible;
+            Ok(Some(visible))
+        });
+        if let Err(error) = session {
+            remote::remove_poll_records(&self.output);
+            return Err(format!("The ArWen terminal window failed: {error}"));
+        }
+        self.workspace_outcome()
     }
     fn publish_companion_status(&mut self, force: bool) {
         if self.companion.session.is_none() { return; }
@@ -1266,8 +1462,14 @@ impl App {
             if let Err(error) = session.publish(status, force) { self.status = format!("Visual workspace status: {error}"); }
         }
     }
+    /// The controller's own status for the job it owns, for the read-only run
+    /// browsers: they list and open that job before its receipts settle.
+    fn owned_job_status(&self) -> Option<serde_json::Value> {
+        self.job.as_ref().map(|job| companion::job_status(job, &self.output))
+    }
     fn poll_run_views(&mut self) {
-        for reply in self.run_views.poll() {
+        let live = if self.run_views.active() { self.owned_job_status() } else { None };
+        for reply in self.run_views.poll(live.as_ref()) {
             if let Some(session)=self.companion.session.as_ref().filter(|session|session.id==reply.session_id){
                 let _=session.respond_with(&reply.request.id,&reply.request.name,reply.result,reply.details);
             }
@@ -1289,8 +1491,8 @@ impl App {
             self.nodes.remember_job(job)?;
             self.nodes.view.log.clear();self.nodes.view.cursor=0;self.nodes.view.status=None;
             self.nodes.begin(remote::Operation::Logs{job:job.clone(),cursor:0},&self.python,&self.output,&self.cwd)?;
-            self.view(Tab::Logs);focus_console_window();
-            Ok(format!("Progress opened for saved job {job}."))
+            self.view(Tab::Logs);self.reveal_console();
+            Ok(if self.desktop_console{format!("Progress for saved job {job} opened in the ArWen terminal window.")}else{format!("Progress opened for saved job {job}.")})
         })();
         if let Some(session)=&self.companion.session{let _=session.respond(&request.id,&request.name,result,None);}
     }
@@ -1306,8 +1508,9 @@ impl App {
                 continue;
             }
             if run_view::Manager::handles(&request.action){
+                let live=self.owned_job_status();
                 let result=self.companion.session.as_ref().ok_or_else(||"The companion session closed.".to_owned())
-                    .and_then(|session|self.run_views.begin(request.clone(),session,&self.nodes.store,&self.python,&self.output,&self.cwd));
+                    .and_then(|session|self.run_views.begin(request.clone(),session,&self.nodes.store,&self.python,&self.output,&self.cwd,live.as_ref()));
                 if let Some(session)=&self.companion.session{match result{
                     Ok(Some(reply))=>{let _=session.respond_with(&request.id,&request.name,reply.result,reply.details);}
                     Ok(None)=>{}
@@ -1385,13 +1588,23 @@ impl App {
                 }
                 companion::Action::FocusLogs => {
                     if request.target.is_some()&&self.checked_companion_target(request.target.as_ref()).is_err(){Err("The requested log target changed. Choose the intended node again.".into())}
-                    else{self.view(Tab::Logs);focus_console_window();Ok("Logs selected in the control center.".into())}
+                    else{self.view(Tab::Logs);self.reveal_console();Ok(if self.desktop_console{"Progress opened in the ArWen terminal window."}else{"Logs selected in the control center."}.into())}
                 }
                 companion::Action::FocusJobLogs(_)=>unreachable!("saved job focus is queued before dispatch"),
-                companion::Action::FocusNodes => {self.open_nodes();Ok("Node targets opened in the control center.".into())}
+                companion::Action::FocusNodes => {self.open_nodes();self.reveal_console();Ok(if self.desktop_console{"Node targets opened in the ArWen terminal window."}else{"Node targets opened in the control center."}.into())}
                 companion::Action::FocusSetup => {
-                    self.dialog=None;self.dialog_stack.clear();self.view(Tab::Settings);
-                    Ok(if self.editor.is_some(){"Configuration settings opened in the control center."}else{"Create or open a configuration on Home."}.into())
+                    self.dialog=None;self.dialog_stack.clear();self.view(Tab::Settings);self.reveal_console();
+                    Ok(if self.editor.is_none(){"Create or open a configuration on Home."}else if self.desktop_console{"Configuration settings opened in the ArWen terminal window."}else{"Configuration settings opened in the control center."}.into())
+                }
+                companion::Action::OpenWorkspace => {
+                    // A second desktop launch over this output root: land the
+                    // user on the workspace that is open, or open one.
+                    let running=self.companion.child_pid();
+                    if running.is_none(){self.open_companion();}
+                    match self.companion.child_pid(){
+                        Some(pid)=>{focus_process_window(pid);Ok(if running.is_some(){"Visual workspace is already open.".into()}else{self.status.clone()})}
+                        None=>Err(self.status.clone()),
+                    }
                 }
                 companion::Action::SelectTarget=>self.select_companion_target(request.target.as_ref().expect("typed target")),
             };
@@ -4592,7 +4805,7 @@ fn draw_dialog(frame: &mut Frame, app: &mut App, area: Rect) {
 fn draw_header_actions(frame: &mut Frame, app: &mut App, area: Rect) {
     if area.width >= 17 && area.height > 0 {
         button_bar(frame, &mut app.hits, Rect::new(area.right() - 17, area.y, 17, 1),
-            &[("Quit (Ctrl+Q)", Hit::Quit)]);
+            &[(if app.desktop_console { "Hide (Ctrl+Q)" } else { "Quit (Ctrl+Q)" }, Hit::Quit)]);
     }
     if area.height < 3 { return; }
     if let Some((result, path, failed)) = app.job_result() {
@@ -4624,6 +4837,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
             Some(Dialog::Quit) => "Quit: Y closes and discards drafts; N / Esc stays.",
             Some(Dialog::Stop) => "Stop local run: Y confirms; N / Esc keeps running.",
             Some(Dialog::Help(_)) => "Ctrl+Q quit; Ctrl+C stop review; Esc closes help.",
+            _ if app.desktop_console => "Ctrl+Q hides this window; Ctrl+C reviews stopping a local run.",
             _ => "Ctrl+Q quits; Ctrl+C reviews stopping a local run.",
         };
         frame.render_widget(Paragraph::new(format!("ArWen — resize to at least 65 × 20.\nEditing paused. {controls}")).wrap(Wrap { trim: false }), area);
@@ -5401,6 +5615,56 @@ fn snapshot(app: &mut App, path: &Path, width: u16, height: u16, screen: &str) -
 pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
     concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
 
+/// The interactive terminal session shared by the plain terminal and the
+/// desktop console: raw mode, bracketed paste and mouse capture around one
+/// frame loop. `tick` runs once per pass after `poll()`: `None` ends the
+/// session, `Some(drawn)` says whether this pass paints a frame (a hidden
+/// console is polled, not drawn). Events are handled the same way either way.
+fn interactive_session(app: &mut App, mut tick: impl FnMut(&mut App, &mut ratatui::DefaultTerminal) -> io::Result<Option<bool>>) -> io::Result<()> {
+    let mut terminal = ratatui::init();
+    let result = (|| -> io::Result<()> {
+        execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
+        loop {
+            app.poll();
+            let Some(drawn) = tick(app, &mut terminal)? else { return Ok(()); };
+            if drawn { terminal.draw(|f| draw(f, app))?; }
+            if event::poll(Duration::from_millis(150))? {
+                let pending = file_drop_input::read(event::read()?, &app.cwd)?;
+                for (index, input) in pending.into_iter().enumerate() {
+                    if index > 0 {
+                        app.poll();
+                        if drawn { terminal.draw(|f| draw(f, app))?; }
+                    }
+                    match input {
+                    Event::Key(k) => {
+                        let size = terminal.size()?;
+                        app.set_viewport(size.width, size.height);
+                        app.key(k);
+                    }
+                    Event::Paste(v) => {
+                        let size = terminal.size()?;
+                        app.set_viewport(size.width, size.height);
+                        app.paste(v);
+                    }
+                    Event::Mouse(event) => app.mouse(event),
+                    Event::Resize(w, h) => {
+                        app.set_viewport(w, h);
+                        app.hits.clear();
+                    }
+                    _ => {}
+                    }
+                    if app.exit {
+                        break;
+                    }
+                }
+            }
+        }
+    })();
+    let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
+    ratatui::restore();
+    result
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
     let mut app = App::new()?;
@@ -5410,6 +5674,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut snapshot_selection = String::from("current");
     let mut open_companion = false;
     let mut headless_companion = false;
+    let mut desktop_console = false;
     let mut connect_node = false;
     let mut show_progress = false;
     let mut explicit_nodes = false;
@@ -5421,6 +5686,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--open-companion" => open_companion = true,
             "--headless-companion" => headless_companion = true,
+            "--desktop-console" => desktop_console = true,
             "--connect-node" => connect_node = true,
             "--show-progress" => { connect_node = true; show_progress = true; },
             "--nodes-file" => {
@@ -5477,7 +5743,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--help" | "-h" => {
                 println!("Visual workspace: --companion PATH (or ARWEN_COMPANION); --open-companion opens it at startup.\n");
-                println!("Desktop controller: --headless-companion opens the visual workspace without an interactive terminal. It keeps an owned forecast running after the window closes.\n");
+                println!("Desktop controller: --headless-companion opens the visual workspace without an interactive terminal. It keeps an owned forecast running after the window closes. With --desktop-console (Windows) the controller instead runs the full terminal workspace in the hidden console it was started in; desktop progress, node and settings actions reveal that window and Ctrl+Q hides it again.\n");
                 println!("Node profiles: --nodes-file ABSOLUTE_JSON selects one explicit profile store; --connect-node opens Nodes and probes its active profile without starting a forecast.\n");
                 println!("Progress window: --show-progress connects the active saved node and opens its current job status without starting a forecast.\n");
                 println!("ArWen terminal workspace (2.7 preview)\nUsage: arwen-tui [--config FILE] [--python EXECUTABLE] [--output DIR] [--prepared DIR] [--geog-root DIR]\n\nStart with W Research to choose a weather question and configuration. I Scenario edits initial-state warm bubbles; D Domains edits following and tracking in an open configuration. Open existing or Continue forecast resumes your own workflow. Click options, tabs and buttons. K opens the built-in historical cases. O accepts TOML configurations and catalog ZIP/JSON files; F2 browses. Drop files to open them without starting a forecast. F/E edits all settings; V shows overview; G opens geography. Ctrl+S saves. F6 reviews the plan; F7 reviews the exact launch command.\nNo command starts automatically. F1 shows all keys; Up/Down or wheel, PgUp/PgDn and Home/End scroll help; Esc closes it.\n\nRead-only capture: --snapshot FILE.html [--snapshot-width COLUMNS] [--snapshot-height ROWS] [--snapshot-screen SCREEN]. Produces styled HTML and FILE.cells.json from the actual terminal cells. SCREEN: home, overview, settings, logs, help, nodes, domains, plots, guide, modes, mode:ID, research:ID, scenario (needs --config), or current. Default size: 120 x 36.");
@@ -5489,6 +5755,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             _ => return Err(format!("Unknown option {arg}; use --help").into()),
         }
+    }
+    if desktop_console && !headless_companion {
+        return Err("--desktop-console needs --headless-companion: alone it would hide the terminal window that is this program's only interface.".into());
+    }
+    if desktop_console && !cfg!(windows) {
+        return Err("--desktop-console is available only on Windows: there is no console window to hide and reveal on this platform.".into());
     }
     if let Some(path) = snap {
         if headless_companion { return Err("--headless-companion cannot be combined with a read-only snapshot.".into()); }
@@ -5507,8 +5779,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?);
     }
     if headless_companion {
-        if connect_node { app.prepare_startup_node()?; }
-        return app.run_headless_companion().map_err(Into::into);
+        let outcome = app.run_desktop_controller(connect_node, desktop_console);
+        if let Err(error) = &outcome { companion::controller_log(&app.output, error); }
+        return outcome.map_err(Into::into);
     }
     use std::io::IsTerminal;
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -5518,49 +5791,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if connect_node { app.prepare_startup_node()?; }
     if show_progress { app.view(Tab::Logs); }
-    let mut terminal = ratatui::init();
-    execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
     if connect_node { app.node_request(remote::Operation::Probe); }
     if open_companion { app.open_companion(); }
-    let result = (|| -> io::Result<()> {
-        while !app.exit {
-            app.poll();
-            terminal.draw(|f| draw(f, &mut app))?;
-            if event::poll(Duration::from_millis(150))? {
-                let pending = file_drop_input::read(event::read()?, &app.cwd)?;
-                for (index, input) in pending.into_iter().enumerate() {
-                    if index > 0 {
-                        app.poll();
-                        terminal.draw(|f| draw(f, &mut app))?;
-                    }
-                    match input {
-                    Event::Key(k) => {
-                        let size = terminal.size()?;
-                        app.set_viewport(size.width, size.height);
-                        app.key(k);
-                    }
-                    Event::Paste(v) => {
-                        let size = terminal.size()?;
-                        app.set_viewport(size.width, size.height);
-                        app.paste(v);
-                    }
-                    Event::Mouse(event) => app.mouse(event),
-                    Event::Resize(w, h) => {
-                        app.set_viewport(w, h);
-                        app.hits.clear();
-                    }
-                    _ => {}
-                    }
-                    if app.exit {
-                        break;
-                    }
-                }
-            }
-        }
-        Ok(())
-    })();
-    let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
-    ratatui::restore();
+    let result = interactive_session(&mut app, |app, _| Ok(if app.exit { None } else { Some(true) }));
     remote::remove_poll_records(&app.output);
     if let Some(job) = &app.job {
         println!(
@@ -8365,6 +8598,23 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
         app.key(press(KeyCode::Char('y')));
         assert!(app.exit);
+    }
+
+    #[test]
+    fn desktop_console_quit_hides_without_a_stop_review_and_labels_the_button_hide() {
+        let mut app = loaded_app("a=1\n");
+        app.desktop_console = true;
+        app.editor.as_mut().unwrap().insert("# unsaved\n");
+        assert!(app.dirty());
+        app.key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+        assert!(app.exit && app.dialog.is_none() && !app.exit_after_job, "the desktop console never opens the quit review");
+        app.exit = false;
+        let (buffer, _) = snapshot_buffer(&mut app, 120, 36).unwrap();
+        let header: String = (0..120).map(|x| buffer[(x, 0)].symbol().to_owned()).collect();
+        assert!(header.contains("Hide (Ctrl+Q)") && !header.contains("Quit (Ctrl+Q)"), "{header}");
+        let (buffer, _) = snapshot_buffer(&mut app, 64, 19).unwrap();
+        let text: String = (0..19).flat_map(|y| (0..64).map(move |x| (x, y))).map(|cell| buffer[cell].symbol().to_owned()).collect();
+        assert!(text.contains("hides this window"), "{text}");
     }
 
     #[test]

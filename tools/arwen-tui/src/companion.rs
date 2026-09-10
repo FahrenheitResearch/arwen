@@ -55,6 +55,9 @@ pub enum Action {
     FocusNodes,
     FocusSetup,
     SelectTarget,
+    /// A second desktop launch over the same output root asks the live
+    /// controller to show its workspace instead of starting a duplicate.
+    OpenWorkspace,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target { Local, Ssh { node_id: String, connection_sha256: String } }
@@ -78,12 +81,12 @@ fn parse_request(value: &Value, id: &str, session: &str) -> Result<Request, Stri
         return Err("Request schema, session or ID does not match this control queue.".into());
     }
     let name = value["action"].as_str().ok_or("Request action is missing.")?;
-    let field = match name { "review_plan" | "launch_plan" => Some("plan_path"), "stop_job" | "sync_artifacts" | "sync_processed_frame" | "sync_processed_frame_v2" | "sync_native_plots" | "artifact_index" | "open_run" | "close_run" => Some("job_id"), "open_config" => Some("config_path"), "reset_setup" | "focus_logs" | "focus_nodes" | "focus_setup" | "select_target" | "browse_runs" => None,
+    let field = match name { "review_plan" | "launch_plan" => Some("plan_path"), "stop_job" | "sync_artifacts" | "sync_processed_frame" | "sync_processed_frame_v2" | "sync_native_plots" | "artifact_index" | "open_run" | "close_run" => Some("job_id"), "open_config" => Some("config_path"), "reset_setup" | "focus_logs" | "focus_nodes" | "focus_setup" | "select_target" | "browse_runs" | "open_workspace" => None,
         _ => return Err("Unsupported companion action.".into()) };
     let object = value.as_object().ok_or("Request must be a JSON object.")?;
     let plan_action = matches!(name, "review_plan" | "launch_plan");
     if object.keys().any(|key| !["schema", "session_id", "id", "action"].contains(&key.as_str())
-        && !(key == "target" && !matches!(name,"open_config"|"reset_setup"|"focus_nodes"|"focus_setup"))
+        && !(key == "target" && !matches!(name,"open_config"|"reset_setup"|"focus_nodes"|"focus_setup"|"open_workspace"))
         && !(matches!(name,"sync_artifacts"|"sync_processed_frame"|"artifact_index") && key=="domain")
         && !(name=="sync_artifacts" && matches!(key.as_str(),"sequence"|"reader_leases"))
         && !(name=="sync_processed_frame" && key=="sequence")
@@ -162,6 +165,7 @@ fn parse_request(value: &Value, id: &str, session: &str) -> Result<Request, Stri
         "focus_nodes" => Action::FocusNodes,
         "focus_setup" => Action::FocusSetup,
         "select_target" => Action::SelectTarget,
+        "open_workspace" => Action::OpenWorkspace,
         _ => Action::FocusLogs,
     };
     Ok(Request { id: id.into(), name: name.into(), action, target, plan_sha256, config_sha256, review_id, review_sha256 })
@@ -332,6 +336,127 @@ fn reap_abandoned_claims(parent: &Path, current_id: &str) {
     }
 }
 
+/// A controller whose status heartbeat (500 ms cadence) is older than this is
+/// not asked to reopen its workspace. It matches the abandoned-claim limit
+/// rather than the desktop's 10 s rule because a controller's heartbeat pauses
+/// for the engine-version probe each time a run viewer opens (up to 20 s).
+const LIVE_CONTROLLER_HEARTBEAT: Duration = ABANDONED_CLAIM;
+
+/// A controller publishes its first status only once its workspace has started,
+/// seconds after its session directory appears. Two launches inside that window
+/// would both become controllers, so a young session directory without a status
+/// is waited for until it publishes, closes or the abandonment limit passes.
+fn wait_for_starting_controllers(parent: &Path) {
+    let deadline = Instant::now() + ABANDONED_CLAIM;
+    loop {
+        let now = now_ms();
+        let starting = fs::read_dir(parent).ok().into_iter().flatten().filter_map(Result::ok).take(4096).any(|entry| {
+            let directory = entry.path();
+            directory.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("companion-"))
+                && directory.is_dir() && !directory.join("status.json").exists()
+                && fs::metadata(&directory).and_then(|meta| meta.modified()).map(unix_ms)
+                    .is_ok_and(|created| now.saturating_sub(created) < ABANDONED_CLAIM.as_millis())
+        });
+        if !starting || Instant::now() >= deadline { return; }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// The live controller session under `parent`, if any: a heartbeating,
+/// unclosed `arwen.companion-status.v1` publisher whose directory name matches
+/// its session id. Read-only run viewers publish the same schema with
+/// `read_only: true` and own no forecast, so they are never the answer. With
+/// several candidates the freshest heartbeat wins. Returns the session id, its
+/// directory and its published status.
+pub(crate) fn live_controller(parent: &Path, now: u128) -> Option<(String, PathBuf, Value)> {
+    let sessions = fs::read_dir(parent).ok()?;
+    let mut best: Option<(u128, String, PathBuf, Value)> = None;
+    for session in sessions.filter_map(Result::ok).take(4096) {
+        let directory = session.path();
+        let Some(id) = directory.file_name().and_then(|name| name.to_str()).and_then(|name| name.strip_prefix("companion-")) else { continue; };
+        let Ok(status) = read_json(&directory.join("status.json"), 1024 * 1024) else { continue; };
+        if status["schema"] != "arwen.companion-status.v1" || status["session_id"] != id
+            || status["read_only"] == true || status["state"] == "closed" { continue; }
+        let Some(beat) = status["heartbeat_unix_ms"].as_u64().map(u128::from) else { continue; };
+        if now.saturating_sub(beat) >= LIVE_CONTROLLER_HEARTBEAT.as_millis() { continue; }
+        if best.as_ref().is_none_or(|(freshest, ..)| beat > *freshest) { best = Some((beat, id.to_owned(), directory, status)); }
+    }
+    best.map(|(_, id, directory, status)| (id, directory, status))
+}
+
+/// One controller per output root. A second `--headless-companion` start over
+/// a root whose controller still heartbeats would own nothing: the first
+/// controller's forecast is only a read-only saved run to it and cannot be
+/// stopped from the second workspace. So the newcomer asks the live controller
+/// to reopen its workspace and, on success, exits. `None` means no live
+/// controller and the newcomer becomes one. `Some(Err(_))` means a live
+/// controller refused or did not answer and still lives: the newcomer must
+/// exit with that message, never become a second owner. An earlier terminal
+/// that does not know the request refuses it the same way.
+pub fn reopen_live_controller(output: &Path) -> Option<Result<String, String>> {
+    let parent = output.join(".arwen-tui");
+    wait_for_starting_controllers(&parent);
+    let (session_id, directory, status) = live_controller(&parent, now_ms())?;
+    if let Some(pid) = status["tui_pid"].as_u64().and_then(|pid| u32::try_from(pid).ok()).filter(|pid| *pid > 0) { allow_foreground(pid); }
+    let outcome = request_open_workspace(&directory, &session_id, LIVE_CONTROLLER_HEARTBEAT);
+    let reason = match outcome { Ok(message) => return Some(Ok(message)), Err(reason) => reason };
+    // Only a controller that has since gone quiet leaves the root to the newcomer.
+    match live_controller(&parent, now_ms()) {
+        Some((live, ..)) if live == session_id => {
+            let version = status["tui_version"].as_str().unwrap_or("an earlier version");
+            Some(Err(format!("ArWen (terminal {version}) is already running for this workspace and could not reopen it: {reason} Let its forecast finish or stop it there, or close that ArWen, before opening ArWen again.")))
+        }
+        _ => None,
+    }
+}
+
+/// Grants the live controller the right to bring its workspace window to the
+/// foreground: the newcomer was just started by the user, the controller was
+/// not. Best effort; Windows only.
+fn allow_foreground(pid: u32) {
+    #[cfg(windows)]
+    unsafe {
+        #[link(name = "user32")]
+        unsafe extern "system" { fn AllowSetForegroundWindow(process_id: u32) -> i32; }
+        AllowSetForegroundWindow(pid);
+    }
+    #[cfg(not(windows))]
+    let _ = pid;
+}
+
+/// Writes an `open_workspace` request the way the visual workspace writes its
+/// own (a temporary file renamed into `requests/`), then waits for the answer.
+fn request_open_workspace(directory: &Path, session_id: &str, wait: Duration) -> Result<String, String> {
+    let id = format!("open-workspace-{}-{}", std::process::id(), now_ms());
+    let request = json!({"schema": "arwen.companion-request.v1", "session_id": session_id, "id": id, "action": "open_workspace"});
+    atomic_json(&directory.join("requests").join(format!("{id}.json")), &request)
+        .map_err(|error| format!("Cannot ask the running ArWen controller to reopen its workspace: {error}"))?;
+    let response = directory.join("responses").join(format!("{id}.json"));
+    let deadline = Instant::now() + wait;
+    loop {
+        if let Ok(value) = read_json(&response, 64 * 1024) {
+            let message = value["message"].as_str().unwrap_or("no message").to_owned();
+            return if value["ok"] == true { Ok(message) } else { Err(format!("The running ArWen controller could not reopen its workspace: {message}")) };
+        }
+        if Instant::now() >= deadline {
+            return Err(format!("The running ArWen controller did not answer within {} seconds.", wait.as_secs()));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// `<output>/.arwen-tui/controller.log`: the desktop launcher's controller has
+/// a hidden console or no console at all, so its fatal errors and startup notes
+/// are appended here (UTC stamp, one line) as well as written to stderr. The
+/// launcher reads the tail when the controller exits nonzero.
+pub fn controller_log(output: &Path, message: &str) {
+    let parent = output.join(".arwen-tui");
+    if fs::create_dir_all(&parent).is_err() { return; }
+    let Ok(mut log) = fs::OpenOptions::new().create(true).append(true).open(parent.join("controller.log")) else { return; };
+    let stamp = i64::try_from(now_ms()).ok().and_then(|now| local_progress::utc_text(now).ok()).unwrap_or_default();
+    let _ = writeln!(log, "{stamp} {}", message.trim_end());
+}
+
 pub struct Session {
     pub id: String,
     pub directory: PathBuf,
@@ -484,6 +609,11 @@ impl Controller {
         Ok(format!("Visual workspace process started. Diagnostic log: {}. Forecast jobs stay in this control center.", log_path.display()))
     }
     pub fn requests(&mut self) -> Vec<Request> { self.session.as_mut().map(Session::requests).unwrap_or_default() }
+    /// The visual workspace process this controller spawned, while it is alive.
+    pub fn child_pid(&mut self) -> Option<u32> {
+        let child = self.child.as_mut()?;
+        (child.try_wait().ok() == Some(None)).then(|| child.id())
+    }
     pub fn child_status(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
         self.child.as_mut().ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected,
             "The visual workspace has not started."))?.try_wait()
@@ -536,6 +666,18 @@ pub fn job_status(job: &crate::job::Job, output: &Path) -> Value {
     status
 }
 
+/// The launcher records its canonical working directory (`\\?\C:\...` on
+/// Windows) while the worker reports `Path.cwd()` (`C:\...`). One directory,
+/// two spellings: compare the directory, not the string. A string comparison
+/// here refused every Windows job and emptied the desktop's run list.
+pub(crate) fn same_directory(recorded:&str,reported:&str)->bool{
+    if recorded==reported{return true;}
+    let plain=|value:&str|value.strip_prefix(r"\\?\").unwrap_or(value).trim_end_matches(['\\','/']).to_owned();
+    let (a,b)=(plain(recorded),plain(reported));
+    if if cfg!(windows){a.eq_ignore_ascii_case(&b)}else{a==b}{return true;}
+    matches!((Path::new(recorded).canonicalize(),Path::new(reported).canonicalize()),(Ok(x),Ok(y)) if x==y)
+}
+
 /// Historical local runs use their saved launcher/process/native receipts;
 /// attaching a reader does not recreate a Child handle or claim its lifetime.
 pub(crate) fn saved_job_status(directory:&Path)->Result<Value,String>{
@@ -550,26 +692,50 @@ pub(crate) fn saved_job_status(directory:&Path)->Result<Value,String>{
         return Err("This saved command is not a forecast run.".into());
     }
     let process=read_json(&directory.join("process.json"),64*1024)?;
+    let same_cwd=launcher["cwd"].as_str().zip(process["cwd"].as_str()).is_some_and(|(recorded,reported)|same_directory(recorded,reported));
     if process["schema"]!="gpuwm-tui-process-v1"||process["cli_args"]!=json!(&command[3..])
-        ||process["cwd"]!=launcher["cwd"]||process["pid"].as_u64().is_none_or(|pid|pid==0){
+        ||!same_cwd||process["pid"].as_u64().is_none_or(|pid|pid==0){
         return Err("Saved local process does not match its original launch command.".into());
     }
     let result_path=directory.join("result.json");
     let result=if result_path.is_file(){Some(read_json(&result_path,128*1024)?)}else{None};
-    if result.as_ref().is_some_and(|result|result["schema"]!="gpuwm-tui-result-v1"
-        ||result["pid"]!=process["pid"]||result["cli_args"]!=process["cli_args"]||result["exit_code"].as_i64().is_none()){
+    // Two receipts end a job: the worker's own, bound to process.json by pid and
+    // arguments, or the launcher's, written when the worker was terminated before
+    // it could write (a Windows stop ends the job object at once) or when its
+    // receipt failed verification. The launcher receipt is read only beside the
+    // validated process receipt and never records a success.
+    let launcher_receipt=result.as_ref().is_some_and(|value|value["schema"]=="gpuwm-tui-launcher-result-v1");
+    if result.as_ref().is_some_and(|result|if launcher_receipt{
+            !matches!(result["status"].as_str(),Some("stopped"|"failed"))||result["exit_code"].as_i64().is_none_or(|code|code==0)
+        }else{result["schema"]!="gpuwm-tui-result-v1"
+            ||result["pid"]!=process["pid"]||result["cli_args"]!=process["cli_args"]||result["exit_code"].as_i64().is_none()}){
         return Err("Saved local completion does not match its original process.".into());
     }
-    let state=match result.as_ref().and_then(|value|value["exit_code"].as_i64()){
-        Some(0)=>"completed",Some(130)=>"stopped",Some(_)=>"failed",None=>"running",
+    let state=match result.as_ref(){
+        Some(value) if launcher_receipt=>if value["status"]=="stopped"{"stopped"}else{"failed"},
+        Some(value)=>match value["exit_code"].as_i64(){Some(0)=>"completed",Some(130)=>"stopped",_=>"failed"},
+        None=>"running",
     };
-    let native=local_progress::cached(&directory,&command)?;
+    let created=fs::metadata(directory.join("job.json")).and_then(|metadata|metadata.modified()).ok()
+        .and_then(|time|time.duration_since(UNIX_EPOCH).ok()).and_then(|elapsed|i64::try_from(elapsed.as_millis()).ok())
+        .and_then(|milliseconds|local_progress::utc_text(milliseconds).ok());
     let mut status=json!({"id":directory,"job_id":directory,"job_dir":directory,"target":{"kind":"local"},
         "action":command[3],"state":state,"exit_code":result.as_ref().map(|value|value["exit_code"].clone()),
-        "started_at":process["started_at"],"ended_at":result.as_ref().map(|value|value["ended_at"].clone()),
+        "created_at":created,"started_at":process["started_at"],"ended_at":result.as_ref().map(|value|value["ended_at"].clone()),
         "pid":process["pid"],"process_path":directory.join("process.json"),"result_path":result_path,
         "log_path":directory.join("job.log"),"command":command,"cwd":launcher["cwd"]});
-    if let Some(fields)=native.as_object(){for(key,value)in fields{status[key]=value.clone();}}
+    // Native receipts exist once the run's own manifest does. A job that ended
+    // before that point (failed while acquiring inputs, stopped while preparing)
+    // is still a finished job with a reason worth showing; a running one without
+    // them is the owning controller's to describe.
+    match local_progress::cached(&directory,&command){
+        Ok(native)=>{if let Some(fields)=native.as_object(){for(key,value)in fields{status[key]=value.clone();}}}
+        Err(error) if state!="running"=>{
+            status["progress_error"]=json!(error);status["manifest_ready"]=json!(false);
+            if let Some(message)=result.as_ref().and_then(|value|value["message"].as_str().or_else(||value["error"]["message"].as_str())){status["error"]=json!(message);}
+        }
+        Err(error)=>return Err(error),
+    }
     Ok(status)
 }
 
@@ -796,6 +962,66 @@ mod tests {
         value["config_path"]=json!("/unexpected.toml");assert!(parse_request(&value,"target-1","s").is_err());
     }
     #[test]
+    fn open_workspace_accepts_only_an_empty_typed_payload(){
+        let value=json!({"schema":"arwen.companion-request.v1","session_id":"s","id":"open-1","action":"open_workspace"});
+        assert!(matches!(parse_request(&value,"open-1","s").unwrap().action,Action::OpenWorkspace));
+        for (key,extra) in [("target",json!({"kind":"local"})),("target",json!({"kind":"ssh","node_id":"node-1","connection_sha256":"a".repeat(64)})),
+                            ("config_path",json!("/saved.toml")),("job_id",json!("job-1")),("plan_sha256",json!("a".repeat(64)))] {
+            let mut other=value.clone();other[key]=extra;
+            assert!(parse_request(&other,"open-1","s").is_err(),"{key}");
+        }
+    }
+    #[test]
+    fn live_controller_scan_ignores_closed_stale_and_read_only_sessions(){
+        let root=env::temp_dir().join(format!("arwen-live-controller-{}-{}",std::process::id(),now_ms()));
+        let parent=root.join(".arwen-tui");
+        let now=now_ms();
+        let publish=|id:&str,status:Value|{let directory=parent.join(format!("companion-{id}"));fs::create_dir_all(&directory).unwrap();atomic_json(&directory.join("status.json"),&status).unwrap();};
+        let status=|id:&str,state:&str,beat:u128|json!({"schema":"arwen.companion-status.v1","session_id":id,"state":state,"heartbeat_unix_ms":beat as u64,"tui_pid":4242});
+        publish("closed",status("closed","closed",now));
+        publish("stale",status("stale","ready",now-LIVE_CONTROLLER_HEARTBEAT.as_millis()));
+        let mut viewer=status("viewer","ready",now);viewer["read_only"]=json!(true);publish("viewer",viewer);
+        publish("foreign",json!({"schema":"arwen.other.v1","session_id":"foreign","state":"ready","heartbeat_unix_ms":now as u64}));
+        publish("renamed",status("elsewhere","ready",now));
+        fs::create_dir_all(parent.join("companion-empty")).unwrap();
+        assert!(live_controller(&parent,now).is_none());
+        publish("older",status("older","running",now-2_000));
+        publish("live",status("live","ready",now-500));
+        let (id,directory,found)=live_controller(&parent,now).unwrap();
+        assert_eq!(id,"live");assert_eq!(directory,parent.join("companion-live"));assert_eq!(found["tui_pid"],4242);
+        assert!(live_controller(&root.join("no-such-root"),now).is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_newcomer_reopens_the_live_controller_workspace_through_its_request_queue(){
+        let root=env::temp_dir().join(format!("arwen-reopen-live-{}-{}",std::process::id(),now_ms()));
+        let mut session=Session::create(&root).unwrap();
+        session.publish(json!({"state":"ready"}),true).unwrap();
+        let (id,directory,_)=live_controller(&root.join(".arwen-tui"),now_ms()).unwrap();
+        assert_eq!(id,session.id);
+        let requests=directory.join("requests");
+        let asked=std::thread::spawn(move||request_open_workspace(&directory,&id,Duration::from_secs(10)));
+        let deadline=Instant::now()+Duration::from_secs(10);
+        let request=loop{
+            if let Some(request)=session.requests().pop(){break request;}
+            assert!(Instant::now()<deadline,"the reopen request never reached the controller queue");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(matches!(request.action,Action::OpenWorkspace),"{:?}",request.action);
+        assert_eq!(request.name,"open_workspace");
+        session.respond(&request.id,&request.name,Ok("Visual workspace is already open.".into()),None).unwrap();
+        assert_eq!(asked.join().unwrap().unwrap(),"Visual workspace is already open.");
+        assert!(!fs::read_dir(requests).unwrap().filter_map(Result::ok).any(|entry|entry.path().extension().is_some_and(|extension|extension=="tmp")));
+        // A refused reopen sends the newcomer on as a controller, as does a session it cannot reach.
+        let refused=std::thread::spawn({let directory=session.directory.clone();let id=session.id.clone();move||request_open_workspace(&directory,&id,Duration::from_secs(10))});
+        let request=loop{if let Some(request)=session.requests().pop(){break request;}assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(20));};
+        session.respond(&request.id,&request.name,Err("Save or Save As before opening the visual workspace.".into()),None).unwrap();
+        assert!(refused.join().unwrap().unwrap_err().contains("Save or Save As"));
+        drop(session);
+        assert!(request_open_workspace(&root.join(".arwen-tui").join("no-such-session"),"none",Duration::from_millis(200)).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn reset_setup_accepts_only_an_empty_typed_payload(){
         let value=json!({"schema":"arwen.companion-request.v1","session_id":"s","id":"reset-1","action":"reset_setup"});
         assert!(matches!(parse_request(&value,"reset-1","s").unwrap().action,Action::ResetSetup));
@@ -904,6 +1130,65 @@ mod tests {
         assert!(next.directory.join("responses").read_dir().unwrap().next().is_none());
         drop(next);
         drop(live);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod saved_job_identity {
+    use super::*;
+    #[test]
+    fn worker_cwd_spelling_differs_from_the_launcher_canonical_path_without_breaking_identity(){
+        let root=env::temp_dir().join(format!("arwen-saved-job-cwd-{}-{}",std::process::id(),now_ms()));
+        fs::create_dir_all(&root).unwrap();
+        let canonical=root.canonicalize().unwrap();
+        let recorded=canonical.to_string_lossy().into_owned();
+        let reported=recorded.strip_prefix(r"\\?\").unwrap_or(&recorded).to_owned();
+        #[cfg(windows)]
+        assert_ne!(reported,recorded,"a canonical Windows path carries the verbatim prefix the worker never writes");
+        assert!(same_directory(&recorded,&reported));
+        assert!(same_directory(&reported,&recorded));
+        assert!(same_directory(&recorded,&recorded));
+        let other=root.join("elsewhere");fs::create_dir_all(&other).unwrap();
+        assert!(!same_directory(&recorded,&other.to_string_lossy()));
+        assert!(!same_directory(&recorded,&format!("{reported}-missing")));
+        // The worker's unprefixed spelling passes the process identity check;
+        // validation proceeds to the native receipts instead of refusing here.
+        let job=root.join("job");fs::create_dir(&job).unwrap();
+        let command=vec!["python".to_owned(),"-m".into(),"gpuwm.cli".into(),"run-plan".into(),root.join("plan.json").to_string_lossy().into_owned()];
+        atomic_json(&job.join("job.json"),&json!({"schema":"gpuwm-tui-job-v1","command":command,"cwd":recorded,"action":"run-plan"})).unwrap();
+        atomic_json(&job.join("process.json"),&json!({"schema":"gpuwm-tui-process-v1","pid":4242,"started_at":"2026-09-10T04:45:21.086137+00:00","cwd":reported,"cli_args":&command[3..]})).unwrap();
+        let error=saved_job_status(&job).unwrap_err();
+        assert!(!error.contains("does not match its original launch command"),"{error}");
+        let mut changed:Value=read_json(&job.join("process.json"),65536).unwrap();changed["cwd"]=json!(other);atomic_json(&job.join("process.json"),&changed).unwrap();
+        assert!(saved_job_status(&job).unwrap_err().contains("does not match its original launch command"));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn jobs_that_ended_before_their_native_manifest_keep_their_terminal_state(){
+        let root=env::temp_dir().join(format!("arwen-saved-job-terminal-{}-{}",std::process::id(),now_ms()));
+        fs::create_dir_all(&root).unwrap();let root=root.canonicalize().unwrap();
+        let command=vec!["python".to_owned(),"-m".into(),"gpuwm.cli".into(),"run-plan".into(),root.join("plan.json").to_string_lossy().into_owned()];
+        let job=|name:&str|{let dir=root.join(name);fs::create_dir(&dir).unwrap();
+            atomic_json(&dir.join("job.json"),&json!({"schema":"gpuwm-tui-job-v1","command":command,"cwd":root,"action":"run-plan"})).unwrap();
+            atomic_json(&dir.join("process.json"),&json!({"schema":"gpuwm-tui-process-v1","pid":4242,"started_at":"2026-09-10T04:45:21.086137+00:00","cwd":root,"cli_args":&command[3..]})).unwrap();dir};
+        // A Windows stop terminates the worker before it writes its receipt; the launcher's receipt ends the job.
+        let stopped=job("stopped");
+        atomic_json(&stopped.join("result.json"),&json!({"schema":"gpuwm-tui-launcher-result-v1","exit_code":130,"os_exit_code":130,"status":"stopped","worker_receipt_valid":false,"message":"Stopped owned process tree (OS exit 130)."})).unwrap();
+        let status=saved_job_status(&stopped).unwrap();
+        assert_eq!(status["state"],"stopped");assert_eq!(status["manifest_ready"],false);assert!(status["progress_error"].as_str().is_some());
+        assert_eq!(status["error"],"Stopped owned process tree (OS exit 130).");assert!(status["created_at"].as_str().unwrap().ends_with('Z'));
+        // A worker that failed while acquiring inputs has its own receipt but no run manifest yet.
+        let failed=job("failed");
+        atomic_json(&failed.join("result.json"),&json!({"schema":"gpuwm-tui-result-v1","pid":4242,"cli_args":&command[3..],"started_at":"2026-09-10T04:45:21.086137+00:00","ended_at":"2026-09-10T04:45:40+00:00","exit_code":2,"status":"failed","error":{"type":"RuntimeError","message":"source window wider than the global grid"}})).unwrap();
+        let status=saved_job_status(&failed).unwrap();
+        assert_eq!(status["state"],"failed");assert_eq!(status["error"],"source window wider than the global grid");assert_eq!(status["manifest_ready"],false);
+        // A launcher receipt never records a success, and a running job without native receipts stays the controller's to describe.
+        let forged=job("forged");
+        atomic_json(&forged.join("result.json"),&json!({"schema":"gpuwm-tui-launcher-result-v1","exit_code":0,"status":"stopped"})).unwrap();
+        assert!(saved_job_status(&forged).unwrap_err().contains("does not match its original process"));
+        let running=job("running");
+        assert!(saved_job_status(&running).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }

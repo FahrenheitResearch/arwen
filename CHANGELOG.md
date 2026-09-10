@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.7.2 (2026-09-10)
+
+Fixed:
+- My forecasts lists the accepted forecast immediately and follows it through acquisition, preparation, simulation, rendering and its final state. Saved runs whose receipts cannot be validated are listed with the reason instead of disappearing. A worker's plain working-directory spelling is no longer mistaken for a different directory.
+- Windows desktop: the ArWen terminal is available from the desktop. Show progress in TUI, Connections in TUI and Credentials & connection settings open the terminal window of the same controller and forecast; Ctrl+Q hides it again without stopping anything.
+- Opening ArWen while a forecast still runs in the background reopens the running controller's workspace instead of starting a second controller.
+
 ## 2.7.1 (2026-09-10)
 
 - Windows desktop setup installs and verifies its own Python and CUDA runtime through a graphical launcher. Local setup checks the GPU before opening the forecast workspace.

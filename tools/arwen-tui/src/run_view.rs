@@ -38,8 +38,12 @@ pub struct Manager {
 impl Manager {
     pub fn handles(action: &Action) -> bool { matches!(action, Action::BrowseRuns | Action::OpenRun(_)) }
 
+    /// `live` is the controller's own status for the job it currently owns
+    /// (`companion::job_status`). It lists and opens that job before its saved
+    /// receipts exist; every other directory still goes through the saved
+    /// launcher/process/native receipt validation.
     pub fn begin(&mut self, request: companion::Request, parent: &Session, nodes: &remote::Store,
-        python: &Path, output: &Path, cwd: &Path) -> Result<Option<Completion>, String> {
+        python: &Path, output: &Path, cwd: &Path, live: Option<&Value>) -> Result<Option<Completion>, String> {
         self.local_roots.insert(output.to_owned());
         self.local_roots.insert(cwd.join("arwen-runs"));
         if self.pending.len() >= MAX_VIEWERS { return Err("Run browsing requests are already in progress. Retry when they finish.".into()); }
@@ -52,13 +56,18 @@ impl Manager {
         let Some(node) = node else {
             let (message, details) = match &request.action {
                 Action::BrowseRuns => {
-                    let jobs = local_jobs(&self.local_roots);
+                    let jobs = local_jobs(&self.local_roots, live);
                     ("Saved local runs loaded.".to_owned(), json!({"target":target.value(),"jobs":jobs}))
                 }
                 Action::OpenRun(id) => {
                     let directory = owned_local_job(id, &self.local_roots)?;
-                    let status = companion::saved_job_status(&directory)?;
-                    let viewer = Viewer::local(client, directory, status)?;
+                    // The owned job is readable from the controller before its
+                    // receipts settle; a bound identity still comes only from them.
+                    let viewer = match (companion::saved_job_status(&directory), live_status_for(live, &directory)) {
+                        (Ok(status), _) => { let identity = local_identity(&status); Viewer::local(client, directory, Some(identity), status)? }
+                        (Err(_), Some(status)) => Viewer::local(client, directory, None, status)?,
+                        (Err(error), None) => return Err(error),
+                    };
                     let handoff = viewer.handoff.clone();
                     self.viewers.push(viewer);
                     ("Saved run opened in a read-only viewer.".to_owned(), json!({"target":target.value(),"job_id":id,"handoff":handoff}))
@@ -77,7 +86,9 @@ impl Manager {
         Ok(None)
     }
 
-    pub fn poll(&mut self) -> Vec<Completion> {
+    pub fn active(&self) -> bool { !self.viewers.is_empty() || !self.pending.is_empty() }
+
+    pub fn poll(&mut self, live: Option<&Value>) -> Vec<Completion> {
         let mut replies = Vec::new();
         for mut pending in std::mem::take(&mut self.pending) {
             let reply = match pending.transport.poll() {
@@ -125,7 +136,7 @@ impl Manager {
             };
             replies.push(Completion { session_id: pending.parent, request: pending.request, result, details });
         }
-        for viewer in &mut self.viewers { viewer.poll(); }
+        for viewer in &mut self.viewers { viewer.poll(live); }
         // No cache/receipt deletion: readers may still hold their native file
         // leases after the UI closes. Pending transfers finish before detach.
         self.viewers.retain(|viewer| !viewer.finished());
@@ -159,7 +170,45 @@ fn owned_local_job(id: &str, roots: &BTreeSet<PathBuf>) -> Result<PathBuf, Strin
     Ok(path)
 }
 
-fn local_jobs(roots: &BTreeSet<PathBuf>) -> Vec<Value> {
+/// The controller's own job status when `directory` is the job it owns,
+/// normalized to the saved-run row shape. Any other directory is `None`.
+fn live_status_for(live: Option<&Value>, directory: &Path) -> Option<Value> {
+    let live = live?;
+    let job_dir = live["job_dir"].as_str().filter(|value| !value.is_empty())?;
+    if !companion::same_directory(job_dir, &directory.to_string_lossy()) { return None; }
+    let mut status = live.clone();
+    if status["id"].is_null() { status["id"] = status["job_id"].clone(); }
+    if status["target"].is_null() { status["target"] = json!({"kind":"local"}); }
+    Some(status)
+}
+
+/// The run list is a forecast list. Sources probes, physics-profile listings,
+/// dry runs and version checks share the same job root and are skipped by
+/// the same predicate saved_job_status applies; they are not failures to show.
+fn forecast_job_directory(directory: &Path) -> bool {
+    let Ok(launcher) = companion::read_json(&directory.join("job.json"), 128 * 1024) else { return true; };
+    let command: Vec<&str> = launcher["command"].as_array().map(|values| values.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    command.get(3).is_some_and(|action| matches!(*action, "run-plan" | "go" | "sim" | "run" | "resume"))
+        && !command.iter().any(|argument| matches!(*argument, "--dry-run" | "--estimate" | "--resolve" | "--physics-profiles" | "--help"))
+}
+
+/// A job directory whose receipts do not validate is listed with the exact
+/// reason instead of vanishing; opening it repeats that reason. The id is
+/// the canonical directory, the same spelling verified rows and the owning
+/// controller use, so a row keeps its identity when it becomes verified.
+fn unverified_summary(directory: &Path, error: String) -> Value {
+    let directory = directory.canonicalize().unwrap_or_else(|_| directory.to_owned());
+    let launcher = companion::read_json(&directory.join("job.json"), 128 * 1024).ok();
+    let created = fs::metadata(directory.join("job.json")).and_then(|metadata| metadata.modified()).ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|elapsed| i64::try_from(elapsed.as_millis()).ok())
+        .and_then(|milliseconds| companion::local_progress::utc_text(milliseconds).ok());
+    json!({"id":directory,"job_id":directory,"job_dir":directory,"target":{"kind":"local"},"state":"unverified","error":error,
+        "action":launcher.as_ref().and_then(|value| value["action"].as_str()),"created_at":created,
+        "name":Value::Null,"forecast_start_time":Value::Null,"run_seconds":Value::Null})
+}
+
+fn local_jobs(roots: &BTreeSet<PathBuf>, live: Option<&Value>) -> Vec<Value> {
     let mut directories = BTreeSet::new();
     for root in roots {
         if let Ok(entries) = fs::read_dir(root.join(".arwen-tui")) {
@@ -170,7 +219,17 @@ fn local_jobs(roots: &BTreeSet<PathBuf>) -> Vec<Value> {
             }
         }
     }
-    directories.into_iter().rev().filter_map(|path| companion::saved_job_status(&path).ok()).take(50).map(|status| run_summary(&status)).collect()
+    directories.into_iter().rev().filter(|path| forecast_job_directory(path)).take(50).map(|path| {
+        // Saved receipts are the authority once they validate; the owning
+        // controller's status stands in only until then.
+        match companion::saved_job_status(&path) {
+            Ok(status) => run_summary(&status),
+            Err(error) => match live_status_for(live, &path) {
+                Some(status) => run_summary(&status),
+                None => unverified_summary(&path, error),
+            },
+        }
+    }).collect()
 }
 
 fn snapshot_summary(status: &Value) -> Value {
@@ -191,7 +250,7 @@ fn snapshot_summary(status: &Value) -> Value {
 
 fn run_summary(status: &Value) -> Value {
     let mut value = snapshot_summary(status);
-    for key in ["id", "job_id", "job_dir", "state", "action", "created_at", "started_at", "ended_at", "exit_code", "outdir", "run_dir", "source_config_path", "source_config_sha256", "model_elapsed_seconds", "valid_time", "phase", "stage"] {
+    for key in ["id", "job_id", "job_dir", "state", "action", "created_at", "started_at", "ended_at", "exit_code", "outdir", "run_dir", "source_config_path", "source_config_sha256", "model_elapsed_seconds", "valid_time", "phase", "stage", "error"] {
         value[key] = status[key].clone();
     }
     if value["job_id"].is_null() { value["job_id"] = status["id"].clone(); }
@@ -278,7 +337,9 @@ impl Binding {
 struct ArtifactPending { request: companion::Request, transport: remote::Request }
 enum Source {
     Remote { node: remote::Node, binding: Binding },
-    Local { directory: PathBuf, identity: Value },
+    /// `identity` binds once the saved receipts validate; until then the
+    /// viewer may only mirror the controller's own status for its owned job.
+    Local { directory: PathBuf, identity: Option<Value> },
 }
 struct Viewer {
     session: Session,
@@ -317,8 +378,7 @@ impl Viewer {
         viewer.publish(true)?;
         Ok(viewer)
     }
-    fn local(client: Client, directory: PathBuf, status: Value) -> Result<Self, String> {
-        let identity = local_identity(&status);
+    fn local(client: Client, directory: PathBuf, identity: Option<Value>, status: Value) -> Result<Self, String> {
         let mut viewer = Self::create(client, Target::Local, Source::Local { directory, identity }, status)?;
         viewer.publish(true)?;
         Ok(viewer)
@@ -385,7 +445,7 @@ impl Viewer {
         self.artifact_pending = Some(ArtifactPending { request: request.clone(), transport });
         Ok(String::new())
     }
-    fn poll(&mut self) {
+    fn poll(&mut self, live: Option<&Value>) {
         for request in self.session.requests() {
             let result = self.begin(&request);
             if !matches!(&result, Ok(message) if message.is_empty()) {
@@ -464,11 +524,29 @@ impl Viewer {
                         Ok(request) => self.status_pending = Some(request), Err(error) => self.error = Some(error),
                     }
                 }
-                Source::Local { directory, identity } => match companion::saved_job_status(directory) {
-                    Ok(status) if local_identity(&status) == *identity => { self.status = status; self.error = None; }
-                    Ok(_) => self.error = Some("The saved local run's original process/source/manifest identity changed.".into()),
-                    Err(error) => self.error = Some(error),
-                },
+                Source::Local { directory, identity } => {
+                    let (directory, bound) = (directory.clone(), identity.clone());
+                    let outcome = match companion::saved_job_status(&directory) {
+                        Ok(status) => match &bound {
+                            Some(bound) if local_identity(&status) != *bound => Err("The saved local run's original process/source/manifest identity changed.".to_owned()),
+                            Some(_) => Ok((status, None)),
+                            None => { let identity = local_identity(&status); Ok((status, Some(identity))) }
+                        },
+                        // Receipts still settling: mirror the owning controller
+                        // until they validate, never once an identity is bound.
+                        Err(error) => match live_status_for(live, &directory) {
+                            Some(status) if bound.is_none() => Ok((status, None)),
+                            _ => Err(error),
+                        },
+                    };
+                    match outcome {
+                        Ok((status, newly_bound)) => {
+                            self.status = status; self.error = None;
+                            if let (Some(identity), Source::Local { identity: slot, .. }) = (newly_bound, &mut self.source) { *slot = Some(identity); }
+                        }
+                        Err(error) => self.error = Some(error),
+                    }
+                }
             }
         }
         if let Err(error) = self.publish(false) { self.error = Some(error); }
@@ -491,6 +569,9 @@ mod tests {
         let mut node=remote::Node::blank();node.id=id.into();node.host=format!("{id}.invalid");node.workspace="/node/runs".into();node
     }
     fn target(node:&remote::Node)->Target{Target::Ssh{node_id:node.id.clone(),connection_sha256:companion::digest(node.connection_key().as_bytes())}}
+    /// Opening a viewer publishes a handoff, which probes the selected runtime's
+    /// engine version; the local-run tests therefore need a real interpreter.
+    fn test_python()->PathBuf{PathBuf::from(std::env::var_os("GPUWM_TUI_TEST_PYTHON").expect("set test Python path"))}
     #[test]
     fn runs_resolve_the_requested_saved_node_without_changing_the_active_one(){
         let mut store=remote::Store::default();let first=node("node-1");let second=node("node-2");
@@ -557,10 +638,10 @@ mod tests {
         let parent=Session::create(&output).unwrap();let mut store=remote::Store::default();let selected=node("selected-ssh");
         store.active=Some(selected.id.clone());store.nodes.push(selected.clone());
         let mut manager=Manager::default();
-        let browse=manager.begin(request(Action::BrowseRuns,Target::Local),&parent,&store,Path::new("missing-fixture-python"),&output,&root).unwrap().unwrap();
+        let browse=manager.begin(request(Action::BrowseRuns,Target::Local),&parent,&store,&test_python(),&output,&root,None).unwrap().unwrap();
         assert_eq!(browse.details["jobs"].as_array().unwrap().len(),1,"{}",browse.details);
         assert_eq!(browse.details["jobs"][0]["name"],"Saved fixture");assert_eq!(browse.details["jobs"][0]["run_seconds"],3600.0);
-        let opened=manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local),&parent,&store,Path::new("missing-fixture-python"),&output,&root).unwrap().unwrap();
+        let opened=manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local),&parent,&store,&test_python(),&output,&root,None).unwrap().unwrap();
         assert_eq!(opened.details["handoff"]["read_only"],true);assert_ne!(opened.details["handoff"]["session_id"],parent.id);
         assert_eq!(store.active.as_deref(),Some(selected.id.as_str()));
         let viewer=&mut manager.viewers[0];
@@ -569,8 +650,59 @@ mod tests {
         }
         let session=viewer.session.directory.clone();let held=fs::File::open(session.join("status.json")).unwrap();
         viewer.begin(&request(Action::CloseRun(viewer.job_id().into()),Target::Local)).unwrap();
-        manager.poll();assert!(manager.viewers.is_empty());assert!(session.join("status.json").is_file());drop(held);
+        manager.poll(None);assert!(manager.viewers.is_empty());assert!(session.join("status.json").is_file());drop(held);
         assert_eq!(companion::read_json(&session.join("status.json"),128*1024).unwrap()["state"],"closed");
+        drop(parent);let _=fs::remove_dir_all(root);
+    }
+    #[test]
+    fn unverifiable_saved_jobs_are_listed_with_their_reason_instead_of_vanishing(){
+        let root=directory("unverified");let(output,job)=local_fixture(&root);
+        let mut process=companion::read_json(&job.join("process.json"),65536).unwrap();process["cwd"]=json!(root.join("elsewhere"));write(&job.join("process.json"),&process);
+        // A sources probe shares the job root and is not a forecast: never listed, never "unverified".
+        let probe=output.join(".arwen-tui/job-0-sources");fs::create_dir_all(&probe).unwrap();
+        write(&probe.join("job.json"),&json!({"schema":"gpuwm-tui-job-v1","command":["fixture-python","-m","gpuwm.cli","sources"],"cwd":root,"action":"sources"}));
+        let rows=local_jobs(&BTreeSet::from([output.clone()]),None);
+        assert_eq!(rows.len(),1,"{rows:?}");
+        assert_eq!(rows[0]["state"],"unverified");assert_eq!(rows[0]["job_id"],json!(job.canonicalize().unwrap()));assert_eq!(rows[0]["action"],"run-plan");
+        assert!(rows[0]["error"].as_str().unwrap().contains("does not match its original launch command"),"{}",rows[0]);
+        assert!(rows[0]["created_at"].as_str().unwrap().ends_with('Z'));
+        let parent=Session::create(&output).unwrap();let store=remote::Store::default();let mut manager=Manager::default();
+        let opened=manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local),&parent,&store,&test_python(),&output,&root,None);
+        assert!(opened.err().expect("an unverifiable saved job is refused with its reason").contains("does not match its original launch command"));
+        // The worker's unprefixed cwd spelling is the same directory, not a mismatch.
+        process["cwd"]=json!(root.to_string_lossy().strip_prefix(r"\\?\").unwrap_or(&root.to_string_lossy()));write(&job.join("process.json"),&process);
+        let rows=local_jobs(&BTreeSet::from([output]),None);assert_eq!(rows[0]["state"],"completed","{}",rows[0]);
+        drop(parent);let _=fs::remove_dir_all(root);
+    }
+    #[test]
+    fn the_owned_job_is_listed_and_opened_from_the_controller_before_its_receipts_settle(){
+        let root=directory("live");let(output,job)=local_fixture(&root);
+        // Before the worker reports: no process receipt, no native manifest.
+        let manifest=fs::read(root.join("native-run/run-manifest.json")).unwrap();
+        fs::remove_file(job.join("process.json")).unwrap();fs::remove_file(job.join("result.json")).unwrap();fs::remove_file(root.join("native-run/run-manifest.json")).unwrap();
+        let live=json!({"job_id":job,"job_dir":job,"action":"run-plan","state":"starting","exit_code":null,"log_path":job.join("job.log"),"manifest_ready":false});
+        let rows=local_jobs(&BTreeSet::from([output.clone()]),Some(&live));
+        assert_eq!(rows.len(),1);assert_eq!(rows[0]["state"],"starting");assert_eq!(rows[0]["job_id"],json!(job));assert!(rows[0]["error"].is_null());
+        let rows=local_jobs(&BTreeSet::from([output.clone()]),None);assert_eq!(rows[0]["state"],"unverified","another controller's or no live status never vouches for the directory");
+        let parent=Session::create(&output).unwrap();let store=remote::Store::default();let mut manager=Manager::default();
+        let opened=manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local),&parent,&store,&test_python(),&output,&root,Some(&live)).unwrap().unwrap();
+        assert_eq!(opened.details["handoff"]["read_only"],true);
+        let viewer=&mut manager.viewers[0];assert!(matches!(&viewer.source,Source::Local{identity:None,..}));
+        assert_eq!(companion::read_json(&viewer.session.directory.join("status.json"),128*1024).unwrap()["job"]["state"],"starting");
+        let mut running=live.clone();running["state"]=json!("running");running["progress"]=json!({"schema":"arwen.forecast-progress.v1","model_seconds":600.,"run_seconds":3600.});
+        viewer.last_status_request=Instant::now()-STATUS_INTERVAL;viewer.poll(Some(&running));
+        assert!(viewer.error.is_none(),"{:?}",viewer.error);assert_eq!(viewer.status["state"],"running");assert_eq!(viewer.status["progress"]["model_seconds"],600.);
+        // Receipts settle: the identity binds from them and the controller mirror stops being consulted.
+        let cli_args=json!(["run-plan",root.join("plan.json").to_string_lossy(),"--execute"]);
+        write(&job.join("process.json"),&json!({"schema":"gpuwm-tui-process-v1","pid":42,"started_at":"2026-09-08T00:00:00Z","cwd":root,"cli_args":cli_args}));
+        write(&job.join("result.json"),&json!({"schema":"gpuwm-tui-result-v1","pid":42,"ended_at":"2026-09-08T00:00:05Z","exit_code":0,"cli_args":cli_args}));
+        fs::write(root.join("native-run/run-manifest.json"),manifest).unwrap();
+        viewer.last_status_request=Instant::now()-STATUS_INTERVAL;viewer.poll(None);
+        assert!(viewer.error.is_none(),"{:?}",viewer.error);assert_eq!(viewer.status["state"],"completed");
+        assert!(matches!(&viewer.source,Source::Local{identity:Some(_),..}));
+        let mut foreign=running.clone();foreign["state"]=json!("stopped");
+        viewer.last_status_request=Instant::now()-STATUS_INTERVAL;viewer.poll(Some(&foreign));
+        assert_eq!(viewer.status["state"],"completed","a bound viewer reads receipts, not the controller");
         drop(parent);let _=fs::remove_dir_all(root);
     }
 }
