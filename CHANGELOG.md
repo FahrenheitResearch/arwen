@@ -5,6 +5,7 @@
 - Windows desktop setup installs and verifies its own Python and CUDA runtime through a graphical launcher. Local setup checks the GPU before opening the forecast workspace.
 - The desktop controller can serve the GUI without an open terminal, retaining forecast review, command acknowledgments, progress and worker lifetime handling.
 - GUI startup diagnostics are saved per session. Engine version probes have a deadline, and reopening an active workspace preserves its existing connection.
+- Local progress waits for the worker startup handshake before reading its process receipt.
 - Completed and claimed request history no longer consumes the pending-request scan limit. Compact-viewer workers service queued jobs beyond large historical directory collections.
 - A compact-cache member removed during eviction is treated as unavailable, while permission and metadata errors remain visible.
 - The desktop identifies pole-crossing forecast areas separately from GPU memory failures and gives a map-based remedy.

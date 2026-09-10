@@ -524,7 +524,10 @@ pub fn job_status(job: &crate::job::Job, output: &Path) -> Value {
         "step_progress_path":existing("progress.jsonl"),"ready_dir":existing("ready"),
         "outputs_dir":named("outputs_dir").or_else(|| run.clone()).unwrap_or_else(|| output.to_owned()),
         "latest_run_pointer":output.join("latest-run.txt")});
-    if matches!(job.action.as_str(),"run-plan"|"go"|"sim"|"run"|"resume")&&!job.command.iter().any(|arg|matches!(arg.as_str(),"--dry-run"|"--estimate"|"--resolve"|"--physics-profiles")){
+    // The worker writes process.json before its ready handshake. Until that
+    // handshake is released, an absent process receipt is ordinary startup.
+    // Running and terminal jobs still require the complete receipt binding.
+    if state!="starting"&&matches!(job.action.as_str(),"run-plan"|"go"|"sim"|"run"|"resume")&&!job.command.iter().any(|arg|matches!(arg.as_str(),"--dry-run"|"--estimate"|"--resolve"|"--physics-profiles")){
         match local_progress::cached(&job.dir,&job.command){
             Ok(native)=>{if let Some(fields)=native.as_object(){for(key,value)in fields{status[key]=value.clone();}}}
             Err(error)=>{status["progress_error"]=json!(error);status["manifest_ready"]=json!(false);for key in ["events_path","progress_path","ready_dir"]{status[key]=Value::Null;}}
@@ -573,6 +576,39 @@ pub(crate) fn saved_job_status(directory:&Path)->Result<Value,String>{
 #[cfg(test)]
 mod request_queue_regressions {
     use super::*;
+    #[test]
+    fn starting_job_defers_native_progress_but_released_jobs_keep_strict_receipts() {
+        let python=PathBuf::from(env::var_os("GPUWM_TUI_TEST_PYTHON").expect("set test Python path"));
+        let root=env::temp_dir().join(format!("arwen-companion-startup-{}-{}",std::process::id(),now_ms()));
+        fs::create_dir(&root).unwrap();let root=root.canonicalize().unwrap();
+        let package=root.join("gpuwm");fs::create_dir(&package).unwrap();
+        // Gate package import so the real worker has not written process.json
+        // when Job::start returns. No model is run and no Job handle is forged.
+        fs::write(package.join("__init__.py"),"from pathlib import Path\nimport time\ngate=Path(__file__).parent.parent/'allow-worker'\ndeadline=time.monotonic()+15\nwhile not gate.exists():\n if time.monotonic()>deadline: raise RuntimeError('fixture import gate timed out')\n time.sleep(0.01)\n").unwrap();
+        fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../gpuwm/tui_worker.py"),package.join("tui_worker.py")).unwrap();
+        fs::write(package.join("cli.py"),"from pathlib import Path\nimport time\ndef main(argv):\n gate=Path(__file__).parent.parent/'finish'\n deadline=time.monotonic()+15\n while not gate.exists():\n  if time.monotonic()>deadline: return 2\n  time.sleep(0.01)\n return 0\n").unwrap();
+        struct OwnedTestJob(crate::job::Job);
+        impl Drop for OwnedTestJob {fn drop(&mut self){let _=self.0.stop();let _=self.0.stop();let _=self.0.poll();}}
+        let mut owned=OwnedTestJob(crate::job::Job::start_with_module_path(&python,"run-plan",&[root.join("plan.json").display().to_string(),"--execute".into()],&root.join("job"),&root,Some(&root)).unwrap());
+        let job=&mut owned.0;
+        assert!(!job.dir.join("process.json").exists());
+        let starting=job_status(job,&root);assert_eq!(starting["state"],"starting");assert!(starting.get("progress_error").is_none());
+        fs::write(root.join("allow-worker"),b"").unwrap();
+        let deadline=Instant::now()+Duration::from_secs(10);
+        while !job.dir.join("start").is_file(){assert!(job.poll().unwrap().is_none());assert!(Instant::now()<deadline,"{}",job.log_tail(20));std::thread::sleep(Duration::from_millis(10));}
+        let process_path=job.dir.join("process.json");let process=fs::read(&process_path).unwrap();
+        fs::remove_file(&process_path).unwrap();
+        let missing=job_status(job,&root);assert_eq!(missing["state"],"running");assert!(missing["progress_error"].as_str().unwrap().contains("process.json"));
+        let mut changed:Value=serde_json::from_slice(&process).unwrap();changed["cli_args"]=json!(["another-command"]);atomic_json(&process_path,&changed).unwrap();
+        std::thread::sleep(Duration::from_millis(510));
+        let mismatched=job_status(job,&root);assert_eq!(mismatched["state"],"running");assert!(mismatched["progress_error"].as_str().unwrap().contains("does not match its launch command"));
+        fs::write(&process_path,&process).unwrap();fs::write(root.join("finish"),b"").unwrap();
+        while job.poll().unwrap().is_none(){assert!(Instant::now()<deadline,"{}",job.log_tail(20));std::thread::sleep(Duration::from_millis(10));}
+        assert_eq!(job.outcome,Some(0));fs::remove_file(&process_path).unwrap();
+        std::thread::sleep(Duration::from_millis(510));
+        let completed=job_status(job,&root);assert_eq!(completed["state"],"completed");assert!(completed["progress_error"].as_str().unwrap().contains("process.json"));
+        drop(owned);assert!(root.starts_with(env::temp_dir().canonicalize().unwrap()));fs::remove_dir_all(root).unwrap();
+    }
 
     fn directory(label: &str) -> PathBuf {
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();

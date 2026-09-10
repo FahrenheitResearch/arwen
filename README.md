@@ -44,6 +44,10 @@ A compatible NVIDIA driver must already be installed. Keep the `resources`
 folder beside `ArWen.exe`. Setup errors remain visible with retry and repair
 controls; setup does not require terminal commands.
 
+First setup also prepares the physics tables and global geography needed for
+regional forecasts. Allow several gigabytes of downloads and at least 25 GB of
+free disk space, plus space for weather inputs and forecast output.
+
 ### Linux
 
 ```bash
