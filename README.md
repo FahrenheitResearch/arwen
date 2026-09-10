@@ -31,12 +31,6 @@ for the exact artifacts and qualification records.
 
 ## Install the desktop for forecasts on your PC
 
-**Use the full GPU installation below for local GUI forecasting.** The original
-2.7.0 desktop instructions used `gpuwm[render]`, which omits CuPy and CUDA runtime
-dependencies. That installation cannot run local forecasts or automatically
-measure GPU memory. These corrected instructions supersede that command in the
-original archives and the 2.7.0 package description.
-
 Install 64-bit Python 3.11 or newer and the current NVIDIA driver for your GPU.
 The commands below install the engine, rendering support, CuPy, and user-space
 CUDA components in one Python environment. A separate CUDA Toolkit installation
@@ -44,27 +38,6 @@ is unnecessary. CUDA 12 is the default; see the CUDA 13 alternative below.
 
 These are one-time setup commands. After setup, use the GUI to create and run
 forecasts on your local computer.
-
-### Already installed and seeing “CuPy is not installed”?
-
-Close ArWen, then add the GPU dependencies to the **same Python environment
-selected by its launcher**. For the environment created by these instructions:
-
-Windows PowerShell:
-
-```powershell
-& "$env:LOCALAPPDATA\ArWen\venvs\2.7.0\Scripts\python.exe" -m pip install "gpuwm[all-cu12]==2.7.0"
-```
-
-Linux:
-
-```bash
-~/.local/share/arwen/venvs/2.7.0/bin/python -m pip install 'gpuwm[all-cu12]==2.7.0'
-```
-
-Reopen ArWen with the same `--python` path shown below. If you chose another
-environment, use its Python executable instead. Adding a manual VRAM budget
-does not install the runtime required for forecasting.
 
 ### Windows
 
