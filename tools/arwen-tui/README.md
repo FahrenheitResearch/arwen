@@ -10,6 +10,12 @@ verified Windows/Linux bundle as the other native tools; `gpuwm fetch-bridges`
 installs it when using the universal Python wheel. `gpuwm tui --snapshot
 terminal.html` writes the existing terminal preview without starting a job.
 
+Desktop launchers can use `--headless-companion --python PATH_TO_PYTHON
+--companion PATH_TO_GUI --output RUN_DIRECTORY` to open the visual workspace
+without an interactive terminal. The controller services the same handoff and
+request queue, and keeps polling an owned forecast after the visual window
+closes until the worker completes. This mode cannot be combined with a snapshot.
+
 - New forecast asks five essentials (location, source, start cycle, duration, new filename), then shows every setting in an editable summary. Ctrl+A opens that summary early. Its visible source recommendation is read from the installed guided CLI; any source ID or alias can replace it. It collects exact native `domain` arguments, shows them before execution, and opens the emitted TOML with **Review launch plan** selected. The full TOML remains editable, including all settings outside the questions.
 - **Calendar (F3)** in a cycle/start-time question shows the selected source's UTC hours, current forecast horizons, publication guidance and documented archive bounds. Click a day and hour, use arrows/Tab, change month with PgUp/PgDn (Ctrl changes year), or type/paste an exact date. New forecast starts with `latest`: Next opens an asynchronous check through the ordinary acquisition resolver, then **Use date** keeps the exact selected cycle. **Latest complete (F4)** checks required final-hour objects where public probes exist. ERA5 instead says **Latest expected**, accounts for the whole requested analysis window behind its approximate publication delay, and labels recent ERA5T data and account requirements. Unknown archive bounds stay unknown; historical file versions still undergo normal acquisition/compatibility checks. Esc cancels the lookup and preserves the original guide value.
 - Open existing asks what you have: an ArWen TOML file, WRF `real.exe` inputs, or WPS `met_em` inputs. Paths are typed or pasted; the optional browser is separate.

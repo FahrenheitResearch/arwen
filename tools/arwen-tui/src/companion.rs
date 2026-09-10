@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     env, fs,
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -203,24 +203,90 @@ pub const TUI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The installed engine's version as the configured interpreter reports it
 /// (`gpuwm.__version__`, from distribution metadata; "0+unknown" for an
-/// uninstalled source tree). None when the interpreter cannot answer:
-/// missing executable, no gpuwm, or a reply that is not a plain version
-/// token. Bounded by importing only `gpuwm`, which costs tens of
-/// milliseconds; -P keeps the launch folder off its path.
-pub fn engine_version(python: &Path) -> Option<String> {
+/// uninstalled source tree). The probe is bounded even when startup/import
+/// hangs; -P keeps the launch folder off its path.
+pub fn engine_version(python: &Path) -> Result<String, String> {
     let mut command = Command::new(python);
     command.args(["-P", "-B", "-c", "import gpuwm,sys;sys.stdout.write(gpuwm.__version__)"])
-        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+        .stdin(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
     }
-    let output = command.output().ok()?;
-    if !output.status.success() { return None; }
-    let version = String::from_utf8(output.stdout).ok()?.trim().to_owned();
-    (!version.is_empty() && version.len() <= 64 && version.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'+' | b'-' | b'_')))
-        .then_some(version)
+    probe_version(&mut command, Duration::from_secs(20))
+}
+
+struct ProbeLog { path: PathBuf, file: fs::File }
+impl ProbeLog {
+    fn create(label: &str) -> io::Result<Self> {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+        let path = env::temp_dir().join(format!("arwen-runtime-{}-{stamp}-{label}.log", std::process::id()));
+        let file = fs::OpenOptions::new().read(true).write(true).create_new(true).open(&path)?;
+        Ok(Self { path, file })
+    }
+    fn text(&mut self, limit: u64) -> io::Result<String> {
+        self.file.seek(SeekFrom::Start(0))?;
+        let mut bytes = Vec::new();
+        Read::by_ref(&mut self.file).take(limit).read_to_end(&mut bytes)?;
+        Ok(String::from_utf8_lossy(&bytes).trim().to_owned())
+    }
+}
+impl Drop for ProbeLog {
+    fn drop(&mut self) { let _ = fs::remove_file(&self.path); }
+}
+
+fn probe_version(command: &mut Command, timeout: Duration) -> Result<String, String> {
+    // Regular files avoid pipe-reader threads and inherited-pipe EOF waits.
+    // A noisy startup is stopped before its diagnostic files can grow freely.
+    let mut stdout = ProbeLog::create("stdout").map_err(|e| format!("Cannot capture the ArWen runtime version: {e}"))?;
+    let mut stderr = ProbeLog::create("stderr").map_err(|e| format!("Cannot capture ArWen runtime diagnostics: {e}"))?;
+    command.stdout(Stdio::from(stdout.file.try_clone().map_err(|e| e.to_string())?))
+        .stderr(Stdio::from(stderr.file.try_clone().map_err(|e| e.to_string())?));
+    let mut child = command.spawn().map_err(|e| format!("Cannot start the selected ArWen runtime: {e}"))?;
+    let deadline = Instant::now() + timeout;
+    let outcome = loop {
+        let error = match child.try_wait() {
+            Ok(Some(outcome)) => break outcome,
+            Ok(None) if Instant::now() >= deadline => Some(format!("ArWen runtime version check timed out after {} seconds.", timeout.as_secs_f64())),
+            Ok(None) if stdout.file.metadata().map(|v| v.len() > 4096).unwrap_or(true)
+                || stderr.file.metadata().map(|v| v.len() > 65536).unwrap_or(true) => Some("ArWen runtime version check produced excessive output.".into()),
+            Ok(None) => None,
+            Err(error) => Some(format!("Cannot check the selected ArWen runtime: {error}")),
+        };
+        if let Some(error) = error {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    if !outcome.success() {
+        let detail = stderr.text(4096).unwrap_or_default();
+        return Err(format!("The selected runtime could not load ArWen ({outcome}). {detail}"));
+    }
+    if stdout.file.metadata().map(|v| v.len() > 4096).unwrap_or(true)
+        || stderr.file.metadata().map(|v| v.len() > 65536).unwrap_or(true) {
+        return Err("ArWen runtime version check produced excessive output.".into());
+    }
+    let version = stdout.text(4097).map_err(|e| format!("Cannot read the ArWen runtime version: {e}"))?;
+    if version.is_empty() || version.len() > 64 || !version.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'+' | b'-' | b'_')) {
+        return Err("The selected runtime returned an invalid ArWen version.".into());
+    }
+    Ok(version)
+}
+
+/// Bound eligible work, not the history of completed or already claimed work.
+/// create_new at dispatch remains the authoritative claim against races.
+fn pending_request_paths(directory: &Path, paths: impl Iterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut pending: Vec<_> = paths.filter(|path| {
+        if !path.extension().is_some_and(|extension| extension == "json") { return false; }
+        let Some(id) = path.file_stem().and_then(|name| name.to_str()).filter(|id| valid_id(id)) else { return false; };
+        !directory.join("responses").join(format!("{id}.json")).exists()
+            && !directory.join("claimed").join(format!("{id}.json")).exists()
+    }).take(4096).collect();
+    pending.sort();
+    pending
 }
 
 /// A previous control session is dead once it published `closed`, or once its
@@ -310,16 +376,16 @@ impl Session {
         // parses the handoff. The GUI side is expected to read and compare
         // these before it assumes which actions the terminal understands.
         context["tui_version"]=json!(TUI_VERSION);
-        context["engine_version"]=context["python"].as_str().and_then(|python|engine_version(Path::new(python))).map_or(Value::Null,Value::String);
+        let python = context["python"].as_str().ok_or("The visual workspace requires a selected ArWen runtime.")?;
+        context["engine_version"] = Value::String(engine_version(Path::new(python))?);
         atomic_json(&self.handoff,&context).map_err(|error|error.to_string())?;
         Ok(context)
     }
     pub fn requests(&mut self) -> Vec<Request> {
         let Ok(entries) = fs::read_dir(self.directory.join("requests")) else { return Vec::new(); };
-        let mut paths: Vec<_> = entries.filter_map(Result::ok).take(4096)
+        let paths = pending_request_paths(&self.directory, entries.filter_map(Result::ok)
             .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
-            .map(|entry| entry.path()).filter(|path| path.extension().is_some_and(|extension| extension == "json")).collect();
-        paths.sort();
+            .map(|entry| entry.path()));
         let mut requests = Vec::new();
         for path in paths {
             if requests.len() >= 8 { break; }
@@ -394,6 +460,9 @@ impl Controller {
         Ok(())
     }
     pub fn open(&mut self, cwd: &Path, output: &Path, context: Value) -> Result<String, String> {
+        if self.child.as_mut().is_some_and(|child| child.try_wait().ok() == Some(None)) {
+            return Ok("Visual workspace is already open.".into());
+        }
         let executable = self.explicit_path.clone().or_else(|| env::var_os("ARWEN_COMPANION").map(PathBuf::from))
             .unwrap_or_else(|| env::current_exe().unwrap_or_default().with_file_name(if cfg!(windows) { "arwen-companion.exe" } else { "arwen-companion" }));
         let executable = if executable.is_absolute() { executable } else { cwd.join(executable) };
@@ -403,15 +472,22 @@ impl Controller {
         if self.session.is_none() { self.session = Some(Session::create(output)?); }
         let session = self.session.as_mut().unwrap();
         session.publish_handoff(context)?;
-        if self.child.as_mut().is_some_and(|child| child.try_wait().ok() == Some(None)) {
-            return Ok("Visual workspace is already open.".into());
-        }
+        let log_path = session.directory.join("companion.log");
+        let mut log = fs::OpenOptions::new().create(true).append(true).open(&log_path)
+            .map_err(|e| format!("Cannot open the visual workspace diagnostic log {}: {e}", log_path.display()))?;
+        writeln!(log, "\n[ArWen TUI] Visual workspace launch at {} ms", now_ms())
+            .map_err(|e| format!("Cannot write the visual workspace diagnostic log: {e}"))?;
+        let stdout = log.try_clone().map_err(|e| format!("Cannot attach the visual workspace diagnostic log: {e}"))?;
         self.child = Some(Command::new(executable).arg("--handoff").arg(&session.handoff)
-            .current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
-            .spawn().map_err(|e| format!("Could not open the visual workspace: {e}"))?);
-        Ok("Visual workspace opened. Forecast jobs stay in this control center.".into())
+            .current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::from(stdout)).stderr(Stdio::from(log))
+            .spawn().map_err(|e| format!("Could not open the visual workspace: {e}. Diagnostic log: {}", log_path.display()))?);
+        Ok(format!("Visual workspace process started. Diagnostic log: {}. Forecast jobs stay in this control center.", log_path.display()))
     }
     pub fn requests(&mut self) -> Vec<Request> { self.session.as_mut().map(Session::requests).unwrap_or_default() }
+    pub fn child_status(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        self.child.as_mut().ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected,
+            "The visual workspace has not started."))?.try_wait()
+    }
 }
 
 pub fn plan_run_dir(path: &Path) -> Option<PathBuf> {
@@ -492,6 +568,100 @@ pub(crate) fn saved_job_status(directory:&Path)->Result<Value,String>{
         "log_path":directory.join("job.log"),"command":command,"cwd":launcher["cwd"]});
     if let Some(fields)=native.as_object(){for(key,value)in fields{status[key]=value.clone();}}
     Ok(status)
+}
+
+#[cfg(test)]
+mod request_queue_regressions {
+    use super::*;
+
+    fn directory(label: &str) -> PathBuf {
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = env::temp_dir().join(format!("arwen-request-queue-{label}-{}-{stamp}", std::process::id()));
+        fs::create_dir_all(root.join("responses")).unwrap();
+        fs::create_dir_all(root.join("claimed")).unwrap();
+        root
+    }
+
+    #[test]
+    fn completed_history_does_not_consume_the_pending_limit() {
+        let root = directory("responses");
+        let mut paths = Vec::new();
+        for index in 0..4096 {
+            let name = format!("done-{index:05}.json");
+            fs::write(root.join("responses").join(&name), b"{}").unwrap();
+            paths.push(root.join("requests").join(name));
+        }
+        let live = root.join("requests/live.json");
+        paths.push(live.clone());
+        assert_eq!(pending_request_paths(&root, paths.into_iter()), vec![live]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn claimed_history_does_not_consume_the_pending_limit() {
+        let root = directory("claims");
+        let mut paths = Vec::new();
+        for index in 0..4096 {
+            let name = format!("claimed-{index:05}.json");
+            fs::write(root.join("claimed").join(&name), b"{}").unwrap();
+            paths.push(root.join("requests").join(name));
+        }
+        let live = root.join("requests/live.json");
+        paths.push(live.clone());
+        assert_eq!(pending_request_paths(&root, paths.into_iter()), vec![live]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn temporary_files_do_not_consume_the_pending_limit() {
+        let root = directory("temporary");
+        let mut paths: Vec<_> = (0..4096).map(|i| root.join(format!("requests/{i}.tmp"))).collect();
+        let live = root.join("requests/live.json");
+        paths.push(live.clone());
+        assert_eq!(pending_request_paths(&root, paths.into_iter()), vec![live]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pending_work_is_still_bounded_and_sorted() {
+        let root = directory("bounded");
+        let paths = (0..4100).rev().map(|i| root.join(format!("requests/{i:05}.json")));
+        let selected = pending_request_paths(&root, paths);
+        assert_eq!(selected.len(), 4096);
+        assert!(selected.windows(2).all(|pair| pair[0] <= pair[1]));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn already_open_workspace_keeps_its_runtime_binding_without_another_probe() {
+        let root = directory("already-open");
+        let python = PathBuf::from(env::var_os("GPUWM_TUI_TEST_PYTHON").expect("set test Python path"));
+        let mut command = Command::new(&python);
+        command.args(["-I", "-B", "-c", "import time;time.sleep(60)"])
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        #[cfg(windows)] {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        }
+        struct OwnedController(Controller);
+        impl Drop for OwnedController {
+            fn drop(&mut self) {
+                if let Some(child) = self.0.child.as_mut() { let _ = child.kill(); let _ = child.wait(); }
+            }
+        }
+        let session = Session::create(&root).unwrap();
+        let original = json!({"schema":"arwen.companion-handoff.v1", "python":python, "engine_version":"2.7.0"});
+        atomic_json(&session.handoff, &original).unwrap();
+        let handoff_path = session.handoff.clone();
+        let mut controller = OwnedController(Controller { explicit_path:Some(python), session:Some(session), child:Some(command.spawn().unwrap()) });
+        let began = Instant::now();
+        let result = controller.0.open(&root, &root, json!({"python":root.join("unavailable-interpreter"), "cwd":root})).unwrap();
+        assert_eq!(result, "Visual workspace is already open.");
+        assert!(began.elapsed() < Duration::from_secs(1));
+        assert_eq!(read_json(&handoff_path, 65536).unwrap(), original);
+        drop(controller);
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -624,21 +794,22 @@ mod tests {
         let root = env::temp_dir().join(format!("arwen-companion-versions-{}-{}", std::process::id(), now_ms()));
         let mut session = Session::create(&root).unwrap();
         let missing = root.join("no-such-interpreter");
-        let handoff = session.publish_handoff(json!({"python":missing,"cwd":root})).unwrap();
-        assert_eq!(handoff["schema"], "arwen.companion-handoff.v1");
-        assert_eq!(handoff["tui_version"], env!("CARGO_PKG_VERSION"));
-        assert!(handoff["engine_version"].is_null(), "{handoff}");
-        assert_eq!(read_json(&session.handoff, 64 * 1024).unwrap()["tui_version"], env!("CARGO_PKG_VERSION"));
+        let error = session.publish_handoff(json!({"python":missing,"cwd":root})).unwrap_err();
+        assert!(error.contains("Cannot start the selected ArWen runtime"), "{error}");
+        assert!(!session.handoff.is_file());
         session.publish(json!({"state":"idle"}), true).unwrap();
         assert_eq!(read_json(&session.directory.join("status.json"), 64 * 1024).unwrap()["tui_version"], env!("CARGO_PKG_VERSION"));
         session.respond("v", "focus_logs", Ok("Shown".into()), None).unwrap();
         assert_eq!(read_json(&session.directory.join("responses/v.json"), 64 * 1024).unwrap()["tui_version"], env!("CARGO_PKG_VERSION"));
-        assert!(engine_version(&missing).is_none());
+        assert!(engine_version(&missing).is_err());
         if let Some(python) = env::var_os("GPUWM_TUI_TEST_PYTHON").map(PathBuf::from) {
             let version = engine_version(&python).expect("the test interpreter reports gpuwm.__version__");
             assert!(version.chars().next().is_some_and(|c| c.is_ascii_digit()), "{version}");
             let handoff = session.publish_handoff(json!({"python":python,"cwd":root})).unwrap();
             assert_eq!(handoff["engine_version"], version);
+            assert_eq!(handoff["schema"], "arwen.companion-handoff.v1");
+            assert_eq!(handoff["tui_version"], env!("CARGO_PKG_VERSION"));
+            assert_eq!(read_json(&session.handoff, 64 * 1024).unwrap()["tui_version"], env!("CARGO_PKG_VERSION"));
         }
         drop(session);
         fs::remove_dir_all(root).unwrap();

@@ -1,10 +1,14 @@
 [package]
 name = "arwen-tui"
-version = "2.7.0"
+version = "2.7.1"
 edition = "2021"
 rust-version = "1.94"
 license-file = "../../LICENSE"
 description = "Terminal workspace for configuring and running ArWen forecasts"
+
+[[test]]
+name = "headless_controller"
+harness = false
 
 [dependencies]
 ratatui = { version = "=0.29.0", features = ["unstable-rendered-line-info"] }

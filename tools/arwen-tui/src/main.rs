@@ -1210,6 +1210,30 @@ impl App {
         self.publish_companion_status(true);
         if self.nodes.store.selected().is_some()&&self.nodes.pending.is_none()&&self.nodes.view.runtime.is_none(){self.node_request(remote::Operation::Probe);}
     }
+    /// The desktop owns the visual window; the existing controller continues
+    /// handling its requests and worker receipts without an interactive console.
+    fn run_headless_companion(&mut self) -> Result<(), String> {
+        self.open_companion();
+        if self.companion.child_status().is_err() { return Err(self.status.clone()); }
+        loop {
+            self.poll();
+            let workspace = self.companion.child_status();
+            // Keep releasing/polling an owned worker even if its GUI closes.
+            // The only operation that stops that worker is an explicit request.
+            if workspace.as_ref().is_ok_and(|status| status.is_none()) || self.busy() {
+                std::thread::sleep(Duration::from_millis(150));
+                continue;
+            }
+            remote::remove_poll_records(&self.output);
+            return match workspace {
+                Ok(Some(status)) if status.success() => Ok(()),
+                Ok(Some(status)) => Err(format!("The visual workspace closed with {status}. Diagnostic log: {}",
+                    self.companion.session.as_ref().map(|session| session.directory.join("companion.log").display().to_string()).unwrap_or_else(|| "unavailable".into()))),
+                Err(error) => Err(format!("Cannot read the visual workspace status: {error}")),
+                Ok(None) => unreachable!("a running workspace keeps the controller alive"),
+            };
+        }
+    }
     fn publish_companion_status(&mut self, force: bool) {
         if self.companion.session.is_none() { return; }
         if !force && self.companion.session.as_ref().is_some_and(|session| !session.due()) { return; }
@@ -5385,6 +5409,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut snapshot_width, mut snapshot_height) = (120, 36);
     let mut snapshot_selection = String::from("current");
     let mut open_companion = false;
+    let mut headless_companion = false;
     let mut connect_node = false;
     let mut show_progress = false;
     let mut explicit_nodes = false;
@@ -5395,6 +5420,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.companion.explicit_path = Some(absolute(PathBuf::from(args.next().ok_or("--companion needs an executable")?), &app.cwd));
             }
             "--open-companion" => open_companion = true,
+            "--headless-companion" => headless_companion = true,
             "--connect-node" => connect_node = true,
             "--show-progress" => { connect_node = true; show_progress = true; },
             "--nodes-file" => {
@@ -5451,6 +5477,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--help" | "-h" => {
                 println!("Visual workspace: --companion PATH (or ARWEN_COMPANION); --open-companion opens it at startup.\n");
+                println!("Desktop controller: --headless-companion opens the visual workspace without an interactive terminal. It keeps an owned forecast running after the window closes.\n");
                 println!("Node profiles: --nodes-file ABSOLUTE_JSON selects one explicit profile store; --connect-node opens Nodes and probes its active profile without starting a forecast.\n");
                 println!("Progress window: --show-progress connects the active saved node and opens its current job status without starting a forecast.\n");
                 println!("ArWen terminal workspace (2.7 preview)\nUsage: arwen-tui [--config FILE] [--python EXECUTABLE] [--output DIR] [--prepared DIR] [--geog-root DIR]\n\nStart with W Research to choose a weather question and configuration. I Scenario edits initial-state warm bubbles; D Domains edits following and tracking in an open configuration. Open existing or Continue forecast resumes your own workflow. Click options, tabs and buttons. K opens the built-in historical cases. O accepts TOML configurations and catalog ZIP/JSON files; F2 browses. Drop files to open them without starting a forecast. F/E edits all settings; V shows overview; G opens geography. Ctrl+S saves. F6 reviews the plan; F7 reviews the exact launch command.\nNo command starts automatically. F1 shows all keys; Up/Down or wheel, PgUp/PgDn and Home/End scroll help; Esc closes it.\n\nRead-only capture: --snapshot FILE.html [--snapshot-width COLUMNS] [--snapshot-height ROWS] [--snapshot-screen SCREEN]. Produces styled HTML and FILE.cells.json from the actual terminal cells. SCREEN: home, overview, settings, logs, help, nodes, domains, plots, guide, modes, mode:ID, research:ID, scenario (needs --config), or current. Default size: 120 x 36.");
@@ -5464,6 +5491,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     if let Some(path) = snap {
+        if headless_companion { return Err("--headless-companion cannot be combined with a read-only snapshot.".into()); }
         if open_companion { return Err("--open-companion cannot be combined with a read-only snapshot.".into()); }
         if connect_node{return Err("--connect-node cannot be combined with a read-only snapshot.".into());}
         if !(1..=400).contains(&snapshot_width) || !(1..=160).contains(&snapshot_height) {
@@ -5477,6 +5505,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             snapshot_height,
             &snapshot_selection,
         )?);
+    }
+    if headless_companion {
+        if connect_node { app.prepare_startup_node()?; }
+        return app.run_headless_companion().map_err(Into::into);
     }
     use std::io::IsTerminal;
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {

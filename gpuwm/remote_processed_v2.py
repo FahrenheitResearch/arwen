@@ -93,11 +93,16 @@ def _entry(root, job, event, authority, selection):
 def _available(entry):
     if entry is None or entry.get("state") != "ready":
         return False
-    directory = Path(entry["object_root"])
-    if not directory.is_dir() or directory.is_symlink():
+    # Eviction can remove a published member between these filesystem checks.
+    # A missing member is a cache miss; permission and metadata errors propagate.
+    try:
+        directory = Path(entry["object_root"])
+        if not directory.is_dir() or directory.is_symlink():
+            return False
+        return all(Path(member["path"]).is_file() and not Path(member["path"]).is_symlink()
+                   and Path(member["path"]).stat().st_size == member["bytes"] for member in entry["members"])
+    except (FileNotFoundError, NotADirectoryError):
         return False
-    return all(Path(member["path"]).is_file() and not Path(member["path"]).is_symlink()
-               and Path(member["path"]).stat().st_size == member["bytes"] for member in entry["members"])
 
 
 def _entry_state(entry):
@@ -547,7 +552,9 @@ def worker(workspace):
             os.nice(10)
         while True:
             pending = False
-            directories = sorted(path for path in root.iterdir() if path.is_dir() and not path.is_symlink())[:1024]
+            # Bound work per job, without letting historical directories hide
+            # queued work later in the same workspace.
+            directories = sorted(path for path in root.iterdir() if path.is_dir() and not path.is_symlink())
             for directory in directories:
                 if not (directory / "queue.json").exists():
                     continue
