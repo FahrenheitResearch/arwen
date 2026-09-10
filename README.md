@@ -29,12 +29,42 @@ include the engine, native processing tools, and TUI. The desktop GUI is the
 separate download above. Check [release notes and checksums](https://github.com/FahrenheitResearch/arwen/releases/tag/v2.7.0)
 for the exact artifacts and qualification records.
 
-## Install the desktop
+## Install the desktop for forecasts on your PC
 
-A computer used to view weather and control a remote forecast node does not
-need local CUDA. Create a dedicated Python environment and install the client
-dependencies. These commands apply to the published 2.7.0 packages; each desktop
-archive also includes instructions for installing from downloaded wheels.
+**Use the full GPU installation below for local GUI forecasting.** The original
+2.7.0 desktop instructions used `gpuwm[render]`, which omits CuPy and CUDA runtime
+dependencies. That installation cannot run local forecasts or automatically
+measure GPU memory. These corrected instructions supersede that command in the
+original archives and the 2.7.0 package description.
+
+Install 64-bit Python 3.11 or newer and the current NVIDIA driver for your GPU.
+The commands below install the engine, rendering support, CuPy, and user-space
+CUDA components in one Python environment. A separate CUDA Toolkit installation
+is unnecessary. CUDA 12 is the default; see the CUDA 13 alternative below.
+
+These are one-time setup commands. After setup, use the GUI to create and run
+forecasts on your local computer.
+
+### Already installed and seeing “CuPy is not installed”?
+
+Close ArWen, then add the GPU dependencies to the **same Python environment
+selected by its launcher**. For the environment created by these instructions:
+
+Windows PowerShell:
+
+```powershell
+& "$env:LOCALAPPDATA\ArWen\venvs\2.7.0\Scripts\python.exe" -m pip install "gpuwm[all-cu12]==2.7.0"
+```
+
+Linux:
+
+```bash
+~/.local/share/arwen/venvs/2.7.0/bin/python -m pip install 'gpuwm[all-cu12]==2.7.0'
+```
+
+Reopen ArWen with the same `--python` path shown below. If you chose another
+environment, use its Python executable instead. Adding a manual VRAM budget
+does not install the runtime required for forecasting.
 
 ### Windows
 
@@ -42,7 +72,9 @@ In PowerShell:
 
 ```powershell
 py -3 -m venv "$env:LOCALAPPDATA\ArWen\venvs\2.7.0"
-& "$env:LOCALAPPDATA\ArWen\venvs\2.7.0\Scripts\python.exe" -m pip install "gpuwm[render]==2.7.0"
+& "$env:LOCALAPPDATA\ArWen\venvs\2.7.0\Scripts\python.exe" -m pip install "gpuwm[all-cu12]==2.7.0"
+& "$env:LOCALAPPDATA\ArWen\venvs\2.7.0\Scripts\python.exe" -m gpuwm.cli fetch-tables
+& "$env:LOCALAPPDATA\ArWen\venvs\2.7.0\Scripts\python.exe" -m gpuwm.cli doctor
 ```
 
 Extract the complete Windows ZIP into its own folder. From that folder:
@@ -58,7 +90,9 @@ installed Python executable when creating the environment.
 
 ```bash
 python3 -m venv ~/.local/share/arwen/venvs/2.7.0
-~/.local/share/arwen/venvs/2.7.0/bin/python -m pip install 'gpuwm[render]==2.7.0'
+~/.local/share/arwen/venvs/2.7.0/bin/python -m pip install 'gpuwm[all-cu12]==2.7.0'
+~/.local/share/arwen/venvs/2.7.0/bin/python -m gpuwm.cli fetch-tables
+~/.local/share/arwen/venvs/2.7.0/bin/python -m gpuwm.cli doctor
 ```
 
 Extract the complete Linux tarball. From its application folder:
@@ -78,18 +112,17 @@ The archives use a documented manual setup. They do not include an installation
 wizard or automatic updater. Settings and run caches live outside the application
 folder; keep the application files and notices together when moving or updating it.
 
-## Run forecasts on a GPU
+## GPU requirements and forecast data
 
-Install the GPU dependencies **on the computer that will execute the model**.
-That computer needs a compatible NVIDIA GPU and device driver. In its activated
-Python environment, select the extra that matches the supported CUDA setup:
+The normal desktop installation above already includes the GPU dependencies.
+Local forecasting requires a compatible NVIDIA GPU and driver. A card's VRAM
+capacity alone does not establish driver or CUDA compatibility.
 
-```bash
-python -m pip install 'gpuwm[all-cu13]==2.7.0'  # CUDA 13
-# Use 'gpuwm[all-cu12]==2.7.0' for a compatible CUDA 12 setup instead.
-gpuwm fetch-tables
-gpuwm doctor
-```
+For a supported CUDA 13 GPU and driver, replace `all-cu12` with `all-cu13` in the
+installation command. Install only one CuPy/CUDA major in each environment.
+A driver reporting CUDA 13 support can also run CUDA 12 applications; that
+display does not require switching a working CUDA 12 installation. See
+[NVIDIA's compatibility guidance](https://docs.nvidia.com/datacenter/tesla/drivers/cuda-toolkit-driver-and-architecture-matrix.html).
 
 `gpuwm doctor` reports each remedy as a command or a `#` comment explaining
 the manual step.
@@ -110,6 +143,9 @@ requires an SSH client and a configured, reachable forecast computer.
 Local forecast integration runs on CUDA; it has no CPU fallback. The desktop,
 terminal, native weather processing, and remote-control workflows can run on a
 computer without a local CUDA installation.
+
+Only an intentionally viewer-only or remote-control installation should use
+`gpuwm[render]==2.7.0` without a GPU extra. It cannot execute local forecasts.
 
 ## Work with weather
 
