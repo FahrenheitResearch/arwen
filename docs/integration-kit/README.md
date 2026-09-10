@@ -1,20 +1,27 @@
 # ArWen 2.7 integration kit
 
-Build a client around the versioned CLI documents and durable run files. The desktop GUI and Rust TUI use the same forecast engine. This kit describes those interfaces and includes a small Python subprocess client; it does not introduce a separate Python simulation API.
+This kit documents the versioned CLI, plan documents, and durable run files used to integrate applications with ArWen. It includes a Python subprocess client, interface examples, and capability catalogs. The desktop GUI and Rust TUI use the same forecast engine; the example client is an interface adapter, not a separate Python simulation API.
 
-Start with `integration-guide.md`, then run `python examples/client.py --help`. `prototyping-brief.md` is a ready-to-use brief for exploring new interfaces and visual directions.
+## Getting started
 
-The JSON catalogs are snapshots from the candidate. Query the installed runtime again when constructing a real plan. Availability depends on the installed native renderer, the source, requested time, available inputs, and the selected computer.
+1. Read the [integration guide](integration-guide.md) for discovery, plan review, execution, and result inspection.
+2. Run `python examples/client.py --help` for the example client's query and inspection commands.
+3. Read the [client design and integration notes](prototyping-brief.md) for state ownership, asynchronous operations, scientific presentation, and prototype validation.
 
-The exporter substitutes `<USER_HOME>` for the build computer's home directory. Credential availability in a snapshot describes that isolated query, so a client must re-query the user's runtime.
+The examples query capabilities, review plans, and inspect existing runs. They do not start, stop, resume, or delete forecasts. An application's execution controls must use the reviewed configuration and an explicit operator action, as described in the guide.
 
 ## Files
 
-- `integration-guide.md`: client boundaries, discovery, review, execution, reconnect, maps, and profiles.
-- `examples/client.py`: JSON discovery, plan review, and durable run inspection without starting a forecast.
-- `examples/prepared-plan.json`: envelope for an existing experiment TOML; replace its paths.
-- `examples/test_client.py`: checks for torn event tails, schema validation, and run identity changes.
-- `sources.json`, `physics-profiles.json`, and `catalog.json`: generated release catalogs when the corresponding capability is available.
-- `prototyping-brief.md`: interface and visual prototyping instructions.
+- [Integration guide](integration-guide.md): supported boundaries, discovery, review, execution, reconnect, maps, and profiles.
+- [Example client](examples/client.py): CLI JSON queries, plan review, and durable run inspection.
+- [Prepared plan example](examples/prepared-plan.json): an envelope for an existing experiment TOML, with paths to replace before use.
+- [Client checks](examples/test_client.py): schema and identity validation, monotonic events, and incomplete event tails.
+- [Catalog exporter](examples/export_catalogs.py): regenerate capability snapshots from a selected runtime.
+- `sources.json`, `physics-profiles.json`, and `catalog.json`: generated capability snapshots included in the packaged kit when the corresponding interface is available.
+- [Client design and integration notes](prototyping-brief.md): implementation constraints and evaluation criteria for new interfaces.
 
-The portable Windows package's interpreter is `runtime/python.exe`. An ordinary installation can use its own `python -m gpuwm.cli` or the `gpuwm` console command. Keep credentials and SSH keys in the user's configured environment.
+## Runtime and catalog scope
+
+Capability snapshots describe the runtime that generated them. Query the installed runtime again when constructing a real plan: availability depends on the source, requested time, input coverage, native components, and selected computer. Credential availability in a snapshot is not a statement about another installation. Exported machine-path placeholders such as `<USER_HOME>` are documentation values, not usable runtime paths.
+
+An installed environment can invoke `python -m gpuwm.cli` or its `gpuwm` console command. Desktop packages that use an external Python environment select that interpreter according to their `INSTALL.md`. The self-contained Windows package includes `runtime/python.exe`. Credentials, SSH keys, geography, and forecast data remain in the operator's configured environment rather than in a distributable client.

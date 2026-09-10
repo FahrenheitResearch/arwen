@@ -1,22 +1,52 @@
-# Prototyping brief: explore a new ArWen experience
+# Client design and integration notes
 
-You are helping design a weather exploration and forecast creation application around ArWen 2.7. Use the attached integration guide, source/product/physics catalogs, and example client as the technical boundary. First read them and identify any gaps that prevent a design from being implemented. Do not invent a simulation API or claim a mocked workflow is connected.
+These notes describe implementation constraints and evaluation criteria for applications built around ArWen 2.7. The [integration guide](integration-guide.md), installed capability catalogs, and [example client](examples/client.py) define the supported interface boundary. Application-specific design work does not introduce additional simulation APIs or imply that an unavailable engine capability exists.
 
-The product gives equal care to exploring regular weather models and creating personal forecasts. It covers saved and running forecasts, historical periods, simulations, and future valid periods supported by the selected inputs. The current design direction is a restrained Frutiger Aero interface: clear glass-like surfaces, sky and water colors, airy depth, readable controls, and a large scientific weather map. Use the available space well. The main areas are Explore, Create forecast, and My forecasts, with contextual controls and a persistent time player.
+## Application workflows
 
-Create three substantially different interface concepts. Show each as a useful working composition at desktop size, including a compact window. Explore alternative organization and interaction rather than changing only colors. Include high-quality visual treatments and artwork where they help orientation or make the product inviting, while keeping the map and its data dominant. Show how the visual system would be implemented in Rust egui; identify any effects that need custom rendering or assets.
+The desktop organizes its interface into Explore, Create forecast, and My forecasts. Independent clients can use a different organization while retaining the same distinctions between source data, an editable forecast setup, and a specific run's results.
 
-For the strongest concept, build a clickable prototype with these journeys:
+| Workflow | Required state and behavior |
+| --- | --- |
+| Explore published weather | Source, initialization, member, product, and exact valid UTC come from available data. Playback selects actual frames within an explicit UTC range. |
+| Create a forecast | The review identifies the source, area or cyclone target, duration, cadence, physics, computer, resource estimate, and output location. Execution uses the exact reviewed plan and configuration. |
+| Inspect a saved or running forecast | The viewer remains bound to its selected run, domain, field, and time. Reconnecting reads durable state; opening or closing the client does not start or stop the forecast. |
+| Request full analysis | Soundings and three-dimensional fields require an explicit analysis preparation for the selected frame. Compact two-dimensional map data is insufficient for a vertical profile. |
 
-1. Choose a regular model and date, inspect several fields, select an exact valid time, and play a loop with a UTC range.
-2. Create an own forecast with a clear source, area or tropical-cyclone target, duration, cadence, physics, and computer; review once and start.
-3. Return to a saved or running forecast, switch domain/field/time, pause while output arrives, and reconnect after closing the client.
-4. Request a sounding or 3D analysis from the selected frame, with an honest preparation state.
+Source coverage, archive availability, forecast lead times, and member sets are capability data. A client must surface an unavailable selection and its reason rather than substituting a different source, date, or computer. Ordinary HRRR uses the same discovery and review boundaries as other supported sources.
 
-Use real catalog entries where provided. Keep forecast draft state separate from the pinned results viewer. Preserve exact timestamps, data-source attribution, projection, map scale, units, legends, contours, and wind barbs. Treat a map drawn small inside an oversized empty plotting frame as a defect. Keep the special HRRR maximum demonstration out; ordinary HRRR remains available when its source supports the requested period.
+## Interface boundaries and state ownership
 
-Use authentic screenshots and data only when supplied. Label mock data and simulated progress explicitly. Do not fabricate a completed forecast, operational performance numbers, storms, availability, or successful execution. For a prototype disconnected from the engine, show exactly which interactions are placeholders and which CLI/interface calls would make them real.
+Discovery uses `gpuwm sources --json`, `gpuwm run-plan --catalog`, and `gpuwm run-plan --physics-profiles`. Plan review uses `gpuwm run-plan PLAN.json --resolve` and `--estimate`; execution is the separate `gpuwm run-plan PLAN.json` operation. The [prepared plan example](examples/prepared-plan.json) wraps an existing experiment TOML. Argument arrays, schema validation, exit-code checks, and explicit error handling are required at the process boundary.
 
-Stress-test the concept with awkward cases: a narrow window, a thousand subhourly frames, one unavailable field, a slow first-frame conversion, a moved inner domain, a disconnected computer, a target changed after review, an empty forecast list, and a source with incomplete historical coverage. Explain what the person sees and how they continue.
+Domain fitting, memory estimates, source preparation, physics compatibility, and simulation remain engine responsibilities. A client can present their results without maintaining a second implementation of those decisions. The desktop's `arwen.companion-handoff.v1` bridge is coupled to its release; independent applications should use the documented CLI boundaries rather than assume that bridge is a stable service API.
 
-Return the prototype and assets, an annotated interaction map, a short implementation plan mapped to the documented interfaces, and a prioritized critique of weaknesses. Distinguish a visual preference from a usability defect, a missing engine capability, and a scientific correctness issue. Invite further exploration by presenting the most promising unresolved design questions with concrete alternatives.
+Draft state and results-viewer state have separate lifetimes. Changing a source, target, configuration, or plan invalidates the corresponding review. It does not replace a run already open in the viewer. Run manifests, request IDs, session and target identities, and configuration checksums retain their authority across reconnects.
+
+## Asynchronous operations and cancellation
+
+Queries, preparation, and transfers need visible pending and failure states. Responses remain bound to the request, selected target, and selection generation that produced them. Cancellation or a later selection must prevent a stale response from replacing the current view.
+
+Cancelling a client query or transfer is distinct from stopping a forecast. Stop, resume, and launch are explicit operations against the intended run or reviewed plan. An unconfirmed launch acknowledgement must not trigger an automatic duplicate launch; the client should inspect the intended job state and explain the uncertainty.
+
+A displayed frame retains its own timestamp while a replacement is prepared. Pausing preserves the selected UTC as new output arrives. Prefetch stays bounded, and following a moving domain is a separate camera choice. The map must not silently jump to another run or time because a background status update arrived.
+
+## Scientific data and presentation
+
+Transferred native data retains its producing run, domain, sequence, exact valid UTC, source authority, and geometry. Readers validate receipts, member checksums, path containment, and lease identity before opening the data. A shared cache lease remains held while any reader, map, or frame clone references the cached files; an evicted frame must be requested again.
+
+Maps preserve the native product's units, projection, scale, color table, legend, contours, and wind barbs. A moved domain may have different geometry at each time. A map rendered as a small inset within an oversized empty plot is a layout defect, not an acceptable substitute for fitting its intended frame.
+
+The current desktop uses Rust egui with native map rendering and a visual style based on pale sky and water colors, light surfaces, and clear controls. Other clients can choose a different style. Useful design criteria include readable labels, accessible contrast, keyboard operation, contextual controls, and sufficient space for the scientific map at both large and compact window sizes. Custom visual effects should have a defined rendering and asset implementation.
+
+## Prototype boundaries
+
+A disconnected prototype can exercise navigation, layout, and interaction using explicitly labeled fixtures. Mock weather, simulated progress, placeholder responses, and inactive execution controls must be distinguishable from an engine-connected workflow. Screenshots and performance figures should identify their source and measurement conditions. A prototype is not evidence of a completed forecast, available source data, or operational performance.
+
+Each placeholder interaction should identify the documented call or missing capability required for integration. Private handoffs, node profiles, credentials, SSH material, and developer-machine paths do not belong in a distributed prototype. Scientific values and geometry require validation in addition to visual inspection.
+
+## Evaluation criteria
+
+Client validation should cover compact windows, large collections of subhourly frames, unavailable fields, slow first-frame preparation, moved domains, disconnected computers, changes after review, empty run lists, cache eviction, and incomplete historical coverage. Each case needs a clear explanation of the current state and an appropriate continuation or retry.
+
+Design review records should include the interaction flow, its mapping to documented interfaces, asset and rendering requirements, and outstanding limitations. Visual preferences, usability defects, missing engine capabilities, and scientific correctness issues should be recorded separately so that each can be assessed on its own evidence.

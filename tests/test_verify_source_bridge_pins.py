@@ -58,126 +58,53 @@ def test_non_object_or_malformed_json_is_refused(tmp_path: Path) -> None:
         source_pins.verify_source_pins(broken)
 
 
-def test_linux_native_release_uses_the_pinned_baseline_and_only_qualified_payload():
+def test_prepared_publisher_preserves_native_build_qualification_without_rebuilding():
     from tools import build_linux_release_bridges as linux_build
-    text = (REPO_ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
-    job = text.split("\n  bridges:\n", 1)[1].split("\n  prepare:\n", 1)[0]
-    assert linux_build.IMAGE in job
-    assert "docker run --rm --platform linux/amd64" in job
-    assert "--target-dir /work/build/cargo-target --output /work/build/artifacts" in job
-    assert '--source /src --revision "$BUNDLE_SOURCE_REV"' in job
-    assert "target=/src,readonly" in job and "target=/work/rust-toolchain,readonly" in job
-    assert "--reuse-target" not in job  # CI starts with an empty native build area.
-    steps = re.split(r"(?=^      - )", job, flags=re.MULTILINE)
-    builds = [step for step in steps if "run: cargo build" in step]
-    assert len(builds) == len(linux_build.WORKSPACES)
-    assert all("if: matrix.platform == 'win-x86_64'" in step for step in builds)
-    linux_step = next(step for step in steps if "name: build and qualify Linux artifacts" in step)
-    assert "if: matrix.platform == 'linux-x86_64'" in linux_step
-    assert "tools/build_linux_release_bridges.py" in linux_step
-    pack = next(step for step in steps if "name: pack the bundle" in step)
-    assert 'search=(--search "$RUNNER_TEMP/arwen-manylinux/artifacts")' in pack
-    assert '"${search[@]}"' in pack
-    assert '- name: pin the toolchain\n        shell: bash' in job
-    assert 'RUST_TOOLCHAIN: "1.94.0"' in job
+    import yaml
+    document = yaml.load((REPO_ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    assert linux_build.IMAGE.startswith("quay.io/pypa/manylinux_2_28_x86_64@sha256:")
+    assert linux_build.RUST_VERSION == "1.94.0"
+    assert "tools/arwen-tui" in linux_build.WORKSPACES
+    # Rebuilding a native bundle during retry invalidates every prepared hash.
+    for name, job in document["jobs"].items():
+        if name != "test":
+            scripts = "\n".join(step.get("run", "") for step in job["steps"])
+            assert "cargo build" not in scripts
+            assert "docker run" not in scripts
+            assert "python -m build" not in scripts
+    controller = (REPO_ROOT / "tools/promote_prepared_release.py").read_text(encoding="utf-8")
+    assert "tools/verify_source_bridge_pins.py" in controller
+    assert "tools/build_bridge_bundle.py" in controller
+    assert '"pin", "--release"' in controller
+    assert "prepared native manifest differs from regenerated exact-byte pins" in controller
+    assert "check_embedded_natives" in controller
 
 
 def test_publish_workflow_has_two_publication_ingresses() -> None:
-    text = (REPO_ROOT / ".github" / "workflows" / "publish.yml").read_text(
-        encoding="utf-8"
-    )
-    trigger_block = text.split("\npermissions:", 1)[0]
-    # Publishing a GitHub release is a cut motion, restored by owner ruling
-    # 2026-08-03; it is how every release through v1.4.0 shipped.  A manual
-    # dispatch is the other ingress and keeps its explicit tag input.  Both
-    # are pinned because losing either one silently is exactly what happened.
-    assert "\n  release:\n    types: [published]\n" in trigger_block
-    assert "workflow_dispatch:" in trigger_block
-    assert "release_tag:" in trigger_block
-    assert "stable_release_expected:" in trigger_block
-    assert "immutable_releases_enabled:" in trigger_block
-    # One tag expression, used by both jobs that resolve a tag: the input on a
-    # dispatch, the event payload on the release event.
-    assert (
-        text.count("${{ inputs.release_tag || github.event.release.tag_name }}")
-        == 2
-    )
-    # ...and the one thing the ingress changes: which release state each job
-    # expects to see.  A dispatch promotes a draft; the release event fires on
-    # a release that is already public.
-    assert (
-        text.count(
-            "EXPECTED_DRAFT: ${{ github.event_name == 'release' "
-            "&& 'false' || 'true' }}"
-        )
-        == 4
-    )
-    assert text.count('"$EXPECTED_DRAFT"') == 4
-    assert "python tools/verify_source_bridge_pins.py" in text
-    assert "tests/test_publish_workflow_state_machine.py" in text
-    assert "tests/test_verify_release_artifacts.py" in text
-    # The stable-X.Y.Z requirement is opt-in, following the immutability
-    # idiom, by the same owner ruling.  All three parts are pinned -- the
-    # input, the branch, and the hard failure inside it -- so the enforcement
-    # cannot quietly become a comment; the un-opted-in path reports instead.
-    assert "STABLE_RELEASE_EXPECTED: ${{ inputs.stable_release_expected }}" in text
-    assert 'if [ "$STABLE_RELEASE_EXPECTED" = "true" ]; then' in text
-    assert "is not a stable X.Y.Z" in text
-    assert "::warning::publishing non-stable version" in text
-    # Non-prerelease is procedure and warns; the tag carrying exactly one
-    # release is integrity and still refuses.
-    assert "exactly one authenticated release must carry tag" in text
-    assert "::warning::release $tag is marked prerelease" in text
-    # Every later job re-proves the captured prerelease state rather than a
-    # literal, so a demoted precondition cannot become an undetected change.
-    assert text.count('"$CAPTURED_PRERELEASE"') == 5
-    assert "-F draft=false -F \"prerelease=$CAPTURED_PRERELEASE\"" in text
-    assert "releases/${RELEASE_ID}" in text
-    assert "releases?per_page=100" in text
-    assert "--paginate --slurp" in text
-    assert "releases/tags/" not in text
-    assert 'releases/${RELEASE_ID}\")' not in text
-    assert "- name: pin the toolchain\n        shell: bash" in text
-    assert text.count("name: release-assets") == 4
-    assert 'if [ "$state" = "starter" ]' in text
-    assert "releases/assets/$asset_id" in text
-    assert 'sha256:${local_sha[$name]}' in text
-    assert "dist-upload/" in text
-    assert "steps.pypi.outputs.upload_required == 'true'" in text
-    assert "PyPI distribution differs from the proven artifact" in text
-    assert "prove exact PyPI state before release promotion" in text
-    assert "\n  authorize_pypi:\n" in text
-    assert "needs: [cut, prepare, authorize_pypi]" in text
-    publish_block = text.split("\n  publish:\n", 1)[1].split(
-        "\n  # GitHub draft promotion", 1
-    )[0]
-    assert "id-token: write" in publish_block
-    assert "contents:" not in publish_block
-    assert "GH_TOKEN" not in publish_block
-    assert "GH_REPO" not in publish_block
-    assert "github.token" not in publish_block
-    assert "releases?per_page" not in publish_block
-    assert "release-assets" not in publish_block
-    assert "/git/ref/tags/" in text
-    assert "/git/tags/" in text
-    assert "RELEASE_COMMIT" in text
-    # Immutability is opt-in rather than a hard gate: it is a repository
-    # setting with no API to set it, and every release through v1.4.0 shipped
-    # without it, so refusing the cut over it blocked a working publication.
-    # What must not quietly disappear is the enforcement itself, so all three
-    # parts are pinned -- the read, the opt-in branch, and the hard failure
-    # inside it.  Deleting any one of them turns a confirmed claim into a
-    # comment.
-    assert "after_immutable=$(jq -r '.immutable' <<<\"$after\")" in text
-    assert 'if [ "$IMMUTABLE_RELEASES_CONFIRMED" = "true" ]; then' in text
-    assert 'if [ "$after_immutable" != "true" ]; then' in text
-    assert (
-        "immutability was confirmed at dispatch but GitHub reports the "
-        "published release as mutable"
-    ) in text
-    # ...and the un-opted-in path reports rather than asserting.
-    assert "immutability was not opted into for this cut" in text
-    assert "\n  release:\n" in text
-    assert "needs: [cut, publish]" in text
-    assert "is already public at the captured id" in text
-    assert "after_by_tag=" in text
+    import yaml
+    text = (REPO_ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
+    document = yaml.load(text, Loader=yaml.BaseLoader)
+    assert document["on"]["release"]["types"] == ["published"]
+    inputs = document["on"]["workflow_dispatch"]["inputs"]
+    assert inputs["release_tag"]["required"] == "true"
+    assert inputs["publication_manifest_sha256"]["required"] == "false"
+    for optional in ("stable_release_expected", "immutable_releases_enabled"):
+        assert inputs[optional]["default"] == "false"
+    assert "${{ inputs.release_tag || github.event.release.tag_name }}" in text
+    assert "--ref \"$GITHUB_REF\" --commit \"$GITHUB_SHA\"" in text
+    assert "environment: pypi" in text
+    controller = (REPO_ROOT / "tools/promote_prepared_release.py").read_text(encoding="utf-8")
+    assert 'release["prerelease"] == captured["prerelease"]' in controller
+    assert '"draft": False, "prerelease": captured["prerelease"]' in controller
+    assert 'captured["immutable_required"]' in controller
+    assert 'release.get("immutable") is True' in controller
+    assert "exactly one authenticated release must carry the selected tag" in controller
+    for name, job in document["jobs"].items():
+        if name != "test":
+            assert job["if"] == "github.event_name != 'pull_request'"
+    publish = document["jobs"]["publish"]
+    assert publish["permissions"] == {"id-token": "write"}
+    assert "assets" in publish["needs"]
+    assert "GH_TOKEN" not in str(publish)
+    assert "github.token" not in str(publish)
+    assert not any(step.get("uses", "").startswith("actions/checkout@") for step in publish["steps"])

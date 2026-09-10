@@ -176,9 +176,9 @@ def test_the_cut_job_still_reads_the_version_from_pyproject() -> None:
     if not workflow.is_file():
         pytest.skip("no publish workflow in this tree")
     text = workflow.read_text(encoding="utf-8")
-    assert "['project']['version']" in text, (
-        "the publish workflow no longer reads the version out of "
-        "pyproject.toml's [project] table; this file's gates pin a field "
-        "the cut may have stopped consuming")
-    assert 'if [ "$tag" != "v$version" ]; then' in text, (
-        "the cut no longer requires the tag to equal v<pyproject version>")
+    controller = (REPO_ROOT / "tools/promote_prepared_release.py").read_text(encoding="utf-8")
+    assert "promote_prepared_release.py verify" in text
+    assert 'config = pyproject["project"]' in controller
+    assert 'declared = config.get("version")' in controller
+    assert 'require(declared == version, "pyproject version differs from release tag")' in controller
+    assert 'metadata.get("Version") == version' in controller

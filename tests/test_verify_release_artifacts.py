@@ -866,10 +866,14 @@ def test_the_workflow_probe_reads_the_shared_table_not_its_own_copy() -> None:
         / ".github" / "workflows" / "publish.yml"
     )
     text = workflow.read_text(encoding="utf-8")
-    assert "bridge_assets.library_abi_for(" in text
+    controller = (workflow.parents[2] / "tools/promote_prepared_release.py").read_text(encoding="utf-8")
+    assert "promote_prepared_release.py smoke" in text
+    assert "tools/verify_release_artifacts.py" in controller
+    assert "bridge_assets.library_abi_for(" in Path(verify_release_artifacts.__file__).read_text(encoding="utf-8")
     for symbol, _version in bridge_assets.LIBRARY_ABI.values():
         assert f'"{symbol}"' not in text, symbol
         assert f"'{symbol}'" not in text, symbol
+        assert f'"{symbol}"' not in controller, symbol
 
 
 # ---------------------------------------------------------------------

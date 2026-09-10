@@ -1,75 +1,28 @@
-# Publish gpuwm to PyPI via Trusted Publishing (OIDC; no API token), and
-# publish the prebuilt Rust bundles the wheel's pins point at.
-#
-# Registered publisher (cross-check on PyPI): project `gpuwm`,
-# owner `FahrenheitResearch`, repository `arwen`, workflow `publish.yml`,
-# environment `pypi`.  The companion project `gpuwm-data` is registered as a
-# PENDING trusted publisher on those same coordinates: it does not exist on
-# PyPI until this workflow's first upload creates it, so a 404 from its JSON
-# API is the expected first-cut state, never an error.
-#
-# Two ingresses, one set of proofs.  Publishing a GitHub release is a cut
-# motion -- it is how every release through v1.4.0 shipped -- and a manual
-# dispatch on the exact tag is the other.  The tag comes from the release
-# payload on the release event and from the required input on a dispatch;
-# every job then compares it against the selected ref either way.  Which
-# ingress ran changes exactly one thing: the release state each job expects
-# to see (a draft the final job promotes, or a release already public).
-# Every byte proof below is identical on both paths.
-#
-# Order and privilege separation are part of the release contract:
-#
-#   test -> release_authority (also captures assets a previous run
-#           already uploaded to the draft: Rust builds are not
-#           byte-reproducible, so a re-run must adopt those exact bytes)
-#          -> cut
-#          -> bridges (one target-native build/probe per platform)
-#          -> prepare (adopt captured assets by content contract;
-#             generate pins; build and prove exact dists)
-#          -> assets (reconcile the proven bridge payload on the draft)
-#          -> authorize_pypi (re-prove draft, assets, and tag commit)
-#          -> publish (push the already-proven dists to PyPI:
-#             gpuwm-data FIRST and proven listed, gpuwm only after --
-#             gpuwm==X.Y.Z hard-pins gpuwm-data==X.Y.Z, so a gpuwm that
-#             lands without its companion breaks every fresh
-#             `pip install gpuwm` until the companion exists)
-#          -> release (re-prove everything and promote the draft)
-#
-# `prepare` cannot mutate either public destination.  The GitHub authority
-# cells have contents:write but no checkout and no PyPI identity.  `publish`
-# has only the PyPI OIDC identity and cannot read or mutate GitHub contents.
-# No public asset is written until every wheel, sdist, pin, bundle member,
-# executable, and host library has passed.
+# Promote a complete prepared packet without rebuilding its bytes.
+# Both PyPI projects retain the publish.yml / pypi Trusted Publisher binding.
+# See docs/dev/prepared-publication.md for preparation and retry procedure.
 name: publish
 
 on:
-  # Publishing a GitHub release cuts a release.  Restored by owner ruling
-  # 2026-08-03: it was the motion for every release through v1.4.0, it was
-  # removed on 2026-08-01 without one, and the tag it carries is exactly the
-  # tag a dispatch has to be told.
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Exact vX.Y.Z tag selected as this workflow's ref
+        description: Exact prepared tag; select the same tag as the workflow ref
         required: true
         type: string
+      publication_manifest_sha256:
+        description: SHA-256 of PUBLICATION-ASSETS.json (or use the release-body marker)
+        required: false
+        type: string
       stable_release_expected:
-        description: >-
-          Optional. Tick to require a stable X.Y.Z version; the cut then
-          refuses any other pyproject version. Left unticked -- the default --
-          a non-stable version publishes and the cut prints a workflow warning
-          naming what it is.
+        description: Require a stable X.Y.Z version
         required: false
         default: false
         type: boolean
       immutable_releases_enabled:
-        description: >-
-          Optional. Tick only if GitHub release immutability was enabled BEFORE
-          this draft was created; the cut then asserts the published release is
-          immutable and fails if it is not. Left unticked the cut proceeds and
-          only warns, which is how every release through v1.4.0 shipped.
+        description: Require GitHub to report the public release immutable
         required: false
         default: false
         type: boolean
@@ -83,35 +36,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # This is the package/contract surface that a public cut can break on a
-  # GPU-less runner.  Model tests requiring CUDA and staged case data remain
-  # in their GPU gates; these tests deliberately avoid importing CuPy.
   test:
     runs-on: ubuntu-24.04
+    env:
+      GPUWM_NO_LOCAL_GPU: '1'
+    outputs:
+      controller_sha256: ${{ steps.controller.outputs.sha256 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.11"
-      # Editable dev install of the honestly-unpinned tagged tree.
-      # Two facts force this step's shape: the unpinned-wheel guard
-      # prescribes GPUWM_ALLOW_UNPINNED_WHEEL=1 for non-publishable
-      # installs (publishable wheels are built only in `prepare`, after
-      # the pin step), and gpuwm requires gpuwm-data==<version>, which
-      # this very workflow is the thing that publishes -- so the
-      # companion must come from the checkout, never from PyPI.
+          python-version: '3.11'
+      # These are unpinned validation fixtures. Only the captured packet can
+      # flow to upload jobs; the test installation is never a release input.
       - name: install the companion from the tree, then gpuwm editable
+        env:
+          GPUWM_ALLOW_UNPINNED_WHEEL: '1'
         run: |
-          python -m pip install build
+          python -m pip install build pyyaml
           python -m build --outdir companion-dist gpuwm-data
           python -m pip install companion-dist/*.whl
           python -m pip install -e ".[dev]"
-        env:
-          GPUWM_ALLOW_UNPINNED_WHEEL: "1"
       - name: packaging and contract tests
         run: |
+          python tools/verify_source_bridge_pins.py
           python -m pytest -q -m "not gpu and not slow and not network" \
             tests/test_bridge_fetch.py \
             tests/test_table_fetch.py \
@@ -125,15 +75,25 @@ jobs:
             tests/test_source_adapters.py \
             tests/test_namelist_compat.py \
             tests/test_native_wrf_distribution.py \
+            tests/test_prepared_publication.py \
             tests/test_publish_workflow_state_machine.py \
             tests/test_publish_dist_shape_agreement.py \
             tests/test_release_version_declaration.py \
             tests/test_bridge_bundle_adopt.py \
             tests/test_verify_source_bridge_pins.py \
             tests/test_verify_release_artifacts.py
+      - id: controller
+        name: capture the tested controller hash
+        shell: bash
+        run: echo "sha256=$(sha256sum tools/promote_prepared_release.py | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: publication-controller
+          path: tools/promote_prepared_release.py
+          if-no-files-found: error
 
-  # Draft visibility requires push authority. Isolate that authority in a
-  # no-checkout, no-OIDC cell and pass only the captured ID/tag/commit on.
+  # Authenticated reads capture the complete draft/public release. This job
+  # cannot upload to PyPI and executes only the same-run tested controller.
   release_authority:
     if: github.event_name != 'pull_request'
     needs: test
@@ -142,1582 +102,259 @@ jobs:
       contents: write
     outputs:
       tag: ${{ steps.capture.outputs.tag }}
-      release_id: ${{ steps.capture.outputs.release_id }}
+      version: ${{ steps.capture.outputs.version }}
       commit: ${{ steps.capture.outputs.commit }}
-      prerelease: ${{ steps.capture.outputs.prerelease }}
+      release_id: ${{ steps.capture.outputs.release_id }}
+      manifest_sha256: ${{ steps.capture.outputs.manifest_sha256 }}
     steps:
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: publication-controller
+          path: controller
+      - name: verify the tested controller
+        env:
+          CONTROLLER_SHA256: ${{ needs.test.outputs.controller_sha256 }}
+        run: echo "$CONTROLLER_SHA256  controller/promote_prepared_release.py" | sha256sum --check --strict
       - id: capture
-        env:
-          # The release event carries its own tag; a dispatch is told one.
-          DISPATCH_RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name }}
-          # Which release state this ingress implies.  A dispatch expects a
-          # draft it will promote in the final job; the release event fires
-          # on an already-public release, so there is nothing left to promote
-          # and the final job's already-public path is the whole of it.
-          EXPECTED_DRAFT: ${{ github.event_name == 'release' && 'false' || 'true' }}
-          IMMUTABLE_RELEASES_CONFIRMED: ${{ inputs.immutable_releases_enabled }}
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          # Advisory, not a gate.  Immutability is a genuine improvement -- it
-          # locks a published release's tag and assets so binaries cannot be
-          # swapped afterwards -- but it is a repo setting the owner may not
-          # have enabled, it cannot be set through the API, and every release
-          # through v1.4.0 shipped without it.  Refusing the cut over it blocks
-          # something that demonstrably works.  Tick the input to opt into
-          # enforcement; leave it unticked and the cut says so and continues.
-          if [ "$IMMUTABLE_RELEASES_CONFIRMED" != "true" ]; then
-            echo "::warning::release immutability not confirmed; publishing without it (Settings -> General -> Releases enables it for FUTURE releases)"
-          fi
-          tag="$DISPATCH_RELEASE_TAG"
-          if [ -z "$tag" ] || [ "$tag" != "$GITHUB_REF_NAME" ] \
-             || [ "$GITHUB_REF_TYPE" != "tag" ] \
-             || [ "$GITHUB_REF" != "refs/tags/$tag" ]; then
-            echo "draft authority requires the exact selected tag ref" >&2
-            exit 1
-          fi
-          matches=$(gh api --paginate --slurp -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" | jq -c --arg tag "$tag" '[.[][] | select(.tag_name == $tag)]')
-          # Integrity, and it stays a refusal: two releases on one tag means
-          # the cut cannot know which one it is publishing, and one release
-          # in the wrong state for this ingress means the motion is not the
-          # one the trigger claimed.
-          if [ "$(jq 'length' <<<"$matches")" -ne 1 ]; then
-            echo "exactly one authenticated release must carry tag $tag" >&2
-            exit 1
-          fi
-          if [ "$(jq -r '.[0].draft' <<<"$matches")" != "$EXPECTED_DRAFT" ]; then
-            echo "release $tag must have draft=$EXPECTED_DRAFT for a ${GITHUB_EVENT_NAME:-workflow_dispatch} cut" >&2
-            exit 1
-          fi
-          # Procedure, not integrity, and demoted to a warning by owner ruling
-          # 2026-08-03.  "Stable versions are never GitHub prereleases" is a
-          # convention the operator owns, not a property of these bytes.  The
-          # captured value is carried to every later job, which re-proves the
-          # state is still the one captured here -- so a prerelease publishes
-          # as a prerelease rather than being silently cleared.
-          prerelease=$(jq -r '.[0].prerelease' <<<"$matches")
-          if [[ ! "$prerelease" =~ ^(true|false)$ ]]; then
-            echo "release $tag has a non-boolean prerelease state" >&2
-            exit 1
-          fi
-          if [ "$prerelease" != "false" ]; then
-            echo "::warning::release $tag is marked prerelease; it is published as one and its prerelease state is carried through the cut unchanged"
-          fi
-          release_id=$(jq -r '.[0].id' <<<"$matches")
-          if [[ ! "$release_id" =~ ^[0-9]+$ ]]; then
-            echo "draft release id is not numeric" >&2
-            exit 1
-          fi
-          ref_json=$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/git/ref/tags/$tag")
-          object_type=$(jq -r '.object.type' <<<"$ref_json")
-          object_sha=$(jq -r '.object.sha' <<<"$ref_json")
-          hops=0
-          while [ "$object_type" = "tag" ]; do
-            if [ "$hops" -ge 16 ]; then
-              echo "annotated tag chain is unexpectedly deep" >&2
-              exit 1
-            fi
-            tag_json=$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/git/tags/$object_sha")
-            object_type=$(jq -r '.object.type' <<<"$tag_json")
-            object_sha=$(jq -r '.object.sha' <<<"$tag_json")
-            hops=$((hops + 1))
-          done
-          if [ "$object_type" != "commit" ] \
-             || [[ ! "$object_sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "release tag does not peel to one commit" >&2
-            exit 1
-          fi
-          echo "tag=$tag" >>"$GITHUB_OUTPUT"
-          echo "release_id=$release_id" >>"$GITHUB_OUTPUT"
-          echo "commit=$object_sha" >>"$GITHUB_OUTPUT"
-          echo "prerelease=$prerelease" >>"$GITHUB_OUTPUT"
-      # A re-run's recovery path starts here.  Rust bridge builds are not
-      # byte-reproducible, so a re-dispatched run rebuilds different zips
-      # than the ones a previous run already uploaded -- and the assets
-      # job's byte-identity reconcile would strand the release on that
-      # difference.  This cell is the only one that can see the draft's
-      # assets, so it captures them (with the sizes and digests GitHub
-      # recorded at upload) for `prepare` to adopt by content contract.
-      # A first run captures an empty inventory and changes nothing.
-      - name: capture the assets the draft already carries
+        name: capture exact prepared assets and release authority
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_ID: ${{ steps.capture.outputs.release_id }}
-          RELEASE_TAG: ${{ steps.capture.outputs.tag }}
-          EXPECTED_DRAFT: ${{ github.event_name == 'release' && 'false' || 'true' }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name }}
+          MANIFEST_SHA256: ${{ inputs.publication_manifest_sha256 }}
+          STABLE_RELEASE_EXPECTED: ${{ inputs.stable_release_expected }}
+          IMMUTABLE_RELEASES_ENABLED: ${{ inputs.immutable_releases_enabled }}
+        shell: bash
         run: |
-          set -euo pipefail
-          mkdir -p draft-held/assets
-          # Resolve through the full paginated list, never a GET by id:
-          # authority here means the captured id still names exactly one
-          # draft carrying exactly the selected tag.
-          matches=$(gh api --paginate --slurp -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" | jq -c --argjson id "$RELEASE_ID" '[.[][] | select(.id == $id)]')
-          if [ "$(jq 'length' <<<"$matches")" -ne 1 ]; then
-            echo "captured release id no longer resolves exactly once" >&2
-            exit 1
-          fi
-          release_json=$(jq -c '.[0]' <<<"$matches")
-          if [ "$(jq -r '.tag_name' <<<"$release_json")" != "$RELEASE_TAG" ] \
-             || [ "$(jq -r '.draft' <<<"$release_json")" != "$EXPECTED_DRAFT" ]; then
-            echo "captured release changed while capturing its assets" >&2
-            exit 1
-          fi
-          jq '[.assets[] | {name, state, size, digest: (.digest // null)}]' <<<"$release_json" >draft-held/inventory.json
-          count=0
-          while IFS= read -r asset; do
-            [ -n "$asset" ] || continue
-            state=$(jq -r '.state' <<<"$asset")
-            if [ "$state" != "uploaded" ]; then
-              continue
-            fi
-            name=$(jq -r '.name' <<<"$asset")
-            if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
-              echo "uploaded draft asset name is not URL-safe: $name" >&2
-              exit 1
-            fi
-            asset_id=$(jq -r '.id' <<<"$asset")
-            if [[ ! "$asset_id" =~ ^[0-9]+$ ]]; then
-              echo "uploaded draft asset $name has a non-numeric id" >&2
-              exit 1
-            fi
-            size=$(jq -r '.size' <<<"$asset")
-            digest=$(jq -r '.digest // ""' <<<"$asset")
-            curl --fail-with-body --silent --show-error --location -H "Accept: application/octet-stream" -H "Authorization: Bearer $GH_TOKEN" -H "X-GitHub-Api-Version: 2026-03-10" --output "draft-held/assets/$name" "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}"
-            actual_size=$(stat -c '%s' -- "draft-held/assets/$name")
-            actual_sha=$(sha256sum -- "draft-held/assets/$name" | awk '{print $1}')
-            if [ "$actual_size" != "$size" ] \
-               || { [ -n "$digest" ] && [ "$digest" != "sha256:$actual_sha" ]; }; then
-              echo "downloaded draft asset $name does not match its recorded size and digest" >&2
-              exit 1
-            fi
-            count=$((count + 1))
-          done < <(jq -c '.assets[]' <<<"$release_json")
-          echo "captured $count uploaded asset(s) the draft already carries"
+          flags=()
+          if [ "$STABLE_RELEASE_EXPECTED" = true ]; then flags+=(--stable-release-expected); fi
+          if [ "$IMMUTABLE_RELEASES_ENABLED" = true ]; then flags+=(--immutable-releases-enabled); fi
+          python controller/promote_prepared_release.py capture --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --ref "$GITHUB_REF" --commit "$GITHUB_SHA" --event "$GITHUB_EVENT_PATH" --event-name "$GITHUB_EVENT_NAME" --manifest-sha256 "$MANIFEST_SHA256" --out "$RUNNER_TEMP/prepared-packet" "${flags[@]}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: draft-held-assets
-          path: draft-held
+          name: prepared-packet
+          path: ${{ runner.temp }}/prepared-packet
           if-no-files-found: error
+          retention-days: 30
 
-  # Resolve one name once, and prove that the event, Git ref, checkout, tag,
-  # pyproject, and intentionally-unpinned source archive all describe the same
-  # immutable commit and the release release_authority captured. Either
-  # ingress lands here identically; on the dispatch ingress the last job makes
-  # the captured draft public only after its assets and PyPI distributions
-  # have passed.
-  cut:
+  prepare:
     if: github.event_name != 'pull_request'
     needs: [test, release_authority]
     runs-on: ubuntu-24.04
-    outputs:
-      tag: ${{ steps.resolve.outputs.tag }}
-      release_id: ${{ steps.resolve.outputs.release_id }}
-      version: ${{ steps.resolve.outputs.version }}
-      commit: ${{ steps.resolve.outputs.commit }}
-      # Forwarded, not re-read: every later job re-proves the release still
-      # carries the prerelease state release_authority captured.
-      prerelease: ${{ needs.release_authority.outputs.prerelease }}
+    permissions:
+      contents: read
+    env:
+      PUBLICATION_COMMIT: ${{ needs.release_authority.outputs.commit }}
+      PUBLICATION_MANIFEST_SHA256: ${{ needs.release_authority.outputs.manifest_sha256 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
+          ref: ${{ needs.release_authority.outputs.commit }}
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.11"
-      - name: prove the tagged source archive is honestly unpinned
-        run: python tools/verify_source_bridge_pins.py
-      - id: resolve
+          python-version: '3.11'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: prepared-packet
+          path: ${{ runner.temp }}/prepared-packet
+      - name: verify the tested controller
         env:
-          DISPATCH_RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name }}
-          # Empty on any trigger that is not workflow_dispatch, which the
-          # comparison below treats as "not opted in".
-          STABLE_RELEASE_EXPECTED: ${{ inputs.stable_release_expected }}
-          CAPTURED_RELEASE_ID: ${{ needs.release_authority.outputs.release_id }}
-          CAPTURED_REMOTE_COMMIT: ${{ needs.release_authority.outputs.commit }}
+          CONTROLLER_SHA256: ${{ needs.test.outputs.controller_sha256 }}
+        run: echo "$CONTROLLER_SHA256  tools/promote_prepared_release.py" | sha256sum --check --strict
+      - name: prove all six distributions and exact native bundles
         run: |
-          set -euo pipefail
-          version=$(python -c "import tomllib, pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
-          # Opt-in, following the immutability idiom.  Whether a public cut
-          # must carry a stable X.Y.Z is the operator's call, not this file's:
-          # tick the input and a non-stable version is refused exactly as
-          # before; leave it unticked -- the default -- and the cut names what
-          # it is publishing and proceeds.  Demoted by owner ruling
-          # 2026-08-03; the refusal was added on 2026-08-01 without one.
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            if [ "$STABLE_RELEASE_EXPECTED" = "true" ]; then
-              echo "stable_release_expected was ticked, but $version is not a stable X.Y.Z" >&2
-              exit 1
-            fi
-            echo "::warning::publishing non-stable version $version; tick stable_release_expected to refuse anything but X.Y.Z"
-          fi
-          tag="$DISPATCH_RELEASE_TAG"
-          if [ -z "$tag" ] || [ "$tag" != "$GITHUB_REF_NAME" ]; then
-            echo "release_tag input $tag must equal selected workflow ref $GITHUB_REF_NAME" >&2
-            exit 1
-          fi
-          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
-            echo "release cut must run from a tag ref, not $GITHUB_REF" >&2
-            exit 1
-          fi
-          if [ "$tag" != "v$version" ]; then
-            echo "release tag $tag does not match pyproject version $version" >&2
-            exit 1
-          fi
-          if [ "$GITHUB_REF" != "refs/tags/$tag" ]; then
-            echo "event ref $GITHUB_REF does not match refs/tags/$tag" >&2
-            exit 1
-          fi
-          tag_commit=$(git rev-parse "${tag}^{commit}")
-          head_commit=$(git rev-parse HEAD)
-          if [ "$head_commit" != "$tag_commit" ] \
-             || [ "$head_commit" != "$GITHUB_SHA" ] \
-             || [ "$head_commit" != "$CAPTURED_REMOTE_COMMIT" ]; then
-            echo "checkout=$head_commit tag=$tag_commit event=$GITHUB_SHA remote=$CAPTURED_REMOTE_COMMIT" >&2
-            exit 1
-          fi
-          if [[ ! "$CAPTURED_RELEASE_ID" =~ ^[0-9]+$ ]]; then
-            echo "captured draft release id is not numeric" >&2
-            exit 1
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "release_id=$CAPTURED_RELEASE_ID" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "commit=$tag_commit" >> "$GITHUB_OUTPUT"
+          python -m pip install 'twine>=7,<8' 'setuptools>=77' packaging
+          python tools/promote_prepared_release.py verify --packet "$RUNNER_TEMP/prepared-packet" --repo "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/release-proof"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-proof
+          path: ${{ runner.temp }}/release-proof
+          if-no-files-found: error
+          retention-days: 30
 
-  # One bundle per target platform. All 28 declared artifacts are probed;
-  # Linux is built and qualified inside the pinned glibc 2.28 baseline.
-  bridges:
+  qualify:
     if: github.event_name != 'pull_request'
-    needs: cut
+    needs: [test, release_authority, prepare]
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
-          - os: windows-2025
-            platform: win-x86_64
           - os: ubuntu-24.04
             platform: linux-x86_64
+          - os: windows-2022
+            platform: win-x86_64
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    env:
+      PUBLICATION_COMMIT: ${{ needs.release_authority.outputs.commit }}
+      PUBLICATION_MANIFEST_SHA256: ${{ needs.release_authority.outputs.manifest_sha256 }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ needs.release_authority.outputs.commit }}
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.11"
-      - name: pin the toolchain
-        shell: bash
-        env:
-          RUST_TOOLCHAIN: "1.94.0"
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
-          rustc --version
-          cargo --version
-      - name: build the GRIB decoders and the CPU preprocessing library
-        if: matrix.platform == 'win-x86_64'
-        working-directory: tools/grib1_bridge
-        run: cargo build --release --locked
-      - name: build the fetch backbone, the batch renderer and the NetCDF decoder
-        if: matrix.platform == 'win-x86_64'
-        working-directory: tools/rustwx
-        run: cargo build --release --locked
-      # The vendored dealiasing crate is its own tree, not a member of
-      # either workspace, so it is built on its own line.  It ships
-      # because --dealias runs it by default.
-      - name: build the region-global dealiasing library
-        if: matrix.platform == 'win-x86_64'
-        working-directory: tools/region_global_dealias
-        run: cargo build --release --locked
-      # The mapped decode engine is its own workspace (the vendored
-      # rw-wps donor snapshot plus gpuwm's crates/mapped-engine), so it
-      # is built on its own line too.  It ships because
-      # gpuwm.mapped_engine_bridge.DEFAULT_ENGINE is `rust`: without it
-      # in the bundle a wheel user has no mapped decode at all, which is
-      # the DEFAULT decode path.
-      - name: build the mapped decode engine
-        if: matrix.platform == 'win-x86_64'
-        working-directory: tools/rw_wps
-        run: cargo build --release --locked
-      - name: build the Rust terminal workspace
-        if: matrix.platform == 'win-x86_64'
-        working-directory: tools/arwen-tui
-        run: cargo build --release --locked --offline
-      - name: build the regular-grid Zarr reader
-        if: matrix.platform == 'win-x86_64'
-        working-directory: tools/zarr_bridge
-        run: cargo build --release --locked --offline
-      - name: build and qualify Linux artifacts on glibc 2.28
-        if: matrix.platform == 'linux-x86_64'
-        shell: bash
-        env:
-          BUNDLE_SOURCE_REV: ${{ needs.cut.outputs.commit }}
-          MANYLINUX_IMAGE: quay.io/pypa/manylinux_2_28_x86_64@sha256:53390351aeb4688114b02c36a23b3e6ce1166ee9b7afc5df1a4f776354fc764c
-        run: |
-          set -euo pipefail
-          toolchain="$(dirname "$(dirname "$(rustup which --toolchain 1.94.0 rustc)")")"
-          build_root="$RUNNER_TEMP/arwen-manylinux"
-          mkdir "$build_root"
-          docker run --rm --platform linux/amd64 \
-            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/src,readonly" \
-            --mount "type=bind,source=$toolchain,target=/work/rust-toolchain,readonly" \
-            --mount "type=bind,source=$build_root,target=/work/build" \
-            --workdir /src "$MANYLINUX_IMAGE" \
-            /bin/bash -c 'dnf -y --setopt=install_weak_deps=False --setopt=keepcache=True install perl-IPC-Cmd perl-Time-Piece && exec "$@"' -- \
-            /opt/python/cp311-cp311/bin/python -B /src/tools/build_linux_release_bridges.py \
-            --source /src --revision "$BUNDLE_SOURCE_REV" \
-            --rust-toolchain /work/rust-toolchain --cargo-home /work/build/cargo-home \
-            --target-dir /work/build/cargo-target --output /work/build/artifacts \
-            --report /work/build/compatibility-report.json --image "$MANYLINUX_IMAGE"
-      - name: retain Linux compatibility evidence
-        if: always() && matrix.platform == 'linux-x86_64'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: manylinux-compatibility
-          path: |
-            ${{ runner.temp }}/arwen-manylinux/compatibility-report.json
-            ${{ runner.temp }}/arwen-manylinux/compatibility-report.logs/**
-          if-no-files-found: error
-      - name: probe every native artifact on its target runner
-        shell: bash
-        if: matrix.platform == 'win-x86_64'
-        env:
-          BUNDLE_PLATFORM: ${{ matrix.platform }}
-          BUNDLE_SOURCE_REV: ${{ needs.cut.outputs.commit }}
-        run: |
-          python - <<'PY'
-          import ctypes
-          import os
-          from pathlib import Path
-
-          from gpuwm import bridge_assets, bridges, doctor
-
-          platform = os.environ["BUNDLE_PLATFORM"]
-          source_rev = os.environ["BUNDLE_SOURCE_REV"]
-          search = (
-              Path("tools/grib1_bridge/target/release"),
-              Path("tools/rustwx/target/release"),
-              Path("tools/region_global_dealias/target/release"),
-              Path("tools/rw_wps/target/release"),
-              Path("tools/arwen-tui/target/release"),
-              Path("tools/zarr_bridge/target/release"),
-          )
-          # Each library's ABI entry point comes from the one table that
-          # declares it, gpuwm.bridge_assets.LIBRARY_ABI, so this probe
-          # and tools/verify_release_artifacts.py cannot disagree about
-          # which symbol proves which artifact.  This block used to
-          # declare its own copy; the verifier kept the older blanket
-          # rule and refused a correct bundle mid cut.
-          for artifact in bridge_assets.BUNDLED_ARTIFACTS:
-              filename = bridge_assets.artifact_filename(artifact, platform)
-              matches = [directory / filename for directory in search
-                         if (directory / filename).is_file()]
-              assert len(matches) == 1, (artifact.name, matches)
-              path = matches[0]
-              payload = path.read_bytes()
-              if artifact.vendored:
-                  # Upstream's tree, frozen at a recorded commit: it does
-                  # not move with this checkout, so what is asked of it is
-                  # the contract marker the pin step will ask for too.
-                  marker = bridges.BRIDGE_ABI_MARKERS[artifact.name]
-                  assert marker in payload, (artifact.name, marker)
-              else:
-                  # The build just ran from this checkout, so its embedded
-                  # source-revision stamp must name the cut commit.
-                  # Failing here, on the platform runner, is hours earlier
-                  # than the same refusal at the pin step.
-                  bridge_assets.verify_source_revision(
-                      payload, expected=source_rev, label=str(path))
-              if artifact.kind == "executable":
-                  ok, evidence = doctor._exec_probe(path)
-                  assert ok, (path, evidence)
-              else:
-                  symbol, expected = bridge_assets.library_abi_for(
-                      artifact.name)
-                  library = ctypes.CDLL(str(path.resolve()))
-                  abi = getattr(library, symbol)
-                  abi.argtypes = []
-                  abi.restype = ctypes.c_uint32
-                  assert int(abi()) == expected, (artifact.name, symbol)
-              print(platform, artifact.name, path)
-          PY
-      - name: pack the bundle
-        shell: bash
-        env:
-          BUNDLE_PLATFORM: ${{ matrix.platform }}
-        run: |
-          search=(--search tools/grib1_bridge/target/release
-                  --search tools/rustwx/target/release
-                  --search tools/region_global_dealias/target/release
-                  --search tools/rw_wps/target/release
-                  --search tools/arwen-tui/target/release
-                  --search tools/zarr_bridge/target/release)
-          if [ "$BUNDLE_PLATFORM" = "linux-x86_64" ]; then
-            search=(--search "$RUNNER_TEMP/arwen-manylinux/artifacts")
-          fi
-          python tools/build_bridge_bundle.py pack \
-            --release '${{ needs.cut.outputs.tag }}' \
-            --platform '${{ matrix.platform }}' \
-            "${search[@]}" \
-            --out dist-bridges
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: bridges-${{ matrix.platform }}
-          path: dist-bridges/*.zip
-          if-no-files-found: error
-
-  # No public-write or OIDC privilege: produce every byte, then prove it from
-  # an isolated wheel installation before making it available to later jobs.
-  prepare:
-    if: github.event_name != 'pull_request'
-    needs: [cut, bridges]
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.11"
+          python-version: '3.11'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: bridges-*
-          merge-multiple: true
-          path: dist-bridges
+          name: prepared-packet
+          path: ${{ runner.temp }}/prepared-packet
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: draft-held-assets
-          path: draft-held
-      # On a re-run the draft may already carry uploaded bundles from a
-      # previous run's non-reproducible build.  Adopt them by content
-      # contract -- exact member list, map-asset bytes hash-checked
-      # against this checkout, the uploaded manifest pinning them member
-      # by member -- so the pins, the wheel, and the assets job's
-      # byte-identity reconcile all describe the bytes the draft holds.
-      # A diverging member is named and the run refuses.  On a first run
-      # nothing was uploaded and nothing changes.
-      - name: adopt the assets the draft already carries, by content contract
-        run: |
-          python tools/build_bridge_bundle.py adopt \
-            --release '${{ needs.cut.outputs.tag }}' \
-            --held draft-held \
-            --bundles dist-bridges \
-            --source-rev '${{ needs.cut.outputs.commit }}'
-      - name: generate pins and manifest from the candidate asset bytes
-        run: |
-          python tools/build_bridge_bundle.py pin \
-            --release '${{ needs.cut.outputs.tag }}' \
-            --source-rev '${{ needs.cut.outputs.commit }}' \
-            $(for bundle in dist-bridges/*.zip; do printf -- '--bundle %s ' "$bundle"; done) \
-            --out gpuwm/data/bridges/bridge-pins.json \
-            --manifest dist-bridges/bridge-bundle-manifest.json
-      - run: python -m pip install build
-      # TWO distributions per project: each of gpuwm and gpuwm-data ships
-      # one sdist and one universal py3-none-any wheel.  That is the shape
-      # gpuwm has actually published -- 37 versions of it, the current one
-      # 89,002,457 B against PyPI's 100 MB per-file cap -- and, per
-      # project, it is the shape every later job in this file expects.
-      #
-      # `--clean` first, and it is not decoration: setup.py tags the wheel
-      # from whether `gpuwm/libexec/bridges` exists, so a staged directory
-      # left behind by anything earlier would silently produce a
-      # single-platform wheel wearing the universal wheel's job. The proof
-      # step below re-checks the built wheel carries no staged artifacts
-      # rather than trusting this line.
-      #
-      # A per-platform wheel matrix was added here on the 2.5.0 line and
-      # is removed again: it built three wheels while `publish` (job 9) and
-      # `release` (job 10) both still demanded exactly one, so a cut would
-      # have pushed the tag, created the draft, uploaded every release
-      # asset and then died at job 9 with the version number spent -- the
-      # way 2.4.0 was burned. Per-platform wheels have never shipped, and
-      # resolving the disagreement toward them would have been a release
-      # mechanism change dressed up as a bug fix.
-      #
-      # The prebuilt Rust still reaches users, by the mechanism that has
-      # always delivered it: the per-platform bundles the `bridges` job
-      # builds are published as GitHub release assets, pinned member by
-      # member in gpuwm/data/bridges/bridge-pins.json, and staged by
-      # `gpuwm setup`. Nothing about that path changes here.
-      # The companion is built here too, into the SAME dist/ directory, so
-      # both pairs travel in the one python-dists artifact every later job
-      # re-proves.  gpuwm==X.Y.Z hard-pins gpuwm-data==X.Y.Z; the two are
-      # cut from the same commit and published together, companion first.
-      - name: build the sdists and the universal wheels
-        run: |
-          set -euo pipefail
-          python tools/stage_wheel_bridges.py --clean
-          python -m build
-          python -m build --outdir dist gpuwm-data
-          ls -l dist/
-      - name: prove distributions, pins, bundles, and Linux artifacts
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ needs.cut.outputs.tag }}
-          RELEASE_COMMIT: ${{ needs.cut.outputs.commit }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          # gpuwm's own pair; the underscore keeps gpuwm_data-* out of a
-          # gpuwm-* glob, and the companion pair has its own proof step.
-          wheels=(dist/gpuwm-*.whl)
-          sdists=(dist/gpuwm-*.tar.gz)
-          bundles=(dist-bridges/*.zip)
-          # One wheel and one sdist.  `publish` (job 9) and `release`
-          # (job 10) both re-prove this same python-dists artifact and
-          # both demand exactly these two files, so a count that drifts
-          # here is not a build failure -- it is a cut that pushes the
-          # tag, uploads every asset, and dies at job 9 with the version
-          # spent.  tests/test_publish_dist_shape_agreement.py holds the
-          # three counts to one contract.
-          if [ "${#wheels[@]}" -ne 1 ] || [ "${#sdists[@]}" -ne 1 ]; then
-            echo "expected exactly one wheel and one sdist, got ${#wheels[@]} and ${#sdists[@]}" >&2
-            printf '  %s\n' "${wheels[@]}" >&2
-            exit 1
-          fi
-          # ...and it must be the UNIVERSAL wheel by name.  A bare count of
-          # one would be satisfied by a lone platform wheel, which is the
-          # artifact that has never shipped.
-          for expected in gpuwm-*-py3-none-any.whl; do
-            matches=(dist/$expected)
-            if [ "${#matches[@]}" -ne 1 ]; then
-              echo "expected exactly one dist/$expected" >&2
-              exit 1
-            fi
-          done
-          # The wheel must be universal in fact and not only in its
-          # filename: setup.py derives the platform tag from whether
-          # `gpuwm/libexec/bridges` exists, so a staged directory that
-          # survived into this build would produce a single-platform wheel
-          # under a py3-none-any name.  Every Rust door on this wheel
-          # refuses BY NAME with a `gpuwm setup` remedy; nothing degrades
-          # into a Python decoder.
-          python - <<'PY'
-          import sys, zipfile, glob
-          path = glob.glob("dist/gpuwm-*-py3-none-any.whl")[0]
-          with zipfile.ZipFile(path) as wheel:
-              stray = [n for n in wheel.namelist()
-                       if n.startswith("gpuwm/libexec/bridges/")]
-          print(f"{path}: {len(stray)} staged artifacts (must be 0)")
-          if stray:
-              print("  the universal wheel carries platform binaries",
-                    file=sys.stderr)
-          sys.exit(1 if stray else 0)
-          PY
-          if [ "${#bundles[@]}" -ne 2 ]; then
-            echo "expected exactly two platform bundles" >&2
-            exit 1
-          fi
-          wheel=$(realpath "${wheels[0]}")
-          sdist=$(realpath "${sdists[0]}")
-          smoke="$RUNNER_TEMP/gpuwm-wheel-smoke"
-          python -m venv "$smoke/venv"
-          "$smoke/venv/bin/python" -m pip install --no-index --no-deps "$wheel"
-          mkdir -p "$smoke/outside" "$smoke/staged" "$smoke/home" release-proof
-          cd "$smoke/outside"
-          env -u PYTHONPATH HOME="$smoke/home" \
-            "$smoke/venv/bin/python" -I \
-            "$GITHUB_WORKSPACE/tools/verify_release_artifacts.py" \
-            --wheel "$wheel" \
-            --sdist "$sdist" \
-            --pins "$GITHUB_WORKSPACE/gpuwm/data/bridges/bridge-pins.json" \
-            --manifest "$GITHUB_WORKSPACE/dist-bridges/bridge-bundle-manifest.json" \
-            --bundles "$GITHUB_WORKSPACE/dist-bridges" \
-            --release "$RELEASE_TAG" \
-            --source-rev "$RELEASE_COMMIT" \
-            --repo-root "$GITHUB_WORKSPACE" \
-            --stage "$smoke/staged" \
-            --receipt "$GITHUB_WORKSPACE/release-proof/release-artifact-proof.json"
-          cd "$GITHUB_WORKSPACE"
-          cp gpuwm/data/bridges/bridge-pins.json release-proof/bridge-pins.json
-          (
-            cd dist
-            sha256sum -- *.whl *.tar.gz \
-              >../release-proof/python-dists-SHA256SUMS
-            sha256sum -c ../release-proof/python-dists-SHA256SUMS
-          )
-          (
-            cd dist-bridges
-            sha256sum -- *.zip bridge-bundle-manifest.json \
-              >../release-proof/release-assets-SHA256SUMS
-            sha256sum -c ../release-proof/release-assets-SHA256SUMS
-          )
-      # The companion pair, proven with the rigor the gpuwm pair gets
-      # above: exact shape, exact names, sane sizes.  It has its own step
-      # so the state-machine suite can execute this block literally.
-      - name: prove the gpuwm-data distributions
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ needs.cut.outputs.tag }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          version="${RELEASE_TAG#v}"
-          data_wheels=(dist/gpuwm_data-*.whl)
-          data_sdists=(dist/gpuwm_data-*.tar.gz)
-          # One wheel and one sdist for the companion too: `publish` (job 9)
-          # re-proves this same python-dists artifact and demands exactly
-          # this shape, so a drift here is a cut that pushes the tag,
-          # uploads every asset, and dies at job 9 with the version spent.
-          if [ "${#data_wheels[@]}" -ne 1 ] || [ "${#data_sdists[@]}" -ne 1 ]; then
-            echo "expected exactly one gpuwm-data wheel and one gpuwm-data sdist, got ${#data_wheels[@]} and ${#data_sdists[@]}" >&2
-            exit 1
-          fi
-          # Version match, to the character.  gpuwm==X.Y.Z hard-pins
-          # gpuwm-data==X.Y.Z, so a companion carrying any other version
-          # publishes a gpuwm no fresh `pip install gpuwm` can resolve.
-          # The exact expected filenames also pin the universal
-          # py3-none-any tag: this distribution is reference tables, and a
-          # platform tag on it is a packaging defect wearing a working
-          # name.
-          if [ "${data_wheels[0]}" != "dist/gpuwm_data-${version}-py3-none-any.whl" ]; then
-            echo "gpuwm-data wheel is not gpuwm_data-${version}-py3-none-any.whl: ${data_wheels[0]}" >&2
-            exit 1
-          fi
-          if [ "${data_sdists[0]}" != "dist/gpuwm_data-${version}.tar.gz" ]; then
-            echo "gpuwm-data sdist is not gpuwm_data-${version}.tar.gz: ${data_sdists[0]}" >&2
-            exit 1
-          fi
-          # Size sanity.  The tables this distribution exists to carry are
-          # ~64 MiB: a dist an order of magnitude under that lost its
-          # payload, and a bare `pip install gpuwm` would then die at the
-          # first radiation or microphysics table read.  Over PyPI's
-          # 100,000,000 B per-file cap (the STRICTER reading
-          # tools/verify_release_artifacts.py enforces for gpuwm) the
-          # upload itself dies at job 9, after the tag is spent -- the
-          # 2.4.0 burn.
-          for path in "${data_wheels[0]}" "${data_sdists[0]}"; do
-            size=$(stat -c '%s' -- "$path")
-            if [ "$size" -lt 10000000 ]; then
-              echo "gpuwm-data distribution lost its payload (${size} B): $path" >&2
-              exit 1
-            fi
-            if [ "$size" -gt 100000000 ]; then
-              echo "gpuwm-data distribution exceeds PyPI's per-file cap (${size} B): $path" >&2
-              exit 1
-            fi
-          done
-          echo "gpuwm-data distributions carry version ${version} inside (10 MB, 100 MB)"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: release-assets
-          path: |
-            dist-bridges/*.zip
-            dist-bridges/bridge-bundle-manifest.json
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: python-dists
-          path: |
-            dist/*.whl
-            dist/*.tar.gz
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-proof
-          path: release-proof
+          path: ${{ runner.temp }}/release-proof
+      - name: verify the tested controller
+        env:
+          CONTROLLER_SHA256: ${{ needs.test.outputs.controller_sha256 }}
+        run: echo "$CONTROLLER_SHA256  tools/promote_prepared_release.py" | sha256sum --check --strict
+      - name: qualify a fresh platform installation without a forecast
+        env:
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+        run: python tools/promote_prepared_release.py smoke --packet "$RUNNER_TEMP/prepared-packet" --proof "$RUNNER_TEMP/release-proof" --repo "$GITHUB_WORKSPACE" --platform "$RELEASE_PLATFORM" --out "$RUNNER_TEMP/platform-smoke"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: smoke-${{ matrix.platform }}
+          path: ${{ runner.temp }}/platform-smoke/SMOKE.json
           if-no-files-found: error
 
-  # GitHub release assets, and nothing else.  This job executes no repository
-  # code and holds no PyPI identity.  Existing asset names are immutable.
+  # GitHub assets must be public before the engine can need their URLs.
   assets:
     if: github.event_name != 'pull_request'
-    needs: [cut, prepare]
+    needs: [test, release_authority, prepare, qualify]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    env:
+      PUBLICATION_COMMIT: ${{ needs.release_authority.outputs.commit }}
+      PUBLICATION_MANIFEST_SHA256: ${{ needs.release_authority.outputs.manifest_sha256 }}
     steps:
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: release-assets
-          path: dist-assets
+          name: publication-controller
+          path: controller
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-proof
-          path: release-proof
-      - name: reconcile immutable assets by captured release id
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_ID: ${{ needs.cut.outputs.release_id }}
-          RELEASE_TAG: ${{ needs.cut.outputs.tag }}
-          RELEASE_COMMIT: ${{ needs.cut.outputs.commit }}
-          EXPECTED_DRAFT: ${{ github.event_name == 'release' && 'false' || 'true' }}
-          CAPTURED_PRERELEASE: ${{ needs.cut.outputs.prerelease }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=(dist-assets/*)
-          bundles=(dist-assets/*.zip)
-          manifests=(dist-assets/bridge-bundle-manifest.json)
-          if [ "${#files[@]}" -ne 3 ] || [ "${#bundles[@]}" -ne 2 ] \
-             || [ "${#manifests[@]}" -ne 1 ]; then
-            echo "release-assets must contain exactly two bundles and one manifest" >&2
-            exit 1
-          fi
-          (
-            cd dist-assets
-            sha256sum -c ../release-proof/release-assets-SHA256SUMS
-          )
-
-          resolve_remote_tag_commit() {
-            local ref_json object_type object_sha tag_json hops
-            ref_json=$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/git/ref/tags/$RELEASE_TAG") || return 1
-            object_type=$(jq -r '.object.type' <<<"$ref_json")
-            object_sha=$(jq -r '.object.sha' <<<"$ref_json")
-            hops=0
-            while [ "$object_type" = "tag" ]; do
-              if [ "$hops" -ge 16 ]; then return 1; fi
-              tag_json=$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/git/tags/$object_sha") || return 1
-              object_type=$(jq -r '.object.type' <<<"$tag_json")
-              object_sha=$(jq -r '.object.sha' <<<"$tag_json")
-              hops=$((hops + 1))
-            done
-            if [ "$object_type" != "commit" ]; then return 1; fi
-            printf '%s' "$object_sha"
-          }
-
-          assert_draft_authority() {
-            local all_releases id_matches tag_matches by_id by_tag remote_commit
-            if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]]; then return 1; fi
-            all_releases=$(gh api --paginate --slurp -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/releases?per_page=100") || return 1
-            id_matches=$(jq -c --argjson id "$RELEASE_ID" '[.[][] | select(.id == $id)]' <<<"$all_releases")
-            tag_matches=$(jq -c --arg tag "$RELEASE_TAG" '[.[][] | select(.tag_name == $tag)]' <<<"$all_releases")
-            if [ "$(jq 'length' <<<"$id_matches")" -ne 1 ] \
-               || [ "$(jq 'length' <<<"$tag_matches")" -ne 1 ]; then
-              echo "captured release id/tag no longer resolve exactly once" >&2
-              return 1
-            fi
-            by_id=$(jq -c '.[0]' <<<"$id_matches")
-            by_tag=$(jq -c '.[0]' <<<"$tag_matches")
-            remote_commit=$(resolve_remote_tag_commit) || return 1
-            # Compared against what release_authority captured, never against
-            # a literal: the property this re-proof owns is "nothing moved
-            # since capture", which is integrity.  Whether the operator marked
-            # the release a prerelease is their call, made once, upstream.
-            if [ "$(jq -r '.id' <<<"$by_id")" != "$RELEASE_ID" ] \
-               || [ "$(jq -r '.tag_name' <<<"$by_id")" != "$RELEASE_TAG" ] \
-               || [ "$(jq -r '.draft' <<<"$by_id")" != "$EXPECTED_DRAFT" ] \
-               || [ "$(jq -r '.prerelease' <<<"$by_id")" != "$CAPTURED_PRERELEASE" ] \
-               || [ "$(jq -r '.id' <<<"$by_tag")" != "$RELEASE_ID" ] \
-               || [ "$remote_commit" != "$RELEASE_COMMIT" ]; then
-              echo "captured release id/tag/draft/commit authority changed before asset publication" >&2
-              return 1
-            fi
-            printf '%s' "$by_id"
-          }
-
-          declare -A local_path=()
-          declare -A local_sha=()
-          declare -A local_size=()
-          for path in "${files[@]}"; do
-            name=$(basename "$path")
-            if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
-              echo "release asset name is not URL-safe: $name" >&2
-              exit 1
-            fi
-            local_path["$name"]="$path"
-            local_sha["$name"]=$(sha256sum -- "$path" | awk '{print $1}')
-            local_size["$name"]=$(stat -c '%s' -- "$path")
-          done
-
-          release_json=$(assert_draft_authority)
-          mapfile -t assets < <(jq -c '.assets[]' <<<"$release_json")
-          declare -A seen=()
-          declare -A present=()
-          for asset in "${assets[@]}"; do
-            name=$(jq -r '.name' <<<"$asset")
-            asset_id=$(jq -r '.id' <<<"$asset")
-            state=$(jq -r '.state' <<<"$asset")
-            if [[ -z "${local_path[$name]:-}" ]]; then
-              echo "draft carries unexpected release asset: $name" >&2
-              exit 1
-            fi
-            if [[ -n "${seen[$name]:-}" ]]; then
-              echo "draft carries duplicate release asset name: $name" >&2
-              exit 1
-            fi
-            seen["$name"]=1
-            if [ "$state" = "starter" ]; then
-              gh api --method DELETE --silent -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/releases/assets/$asset_id"
-              echo "removed interrupted starter asset: $name"
-              continue
-            fi
-            if [ "$state" != "uploaded" ]; then
-              echo "release asset $name has unsupported state $state" >&2
-              exit 1
-            fi
-            size=$(jq -r '.size' <<<"$asset")
-            digest=$(jq -r '.digest // ""' <<<"$asset")
-            if [ "$size" != "${local_size[$name]}" ] \
-               || [ "$digest" != "sha256:${local_sha[$name]}" ]; then
-              echo "refusing changed bytes for immutable release asset: $name" >&2
-              exit 1
-            fi
-            present["$name"]=1
-            echo "immutable release asset already matches: $name"
-          done
-
-          # Bundles first, the manifest last.  The manifest pins the
-          # bundles' exact bytes, so uploading it only after every bundle
-          # it pins means an interrupted run can never leave a manifest
-          # on the draft pinning bundle bytes the draft does not hold --
-          # the one partial state a re-run could never adopt, because a
-          # non-reproducible rebuild cannot recreate those bytes.
-          manifest_name=$(basename "${manifests[0]}")
-          for name in $(printf '%s\n' "${!local_path[@]}" | grep -Fxv -- "$manifest_name" | sort) "$manifest_name"; do
-            if [[ -z "${present[$name]:-}" ]]; then
-              path="${local_path[$name]}"
-              curl --fail-with-body --silent --show-error --request POST -H "Accept: application/vnd.github+json" -H "Authorization: Bearer $GH_TOKEN" -H "X-GitHub-Api-Version: 2026-03-10" -H "Content-Type: application/octet-stream" --data-binary "@$path" "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets?name=$name" >/dev/null
-            fi
-          done
-
-          final_json=$(assert_draft_authority)
-          if [ "$(jq '.assets | length' <<<"$final_json")" -ne "${#files[@]}" ]; then
-            echo "draft release asset set is not exact after upload" >&2
-            exit 1
-          fi
-          for name in "${!local_path[@]}"; do
-            match=$(jq -c --arg name "$name" '[.assets[] | select(.name == $name)]' <<<"$final_json")
-            if [ "$(jq 'length' <<<"$match")" -ne 1 ] \
-               || [ "$(jq -r '.[0].state' <<<"$match")" != "uploaded" ] \
-               || [ "$(jq -r '.[0].size' <<<"$match")" != "${local_size[$name]}" ] \
-               || [ "$(jq -r '.[0].digest // ""' <<<"$match")" != "sha256:${local_sha[$name]}" ]; then
-              echo "uploaded release asset failed final proof: $name" >&2
-              exit 1
-            fi
-          done
-
-  # Last GitHub authority check before PyPI.  This no-checkout, no-OIDC cell
-  # proves the captured draft, its exact assets, and the peeled tag commit.
-  # The succeeding identity cell therefore needs no GitHub visibility at all.
-  authorize_pypi:
-    if: github.event_name != 'pull_request'
-    needs: [cut, prepare, assets]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
+          path: ${{ runner.temp }}/release-proof
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: release-assets
-          path: dist-assets
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: release-proof
-          path: release-proof
-      - name: authorize the exact draft immediately before PyPI
-        shell: bash
+          pattern: smoke-*
+          path: ${{ runner.temp }}/platform-smokes
+      - name: verify the tested controller
+        env:
+          CONTROLLER_SHA256: ${{ needs.test.outputs.controller_sha256 }}
+        run: echo "$CONTROLLER_SHA256  controller/promote_prepared_release.py" | sha256sum --check --strict
+      - name: publish the verified GitHub assets
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_ID: ${{ needs.cut.outputs.release_id }}
-          RELEASE_TAG: ${{ needs.cut.outputs.tag }}
-          RELEASE_COMMIT: ${{ needs.cut.outputs.commit }}
-          EXPECTED_DRAFT: ${{ github.event_name == 'release' && 'false' || 'true' }}
-          CAPTURED_PRERELEASE: ${{ needs.cut.outputs.prerelease }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          asset_files=(dist-assets/*)
-          if [ "${#asset_files[@]}" -ne 3 ]; then
-            echo "local release asset proof set must contain exactly three files" >&2
-            exit 1
-          fi
-          (
-            cd dist-assets
-            sha256sum -c ../release-proof/release-assets-SHA256SUMS
-          )
-          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]] \
-             || [[ ! "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "captured release authority is malformed" >&2
-            exit 1
-          fi
+        run: python controller/promote_prepared_release.py promote --proof "$RUNNER_TEMP/release-proof" --smokes "$RUNNER_TEMP/platform-smokes" --out "$RUNNER_TEMP/PUBLIC-ASSETS.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: public-assets-proof
+          path: ${{ runner.temp }}/PUBLIC-ASSETS.json
+          if-no-files-found: error
 
-          all_releases=$(gh api --paginate --slurp -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/releases?per_page=100")
-          id_matches=$(jq -c --argjson id "$RELEASE_ID" '[.[][] | select(.id == $id)]' <<<"$all_releases")
-          tag_matches=$(jq -c --arg tag "$RELEASE_TAG" '[.[][] | select(.tag_name == $tag)]' <<<"$all_releases")
-          if [ "$(jq 'length' <<<"$id_matches")" -ne 1 ] \
-             || [ "$(jq 'length' <<<"$tag_matches")" -ne 1 ]; then
-            echo "captured draft id/tag no longer resolve exactly once" >&2
-            exit 1
-          fi
-          by_id=$(jq -c '.[0]' <<<"$id_matches")
-          by_tag=$(jq -c '.[0]' <<<"$tag_matches")
-          if [ "$(jq -r '.id' <<<"$by_tag")" != "$RELEASE_ID" ] \
-             || [ "$(jq -r '.tag_name' <<<"$by_id")" != "$RELEASE_TAG" ] \
-             || [ "$(jq -r '.draft' <<<"$by_id")" != "$EXPECTED_DRAFT" ] \
-             || [ "$(jq -r '.prerelease' <<<"$by_id")" != "$CAPTURED_PRERELEASE" ]; then
-            echo "captured release id/tag/state changed before PyPI" >&2
-            exit 1
-          fi
-
-          ref_json=$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/git/ref/tags/$RELEASE_TAG")
-          object_type=$(jq -r '.object.type' <<<"$ref_json")
-          object_sha=$(jq -r '.object.sha' <<<"$ref_json")
-          hops=0
-          while [ "$object_type" = "tag" ]; do
-            if [ "$hops" -ge 16 ]; then
-              echo "annotated tag chain is unexpectedly deep" >&2
-              exit 1
-            fi
-            tag_json=$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/git/tags/$object_sha")
-            object_type=$(jq -r '.object.type' <<<"$tag_json")
-            object_sha=$(jq -r '.object.sha' <<<"$tag_json")
-            hops=$((hops + 1))
-          done
-          if [ "$object_type" != "commit" ] \
-             || [ "$object_sha" != "$RELEASE_COMMIT" ]; then
-            echo "release tag moved after the build" >&2
-            exit 1
-          fi
-
-          if [ "$(jq '.assets | length' <<<"$by_id")" -ne "${#asset_files[@]}" ]; then
-            echo "captured draft asset set changed before PyPI" >&2
-            exit 1
-          fi
-          for path in "${asset_files[@]}"; do
-            name=$(basename "$path")
-            size=$(stat -c '%s' -- "$path")
-            sha=$(sha256sum -- "$path" | awk '{print $1}')
-            match=$(jq -c --arg name "$name" '[.assets[] | select(.name == $name)]' <<<"$by_id")
-            if [ "$(jq 'length' <<<"$match")" -ne 1 ] \
-               || [ "$(jq -r '.[0].state' <<<"$match")" != "uploaded" ] \
-               || [ "$(jq -r '.[0].size' <<<"$match")" != "$size" ] \
-               || [ "$(jq -r '.[0].digest // ""' <<<"$match")" != "sha256:$sha" ]; then
-              echo "captured draft asset differs before PyPI: $name" >&2
-              exit 1
-            fi
-          done
-
-  # PyPI, and nothing else.  No checkout and no rebuild: Trusted Publishing
-  # receives the exact wheel and sdist that `prepare` already proved.
+  # OIDC alone: no checkout, GitHub credential, build or asset mutation here.
   publish:
     if: github.event_name != 'pull_request'
-    needs: [cut, prepare, authorize_pypi]
+    needs: [test, release_authority, prepare, assets]
     runs-on: ubuntu-24.04
-    environment: pypi
     permissions:
       id-token: write
+    environment: pypi
+    env:
+      PUBLICATION_COMMIT: ${{ needs.release_authority.outputs.commit }}
+      PUBLICATION_MANIFEST_SHA256: ${{ needs.release_authority.outputs.manifest_sha256 }}
     steps:
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: python-dists
-          path: dist
+          name: publication-controller
+          path: controller
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-proof
-          path: release-proof
-      - name: verify the exact prevalidated distributions
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=(dist/*)
-          wheels=(dist/gpuwm-*.whl)
-          sdists=(dist/gpuwm-*.tar.gz)
-          data_wheels=(dist/gpuwm_data-*.whl)
-          data_sdists=(dist/gpuwm_data-*.tar.gz)
-          if [ "${#files[@]}" -ne 4 ] || [ "${#wheels[@]}" -ne 1 ] \
-             || [ "${#sdists[@]}" -ne 1 ] || [ "${#data_wheels[@]}" -ne 1 ] \
-             || [ "${#data_sdists[@]}" -ne 1 ]; then
-            echo "python-dists must contain exactly one wheel and one sdist each for gpuwm and gpuwm-data" >&2
-            exit 1
-          fi
-          (
-            cd dist
-            sha256sum -c ../release-proof/python-dists-SHA256SUMS
-          )
-      # gpuwm-data FIRST, and it is ordering with a failure mode attached:
-      # gpuwm==X.Y.Z hard-pins gpuwm-data==X.Y.Z, so if gpuwm landed first
-      # and anything then failed, every fresh `pip install gpuwm` would be
-      # broken until the companion existed.  This order's failure mode --
-      # companion live, gpuwm absent -- breaks nobody and a re-run adopts
-      # it.  The companion may not exist on PyPI at all yet: `gpuwm-data`
-      # is a PENDING trusted publisher on this workflow's exact
-      # coordinates, created by its first upload, so a 404 here means
-      # "every distribution is missing", never an error.
-      - name: reconcile exact PyPI distribution state for gpuwm-data
-        id: pypi_data
-        shell: bash
+          path: ${{ runner.temp }}/release-proof
+      - name: verify the tested controller
         env:
-          PYPI_DATA_PROJECT: gpuwm-data
-          PYPI_VERSION: ${{ needs.cut.outputs.version }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=(dist/gpuwm_data-*)
-          mkdir -p dist-upload-data
-          declare -A local_path=()
-          declare -A local_sha=()
-          declare -A local_size=()
-          for path in "${files[@]}"; do
-            name=$(basename "$path")
-            local_path["$name"]="$path"
-            local_sha["$name"]=$(sha256sum -- "$path" | awk '{print $1}')
-            local_size["$name"]=$(stat -c '%s' -- "$path")
-          done
-
-          state="$RUNNER_TEMP/pypi-data-before.json"
-          status=$(curl --silent --show-error --location -H "Accept: application/json" -H "Cache-Control: no-cache" --output "$state" --write-out '%{http_code}' "https://pypi.org/pypi/${PYPI_DATA_PROJECT}/${PYPI_VERSION}/json")
-          case "$status" in
-            200) ;;
-            404) printf '{"urls":[]}\n' >"$state" ;;
-            *) echo "PyPI JSON API returned HTTP $status for ${PYPI_DATA_PROJECT}" >&2; exit 1 ;;
-          esac
-
-          declare -A remote_seen=()
-          mapfile -t remote_names < <(jq -r '.urls[].filename' "$state")
-          for name in "${remote_names[@]}"; do
-            if [[ -z "${local_path[$name]:-}" ]]; then
-              echo "PyPI version carries unexpected distribution: $name" >&2
-              exit 1
-            fi
-            if [[ -n "${remote_seen[$name]:-}" ]]; then
-              echo "PyPI version carries duplicate distribution filename: $name" >&2
-              exit 1
-            fi
-            remote_seen["$name"]=1
-          done
-
-          missing=0
-          for name in "${!local_path[@]}"; do
-            match=$(jq -c --arg name "$name" '[.urls[] | select(.filename == $name)]' "$state")
-            count=$(jq 'length' <<<"$match")
-            if [ "$count" -eq 0 ]; then
-              cp -- "${local_path[$name]}" dist-upload-data/
-              missing=$((missing + 1))
-              continue
-            fi
-            if [ "$count" -ne 1 ] \
-               || [ "$(jq -r '.[0].size' <<<"$match")" != "${local_size[$name]}" ] \
-               || [ "$(jq -r '.[0].digests.sha256' <<<"$match")" != "${local_sha[$name]}" ] \
-               || [ "$(jq -r '.[0].yanked // false' <<<"$match")" != "false" ]; then
-              echo "PyPI distribution differs from the proven artifact: $name" >&2
-              exit 1
-            fi
-            echo "PyPI distribution already matches: $name"
-          done
-          if [ "$missing" -eq 0 ]; then
-            echo "upload_required=false" >>"$GITHUB_OUTPUT"
-          else
-            echo "upload_required=true" >>"$GITHUB_OUTPUT"
-          fi
-          echo "missing_count=$missing" >>"$GITHUB_OUTPUT"
-      # The same publisher action, the same OIDC identity: one workflow,
-      # one environment, a second project on the same coordinates.
-      - if: steps.pypi_data.outputs.upload_required == 'true'
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+          CONTROLLER_SHA256: ${{ needs.test.outputs.controller_sha256 }}
+        run: echo "$CONTROLLER_SHA256  controller/promote_prepared_release.py" | sha256sum --check --strict
+      - id: data
+        name: reconcile and stage only missing companion files
+        run: python controller/promote_prepared_release.py stage-missing --proof "$RUNNER_TEMP/release-proof" --dists "$RUNNER_TEMP/release-proof/dists" --project gpuwm-data --out upload-data
+      - name: upload companion files
+        if: steps.data.outputs.upload_required == 'true'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
         with:
-          packages-dir: dist-upload-data/
-      # The hard gate between the two projects.  gpuwm's own reconcile and
-      # upload are unreachable until PyPI provably lists the exact
-      # companion bytes; a failure here fails the job with gpuwm still
-      # unpublished, which is the recoverable state.
-      - name: prove exact gpuwm-data PyPI state before gpuwm publishes
-        shell: bash
-        env:
-          PYPI_DATA_PROJECT: gpuwm-data
-          PYPI_VERSION: ${{ needs.cut.outputs.version }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=(dist/gpuwm_data-*)
-          state="$RUNNER_TEMP/pypi-data-after.json"
-          # The same index-lag retry the gpuwm proof below uses: the upload
-          # can return 200 OK a beat before the JSON API lists the version.
-          # Retry ONLY the 404 signature, bounded at five minutes; every
-          # other status and every exact-state assertion keeps single-shot
-          # fail-closed semantics.
-          budget="${PYPI_INDEX_RETRY_BUDGET_SECONDS:-300}"
-          delay="${PYPI_INDEX_RETRY_INITIAL_DELAY_SECONDS:-1}"
-          if [ "$delay" -lt 1 ]; then
-            delay=1
-          fi
-          elapsed=0
-          while :; do
-            status=$(curl --silent --show-error --location -H "Accept: application/json" -H "Cache-Control: no-cache" --output "$state" --write-out '%{http_code}' "https://pypi.org/pypi/${PYPI_DATA_PROJECT}/${PYPI_VERSION}/json")
-            if [ "$status" != "404" ] || [ "$elapsed" -ge "$budget" ]; then
-              break
-            fi
-            pause=$delay
-            remaining=$((budget - elapsed))
-            if [ "$pause" -gt "$remaining" ]; then
-              pause=$remaining
-            fi
-            echo "PyPI index does not list ${PYPI_DATA_PROJECT} ${PYPI_VERSION} yet (HTTP 404); retrying in ${pause}s"
-            sleep "$pause"
-            elapsed=$((elapsed + pause))
-            delay=$((delay * 2))
-          done
-          if [ "$status" != "200" ]; then
-            echo "gpuwm-data exact-state proof returned HTTP $status" >&2
-            exit 1
-          fi
-          if [ "$(jq '.urls | length' "$state")" -ne "${#files[@]}" ]; then
-            echo "gpuwm-data release does not carry the exact distribution set" >&2
-            exit 1
-          fi
-          for path in "${files[@]}"; do
-            name=$(basename "$path")
-            size=$(stat -c '%s' -- "$path")
-            sha=$(sha256sum -- "$path" | awk '{print $1}')
-            match=$(jq -c --arg name "$name" '[.urls[] | select(.filename == $name)]' "$state")
-            if [ "$(jq 'length' <<<"$match")" -ne 1 ] \
-               || [ "$(jq -r '.[0].size' <<<"$match")" != "$size" ] \
-               || [ "$(jq -r '.[0].digests.sha256' <<<"$match")" != "$sha" ] \
-               || [ "$(jq -r '.[0].yanked // false' <<<"$match")" != "false" ]; then
-              echo "gpuwm-data exact-state proof failed for $name" >&2
-              exit 1
-            fi
-          done
-      - name: reconcile exact PyPI distribution state
-        id: pypi
-        shell: bash
-        env:
-          PYPI_PROJECT: gpuwm
-          PYPI_VERSION: ${{ needs.cut.outputs.version }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=(dist/gpuwm-*)
-          mkdir -p dist-upload
-          declare -A local_path=()
-          declare -A local_sha=()
-          declare -A local_size=()
-          for path in "${files[@]}"; do
-            name=$(basename "$path")
-            local_path["$name"]="$path"
-            local_sha["$name"]=$(sha256sum -- "$path" | awk '{print $1}')
-            local_size["$name"]=$(stat -c '%s' -- "$path")
-          done
-
-          state="$RUNNER_TEMP/pypi-before.json"
-          status=$(curl --silent --show-error --location -H "Accept: application/json" -H "Cache-Control: no-cache" --output "$state" --write-out '%{http_code}' "https://pypi.org/pypi/${PYPI_PROJECT}/${PYPI_VERSION}/json")
-          case "$status" in
-            200) ;;
-            404) printf '{"urls":[]}\n' >"$state" ;;
-            *) echo "PyPI JSON API returned HTTP $status" >&2; exit 1 ;;
-          esac
-
-          declare -A remote_seen=()
-          mapfile -t remote_names < <(jq -r '.urls[].filename' "$state")
-          for name in "${remote_names[@]}"; do
-            if [[ -z "${local_path[$name]:-}" ]]; then
-              echo "PyPI version carries unexpected distribution: $name" >&2
-              exit 1
-            fi
-            if [[ -n "${remote_seen[$name]:-}" ]]; then
-              echo "PyPI version carries duplicate distribution filename: $name" >&2
-              exit 1
-            fi
-            remote_seen["$name"]=1
-          done
-
-          missing=0
-          for name in "${!local_path[@]}"; do
-            match=$(jq -c --arg name "$name" '[.urls[] | select(.filename == $name)]' "$state")
-            count=$(jq 'length' <<<"$match")
-            if [ "$count" -eq 0 ]; then
-              cp -- "${local_path[$name]}" dist-upload/
-              missing=$((missing + 1))
-              continue
-            fi
-            if [ "$count" -ne 1 ] \
-               || [ "$(jq -r '.[0].size' <<<"$match")" != "${local_size[$name]}" ] \
-               || [ "$(jq -r '.[0].digests.sha256' <<<"$match")" != "${local_sha[$name]}" ] \
-               || [ "$(jq -r '.[0].yanked // false' <<<"$match")" != "false" ]; then
-              echo "PyPI distribution differs from the proven artifact: $name" >&2
-              exit 1
-            fi
-            echo "PyPI distribution already matches: $name"
-          done
-          if [ "$missing" -eq 0 ]; then
-            echo "upload_required=false" >>"$GITHUB_OUTPUT"
-          else
-            echo "upload_required=true" >>"$GITHUB_OUTPUT"
-          fi
-          echo "missing_count=$missing" >>"$GITHUB_OUTPUT"
-      - if: steps.pypi.outputs.upload_required == 'true'
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+          packages-dir: upload-data/
+      - name: prove both companion index entries
+        run: python controller/promote_prepared_release.py wait-index --proof "$RUNNER_TEMP/release-proof" --project gpuwm-data --out "$RUNNER_TEMP/DATA-INDEX.json"
+      - id: native
+        name: reconcile and stage only missing platform engine wheels
+        run: python controller/promote_prepared_release.py stage-missing --proof "$RUNNER_TEMP/release-proof" --dists "$RUNNER_TEMP/release-proof/dists" --project gpuwm --phase native --out upload-native
+      - name: upload platform engine wheels
+        if: steps.native.outputs.upload_required == 'true'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
         with:
-          packages-dir: dist-upload/
-      - name: prove exact PyPI state before release promotion
-        shell: bash
-        env:
-          PYPI_PROJECT: gpuwm
-          PYPI_VERSION: ${{ needs.cut.outputs.version }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=(dist/gpuwm-*)
-          state="$RUNNER_TEMP/pypi-after.json"
-          # The upload above can return 200 OK a beat before PyPI's JSON API
-          # lists the new version -- index lag measured in the hundreds of
-          # milliseconds, occasionally longer.  Retry ONLY this index read,
-          # only while it answers 404, with exponential backoff bounded at
-          # five minutes total.  Any other status, and every exact-state
-          # assertion below, keeps its original single-shot fail-closed
-          # semantics: once the budget is exhausted a 404 is the same hard
-          # failure it always was.
-          budget="${PYPI_INDEX_RETRY_BUDGET_SECONDS:-300}"
-          delay="${PYPI_INDEX_RETRY_INITIAL_DELAY_SECONDS:-1}"
-          if [ "$delay" -lt 1 ]; then
-            delay=1
-          fi
-          elapsed=0
-          while :; do
-            status=$(curl --silent --show-error --location -H "Accept: application/json" -H "Cache-Control: no-cache" --output "$state" --write-out '%{http_code}' "https://pypi.org/pypi/${PYPI_PROJECT}/${PYPI_VERSION}/json")
-            if [ "$status" != "404" ] || [ "$elapsed" -ge "$budget" ]; then
-              break
-            fi
-            pause=$delay
-            remaining=$((budget - elapsed))
-            if [ "$pause" -gt "$remaining" ]; then
-              pause=$remaining
-            fi
-            echo "PyPI index does not list ${PYPI_PROJECT} ${PYPI_VERSION} yet (HTTP 404); retrying in ${pause}s"
-            sleep "$pause"
-            elapsed=$((elapsed + pause))
-            delay=$((delay * 2))
-          done
-          if [ "$status" != "200" ]; then
-            echo "PyPI exact-state proof returned HTTP $status" >&2
-            exit 1
-          fi
-          if [ "$(jq '.urls | length' "$state")" -ne "${#files[@]}" ]; then
-            echo "PyPI release does not carry the exact distribution set" >&2
-            exit 1
-          fi
-          for path in "${files[@]}"; do
-            name=$(basename "$path")
-            size=$(stat -c '%s' -- "$path")
-            sha=$(sha256sum -- "$path" | awk '{print $1}')
-            match=$(jq -c --arg name "$name" '[.urls[] | select(.filename == $name)]' "$state")
-            if [ "$(jq 'length' <<<"$match")" -ne 1 ] \
-               || [ "$(jq -r '.[0].size' <<<"$match")" != "$size" ] \
-               || [ "$(jq -r '.[0].digests.sha256' <<<"$match")" != "$sha" ] \
-               || [ "$(jq -r '.[0].yanked // false' <<<"$match")" != "false" ]; then
-              echo "PyPI exact-state proof failed for $name" >&2
-              exit 1
-            fi
-          done
+          packages-dir: upload-native/
+      - name: prove both native engine index entries
+        run: python controller/promote_prepared_release.py wait-index --proof "$RUNNER_TEMP/release-proof" --project gpuwm --phase native --out "$RUNNER_TEMP/NATIVE-INDEX.json"
+      - id: pure
+        name: reconcile and stage only missing universal engine files
+        run: python controller/promote_prepared_release.py stage-missing --proof "$RUNNER_TEMP/release-proof" --dists "$RUNNER_TEMP/release-proof/dists" --project gpuwm --phase pure --out upload-pure
+      - name: upload universal wheel and engine source
+        if: steps.pure.outputs.upload_required == 'true'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
+        with:
+          packages-dir: upload-pure/
+      - name: prove the complete four-file engine index
+        run: python controller/promote_prepared_release.py wait-index --proof "$RUNNER_TEMP/release-proof" --project gpuwm --out "$RUNNER_TEMP/ENGINE-INDEX.json"
 
-  # GitHub draft promotion, and nothing else. No checkout, repository code,
-  # build toolchain, or PyPI identity is present in this final privilege cell.
   release:
     if: github.event_name != 'pull_request'
-    needs: [cut, publish]
+    needs: [test, release_authority, publish]
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
+      contents: read
+    env:
+      PUBLICATION_COMMIT: ${{ needs.release_authority.outputs.commit }}
+      PUBLICATION_MANIFEST_SHA256: ${{ needs.release_authority.outputs.manifest_sha256 }}
     steps:
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: release-assets
-          path: dist-assets
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: python-dists
-          path: dist
+          name: publication-controller
+          path: controller
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-proof
-          path: release-proof
-      - name: publish the fully-proven draft
+          path: ${{ runner.temp }}/release-proof
+      - name: verify the tested controller
+        env:
+          CONTROLLER_SHA256: ${{ needs.test.outputs.controller_sha256 }}
+        run: echo "$CONTROLLER_SHA256  controller/promote_prepared_release.py" | sha256sum --check --strict
+      - name: record exact public release and both complete indexes
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_ID: ${{ needs.cut.outputs.release_id }}
-          RELEASE_TAG: ${{ needs.cut.outputs.tag }}
-          RELEASE_COMMIT: ${{ needs.cut.outputs.commit }}
-          PYPI_PROJECT: gpuwm
-          PYPI_DATA_PROJECT: gpuwm-data
-          PYPI_VERSION: ${{ needs.cut.outputs.version }}
-          # The prerelease state release_authority captured.  Promotion
-          # preserves it rather than forcing it to false: with the
-          # non-prerelease check demoted to a warning upstream, clearing the
-          # flag here would publish as stable something the operator marked
-          # otherwise -- a silent state change, which is worse than either
-          # refusing or preserving.
-          CAPTURED_PRERELEASE: ${{ needs.cut.outputs.prerelease }}
-          # Empty on any trigger that is not workflow_dispatch, which the
-          # comparisons below treat as "not opted in".  Declared here because
-          # this step runs under `set -u` and the input is otherwise only in
-          # scope in release_authority.
-          IMMUTABLE_RELEASES_CONFIRMED: ${{ inputs.immutable_releases_enabled }}
-        run: |
-          set -euo pipefail
-          if [[ ! "$RELEASE_ID" =~ ^[0-9]+$ ]] \
-             || [[ ! "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "captured release authority is malformed" >&2
-            exit 1
-          fi
-
-          all_releases=$(gh api --paginate --slurp -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/releases?per_page=100")
-          id_matches=$(jq -c --argjson id "$RELEASE_ID" '[.[][] | select(.id == $id)]' <<<"$all_releases")
-          tag_matches=$(jq -c --arg tag "$RELEASE_TAG" '[.[][] | select(.tag_name == $tag)]' <<<"$all_releases")
-          if [ "$(jq 'length' <<<"$id_matches")" -ne 1 ] \
-             || [ "$(jq 'length' <<<"$tag_matches")" -ne 1 ]; then
-            echo "captured release id/tag no longer resolve exactly once" >&2
-            exit 1
-          fi
-          current=$(jq -c '.[0]' <<<"$id_matches")
-          by_tag=$(jq -c '.[0]' <<<"$tag_matches")
-          if [ "$(jq -r '.tag_name' <<<"$current")" != "$RELEASE_TAG" ] \
-             || [ "$(jq -r '.id' <<<"$by_tag")" != "$RELEASE_ID" ] \
-             || [ "$(jq -r '.prerelease' <<<"$current")" != "$CAPTURED_PRERELEASE" ]; then
-            echo "captured release id/tag authority changed before promotion" >&2
-            exit 1
-          fi
-
-          ref_json=$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/git/ref/tags/$RELEASE_TAG")
-          object_type=$(jq -r '.object.type' <<<"$ref_json")
-          object_sha=$(jq -r '.object.sha' <<<"$ref_json")
-          hops=0
-          while [ "$object_type" = "tag" ]; do
-            if [ "$hops" -ge 16 ]; then
-              echo "annotated tag chain is unexpectedly deep" >&2
-              exit 1
-            fi
-            tag_json=$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/git/tags/$object_sha")
-            object_type=$(jq -r '.object.type' <<<"$tag_json")
-            object_sha=$(jq -r '.object.sha' <<<"$tag_json")
-            hops=$((hops + 1))
-          done
-          if [ "$object_type" != "commit" ] \
-             || [ "$object_sha" != "$RELEASE_COMMIT" ]; then
-            echo "release tag moved before final promotion" >&2
-            exit 1
-          fi
-
-          shopt -s nullglob
-          asset_files=(dist-assets/*)
-          dist_files=(dist/*)
-          data_dist_files=(dist/gpuwm_data-*)
-          gpuwm_dist_files=(dist/gpuwm-*)
-          if [ "${#asset_files[@]}" -ne 3 ] || [ "${#dist_files[@]}" -ne 4 ] \
-             || [ "${#data_dist_files[@]}" -ne 2 ] \
-             || [ "${#gpuwm_dist_files[@]}" -ne 2 ]; then
-            echo "final promotion local artifact sets are not exact" >&2
-            exit 1
-          fi
-          (
-            cd dist-assets
-            sha256sum -c ../release-proof/release-assets-SHA256SUMS
-          )
-          (
-            cd dist
-            sha256sum -c ../release-proof/python-dists-SHA256SUMS
-          )
-          if [ "$(jq '.assets | length' <<<"$current")" -ne "${#asset_files[@]}" ]; then
-            echo "final promotion draft asset set changed" >&2
-            exit 1
-          fi
-          for path in "${asset_files[@]}"; do
-            name=$(basename "$path")
-            size=$(stat -c '%s' -- "$path")
-            sha=$(sha256sum -- "$path" | awk '{print $1}')
-            match=$(jq -c --arg name "$name" '[.assets[] | select(.name == $name)]' <<<"$current")
-            if [ "$(jq 'length' <<<"$match")" -ne 1 ] \
-               || [ "$(jq -r '.[0].state' <<<"$match")" != "uploaded" ] \
-               || [ "$(jq -r '.[0].size' <<<"$match")" != "$size" ] \
-               || [ "$(jq -r '.[0].digest // ""' <<<"$match")" != "sha256:$sha" ]; then
-              echo "final promotion asset proof failed: $name" >&2
-              exit 1
-            fi
-          done
-
-          # PyPI is proven per project, the companion FIRST, both here and
-          # again after the promotion patch.  gpuwm==X.Y.Z hard-pins
-          # gpuwm-data==X.Y.Z: the state where gpuwm exists without its
-          # companion is the state where a bare `pip install gpuwm` cannot
-          # resolve, so nothing is promoted until BOTH projects list the
-          # exact proven bytes.
-          #
-          # The `retry` mode absorbs the same index lag the publish job
-          # does on its own reads of this endpoint: uploads return 200 OK
-          # a beat before PyPI's JSON API lists the new version, and this
-          # read was measured to hit that window live (uploads at T+0, a
-          # 404 here at T+59s while the publish job's retry logged the
-          # same 404s before succeeding).  Retry ONLY the index read, only
-          # while it answers 404, with exponential backoff bounded at five
-          # minutes total.  Any other status, every read in `once` mode,
-          # and every exact-state assertion keep their single-shot
-          # fail-closed semantics.
-          read_pypi_state() {
-            # $1 = retry|once, $2 = project, $3 = output state file.
-            # Writes the final HTTP status to stdout.
-            local mode="$1" project="$2" state="$3"
-            local budget="${PYPI_INDEX_RETRY_BUDGET_SECONDS:-300}"
-            local delay="${PYPI_INDEX_RETRY_INITIAL_DELAY_SECONDS:-1}"
-            local elapsed=0 status pause remaining
-            if [ "$mode" != "retry" ]; then
-              budget=0
-            fi
-            if [ "$delay" -lt 1 ]; then
-              delay=1
-            fi
-            while :; do
-              status=$(curl --silent --show-error --location -H "Accept: application/json" -H "Cache-Control: no-cache" --output "$state" --write-out '%{http_code}' "https://pypi.org/pypi/${project}/${PYPI_VERSION}/json")
-              if [ "$status" != "404" ] || [ "$elapsed" -ge "$budget" ]; then
-                break
-              fi
-              pause=$delay
-              remaining=$((budget - elapsed))
-              if [ "$pause" -gt "$remaining" ]; then
-                pause=$remaining
-              fi
-              echo "PyPI index does not list ${project} ${PYPI_VERSION} yet (HTTP 404); retrying in ${pause}s" >&2
-              sleep "$pause"
-              elapsed=$((elapsed + pause))
-              delay=$((delay * 2))
-            done
-            printf '%s' "$status"
-          }
-
-          prove_pypi_project() {
-            # $1 = retry|once, $2 = project, $3 = state file, $4 = message
-            # for a set-level change, $5 = message prefix for a per-file
-            # mismatch; the remaining arguments are the local distribution
-            # files the project must list exactly.
-            local mode="$1" project="$2" state="$3" set_msg="$4" file_msg="$5"
-            shift 5
-            local status path name size sha match
-            status=$(read_pypi_state "$mode" "$project" "$state")
-            if [ "$status" != "200" ] \
-               || [ "$(jq '.urls | length' "$state")" -ne "$#" ]; then
-              echo "$set_msg (${project} HTTP ${status})" >&2
-              exit 1
-            fi
-            for path in "$@"; do
-              name=$(basename "$path")
-              size=$(stat -c '%s' -- "$path")
-              sha=$(sha256sum -- "$path" | awk '{print $1}')
-              match=$(jq -c --arg name "$name" '[.urls[] | select(.filename == $name)]' "$state")
-              if [ "$(jq 'length' <<<"$match")" -ne 1 ] \
-                 || [ "$(jq -r '.[0].size' <<<"$match")" != "$size" ] \
-                 || [ "$(jq -r '.[0].digests.sha256' <<<"$match")" != "$sha" ] \
-                 || [ "$(jq -r '.[0].yanked // false' <<<"$match")" != "false" ]; then
-                echo "${file_msg}${name}" >&2
-                exit 1
-              fi
-            done
-          }
-
-          prove_pypi_project retry "$PYPI_DATA_PROJECT" "$RUNNER_TEMP/pypi-data-final.json" \
-            "final promotion PyPI artifact set changed" \
-            "final promotion PyPI proof failed: " \
-            "${data_dist_files[@]}"
-          prove_pypi_project retry "$PYPI_PROJECT" "$RUNNER_TEMP/pypi-final.json" \
-            "final promotion PyPI artifact set changed" \
-            "final promotion PyPI proof failed: " \
-            "${gpuwm_dist_files[@]}"
-
-          # Retry safety.  This recognises an already-promoted release so a
-          # re-run exits clean instead of trying to promote twice.  The
-          # immutable leg is only required when enforcement was opted into --
-          # otherwise a retry after a successful promotion would fail this
-          # test, fall through to the draft check below, find draft=false and
-          # abort with "invalid draft state" on a release that is in fact fine.
-          # This is also the whole of the release-event ingress: that trigger
-          # fires on an already-public release, so everything above proved it
-          # and there is nothing left to promote.
-          if [ "$(jq -r '.draft' <<<"$current")" = "false" ] \
-             && { [ "$IMMUTABLE_RELEASES_CONFIRMED" != "true" ] \
-                  || [ "$(jq -r '.immutable' <<<"$current")" = "true" ]; } \
-             && [ "$(jq -r '.prerelease' <<<"$current")" = "$CAPTURED_PRERELEASE" ]; then
-            echo "release ${RELEASE_TAG} is already public at the captured id"
-            exit 0
-          fi
-          if [ "$(jq -r '.draft' <<<"$current")" != "true" ]; then
-            echo "release ${RELEASE_TAG} has an invalid draft state" >&2
-            exit 1
-          fi
-          gh api --method PATCH -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false -F "prerelease=$CAPTURED_PRERELEASE" >/dev/null
-          after_releases=$(gh api --paginate --slurp -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/releases?per_page=100")
-          after_id_matches=$(jq -c --argjson id "$RELEASE_ID" '[.[][] | select(.id == $id)]' <<<"$after_releases")
-          after_tag_matches=$(jq -c --arg tag "$RELEASE_TAG" '[.[][] | select(.tag_name == $tag)]' <<<"$after_releases")
-          if [ "$(jq 'length' <<<"$after_id_matches")" -ne 1 ] \
-             || [ "$(jq 'length' <<<"$after_tag_matches")" -ne 1 ]; then
-            echo "published release id/tag do not resolve exactly once" >&2
-            exit 1
-          fi
-          after=$(jq -c '.[0]' <<<"$after_id_matches")
-          after_by_tag=$(jq -c '.[0]' <<<"$after_tag_matches")
-          after_ref_json=$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/git/ref/tags/$RELEASE_TAG")
-          after_object_type=$(jq -r '.object.type' <<<"$after_ref_json")
-          after_object_sha=$(jq -r '.object.sha' <<<"$after_ref_json")
-          after_hops=0
-          while [ "$after_object_type" = "tag" ]; do
-            if [ "$after_hops" -ge 16 ]; then
-              echo "published annotated tag chain is unexpectedly deep" >&2
-              exit 1
-            fi
-            after_tag_json=$(gh api -H "X-GitHub-Api-Version: 2026-03-10" "/repos/${GITHUB_REPOSITORY}/git/tags/$after_object_sha")
-            after_object_type=$(jq -r '.object.type' <<<"$after_tag_json")
-            after_object_sha=$(jq -r '.object.sha' <<<"$after_tag_json")
-            after_hops=$((after_hops + 1))
-          done
-          if [ "$(jq '.assets | length' <<<"$after")" -ne "${#asset_files[@]}" ]; then
-            echo "immutable release asset set changed during promotion" >&2
-            exit 1
-          fi
-          for path in "${asset_files[@]}"; do
-            name=$(basename "$path")
-            size=$(stat -c '%s' -- "$path")
-            sha=$(sha256sum -- "$path" | awk '{print $1}')
-            match=$(jq -c --arg name "$name" '[.assets[] | select(.name == $name)]' <<<"$after")
-            if [ "$(jq 'length' <<<"$match")" -ne 1 ] \
-               || [ "$(jq -r '.[0].state' <<<"$match")" != "uploaded" ] \
-               || [ "$(jq -r '.[0].size' <<<"$match")" != "$size" ] \
-               || [ "$(jq -r '.[0].digest // ""' <<<"$match")" != "sha256:$sha" ]; then
-              echo "immutable release asset changed during promotion: $name" >&2
-              exit 1
-            fi
-          done
-
-          # The same per-project re-proof, companion first, single-shot:
-          # both projects already answered 200 above, so a 404 here is not
-          # lag but a state change, and it refuses.
-          prove_pypi_project once "$PYPI_DATA_PROJECT" "$RUNNER_TEMP/pypi-data-promoted.json" \
-            "immutable release PyPI artifact set changed during promotion" \
-            "immutable release PyPI artifact changed during promotion: " \
-            "${data_dist_files[@]}"
-          prove_pypi_project once "$PYPI_PROJECT" "$RUNNER_TEMP/pypi-promoted.json" \
-            "immutable release PyPI artifact set changed during promotion" \
-            "immutable release PyPI artifact changed during promotion: " \
-            "${gpuwm_dist_files[@]}"
-          # Everything that proves THIS cut published what it built stays a hard
-          # gate: the release id, the tag, the release going public with the
-          # prerelease state it was captured with, the tag resolving to the
-          # exact commit, and the asset and PyPI byte checks above.  What is
-          # not asserted is that the operator chose any particular prerelease
-          # value -- that is procedure, and it warns upstream.
-          # Immutability is the one leg that is a repo setting
-          # rather than a property of this cut, so it is asserted only when the
-          # operator opted in, and reported otherwise.
-          if [ "$(jq -r '.id' <<<"$after")" != "$RELEASE_ID" ] \
-             || [ "$(jq -r '.tag_name' <<<"$after")" != "$RELEASE_TAG" ] \
-             || [ "$(jq -r '.draft' <<<"$after")" != "false" ] \
-             || [ "$(jq -r '.prerelease' <<<"$after")" != "$CAPTURED_PRERELEASE" ] \
-             || [ "$(jq -r '.id' <<<"$after_by_tag")" != "$RELEASE_ID" ] \
-             || [ "$after_object_type" != "commit" ] \
-             || [ "$after_object_sha" != "$RELEASE_COMMIT" ]; then
-            echo "release promotion did not preserve the proven id/tag or public state" >&2
-            exit 1
-          fi
-          after_immutable=$(jq -r '.immutable' <<<"$after")
-          if [ "$IMMUTABLE_RELEASES_CONFIRMED" = "true" ]; then
-            if [ "$after_immutable" != "true" ]; then
-              echo "immutability was confirmed at dispatch but GitHub reports the published release as mutable" >&2
-              exit 1
-            fi
-            echo "published release is immutable"
-          else
-            echo "::warning::published release immutable=${after_immutable}; immutability was not opted into for this cut"
-          fi
+        run: python controller/promote_prepared_release.py finish --proof "$RUNNER_TEMP/release-proof" --out "$RUNNER_TEMP/PUBLICATION-RESULT.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: publication-result
+          path: ${{ runner.temp }}/PUBLICATION-RESULT.json
+          if-no-files-found: error
+          retention-days: 90
