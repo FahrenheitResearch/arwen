@@ -21,6 +21,27 @@
     "tests/test_inflow_perturbation.py": 28,
     "tests/test_shipped_configs_inflow_applicability.py": 4
    }
+  },
+  {
+   "recorded_on": "2026-09-09",
+   "leg": "stage1",
+   "source_revision": "f6d9afe7c0f391afc9f66e90aac478c881d26175",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1"
+   },
+   "counts": {
+    "tests/test_prepared_publication.py": 79,
+    "tests/test_publish_workflow_state_machine.py": 18,
+    "tests/test_publish_dist_shape_agreement.py": 16,
+    "tests/test_verify_source_bridge_pins.py": 9,
+    "tests/test_release_version_declaration.py": 4,
+    "tests/test_verify_release_artifacts.py": 38,
+    "tests/test_source_adapters.py": 113
+   },
+   "reason": "Prepared release promotion replaces legacy inline Bash state-machine fixtures with parsed workflow wiring checks and 79 executable controller cases. Both publication suites remain listed; the new controller suite joins stage1. All changed release test modules were collected by record_list_census._collect under the recorded CPU marker expression."
   }
  ],
  "recorded_at_commit": "e1ae169c3937ebcaa96605832fe6dba2883d2c2b",
@@ -32,7 +53,7 @@
    "environment": {
     "GPUWM_NO_LOCAL_GPU": "1"
    },
-   "collected_total": 13119,
+   "collected_total": 13166,
    "files": {
     "tests/test_runplan.py": 145,
     "tests/test_nest_spawn_soil.py": 20,
@@ -96,7 +117,7 @@
     "tests/test_release_snapshot_machine_paths.py": 20,
     "tests/test_release_snapshot_modes.py": 3,
     "tests/test_stage1_manifest.py": 717,
-    "tests/test_publish_workflow_state_machine.py": 58,
+    "tests/test_publish_workflow_state_machine.py": 18,
     "tests/test_verify_source_bridge_pins.py": 9,
     "tests/test_wheel_pin_gate.py": 7,
     "tests/test_doctor_nexrad.py": 16,
@@ -160,7 +181,7 @@
     "tests/test_adapt.py": 17,
     "tests/test_mapped_authoring.py": 27,
     "tests/test_release_version_declaration.py": 4,
-    "tests/test_publish_dist_shape_agreement.py": 8,
+    "tests/test_publish_dist_shape_agreement.py": 16,
     "tests/test_configs_are_packaged.py": 5,
     "tests/test_stage_seams.py": 30,
     "tests/test_progress_log.py": 76,
@@ -381,7 +402,8 @@
     "tests/test_cyclone_setup.py": 8,
     "tests/test_domain_target_hardware.py": 17,
     "tests/test_lifecycle_reflectivity_restart.py": 15,
-    "tests/test_remote_processed_v2.py": 8
+    "tests/test_remote_processed_v2.py": 8,
+    "tests/test_prepared_publication.py": 79
    }
   },
   "always": {

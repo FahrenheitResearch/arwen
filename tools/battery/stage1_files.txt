@@ -512,6 +512,9 @@ tests/test_stage1_manifest.py
 # to this list, and at 23 s it is the most expensive one; it is worth it for
 # the same reason test_verify_release_artifacts.py is.
 tests/test_publish_workflow_state_machine.py
+# Prepared-packet identity, native/metadata checks and bounded retry behavior
+# moved from the old inline Bash workflow fixtures into this controller suite.
+tests/test_prepared_publication.py
 
 # Three more release-machinery suites on no leg, matching the 2.1.0
 # rationale above verbatim: CPU-only, fixtures built through the real tools,
