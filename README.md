@@ -91,6 +91,9 @@ gpuwm fetch-tables
 gpuwm doctor
 ```
 
+`gpuwm doctor` reports each remedy as a command or a `#` comment explaining
+the manual step.
+
 The GPU extra installs CuPy and the required user-space NVIDIA CUDA components
 through their dependency packages. It does not install Python or the NVIDIA
 device driver. Install one CuPy/CUDA major per environment. See the

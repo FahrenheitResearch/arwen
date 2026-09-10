@@ -177,6 +177,12 @@ _TOP_LEVEL_EXCLUDES = {
     "companion_query.py", "companion_domains.py", "companion_forcing.py",
     "configuration_recovery.py", "remote_artifacts.py",
     "remote_input_transfer.py", "remote_plan.py", "remote_processed.py",
+    # Companion forecast configuration and remote rendering/preparation
+    # orchestrators belong to the same excluded ArWen UI/worker surface.
+    # Standalone source_cli has no entry point or importer for these doors.
+    "companion_physics.py", "cyclone_setup.py", "remote_native_plots.py",
+    "remote_preparation_v2.py", "remote_processed_cache_v2.py",
+    "remote_processed_v2.py",
     # The product renderer publishes supervisor/first-products receipts.
     # Its callers are the excluded ArWen CLI/go/run-plan/remote doors and
     # unstaged DA/cells/verification packages. RW-WPS has no render command;
@@ -542,6 +548,11 @@ _OPTIONAL_STAGED_IMPORTS = {
         "but no class definition and no config-validation path reaches "
         "nest_stream, and its only other referrer, gpuwm/core/nest.py, is not "
         "staged at all",
+    ("gpuwm/core/streaming.py", "gpuwm.core.prepared_tile_memory"):
+        "prepared forecast VRAM pricing, imported function-locally inside "
+        "radiation_footprint after tilestream.autoplan. RW-WPS stages "
+        "streaming.py for StreamingOptions and config validation; no "
+        "standalone preprocessing path calls the forecast footprint planner",
     ("gpuwm/core/streaming.py", "gpuwm.state_digest"):
         "the canonical end-of-run digest taken from the STORE, imported "
         "inside StreamedDomain.canonical_digest. gpuwm/state_digest.py is on "
