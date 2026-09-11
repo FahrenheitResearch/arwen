@@ -166,7 +166,11 @@ def test_the_plan_reports_the_mode_the_child_will_actually_use(
 
     The whole front-door claim is that a ``[tiles]`` block in a child config
     is honored, so ``--dry-run`` has to be able to say which mode the run
-    will take -- including for a config this command did not write.
+    will take -- including for a config this command did not write -- and
+    now DECIDE it, on the card the review holds, with the same function the
+    run decides with (``gpuwm.downscale_pricing``).  The ``tiles`` block
+    still reports the configured options; the ``streaming`` block beside
+    ``memory`` reports the verdict.
     """
 
     namelist = _parent_archive(tmp_path)
@@ -179,16 +183,41 @@ def test_the_plan_reports_the_mode_the_child_will_actually_use(
 
     plain = _child_toml(tmp_path / "plain")
     assert cli_main(args + ["--child-config", str(plain)]) == 0
-    assert _plan(capsys)["tiles"]["mode"] == "off"
+    plan = _plan(capsys)
+    assert plan["tiles"]["mode"] == "off"
+    assert plan["streaming"]["mode"] == "resident"
+    assert plan["streaming"]["why"] == "[tiles] mode = 'off'"
+    assert plan["streaming"]["tile"] is None
+    assert plan["memory"]["basis"] == "explicit-size"
+    assert plan["memory"]["peak_envelope_bytes"] == (
+        plan["streaming"]["peak_envelope_bytes"])
 
+    auto = _child_toml(tmp_path / "auto",
+                       tiles_block='[tiles]\nmode = "auto"\n')
+    assert cli_main(args + ["--child-config", str(auto)]) == 0
+    plan = _plan(capsys)
+    assert plan["tiles"]["mode"] == "auto"
+    # Decided against the declared 24 GiB card: the configured envelope
+    # fits, so the child is resident, and the budget it was judged on is
+    # written down.
+    assert plan["streaming"]["mode"] == "resident"
+    assert "configured resident envelope fits" in plan["streaming"]["why"]
+    assert plan["streaming"]["basis"] == "declared"
+    assert plan["streaming"]["budget_bytes"] > (
+        plan["streaming"]["peak_envelope_bytes"])
+    assert plan["streaming"]["tile"] is None
+
+    # A 12x10 child pinned to mode = "on" cannot be tiled at all (the
+    # smallest legal compute window is wider than the domain), and that
+    # refusal now lands HERE, at plan review, in the planner's own words,
+    # instead of after the whole archive has been interpolated.
     streamed = _child_toml(tmp_path / "streamed",
                            tiles_block='[tiles]\nmode = "on"\n')
-    assert cli_main(args + ["--child-config", str(streamed)]) == 0
-    reported = _plan(capsys)["tiles"]
-    assert reported["mode"] == "on"
-    # Never a fabricated tiling: the planner answers that for the card the
-    # run meets, and the plan must not pretend to know it here.
-    assert "tile_nx" not in reported and "nbuffers" not in reported
+    assert cli_main(args + ["--child-config", str(streamed)]) != 0
+    err = capsys.readouterr().err
+    assert "cannot be tiled at all" in err
+    assert "RESIDENT" in err
+    assert not (tmp_path / "child-run").exists()
 
 
 def test_tiles_flag_is_refused_against_a_supplied_child_config(

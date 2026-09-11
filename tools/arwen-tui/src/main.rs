@@ -5947,6 +5947,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &app.cwd,
                 )
             }
+            "--saved-runs" => {
+                // A folder whose finished runs stay listed after the output root
+                // moved: the desktop launchers name the profile's previous run
+                // folder here when the user chose a new forecast output folder.
+                let root = absolute(PathBuf::from(args.next().ok_or("--saved-runs needs a folder")?), &app.cwd);
+                app.run_views.add_local_root(root);
+            }
             "--prepared" => {
                 app.prepared = absolute(
                     PathBuf::from(args.next().ok_or("--prepared needs a folder")?),
@@ -5986,7 +5993,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Desktop controller: --headless-companion opens the visual workspace without an interactive terminal. It keeps an owned forecast running after the window closes. With --desktop-console (Windows) the controller instead runs the full terminal workspace in the hidden console it was started in; desktop progress, node and settings actions reveal that window and Ctrl+Q hides it again.\n");
                 println!("Node profiles: --nodes-file ABSOLUTE_JSON selects one explicit profile store; --connect-node opens Nodes and probes its active profile without starting a forecast.\n");
                 println!("Progress window: --show-progress connects the active saved node and opens its current job status without starting a forecast.\n");
-                println!("ArWen terminal workspace (2.7 preview)\nUsage: arwen-tui [--config FILE] [--python EXECUTABLE] [--output DIR] [--prepared DIR] [--geog-root DIR]\n\nStart with W Research to choose a weather question and configuration. I Scenario edits initial-state warm bubbles; D Domains edits following and tracking in an open configuration. Open existing or Continue forecast resumes your own workflow. Click options, tabs and buttons. K opens the built-in historical cases. O accepts TOML configurations and catalog ZIP/JSON files; F2 browses. Drop files to open them without starting a forecast. F/E edits all settings; V shows overview; G opens geography. Ctrl+S saves. F6 reviews the plan; F7 reviews the exact launch command.\nNo command starts automatically. F1 shows all keys; Up/Down or wheel, PgUp/PgDn and Home/End scroll help; Esc closes it.\n\nRead-only capture: --snapshot FILE.html [--snapshot-width COLUMNS] [--snapshot-height ROWS] [--snapshot-screen SCREEN]. Produces styled HTML and FILE.cells.json from the actual terminal cells. SCREEN: home, overview, settings, logs, help, nodes, domains, plots, guide, modes, mode:ID, research:ID, scenario (needs --config), or current. Default size: 120 x 36.");
+                println!("ArWen terminal workspace (2.7 preview)\nUsage: arwen-tui [--config FILE] [--python EXECUTABLE] [--output DIR] [--saved-runs DIR] [--prepared DIR] [--geog-root DIR]\n\nStart with W Research to choose a weather question and configuration. I Scenario edits initial-state warm bubbles; D Domains edits following and tracking in an open configuration. Open existing or Continue forecast resumes your own workflow. Click options, tabs and buttons. K opens the built-in historical cases. O accepts TOML configurations and catalog ZIP/JSON files; F2 browses. Drop files to open them without starting a forecast. F/E edits all settings; V shows overview; G opens geography. Ctrl+S saves. F6 reviews the plan; F7 reviews the exact launch command.\nNo command starts automatically. F1 shows all keys; Up/Down or wheel, PgUp/PgDn and Home/End scroll help; Esc closes it.\n\nRead-only capture: --snapshot FILE.html [--snapshot-width COLUMNS] [--snapshot-height ROWS] [--snapshot-screen SCREEN]. Produces styled HTML and FILE.cells.json from the actual terminal cells. SCREEN: home, overview, settings, logs, help, nodes, domains, plots, guide, modes, mode:ID, research:ID, scenario (needs --config), or current. Default size: 120 x 36.");
                 return Ok(());
             }
             "--version" => {

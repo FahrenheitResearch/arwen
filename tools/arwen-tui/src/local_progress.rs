@@ -211,10 +211,12 @@ fn summarize(config:&[u8],config_sha:&str,manifest:&Value,manifest_bytes:&[u8],e
         let total=table_number(run,"run_seconds").filter(|v|*v>0.).ok_or("Derived child configuration has no positive forecast duration")?;
         let interval=table_number(run,"output_interval_s").filter(|v|*v>0.).ok_or("Derived child configuration has no output interval")?;
         let id=run.get("grid_id").and_then(|v|v.as_integer()).filter(|n|(1..=999).contains(n)).unwrap_or(1) as u64;
-        // No restart POLICY on this route: the child writes one final
-        // checkpoint. A zero interval is what `planned` already reads as
-        // "nothing scheduled", so no next-checkpoint countdown is invented.
-        (start,total,0.0,BTreeMap::from([(id,interval)]))
+        // The child's own restart policy: it checkpoints on the
+        // configuration's `restart_interval_s` and once more at its end.
+        // Absent or zero means only the final checkpoint, which `planned`
+        // already reads as "nothing scheduled".
+        let restart=table_number(run,"restart_interval_s").unwrap_or(0.0);
+        (start,total,restart,BTreeMap::from([(id,interval)]))
     }else{
         let experiment=doc.get("experiment").and_then(|v|v.as_table()).ok_or("Saved configuration has no experiment")?;
         let start=experiment.get("start_time").ok_or("Saved configuration has no start time")?;

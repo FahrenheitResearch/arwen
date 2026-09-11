@@ -1839,7 +1839,7 @@ def test_an_offline_mp28_child_keeps_its_inherited_surface_emission(tmp_path):
 
 @requires_gpu
 def test_an_offline_mp28_child_can_write_its_final_checkpoint(tmp_path):
-    """``gpuwm downscale`` ends by writing ``gpuwmrst_dNN_final.npz``.
+    """``gpuwm downscale`` ends by writing ``gpuwmrst_dNN_<instant>.npz``.
 
     Before the identity row existed that raised ``RestartManifestError``
     AFTER the whole child forecast had run, i.e. the run's own evidence was
@@ -1868,7 +1868,7 @@ def test_an_offline_mp28_child_can_write_its_final_checkpoint(tmp_path):
     child = build_offline_child_domain_state(initial, cfg, array_module=cp)
     cp.cuda.Stream.null.synchronize()
 
-    path = tmp_path / "gpuwmrst_d01_final.npz"
+    path = tmp_path / "gpuwmrst_d01_1974-04-03_12_00_00.npz"
     restart.write_restart(path, child, cfg)
     assert path.is_file()
     header = restart.read_restart_header(path)

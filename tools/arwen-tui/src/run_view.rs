@@ -2,7 +2,7 @@
 //! selected node. Every viewer owns its session, frozen connection and queues.
 use crate::{companion::{self, Action, Session, Target}, remote};
 use serde_json::{json, Value};
-use std::{collections::BTreeSet, fs, path::{Path, PathBuf}, time::{Duration, Instant}};
+use std::{collections::{BTreeMap, BTreeSet}, fs, path::{Path, PathBuf}, time::{Duration, Instant}};
 
 const MAX_VIEWERS: usize = 8;
 const STATUS_INTERVAL: Duration = Duration::from_secs(2);
@@ -37,6 +37,12 @@ pub struct Manager {
 
 impl Manager {
     pub fn handles(action: &Action) -> bool { matches!(action, Action::BrowseRuns | Action::OpenRun(_)) }
+
+    /// Another folder whose `.arwen-tui` job records are listed and opened
+    /// beside the controller's own: the profile's previous run folder after
+    /// the user chose a new forecast output folder, so the forecasts already
+    /// there stay in My forecasts.
+    pub fn add_local_root(&mut self, root: PathBuf) { self.local_roots.insert(root); }
 
     /// `live` is the controller's own status for the job it currently owns
     /// (`companion::job_status`). It lists and opens that job before its saved
@@ -296,7 +302,11 @@ fn committed_directories(status: &Value) -> (Option<PathBuf>, Option<PathBuf>) {
         let Ok(text) = std::str::from_utf8(line) else { continue; };
         if history.is_none() && text.contains("\"output_committed\"") {
             if let Ok(event) = serde_json::from_str::<Value>(text) {
-                if event["event"] == "output_committed" && event["domain"].as_u64() == Some(1) {
+                // Any domain's frame names the history directory: a
+                // downscaled child commits its frames as its own domain
+                // (d02, d03, ...) beside its manifest, and a reader that
+                // waited for domain 1 never found them.
+                if event["event"] == "output_committed" && event["domain"].as_u64().is_some() {
                     history = event["path"].as_str().and_then(|frame| Path::new(frame).parent()).map(Path::to_path_buf);
                 }
             }
@@ -310,20 +320,42 @@ fn committed_directories(status: &Value) -> (Option<PathBuf>, Option<PathBuf>) {
     (history, checkpoint)
 }
 
+/// The domain a `wrfout_dNN_*` frame name belongs to, or `None`.
+fn frame_domain(name: &str) -> Option<u64> {
+    let rest = name.strip_prefix("wrfout_d")?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    if digits.len() != 2 || !rest[2..].starts_with('_') { return None; }
+    digits.parse().ok()
+}
+
+/// The domain a `gpuwmrst_dNN_*` set member belongs to, or `None`.
+fn checkpoint_domain(name: &str) -> Option<u64> {
+    let rest = name.strip_prefix("gpuwmrst_d")?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() || !rest[digits.len()..].starts_with('_') { return None; }
+    digits.parse().ok()
+}
+
 /// What a finished local run can offer an offline downscale, read from the
 /// directories its own stream says it wrote to (`history_dir` holds the
-/// `wrfout_d01_*` frames, `checkpoint_dir` the `gpuwmrst_*` sets; a run whose
-/// stream names neither is read where its manifest lives). A child needs at
-/// least two history frames to be forced between and one complete restart
-/// set for its physics, so the front door that offers downscaling reads
-/// eligibility from these receipts instead of guessing it from a run's
-/// settings, and hands the engine `history_dir` as the parent to read.
+/// `wrfout_dNN_*` frames, `checkpoint_dir` the `gpuwmrst_*` sets; a run whose
+/// stream names neither is read where its manifest lives). `parent_domain`
+/// is the domain the row counts: the root when the run has `wrfout_d01_*`
+/// frames, otherwise the lowest domain present, which for a downscaled child
+/// is the child's own (d02, d03, ...), so a downscaled run is offered as a
+/// parent too. `restart_sets` counts the checkpoint sets holding that
+/// domain. A child needs at least two history frames to be forced between
+/// and one complete restart set for its physics, so the front door that
+/// offers downscaling reads eligibility from these receipts instead of
+/// guessing it from a run's settings, and hands the engine `history_dir` as
+/// the parent to read and `parent_domain` as the frames to read there.
 fn downscale_inputs(status: &Value) -> Value {
     let Some(root) = status["run_dir"].as_str().map(PathBuf::from).filter(|path| path.is_dir()) else { return Value::Null; };
     let (history, checkpoint) = committed_directories(status);
     let history_dir = history.filter(|path| path.is_dir()).unwrap_or_else(|| root.clone());
     let checkpoint_dir = checkpoint.filter(|path| path.is_dir()).unwrap_or_else(|| history_dir.clone());
-    let (mut frames, mut sets) = (0_usize, BTreeSet::new());
+    let mut frames_by_domain: BTreeMap<u64, usize> = BTreeMap::new();
+    let mut sets_by_domain: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
     let mut directories = vec![&history_dir];
     if checkpoint_dir != history_dir { directories.push(&checkpoint_dir); }
     for (index, directory) in directories.iter().enumerate() {
@@ -331,12 +363,15 @@ fn downscale_inputs(status: &Value) -> Value {
         for entry in entries.filter_map(Result::ok).take(20_000) {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue; };
-            if name.starts_with("wrfout_d01_") { if index == 0 { frames += 1; } }
-            else if let Some(group) = checkpoint_group(name) { sets.insert(group); }
+            if let Some(domain) = frame_domain(name) { if index == 0 { *frames_by_domain.entry(domain).or_default() += 1; } }
+            else if let (Some(group), Some(domain)) = (checkpoint_group(name), checkpoint_domain(name)) { sets_by_domain.entry(domain).or_default().insert(group); }
         }
     }
+    let parent_domain = if frames_by_domain.contains_key(&1) { 1 } else { frames_by_domain.keys().next().copied().unwrap_or(1) };
+    let frames = frames_by_domain.get(&parent_domain).copied().unwrap_or(0);
+    let sets = sets_by_domain.get(&parent_domain).map_or(0, BTreeSet::len);
     json!({"history_dir": history_dir, "checkpoint_dir": checkpoint_dir,
-        "history_frames": frames, "restart_sets": sets.len(),
+        "history_frames": frames, "restart_sets": sets, "parent_domain": parent_domain,
         "history_interval_s": status["progress"]["domains"][0]["history_interval_s"]})
 }
 
@@ -689,14 +724,28 @@ mod tests {
         assert_eq!(receipts["checkpoint_dir"],json!(run));
         assert_eq!(receipts["history_frames"],3);
         assert_eq!(receipts["restart_sets"],2);
+        assert_eq!(receipts["parent_domain"],1);
         assert_eq!(receipts["history_interval_s"],900.0);
         // A run whose stream names no paths is read where its manifest lives.
         let plain=directory("downscale-plain");
         fs::write(plain.join("wrfout_d01_2026-09-09_12_00_00"),b"frame").unwrap();fs::write(plain.join("gpuwmrst_d01_2026-09-09_13_00_00.npz"),b"set").unwrap();
         let receipts=downscale_inputs(&json!({"run_dir":plain,"progress":{"domains":[]}}));
         assert_eq!(receipts["history_dir"],json!(plain));assert_eq!(receipts["checkpoint_dir"],json!(plain));
-        assert_eq!(receipts["history_frames"],1);assert_eq!(receipts["restart_sets"],1);
-        fs::remove_dir_all(root).ok();fs::remove_dir_all(plain).ok();
+        assert_eq!(receipts["history_frames"],1);assert_eq!(receipts["restart_sets"],1);assert_eq!(receipts["parent_domain"],1);
+        // A downscaled child: frames and sets of ITS domain beside its
+        // manifest, committed under domain 2, so the row offers it as a
+        // parent whose frames are d02 and whose sets are the d02 ones.
+        let child=directory("downscale-child");
+        for name in ["wrfout_d02_2026-09-09_12_00_00","wrfout_d02_2026-09-09_13_00_00","wrfout_d02_2026-09-09_14_00_00"]{fs::write(child.join(name),b"frame").unwrap();}
+        for name in ["gpuwmrst_d02_2026-09-09_13_00_00.npz","gpuwmrst_d02_2026-09-09_14_00_00.npz"]{fs::write(child.join(name),b"set").unwrap();}
+        let events=child.join("events.jsonl");
+        let lines=[json!({"schema_version":"gpuwm.run-plan.event.v1","sequence":1,"event":"output_committed","domain":2,"valid_time":"2026-09-09T12:00:00","path":child.join("wrfout_d02_2026-09-09_12_00_00")}),
+            json!({"schema_version":"gpuwm.run-plan.event.v1","sequence":2,"event":"model_progress","domain":2,"model_seconds":7200.0,"last_checkpoint":child.join("gpuwmrst_d02_2026-09-09_14_00_00.npz")})];
+        fs::write(&events,lines.iter().map(|event|serde_json::to_string(event).unwrap()+"\n").collect::<String>()).unwrap();
+        let receipts=downscale_inputs(&json!({"run_dir":child,"events_path":events,"progress":{"domains":[{"history_interval_s":3600.0}]}}));
+        assert_eq!(receipts["history_dir"],json!(child));assert_eq!(receipts["checkpoint_dir"],json!(child));
+        assert_eq!(receipts["history_frames"],3);assert_eq!(receipts["restart_sets"],2);assert_eq!(receipts["parent_domain"],2);
+        fs::remove_dir_all(root).ok();fs::remove_dir_all(plain).ok();fs::remove_dir_all(child).ok();
     }
     #[test]
     fn runs_resolve_the_requested_saved_node_without_changing_the_active_one(){
@@ -782,6 +831,27 @@ mod tests {
         // the controller's own session and the job receipts stay.
         assert!(!session.exists(),"the closed run viewer left its session directory behind");
         assert!(parent.directory.is_dir());assert!(job.join("job.json").is_file());
+        drop(parent);let _=fs::remove_dir_all(root);
+    }
+    /// A run whose job record lives in another folder the launcher named with
+    /// `--saved-runs` is listed and opened like one under the controller's own
+    /// output root; a folder nobody named stays unknown.
+    #[test]
+    fn saved_runs_in_a_named_extra_folder_are_listed_and_opened(){
+        let root=directory("extra-root");let(previous,job)=local_fixture(&root);
+        let output=root.join("chosen-output");fs::create_dir_all(&output).unwrap();
+        let parent=Session::create(&output).unwrap();let store=remote::Store::default();
+        let mut unaware=Manager::default();
+        let browse=unaware.begin(request(Action::BrowseRuns,Target::Local),&parent,&store,&test_python(),&output,&root,None).unwrap().unwrap();
+        assert_eq!(browse.details["jobs"].as_array().unwrap().len(),0,"{}",browse.details);
+        match unaware.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local),&parent,&store,&test_python(),&output,&root,None){Err(error)=>assert!(error.contains("outside the known run stores"),"{error}"),Ok(_)=>panic!("a folder nobody named must stay unknown")}
+        let mut manager=Manager::default();manager.add_local_root(previous.clone());
+        let browse=manager.begin(request(Action::BrowseRuns,Target::Local),&parent,&store,&test_python(),&output,&root,None).unwrap().unwrap();
+        assert_eq!(browse.details["jobs"].as_array().unwrap().len(),1,"{}",browse.details);
+        assert_eq!(browse.details["jobs"][0]["name"],"Saved fixture");
+        let opened=manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local),&parent,&store,&test_python(),&output,&root,None).unwrap().unwrap();
+        assert_eq!(opened.details["handoff"]["read_only"],true);
+        let viewer=&mut manager.viewers[0];viewer.begin(&request(Action::CloseRun(viewer.job_id().into()),Target::Local)).unwrap();manager.poll(None);
         drop(parent);let _=fs::remove_dir_all(root);
     }
     /// The defect this covers: every Runs window left a `companion-*` session

@@ -482,6 +482,65 @@ header).
 every archived frame is listed. The window lands in the derived config as
 `run_seconds`.
 
+### A drawn extent on the measured card
+
+`--child-size NX,NY` with `--auto-vram` prices the extent you drew on the
+card in front of you: the door measures the local card once, prices the
+given child on it (`memory.basis` is `measured-local`, `gpu_sizing` carries
+the measurement) and reports `memory.fits`. The same holds for
+`--child-config` beside `--auto-vram`. Only `--card` and `--vram-gib` are
+exclusive with measuring, because a measured card and a declared capacity
+are two answers to one budget.
+
+An extent that reaches past the parent's interior around the point is not
+refused: it shrinks to the largest centered extent the parent holds there,
+and the plan's `warnings` carry one sentence saying what was asked, what
+it became and why. Only a child that cannot exist at all (the smallest
+legal extent already reaches past the interior) is refused, with the way
+out.
+
+### One price, one decision
+
+The plan review prices the child once with the itemized estimator and
+takes its `[tiles]` decision on that price, against the card it holds; the
+run calls the same function on a card measured cold, before the child's own state was built on the device. The plan document's `streaming`
+block (`mode` resident or streamed, `why`, `budget_bytes`,
+`peak_envelope_bytes`, `tile` when streamed) sits beside the `memory`
+block, and the child's `report.json` repeats it. With `[tiles]` set to
+`auto`, `memory.fits` is judged on the budget the streaming decision used,
+so `mode` resident comes with `fits` true and `mode` streamed with `fits`
+false: read `mode` for whether the child runs, `fits` for whether it runs
+resident. Without a `[tiles]` block the child is resident by configuration
+and `fits` reports the fit ceiling. `mode` is null only when the review
+holds no card to plan against; the run then decides on the card it starts
+on. A child that cannot run on the card even streamed refuses at
+plan review, and at run start before preprocessing, never after the
+archive has been interpolated. `child_outline` gives the footprint's four
+corner `[lat, lon]` pairs read from the parent's own grid, beside
+`parent_domain` and `child_grid_id`, so a front end draws exactly what
+will run.
+
+### A downscaled run is itself a parent
+
+The child honours its configuration's `restart_interval_s` (inherited from
+the parent by `--point` derivation): it writes a checkpoint set at every
+interval inside its window and once more at its end, under the instant
+naming `--parent-restart latest` discovers
+(`gpuwmrst_d02_YYYY-MM-DD_HH_MM_SS.npz` beside its `wrfout_d02_*` frames).
+`restart_interval_s = 0` writes only the final set. So a finished
+downscale chains:
+
+```bash
+gpuwm downscale CHILD_RUN --parent-domain 2 --parent-restart latest   --point 40.55,-103.60 --ratio 3 --child-size 60,60 --auto-vram   --hours 2 --out GRANDCHILD
+```
+
+derives a grid 3 grandchild at a third of the child's spacing from the
+d02 frames at the run root and the d02 checkpoint sets beside them, named
+`Downscale of <child run> · d03 ×3 · 1.33 km`. With `--parent-domain N`
+the physics evidence is the d0N member of the newest checkpoint set, so a
+multi-domain run root serves its nest's frames with that nest's own
+physics; a set with no such member is refused naming the members it has.
+
 ## The contract, in order
 
 1. **Prove the parent.** Complete frame inventory, frozen geometry,
@@ -602,7 +661,7 @@ against 7.9% for a properly resolved column, because it inherits its parent's
 ladder. `--child-levels` gives it its own:
 
 ```bash
-gpuwm downscale parent/ --parent-restart parent/gpuwmrst_d01_final.npz   --point 39.5,-84.0 --ratio 5 --child-levels 96,2.5 --out out/child
+gpuwm downscale parent/ --parent-restart latest   --point 39.5,-84.0 --ratio 5 --child-levels 96,2.5 --out out/child
 ```
 
 `N,STRETCH` is the level count and the tanh clustering toward the ground; the
@@ -652,8 +711,10 @@ remap extrapolating above the model top with no state to extrapolate from.
 - **A single-domain `gpuwm domain` emission sets
   `restart_interval_s = 0.0`**, so it produces a parent that cannot be
   downscaled until you edit it.
-- One fixed child per invocation; repeat the workflow with the downscaled
-  run's own compatible archive. A parent series whose geometry changes as
+- One fixed child per invocation; a downscaled run is itself a parent
+  (its `restart_interval_s` checkpoints are discoverable), so repeat the
+  command on the child's run directory with `--parent-domain 2` for the
+  next level. A parent series whose geometry changes as
   a nest moves is refused, and the standalone child config does not accept
   a relocation block. Live moving nests use the prepared-corridor route in
   [TUI task modes](TUI-TASK-MODES.md#follow-weather-without-changing-what-the-tracker-means).

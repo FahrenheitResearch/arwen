@@ -243,7 +243,7 @@ Open **Domains → Downscale an archived forecast**, or the corresponding Resear
 6. Choose a **new** output directory and action `plan`. Planning validates and may write the derived TOML and report; it does not run a forecast.
 7. Read the plan, then select action `run` with another unused output directory and review the launch.
 
-Point sizing measures the local GPU by default in this guide. Entering explicit capacity, child dimensions, or a child configuration disables automatic sizing. The parent namelist's domain column and the history's domain ID are different selectors; set both correctly when needed.
+Point sizing measures the local GPU by default in this guide. Entering child dimensions or a child configuration keeps that measurement and prices the given extent on the measured card; entering an explicit capacity replaces the measurement, because a measured card and a declared capacity are two answers to one budget. The parent namelist's domain column and the history's domain ID are different selectors; set both correctly when needed.
 
 ## 12. Choose plots and render saved output
 

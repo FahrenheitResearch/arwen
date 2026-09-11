@@ -440,7 +440,7 @@ Takes no options of its own.
 | option | what it does |
 |---|---|
 | `--accept-parent-cadence` | accept the archive's own cadence as the ceiling (prints the 15-min guidance when coarser); mutually exclusive with --max-boundary-interval-seconds |
-| `--auto-vram` | measure local total AND free GPU memory for --point sizing; exclusive with --card, --vram-gib and --child-size |
+| `--auto-vram` | measure local total AND free GPU memory and price the child on it: fits the extent when --child-size is absent, prices the given extent or child config otherwise; exclusive with --card and --vram-gib |
 | `--card` | card for --point sizing (default 24gb): a tier (12gb/16gb/24gb/32gb), a size ('10gb') or a model with a recorded size ('RTX 3080'), the same spellings `gpuwm domain` accepts |
 | `--child-config` | legacy RunConfig TOML for the child (specified=true, nested=false) |
 | `--child-levels N[,STRETCH]` | give the child its own vertical ladder of N levels instead of inheriting the parent's, clustered toward the ground by STRETCH (the LES case: a 100 m child wants the levels, not just the columns). p_top, hybrid_opt and etac stay shared with the parent |

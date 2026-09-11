@@ -230,7 +230,7 @@ def run(outdir: str | Path, *, duration_seconds: float = 9.0,
     from gpuwm.ingest.lateral_bc import (
         attach_lateral_boundaries, attach_streaming_lateral_boundaries,
         lateral_boundary_reload_count, lateral_boundary_resident_bytes)
-    from gpuwm.io.restart import write_restart
+    from gpuwm.io.restart import restart_filename, write_restart
     from gpuwm.io.wrfout import wrfout_filename
     from gpuwm.verify.cases import wk82
 
@@ -405,8 +405,14 @@ def run(outdir: str | Path, *, duration_seconds: float = 9.0,
                  elapsed_seconds=float(child.elapsed_seconds),
                  path=str(output_path), bytes=output_path.stat().st_size)
     child_final_path = child_output_paths[-1]
+    # The instant name gpuwm.resume.discover_checkpoint_sets recognises,
+    # as the downscale runner writes it, so the smoke's child is a parent
+    # the same way a downscaled run is.
     child_restart_path = write_restart(
-        child_dir / "gpuwmrst_d04_final.npz", child, child_cfg)
+        child_dir / restart_filename(
+            start_time + timedelta(seconds=float(child.elapsed_seconds)),
+            domain="d04"),
+        child, child_cfg)
     child_health = stability_report(child, child_cfg)
     free_final, _ = cp.cuda.runtime.memGetInfo()
     report = {

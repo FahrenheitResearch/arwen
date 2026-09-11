@@ -25,8 +25,10 @@ def test_free_memory_changes_the_actual_fit_without_changing_card_capacity():
     assert occupied % 4 == 0
 
 
-@pytest.mark.parametrize("extra", [["--vram-gib", "32"], ["--card", "32gb"],
-                                  ["--child-size", "48"]])
+# --child-size beside --auto-vram is no longer here: a drawn extent priced on
+# the measured card is what that pair means (test_downscale_cli), and only a
+# declared capacity contradicts a measurement.
+@pytest.mark.parametrize("extra", [["--vram-gib", "32"], ["--card", "32gb"]])
 def test_ambiguous_automatic_sizing_refuses_before_reading_an_archive(tmp_path, capsys, extra):
     assert main(["downscale", str(tmp_path / "absent"), "--point", "35,-97",
                  "--out", str(tmp_path / "output"), "--auto-vram", *extra]) == 2

@@ -16,17 +16,97 @@ except ImportError:  # Windows has no POSIX terminal to put back.
     termios = None
 
 
-def cache_directory(state: Path) -> Path:
-    """Honor the GUI preference stored within this launcher's selected profile."""
+def preference_folder(state: Path, key: str) -> Path | None:
+    """One absolute folder from the GUI preferences within this launcher's profile.
+
+    A missing file, a missing key, a malformed document or a relative path all
+    read as no preference; a relative folder would land wherever this process
+    started, so it is never honored.
+    """
     preference = state / 'appdata/ArWenCompanion/preferences.json'
     try:
         value = json.loads(preference.read_text(encoding='utf-8'))
-        folder = value.get('data_folder') if isinstance(value, dict) else None
+        folder = value.get(key) if isinstance(value, dict) else None
         if isinstance(folder, str) and folder.strip() and Path(folder).is_absolute():
-            return Path(folder) / 'cache'
+            return Path(folder)
     except (OSError, ValueError):
         pass
-    return state / 'cache'
+    return None
+
+
+def preference_folders(state: Path, key: str) -> list[Path]:
+    """The absolute folders listed under one key of the GUI preferences, once each.
+
+    A missing file, a missing key, a value that is not a list and an entry that
+    is not an absolute path all read as nothing, the way ``preference_folder``
+    reads a single folder.
+    """
+    preference = state / 'appdata/ArWenCompanion/preferences.json'
+    folders: list[Path] = []
+    try:
+        value = json.loads(preference.read_text(encoding='utf-8'))
+        entries = value.get(key) if isinstance(value, dict) else None
+        for entry in entries if isinstance(entries, list) else []:
+            if isinstance(entry, str) and entry.strip() and Path(entry).is_absolute():
+                folder = Path(entry)
+                if not any(_same_folder(folder, known) for known in folders):
+                    folders.append(folder)
+    except (OSError, ValueError):
+        pass
+    return folders
+
+
+def _same_folder(left: Path, right: Path) -> bool:
+    return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(os.path.normpath(str(right)))
+
+
+def cache_directory(state: Path) -> Path:
+    """Honor the GUI preference stored within this launcher's selected profile."""
+    folder = preference_folder(state, 'data_folder')
+    return folder / 'cache' if folder is not None else state / 'cache'
+
+
+def output_folder(state: Path) -> tuple[Path, str | None]:
+    """The controller's run folder, and the sentence to print when it is not the chosen one.
+
+    The forecast output folder chosen in the GUI is created here, before the
+    controller starts: a saved folder on a drive that is absent today would
+    make the controller fail to create its session folder and exit before the
+    GUI, and its Settings, could open. Then the profile's own ``runs`` folder
+    is used and the sentence names the saved folder, the reason and the way
+    out.
+    """
+    default = state / 'runs'
+    chosen = preference_folder(state, 'forecast_output_folder')
+    if chosen is None:
+        return default, None
+    try:
+        chosen.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        return default, ('The saved forecast output folder ' + str(chosen) + ' is unavailable: ' + str(error)
+                         + '. New forecasts go to ' + str(default)
+                         + ' until a folder that can be created is chosen in Settings, Forecast output folder.')
+    return chosen, None
+
+
+def output_arguments(state: Path) -> list[str]:
+    """The controller's run folder: the forecast output folder chosen in the GUI.
+
+    The profile's own ``runs`` folder and every forecast output folder chosen
+    before stay named as saved-runs folders, once each and never the output
+    folder itself, so the forecasts already in them remain listed in My
+    forecasts after the folder moves again.
+    """
+    default = state / 'runs'
+    output, _ = output_folder(state)
+    arguments = ['--output', str(output)]
+    named: list[Path] = []
+    for folder in [default] + preference_folders(state, 'saved_run_folders'):
+        if _same_folder(folder, output) or any(_same_folder(folder, known) for known in named):
+            continue
+        named.append(folder)
+        arguments += ['--saved-runs', str(folder)]
+    return arguments
 
 
 def child_environment(state: Path, python: Path, cds_credentials: Path | None = None,
@@ -159,12 +239,16 @@ def launch(arguments: list[str]) -> int:
     if not options.tui_only:
         command.append('--open-companion')
     if '--output' not in forwarded:
-        command += ['--output', str(state / 'runs')]
+        command += output_arguments(state)
+        notice = output_folder(state)[1]
+        if notice is not None and not options.verify_launcher:
+            print(notice, file=sys.stderr)
     command += forwarded
     if options.verify_launcher:
         print(json.dumps({'status': 'PASS', 'source_revision': manifest['engine_source_revision'],
                           'python': str(python), 'command': command, 'state_directory': str(state),
                           'cache_directory': env['ARWEN_CACHE_DIR'],
+                          'output_directory': str(controller_log(command, state).parent.parent),
                           'cds_credentials_configured': bool(env.get('CDSAPI_RC')),
                           'bytecode_writes_disabled': env.get('PYTHONDONTWRITEBYTECODE') == '1',
                           'checked_components': len(rows), 'application_opened': False,

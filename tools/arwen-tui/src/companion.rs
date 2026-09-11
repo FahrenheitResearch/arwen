@@ -143,7 +143,10 @@ fn parse_downscale(value: &Value) -> Result<DownscaleRequest, String> {
         parent_run_dir: absolute_field(value, "parent_run_dir", "The parent run directory")?,
         out_dir: absolute_field(value, "out_dir", "The downscaled output directory")?,
         ratio: count(value, "ratio", 2..=99, "Refinement ratio")?.unwrap_or(3),
-        parent_domain: count(value, "parent_domain", 1..=99, "Parent domain")?,
+        // Absent means the root: every desktop row now carries the domain
+        // its frames belong to, and a downscaled run's own frames are its
+        // child's, so the engine is always told which frames to read.
+        parent_domain: Some(count(value, "parent_domain", 1..=99, "Parent domain")?.unwrap_or(1)),
         hours: finite(value, "hours", "Child duration in hours")?,
         output_interval_seconds: finite(value, "output_interval_seconds", "Child output interval")?,
         max_boundary_interval_seconds: finite(value, "max_boundary_interval_seconds", "Maximum boundary interval")?,
@@ -183,15 +186,20 @@ fn parse_downscale(value: &Value) -> Result<DownscaleRequest, String> {
         }
         Some(_) => return Err("Explicit child size must be an object with nx and ny.".into()),
     };
+    // Measuring the card is not tied to fitting an extent: an explicit
+    // size or a supplied child configuration is PRICED on the measured card
+    // when this is true (`--child-size` with `--auto-vram`, the drawn-box
+    // case), so only a declared capacity excludes it, the two being two
+    // declarations of one budget. Absent, measuring is on whenever no
+    // capacity was declared: the engine's own default card is a declared
+    // 24 GiB, and a drawn box priced on a card the desk does not have
+    // reviewed one card and ran on another.
     request.auto_vram = match value.get("auto_vram") {
-        None | Some(Value::Null) => request.child_size.is_none() && request.vram_gib.is_none() && request.child_config.is_none(),
+        None | Some(Value::Null) => request.vram_gib.is_none(),
         Some(flag) => flag.as_bool().ok_or("Fit to this GPU must be true or false.")?,
     };
-    if request.auto_vram && (request.child_size.is_some() || request.vram_gib.is_some() || request.child_config.is_some()) {
-        return Err("Fitting the child to this GPU measures it: leave explicit size, capacity and a supplied child configuration unset, or turn fitting off.".into());
-    }
-    if request.child_size.is_some() && request.vram_gib.is_some() {
-        return Err("Choose an explicit child size or a GPU capacity to size against, not both.".into());
+    if request.auto_vram && request.vram_gib.is_some() {
+        return Err("Measuring this GPU and declaring a capacity are two answers to one budget: leave the capacity unset, or turn measuring off.".into());
     }
     request.accept_parent_cadence = match value.get("accept_parent_cadence") {
         None | Some(Value::Null) => request.max_boundary_interval_seconds.is_none(),
@@ -1139,16 +1147,43 @@ mod downscale_requests {
         neither["point"] = Value::Null;
         assert!(parse(&neither).unwrap_err().contains("either a child centre point"));
 
+        // A drawn extent priced on the measured card: explicit size AND
+        // measuring together is the request a front end sends for a box.
         let mut sized = payload(&parent, &out);
         sized["child_size"] = json!({"nx":300,"ny":300});
         sized["auto_vram"] = json!(true);
-        assert!(parse(&sized).unwrap_err().contains("measures it"));
-        // Absent, fitting turns itself off for a caller that named an
-        // extent: the default is the narrow door, not a contradiction.
+        let body = parse(&sized).unwrap();
+        assert_eq!(body.child_size, Some((300, 300)));
+        assert!(body.auto_vram);
+        // Only a declared capacity excludes measuring: two answers to one
+        // budget.
+        sized["vram_gib"] = json!(8);
+        assert!(parse(&sized).unwrap_err().contains("one budget"));
+        // An explicit extent beside a declared capacity is priced on that
+        // capacity, with measuring off: the pair contradicts nothing.
         sized["auto_vram"] = Value::Null;
         let body = parse(&sized).unwrap();
         assert_eq!(body.child_size, Some((300, 300)));
+        assert_eq!(body.vram_gib, Some(8.0));
         assert!(!body.auto_vram);
+        // Absent, with no capacity declared, the card is measured even for
+        // a caller that named an extent: the drawn box is priced on the
+        // card in front of the user, never on the engine's declared default.
+        sized["vram_gib"] = Value::Null;
+        let body = parse(&sized).unwrap();
+        assert_eq!(body.child_size, Some((300, 300)));
+        assert!(body.auto_vram);
+        // The same for a supplied configuration.
+        let mut configured = payload(&parent, &out);
+        configured["point"] = Value::Null;
+        configured["child_config"] = json!(root.join("child.toml"));
+        assert!(parse(&configured).unwrap().auto_vram);
+        configured["vram_gib"] = json!(12);
+        assert!(!parse(&configured).unwrap().auto_vram);
+        // The parent domain defaults to the root and is carried as given.
+        assert_eq!(body.parent_domain, Some(1));
+        sized["parent_domain"] = json!(2);
+        assert_eq!(parse(&sized).unwrap().parent_domain, Some(2));
 
         let mut cadence = payload(&parent, &out);
         cadence["max_boundary_interval_seconds"] = json!(600);

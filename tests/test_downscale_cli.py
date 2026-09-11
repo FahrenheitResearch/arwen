@@ -9,6 +9,7 @@ Davies-bind boundary clock the standalone child constructs.
 from argparse import Namespace
 from datetime import datetime, timedelta
 import math
+from pathlib import Path
 
 import netCDF4
 import numpy as np
@@ -519,7 +520,7 @@ def test_run_accepts_the_output_root_its_caller_reserved(tmp_path):
 
     outdir = tmp_path / "child-run"
     assert _create_output_root(outdir) == outdir.resolve()
-    (outdir / "gpuwmrst_d02_final.npz").write_bytes(b"x")
+    (outdir / "gpuwmrst_d02_1974-04-03_12_15_00.npz").write_bytes(b"x")
     with pytest.raises(OfflineChildContractError):
         _create_output_root(outdir)
 
@@ -804,7 +805,7 @@ def _point_args(tmp_path, *, ny=18, nx=20):
         _history(frame, start + timedelta(hours=index), ny=ny, nx=nx)
         _give_the_parent_a_real_projection(frame, ny=ny, nx=nx)
     restart = _restart_evidence(
-        tmp_path / "gpuwmrst_d01_final.npz",
+        tmp_path / "gpuwmrst_d01_1974-04-03_12_00_00.npz",
         dict(_SURFACE_PARENT_CONFIG, nx=nx, ny=ny, nz=2, grid_id=1,
              dt=3.0, run_seconds=7200.0, nested=False, specified=False))
     return [
@@ -1052,37 +1053,216 @@ def test_parent_restart_latest_names_the_setting_that_makes_one(
 
 
 def test_the_explicit_extent_price_is_taken_on_the_card_the_door_holds(
-        monkeypatch):
-    """The explicit-size route prices on the same profile the fit does.
+        tmp_path, capsys, monkeypatch):
+    """``--child-size`` with ``--auto-vram`` prices the drawn extent on the
+    measured card.
 
-    The Noah-MP lane retired a refusal on the fitted route by handing the
-    estimator the profile the sizing probe read.  An explicit
-    ``--child-size`` is priced once, by ``_price_child_config``, and a
-    route that dropped the profile there would send a Noah-MP child on a
-    measured card back into "a declared card that is not in this
-    machine".  The door refuses ``--auto-vram`` beside ``--child-size``
-    today, so the profile it holds on that route is ``None``; the
-    contract held here is that whatever it holds reaches the estimator
-    unchanged, on both spellings of the call.
+    The refusal that stood here ("--auto-vram requires --point sizing
+    without an explicit --child-size") prevented nothing: an explicit
+    extent priced against the card in front of the user is exactly what a
+    drawn box needs.  The door measures once, prices the given child on
+    that card with the probe's own profile, reports the fit under basis
+    ``measured-local`` and fills ``gpu_sizing`` as the fitted route does.
     """
-    from gpuwm.config import RunConfig
-    from gpuwm.core import preflight as pf
-    from gpuwm.downscale import _price_child_config
+    import json as json_module
 
-    seen = []
+    import gpuwm.domain_wizard as wizard
+    from gpuwm.core import preflight as pf
+    from gpuwm.domain_wizard import SizingBudget
+
+    given = tmp_path / "given"
+    given.mkdir()
+    _named_checkpoint(
+        given,
+        dict(_SURFACE_PARENT_CONFIG, nx=20, ny=18, nz=2, grid_id=1,
+             dt=3.0, run_seconds=7200.0, nested=False, specified=False))
+    observed = []
+    device_profile = pf.card_local_memory_profile(None)
+    budget = SizingBudget(10.0, 7 * 1024 ** 3, device_profile,
+                          "measured fixture card", True)
+
+    def probe(card, capacity):
+        observed.append((card, capacity))
+        return budget
+
+    priced = []
+    real_estimate = pf.estimate_experiment
 
     def estimate(exp, **kwargs):
-        seen.append(kwargs)
-        return "priced"
+        priced.append(kwargs)
+        return real_estimate(exp, **kwargs)
 
+    monkeypatch.setattr(wizard, "resolve_sizing_budget", probe)
     monkeypatch.setattr(pf, "estimate_experiment", estimate)
-    cfg = RunConfig(**{key: value for key, value in _SURFACE_PARENT_CONFIG.items()
-                       if key != "not_a_runconfig_key"})
-    measured = object()
-    assert _price_child_config(cfg, 24.0, profile=measured) == "priced"
-    assert _price_child_config(cfg, 16.0) == "priced"
-    assert seen == [{"vram_gib": 24.0, "profile": measured},
-                    {"vram_gib": 16.0, "profile": None}]
+    assert cli_main(_controller_point_args(
+        given, restart="latest",
+        extra=["--child-size", "12,10", "--auto-vram"])) == 0
+    out = capsys.readouterr()
+    assert "--auto-vram" not in out.err
+    plan = json_module.loads(out.out[out.out.index("{\n"):])
+    assert observed == [(None, None)]
+    assert plan["child_grid"]["nx"] == 12 and plan["child_grid"]["ny"] == 10
+    memory = plan["memory"]
+    assert memory["basis"] == "measured-local"
+    assert memory["vram_gib"] == 10.0
+    assert memory["free_bytes"] == budget.free_bytes
+    assert memory["peak_envelope_bytes"] > 0
+    assert memory["fits"] is (
+        memory["peak_envelope_bytes"] <= memory["budget_bytes"])
+    assert plan["gpu_sizing"]["basis"] == "measured-local"
+    assert plan["gpu_sizing"]["free_bytes"] == budget.free_bytes
+    # Priced ONCE, on the measured card's own profile and capacity.
+    assert len(priced) == 1
+    assert priced[0]["profile"] is device_profile
+    assert priced[0]["vram_gib"] == 10.0
+    streaming = plan["streaming"]
+    assert streaming["mode"] == "resident"
+    assert streaming["basis"] == "measured-local"
+    assert streaming["machine_free_bytes"] == budget.free_bytes
+    assert streaming["peak_envelope_bytes"] == memory["peak_envelope_bytes"]
+
+
+def test_a_requested_extent_past_the_interior_shrinks_and_says_so():
+    """A drawn box that reaches past the parent is placed, not refused."""
+    from gpuwm.downscale import _fit_requested_extent
+    from gpuwm.runplan import collect_warnings
+
+    lat = np.linspace(38.0, 41.0, 31)[:, None] * np.ones((1, 41))
+    lon = np.ones((31, 1)) * np.linspace(-86.0, -82.0, 41)[None, :]
+    j0, i0 = _nearest_parent_index(lat, lon, 39.5, -84.0)
+    parent = {"nx": 41, "ny": 31}
+    records = []
+    with collect_warnings(records):
+        nx, ny = _fit_requested_extent(
+            parent, j0=j0, i0=i0, ratio=3, child_nx=300, child_ny=240,
+            lat=39.5, lon=-84.0)
+    assert nx % 3 == 0 and ny % 3 == 0
+    assert nx < 300 and ny < 240
+    # The largest: one more refinement cell on either axis no longer fits.
+    _centered_placement(parent, j0=j0, i0=i0, ratio=3, child_nx=nx, child_ny=ny)
+    for wider in ((nx + 3, ny), (nx, ny + 3)):
+        # The stencil-coverage gate refuses with the placement's own
+        # ValueError; the shrink is what keeps a caller from meeting it.
+        with pytest.raises((OfflineChildContractError, ValueError)):
+            _centered_placement(parent, j0=j0, i0=i0, ratio=3,
+                                child_nx=wider[0], child_ny=wider[1])
+    assert len(records) == 1
+    sentence = records[0]["action"]
+    assert "300x240" in sentence and f"{nx}x{ny}" in sentence
+    assert "does not fit inside the parent's interior" in sentence
+    assert "41x31" in sentence
+
+    # A size the parent holds is placed exactly, silently.
+    records.clear()
+    with collect_warnings(records):
+        assert _fit_requested_extent(
+            parent, j0=j0, i0=i0, ratio=3, child_nx=36, child_ny=24,
+            lat=39.5, lon=-84.0) == (36, 24)
+    assert records == []
+
+    # An extent that is not a whole number of refinement cells rounds down.
+    records.clear()
+    with collect_warnings(records):
+        assert _fit_requested_extent(
+            parent, j0=j0, i0=i0, ratio=3, child_nx=35, child_ny=24,
+            lat=39.5, lon=-84.0) == (33, 24)
+    assert len(records) == 1 and "adjusted to 33x24" in records[0]["action"]
+
+    # A point where even the smallest child cannot exist is refused.
+    with pytest.raises(OfflineChildContractError, match="no child can be "
+                       "centered"):
+        _fit_requested_extent(
+            {"nx": 41, "ny": 31}, j0=0, i0=0, ratio=3, child_nx=6,
+            child_ny=6, lat=38.0, lon=-86.0)
+
+
+@needs_netcdf_bridge
+def test_the_dry_run_shrinks_a_drawn_extent_and_outlines_the_child(
+        tmp_path, capsys):
+    """The plan says what was asked, what runs, and where its corners are."""
+    _named_checkpoint(
+        tmp_path,
+        dict(_SURFACE_PARENT_CONFIG, nx=20, ny=18, nz=2, grid_id=1,
+             dt=3.0, run_seconds=7200.0, nested=False, specified=False))
+    assert cli_main(_controller_point_args(
+        tmp_path, restart="latest",
+        extra=["--child-size", "60,60", "--vram-gib", "24"])) == 0
+    capsys.readouterr()
+    plan = _plan_document(tmp_path)
+    grid = plan["child_grid"]
+    assert grid["nx"] < 60 and grid["ny"] < 60
+    shrink = [record for record in plan["warnings"]
+              if "does not fit inside the parent's interior" in record["action"]]
+    assert len(shrink) == 1
+    assert "60x60" in shrink[0]["action"]
+    assert f"{grid['nx']}x{grid['ny']}" in shrink[0]["action"]
+    assert plan["parent_domain"] == 1 and plan["child_grid_id"] == 2
+    outline = plan["child_outline"]
+    cells = outline["parent_cells"]
+    assert cells["i_first"] == grid["i_parent_start"]
+    assert cells["j_first"] == grid["j_parent_start"]
+    assert cells["i_last"] == cells["i_first"] + grid["nx"] // grid["ratio"] - 1
+    assert cells["j_last"] == cells["j_first"] + grid["ny"] // grid["ratio"] - 1
+    # Read off the parent's own XLAT/XLONG (the fixture's projection is a
+    # regular lat/lon ladder, so the corners are its rows and columns).
+    lat = np.linspace(38.0, 41.0, 18)
+    lon = np.linspace(-86.0, -82.0, 20)
+    sw, ne = outline["sw"], outline["ne"]
+    assert sw == pytest.approx(
+        [float(np.float32(lat[cells["j_first"] - 1])),
+         float(np.float32(lon[cells["i_first"] - 1]))])
+    assert ne == pytest.approx(
+        [float(np.float32(lat[cells["j_last"] - 1])),
+         float(np.float32(lon[cells["i_last"] - 1]))])
+    assert outline["se"][0] == sw[0] and outline["se"][1] == ne[1]
+    assert outline["nw"][0] == ne[0] and outline["nw"][1] == sw[1]
+    assert "parent mass points" in outline["basis"]
+
+
+@needs_netcdf_bridge
+def test_a_downscaled_run_is_accepted_as_a_parent(tmp_path, capsys):
+    """The chain: a child's own frames and sets seed a grid 3 grandchild.
+
+    A downscaled run writes ``wrfout_d02_*`` at its root and
+    ``gpuwmrst_d02_<instant>.npz`` beside them.  ``--parent-domain 2``
+    selects those frames, ``--parent-restart latest`` discovers those
+    sets, the physics evidence's grid id is 2 and the derived grandchild
+    is grid 3.
+    """
+    from gpuwm.config import load_config as read_config
+
+    child_run = tmp_path / "child-run"
+    child_run.mkdir()
+    start = datetime(1974, 4, 3, 12)
+    for index in range(3):
+        frame = child_run / f"wrfout_d02_1974-04-03_{12 + index:02d}_00_00"
+        _history(frame, start + timedelta(hours=index), ny=18, nx=20)
+        _give_the_parent_a_real_projection(frame, ny=18, nx=20)
+        with netCDF4.Dataset(frame, "a") as dataset:
+            dataset.GRID_ID = np.int32(2)
+    _restart_evidence(
+        child_run / "gpuwmrst_d02_1974-04-03_14_00_00.npz",
+        dict(_SURFACE_PARENT_CONFIG, nx=20, ny=18, nz=2, grid_id=2,
+             dt=3.0, run_seconds=7200.0, nested=False, specified=True))
+    assert cli_main([
+        "downscale", str(child_run), "--parent-domain", "2",
+        "--parent-restart", "latest", "--point", "39.5,-84.0",
+        "--ratio", "1", "--child-size", "12,10", "--child-levels", "4,2.5",
+        "--hours", "0.25", "--output-interval-seconds", "900",
+        "--out", str(tmp_path / "grandchild" / "child-run"), "--dry-run"]) == 0
+    capsys.readouterr()
+    plan = _plan_document(tmp_path / "grandchild")
+    assert plan["parent_domain"] == 2
+    assert plan["parent"]["domain"] == 2
+    assert plan["parent"]["run_dir"] == str(child_run)
+    assert plan["parent"]["restart"] == str(
+        child_run / "gpuwmrst_d02_1974-04-03_14_00_00.npz")
+    assert plan["physics_binding"]["domain_id"] == 2
+    assert plan["child_grid_id"] == 3
+    grandchild = read_config(plan["child_config"])
+    assert grandchild.grid_id == 3
+    assert [Path(frame).name[:10] for frame in plan["parent_frames"]] == [
+        "wrfout_d02"] * 3
 
 
 @needs_netcdf_bridge
@@ -1139,3 +1319,202 @@ def test_plan_document_prices_the_child_on_both_sizing_routes(
     assert memory["basis"] == "capacity"
     assert memory["fits"] is True
     assert memory["peak_envelope_bytes"] <= memory["budget_bytes"]
+
+
+def test_the_review_refuses_a_child_clock_that_is_not_whole_steps(
+        tmp_path, capsys):
+    """A hand-written child config whose output or restart interval is not
+    a whole number of dt steps is refused at plan review, in the runner's
+    own sentence, instead of after the run has started and reserved
+    --out.  One function (offline_child_run.child_cadence) answers for
+    both doors."""
+    start = datetime(1974, 4, 3, 12)
+    for index in range(3):
+        _history(tmp_path / f"wrfout_d03_1974-04-03_{12 + index:02d}_00_00",
+                 start + timedelta(hours=index), ny=18, nx=20)
+    namelist = tmp_path / "namelist.input"
+    namelist.write_text("&physics\n mp_physics = 8,\n/\n", encoding="utf-8")
+    parent = {"nx": 20, "ny": 18, "dx": 1000.0, "dy": 1000.0}
+
+    def review(child: dict, out: str) -> int:
+        child_toml = tmp_path / f"{out}.toml"
+        child_toml.write_text(_render_child_toml(child), encoding="utf-8")
+        return cli_main([
+            "downscale", str(tmp_path), "--parent-domain", "3",
+            "--parent-namelist", str(namelist),
+            "--child-config", str(child_toml), "--ratio", "1",
+            "--i-parent-start", "4", "--j-parent-start", "4",
+            "--accept-parent-cadence",
+            "--out", str(tmp_path / out), "--dry-run"])
+
+    # dt is 5 s: 302 s of output interval is 60.4 steps.
+    uneven_output = _derive_child_run_config(
+        _PARENT_CONFIG, parent=parent, ratio=1, child_nx=12, child_ny=10,
+        run_seconds=600.0, output_interval_s=302.0)
+    assert review(uneven_output, "uneven-output") == 2
+    captured = capsys.readouterr()
+    assert "output_interval_s/dt must be a positive integer" in captured.err
+    # The way out rides in the same sentence: the multiple to choose.
+    assert ("set output_interval_s to a value that is a whole multiple of dt"
+            in captured.err)
+    assert "downscale_plan" not in captured.out
+    assert "Traceback" not in captured.err
+
+    # 7.5 s of restart interval is 1.5 steps.
+    uneven_restart = dict(_derive_child_run_config(
+        _PARENT_CONFIG, parent=parent, ratio=1, child_nx=12, child_ny=10,
+        run_seconds=600.0, output_interval_s=300.0),
+        restart_interval_s=7.5)
+    assert review(uneven_restart, "uneven-restart") == 2
+    captured = capsys.readouterr()
+    assert "restart_interval_s/dt must be a positive integer" in captured.err
+    assert "Traceback" not in captured.err
+
+    # The same child on a whole-step clock reviews.
+    whole = dict(uneven_restart, restart_interval_s=300.0)
+    assert review(whole, "whole") == 0
+    assert "downscale_plan" in capsys.readouterr().out
+
+
+@needs_netcdf_bridge
+def test_the_memory_block_is_judged_on_the_budget_the_decision_used(
+        tmp_path, capsys, monkeypatch):
+    """``memory.fits`` and ``streaming.mode`` are two readings of one comparison.
+
+    The fit ceiling withholds headroom the fit loop needs (0.5 GiB, then
+    the larger of 0.25 GiB and five percent); the ``[tiles]`` admission
+    judges the configured envelope against free minus 0.5 GiB.  On the
+    user's figures the two differed by 0.32 GiB, a window in which the plan
+    said ``fits false`` about a child its own decision ran resident.  Once
+    a decision exists the memory block reports the decision's budget, so a
+    front end reading either block reads the engine's one answer.
+    """
+    import json as json_module
+
+    import gpuwm.domain_wizard as wizard
+    from gpuwm.core import preflight as pf
+    from gpuwm.domain_wizard import SizingBudget
+
+    device_profile = pf.card_local_memory_profile(None)
+    parent_config = dict(_SURFACE_PARENT_CONFIG, nx=20, ny=18, nz=2,
+                         grid_id=1, dt=3.0, run_seconds=7200.0,
+                         nested=False, specified=False)
+
+    def review(name: str, free_bytes: int, *tiles: str) -> dict:
+        given = tmp_path / name
+        given.mkdir()
+        _named_checkpoint(given, parent_config)
+        budget = SizingBudget(10.0, int(free_bytes), device_profile,
+                              "measured fixture card", True)
+        monkeypatch.setattr(wizard, "resolve_sizing_budget",
+                            lambda card, capacity: budget)
+        assert cli_main(_controller_point_args(
+            given, restart="latest",
+            extra=["--child-size", "12,10", "--auto-vram", *tiles])) == 0
+        out = capsys.readouterr()
+        return json_module.loads(out.out[out.out.index("{\n"):])
+
+    # [tiles] auto, the block the user's child inherited from its parent:
+    # the decision goes through the resident admission and the memory
+    # block reports the admission's budget.
+    roomy = review("roomy", 7 * 1024 ** 3, "--tiles", "auto")
+    memory, streaming = roomy["memory"], roomy["streaming"]
+    assert streaming["mode"] == "resident"
+    assert "envelope fits" in streaming["why"]
+    assert memory["budget_bytes"] == streaming["budget_bytes"]
+    assert memory["budget_bytes"] == 7 * 1024 ** 3 - pf.EXTERNAL_MARGIN_BYTES
+    assert memory["fits"] is True
+    assert memory["fits"] is (
+        memory["peak_envelope_bytes"] <= memory["budget_bytes"])
+    envelope = int(memory["peak_envelope_bytes"])
+
+    # A card whose free figure puts the envelope INSIDE the window: the
+    # admission (free minus 0.5 GiB) says resident, the fit ceiling (a
+    # further 0.25 GiB down) would have said no.  One answer.
+    free = envelope + pf.EXTERNAL_MARGIN_BYTES + 100 * 1024 ** 2
+    narrow = review("narrow", free, "--tiles", "auto")
+    memory, streaming = narrow["memory"], narrow["streaming"]
+    assert memory["peak_envelope_bytes"] == envelope
+    assert streaming["mode"] == "resident"
+    assert memory["budget_bytes"] == streaming["budget_bytes"]
+    assert memory["fits"] is True
+    assert memory["free_bytes"] == free
+
+    # No [tiles] block: the child is resident by configuration, no
+    # admission is taken, and the memory block keeps the fit ceiling it
+    # always reported (free minus the margin minus the fit headroom).
+    plain = review("plain", 7 * 1024 ** 3)
+    memory, streaming = plain["memory"], plain["streaming"]
+    assert streaming["mode"] == "resident"
+    assert streaming["budget_bytes"] is None
+    assert memory["budget_bytes"] == _budget_bytes(10.0, 7 * 1024 ** 3)[1]
+    assert memory["fits"] is (
+        memory["peak_envelope_bytes"] <= memory["budget_bytes"])
+
+
+@needs_netcdf_bridge
+def test_the_parents_restart_is_the_member_of_the_domain_the_frames_come_from(
+        tmp_path, capsys):
+    """A checkpoint set is one instant of every domain written together.
+
+    ``--parent-restart latest`` with ``--parent-domain 2`` binds the d02
+    frames' physics from the set's d02 member.  The set's root member (the
+    lowest grid id) describes another grid, and handing it on made the
+    door refuse its own nest with "evidence domain 1 does not match
+    history GRID_ID=2".  A set with no member for the frames' domain is
+    refused naming the members it has and the way out.
+    """
+    from gpuwm.config import load_config as read_config
+
+    def nest_frames(run: Path, grid_id: int) -> None:
+        run.mkdir()
+        start = datetime(1974, 4, 3, 12)
+        for index in range(3):
+            frame = run / f"wrfout_d{grid_id:02d}_1974-04-03_{12 + index:02d}_00_00"
+            _history(frame, start + timedelta(hours=index), ny=18, nx=20)
+            _give_the_parent_a_real_projection(frame, ny=18, nx=20)
+            with netCDF4.Dataset(frame, "a") as dataset:
+                dataset.GRID_ID = np.int32(grid_id)
+
+    root_config = dict(_SURFACE_PARENT_CONFIG, nx=40, ny=36, nz=2, grid_id=1,
+                       dt=9.0, run_seconds=7200.0, nested=False, specified=True)
+    nest_config = dict(_SURFACE_PARENT_CONFIG, nx=20, ny=18, nz=2, grid_id=2,
+                       dt=3.0, run_seconds=7200.0, nested=False, specified=True)
+
+    def door(run: Path, domain: int, out: str) -> int:
+        return cli_main([
+            "downscale", str(run), "--parent-domain", str(domain),
+            "--parent-restart", "latest", "--point", "39.5,-84.0",
+            "--ratio", "1", "--child-size", "12,10", "--child-levels", "4,2.5",
+            "--hours", "0.25", "--output-interval-seconds", "900",
+            "--out", str(tmp_path / out / "child-run"), "--dry-run"])
+
+    tree = tmp_path / "tree-run"
+    nest_frames(tree, 2)
+    _restart_evidence(tree / "gpuwmrst_d01_1974-04-03_14_00_00__tree.npz",
+                      root_config)
+    nest_member = _restart_evidence(
+        tree / "gpuwmrst_d02_1974-04-03_14_00_00__tree.npz", nest_config)
+    assert door(tree, 2, "grandchild") == 0
+    capsys.readouterr()
+    plan = _plan_document(tmp_path / "grandchild")
+    assert plan["parent"]["restart"] == str(nest_member)
+    assert plan["parent_domain"] == 2
+    assert plan["physics_binding"]["domain_id"] == 2
+    assert plan["child_grid_id"] == 3
+    assert read_config(plan["child_config"]).grid_id == 3
+
+    # Frames of a domain the set never wrote: refused at the door, with
+    # the members present and both ways out.
+    orphan = tmp_path / "orphan-run"
+    nest_frames(orphan, 3)
+    _restart_evidence(orphan / "gpuwmrst_d01_1974-04-03_14_00_00__tree.npz",
+                      root_config)
+    _restart_evidence(orphan / "gpuwmrst_d02_1974-04-03_14_00_00__tree.npz",
+                      nest_config)
+    assert door(orphan, 3, "orphan-child") == 2
+    captured = capsys.readouterr()
+    assert "has no d03 member" in captured.err
+    assert "d01, d02" in captured.err
+    assert "--parent-domain" in captured.err and "--parent-restart" in captured.err
+    assert "Traceback" not in captured.err

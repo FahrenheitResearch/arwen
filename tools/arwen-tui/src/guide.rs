@@ -168,12 +168,12 @@ impl Guide {
     q("Child duration (hours)", "--hours", "Optional centre-point run window. Blank keeps the full available parent window.", "", false),
     q("Child output interval (seconds)", "--output-interval-seconds", "Optional centre-point history cadence. Blank keeps the native inherited cadence.", "", false),
     q("Child vertical levels: N,STRETCH", "--child-levels", "Optional independent vertical ladder clustered toward the ground. Enter the intended stretch; the engine validates the vertical remap.", "", false),
-    q("GPU memory capacity (GiB)", "--vram-gib", "Blank measures this computer's total and free GPU memory. Enter capacity for another machine; this turns off automatic measurement. A supplied child configuration or explicit child size keeps its own dimensions and also turns off automatic sizing.", "", false),
+    q("GPU memory capacity (GiB)", "--vram-gib", "Blank measures this computer's total and free GPU memory. Enter capacity for another machine; this turns off automatic measurement. A supplied child configuration or explicit child size keeps its own dimensions and is priced on whichever card this setting names.", "", false),
     q("Streaming for point child: on/auto", "--tiles", "Optional centre-point streaming selection. For a child configuration, edit its own [tiles] settings instead.", "", false),
     q("New downscaled output directory", "--out", "A new directory. Planning can write the derived TOML and reports; an existing directory is never replaced.", cwd.join("downscaled-run").to_string_lossy(), true),
     q("Action: plan or run", "@downscale-mode", "plan invokes --dry-run to validate and write the derived plan without a forecast. run starts the offline child only after you review and confirm the exact command.", "plan", true),
     q("Parent namelist domain column", "--parent-namelist-domain", "Optional column of the stock-WRF namelist corresponding to this parent (native default 1). This is distinct from selecting a wrfout domain ID.", "", false),
-    q("Measure local GPU free memory: true/false", "@auto-vram", "true measures actual total and free memory for a point-sized child. Entering capacity, child size or a child configuration turns this off. false uses explicit capacity or the native 24 GiB default when none is supplied.", "true", false),
+    q("Measure local GPU free memory: true/false", "@auto-vram", "true measures actual total and free memory: it fits a point child when no size is given, and prices an explicit child size or a supplied child configuration on the measured card otherwise. Entering a capacity turns this off. false uses explicit capacity or the native 24 GiB default when none is supplied.", "true", false),
    ],
    Kind::Wrf|Kind::MetEm=>vec![q("Existing input directory", if kind==Kind::Wrf {"--wrfinput"}else{"--met-em"}, if kind==Kind::Wrf {"Folder containing wrfinput_d0*, wrfbdy_d01 and the producing namelist.input. Its physics stays authoritative."}else{"Folder containing met_em.d0*.nc and the producing namelist.input. Its settings stay authoritative."}, "", true), q("Shorten duration (seconds, optional)","--run-seconds","Empty preserves the producing namelist duration.","",false),q("Forecast output directory","--outdir","Run output will be written here. Review the exact command before starting.",out,true)],
    Kind::Resume=>vec![q("Original configuration file","","The same ArWen TOML used by the interrupted run. Checkpoint identity is checked by the existing engine.","",true),q("Checkpoint file or latest","--from","Use an actual gpuwmrst checkpoint, or latest to let the engine locate a valid set in the output directory.","latest",true),q("Existing forecast output directory","--outdir","The interrupted run's wrfout/checkpoint directory. A log folder alone is not a checkpoint.",out,true)],
@@ -291,7 +291,10 @@ impl Guide {
             self.questions.retain(|q| q.flag != "@extra");
         }
         if self.kind == Kind::Downscale {
-            if [2, 7, 16].iter().any(|index| !self.questions[*index].value.trim().is_empty()) {
+            // Only a declared capacity turns measuring off: an explicit
+            // child size or a supplied configuration is priced on the
+            // measured card when measuring stays on.
+            if !self.questions[16].value.trim().is_empty() {
                 self.questions[21].value = "false".into();
             }
             if !self.questions[11].value.trim().is_empty() {
@@ -443,9 +446,12 @@ impl Guide {
                 continue;
             }
             if field.flag == "@auto-vram" {
-                // Named sizing inputs take precedence over the automatic
+                // A declared capacity takes precedence over the automatic
                 // default, including requests assembled before Next is used.
-                if self.kind == Kind::Downscale && [2, 7, 16].iter().any(|i| !self.questions[*i].value.trim().is_empty()) { continue; }
+                // An explicit child size or a supplied child configuration
+                // does not: the engine prices either on the measured card
+                // when measuring is on (the drawn-box case).
+                if self.kind == Kind::Downscale && !self.questions[16].value.trim().is_empty() { continue; }
                 match value {
                     "true" => args.push("--auto-vram".into()),
                     "false" => {},
@@ -492,8 +498,8 @@ impl Guide {
                         .into(),
                 );
             }
-            if args.iter().any(|a| a == "--auto-vram") && (has("--vram-gib") || has("--child-size") || has("--child-config")) {
-                return Err("Automatic GPU sizing needs a centre point with capacity and explicit child size blank. Set Measure local GPU to false to use those settings.".into());
+            if args.iter().any(|a| a == "--auto-vram") && has("--vram-gib") {
+                return Err("Measuring this GPU and declaring a capacity are two answers to one budget. Leave the capacity blank, or set Measure local GPU to false.".into());
             }
             if has("--parent-restart") && has("--parent-namelist") {
                 return Err(

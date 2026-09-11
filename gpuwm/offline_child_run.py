@@ -10,6 +10,7 @@ advances only the requested child on the GPU.  It never invokes WPS,
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from datetime import timedelta
 import hashlib
 import json
@@ -21,6 +22,7 @@ import time
 import netCDF4
 import numpy as np
 
+from gpuwm import downscale_pricing
 from gpuwm.aerosol_source_receipt import aerosol_source_report_entry
 from gpuwm.config import (
     load_config,
@@ -231,6 +233,18 @@ def _parent_label(frame: Path) -> str:
     return frame.parent.name
 
 
+def child_run_name(frame: Path, *, grid_id: int, ratio: int, dx: float) -> str:
+    """``Downscale of <parent> · d03 ×3 · 1.33 km``: the run browser's name.
+
+    Three significant figures on the spacing, so a grandchild at a third
+    of 4 km reads as 1.33 km rather than a long fraction, and 4 km stays
+    ``4 km``.
+    """
+    return (f"Downscale of {_parent_label(frame)} "
+            f"· d{int(grid_id):02d} ×{int(ratio)} "
+            f"· {float(dx) / 1000.0:.3g} km")
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -267,8 +281,67 @@ def _exact_steps(seconds: float, dt: float, label: str) -> int:
     rounded = int(round(raw))
     if rounded < 1 or not np.isclose(raw, rounded, rtol=0.0, atol=1e-8):
         raise OfflineChildContractError(
-            f"{label}/dt must be a positive integer, got {raw}")
+            f"{label}/dt must be a positive integer, got {raw}: the "
+            f"child integrates in whole steps of dt = {float(dt):g} s and "
+            f"would never land on that instant; set {label} to a value that is "
+            f"a whole multiple of dt")
     return rounded
+
+
+def checkpoint_schedule(steps: int, restart_steps: int | None) -> frozenset:
+    """The step indices a child writes a checkpoint at.
+
+    Every whole multiple of ``restart_steps`` inside the run, and the last
+    step always: a run with ``restart_interval_s`` unset or zero writes
+    exactly one checkpoint, at its end, which is what it always wrote,
+    now under a name the next downscale can discover.
+    """
+    due = {int(steps)}
+    if restart_steps is not None and int(restart_steps) > 0:
+        due.update(range(int(restart_steps), int(steps) + 1,
+                         int(restart_steps)))
+    return frozenset(due)
+
+
+@dataclass(frozen=True)
+class ChildCadence:
+    """Every step count a child integrates on, as whole steps of ``dt``."""
+
+    steps: int
+    output_steps: int
+    restart_steps: int | None
+    health_steps: int | None
+    checkpoint_due: frozenset
+
+
+def child_cadence(cfg, *, health_interval_seconds: float | None = None
+                  ) -> ChildCadence:
+    """Check the child's clock once, for the plan review and the run alike.
+
+    ``run_seconds``, ``output_interval_s`` and ``restart_interval_s`` must
+    each be a whole number of ``dt`` steps, and so must the health interval
+    when the caller has one.  A derived child inherits these from its
+    parent with ``dt`` divided by the ratio, so exactness is preserved; a
+    hand-written ``--child-config`` can break it, and that used to be
+    found only at run start.  ``gpuwm downscale`` reviews with this
+    function and the runner integrates on its answer, so the two doors
+    cannot disagree about the same clock.  ``restart_interval_s`` unset or
+    zero means one checkpoint, at the end.
+    """
+    steps = _exact_steps(cfg.run_seconds, cfg.dt, "run_seconds")
+    output_steps = _exact_steps(
+        cfg.output_interval_s, cfg.dt, "output_interval_s")
+    restart_steps = (
+        _exact_steps(cfg.restart_interval_s, cfg.dt, "restart_interval_s")
+        if float(cfg.restart_interval_s) > 0.0 else None)
+    health_steps = (
+        None if health_interval_seconds is None else
+        _exact_steps(health_interval_seconds, cfg.dt,
+                     "health_interval_seconds"))
+    return ChildCadence(
+        steps=steps, output_steps=output_steps, restart_steps=restart_steps,
+        health_steps=health_steps,
+        checkpoint_due=checkpoint_schedule(steps, restart_steps))
 
 
 def _memory_snapshot(cp) -> dict[str, int]:
@@ -609,7 +682,7 @@ def _run(args: argparse.Namespace,
         lateral_boundary_reload_count,
         lateral_boundary_resident_bytes,
     )
-    from gpuwm.io.restart import write_restart
+    from gpuwm.io.restart import restart_filename, write_restart
     from gpuwm.io.wrfout import wrfout_filename
 
     started = time.perf_counter()
@@ -684,11 +757,23 @@ def _run(args: argparse.Namespace,
     if not np.isclose(cfg.dy, expected_dy, rtol=2e-7, atol=1e-6):
         raise OfflineChildContractError(
             f"child dy={cfg.dy} != parent DY/ratio={expected_dy}")
-    steps = _exact_steps(cfg.run_seconds, cfg.dt, "run_seconds")
-    output_steps = _exact_steps(
-        cfg.output_interval_s, cfg.dt, "output_interval_s")
-    health_steps = _exact_steps(
-        args.health_interval_seconds, cfg.dt, "health_interval_seconds")
+    # The child's clock, checked by the same function the plan review
+    # checked it with (child_cadence), so a cadence that is not a whole
+    # number of steps was refused when the child was reviewed and cannot
+    # surface here for the first time.  The child's OWN restart cadence is
+    # honoured: ``restart_interval_s`` rides into every derived child
+    # config verbatim from the parent, and the door's own refusal tells a
+    # user "the parent needs restart_interval_s inside its window to be
+    # downscalable" -- yet the child wrote one final checkpoint under a
+    # name no discovery recognised, so no downscaled run was ever
+    # downscalable.  A setting accepted and silently dropped is a defect;
+    # checkpoint_due is the cadence.
+    cadence = child_cadence(
+        cfg, health_interval_seconds=float(args.health_interval_seconds))
+    steps = cadence.steps
+    output_steps = cadence.output_steps
+    health_steps = cadence.health_steps
+    checkpoint_due = cadence.checkpoint_due
     surface = None
     surface_from = getattr(args, "child_surface_from", None)
     if surface_from is not None:
@@ -731,6 +816,36 @@ def _run(args: argparse.Namespace,
          child_shape=[cfg.nz, cfg.ny, cfg.nx],
          child_spacing_m=[cfg.dy, cfg.dx])
 
+    # THE [tiles] DECISION, taken HERE on a COLD card and never again.  The
+    # same function ``gpuwm downscale`` reviewed this child with
+    # (gpuwm.downscale_pricing.price_child): the configured envelope from
+    # the itemized estimator, judged against a machine measured before this
+    # process has allocated a byte on the device.  It used to be taken after
+    # the initial state, the boundary tables and the physics driver had
+    # filled the card, with no estimate and no machine, so the tile planner
+    # measured what was LEFT and charged the whole rung's fixed cost against
+    # it: a 138x138x49 child the review had admitted at 2.90 GiB against
+    # 7.32 GiB free was refused at "no tile fits in 3.49 GiB" after the
+    # whole archive had been interpolated.  A card that is genuinely too
+    # small refuses here, before anything is interpolated or allocated on
+    # the device, with the measured figure and the way out.
+    from tilestream.autoplan import CannotPlan
+
+    try:
+        # The estimator's default forcing model, as the fitted sizing and
+        # the review price it: the child's boundary intervals are streamed
+        # from the host one at a time, so counting every archived interval
+        # as retained on the device would price this child a third above
+        # what it holds and stream a child that fits.
+        pricing = downscale_pricing.price_child(
+            cfg, tiles, machine=downscale_pricing.cold_machine(tiles),
+            basis=downscale_pricing.MEASURED_BASIS)
+    except CannotPlan as error:
+        raise OfflineChildContractError(str(error)) from error
+    tiles = pricing.options
+    streaming_decision = pricing.decision
+    _log("child_streaming_decision", **pricing.plan_entry())
+
     # PUBLISHED HERE: after every contract that can refuse this child has
     # passed and before the first minute of preprocessing is spent, so a
     # reader watching the directory sees a run it can trust, and sees it
@@ -746,10 +861,9 @@ def _run(args: argparse.Namespace,
             "frames": len(contract.frames),
             "cadence_seconds": float(contract.interval_seconds),
         },
-        name=(f"Downscale of {_parent_label(Path(contract.frames[0].path))} "
-              f"· d{int(cfg.grid_id):02d} "
-              f"×{int(placement.parent_grid_ratio)} "
-              f"· {float(cfg.dx) / 1000.0:g} km"))
+        name=child_run_name(
+            Path(contract.frames[0].path), grid_id=int(cfg.grid_id),
+            ratio=int(placement.parent_grid_ratio), dx=float(cfg.dx)))
     progress.emit("stage_started", stage="initialize", phase="preprocess")
 
     initial = interpolate_parent_initial_state(
@@ -793,12 +907,12 @@ def _run(args: argparse.Namespace,
     # below has always called -- so a child that configures nothing is
     # byte-for-byte the run it was before this seam existed.
     #
-    # AFTER the physics driver is attached, never before: the builder fills
-    # the store from the PREPARED state and builds every tile buffer with the
-    # domain's own physics selectors, so a stepper made against a bare
-    # DomainState would carry a different inventory than the domain it is
-    # meant to be.
-    streaming_decision = streaming.decide(cfg, tiles)
+    # The DECISION was taken above, before preprocessing, on the cold card.
+    # The STEPPER is made here, AFTER the physics driver is attached, never
+    # before: the builder fills the store from the PREPARED state and builds
+    # every tile buffer with the domain's own physics selectors, so a
+    # stepper made against a bare DomainState would carry a different
+    # inventory than the domain it is meant to be.
     stepper = streaming.make_stepper(
         child, cfg, tiles, decision=streaming_decision,
         build=streaming.standalone_domain_builder(grid_id=int(cfg.grid_id)))
@@ -850,6 +964,29 @@ def _run(args: argparse.Namespace,
                       valid_time=valid.strftime("%Y-%m-%dT%H:%M:%SZ"),
                       path=str(path), bytes=path.stat().st_size)
 
+    checkpoint_paths: list[Path] = []
+    carriers_refreshed = 0
+
+    def emit_checkpoint() -> None:
+        # A DISCOVERABLE set (gpuwm.io.restart.restart_filename's instant
+        # naming, the one gpuwm.resume.discover_checkpoint_sets recognises),
+        # so this run can be the parent of the next downscale.  The
+        # streamed state is refreshed first, exactly as the history writer
+        # does: a streamed domain's forecast lives in the pinned host store
+        # and this DomainState is the snapshot that filled it, so without
+        # the copy every checkpoint would be the initial condition under a
+        # later clock.  Zero and a getattr when resident.
+        nonlocal carriers_refreshed
+        carriers_refreshed = streaming.refresh_streamed_state(stepper, child)
+        valid = initial.valid_time + timedelta(
+            seconds=float(clock.elapsed_seconds))
+        path = write_restart(
+            outdir / restart_filename(valid, domain=f"d{cfg.grid_id:02d}"),
+            child, cfg)
+        checkpoint_paths.append(Path(path))
+        _log("child_checkpoint", elapsed_seconds=float(clock.elapsed_seconds),
+             path=str(path), bytes=Path(path).stat().st_size)
+
     progress.emit("stage_started", stage="forecast", phase="integrate")
     emit_output()
     step_seconds = []
@@ -886,20 +1023,26 @@ def _run(args: argparse.Namespace,
                           model_seconds=float(clock.elapsed_seconds),
                           run_seconds=float(cfg.run_seconds),
                           outer_step=int(step_index), total_steps=int(steps),
-                          wall_seconds=time.perf_counter() - started)
+                          wall_seconds=time.perf_counter() - started,
+                          # The reader that offers "downscale from this
+                          # run" takes its checkpoint directory from here,
+                          # as it does for every other route.
+                          **({"last_checkpoint": str(checkpoint_paths[-1])}
+                             if checkpoint_paths else {}))
             if child_health["nan"]:
                 raise RuntimeError(
                     f"offline child became non-finite at step {step_index}")
         if output_due:
             emit_output()
-    # "and once more before its final read" -- the checkpoint and every
-    # summary field below read the DomainState, and the last emit_output
-    # refreshed it only because the final step is always output-due.  Stated
-    # here rather than inferred from that coincidence: a run whose cadence
-    # changed would otherwise checkpoint the analysis.
-    carriers_refreshed = streaming.refresh_streamed_state(stepper, child)
-    restart = write_restart(
-        outdir / f"gpuwmrst_d{cfg.grid_id:02d}_final.npz", child, cfg)
+        if step_index in checkpoint_due:
+            # The final step is always due, so the run's last checkpoint
+            # is the instant-named set the next downscale discovers.  The
+            # refresh inside emit_checkpoint is what keeps a streamed
+            # child's checkpoint from being the analysis under a later
+            # clock, stated there rather than inferred from the output
+            # cadence happening to coincide.
+            emit_checkpoint()
+    restart = checkpoint_paths[-1]
     sample = np.asarray(step_seconds, dtype=np.float64)
     warm = sample[1:] if sample.size > 1 else sample
     _verify_file_receipts(
@@ -954,7 +1097,16 @@ def _run(args: argparse.Namespace,
         # is the field to assert on: a mode='auto' child that declined and
         # an unconfigured one are otherwise indistinguishable.
         "tiles": streaming_report,
+        # The decision the run was integrated with, and what it was judged
+        # on: the same block the plan review wrote, so a reader can hold
+        # the two documents side by side and find one answer.
+        "streaming": pricing.plan_entry(),
         "streamed_carriers_refreshed": carriers_refreshed,
+        # Every checkpoint this run wrote, on the child's own
+        # restart_interval_s, under the instant naming the next downscale
+        # discovers.  The last one is the run's end state.
+        "restart_interval_s": float(cfg.restart_interval_s),
+        "checkpoints": [str(path) for path in checkpoint_paths],
         "boundary_intervals": len(prepared.boundaries.intervals),
         "boundary_device_resident_bytes": boundary_bytes,
         "boundary_device_reload_count": lateral_boundary_reload_count(child),
