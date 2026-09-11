@@ -243,7 +243,12 @@ fn main() {
                 assert_eq!([argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[9], argv[10]],
                     ["--point=39.5,-84", "--parent-restart=latest", "--parent-domain=1", "--ratio=3",
                      "--accept-parent-cadence", "--out", "--dry-run", "--auto-vram"]);
-                assert_eq!(argv.len(), 11, "{argv:?}");
+                // The child is drawn as this session draws: the request named
+                // no products, so the controller filled in its own selection
+                // and the child and the forecast beside it get one catalog.
+                let products = argv[11].strip_prefix("--render-products=").unwrap_or_else(|| panic!("{argv:?}"));
+                assert!(products.split(',').count() > 1 && products.contains("composite_reflectivity"), "{argv:?}");
+                assert_eq!(argv.len(), 12, "{argv:?}");
             }
             fs::write(root.join("finish-worker"), "").unwrap();
         }

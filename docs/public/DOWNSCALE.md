@@ -643,6 +643,43 @@ On the ERA5 route that means `--history-interval 900` in step 1.
 
 ## Rendering the child
 
+**The child draws itself.** `gpuwm downscale` renders the finished child
+the way every other ArWen forecast door renders its forecast: the same
+stage, the same product catalog, the same folder shape. The pictures land
+in `<out>/png/<domain>/<product>/<valid-day>/`, beside the frames they
+came from, and
+the analysis frame is drawn while the rest of the child is still
+integrating, so the first picture is readable long before the run ends.
+The run's event stream carries the `finalize` stage and its render
+summary, which is what fills the rendered-picture count a run browser
+shows.
+
+`--render-products` chooses the set, in `gpuwm render --products`'
+own spelling: a comma-separated list of catalog slugs, `all` (the
+default, and the same default `gpuwm go` takes), or `none` to keep only
+the frames.
+
+```bash
+gpuwm downscale RUN --parent-restart latest --point 39.5,-84.0 \
+  --out out/child --render-products composite_reflectivity,mslp_10m_winds
+```
+
+The names are the renderer's own catalog slugs; `gpuwm render
+--list-products` prints every one this install can draw. A slug the
+catalog does not carry is refused at plan review, before a single
+archived frame is opened.
+
+A requested set that produced no picture is a refusal naming the render
+command to run by hand, and a render stage that exits nonzero is the same
+kind of refusal: the forecast keeps its `PASS`, `report.json` gains a
+`products` block saying the pictures failed and naming that command, and
+the door exits 2 with the sentence rather than a traceback. A computer
+with no staged Rust renderer is turned away before the child is
+integrated rather than after, with `--render-products none` named as the
+way to run the forecast anyway. A child that does not pass publishes no
+picture at all: what the early render had already drawn is withdrawn, and
+the event stream and the report say so.
+
 `gpuwm render` handles the child's wrfouts like any other run's, and
 sub-hourly cadences render exactly: every frame carries its precise
 `valid_..._lead_...` stamp, so a 15-minute child cadence never rounds to a

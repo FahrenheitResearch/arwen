@@ -2622,8 +2622,13 @@ class _GoObserver:
     model observer, and the events interleave in real order.
     """
 
-    def __init__(self, observer: RunObserver):
+    def __init__(self, observer: RunObserver, *, door: str = "go"):
         self._observer = observer
+        #: The command the reader typed, for the one warning below that
+        #: quotes it.  `gpuwm downscale` runs this same render stage,
+        #: and a warning in ITS event stream naming `gpuwm go` sends a
+        #: reader to a command they did not run.
+        self._door = door
         self.failure: dict[str, Any] | None = None
 
     # -- gpuwm go's chain hooks ---------------------------------------
@@ -2666,9 +2671,10 @@ class _GoObserver:
                 self.failure = {"stage": label, "exit_code": exit_code}
             self._observer.warn(
                 "chain_stage_failed",
-                f"`gpuwm go` stage {label!r} exited {exit_code}; no later "
-                "stage ran, because each consumes the previous one's "
-                "output", stage=label, exit_code=exit_code)
+                f"`gpuwm {self._door}` stage {label!r} exited "
+                f"{exit_code}; no later stage ran, because each consumes "
+                "the previous one's output",
+                stage=label, exit_code=exit_code)
 
     # -- the runner's progress protocol, for the hosted forecast ------
 
@@ -3327,12 +3333,21 @@ def _chain_render(plan: RunPlan, *, forecast_dir: Path, run_dir: Path,
     return _chain_summary(run_dir / "chain", observer=observer)
 
 
-def _finish_render(render_plan: dict, *, observer: RunObserver) -> None:
-    """Finish the shared render stage and refuse an unfulfilled request."""
+def _finish_render(render_plan: dict, *, observer: RunObserver,
+                   door: str = "go") -> None:
+    """Finish the shared render stage and refuse an unfulfilled request.
+
+    ``door`` is the command the reader typed, carried down to the one
+    line the stage addresses them with -- this function serves
+    ``gpuwm go`` and ``gpuwm downscale``, and a failure under one must
+    not name the other.
+    """
     from gpuwm.go_cli import _render_stage, printable, render_command
 
     observer.enter_stage("finalize", phase="render")
-    rendered = _render_stage(render_plan, explain=False, observer=_GoObserver(observer))
+    rendered = _render_stage(render_plan, explain=False,
+                             observer=_GoObserver(observer, door=door),
+                             door=door)
     if not rendered and str(render_plan.get("render_products") or "").strip().lower() != "none":
         raise PlanError(
             "Forecast completed, but requested pictures were not produced. "

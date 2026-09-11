@@ -130,6 +130,16 @@ def _log(event: str, **values) -> None:
     print(json.dumps({"event": event, **values}, sort_keys=True), flush=True)
 
 
+from gpuwm.first_products import DEFAULT_WAIT_SECONDS as _EARLY_RENDER_WAIT
+
+#: One sentence for the two doors that ask it (this runner at admission and
+#: gpuwm downscale before it opens a frame), so they cannot drift apart.
+RENDERER_MISSING_REMEDY = (
+    "The Rust renderer is unavailable, so this child's products cannot be "
+    "drawn. Next: gpuwm setup, then repeat this command. Use "
+    "--render-products none to run the child without pictures.")
+
+
 class _ChildProgress:
     """The offline child's own run manifest and native event stream.
 
@@ -156,6 +166,24 @@ class _ChildProgress:
         self.manifest_path = None
         self.run_id = None
         self.outdir = None
+        #: The plan the child's pictures are drawn from -- the very dict
+        #: :func:`gpuwm.go_cli._render_stage` is handed, so the early
+        #: render and the finalize one cannot drift apart in what they
+        #: draw or where they put it.  ``None`` when no products were
+        #: asked for.
+        self.render_plan = None
+        self._stage = None
+        self._stage_phases: list[str] = []
+        self._stage_started_wall = None
+        self._started_wall = time.perf_counter()
+        self._first_products = None
+        self._first_products_seconds = None
+        #: The domain a coarse progress sample is attributed to.  A
+        #: child is one domain and :meth:`start` learns which.
+        self._root_domain = 1
+        #: Set by :class:`gpuwm.runplan._GoObserver`, which is what the
+        #: shared render stage reports through on every route.
+        self._render_summary = None
 
     def start(self, *, outdir: Path, child_config: Path, ratio: int,
               start_time, parent: dict, name: str) -> None:
@@ -204,11 +232,233 @@ class _ChildProgress:
         if self.events is not None:
             self.events.emit(event, **fields)
 
-    def failed(self, error: BaseException) -> None:
+    def failed(self, error: BaseException | None = None, *,
+               stage: str = "forecast") -> None:
+        """This run failed.  Both callers of that sentence reach here.
+
+        The runner's progress protocol calls ``failed()`` with no
+        argument -- :meth:`gpuwm.runplan.RunObserver.failed` takes none,
+        and :meth:`gpuwm.runplan._GoObserver.failed` forwards to it --
+        while this module's own exit paths call it with the exception
+        they caught.  A signature that took only the second spelling
+        made this object incompatible with the very surface it is handed
+        to, and the incompatibility was reachable: it is a
+        ``TypeError`` raised on a failure path, which is where a
+        readable message matters most.
+        """
+
+        if error is None:
+            self.emit("failed", stage=stage)
+            return
         message = " ".join(f"{type(error).__name__}: {error}".split())
-        self.emit("failed", stage="forecast", message=message[:1600])
+        self.emit("failed", stage=stage, message=message[:1600])
+
+    # -- the run-plan observer surface the shared render stage drives --
+    #
+    # `gpuwm.runplan._finish_render` is the finalize render EVERY other
+    # route uses, and it reports through `_GoObserver`, which asks its
+    # observer for exactly these five things.  Supplying them here is
+    # what lets a child's pictures be drawn by that function rather than
+    # by a second render stage written for this route -- two renderers
+    # for one product set is how a downscaled run ends up drawing a
+    # different catalog, into a different folder, than the forecast it
+    # was cut from.
+
+    def warn(self, code: str, message: str, **fields) -> None:
+        self.emit("warning", code=code, message=message, **fields)
+
+    def stage_progress(self, *, phase: str, elapsed_seconds: float,
+                       model_seconds: float, status=None) -> None:
+        """One coarse sample from a stage that runs out of process.
+
+        :meth:`gpuwm.runplan._GoObserver.stage_heartbeat` calls this
+        whenever the running stage's progress file carries a model
+        clock, so an observer that lacks it raises ``AttributeError``
+        out of a heartbeat -- inside the render stage of a finished
+        forecast.
+
+        Spelled as :meth:`gpuwm.runplan.RunObserver.stage_progress`
+        spells it, down to ``source``: one event tag, one field set, so
+        a reader of a downscaled run's stream and a reader of a
+        forecast's are the same reader.
+        """
+
+        speed = (round(model_seconds / elapsed_seconds, 4)
+                 if elapsed_seconds > 0.0 and model_seconds > 0.0 else None)
+        self.emit("model_progress", domain=self._root_domain,
+                  model_seconds=float(model_seconds),
+                  wall_seconds=round(float(elapsed_seconds), 6),
+                  speed_x=speed, step_ms=None, phase=phase,
+                  status=status, source="stage_progress_file")
+
+    def enter_stage(self, stage: str, *, phase: str | None = None) -> None:
+        """Close whatever stage is open and open ``stage``.
+
+        Re-entering the open stage is a no-op, exactly as
+        :meth:`gpuwm.runplan.RunObserver.enter_stage` treats it: the
+        finalize render is announced by its caller AND by the stage
+        hook, and one render is one ``stage_started``.
+        """
+
+        if stage == self._stage:
+            return
+        self.finish_stage()
+        self._stage = stage
+        self._stage_phases = [] if phase is None else [phase]
+        self._stage_started_wall = time.perf_counter()
+        fields = {"stage": stage}
+        if phase is not None:
+            fields["phase"] = phase
+        self.emit("stage_started", **fields)
+
+    def finish_stage(self, **fields) -> None:
+        """Close the open stage, carrying the render summary on finalize."""
+
+        if self._stage is None:
+            return
+        stage, started = self._stage, self._stage_started_wall
+        self._stage = None
+        if stage == "finalize" and self._render_summary is not None:
+            fields.setdefault("render_summary", self._render_summary)
+        self.emit("stage_finished", stage=stage,
+                  wall_seconds=round(time.perf_counter() - started, 6),
+                  phases=list(self._stage_phases), **fields)
+
+    def arm_render(self, *, outdir, render_products) -> dict | None:
+        """Arm this child's pictures: the plan, and the early render.
+
+        The plan is built ONCE, here, and both renders read it: the
+        early one this arms and the finalize one
+        :func:`_finish_child_render` runs.  ``render_products`` absent
+        or ``none`` arms nothing and leaves :attr:`render_plan` ``None``,
+        which is the single answer to "does this run draw?".
+        """
+
+        from gpuwm.first_products import FirstProducts, early_render_requested
+
+        if not early_render_requested(render_products):
+            self.render_plan = None
+            return None
+        root = Path(outdir)
+        self.render_plan = {"run": root, "wrfout_dir": root,
+                            "render": root / "png",
+                            "render_products": str(render_products)}
+        self._first_products = FirstProducts(
+            self.render_plan, report=self._first_products_ready,
+            warn=self.warn)
+        return self.render_plan
+
+    @property
+    def first_products(self):
+        """The armed early render, read by the finalize stage."""
+
+        return self._first_products
+
+    @property
+    def first_products_seconds(self) -> float | None:
+        """Time to first plot, or ``None`` if no early render published."""
+
+        return self._first_products_seconds
+
+    def _first_products_ready(self, receipt) -> None:
+        """The early render published.  This is the TTFP number."""
+
+        elapsed = round(time.perf_counter() - self._started_wall, 6)
+        self._first_products_seconds = elapsed
+        self.emit(
+            "first_products_ready",
+            domain=receipt["domain"], valid_time=receipt["valid_time"],
+            frame=receipt["frame"], paths=list(receipt["paths"]),
+            render_products=receipt["render_products"],
+            render_seconds=receipt["render_seconds"],
+            seconds_from_plan_accepted=elapsed)
+
+    def output_committed(self, **fields) -> None:
+        """One child history frame is durable.  Draws the first one.
+
+        The event is the same one this route always emitted; the
+        dispatch beside it is what makes the analysis frame a picture
+        while the rest of the forecast is still integrating, as it is on
+        every other route.  Only the first frame wins, and
+        :class:`gpuwm.first_products.FirstProducts` decides that, not a
+        counter kept here.
+        """
+
+        # The child's own domain, learned from the frames it commits:
+        # this route has one, and a coarse progress sample has to name
+        # it rather than the root of a hierarchy it does not have.
+        self._root_domain = int(fields["domain"])
+        self.emit("output_committed", **fields)
+        if self._first_products is not None:
+            self._first_products.frame_committed(
+                domain=fields["domain"], valid_time=fields["valid_time"],
+                path=fields["path"])
+
+    def wait_early_render(self, *, timeout: float | None = _EARLY_RENDER_WAIT) -> None:
+        """Join the early render, wherever this run is exiting from.
+
+        A render dispatched on a worker thread outlives nothing: the
+        subprocess it owns is still drawing when the process that armed
+        it returns.  The finalize stage waits for exactly this reason,
+        and every OTHER exit -- a refused forecast, a raised contract, a
+        render stage that failed -- has the same obligation, so the wait
+        lives on the one method all of them pass through.
+        """
+
+        if self._first_products is not None:
+            self._first_products.wait(timeout=timeout)
+
+    def early_pictures(self) -> int:
+        """How many pictures the early render has published, after joining it."""
+
+        if self._first_products is None:
+            return 0
+        # The bounded wait: this is a count for a sentence, and a wedged
+        # renderer must not hold a run that already failed.  The receipt
+        # lists what the early render published under "written".
+        receipt = self._first_products.wait()
+        written = receipt.get("written") if isinstance(receipt, dict) else None
+        return len(written) if isinstance(written, list) else 0
+
+    def withdraw_early_render(self, reason: str) -> int:
+        """Drop what the early render published; return how many pictures.
+
+        THE DECISION, recorded where it is enforced: a child that does
+        not pass publishes NO picture.  The early render draws the
+        analysis frame while the run still looks healthy, and a run that
+        then refuses itself would otherwise leave pictures as its only
+        artifact that does not carry the verdict -- and no frame of a
+        run that went non-finite can be shown to be the frame that was
+        still finite.  The frames, the checkpoints and the report stay:
+        they are the evidence.  The pictures are a derivative of it and
+        can be redrawn by hand from the frames at any time.
+
+        Nothing else writes into this directory on a failed run -- the
+        finalize render never runs -- so the whole picture tree is
+        exactly what the early render put there.
+        """
+
+        if self._first_products is None or self.render_plan is None:
+            return 0
+        from gpuwm.first_products import withdraw
+
+        # No timeout here: a withdrawal that ran ahead of the render
+        # thread would remove a tree that thread is still writing into.
+        self.wait_early_render(timeout=None)
+        render_dir = Path(self.render_plan["render"])
+        pictures = withdraw(render_dir)
+        # A `warning` carrying its own code, because the event
+        # vocabulary is a closed schema shared with every reader of
+        # every route (:data:`gpuwm.runplan.EVENT_TAGS`) -- a tag
+        # invented for one route is a record nothing can read.
+        self.warn("early_render_withdrawn", reason,
+                  render=str(render_dir), pictures=pictures)
+        return pictures
 
     def close(self) -> None:
+        # The floor under wait_early_render: every exit path closes the
+        # stream, so every exit path waits.
+        self.wait_early_render()
         if self.events is not None:
             self.events.close()
             self.events = None
@@ -662,13 +912,143 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     try:
         report = _run(args, progress)
     except BaseException as error:
+        # The run did not finish, so it publishes no picture: the early
+        # render's analysis frame is withdrawn before the stream is
+        # closed, and the wait inside that withdrawal is what keeps the
+        # render subprocess from outliving this process.
+        progress.withdraw_early_render(
+            "the child did not finish, and a run that did not finish "
+            "publishes no picture of itself")
         progress.failed(error)
         progress.close()
         raise
-    progress.emit("completed", stage="forecast", result=report["result"],
-                  outputs=len(report.get("outputs", []) or []))
+    if str(report["result"]) != "PASS":
+        pictures = progress.withdraw_early_render(
+            "the child's own health check refused this forecast, and a "
+            "run that refused itself publishes no picture of itself")
+        if progress.render_plan is not None:
+            _record_products(
+                progress, report, status="WITHDRAWN",
+                reason=("this child did not pass, so the "
+                        f"{pictures} picture(s) the early render had "
+                        "published were removed; the frames and the "
+                        "checkpoints are on disk and can be drawn by "
+                        "hand"),
+                render_command=_render_command_text(progress.render_plan))
+    else:
+        try:
+            _finish_child_render(progress, report=report)
+        except BaseException as error:
+            # Before the failure event, so the stream a reader tails
+            # ends on the failure rather than on a picture published by
+            # a thread that was still running when it was raised.
+            progress.wait_early_render()
+            progress.failed(error, stage="finalize")
+            progress.close()
+            raise
+    progress.emit(
+        "completed", stage="forecast", result=report["result"],
+        outputs=len(report.get("outputs", []) or []),
+        # Time to first plot and the render's own summary ride the
+        # terminal event, exactly as they do on the chain's, so one
+        # reader shape serves a forecast and a downscaled forecast.
+        first_products_seconds=progress.first_products_seconds,
+        **({"render_summary": progress._render_summary}
+           if progress._render_summary is not None else {}))
     progress.close()
     return report
+
+
+def _render_command_text(render_plan: dict) -> str:
+    """The render command for this plan, as a reader would type it."""
+
+    from gpuwm.go_cli import printable, render_command
+
+    return printable(render_command(render_plan))
+
+
+def _record_products(progress: "_ChildProgress", report: dict,
+                     **block) -> None:
+    """Record what became of this child's pictures, in its own report.
+
+    ``report.json`` is the document that says what this run produced,
+    and it used to say ``PASS`` beside an empty picture tree whenever
+    the render stage failed -- while the process exited 1 with a
+    traceback.  One run cannot have two verdicts: ``result`` stays the
+    forecast's, which passed, and this block is the pictures' own.
+
+    The directory is the one the RUN resolved, read off the progress
+    object rather than off the arguments: a run that never got as far
+    as opening its stream has no report to amend either.
+    """
+
+    report["products"] = dict(block)
+    if progress.outdir is None:
+        return
+    _publish_report(report, Path(progress.outdir))
+
+
+def _publish_report(report: dict, outdir: Path) -> None:
+    """Write ``report.json`` through a rename, from its one writer."""
+
+    temporary = outdir / "report.json.tmp"
+    temporary.write_text(
+        json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, outdir / "report.json")
+
+
+def _finish_child_render(progress: "_ChildProgress", *,
+                         report: dict) -> None:
+    """Draw a finished child's products through the shared render stage.
+
+    :func:`gpuwm.runplan._finish_render` is the finalize render every
+    other route runs: it opens the finalize stage, hands the plan to
+    :func:`gpuwm.go_cli._render_stage`, and refuses -- naming the render
+    command to run by hand -- when a requested product set produced
+    nothing.  A child gets that function, not a copy of it.
+
+    A stage that EXITS NONZERO is a different outcome from one that drew
+    nothing, and it is the outcome a product the renderer cannot draw
+    for these frames produces.  That is a
+    :class:`gpuwm.go_cli.GoStageFailed`, which subclasses ``Exception``
+    and nothing the CLI boundary recognises -- so it left this door
+    printing a traceback at exit 1 over a ``report.json`` that said
+    ``PASS``.  It becomes this door's own refusal here: one sentence,
+    exit 2, with the command that draws the finished frames by hand, and
+    a ``products`` block in the report so the two documents agree.
+    """
+
+    if progress.render_plan is None:
+        return
+    from gpuwm.go_cli import GoStageFailed
+    from gpuwm.runplan import _finish_render
+
+    try:
+        _finish_render(progress.render_plan, observer=progress,
+                       door="downscale")
+    except GoStageFailed as failure:
+        command = _render_command_text(progress.render_plan)
+        early = progress.early_pictures()
+        outcome = (f"this run's pictures are incomplete: {early} drawn early "
+                   "from the first frame, the rest not drawn" if early
+                   else "this run has no pictures")
+        _record_products(
+            progress, report, status="FAILED",
+            reason=(f"the render stage exited {failure.code}; the "
+                    "forecast itself passed and its frames are on disk"),
+            render_command=command, drawn_early=early)
+        raise OfflineChildContractError(
+            "The child integrated and its frames are on disk, but the "
+            f"render stage exited {failure.code}, so {outcome}. Next: draw "
+            "the saved frames by hand, which names the product that could "
+            "not be drawn:\n  "
+            + command) from failure
+    progress.finish_stage()
+    _record_products(
+        progress, report, status="DRAWN",
+        render_products=str(progress.render_plan.get("render_products")),
+        render_summary=progress._render_summary,
+        render_command=_render_command_text(progress.render_plan))
 
 
 def _run(args: argparse.Namespace,
@@ -686,6 +1066,24 @@ def _run(args: argparse.Namespace,
     from gpuwm.io.wrfout import wrfout_filename
 
     started = time.perf_counter()
+    # Pictures are this route's default, so "this computer cannot draw"
+    # is admitted HERE -- before the archived parent is read and the
+    # child is integrated -- and not discovered after the forecast,
+    # where the only outcome left is a completed child reported as a
+    # failure.  `gpuwm go` refuses its own chain at the same point, for
+    # the same reason, and names the same two ways out.
+    from gpuwm.first_products import early_render_requested
+
+    render_products = getattr(args, "render_products", None)
+    if early_render_requested(render_products):
+        from gpuwm.go_cli import render_extra_missing
+
+        missing = render_extra_missing()
+        if missing is not None:
+            from gpuwm.explain import layered
+
+            raise OfflineChildContractError(layered(
+                RENDERER_MISSING_REMEDY, missing))
     # ``outdir_reserved`` means the caller already applied the same
     # never-adopt reservation in this process (``gpuwm downscale`` does,
     # so the config it derives can live inside the run it describes).
@@ -864,6 +1262,10 @@ def _run(args: argparse.Namespace,
         name=child_run_name(
             Path(contract.frames[0].path), grid_id=int(cfg.grid_id),
             ratio=int(placement.parent_grid_ratio), dx=float(cfg.dx)))
+    # Armed beside the manifest, so the analysis frame -- written before
+    # a single step is integrated -- becomes a picture while the child
+    # is still running, as it does on every other route.
+    progress.arm_render(outdir=outdir, render_products=render_products)
     progress.emit("stage_started", stage="initialize", phase="preprocess")
 
     initial = interpolate_parent_initial_state(
@@ -960,9 +1362,9 @@ def _run(args: argparse.Namespace,
         reset_up_heli_max(child)
         _log("child_output", elapsed_seconds=float(clock.elapsed_seconds),
              path=str(path), bytes=path.stat().st_size)
-        progress.emit("output_committed", domain=int(cfg.grid_id),
-                      valid_time=valid.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                      path=str(path), bytes=path.stat().st_size)
+        progress.output_committed(domain=int(cfg.grid_id),
+                                  valid_time=valid.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                  path=str(path), bytes=path.stat().st_size)
 
     checkpoint_paths: list[Path] = []
     carriers_refreshed = 0
@@ -1144,10 +1546,7 @@ def _run(args: argparse.Namespace,
             "parent's fields -- WRF's monthly WIF climatology or "
             "thompson_init's synthetic profile -- is recorded in the "
             "PARENT run's report, and is the answer for this child too")))
-    temporary = outdir / "report.json.tmp"
-    temporary.write_text(
-        json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(temporary, outdir / "report.json")
+    _publish_report(report, outdir)
     _log("complete", **report)
     return report
 
@@ -1178,6 +1577,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--preprocess-backend", choices=("cuda", "cpu"),
                         default="cuda")
     parser.add_argument("--health-interval-seconds", type=float, default=60.0)
+    parser.add_argument("--render-products", default=None, metavar="LIST",
+                        dest="render_products",
+                        help="which products this child's frames are drawn "
+                             "into <outdir>/png: a comma-separated list of "
+                             "catalog slugs, 'all', or 'none'.  Absent draws "
+                             "nothing, because this runner is the engine "
+                             "door; `gpuwm downscale` is the door that "
+                             "defaults to drawing")
     parser.add_argument("--outdir", type=Path, required=True)
     return parser
 

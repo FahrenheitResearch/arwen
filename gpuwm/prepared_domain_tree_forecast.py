@@ -684,6 +684,30 @@ def _plan_restart_identity(plan) -> dict[str, object]:
     return identity
 
 
+def cold_tree_streaming_decision(exp, nodes, *, machine=None, decisions=None):
+    """The RUN DOOR's own ``[tiles]`` admission, as one callable question.
+
+    Extracted so the door and the plan review ask the same question the
+    same way, and so a test can drive the door's invocation -- its machine,
+    its estimate arguments -- without standing up a forecast.  The estimate
+    is :func:`gpuwm.core.preflight.admission_estimate`, the single pricing
+    both sides call; the run's memory LEDGER keeps its own richer estimate,
+    which is a different question and is never compared with this one.
+
+    ``None`` when nothing in the tree configures streaming: an unconfigured
+    tree consults no planner and touches no card, exactly as before.
+    """
+    from gpuwm.core.preflight import admission_estimate
+    if not streaming.tree_streams_anywhere(
+            SimpleNamespace(walk_parent_first=lambda: nodes), exp.tiles):
+        return None
+    from gpuwm.core.streamed_relocation import mark_reconstruction_nodes
+    mark_reconstruction_nodes(nodes, exp)
+    return streaming.decide_tree(
+        nodes, exp.tiles, machine=machine, decisions=decisions,
+        resident_estimate=admission_estimate(exp, machine=machine))
+
+
 def resolve_execution_plan(exp) -> Mapping[str, object]:
     """Resolve every edge through the engine's actual transition authority.
 
@@ -1986,11 +2010,8 @@ def run_prepared_tree(
     )
     cold_decisions = {}
     cold_nodes = _prepared_planning_nodes(inputs)
-    if streaming.tree_streams_anywhere(SimpleNamespace(walk_parent_first=lambda: cold_nodes), exp.tiles):
-        from gpuwm.core.streamed_relocation import mark_reconstruction_nodes
-        mark_reconstruction_nodes(cold_nodes, exp)
-        streaming.decide_tree(cold_nodes, exp.tiles, machine=planning_machine,
-                              decisions=cold_decisions, resident_estimate=estimate)
+    cold_tree_streaming_decision(exp, cold_nodes, machine=planning_machine,
+                                 decisions=cold_decisions)
     store_ids = ({gid for gid, decision in cold_decisions.items() if decision.stream}
                  if initialization is None else set())
     resident_domains = tuple(dc for dc in exp.domains if dc.grid_id not in store_ids)

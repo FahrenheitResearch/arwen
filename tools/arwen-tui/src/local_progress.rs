@@ -376,6 +376,44 @@ mod tests{
         let value=read(&f.job,&f.command).unwrap();assert_eq!(value["progress"]["outer_step"],360);assert_eq!(value["progress"]["speed_x"],45.5852);
     }
     #[test]
+    fn a_downscaled_run_reports_the_pictures_it_drew(){
+        // The child publishes the finalize render stage and its summary in
+        // the same event stream every other route publishes, so the count a
+        // run view shows comes off this reader unchanged, with no second
+        // path for the downscale route.
+        let path=std::env::temp_dir().join(format!("local-progress-downscale-{}",crate::remote::stamp()));
+        fs::create_dir_all(&path).unwrap();let root=path.canonicalize().unwrap();
+        let job=root.join("job");let out=root.join("child-run");fs::create_dir(&job).unwrap();fs::create_dir(&out).unwrap();
+        let config=out.join("child.toml");
+        fs::write(&config,"[grid]\nnx=12\nny=10\nnz=4\n[run]\ngrid_id=2\nrun_seconds=21600\noutput_interval_s=3600\nrestart_interval_s=3600\n").unwrap();
+        let sha=digest(&fs::read(&config).unwrap());
+        let command=vec!["unused-fixture-python".into(),"-m".into(),"gpuwm.cli".into(),"downscale".into(),
+            root.join("parent-run").display().to_string(),"--out".into(),out.display().to_string(),
+            "--render-products=all".into()];
+        write(&job.join("job.json"),&json!({"schema":"gpuwm-tui-job-v1","command":command,"cwd":root,"action":"downscale"}));
+        write(&job.join("process.json"),&json!({"schema":"gpuwm-tui-process-v1","pid":4242,"started_at":"2026-09-07T00:00:00Z","cwd":root,"cli_args":&command[3..]}));
+        let started=utc_ms("2026-09-07T00:00:01Z").unwrap();
+        write(&out.join("run-manifest.json"),&json!({"schema":"gpuwm.run-manifest.v1","run_id":"downscale-fixture","pid":4242,
+            "started_at_utc":"2026-09-07T00:00:01Z","route":"downscale","run_dir":out,"outputs_dir":out,
+            "events_path":out.join("events.jsonl"),"plan_source":format!("gpuwm downscale {}",config.display()),
+            "plan_sha256":"e".repeat(64),"progress_path":Value::Null,"start_time":"2026-09-11T12:00:00Z"}));
+        let summary=json!({"schema":"gpuwm.render-summary.v1","rendered_png_count":146,"rendered_family_count":21,
+            "requested_specs":["composite_reflectivity,2m_temperature"]});
+        let stream=vec![
+            json!({"schema_version":"gpuwm.run-plan.event.v1","sequence":1,"emitted_unix_ms":started+1,"event":"resolved_plan","config_source":config,"config_sha256":sha}),
+            json!({"schema_version":"gpuwm.run-plan.event.v1","sequence":2,"emitted_unix_ms":started+2,"event":"stage_started","stage":"finalize","phase":"render"}),
+            json!({"schema_version":"gpuwm.run-plan.event.v1","sequence":3,"emitted_unix_ms":started+3,"event":"stage_finished","stage":"finalize","wall_seconds":28.6,"phases":["render"],"render_summary":summary}),
+            json!({"schema_version":"gpuwm.run-plan.event.v1","sequence":4,"emitted_unix_ms":started+4,"event":"completed","stage":"forecast","result":"PASS","outputs":7,"render_summary":summary}),
+        ];
+        fs::write(out.join("events.jsonl"),stream.iter().map(|e|serde_json::to_string(e).unwrap()+"\n").collect::<String>()).unwrap();
+        let value=read(&job,&command).unwrap();
+        assert_eq!(value["render_summary"],summary);
+        assert_eq!(value["render_summary"]["rendered_png_count"],146);
+        assert_eq!(value["stage"],"completed");
+        assert_eq!(value["phase"],"render");
+        fs::remove_dir_all(root).ok();
+    }
+    #[test]
     fn pipeline_shows_real_acquisition_and_preparation_counts_before_integration(){
         let events=vec![json!({"event":"stage_started","stage":"fetch","emitted_unix_ms":1000}),json!({"event":"fetch_progress","emitted_unix_ms":2000,"acquisition":{"schema":"arwen.acquisition-progress.v1","phase":"cds_running","requests_completed":1,"requests_total":2,"files_total":2,"forcing_hours":3,"forcing_times_total":4}}),json!({"event":"fetch_completed","emitted_unix_ms":3000,"file":"part-0.grib","bytes":4194304,"failed":false}),json!({"event":"fetch_progress","emitted_unix_ms":4000,"file":"part-1.grib","bytes":2097152})];
         let p=pipeline_progress(&events,&json!({"stage":"fetch"}),0,Some(60000));assert_eq!(p["phase"],"cds_running");assert_eq!(p["wall_seconds"],59.);assert_eq!(p["acquisition"]["transferred_bytes"],6291456);assert_eq!(p["acquisition"]["files_completed"],1);assert!(p["acquisition"]["expected_bytes"].is_null());

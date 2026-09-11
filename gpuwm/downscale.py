@@ -46,7 +46,7 @@ import numpy as np
 
 from gpuwm import downscale_pricing, netcdf_bridge
 
-from gpuwm.explain import warn
+from gpuwm.explain import layered, warn
 from gpuwm.offline_child import (
     DERIVED_CHILD_SURFACE_CAVEAT,
     OfflineChildContractError,
@@ -1066,8 +1066,60 @@ def downscale_main(args) -> int:
         raise
 
 
+def _admit_render_products(render_products, *, dry_run: bool) -> None:
+    """Refuse an undrawable product request BEFORE anything is opened.
+
+    Pictures are this door's default, so "this computer cannot draw" and
+    "that is not a product" are admission facts, not discoveries.  Both
+    used to be found later -- the first in the engine runner, after nine
+    archived frames had been opened, ``--out`` created and the plan
+    document written into it, so the refusal's own remedy ("repeat this
+    command") then failed on ``--out already holds a child run``; the
+    second not at all, because an unknown slug is a renderer that exits
+    nonzero, which arrived as a traceback after the whole child had been
+    integrated.  ``gpuwm go`` admits the same two facts before it
+    creates anything, and this is that check on this door.
+
+    A ``--dry-run`` is exempt from the FIRST of them and only that one:
+    a plan review integrates nothing and draws nothing, so a computer
+    with no renderer must still be able to price a child on it.  The
+    spec is checked either way -- a review that does not review the
+    product list is not a review.
+    """
+
+    from gpuwm.go_cli import render_extra_missing, unknown_render_products
+    from gpuwm.first_products import early_render_requested
+
+    if not early_render_requested(render_products):
+        return
+    if not dry_run:
+        missing = render_extra_missing()
+        if missing is not None:
+            from gpuwm.offline_child_run import RENDERER_MISSING_REMEDY
+
+            raise OfflineChildContractError(layered(RENDERER_MISSING_REMEDY, missing))
+    unknown = unknown_render_products(render_products)
+    if unknown:
+        raise OfflineChildContractError(
+            "--render-products names "
+            + ", ".join(repr(slug) for slug in unknown)
+            + ", which the renderer's catalog does not carry. Next: "
+            "gpuwm render --list-products names every product this "
+            "install can draw; repeat this command with names from it, "
+            "or 'all'.")
+
+
 def _downscale_main(args, reservation: _OutputReservation,
                     warnings: list[dict]) -> int:
+    from gpuwm.go_cli import DEFAULT_RENDER_PRODUCTS
+
+    # Absent means the forecast door's own default, read off that door
+    # rather than repeated here: two doors of one product cannot draw
+    # two different catalogs by default.
+    render_products = (args.render_products
+                       if getattr(args, "render_products", None) is not None
+                       else DEFAULT_RENDER_PRODUCTS)
+    _admit_render_products(render_products, dry_run=bool(args.dry_run))
     auto_vram = bool(getattr(args, "auto_vram", False))
     if auto_vram and (args.card is not None or args.vram_gib is not None):
         # Two declarations of one budget: a measured card and a declared
@@ -1466,6 +1518,11 @@ def _downscale_main(args, reservation: _OutputReservation,
         "domain": plan_parent_domain,
     }
     plan["warnings"] = [dict(record) for record in warnings]
+    # What this child will be drawn as, in the plan a reviewer reads
+    # before anything runs -- the same field name the run plan of a
+    # forecast carries, so one reader answers "which products?" for
+    # both.  `gpuwm go`'s own default is the single source of "all".
+    plan["render_products"] = render_products
     plan_path = downscale_plan_path(Path(args.out), dry_run=bool(args.dry_run))
     if args.dry_run:
         _write_downscale_plan(plan_path, plan)
@@ -1490,6 +1547,7 @@ def _downscale_main(args, reservation: _OutputReservation,
                             else Path(args.child_surface_from)),
         preprocess_backend=args.preprocess_backend,
         health_interval_seconds=float(args.health_interval_seconds),
+        render_products=render_products,
         outdir=Path(args.out),
         # This process created --out moments ago to hold the config it
         # derived; the never-adopt reservation already happened there.
@@ -1627,6 +1685,19 @@ def register_cli(subparsers) -> None:
                              "LES case: a 100 m child wants the levels, not "
                              "just the columns).  p_top, hybrid_opt and etac "
                              "stay shared with the parent")
+    # The same vocabulary `gpuwm go --products` takes, and the same
+    # default: a downscaled forecast is a forecast, and a reader who
+    # gets pictures from one and frames from the other is reading two
+    # products, not one.
+    parser.add_argument("--render-products", default=None, metavar="LIST",
+                        dest="render_products",
+                        help="which products the child's frames are drawn "
+                             "into <out>/png once it finishes: a "
+                             "comma-separated list of catalog slugs, 'all' "
+                             "(the default -- the renderer's whole "
+                             "catalog), or 'none' to keep only the frames.  "
+                             "The same spelling `gpuwm render --products` "
+                             "and `gpuwm go --products` take")
     parser.add_argument("--dry-run", action="store_true",
                         help="validate contracts, derive/print the plan, "
                              "write the derived TOML, run nothing")

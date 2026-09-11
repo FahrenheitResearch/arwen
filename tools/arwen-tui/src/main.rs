@@ -502,7 +502,8 @@ fn local_forecast_action(action: &str, command: &[String]) -> bool {
 /// exclusions, the `--out DIR` pair, the `--dry-run` that plan mode means --
 /// so a request and the terminal's own guided setup cannot produce different
 /// commands for the same answers.
-fn downscale_guide(body: &companion::DownscaleRequest, cwd: &Path, output: &Path) -> Guide {
+fn downscale_guide(body: &companion::DownscaleRequest, cwd: &Path, output: &Path,
+                   products: &str) -> Guide {
     let mut guide = Guide::new(Kind::Downscale, cwd, output);
     let number = |value: f64| format!("{value}");
     let blank = String::new();
@@ -525,6 +526,10 @@ fn downscale_guide(body: &companion::DownscaleRequest, cwd: &Path, output: &Path
     guide.questions[18].value = body.out_dir.clone();
     guide.questions[19].value = if body.plan { "plan".into() } else { "run".into() };
     guide.questions[21].value = if body.auto_vram { "true".into() } else { "false".into() };
+    // What the finished child is drawn as. A request that names nothing
+    // takes the session's own plot selection, so downscaling a forecast
+    // from this desk produces the products this desk already asked for.
+    guide.questions[22].value = products.to_owned();
     guide.sync_choices();
     guide
 }
@@ -1088,7 +1093,7 @@ impl App {
         serde_json::json!({"config_path":config,"config_sha256":hash,"python":self.python,"cwd":self.cwd,
             "output_root":self.output,"geog_root":(!self.geog_root.as_os_str().is_empty()).then_some(&self.geog_root),
             "prepared_root":(!self.prepared.as_os_str().is_empty()).then_some(&self.prepared),
-            "render_products":self.plot_spec().unwrap_or_else(|_| "all".into()),
+            "render_products":self.session_render_products(),
             "plot_preferences_path":config.map(|path| plotsettings::sidecar(path)),
             "current_job_dir":self.job.as_ref().map(|job| &job.dir),"target":self.companion_target(),
             "available_targets":self.available_companion_targets()})
@@ -1666,7 +1671,9 @@ impl App {
                     else if self.checked_companion_target(request.target.as_ref()).is_err() { Err("The execution target changed. Review again.".into()) }
                     else {
                         let cwd = self.cwd.clone();
-                        let built = downscale_guide(body, &cwd, &self.output).request(&cwd);
+                        let products = body.render_products.clone()
+                            .unwrap_or_else(|| self.session_render_products());
+                        let built = downscale_guide(body, &cwd, &self.output, &products).request(&cwd);
                         match built {
                             // The guide's own refusals travel verbatim: an
                             // output directory that already exists, both or
@@ -1910,6 +1917,14 @@ impl App {
     }
     fn plot_spec(&self) -> Result<String, String> {
         self.plot_selection().map(|selection| selection.spec)
+    }
+    /// The product spec this session draws with, as the companion status
+    /// already publishes it. One expression, read by the status document
+    /// and by every launch that inherits it, so a downscaled child cannot
+    /// be drawn as a different set than the forecast beside it.
+    fn session_render_products(&self) -> String {
+        self.plot_spec()
+            .unwrap_or_else(|_| guide::DEFAULT_RENDER_PRODUCTS.into())
     }
     fn begin_plots(&mut self) {
         if self.nodes.store.selected().is_some() {
@@ -8555,7 +8570,7 @@ mod tests {
             output_interval_seconds:Some(900.0),tiles:Some("auto".into()),
             out_dir:out.to_string_lossy().into_owned(),plan:true,
             ..companion::DownscaleRequest::default()};
-        let request=downscale_guide(&body,&root,&root.join("runs")).request(&root).unwrap();
+        let request=downscale_guide(&body,&root,&root.join("runs"),"all").request(&root).unwrap();
         assert_eq!(request.command,"downscale");
         // Exactly what the terminal's own Downscale guide builds for the
         // same answers, because it IS that guide: the positional parent,
@@ -8565,7 +8580,17 @@ mod tests {
             "--point=39.5,-84".to_owned(),"--parent-restart=latest".into(),"--ratio=3".into(),
             "--accept-parent-cadence".into(),"--output-interval-seconds=900".into(),
             "--tiles=auto".into(),"--out".into(),out.to_string_lossy().into_owned(),
-            "--dry-run".into(),"--auto-vram".into()]);
+            "--dry-run".into(),"--auto-vram".into(),"--render-products=all".into()]);
+
+        // The child is drawn as whatever the session draws, and a request
+        // that names its own set is taken verbatim -- "none" included, so
+        // a caller can ask for the frames alone.
+        let mut named=body.clone();named.render_products=Some("composite_reflectivity,mslp_10m_winds".into());
+        let request=downscale_guide(&named,&root,&root.join("runs"),
+            named.render_products.as_deref().unwrap()).request(&root).unwrap();
+        assert!(request.args.contains(&"--render-products=composite_reflectivity,mslp_10m_winds".to_owned()));
+        let request=downscale_guide(&body,&root,&root.join("runs"),"none").request(&root).unwrap();
+        assert!(request.args.contains(&"--render-products=none".to_owned()));
         let receipt=downscale_receipt(&body);
         assert_eq!(receipt["mode"],"plan");
         assert_eq!(receipt["child_config_path"],serde_json::json!(root.join("child-run.child.toml")));
@@ -8574,7 +8599,7 @@ mod tests {
         // The same answers as a run: no --dry-run, and both documents move
         // inside the directory the run owns.
         let mut running=body.clone();running.plan=false;
-        let request=downscale_guide(&running,&root,&root.join("runs")).request(&root).unwrap();
+        let request=downscale_guide(&running,&root,&root.join("runs"),"all").request(&root).unwrap();
         assert!(!request.args.iter().any(|argument|argument=="--dry-run"));
         let receipt=downscale_receipt(&running);
         assert_eq!(receipt["mode"],"run");
@@ -8584,10 +8609,21 @@ mod tests {
         // An output directory that already exists is the guide's own
         // refusal, and it reaches the caller verbatim.
         fs::create_dir(&out).unwrap();
-        let refusal=match downscale_guide(&body,&root,&root.join("runs")).request(&root){
+        let refusal=match downscale_guide(&body,&root,&root.join("runs"),"all").request(&root){
             Err(error)=>error,Ok(_)=>panic!("an existing output directory must be refused")};
         assert!(refusal.contains("already exists"),"{refusal}");
         fs::remove_dir_all(root).ok();
+    }
+    #[test]
+    fn the_session_product_spec_has_one_reader_and_one_fallback(){
+        let app=loaded_app("a=1
+");
+        let spec=app.session_render_products();
+        // The session's own selection, not a literal kept here: the status
+        // document and every launch that inherits it read one expression.
+        assert_eq!(spec,plotsettings::Selection::default().spec);
+        assert!(!spec.is_empty());
+        assert_eq!(app.companion_context()["render_products"],serde_json::json!(spec));
     }
     #[test]
     fn companion_launch_available_status_keeps_queue_and_tui_review_exclusive(){

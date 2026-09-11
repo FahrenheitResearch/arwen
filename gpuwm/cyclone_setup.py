@@ -323,16 +323,77 @@ def _stopped_by_sentence(stopped) -> str:
             f"not the card: {stopped['reason']}")
 
 
-def _keeps_coverage_sentence(admitted) -> str:
-    """The one sentence that names ``--tiles off`` as the way to keep the
-    requested ground, with the numbers that make it a claim."""
+def _keeps_coverage_sentence(admitted, tiles: str) -> str:
+    """The one sentence that names the way to keep the requested ground,
+    with the numbers that make it a claim.
+
+    WHICH WAY DEPENDS ON WHAT COMPELLED THE TILED ROAD.  Under ``--tiles
+    on`` the tiled road was ASKED FOR: the computer holds this tree, and
+    ``--tiles auto`` weighs a tree resident before it consults the planner
+    at all, so auto is the remedy and ``off`` is a bigger change than the
+    reader needs.  Under ``auto`` there is no mode to withdraw, and ``off``
+    remains the sentence.
+    """
 
     dims = admitted["dimensions"]
-    return (f"--tiles off admits the requested {dims[0][0]}x{dims[0][1]} / "
-            f"{dims[1][0]}x{dims[1][1]} domain on this computer as one "
-            f"resident allocation ({admitted['peak_envelope_bytes']} bytes "
-            f"against a {admitted['budget_bytes']} byte budget); re-run with "
-            "--tiles off to keep the requested coverage")
+    ground = (f"the requested {dims[0][0]}x{dims[0][1]} / "
+              f"{dims[1][0]}x{dims[1][1]} domain on this computer as one "
+              f"resident allocation ({admitted['peak_envelope_bytes']} bytes "
+              f"against a {admitted['budget_bytes']} byte budget)")
+    if tiles == "on":
+        return (f"--tiles on is what compels the tiled road here, not the "
+                f"computer: --tiles auto admits {ground}, so re-run with "
+                "--tiles auto to keep the requested coverage")
+    return (f"--tiles off admits {ground}; re-run with --tiles off to keep "
+            "the requested coverage")
+
+
+#: HOW THE PROPOSED TREE RUNS, on the document that proposes it.
+#:
+#: ``--tiles auto`` is a request, not an outcome: the same layout runs
+#: resident on one card and streamed on another, and until this block
+#: existed the cyclone document said only which mode was ASKED for.  A
+#: reviewer reading "tiles: auto" had no way to tell whether the proposal
+#: in front of them keeps the whole tree on the card or pins a host store
+#: and cycles tiles through it, which is a difference of 1.2x-1.4x in
+#: wall time and of tens of gigabytes of host RAM.
+#:
+#: Read off the SAME walk the run door takes -- ``phases.tree_road`` is
+#: :func:`gpuwm.core.streaming.decide_tree`'s own decisions -- so the
+#: document cannot claim a road the run will not take.  Same shape as
+#: ``downscale-plan.json``'s ``streaming`` block: the mode, the road, the
+#: budget it was decided against, and the per-domain verdict with its
+#: tiling where there is one.  Additive: the schema version is unchanged
+#: because no existing key moves or changes meaning.
+def _streaming_entry(phases, tiles: str, budget: int) -> dict:
+    """The ``streaming`` block: which road each domain takes, and why."""
+    road_plan = getattr(phases, "tree_road", None)
+    rows = tuple(getattr(road_plan, "rows", ()) or ())
+    common = {"mode": tiles, "budget_bytes": int(budget),
+              "peak_envelope_bytes": phases.peak_envelope_bytes}
+    if rows:
+        return {**common,
+                "road": ("streamed" if any(row["road"] == "streamed"
+                                           for row in rows) else "resident"),
+                "domains": [{"grid_id": row["grid_id"], "road": row["road"],
+                             "why": row["reason"], "tile": row.get("tile")}
+                            for row in rows]}
+    if tiles == "off":
+        # NOT an unpriced road: "off" IS the answer, and it needs no walk.
+        return {**common, "road": "resident",
+                "reason": "[tiles] mode = 'off': every domain is resident by "
+                          "configuration, so no tree road is priced",
+                "domains": []}
+    # AN UNPRICED ROAD IS NOT A RESIDENT ONE.  Saying "resident" with no row
+    # behind it is a claim about how the run goes, made where the walk
+    # produced nothing -- a refusal, a report failure, or a tree this
+    # surface never priced -- and a reviewer sizing a card reads it as a
+    # verdict.  Say that it could not be priced, and say what said so.
+    return {**common, "road": None,
+            "reason": (getattr(road_plan, "refusal", None)
+                       or getattr(road_plan, "report_error", None)
+                       or "this configuration prices no tree road"),
+            "domains": []}
 
 
 def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machine=None,
@@ -507,7 +568,7 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
 
         def _way_through(exhausted: bool, floors: dict) -> str:
             if keeps_coverage:
-                return f"  {_keeps_coverage_sentence(keeps_coverage)}."
+                return f"  {_keeps_coverage_sentence(keeps_coverage, tiles)}."
             measured, found = _probe(exhausted)
             if found:
                 return f"  {_resident_alternative_sentence(found)}."
@@ -594,19 +655,32 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
             hardware_bound = impossible or tiles == "off" or not (
                 resident_floor is not None and resident_floor < budget) or (
                 keeps_coverage is None and _alternative(impossible) is None)
+            # ONE SENTENCE, THEN THE WAY OUT.  What the reader needs is what
+            # refused, with its numbers, and what to do; three further
+            # sentences of policy behind them is a paragraph nobody finishes.
+            # The clauses below carry the same facts the sentences did.
             if hardware_bound:
                 head = "The selected computer cannot admit a cyclone proposal: "
                 tail = ("; fixed process/radiation costs exhaust the budget, so resizing "
                         "cannot help." if impossible else
-                        "; no smaller candidate in this bounded policy passed. Physics, "
-                        "duration, halos and movement margins were not reduced.")
+                        "; no smaller candidate in this bounded policy passed, and "
+                        "physics, duration, halos and movement margins were not reduced.")
             else:
                 head = f"No --tiles {tiles} cyclone proposal was admitted: "
-                tail = ("; no smaller candidate in this bounded policy passed. Physics, "
-                        "duration, halos and movement margins were not reduced. This is "
-                        "the tile planner's tree road refusing, not the computer: its "
-                        f"resident fixed floor is {resident_floor} bytes against a "
-                        f"{budget} byte budget.")
+                # UNDER `on`, THE MODE IS WHAT REFUSED.  "the tile planner's
+                # tree road refusing" is true either way, but under `on` the
+                # planner was asked for by the request itself, so naming the
+                # planner sends the reader looking for a defect where there
+                # is a flag.  Under `auto` the mode chose the planner and the
+                # planner is the right name.
+                tail = (("; no smaller candidate passed, and the requested "
+                         "--tiles on is what compels the tiled road here, not "
+                         "the computer: a resident tree's fixed floor is "
+                         f"{resident_floor} bytes against a {budget} byte budget."
+                         ) if tiles == "on" else
+                        ("; no smaller candidate passed, and this is the tile planner's "
+                         "tree road refusing, not the computer: its resident fixed floor "
+                         f"is {resident_floor} bytes against a {budget} byte budget."))
             raise MemoryAdmissionError(
                 head + str(error) + tail + _way_through(impossible, floors),
                 reason="fixed-floor" if impossible else "bounded-search",
@@ -630,6 +704,7 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
                      "following": d.grid_id == 2} for d in experiment.domains],
         "follow": dict(VORTEX_PRESET), "follow_preset_source": VORTEX_PRESET_SOURCE,
         "profile": dw.resolved_physics_profile("gfs", None),
+        "streaming": _streaming_entry(phases, tiles, budget),
         "memory": {"peak_envelope_bytes": phases.peak_envelope_bytes, "budget_bytes": budget,
                    "binding_phase": phases.binding_phase, "free_bytes": sizing.free_bytes,
                    "fit_headroom_bytes": dw.fit_headroom_bytes(budget) if reduced else 0,
@@ -645,7 +720,7 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
                     "stopped_by": stopped_by,
                     "notice": (("Smaller geographic coverage proposed. Review dimensions and all field "
                                 "changes; use --accept-fit FIT_ID to save this exact proposal."
-                                + (f"  {_keeps_coverage_sentence(keeps_coverage)}."
+                                + (f"  {_keeps_coverage_sentence(keeps_coverage, tiles)}."
                                    if keeps_coverage else "")
                                 + (f"  {_stopped_by_sentence(stopped_by)}."
                                    if stopped_by else ""))

@@ -1,6 +1,17 @@
 //! Questions collect exact CLI arguments; the existing engine owns all science.
 use std::path::{Path, PathBuf};
 
+/// What a door draws when nobody names a product set.
+///
+/// ONE literal in this language: the forecast guide's answer, the
+/// Downscale guide's answer and the session fallback in `main.rs` all
+/// read it. It is a SECOND declaration of the engine's own
+/// `gpuwm.first_products.DEFAULT_RENDER_PRODUCTS`, because a Rust
+/// default cannot read a Python constant; the README's `launch_downscale`
+/// paragraph carries that as a contract sentence, and the two are
+/// changed together.
+pub const DEFAULT_RENDER_PRODUCTS: &str = "all";
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Kind {
     New,
@@ -145,7 +156,7 @@ impl Guide {
    ],
    Kind::Render=>vec![
     q("Forecast history file or folder", "@history", "An actual wrfout file, or a folder containing wrfout files. Compatible files form a timeline for windowed plots; separate runs, domains and lifecycle episodes stay separate. Discovery includes child folders, skips symbolic links, and is bounded. The exact files appear in the command review.", "", true),
-    q("Requested plots", "--products", "Comma-separated canonical products. The task mode supplies a starting selection; all is also accepted. Missing fields/windows are reported by the native renderer.", "all", true),
+    q("Requested plots", "--products", "Comma-separated canonical products. The task mode supplies a starting selection; all is also accepted. Missing fields/windows are reported by the native renderer.", DEFAULT_RENDER_PRODUCTS, true),
     q("Frame index or all", "--timeidx", "all plots every saved frame; a nonnegative index selects one record within each file.", "all", true),
     q("Image output folder", "--out", "An ordinary output root gets a fresh timestamped run folder. Choosing a folder already inside run-YYYY... reuses that run and may replace matching plots; review the path deliberately.", cwd.join("weather-plots").to_string_lossy(), true),
     q("Source label shown on plots", "--source-label", "Name the model and whether this is a hypothetical or changed-initial-state run. This label is printed on the actual images.", "External / unspecified forecast", true),
@@ -174,6 +185,7 @@ impl Guide {
     q("Action: plan or run", "@downscale-mode", "plan invokes --dry-run to validate and write the derived plan without a forecast. run starts the offline child only after you review and confirm the exact command.", "plan", true),
     q("Parent namelist domain column", "--parent-namelist-domain", "Optional column of the stock-WRF namelist corresponding to this parent (native default 1). This is distinct from selecting a wrfout domain ID.", "", false),
     q("Measure local GPU free memory: true/false", "@auto-vram", "true measures actual total and free memory: it fits a point child when no size is given, and prices an explicit child size or a supplied child configuration on the measured card otherwise. Entering a capacity turns this off. false uses explicit capacity or the native 24 GiB default when none is supplied.", "true", false),
+    q("Requested plots", "--render-products", "Comma-separated canonical products drawn into png beside the child's frames when it finishes, or all, or none to keep only the frames. The same spelling the forecast door takes.", DEFAULT_RENDER_PRODUCTS, false),
    ],
    Kind::Wrf|Kind::MetEm=>vec![q("Existing input directory", if kind==Kind::Wrf {"--wrfinput"}else{"--met-em"}, if kind==Kind::Wrf {"Folder containing wrfinput_d0*, wrfbdy_d01 and the producing namelist.input. Its physics stays authoritative."}else{"Folder containing met_em.d0*.nc and the producing namelist.input. Its settings stay authoritative."}, "", true), q("Shorten duration (seconds, optional)","--run-seconds","Empty preserves the producing namelist duration.","",false),q("Forecast output directory","--outdir","Run output will be written here. Review the exact command before starting.",out,true)],
    Kind::Resume=>vec![q("Original configuration file","","The same ArWen TOML used by the interrupted run. Checkpoint identity is checked by the existing engine.","",true),q("Checkpoint file or latest","--from","Use an actual gpuwmrst checkpoint, or latest to let the engine locate a valid set in the output directory.","latest",true),q("Existing forecast output directory","--outdir","The interrupted run's wrfout/checkpoint directory. A log folder alone is not a checkpoint.",out,true)],

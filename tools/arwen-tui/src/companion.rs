@@ -88,6 +88,12 @@ pub struct DownscaleRequest {
     pub accept_parent_cadence: bool,
     pub max_boundary_interval_seconds: Option<f64>,
     pub out_dir: String,
+    /// Which products the finished child is drawn as, in `gpuwm render
+    /// --products` spelling. `None` means the session's own plot
+    /// selection, which is what a forecast started from the same desk
+    /// draws: a downscaled run and the run it was cut from are two
+    /// resolutions of one forecast, not two product sets.
+    pub render_products: Option<String>,
     /// `true` is `mode: "plan"`: validate, derive and price the child,
     /// write its TOML and plan document, run no forecast.
     pub plan: bool,
@@ -113,7 +119,7 @@ pub struct Request {
 const DOWNSCALE_KEYS: &[&str] = &["parent_run_dir", "parent_domain", "parent_restart", "point",
     "child_config", "ratio", "child_size", "vram_gib", "auto_vram", "hours",
     "output_interval_seconds", "tiles", "accept_parent_cadence",
-    "max_boundary_interval_seconds", "out_dir", "mode"];
+    "max_boundary_interval_seconds", "out_dir", "mode", "render_products"];
 
 fn absolute_field(value: &Value, key: &str, label: &str) -> Result<String, String> {
     let text = value[key].as_str().filter(|text| !text.is_empty() && text.len() <= 8192
@@ -212,6 +218,12 @@ fn parse_downscale(value: &Value) -> Result<DownscaleRequest, String> {
         None | Some(Value::Null) => None,
         Some(Value::String(mode)) if matches!(mode.as_str(), "on" | "auto") => Some(mode.clone()),
         Some(_) => return Err("Streaming must be on or auto.".into()),
+    };
+    request.render_products = match value.get("render_products") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(spec)) if !spec.trim().is_empty() && spec.len() <= 4096
+            && !spec.chars().any(char::is_control) => Some(spec.trim().to_owned()),
+        Some(_) => return Err("Requested plots must be a comma-separated product list, all, or none.".into()),
     };
     request.plan = match value["mode"].as_str() {
         Some("plan") => true,
@@ -1138,6 +1150,18 @@ mod downscale_requests {
         let mut unknown = payload(&parent, &out);
         unknown["child_levels"] = json!("40,2.5");
         assert!(parse(&unknown).unwrap_err().contains("Unknown field"));
+
+        // Products: absent leaves the session's own selection to fill in,
+        // a named set travels verbatim, and "none" is a set like any other.
+        assert_eq!(body.render_products, None);
+        let mut drawn = payload(&parent, &out);
+        drawn["render_products"] = json!(" composite_reflectivity,mslp_10m_winds ");
+        assert_eq!(parse(&drawn).unwrap().render_products.as_deref(),
+            Some("composite_reflectivity,mslp_10m_winds"));
+        drawn["render_products"] = json!("none");
+        assert_eq!(parse(&drawn).unwrap().render_products.as_deref(), Some("none"));
+        drawn["render_products"] = json!(7);
+        assert!(parse(&drawn).unwrap_err().contains("comma-separated product list"));
 
         let mut both = payload(&parent, &out);
         both["child_config"] = json!(root.join("child.toml"));

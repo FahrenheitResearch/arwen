@@ -7,9 +7,11 @@ Davies-bind boundary clock the standalone child constructs.
 """
 
 from argparse import Namespace
+import json
 from datetime import datetime, timedelta
 import math
 from pathlib import Path
+import threading
 
 import netCDF4
 import numpy as np
@@ -38,6 +40,36 @@ from gpuwm.offline_child import (
 )
 from gpuwm.offline_child_run import _child_boundary_clock
 from test_offline_child import _history
+
+
+#: What every test in this deck runs on: a computer that CAN draw.
+#:
+#: `gpuwm downscale` draws by default, so a box with no staged renderer
+#: is turned away at admission -- before the request's own contracts are
+#: read, because the remedy for that refusal must not have to undo an
+#: --out this command created.  A test box has no renderer, so without
+#: this every refusal this deck pins (the surface-source contract, the
+#: --out collisions, the cadence sentences) would arrive as the render
+#: refusal instead.  The refusal itself is pinned by
+#: ``test_a_computer_that_cannot_draw_is_refused_before_anything_is_opened``,
+#: which overrides this, and the catalog is a fixed one so no test in
+#: this deck depends on a renderer being installed to be admitted.
+_CATALOG_FIXTURE = {
+    "engine": "rust",
+    "products": [{"name": "composite_reflectivity"}, {"name": "mslp_10m_winds"},
+                 {"name": "2m_temperature"}, {"name": "total_qpf"},
+                 {"name": "10m_wind_speed_and_direction"}],
+    "group_keywords": ["severe", "surface"],
+}
+
+
+@pytest.fixture(autouse=True)
+def _a_box_that_can_draw(monkeypatch):
+    import gpuwm.go_cli as go_cli
+    import gpuwm.runplan as runplan
+
+    monkeypatch.setattr(go_cli, "render_extra_missing", lambda: None)
+    monkeypatch.setattr(runplan, "render_catalog", lambda: dict(_CATALOG_FIXTURE))
 
 
 #: The three tests marked with this hand the door a real wrfout or restart
@@ -1518,3 +1550,644 @@ def test_the_parents_restart_is_the_member_of_the_domain_the_frames_come_from(
     assert "d01, d02" in captured.err
     assert "--parent-domain" in captured.err and "--parent-restart" in captured.err
     assert "Traceback" not in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Products: a downscaled forecast is drawn the way a forecast is
+# ---------------------------------------------------------------------------
+
+def test_the_plan_says_which_products_the_child_will_be_drawn_as(
+        tmp_path, capsys):
+    """The reviewed plan carries the product spec, defaulted off the
+    forecast door rather than off a second literal kept here."""
+    from gpuwm.go_cli import DEFAULT_RENDER_PRODUCTS
+
+    plan = _dry_run_plan(tmp_path, capsys, ["--accept-parent-cadence"])
+    assert plan["render_products"] == DEFAULT_RENDER_PRODUCTS == "all"
+
+    off = _dry_run_plan(tmp_path / "off", capsys,
+                        ["--accept-parent-cadence",
+                         "--render-products", "none"])
+    assert off["render_products"] == "none"
+
+    chosen = _dry_run_plan(tmp_path / "chosen", capsys,
+                           ["--accept-parent-cadence",
+                            "--render-products", "composite_reflectivity,mslp_10m_winds"])
+    assert chosen["render_products"] == "composite_reflectivity,mslp_10m_winds"
+
+
+def _downscale_with_receipts(tmp_path, monkeypatch, *, extra=(),
+                             rendered=True):
+    """``gpuwm downscale`` through its real runner, integration replaced.
+
+    The child's receipts -- manifest, event stream, the armed render --
+    are published exactly as a real child publishes them; only the GPU
+    forecast between them is the stand-in, so what this exercises is the
+    door, the runner's own finalize, and the shared render stage.
+    """
+
+    import json as _json
+
+    import gpuwm.go_cli as go_cli
+    import gpuwm.offline_child_run as offline_child_run
+
+    calls = []
+
+    def fake_render_stage(plan, *, explain, observer=None, door="go"):
+        calls.append(dict(plan))
+        return rendered
+
+    def fake_child(args, progress):
+        outdir = Path(args.outdir)
+        progress.start(
+            outdir=outdir, child_config=Path(args.child_config),
+            ratio=int(args.parent_grid_ratio),
+            start_time=datetime(1974, 4, 3, 12),
+            parent={"run_dir": str(tmp_path), "frames": 3},
+            name="Downscale of parent")
+        progress.arm_render(outdir=outdir,
+                            render_products=args.render_products)
+        progress.emit("stage_started", stage="forecast", phase="integrate")
+        return {"result": "PASS", "outputs": []}
+
+    monkeypatch.setattr(go_cli, "_render_stage", fake_render_stage)
+    monkeypatch.setattr(offline_child_run, "_run", fake_child)
+
+    start = datetime(1974, 4, 3, 12)
+    for index in range(3):
+        _history(tmp_path / f"wrfout_d03_1974-04-03_{12 + index:02d}_00_00",
+                 start + timedelta(hours=index), ny=18, nx=20)
+    namelist = tmp_path / "namelist.input"
+    namelist.write_text("&physics\n mp_physics = 8,\n/\n", encoding="utf-8")
+    child_toml = tmp_path / "child.toml"
+    merged = _derive_child_run_config(
+        _PARENT_CONFIG,
+        parent={"nx": 20, "ny": 18, "dx": 1000.0, "dy": 1000.0},
+        ratio=1, child_nx=12, child_ny=10,
+        run_seconds=600.0, output_interval_s=300.0)
+    child_toml.write_text(_render_child_toml(merged), encoding="utf-8")
+    out = tmp_path / "child-run"
+    code = cli_main([
+        "downscale", str(tmp_path), "--parent-domain", "3",
+        "--parent-namelist", str(namelist),
+        "--child-config", str(child_toml), "--ratio", "1",
+        "--i-parent-start", "4", "--j-parent-start", "4",
+        "--accept-parent-cadence", "--out", str(out), *extra])
+    events = [
+        _json.loads(line) for line
+        in (out / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()]
+    return code, out, calls, events
+
+
+def test_a_finished_child_is_rendered_once_into_png_beside_its_frames(
+        tmp_path, monkeypatch, capsys):
+    code, out, calls, events = _downscale_with_receipts(tmp_path, monkeypatch)
+    capsys.readouterr()
+    assert code == 0
+
+    # One render, on the child's own frames, into the child's own folder.
+    assert len(calls) == 1
+    plan = calls[0]
+    assert plan["run"] == out
+    assert plan["wrfout_dir"] == out
+    assert plan["render"] == out / "png"
+    assert plan["render_products"] == "all"
+
+    # And a reader of this run sees the sequence a forecast writes.
+    staged = [(event["event"], event.get("stage"), event.get("phase"))
+              for event in events]
+    assert ("stage_started", "finalize", "render") in staged
+    finished = [event for event in events
+                if event["event"] == "stage_finished"
+                and event["stage"] == "finalize"]
+    assert len(finished) == 1
+    assert events[-1]["event"] == "completed"
+
+
+def test_render_products_none_draws_nothing_and_says_nothing(
+        tmp_path, monkeypatch, capsys):
+    code, _out, calls, events = _downscale_with_receipts(
+        tmp_path, monkeypatch, extra=["--render-products", "none"])
+    capsys.readouterr()
+    assert code == 0
+    assert calls == []
+    assert not [event for event in events
+                if event.get("stage") == "finalize"]
+
+
+def test_a_requested_product_set_that_drew_nothing_is_a_refusal(
+        tmp_path, monkeypatch, capsys):
+    """The chain's own refusal, on this route: the finished forecast is
+    kept and the command that draws it by hand is named."""
+    code, out, calls, _events = _downscale_with_receipts(
+        tmp_path, monkeypatch, rendered=False)
+    err = capsys.readouterr().err
+    assert code == 2
+    assert len(calls) == 1
+    assert "were not produced" in err
+    assert "render" in err
+    assert "child-run/png" in err.replace(chr(92), "/")
+    # The finished child is evidence; a render that drew nothing does not
+    # take its frames away.
+    assert out.is_dir()
+
+
+def test_the_door_hands_the_runner_the_spec_it_resolved(
+        tmp_path, monkeypatch, capsys):
+    import gpuwm.offline_child_run as offline_child_run
+
+    captured = {}
+
+    def fake_run(namespace):
+        captured["namespace"] = namespace
+        return {"result": "PASS"}
+
+    monkeypatch.setattr(offline_child_run, "run", fake_run)
+    start = datetime(1974, 4, 3, 12)
+    for index in range(3):
+        _history(tmp_path / f"wrfout_d03_1974-04-03_{12 + index:02d}_00_00",
+                 start + timedelta(hours=index), ny=18, nx=20)
+    namelist = tmp_path / "namelist.input"
+    namelist.write_text("&physics\n mp_physics = 8,\n/\n", encoding="utf-8")
+    child_toml = tmp_path / "child.toml"
+    merged = _derive_child_run_config(
+        _PARENT_CONFIG,
+        parent={"nx": 20, "ny": 18, "dx": 1000.0, "dy": 1000.0},
+        ratio=1, child_nx=12, child_ny=10,
+        run_seconds=600.0, output_interval_s=300.0)
+    child_toml.write_text(_render_child_toml(merged), encoding="utf-8")
+    door = [
+        "downscale", str(tmp_path), "--parent-domain", "3",
+        "--parent-namelist", str(namelist),
+        "--child-config", str(child_toml), "--ratio", "1",
+        "--i-parent-start", "4", "--j-parent-start", "4",
+        "--accept-parent-cadence"]
+    assert cli_main(door + ["--out", str(tmp_path / "a")]) == 0
+    assert captured["namespace"].render_products == "all"
+    assert cli_main(door + ["--out", str(tmp_path / "b"),
+                            "--render-products", "none"]) == 0
+    assert captured["namespace"].render_products == "none"
+    capsys.readouterr()
+
+    # The engine runner speaks the same flag, and draws nothing without it.
+    from gpuwm.offline_child_run import _parser
+    base = ["--parent-history", "x", "--parent-restart", "r",
+            "--child-config", "c", "--parent-grid-ratio", "3",
+            "--i-parent-start", "1", "--j-parent-start", "1",
+            "--max-boundary-interval-seconds", "900", "--outdir", "o"]
+    assert _parser().parse_args(base).render_products is None
+    assert _parser().parse_args(
+        base + ["--render-products", "all"]).render_products == "all"
+
+
+def test_the_childs_first_frame_is_drawn_while_it_is_still_running(
+        tmp_path, monkeypatch):
+    """The early render is armed off the SAME plan the finalize render
+    runs, and the first committed frame dispatches it."""
+    from gpuwm.first_products import FirstProducts
+    from gpuwm.offline_child_run import _ChildProgress
+
+    dispatched = []
+    monkeypatch.setattr(
+        FirstProducts, "frame_committed",
+        lambda self, **fields: bool(dispatched.append(fields)) or True)
+
+    out = tmp_path / "child-run"
+    out.mkdir()
+    child_toml = tmp_path / "child.toml"
+    child_toml.write_text("# child\n", encoding="utf-8")
+    progress = _ChildProgress()
+    progress.start(outdir=out, child_config=child_toml, ratio=3,
+                   start_time=datetime(1974, 4, 3, 12),
+                   parent={"run_dir": str(tmp_path), "frames": 1},
+                   name="Downscale of parent")
+    plan = progress.arm_render(outdir=out, render_products="all")
+    assert plan == {"run": out, "wrfout_dir": out, "render": out / "png",
+                    "render_products": "all"}
+    assert progress.first_products.render_dir == out / "png"
+    frame = str(out / "wrfout_d02_1974-04-03_12_00_00")
+    progress.output_committed(domain=2, valid_time="1974-04-03T12:00:00Z",
+                              path=frame, bytes=1)
+    progress.close()
+    assert dispatched == [{"domain": 2,
+                           "valid_time": "1974-04-03T12:00:00Z",
+                           "path": frame}]
+
+    # No products asked for is no early render and no plan, which is the
+    # one place that answer lives.
+    quiet = _ChildProgress()
+    assert quiet.arm_render(outdir=out, render_products="none") is None
+    assert quiet.render_plan is None and quiet.first_products is None
+
+
+# ---------------------------------------------------------------------------
+# Products: what is admitted, what is refused, and what is never drawn
+# ---------------------------------------------------------------------------
+
+def _child_door(tmp_path):
+    """The argv of one real ``gpuwm downscale`` run, fixtures written."""
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    start = datetime(1974, 4, 3, 12)
+    for index in range(3):
+        _history(tmp_path / f"wrfout_d03_1974-04-03_{12 + index:02d}_00_00",
+                 start + timedelta(hours=index), ny=18, nx=20)
+    namelist = tmp_path / "namelist.input"
+    namelist.write_text("&physics\n mp_physics = 8,\n/\n", encoding="utf-8")
+    child_toml = tmp_path / "child.toml"
+    merged = _derive_child_run_config(
+        _PARENT_CONFIG,
+        parent={"nx": 20, "ny": 18, "dx": 1000.0, "dy": 1000.0},
+        ratio=1, child_nx=12, child_ny=10,
+        run_seconds=600.0, output_interval_s=300.0)
+    child_toml.write_text(_render_child_toml(merged), encoding="utf-8")
+    return [
+        "downscale", str(tmp_path), "--parent-domain", "3",
+        "--parent-namelist", str(namelist),
+        "--child-config", str(child_toml), "--ratio", "1",
+        "--i-parent-start", "4", "--j-parent-start", "4",
+        "--accept-parent-cadence", "--out", str(tmp_path / "child-run")]
+
+
+def _count_frame_opens(monkeypatch):
+    """Every archive frame this command opens, counted at netCDF4."""
+
+    opened = []
+    real = netCDF4.Dataset
+
+    def counting(path, *args, **kwargs):
+        opened.append(str(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(netCDF4, "Dataset", counting)
+    return opened
+
+
+def test_a_computer_that_cannot_draw_is_refused_before_anything_is_opened(
+        tmp_path, monkeypatch, capsys):
+    """The renderer-missing refusal is an ADMISSION fact.
+
+    It used to fire inside the engine runner: nine archived frames had
+    been opened, ``--out`` created and the plan document written into it
+    by then, so the remedy the refusal names -- run gpuwm setup, then
+    repeat this command -- met "--out already holds a child run's
+    output" on the repeat.
+    """
+
+    import gpuwm.go_cli as go_cli
+
+    monkeypatch.setattr(go_cli, "render_extra_missing",
+                        lambda: "no rw_wrfbatch is staged on this computer")
+    door = _child_door(tmp_path)
+    opened = _count_frame_opens(monkeypatch)
+    assert cli_main(door) == 2
+    err = capsys.readouterr().err
+    assert "gpuwm setup" in err and "--render-products none" in err
+    assert "Traceback" not in err
+    # Nothing was read and nothing was created, so the remedy works.
+    assert opened == []
+    assert not (tmp_path / "child-run").exists()
+
+
+def test_a_product_the_catalog_does_not_carry_is_refused_at_plan_review(
+        tmp_path, monkeypatch, capsys):
+    """An unknown slug is a renderer that exits nonzero, which is a
+    traceback after a whole forecast.  It is a sentence before one."""
+
+    import gpuwm.go_cli as go_cli
+    import gpuwm.runplan as runplan
+
+    monkeypatch.setattr(go_cli, "render_extra_missing", lambda: None)
+    monkeypatch.setattr(runplan, "render_catalog", lambda: {
+        "engine": "rust",
+        "products": [{"name": "composite_reflectivity"},
+                     {"name": "mslp_10m_winds"}],
+        "group_keywords": ["severe"]})
+    door = _child_door(tmp_path)
+    opened = _count_frame_opens(monkeypatch)
+    assert cli_main(door + ["--render-products", "mslp,composite_reflectivity"]) == 2
+    err = capsys.readouterr().err
+    assert "'mslp'" in err and "--list-products" in err
+    assert "Traceback" not in err
+    assert opened == []
+    assert not (tmp_path / "child-run").exists()
+
+    # A catalog name, a group keyword, an alias and the whole catalog are
+    # all admitted, so the check refuses spellings rather than vocabulary.
+    for spec in ("composite_reflectivity", "severe", "refl", "all", "none",
+                 "var:T2", "ALL", "SEVERE", "composite_reflectivity, mslp_10m_winds",
+                 "xsec:wa=1,2,5,10@5", "composite_reflectivity,xsec:QCLOUD/wa=1,2,3",
+                 "xsec:wa=1,2,5,mslp_10m_winds"):
+        assert go_cli.unknown_render_products(spec) == [], spec
+    # A level list is the renderer's own comma grammar; a slug after it is
+    # still a slug, and an unknown one is still refused.
+    assert go_cli.unknown_render_products("xsec:wa=1,2,bogus") == ["bogus"]
+
+
+def test_early_pictures_are_counted_from_the_receipt_the_early_render_writes():
+    """The receipt lists what was published under ``written``; the count
+    the failure sentence carries reads that list, bounded by the same
+    wait the finalize stage uses."""
+
+    from gpuwm.offline_child_run import _ChildProgress
+
+    class _Early:
+        def __init__(self, receipt):
+            self.receipt = receipt
+            self.timeouts = []
+
+        def wait(self, timeout="default"):
+            self.timeouts.append(timeout)
+            return self.receipt
+
+    progress = _ChildProgress()
+    assert progress.early_pictures() == 0
+    progress._first_products = _Early({"written": ["a.png", "b.png"], "frame": "f"})
+    assert progress.early_pictures() == 2
+    assert progress._first_products.timeouts == ["default"]
+    progress._first_products = _Early(None)
+    assert progress.early_pictures() == 0
+
+
+def test_the_admission_check_says_nothing_when_it_cannot_ask(monkeypatch):
+    """A box with no renderer has a different refusal, with a different
+    remedy; this one must not answer for it."""
+
+    import gpuwm.go_cli as go_cli
+    import gpuwm.runplan as runplan
+
+    monkeypatch.setattr(runplan, "render_catalog", lambda: {
+        "engine": None, "products": None, "error": "no renderer is staged"})
+    assert go_cli.unknown_render_products("whatever,it,says") == []
+
+
+def _fake_render_runner(monkeypatch, *, pictures=1):
+    """The early render's subprocess, replaced by one that draws.
+
+    It writes into the scratch directory the command names and leaves the
+    renderer's OWN scratch sibling behind, exactly as ``rw_wrfbatch``
+    does (``gpuwm.render.scratch_root_for``), so the cleanup of that
+    sibling is measured rather than assumed.
+    """
+
+    import subprocess as _subprocess
+
+    import gpuwm.first_products as first_products
+
+    def runner(command):
+        out = Path(command[command.index("--out") + 1])
+        (out / "d02" / "composite_reflectivity" / "1974-04-03").mkdir(
+            parents=True, exist_ok=True)
+        for index in range(pictures):
+            (out / "d02" / "composite_reflectivity" / "1974-04-03"
+             / f"picture-{index}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        sibling = out.with_name(out.name + ".render-scratch")
+        sibling.mkdir(parents=True, exist_ok=True)
+        (sibling / "working.bin").write_bytes(b"0" * 16)
+        return _subprocess.CompletedProcess(list(command), 0, "", "")
+
+    monkeypatch.setattr(first_products, "_run_render", runner)
+
+
+def _downscale_drawing(tmp_path, monkeypatch, *, result="PASS",
+                       stage_failure=None, extra=()):
+    """``gpuwm downscale`` with a real early render and a stub forecast.
+
+    The child's receipts, its armed early render and its report are
+    published exactly as a real child publishes them; only the GPU
+    integration between them is the stand-in.
+    """
+
+    import json as _json
+
+    import gpuwm.go_cli as go_cli
+    import gpuwm.offline_child_run as offline_child_run
+
+    calls = []
+
+    def fake_render_stage(plan, *, explain, observer=None, door="go"):
+        calls.append({**plan, "door": door})
+        if stage_failure is not None:
+            raise go_cli.GoStageFailed(stage_failure)
+        return True
+
+    def fake_child(args, progress):
+        outdir = Path(args.outdir)
+        progress.start(
+            outdir=outdir, child_config=Path(args.child_config),
+            ratio=int(args.parent_grid_ratio),
+            start_time=datetime(1974, 4, 3, 12),
+            parent={"run_dir": str(tmp_path), "frames": 3},
+            name="Downscale of parent")
+        progress.arm_render(outdir=outdir,
+                            render_products=args.render_products)
+        progress.emit("stage_started", stage="forecast", phase="integrate")
+        frame = outdir / "wrfout_d02_1974-04-03_12_00_00"
+        frame.write_bytes(b"CDF frame")
+        progress.output_committed(
+            domain=2, valid_time="1974-04-03T12:00:00Z",
+            path=str(frame), bytes=frame.stat().st_size)
+        report = {"result": result, "outputs": [str(frame)]}
+        offline_child_run._publish_report(report, outdir)
+        return report
+
+    monkeypatch.setattr(go_cli, "render_extra_missing", lambda: None)
+    monkeypatch.setattr(go_cli, "_render_stage", fake_render_stage)
+    monkeypatch.setattr(offline_child_run, "_run", fake_child)
+    _fake_render_runner(monkeypatch)
+
+    out = tmp_path / "child-run"
+    code = cli_main(_child_door(tmp_path) + list(extra))
+    events = [
+        _json.loads(line) for line
+        in (out / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()]
+    report = _json.loads((out / "report.json").read_text(encoding="utf-8"))
+    return code, out, calls, events, report
+
+
+def test_the_early_render_leaves_the_picture_tree_and_nothing_else(
+        tmp_path, monkeypatch, capsys):
+    """Every early render used to leave the renderer's own scratch
+    directory inside the picture tree it had just published into."""
+
+    code, out, _calls, _events, report = _downscale_drawing(
+        tmp_path, monkeypatch)
+    capsys.readouterr()
+    assert code == 0
+    published = sorted(path.name for path in (out / "png").rglob("*.png"))
+    assert published == ["picture-0.png"]
+    leftovers = [path for path in (out / "png").rglob("*")
+                 if ".render-scratch" in path.name
+                 or ".first-products-scratch" in path.name]
+    assert leftovers == []
+    assert report["products"]["status"] == "DRAWN"
+
+
+def test_a_child_that_did_not_pass_publishes_no_picture(
+        tmp_path, monkeypatch, capsys):
+    """THE DECISION: a child that does not pass draws nothing.
+
+    The early render draws the analysis frame while the run still looks
+    healthy; a run that then refuses itself must not leave pictures as
+    its only artifact that does not carry the verdict.  So what the
+    early render published is withdrawn -- and the withdrawal waits for
+    it, which is also what stops the render subprocess outliving the
+    process that armed it.
+    """
+
+    from gpuwm.first_products import FIRST_PRODUCTS_RECEIPT
+
+    code, out, calls, events, report = _downscale_drawing(
+        tmp_path, monkeypatch, result="FAIL")
+    capsys.readouterr()
+    assert code == 1
+    # The finalize render never ran; the early one was undone.
+    assert calls == []
+    assert not (out / "png").exists()
+    assert not (out / "png" / FIRST_PRODUCTS_RECEIPT).exists()
+    # The frames and the report are evidence and stay.
+    assert (out / "wrfout_d02_1974-04-03_12_00_00").is_file()
+    assert report["result"] == "FAIL"
+    assert report["products"]["status"] == "WITHDRAWN"
+    assert "did not pass" in report["products"]["reason"]
+    withdrawn = [event for event in events
+                 if event.get("code") == "early_render_withdrawn"]
+    assert len(withdrawn) == 1 and withdrawn[0]["pictures"] == 1
+    assert "publishes no picture" in withdrawn[0]["message"]
+    assert events[-1]["event"] == "completed"
+    # Nothing is still drawing when the door returns.
+    assert [thread for thread in threading.enumerate()
+            if thread.name == "gpuwm-first-products"
+            and thread.is_alive()] == []
+
+
+def test_a_render_stage_that_exited_nonzero_is_this_doors_refusal(
+        tmp_path, monkeypatch, capsys):
+    """A nonzero render stage raises GoStageFailed, which no CLI handler
+    knows: the door died at exit 1 with a traceback over a report.json
+    that said PASS."""
+
+    code, out, calls, events, report = _downscale_drawing(
+        tmp_path, monkeypatch, stage_failure=3)
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "Traceback" not in captured.err
+    assert "render stage exited 3" in captured.err
+    assert "gpuwm.cli render" in captured.err
+    # The forecast passed and its frames are on disk; the pictures did
+    # not.  One run, two verdicts, in the one document that says so.
+    assert report["result"] == "PASS"
+    assert report["products"]["status"] == "FAILED"
+    assert "exited 3" in report["products"]["reason"]
+    assert "--products" in report["products"]["render_command"]
+    assert events[-1]["event"] == "failed"
+    assert events[-1]["stage"] == "finalize"
+    # And no record of this run names a command its reader did not type.
+    assert not [event for event in events
+                if "gpuwm go" in json.dumps(event)]
+    # And the stage was told which door is running it.
+    assert calls[0]["door"] == "downscale"
+
+
+def test_the_stage_failure_line_names_the_door_that_is_running(capsys):
+    """`go: stopped at render` under `gpuwm downscale` sends its reader
+    to another command's documentation."""
+
+    import sys
+
+    from gpuwm.go_cli import GoStageFailed, _run_stage
+
+    failing = [sys.executable, "-c", "raise SystemExit(4)"]
+    with pytest.raises(GoStageFailed):
+        _run_stage("render", failing, explain=False, door="downscale")
+    printed = capsys.readouterr().out
+    assert "downscale: stopped at render" in printed
+    assert "go: stopped at" not in printed
+
+
+def test_the_remedy_command_renders_the_frames_and_nothing_else(tmp_path):
+    """The printed remedy used to glob the whole run directory.
+
+    A child's ``wrfout_dir`` IS its run root, so that command handed
+    events.jsonl, report.json, the checkpoints and the picture tree to
+    the renderer, which stopped on "NetCDF: Unknown file format".
+    """
+
+    import glob
+
+    from gpuwm.go_cli import render_command, wrfout_frames
+
+    run = tmp_path / "child-run"
+    (run / "png" / "d02").mkdir(parents=True)
+    (run / "png" / "d02" / "picture.png").write_bytes(b"\x89PNG")
+    (run / "events.jsonl").write_text("{}\n", encoding="utf-8")
+    (run / "report.json").write_text("{}\n", encoding="utf-8")
+    (run / "gpuwmrst_d02_1974-04-03_12_10_00.npz").write_bytes(b"NPZ")
+    (run / "downscale-plan.json").write_text("{}\n", encoding="utf-8")
+    frames = []
+    for hour in (12, 13):
+        frame = run / f"wrfout_d02_1974-04-03_{hour}_00_00"
+        frame.write_bytes(b"CDF")
+        frames.append(frame)
+
+    plan = {"run": run, "wrfout_dir": run, "render": run / "png",
+            "render_products": "all"}
+    assert sorted(wrfout_frames(plan)) == sorted(frames)
+    # The command a reader pastes names the frames, and only the frames:
+    # nothing in it is a pattern a shell has to expand, because the
+    # quoting that makes it pasteable is exactly what stops a shell
+    # expanding one.
+    printed = render_command(plan)
+    targets = printed[printed.index("render") + 1:printed.index("--series")]
+    assert sorted(Path(path) for path in targets) == sorted(frames)
+
+    # Before the run has published anything -- the dry-run case -- the
+    # pattern is printed instead, and it still selects frames alone.
+    empty = tmp_path / "not-yet"
+    (empty / "png").mkdir(parents=True)
+    (empty / "events.jsonl").write_text("{}" + chr(10), encoding="utf-8")
+    pattern = render_command({"run": empty, "wrfout_dir": empty,
+                              "render": empty / "png"})[4]
+    assert pattern.endswith("wrfout_d*")
+    assert glob.glob(pattern) == []
+
+
+def test_the_child_progress_object_is_the_observer_surface_it_is_handed(
+        tmp_path):
+    """`_GoObserver` forwards five calls; two of them used to raise.
+
+    ``failed()`` takes no argument on that surface and ``stage_progress``
+    has to exist -- the heartbeat calls it whenever a running stage's
+    progress file carries a model clock.
+    """
+
+    import json as _json
+
+    from gpuwm.offline_child_run import _ChildProgress
+    from gpuwm.runplan import _GoObserver
+
+    out = tmp_path / "child-run"
+    out.mkdir()
+    config = tmp_path / "child.toml"
+    config.write_text("# child\n", encoding="utf-8")
+    progress = _ChildProgress()
+    progress.start(outdir=out, child_config=config, ratio=3,
+                   start_time=datetime(1974, 4, 3, 12),
+                   parent={"run_dir": str(tmp_path), "frames": 1},
+                   name="Downscale of parent")
+    observer = _GoObserver(progress)
+    observer.stage_heartbeat(
+        label="render", elapsed_seconds=1.5,
+        progress={"model_elapsed_seconds": 600.0, "status": "running"})
+    observer.failed()
+    progress.close()
+    events = [_json.loads(line) for line
+              in (out / "events.jsonl").read_text(encoding="utf-8").splitlines()
+              if line.strip()]
+    coarse = [event for event in events
+              if event["event"] == "model_progress"]
+    assert len(coarse) == 1
+    assert coarse[0]["source"] == "stage_progress_file"
+    assert events[-1]["event"] == "failed" and events[-1]["stage"] == "forecast"

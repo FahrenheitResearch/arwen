@@ -521,7 +521,16 @@ def test_real_planner_declared_hardware_no_gpu_probe(monkeypatch):
     from tilestream.autoplan import Machine
     monkeypatch.setattr(Machine, "detect", lambda *a, **kw: pytest.fail("no GPU probe permitted"))
     found_reduction = False
-    for free_gib in (3., 6., 7.25, 7.5, 8., 12.):
+    # 5 GiB is the band where the layout GENUINELY reduces: the requested
+    # tree does not fit the card resident there.  MEASURED across these
+    # rungs, the tile planner's tree road charging its streamed fixed floor
+    # against a card that holds the tree resident cost the whole middle of
+    # this sweep: 5 and 6 GiB were REFUSED outright, 7.25 and 7.5 GiB were
+    # REDUCED (to 130x104 and 160x128), and only 8 and 12 GiB admitted the
+    # requested ground.  5 GiB now proposes a real smaller layout and every
+    # rung above it admits the request, which `unreduced` below pins.
+    unreduced = set()
+    for free_gib in (3., 5., 6., 7.25, 7.5, 8., 12.):
         free = int(free_gib * GIB)
         sizing = dw.SizingBudget(free_gib + .75, free, None, "CPU declaration", measured=False)
         machine = Machine(vram_bytes=free, host_bytes=128 * GIB, name="CPU declaration")
@@ -538,7 +547,13 @@ def test_real_planner_declared_hardware_no_gpu_probe(monkeypatch):
         assert priced.peak_envelope_bytes <= budget - result["memory"]["fit_headroom_bytes"]
         assert tc.plan_cyclone(**INTENT, sizing=sizing, target_machine=machine) == result
         found_reduction |= result["fitting"]["changed"]
+        if not result["fitting"]["changed"]:
+            unreduced.add(free_gib)
+            assert result["streaming"]["road"] == "resident"
+            assert result["fitting"]["proposed_dimensions"] == [
+                list(tc.ROOT_DIMS), list(tc.CHILD_DIMS)]
     assert found_reduction, "declared hardware sweep must exercise an actual reduced plan"
+    assert {6., 7.25, 7.5, 8., 12.} <= unreduced
 
 
 def test_real_fixed_floor_excludes_grid_sized_column_workspaces():

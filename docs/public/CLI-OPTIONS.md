@@ -462,6 +462,7 @@ Takes no options of its own.
 | `--point LAT,LON` | derive the child around this point instead of --child-config (gpuwm parents only) |
 | `--preprocess-backend {cuda,cpu}` | where the parent-to-child interpolation runs (default cuda; cpu reproduces it off-GPU for verification) |
 | `--ratio` | refinement ratio (child-config placement: required; --point default 3) |
+| `--render-products LIST` | which products the child's frames are drawn into <out>/png once it finishes: a comma-separated list of catalog slugs, 'all' (the default -- the renderer's whole catalog), or 'none' to keep only the frames. The same spelling `gpuwm render --products` and `gpuwm go --products` take |
 | `--tiles {on,auto}` | write [tiles] mode into the config --point derives, so the child integrates out of a pinned host store instead of resident ('on' always, 'auto' when tilestream.autoplan says it does not fit) |
 | `--vram-gib` | explicit VRAM capacity for --point sizing |
 

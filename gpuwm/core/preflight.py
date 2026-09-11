@@ -7029,7 +7029,15 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
         from gpuwm.core.streaming import tree_road_plan
 
         try:
-            tree_road = tree_road_plan(exp, machine=machine, resident_estimate=forecast)
+            # Priced from the ADMISSION estimate, not from this report's
+            # own forecast term: the run door asks the same question of the
+            # same function, and a review that admitted a tree the door
+            # then refused is the defect :func:`admission_estimate`
+            # documents.  The report's resident term below is unchanged.
+            tree_road = tree_road_plan(
+                exp, machine=machine,
+                resident_estimate=admission_estimate(exp, machine=machine,
+                                                     profile=profile))
         except Exception:            # a gate never dies on its estimate
             tree_road = None
         streamed = (tree_road if tree_road is not None and tree_road.usable
@@ -7192,6 +7200,44 @@ def estimate_experiment(
             exp, profile=(card_local_memory_profile(vram_gib)
                           if profile is None else profile)),
     )
+
+
+def admission_estimate(exp: ExperimentConfig, *, machine=None,
+                       profile: DeviceLocalMemoryProfile | None = None
+                       ) -> ExperimentMemoryEstimate:
+    """THE estimate a tree's ``[tiles]`` admission is judged from.
+
+    ONE function, called with the same arguments wherever the question is
+    asked, because the question has one answer.  The plan review
+    (:func:`estimate_phases`, through
+    :func:`gpuwm.core.streaming.tree_road_plan`) and the run door
+    (:func:`gpuwm.prepared_domain_tree_forecast.cold_tree_streaming_decision`)
+    used to price it from two different calls: the review with an explicit
+    ``column_chunk`` and the target card's profile, the door with the
+    prepared cache's retained forcing interval count and its real lateral
+    boundaries and no profile at all.  MEASURED on the 12/3 km moving-nest
+    cyclone tree, those two inputs move the envelope by 60,193,971 and by
+    up to 432,788,799 bytes, so for any budget in between the review
+    admitted the tree resident and the door then raised ``StreamingRefused``
+    AFTER authority, fetch, manifest and prepare had run -- a refusal the
+    user paid for twice over and could have had before the download.
+
+    So the admission is priced from the CONFIGURATION and the machine, and
+    from nothing a cold surface cannot see: ``column_chunk`` is the
+    experiment's own, the forcing schedule is the one the configuration
+    declares, and no lateral boundary tables are folded in.  The run keeps
+    its own, richer estimate for its memory LEDGER -- that one has the
+    cache's real interval count and belongs to a different question -- and
+    the two are never compared against each other.
+
+    ``profile`` is the device the non-pool terms are priced against; it
+    defaults to the machine's own, so passing one machine to both sides
+    is enough to make both sides agree.
+    """
+    return estimate_experiment(
+        exp, column_chunk=exp.column_chunk,
+        profile=(getattr(machine, "device_profile", None)
+                 if profile is None else profile))
 
 
 # ---------------------------------------------------------------------------
@@ -10282,7 +10328,8 @@ __all__ = [
     "PreflightAllocError", "PreflightHeadroomError", "ReservePolicy",
     "SCRATCH_SLOT_LIFETIME_AUDIT", "ScratchSlotLifetime",
     "atmosphere_transient_shapes", "check_main", "dudhia_column_shapes",
-    "estimate_domain", "estimate_experiment", "evaluate_alloc_gates",
+    "admission_estimate", "estimate_domain", "estimate_experiment",
+    "evaluate_alloc_gates",
     "gate_display_name",
     "k_distribution_bytes", "lbc_interval_values", "lbc_intervals",
     "myj_output_transient_shapes",

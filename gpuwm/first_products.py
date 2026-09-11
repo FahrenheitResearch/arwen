@@ -308,7 +308,12 @@ class FirstProducts:
         # the same directory would be published as though this render had
         # written it.
         if scratch.exists():
-            shutil.rmtree(fs_path(scratch))
+            # ``descend=True``: what is being removed is a TREE, and the
+            # renderer's own store underneath it carries names long
+            # enough that an ordinary spelling of this root makes the
+            # walk fail at the first deep entry -- measured, with
+            # WinError 3 on a store path of about 300 characters.
+            shutil.rmtree(fs_path(scratch, descend=True))
         scratch.mkdir(parents=True)
         try:
             command = render_command(
@@ -372,7 +377,21 @@ class FirstProducts:
             from gpuwm.render_receipts import relocate_invocations
             relocate_invocations(scratch, render_dir, published)
         finally:
-            shutil.rmtree(fs_path(scratch), ignore_errors=True)
+            shutil.rmtree(fs_path(scratch, descend=True), ignore_errors=True)
+            # And the renderer's OWN scratch, which it parks beside the
+            # directory it was asked to deliver into
+            # (`gpuwm.render.scratch_root_for`).  That sibling is
+            # `<render>/.first-products-scratch.render-scratch` here --
+            # INSIDE the picture tree, because the directory this render
+            # delivers into is itself inside it -- so leaving it turned
+            # every early render into about 11 MB of working files
+            # published beside the pictures.
+            from gpuwm.render import SCRATCH_SUFFIX
+
+            shutil.rmtree(
+                fs_path(scratch.with_name(scratch.name + SCRATCH_SUFFIX),
+                        descend=True),
+                ignore_errors=True)
 
         announced = {
             "schema": FIRST_PRODUCTS_SCHEMA,
@@ -410,6 +429,30 @@ class FirstProducts:
         receipt = {**announced, "frame_sha256": _sha256_file(frame)}
         self._receipt = receipt
         _write_receipt(render_dir / FIRST_PRODUCTS_RECEIPT, receipt)
+
+
+def withdraw(render_dir: Path) -> int:
+    """Remove an early render's whole output; return the pictures dropped.
+
+    For the one caller that must publish no picture at all: a child
+    forecast that did not pass.  Its analysis frame was drawn while the
+    run still looked healthy, and the run then refused itself -- so the
+    pictures are the only artifact of it that does not carry the
+    verdict, and nothing else has written into this directory (the
+    finalize render never runs on a run that failed).
+
+    Best-effort by construction.  A picture that cannot be removed is
+    not worth failing an already-failed run over, and the count returned
+    is what was counted before the removal.
+    """
+
+    root = Path(render_dir)
+    try:
+        pictures = len(iter_rendered(root))
+    except OSError:
+        pictures = 0
+    shutil.rmtree(fs_path(root, descend=True), ignore_errors=True)
+    return pictures
 
 
 def _write_receipt(path: Path, payload: Mapping[str, Any]) -> None:
@@ -554,4 +597,5 @@ __all__ = [
     "published_frames",
     "published_pictures_are_original",
     "read_receipt",
+    "withdraw",
 ]

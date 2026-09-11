@@ -51,6 +51,12 @@ from pathlib import Path
 from gpuwm import capabilities
 from gpuwm import run_stamp as run_stamp_module
 from gpuwm.explain import explain_enabled, layered, render
+# The default product spec, declared where the early render declares it
+# and re-exported below rather than written twice.  Safe at module
+# scope: first_products reaches back into this module only from inside
+# its functions.
+from gpuwm.first_products import (
+    DEFAULT_RENDER_PRODUCTS as _first_products_default)
 # The two-stage route is spelled in ONE place (the seam that IS those
 # two stages), and every door that points a reader at it renders from
 # there -- this refusal included.
@@ -87,6 +93,30 @@ RUNNER_RELATIVE = "tools/prepared_single_domain_forecast.py"
 #: stopped it.  Whatever else a long stage does, it must keep saying
 #: that it is a long stage.
 HEARTBEAT_SECONDS = 20.0
+
+#: Which products a front door draws when its caller named none.
+#:
+#: ONE literal in this language, and it is not here: the early render
+#: already had to spell it (:data:`gpuwm.first_products.DEFAULT_RENDER_PRODUCTS`)
+#: because it is handed a command line, and the finalize stage compares
+#: the two specs before it may skip a frame.  This is that name, read
+#: rather than repeated, so `gpuwm go` and `gpuwm downscale` cannot
+#: default to two catalogs.  The terminal declares its own copy in Rust
+#: and says so where it does.
+DEFAULT_RENDER_PRODUCTS = _first_products_default
+
+#: The history frames a run publishes, as a glob.
+#:
+#: Both readers of "which files are this run's frames" spell it here:
+#: :func:`wrfout_frames`, which enumerates them, and
+#: :func:`render_command`, which prints the pattern for a reader to
+#: expand.  They used to disagree -- the command globbed ``*`` -- and on
+#: a route whose frames live in the RUN ROOT rather than in a
+#: ``wrfout/`` subdirectory (a downscaled child does) that swept
+#: ``events.jsonl``, ``report.json``, the checkpoints and the picture
+#: tree into the renderer, which stopped on "NetCDF: Unknown file
+#: format" at exit 2.
+WRFOUT_GLOB = "wrfout_d*"
 
 #: Compatibility export for callers of the former GFS-only go interface.
 #: Dispatch uses runplan.prepared_chain_for_source, not this historical tuple.
@@ -886,7 +916,8 @@ def _early_render_products(plan: dict) -> str | None:
         # the reader is not looking.
         return None
     products = plan.get("render_products")
-    return "all" if products is None else str(products)
+    return (DEFAULT_RENDER_PRODUCTS if products is None
+            else str(products))
 
 
 def forecast_command(plan: dict, digests: dict, *,
@@ -1111,7 +1142,8 @@ def proof_digests(prepared_root: Path) -> dict:
 def wrfout_frames(plan: dict) -> list[Path]:
     """Every history file the forecast stage published, in time order."""
 
-    return sorted(Path(plan.get("wrfout_dir", plan["run"] / "wrfout")).glob("wrfout_d*"))
+    return sorted(Path(plan.get("wrfout_dir", plan["run"] / "wrfout"))
+                  .glob(WRFOUT_GLOB))
 
 
 def render_command(plan: dict, frames: list[Path] | None = None, *,
@@ -1134,6 +1166,24 @@ def render_command(plan: dict, frames: list[Path] | None = None, *,
     point the directory is empty and naming its contents would be a
     guess.
 
+    That glob is :data:`WRFOUT_GLOB` -- the FRAMES, not everything in
+    the directory.  It used to be ``*``, which is the same set only on
+    a route that keeps its frames in a ``wrfout/`` subdirectory of its
+    own.  A downscaled child writes them in the run root beside
+    ``events.jsonl``, ``report.json``, its checkpoints and its picture
+    tree, so the remedy line this function prints fed all of those to
+    the renderer and stopped at "NetCDF: Unknown file format".
+
+    And when frames are ALREADY on disk, ``frames=None`` names them
+    rather than the pattern, because the line this composes is pasted
+    into a shell: :func:`printable` quotes any token holding a ``*``,
+    so the pattern reaches the renderer's argv literally on a shell
+    that would have expanded it -- and PowerShell, where a reader on
+    this platform pastes it, expands nothing for a native command at
+    all.  The pattern is printed when the directory holds no frame yet,
+    which is the ``--dry-run`` case and the only one where naming its
+    contents would be a guess.
+
     The run folder is claimed ONCE, by the chain, and this stage draws
     into it: :func:`gpuwm.run_stamp.stage_flags` is what says so.  This
     command is composed twice for one run -- once by
@@ -1144,8 +1194,11 @@ def render_command(plan: dict, frames: list[Path] | None = None, *,
     early frame had already been drawn.
     """
 
+    if frames is None:
+        frames = wrfout_frames(plan) or None
     targets = ([str(frame) for frame in frames] if frames is not None
-               else [str(Path(plan.get("wrfout_dir", plan["run"] / "wrfout")) / "*")])
+               else [str(Path(plan.get("wrfout_dir",
+                                       plan["run"] / "wrfout")) / WRFOUT_GLOB)])
     command = [sys.executable, "-m", "gpuwm.cli", "render", *targets, "--series",
                "--out", str(plan["render"]),
                *run_stamp_module.stage_flags()]
@@ -1187,8 +1240,102 @@ def render_extra_missing() -> str | None:
     return None if engine is not None else why
 
 
+def unknown_render_products(spec) -> list[str]:
+    """Which tokens of a ``--products`` spec this renderer cannot draw.
+
+    Asked of the RENDERER'S OWN catalog
+    (:func:`gpuwm.runplan.render_catalog`, which runs
+    ``rw_wrfbatch --list-products``), so a door can refuse a misspelled
+    slug at plan review instead of integrating a whole forecast and then
+    dying in the render stage -- which is what an unknown slug does: the
+    renderer exits nonzero, and a stage that exits nonzero is a
+    :class:`GoStageFailed`, not a sentence.
+
+    Empty when there is nothing to say: ``none``, an empty spec, a spec
+    containing ``all`` (which IS the catalog), a catalog this install
+    cannot ask for (no renderer -- a separate refusal, with its own
+    remedy), and any token carrying a ``:``, which is the ``var:`` and
+    ``xsec:`` grammar the renderer resolves per file rather than from a
+    fixed list.  Group keywords and the four shared short names
+    (:data:`gpuwm.render.RUST_PRODUCT_ALIASES`) are known names too.
+    """
+
+    text = str(spec or "").strip()
+    if not text or text.casefold() == "none":
+        return []
+    tokens = _render_spec_tokens(text)
+    if any(token.casefold() == "all" for token in tokens):
+        return []
+    from gpuwm.runplan import render_catalog
+
+    catalog = render_catalog()
+    products = catalog.get("products")
+    if not isinstance(products, list) or not products:
+        # No catalog to check against.  Saying "unknown" here would
+        # refuse every spelling on a box that simply has no renderer
+        # staged, which is a different refusal with a different remedy.
+        return []
+    from gpuwm.render import RUST_PRODUCT_ALIASES
+
+    known = {str(entry.get("name") or "") for entry in products
+             if isinstance(entry, dict)}
+    known |= set(RUST_PRODUCT_ALIASES)
+    # The renderer matches ``all`` and its group keywords without regard
+    # to case (rw-wrfbatch section.rs, split_product_spec); product names
+    # are matched as written.
+    groups = {str(word).casefold() for word in catalog.get("group_keywords") or ()}
+    return [token for token in tokens
+            if ":" not in token and token not in known
+            and token.casefold() not in groups]
+
+
+_SECTION_PREFIX = "xsec:"
+
+
+def _render_spec_tokens(text: str) -> list[str]:
+    """Split a ``--products`` spec the way the renderer itself does.
+
+    A level list inside a cross-section term is comma-separated too
+    (``xsec:wa=1,2,5,10@5``), so a purely numeric token that follows an
+    ``xsec:`` token whose last term opened a level list is that list's
+    continuation, not a product; this is rw-wrfbatch's own rule
+    (section.rs, ``split_product_spec``), carried here so the admission
+    check cannot refuse a spelling the renderer accepts.
+    """
+
+    def level_list_open(token: str) -> bool:
+        last_term = token.rsplit("/", 1)[-1]
+        return "=" in last_term and "@" not in last_term.rsplit("=", 1)[-1]
+
+    def numeric(value: str) -> bool:
+        value = value.strip()
+        if not value:
+            return False
+        try:
+            float(value)
+        except ValueError:
+            return False
+        return True
+
+    def is_level_token(token: str) -> bool:
+        level, sep, highlight = token.partition("@")
+        return numeric(level) and (not sep or numeric(highlight))
+
+    tokens: list[str] = []
+    for token in (part.strip() for part in text.split(",")):
+        if not token:
+            continue
+        prior = tokens[-1] if tokens else None
+        if (prior is not None and prior.startswith(_SECTION_PREFIX)
+                and level_list_open(prior) and is_level_token(token)):
+            tokens[-1] = prior + "," + token
+        else:
+            tokens.append(token)
+    return tokens
+
+
 def _render_stage(plan: dict, *, explain: bool,
-                  observer=None) -> bool:
+                  observer=None, door: str = "go") -> bool:
     """Run the render stage; return whether anything was rendered.
 
     ``plan["render_products"] == "none"`` skips the stage outright.
@@ -1282,7 +1429,8 @@ def _render_stage(plan: dict, *, explain: bool,
     # though its already published pictures must not be rewritten.
     from gpuwm.render_receipts import SUMMARY_FILENAME
     _run_stage("render", render_command(plan, frames, context_frames=already), explain=explain,
-               progress=Path(plan["render"]) / SUMMARY_FILENAME, observer=observer)
+               progress=Path(plan["render"]) / SUMMARY_FILENAME, observer=observer,
+               door=door)
     return True
 
 
@@ -1385,7 +1533,7 @@ def _notify(observer, event: str, **fields) -> None:
 def _run_stage(label: str, command: list[str], *, explain: bool,
                progress: Path | None = None,
                heartbeat_seconds: float = HEARTBEAT_SECONDS,
-               observer=None) -> None:
+               observer=None, door: str = "go") -> None:
     """Run one stage; replay everything it said and stop if it failed.
 
     Output is captured so the default is one line per stage, and
@@ -1402,6 +1550,9 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
     it says it is doing.  The heartbeat is a property of waiting, not of
     verbosity: it is not behind ``--explain``, because the reader who
     needs it is the one who did not pass any flags.
+
+    ``door`` names the command the reader typed, for the one sentence
+    below that addresses them directly.
     """
 
     print(f"  .. {label}", flush=True)
@@ -1476,8 +1627,13 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
                   "re-run with --explain to replay all of them)")
         for line in tail:
             print(f"    {line}")
-        print(f"go: stopped at {label}; every later stage consumes this "
-              "one's output, so nothing after it ran.")
+        # The DOOR the reader typed, not a door they did not.  A
+        # downscaled child runs this very stage, and a line reading
+        # "go: stopped at render" sends its reader to `gpuwm go`'s
+        # documentation for a failure that happened under
+        # `gpuwm downscale`.
+        print(f"{door}: stopped at {label}; every later stage consumes "
+              "this one's output, so nothing after it ran.")
         # Carry the same diagnostic into machine-facing failures. Desktop and
         # remote clients cannot rely on a separate terminal's preceding lines.
         diagnostic = (completed.stderr or "").strip() or (completed.stdout or "").strip()
@@ -2005,7 +2161,7 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
     options = {"geog_root": (None if args.geog_root is None
                              else str(Path(args.geog_root).resolve())),
                "render_products": (args.render_products if args.render_products is not None
-                                   else "all")}
+                                   else DEFAULT_RENDER_PRODUCTS)}
     if not declared_inputs and prepared_root is None:
         options["data_dir"] = str(data_dir.resolve())
     elif prepared_root is not None and args.data_dir is not None:
@@ -2688,8 +2844,10 @@ def register_cli(subparsers) -> None:
 
 
 __all__ = [
+    "DEFAULT_RENDER_PRODUCTS",
     "GoRefusal", "GoStageFailed", "HEARTBEAT_SECONDS", "MANUAL_CHAIN",
     "ORCHESTRATED_SOURCES", "RUNNER_MODULE", "RUNNER_RELATIVE",
+    "WRFOUT_GLOB", "unknown_render_products",
     "TREE_RUNNER_MODULE", "tree_forecast_command",
     "authority_command", "fetch_command", "forecast_command", "go_main",
     "manifest_command", "memory_gate", "plan_from_config",
