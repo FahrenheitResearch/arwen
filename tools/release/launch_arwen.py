@@ -16,6 +16,26 @@ except ImportError:  # Windows has no POSIX terminal to put back.
     termios = None
 
 
+# Characters no folder this launcher creates may carry.  A wildcard or an
+# embedded null passes ``Path.is_absolute`` on every platform and passes
+# ``pathlib`` itself on Linux, and then Windows raises out of ``mkdir``:
+# ``ValueError`` for the null, ``OSError`` for the wildcard.  The desktop
+# bootstrap refuses the same set, so all three readers of the preferences
+# document accept one definition of an absolute folder.
+_REFUSED_IN_A_FOLDER = '\0?*"<>|'
+
+
+def absolute_folder(value: object) -> Path | None:
+    """The absolute folder a saved preference names, or None when it names none."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if any(character in text for character in _REFUSED_IN_A_FOLDER) or any(ord(character) < 32 for character in text):
+        return None
+    folder = Path(text)
+    return folder if folder.is_absolute() else None
+
+
 def preference_folder(state: Path, key: str) -> Path | None:
     """One absolute folder from the GUI preferences within this launcher's profile.
 
@@ -26,9 +46,7 @@ def preference_folder(state: Path, key: str) -> Path | None:
     preference = state / 'appdata/ArWenCompanion/preferences.json'
     try:
         value = json.loads(preference.read_text(encoding='utf-8'))
-        folder = value.get(key) if isinstance(value, dict) else None
-        if isinstance(folder, str) and folder.strip() and Path(folder).is_absolute():
-            return Path(folder)
+        return absolute_folder(value.get(key)) if isinstance(value, dict) else None
     except (OSError, ValueError):
         pass
     return None
@@ -47,10 +65,9 @@ def preference_folders(state: Path, key: str) -> list[Path]:
         value = json.loads(preference.read_text(encoding='utf-8'))
         entries = value.get(key) if isinstance(value, dict) else None
         for entry in entries if isinstance(entries, list) else []:
-            if isinstance(entry, str) and entry.strip() and Path(entry).is_absolute():
-                folder = Path(entry)
-                if not any(_same_folder(folder, known) for known in folders):
-                    folders.append(folder)
+            folder = absolute_folder(entry)
+            if folder is not None and not any(_same_folder(folder, known) for known in folders):
+                folders.append(folder)
     except (OSError, ValueError):
         pass
     return folders
@@ -82,7 +99,7 @@ def output_folder(state: Path) -> tuple[Path, str | None]:
         return default, None
     try:
         chosen.mkdir(parents=True, exist_ok=True)
-    except OSError as error:
+    except (OSError, ValueError) as error:
         return default, ('The saved forecast output folder ' + str(chosen) + ' is unavailable: ' + str(error)
                          + '. New forecasts go to ' + str(default)
                          + ' until a folder that can be created is chosen in Settings, Forecast output folder.')

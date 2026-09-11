@@ -155,6 +155,30 @@ def test_a_saved_forecast_folder_that_cannot_be_created_falls_back_and_the_notic
     assert launcher.output_folder(tmp_path / "no-preferences") == (tmp_path / "no-preferences" / "runs", None)
 
 
+def test_a_saved_folder_holding_a_wildcard_or_a_null_is_no_preference_at_all(launcher, tmp_path):
+    """THE BREAKAGE THIS PREVENTS: ``Path.is_absolute`` accepts both, and the launcher then
+    hands the controller a folder Windows cannot create, or raises ``ValueError`` out of
+    ``mkdir`` before the GUI, and its Settings, can open to change the folder."""
+
+    state = tmp_path / "state"
+    pref = state / "appdata" / "ArWenCompanion" / "preferences.json"
+    pref.parent.mkdir(parents=True)
+    for name in (str(tmp_path / "wild?card"), str(tmp_path / "star*"), str(tmp_path / "null") + "\x00y",
+                 str(tmp_path / "pipe|d"), str(tmp_path / "bell") + "\x07"):
+        pref.write_text(json.dumps({"forecast_output_folder": name, "data_folder": name}), encoding="utf-8")
+        assert launcher.preference_folder(state, "forecast_output_folder") is None, name
+        assert launcher.output_folder(state) == (state / "runs", None), name
+        assert launcher.output_arguments(state) == ["--output", str(state / "runs")], name
+        assert launcher.cache_directory(state) == state / "cache", name
+    # One refused entry never discards the entries after it.
+    first, second = tmp_path / "first", tmp_path / "second"
+    pref.write_text(json.dumps({"saved_run_folders": [str(first), str(tmp_path / "bad|entry"), str(second)]}), encoding="utf-8")
+    assert launcher.preference_folders(state, "saved_run_folders") == [first, second]
+    assert launcher.absolute_folder(str(first)) == first
+    assert launcher.absolute_folder("relative/runs") is None
+    assert launcher.absolute_folder(7) is None
+
+
 def test_cds_credentials_reach_the_children_or_refuse_by_name(launcher, tmp_path):
     rc = tmp_path / "cdsapirc"
     rc.write_text("url: https://example.invalid\nkey: 0\n", encoding="utf-8")
