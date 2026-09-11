@@ -564,7 +564,14 @@ SCHEME_NATIVE_REFL_10CM: dict[int, str] = {
         "driver binds straight to refl_10cm (module_microphysics_driver.F:"
         "1878), so the scheme writes the slot on every call and "
         "gpuwm/core/milbrandt2.py stashes that array rather than calling a "
-        "generic operator."
+        "generic operator.  Its Z block updates nothing, so it is also "
+        "available as a standalone H(x) -- "
+        "gpuwm.core.milbrandt2.reflectivity over "
+        "kernels/milbrandt2_zet.cu, which gpuwm/da/obsop.py dispatches "
+        "mp=9 to before reaching this module, exactly as it does mp=18.  "
+        "Note the floor: Milbrandt-Yau's clear-air value is -99 dBZ "
+        "(MY2_minZET, kernels/milbrandt2.cu:308), NOT the -35 dBZ this "
+        "dispatcher's family floors at."
     ),
     18: (
         "NSSL two-moment has its own S-band diagnostic, radardd02 "
@@ -600,6 +607,76 @@ SCHEME_NATIVE_REFL_10CM: dict[int, str] = {
         "floor from the scheme and not from here."
     ),
 }
+
+
+#: The state fields :func:`compute_refl_10cm` READS for each scheme it
+#: dispatches, keyed by ``mp_physics``.  ONE table, published, instead of
+#: the four ``missing = [...]`` literals the dispatch used to carry inline:
+#: a scheme's reflectivity inputs are a row here, the dispatch below
+#: resolves its required-field check through this row, and every other
+#: reader of "what does reflectivity need from the state" -- the streamed
+#: composite (tilestream) that duplicated Morrison's six-moment list and
+#: refused every other scheme on it, the physics registry's per-option
+#: ``reflectivity_input_species`` row, the agreement test -- reads the same
+#: row.  Water vapour is a genuine input (the Rayleigh sums take rho, and
+#: rho takes qv); temperature and pressure are supplied by the caller and
+#: are not state species, so they are not listed.
+#:
+#: The keys are exactly the PRODUCER set the gate below admits.  A scheme in
+#: :data:`SCHEME_NATIVE_REFL_10CM` has no row here on purpose: it computes
+#: Z itself and there is nothing to read for it.  ``tests/test_refl.py``
+#: and ``tests/test_authority_agreement.py`` hold the three sets (this
+#: table, the native table, the registry's implemented microphysics) to
+#: their arithmetic.
+REFL_10CM_INPUT_SPECIES: dict[int, tuple[str, ...]] = {
+    # Kessler rain-only Marshall-Palmer form.
+    1: ("qv", "qr"),
+    # WSM6: rain, snow, graupel masses (``launch_refl10cm_wsm6``).
+    6: ("qv", "qr", "qs", "qg"),
+    # Thompson: rain mass AND number, snow and graupel masses; the classic
+    # graupel-number shadow is a same-call argument, not a state species.
+    8: ("qv", "qr", "nr", "qs", "qg"),
+    # Morrison: three two-moment species (``launch_refl10cm_morrison``).
+    10: ("qv", "qr", "nr", "qs", "ns", "qg", "ng"),
+    # WDM6: Thompson's list with WDM6's own kernel (``launch_refl10cm_wdm6``).
+    16: ("qv", "qr", "nr", "qs", "qg"),
+    # Aerosol-aware Thompson: mp=8's list exactly -- see the docstring of
+    # compute_refl_10cm for why nc/nwfa/nifa contribute nothing to Z.
+    28: ("qv", "qr", "nr", "qs", "qg"),
+}
+
+
+def refl_10cm_input_species(mp_physics: int) -> tuple[str, ...]:
+    """The state species reflectivity reads for ``mp_physics``.
+
+    Raises :class:`NativeReflectivityScheme` for a scheme that produces its
+    own Z (so the caller learns where the field IS instead of what it
+    lacks), and ``ValueError`` for a selector with no reflectivity
+    formulation at all.
+    """
+    key = int(mp_physics)
+    if key in REFL_10CM_INPUT_SPECIES:
+        return REFL_10CM_INPUT_SPECIES[key]
+    native = SCHEME_NATIVE_REFL_10CM.get(key)
+    if native is not None:
+        raise NativeReflectivityScheme(
+            f"mp_physics={key} computes REFL_10CM itself and reads no "
+            "operator inputs. " + native + "  Read the scheme's own dBZ out "
+            "of the DomainState 'refl_10cm' scratch slot instead.")
+    raise ValueError(
+        f"mp_physics={key} has no reflectivity formulation; the operator "
+        f"dispatches {sorted(REFL_10CM_INPUT_SPECIES)} and the native-Z "
+        f"schemes are {sorted(SCHEME_NATIVE_REFL_10CM)}")
+
+
+def _missing_refl_inputs(state, mp_physics: int) -> list[str]:
+    """The species of :data:`REFL_10CM_INPUT_SPECIES` this state lacks.
+
+    ``qv`` is checked by the caller's ``state.qv is None`` guard with its
+    own moist-state message, so it is not repeated here.
+    """
+    return [name for name in refl_10cm_input_species(mp_physics)
+            if name != "qv" and getattr(state, name, None) is None]
 
 
 def compute_refl_10cm(
@@ -653,7 +730,7 @@ def compute_refl_10cm(
     from gpuwm.core import constants as c
     from gpuwm.core.state import DTYPE
 
-    if cfg.mp_physics not in (1, 6, 8, 10, 16, 28):
+    if cfg.mp_physics not in REFL_10CM_INPUT_SPECIES:
         native = SCHEME_NATIVE_REFL_10CM.get(int(cfg.mp_physics))
         if native is not None:
             # NOT "no reflectivity": the scheme already produced its own,
@@ -688,9 +765,7 @@ def compute_refl_10cm(
         p = pressure
     refl = state.scratch((nz, ny, nx), "refl_10cm")
     if cfg.mp_physics == 10:
-        required = ("qr", "nr", "qs", "ns", "qg", "ng")
-        missing = [name for name in required
-                   if getattr(state, name, None) is None]
+        missing = _missing_refl_inputs(state, 10)
         if missing:
             raise ValueError("mp_physics=10 reflectivity lacks Morrison "
                              "moments: " + ", ".join(missing))
@@ -704,8 +779,7 @@ def compute_refl_10cm(
         # number, so a separate mp=28 branch could only ever differ from
         # WRF.  The required-field list is identical too -- mp=28 allocates
         # a strict superset of mp=8's state.
-        missing = [name for name in ("qr", "nr", "qs", "qg")
-                   if getattr(state, name, None) is None]
+        missing = _missing_refl_inputs(state, int(cfg.mp_physics))
         if missing:
             raise ValueError(
                 f"mp_physics={cfg.mp_physics} reflectivity lacks Thompson "
@@ -718,8 +792,7 @@ def compute_refl_10cm(
             state.qv, state.qr, state.nr, state.qs, state.qg,
             thompson_graupel_number, t, p, refl)
     elif cfg.mp_physics == 16:
-        missing = [name for name in ("qr", "nr", "qs", "qg")
-                   if getattr(state, name, None) is None]
+        missing = _missing_refl_inputs(state, 16)
         if missing:
             raise ValueError("mp_physics=16 reflectivity lacks WDM6 fields: "
                              + ", ".join(missing))
@@ -727,8 +800,7 @@ def compute_refl_10cm(
                              state.qg, t, p, refl,
                              hail_opt=cfg.wdm6_hail_opt)
     elif cfg.mp_physics == 6:
-        missing = [name for name in ("qr", "qs", "qg")
-                   if getattr(state, name, None) is None]
+        missing = _missing_refl_inputs(state, 6)
         if missing:
             raise ValueError("mp_physics=6 reflectivity lacks WSM6 fields: "
                              + ", ".join(missing))
@@ -815,3 +887,28 @@ def compute_and_stash_refl_10cm(
         state, compute_refl_10cm(
             state, cfg, temperature=temperature, pressure=pressure,
             thompson_graupel_number=thompson_graupel_number))
+
+
+# ---------------------------------------------------------------------------
+# AGREEMENT WITH THE REGISTRY, AT IMPORT.  ``REFL_10CM_INPUT_SPECIES`` and
+# ``SCHEME_NATIVE_REFL_10CM`` are the source of every option's
+# ``consumers.reflectivity_input_species`` / ``reflectivity_native_reason``
+# rows; this holds them to the generated copy.  Every implemented
+# microphysics selector must be in exactly one of the two tables (mp=0,
+# which has no reflectivity at all, is the one cited absence), which is the
+# arithmetic tests/test_refl.py and tests/test_mp28_runtime_reachability.py
+# have always asserted -- now against the registry rather than a literal.
+def _require_agreement_with_the_registry() -> None:
+    from gpuwm.physics_registry import require_consumer_rows_agreement
+
+    observed = {mp: list(species)
+                for mp, species in REFL_10CM_INPUT_SPECIES.items()}
+    observed.update({mp: None for mp in SCHEME_NATIVE_REFL_10CM})
+    require_consumer_rows_agreement(
+        "gpuwm.core.refl (REFL_10CM_INPUT_SPECIES, SCHEME_NATIVE_REFL_10CM)",
+        "microphysics", "reflectivity_input_species", observed,
+        project=lambda row: None if row is None else list(row),
+        cited_absences={0: "no microphysics, no reflectivity"})
+
+
+_require_agreement_with_the_registry()

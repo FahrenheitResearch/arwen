@@ -46,7 +46,7 @@ import numpy as np
 from gpuwm.config import RunConfig
 from gpuwm.core import constants as c
 from gpuwm.core.kernels import get_kernel
-from gpuwm.core.milbrandt2_constants import ck_vector
+from gpuwm.core.milbrandt2_constants import ck_vector_device
 from gpuwm.core.state import DTYPE, DomainState
 
 _CELL_TPB = 64
@@ -79,15 +79,15 @@ FIXED_IDENTITY = {
     "prim_ice_nucl": 1,         # :1175 Meyers + contact
 }
 
-_ck_device = None
-
 
 def _constants_device() -> cp.ndarray:
-    """The read-only FP32 constant vector, uploaded once per process."""
-    global _ck_device
-    if _ck_device is None:
-        _ck_device = cp.asarray(ck_vector())
-    return _ck_device
+    """The read-only FP32 constant vector, uploaded once per process.
+
+    The cache itself lives in :mod:`gpuwm.core.milbrandt2_constants`, with
+    the table, because the mixed nest edge into mp=9 needs the same vector
+    from a module the RW-WPS preparation wheel stages and this one is not.
+    """
+    return ck_vector_device()
 
 
 def _surface_pressure(pressure, z_half, z_at_w0, out):
@@ -302,3 +302,54 @@ def apply(state: DomainState, cfg: RunConfig, dt: float, *,
         snownc=snownc, snowncv=snowncv,
         graupelnc=graupelnc, graupelncv=graupelncv,
         hailnc=hailnc, hailncv=hailncv)
+
+
+def reflectivity(state: DomainState, *, temperature=None, pressure=None):
+    """H_Z(x): the scheme's own 10 cm reflectivity, as a pure diagnostic.
+
+    The Z block of ``mp_milbrandt2mom_main``'s final diagnostics
+    (module_mp_milbrandt2mom.F:3400-3466) reads T, pressure, five
+    precipitating masses and their five number moments and writes Zet.  It
+    updates nothing, so unlike P3's fused ``k_loop_final_diagnostics`` it
+    is a real observation operator and is launched here as one
+    (``gpuwm/core/kernels/milbrandt2_zet.cu``) -- the same relationship
+    ``gpuwm.da.obsop`` has with NSSL's ``radardd02``.
+
+    ``state``'s number moments are per unit mass, the convention a
+    ``DomainState`` carries between steps; the kernel converts with the
+    scheme's own ``de``.  ``temperature``/``pressure`` are the
+    microphysics-time pair when a caller has it; omitting both diagnoses
+    temperature from the state on the state's own pressure.
+
+    Returns the state's persistent ``refl_10cm`` scratch slot.
+    """
+
+    nz, ny, nx = state.p.shape
+    missing = [name for name in ("qr", "qi", "qs", "qg", "qh",
+                                 "nr", "ni", "ns", "ng", "nh")
+               if getattr(state, name, None) is None]
+    if missing:
+        raise ValueError(
+            "the Milbrandt-Yau reflectivity operator needs the scheme's own "
+            "state: missing " + ", ".join(missing))
+    if (temperature is None) != (pressure is None):
+        raise ValueError("temperature and pressure must be supplied together")
+    if temperature is None:
+        thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
+        t = state.scratch((nz, ny, nx), "my2_zet_t")
+        t[...] = (thb + state.thp) * cp.power(
+            state.p / DTYPE(c.P0), DTYPE(c.RCP))
+        pres = state.p
+    else:
+        t = temperature
+        pres = pressure
+    zet = state.scratch((nz, ny, nx), "refl_10cm")
+    ncell = nz * ny * nx
+    blocks = (ncell + _CELL_TPB - 1) // _CELL_TPB
+    get_kernel("milbrandt2_zet", "milbrandt2_zet")(
+        (blocks,), (_CELL_TPB,), (
+            t, state.qr, state.qi, state.qs, state.qg, state.qh,
+            state.nr, state.ni, state.ns, state.ng, state.nh,
+            pres, zet, _constants_device(), np.int32(0),
+            np.int32(nz), np.int32(ny), np.int32(nx)))
+    return zet

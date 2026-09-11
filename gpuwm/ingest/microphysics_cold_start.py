@@ -40,8 +40,37 @@ def source_absent_microphysics(cfg):
         return (("QNICE", "QNRAIN", "QIR", "QIB"),
                 dict.fromkeys(("ni", "nr", "qir", "qib"), 0.0))
     if mp == 28:
-        raise ValueError("analyzed input lacks the aerosol-aware Thompson boundary "
-                         "species; supply a source with the required aerosol forcing")
+        # Aerosol-aware Thompson (Registry.EM_COMMON:3036).  The three
+        # number species a cold start owns are nc, nr and ni, and every
+        # one of them starts at exact zero -- the value gpuwm/core/state.py
+        # allocates and the value real.exe leaves when the analyzed input
+        # carries no number moment.
+        #
+        # nwfa/nifa (and the two 2-D emission fields) are deliberately NOT
+        # here.  Their initial condition is not "absent from the analysed
+        # input, therefore zero": it is DECIDED by mp28_aerosol_source --
+        # the WIF climatology ingest fills them
+        # (gpuwm/ingest/real.py, real.exe's aer_init_opt=1 path) and the
+        # synthetic source leaves the exact zeros thompson_init's MAXVAL
+        # test reads to install its own profile
+        # (module_mp_thompson.F:493/:531).  That authority publishes its
+        # own receipt and refuses a nonzero field it did not write, so a
+        # second contract over the same fields here would be a second
+        # spelling -- and it would be WRONG for the climatology run, whose
+        # nwfa is nonzero by the time any consumer of this contract looks.
+        #
+        # This function used to RAISE for mp=28, on the premise that no
+        # source carried the aerosol boundary species.  Audit R-044
+        # retired that premise (the WIF ingest is the source, on every
+        # route), and the raise outlived it: it was reached from
+        # tools/prepare_hrrr_wrf.py after the wizard had already reported
+        # PASS -- a refusal after step 0, which the gate law forbids.  The
+        # precondition that survives is the DATASET one, measured by
+        # gpuwm.config.mp28_aerosol_lateral_forcing_precondition: reported
+        # at plan review and raised at the run door by
+        # gpuwm.config.validate_run_preparation.
+        return (("QNCLOUD", "QNRAIN", "QNICE"),
+                dict.fromkeys(("nc", "nr", "ni"), 0.0))
     raise ValueError(f"no native prognostic-species initialization for mp_physics={mp}")
 
 

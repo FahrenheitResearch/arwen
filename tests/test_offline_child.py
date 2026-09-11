@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from gpuwm.offline_child import (
+    OFFLINE_CHILD_MP_PHYSICS,
     PARENT_SCHEME_CONTRACT,
     _resolve_source_physics,
     bind_parent_physics_from_wrf_namelist,
@@ -22,8 +23,10 @@ from gpuwm.offline_child import (
     read_parent_microphysics,
     validate_parent_history,
 )
+from gpuwm import netcdf_bridge
 from gpuwm.config import RunConfig
 from gpuwm.offline_child_run import (
+    _ChildProgress,
     _create_output_root,
     _file_receipt,
     main as offline_child_main,
@@ -74,7 +77,12 @@ def test_offline_child_capabilities_are_warning_only_and_exact(capsys):
     # every mixed edge touching either is refused by name (see the refusal
     # tests below), matching the online nest lane's
     # UNVALIDATED_MIXED_EDGE_SELECTORS.
-    assert capability["same_scheme_mp_physics"] == [6, 8, 10, 18, 28, 50]
+    # 0, 1 and 9 joined with audit R-017: the lane reads a vapour-only
+    # parent, a Kessler parent and a Milbrandt-Yau parent (the last through
+    # its own scheme-qualified QHAIL/QNHAIL map), and gpuwm's history
+    # writer publishes QNHAIL for mp=9 at last.
+    assert capability["same_scheme_mp_physics"] == [
+        0, 1, 6, 8, 9, 10, 18, 28, 50]
     assert capability["cross_scheme_transitions"] == []
     # Was pinned to False while the runner refused any child whose nz
     # differed from its parent's.  A child may now carry its OWN eta ladder
@@ -98,7 +106,7 @@ def _physics_binding(tmp_path, *, mp=8, morr_rimed_ice=1):
 
 def _history(path, valid_time, *, mp=8, hgt_offset=0.0, signal=0.0,
              ny=3, nx=4, omit_aerosol_surface_emission=False,
-             qnrain=None, qir=None):
+             qnrain=None, qir=None, producer="gpuwm"):
     nz = 2
     with netCDF4.Dataset(path, "w") as dataset:
         for name, size in (
@@ -108,7 +116,8 @@ def _history(path, valid_time, *, mp=8, hgt_offset=0.0, signal=0.0,
                 ("south_north_stag", ny + 1),
                 ("bottom_top_stag", nz + 1)):
             dataset.createDimension(name, size)
-        dataset.TITLE = "gpuwm offline-child fixture"
+        dataset.TITLE = ("gpuwm offline-child fixture" if producer == "gpuwm"
+                         else " OUTPUT FROM WRF V4.6.1 MODEL")
         dataset.DX = 1000.0
         dataset.DY = 1000.0
         dataset.MAP_PROJ = 1
@@ -119,7 +128,8 @@ def _history(path, valid_time, *, mp=8, hgt_offset=0.0, signal=0.0,
         dataset.CEN_LON = -97.0
         dataset.HYBRID_OPT = 2
         dataset.ETAC = 0.2
-        dataset.GPUWM_WRITE_COMPLETE = 1
+        if producer == "gpuwm":
+            dataset.GPUWM_WRITE_COMPLETE = 1
         times = dataset.createVariable("Times", "S1", ("Time", "DateStrLen"))
         times[0] = np.frombuffer(
             valid_time.strftime("%Y-%m-%d_%H:%M:%S").encode(), dtype="S1")
@@ -132,7 +142,13 @@ def _history(path, valid_time, *, mp=8, hgt_offset=0.0, signal=0.0,
         # ``moist:qv,qc,qr,qi``), so a faithful P3 archive omits both, and
         # its QICE is written nonzero below so the rime pair has ice to
         # describe.  Every other fixture keeps the six-species zeros.
-        zero_masses = (("P", "QVAPOR", "QCLOUD", "QRAIN") if mp == 50 else
+        # mp 0 and 1 carry the warm-rain trio and no frozen species: WRF's
+        # Kessler declares moist:qv,qc,qr (Registry.EM_COMMON:3015) and
+        # gpuwm's own mp=0 advects the same three
+        # (gpuwm/offline_child.py::_transported_source_fields), which is
+        # exactly why the inventory cannot separate them on a gpuwm tape.
+        zero_masses = (("P", "QVAPOR", "QCLOUD", "QRAIN")
+                       if mp in {0, 1, 50} else
                        ("P", "QVAPOR", "QCLOUD", "QRAIN",
                         "QICE", "QSNOW", "QGRAUP"))
         for name in zero_masses:
@@ -212,6 +228,15 @@ def _history(path, valid_time, *, mp=8, hgt_offset=0.0, signal=0.0,
                           np.full((1, ny, nx), 4321.0))
                 _variable(dataset, "QNIFA2D", mass2,
                           np.full((1, ny, nx), 0.0))
+        if mp == 16:
+            # WDM6 (Registry.EM_COMMON:3031, scalar:qnn,qnc,qnr): the six
+            # masses above plus a warm-rain number pair and the CCN
+            # reservoir, and NO ice number, which is the discriminant.
+            _variable(dataset, "QNCCN", mass3,
+                      np.full((1, nz, ny, nx), 1.0e8))
+            _variable(dataset, "QNCLOUD", mass3,
+                      np.full((1, nz, ny, nx), 1.0e8))
+            _variable(dataset, "QNRAIN", mass3, np.zeros((1, nz, ny, nx)))
         if mp == 50:
             # P3 one-category.  QNRAIN/QNICE already landed above; the rest
             # is the ice mass and its prognostic rime pair, with DISTINCT
@@ -367,19 +392,24 @@ def test_inventory_inference_is_advisory_when_companion_binds_physics(tmp_path):
     assert info.inferred_mp_physics == 10
 
 
-@pytest.mark.parametrize("parent_mp", [0, 1])
+@pytest.mark.parametrize("parent_mp", [16])
 def test_offline_child_parent_scheme_refusal_names_the_switch(
         tmp_path, parent_mp):
-    """A genuine unimplemented-selector refusal, watched at all four gates.
+    """A genuine unreadable-parent refusal, watched at all four gates.
 
-    This route's parent contract is NOT a profile whitelist: the child's
-    hydrometeor mapping is written against the transported species of
-    WSM6/Thompson/Morrison/NSSL, and mp 0 (no microphysics) and mp 1
-    (Kessler, qc+qr only) have no mapping here -- so the 2026-07-31 suite
-    ruling leaves these refusals standing.  What the ruling does demand
-    is that each one name the exact switch and its value, and that the
-    refusal be pinned rather than merely believed; before this test the
-    four enforcement points had no coverage at all.
+    This route's parent contract is NOT a profile whitelist: it names the
+    parents whose transported state the lane can actually read.  mp 0
+    (vapour plus the warm-rain pair) and mp 1 (Kessler) LEFT this test
+    with audit R-017 -- their inventories are the prefix the lane already
+    built, and refusing them was the admission set contradicting the
+    lane's own helper -- and mp=9 joined the admitted set with them once
+    the lane learned its scheme-qualified QHAIL/QNHAIL rows.  What still
+    stands here is mp=16 (WDM6), and it stands on a named breakage: nn and
+    NSSL's qnn both publish under QNCCN, so the field map has no
+    unambiguous row and a WDM6 child would start with a zero-filled CCN
+    reservoir.  What the 2026-07-31 suite ruling demands is that the
+    refusal name the exact switch and its value, and be pinned rather than
+    believed.
     """
 
     namelist = tmp_path / f"namelist-mp{parent_mp}.input"
@@ -399,7 +429,7 @@ def test_offline_child_parent_scheme_refusal_names_the_switch(
 
     with pytest.raises(
             OfflineChildContractError,
-            match=f"source mp 6/8/10/18, got {parent_mp}"):
+            match=f"mp_physics={parent_mp}"):
         map_microphysics_to_nssl18({}, source_mp_physics=parent_mp)
 
     with pytest.raises(
@@ -409,7 +439,19 @@ def test_offline_child_parent_scheme_refusal_names_the_switch(
 
     # The four enforcement points read ONE named contract, so a scheme
     # can never be carried by one of them and refused by another.
-    assert PARENT_SCHEME_CONTRACT == frozenset({6, 8, 10, 18})
+    # Re-measured with audit R-017: 0, 1 and 9 are READ by this lane now,
+    # and each is held out of the CROSS-scheme contract by its own named
+    # reason rather than by being unreadable
+    # (_OFFLINE_CROSS_LEG_UNBUILT_REASONS).
+    # mp=28 joined when its online mixed edge was ratified and the derived
+    # closure mirror emptied: its masses are classic Thompson's and the
+    # NSSL conversion is the one mp=8 already runs.
+    assert PARENT_SCHEME_CONTRACT == frozenset({6, 8, 10, 18, 28})
+    assert {0, 1, 9} <= OFFLINE_CHILD_MP_PHYSICS
+    for mp in (0, 1, 9):
+        with pytest.raises(OfflineChildContractError,
+                           match="offline cross-physics conversion"):
+            map_microphysics_to_nssl18({}, source_mp_physics=mp)
 
 
 def test_conservative_parent_snapshot_and_streamed_lateral_intervals(tmp_path):
@@ -636,46 +678,37 @@ def test_mp28_streamed_lateral_intervals_include_the_aerosol_tracers(
     assert np.isfinite(interval.fields["nwfa"].west.value).all()
 
 
-def test_mp28_cross_scheme_offline_edges_are_refused_by_name(tmp_path):
-    """Both directions, and both the initial-state and forcing paths.
+#: Reading a parent history file goes through the Rust NetCDF decoder
+#: (gpuwm.netcdf_bridge.NetcdfBridgeMissing otherwise).  Per test rather than
+#: module-wide: the rest of this deck writes its fixtures with netCDF4 and
+#: asks gpuwm to decode none of them.
+needs_netcdf_bridge = pytest.mark.skipif(
+    netcdf_bridge.find_netcdf_bin() is None,
+    reason="rw_netcdf is not built; build tools/rustwx to run this")
 
-    This must stay a REFUSAL rather than becoming the obvious
-    nc = Nt_c/rho, nwfa = 11.1E6/rho closure: the online nest lane refuses
-    the identical edge (gpuwm/core/microphysics_transition.py::
-    UNVALIDATED_MIXED_EDGE_SELECTORS), and an offline path that quietly
-    performed the closure would defeat that refusal instead of respecting
-    it.
+
+@needs_netcdf_bridge
+def test_mp28_offline_converts_to_nssl_and_drops_only_its_aerosols(tmp_path):
+    """The closure-mirror refusal retired with the online one.
+
+    mp=28 carries classic Thompson's six masses and adds nc/nwfa/nifa.
+    The NSSL conversion is the one mp=8 already runs -- nc rides the
+    qndrop alias, the two aerosol tracers have no NSSL counterpart and
+    are dropped -- so there was nothing left for the mirror to refuse.
     """
     aero = tmp_path / "parent-mp28.nc"
-    classic = tmp_path / "parent-mp8.nc"
     _history(aero, datetime(1974, 4, 3, 12), mp=28, ny=18, nx=20)
-    _history(classic, datetime(1974, 4, 3, 12), mp=8, ny=18, nx=20)
     placement = _mp28_placement()
 
-    # 28 -> 18 (the one cross-scheme target the lane otherwise supports).
-    with pytest.raises(OfflineChildContractError, match="REFUSED"):
-        interpolate_parent_initial_state(
-            aero, placement, source_mp_physics=28, target_mp_physics=18,
-            backend="cpu")
-    with pytest.raises(OfflineChildContractError, match="REFUSED"):
-        interpolate_parent_boundary_snapshot(
-            aero, placement, source_mp_physics=28, target_mp_physics=18,
-            backend="cpu")
-
-    # 8 -> 28 (a child the lane could not seed).
-    with pytest.raises(OfflineChildContractError, match="REFUSED"):
-        interpolate_parent_initial_state(
-            classic, placement, source_mp_physics=8, target_mp_physics=28,
-            backend="cpu")
-    with pytest.raises(OfflineChildContractError, match="REFUSED"):
-        interpolate_parent_boundary_snapshot(
-            classic, placement, source_mp_physics=8, target_mp_physics=28,
-            backend="cpu")
-
-    # And the direct converter, so the refusal cannot be bypassed by
-    # calling it rather than the two wrappers.
-    with pytest.raises(OfflineChildContractError, match="REFUSED"):
-        map_microphysics_to_nssl18({}, source_mp_physics=28)
+    assert 28 in PARENT_SCHEME_CONTRACT
+    state = interpolate_parent_initial_state(
+        aero, placement, source_mp_physics=28, target_mp_physics=18,
+        backend="cpu")
+    assert state is not None
+    snapshot = interpolate_parent_boundary_snapshot(
+        aero, placement, source_mp_physics=28, target_mp_physics=18,
+        backend="cpu")
+    assert snapshot is not None
 
 
 def test_every_admitted_parent_scheme_has_a_transport_mapping():
@@ -911,10 +944,10 @@ def test_p3_cross_scheme_offline_edges_are_refused_by_name(tmp_path):
     nest lane RATIFIED 50's rime-pair closure (it left
     UNVALIDATED_MIXED_EDGE_SELECTORS), so what refuses these edges is no
     longer the derived closure mirror but this module's own named gate
-    (_P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS): the offline lane has no leg
+    (``_P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS``): the offline lane has no leg
     that runs the ratified merge/split maps, and converting without them
-    would zero-fill or invent the rime pair.  Follow-up
-    offline-p3-edge-closure retires the gate.
+    would zero-fill or invent the rime pair.  Landing the leg retires the
+    row.
     """
     p3 = tmp_path / "parent-mp50.nc"
     classic = tmp_path / "parent-mp8.nc"
@@ -942,12 +975,13 @@ def test_p3_cross_scheme_offline_edges_are_refused_by_name(tmp_path):
             classic, placement, source_mp_physics=8, target_mp_physics=50,
             backend="cpu")
 
-    # And the direct converter names P3's own moments, nobody else's.
+    # And the direct converter names P3's own closure, nobody else's.
     with pytest.raises(OfflineChildContractError) as caught:
         map_microphysics_to_nssl18({}, source_mp_physics=50)
     assert "REFUSED" in str(caught.value)
-    assert "P3" in str(caught.value)
+    assert "mp_physics=50" in str(caught.value)
     assert "qir/qib" in str(caught.value)
+    assert "CCN reservoir" not in str(caught.value)
 
 
 def test_p3_clamp_membership_matches_the_online_lane(tmp_path):
@@ -1003,3 +1037,200 @@ def test_offline_transport_inventory_derives_from_the_online_forcing_table():
         assert set(_transported_source_fields(mp)) == online, (
             f"mp_physics={mp}: offline transport inventory drifted from "
             "the online forcing table")
+
+
+# ---------------------------------------------------------------------
+# The child's own progress receipts.  A downscale used to publish
+# report.json at the end and nothing a reader could bind to the process
+# writing it, so no run browser could show one in flight.
+# ---------------------------------------------------------------------
+
+_CHILD_TOML = """[grid]
+nx = 12
+ny = 10
+nz = 3
+
+[run]
+run_seconds = 900.0
+output_interval_s = 900.0
+grid_id = 1
+"""
+
+
+def test_a_child_is_named_after_its_parent_run_not_a_layout_folder():
+    """"Downscale of wrfout" names nobody's forecast.
+
+    The prepared routes write ``<stamp>/run/wrfout/wrfout_d01_*``, so the
+    frame's own folder is a layout name and so is the one above it; the
+    stamped run folder is the first name that says which run this was.
+    A parent whose frames sit in its own directory keeps that directory.
+    """
+    from pathlib import PurePosixPath
+
+    from gpuwm.offline_child_run import _parent_label
+
+    frame = PurePosixPath(
+        "/out/chain/run-20260910-214921Z_i202609091200Z/run/wrfout"
+        "/wrfout_d01_2026-09-09_12_00_00")
+    assert _parent_label(frame) == "run-20260910-214921Z_i202609091200Z"
+    assert _parent_label(PurePosixPath(
+        "/cases/parent-run/wrfout_d01_2026-09-09_12_00_00")) == "parent-run"
+
+
+def _start_child_progress(progress, tmp_path):
+    """Publish one child's manifest and stream, as ``run`` does."""
+    outdir = tmp_path / "child-run"
+    outdir.mkdir(exist_ok=True)
+    config = tmp_path / "child.toml"
+    config.write_text(_CHILD_TOML, encoding="utf-8")
+    progress.start(
+        outdir=outdir, child_config=config, ratio=3,
+        start_time=datetime(1974, 4, 3, 12),
+        parent={"run_dir": str(tmp_path), "restart": None, "frames": 3,
+                "cadence_seconds": 900.0},
+        name="Downscale of parent-run")
+    return outdir, config
+
+
+def test_child_publishes_the_manifest_every_other_run_publishes(tmp_path):
+    """One manifest shape for every route, so every reader works unchanged."""
+    import os
+
+    from gpuwm import runplan
+    from gpuwm.offline_child_run import _sha256
+
+    progress = _ChildProgress()
+    outdir, config = _start_child_progress(progress, tmp_path)
+    try:
+        manifest = json.loads(
+            (outdir / runplan.MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        assert manifest["schema"] == runplan.MANIFEST_SCHEMA
+        assert manifest["route"] == "downscale"
+        assert manifest["pid"] == os.getpid()
+        assert manifest["run_id"]
+        # The binding a reader checks: run_dir == outputs_dir == the run's
+        # own directory, and a plan source naming the exact config it ran
+        # with that file's hash beside it.
+        assert manifest["run_dir"] == manifest["outputs_dir"] == str(outdir)
+        assert manifest["plan_source"] == f"gpuwm downscale {config.resolve()}"
+        assert manifest["plan_sha256"] == _sha256(config.resolve())
+        assert manifest["events_path"] == str(outdir / "events.jsonl")
+        # No supervisor heartbeat on this route: null, never a path to a
+        # file nothing writes.
+        assert manifest["progress_path"] is None
+        assert manifest["start_time"] == "1974-04-03T12:00:00Z"
+        assert manifest["parent"]["frames"] == 3
+        assert manifest["name"] == "Downscale of parent-run"
+
+        progress.emit("stage_started", stage="forecast", phase="integrate")
+        progress.emit("output_committed", domain=1,
+                      valid_time="1974-04-03T12:00:00Z",
+                      path=str(outdir / "wrfout_d01_1974-04-03_12_00_00"),
+                      bytes=64)
+        progress.emit("model_progress", domain=1, model_seconds=900.0,
+                      run_seconds=900.0, outer_step=300, total_steps=300,
+                      wall_seconds=1.5)
+        progress.emit("completed", stage="forecast", result="PASS",
+                      outputs=1)
+    finally:
+        progress.close()
+    events = runplan.read_events(outdir / "events.jsonl")
+    assert [event["event"] for event in events] == [
+        "resolved_plan", "stage_started", "output_committed",
+        "model_progress", "completed"]
+    assert [event["sequence"] for event in events] == [1, 2, 3, 4, 5]
+    assert all(event["schema_version"] == runplan.EVENT_SCHEMA
+               for event in events)
+    assert events[0]["config_source"] == str(config.resolve())
+    assert events[0]["config_sha256"] == events[0]["config_sha256"]
+
+
+def test_a_child_that_dies_says_so_in_its_own_stream(tmp_path, monkeypatch):
+    """The last event a reader sees is always terminal.
+
+    A run that raised used to leave a stream whose final record was an
+    ordinary progress line, so a reader tailing it could not tell a dead
+    child from a slow one.
+    """
+    from gpuwm import runplan
+    import gpuwm.offline_child_run as child_run
+
+    def explode(args, progress):
+        _start_child_progress(progress, tmp_path)
+        raise RuntimeError("offline child became non-finite at step 7")
+
+    monkeypatch.setattr(child_run, "_run", explode)
+    with pytest.raises(RuntimeError):
+        child_run.run(object())
+    events = runplan.read_events(tmp_path / "child-run" / "events.jsonl")
+    assert events[-1]["event"] == "failed"
+    assert "non-finite at step 7" in events[-1]["message"]
+    assert events[-1]["message"].startswith("RuntimeError:")
+def test_a_gpuwm_warm_rain_frame_is_not_claimed_as_kessler(tmp_path):
+    """The R-018 residual: the writer, not the scheme, sets this inventory.
+
+    Stock WRF's passiveqv (mp=0) transports qv alone, so a stock frame
+    carrying QVAPOR/QCLOUD/QRAIN is Kessler and nothing else.  gpuwm's own
+    mp=0 allocates and advects the warm-rain pair beside qv
+    (_transported_source_fields says so in the same module) and
+    gpuwm/io/wrfout.py writes all three whenever the state is moist, so on
+    a gpuwm tape the same three names are mp=0 OR mp=1.  Naming one of them
+    is the mislabel class this ladder was rewritten to end.
+    """
+    ours = tmp_path / "gpuwm-warm.nc"
+    theirs = tmp_path / "wrf-warm.nc"
+    _history(ours, datetime(1974, 4, 3, 12), mp=1)
+    _history(theirs, datetime(1974, 4, 3, 12), mp=1, producer="wrf")
+
+    mine = inspect_parent_history_frame(ours)
+    assert mine.source_kind == "gpuwm"
+    assert mine.inferred_mp_physics is None
+
+    stock = inspect_parent_history_frame(theirs)
+    assert stock.source_kind == "wrf"
+    assert stock.inferred_mp_physics == 1
+
+    # Both are still READABLE: the ambiguity is advisory, and declaring the
+    # parent's scheme is the evidence-bearing route that always worked.
+    for path in (ours, theirs):
+        frame = inspect_parent_history_frame(path, source_mp_physics=1)
+        assert frame.source_mp_physics == 1
+
+
+def test_an_undeclared_parent_inferring_an_unsupported_scheme_is_refused(
+        tmp_path):
+    """A WDM6 archive satisfies the blind six-species contract.
+
+    With nothing declared, the inventory is the only scheme evidence there
+    is, and these arms are single-package discriminants rather than subset
+    matches.  Left to fall through, the child was prepared with the
+    parent's warm-rain numbers and its CCN reservoir dropped in silence --
+    the same cross-scheme entry-closure breakage the online mixed nest edge
+    refuses by name for mp=16.
+    """
+    frame = tmp_path / "wdm6.nc"
+    _history(frame, datetime(1974, 4, 3, 12), mp=16)
+
+    with pytest.raises(OfflineChildContractError) as excinfo:
+        inspect_parent_history_frame(frame)
+    message = str(excinfo.value)
+    assert "mp_physics=16" in message
+    assert "no parent scheme was declared" in message
+    # It names the way out and the row an editor would change, not a bare
+    # "unsupported".
+    assert "consumers.offline_child" in message
+
+    # Declaring 16 is refused too, on the same registry row -- the point is
+    # that the two routes agree rather than one being a hole.
+    with pytest.raises(OfflineChildContractError, match="mp_physics=16"):
+        inspect_parent_history_frame(frame, source_mp_physics=16)
+
+
+def test_an_admitted_scheme_inferred_from_a_frame_still_needs_no_declaration(
+        tmp_path):
+    """The refusal above must not have closed the undeclared route itself."""
+    frame = tmp_path / "morrison.nc"
+    _history(frame, datetime(1974, 4, 3, 12), mp=10)
+    info = inspect_parent_history_frame(frame)
+    assert info.inferred_mp_physics == 10
+    assert info.source_mp_physics is None

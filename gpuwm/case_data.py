@@ -60,7 +60,7 @@ from pathlib import Path
 from typing import Mapping
 
 from gpuwm.experiment import (ExperimentConfig, build_experiment,
-                              did_you_mean)
+                              did_you_mean, review_root_footprint)
 from gpuwm.explain import layered, warn
 
 _GLOB_CHARS = frozenset("*?[")
@@ -1066,6 +1066,11 @@ def load_experiment_case_bytes(
     # Validate the experiment FIRST so an invalid experiment surfaces its
     # own error even when [case_data] is also missing.
     experiment = build_experiment(raw, source=source)
+    # The other file door's plan review: a root whose footprint encloses
+    # the projection pole is refused here as well as in
+    # gpuwm.experiment.load_experiment, because a case file is a plan too
+    # and this is the door `gpuwm run`/`check` read it through.
+    review_root_footprint(experiment, source)
     if table is None:
         raise ValueError(_missing_case_data_table_refusal(source, shape))
     data = build_case_data(table, source=source, base_dir=base,

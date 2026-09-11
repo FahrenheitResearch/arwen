@@ -88,3 +88,18 @@ def test_the_report_keeps_a_walk_exception_apart_from_a_refusal(tmp_path, monkey
     road = streaming.tree_road_plan(exp)
     assert road.report_error is None
     assert road.refusal == "no auto road fits" and road.refusal_resource == "memory"
+
+
+@pytest.mark.parametrize("resource", sorted(go_cli._PLANNER_MEMORY_RESOURCES))
+def test_every_memory_resource_admits_against_an_unmeasured_card(resource):
+    """The 2.7.3 sweep's check on this door: it already admits.
+
+    A memory verdict computed against a card nobody read is not a fact
+    about the tree, so every memory resource -- not just the one the test
+    above happens to use -- has to pass the run through with the planner's
+    words said out loud.
+    """
+    road = _road(refusal="no auto road fits", refusal_resource=resource)
+    refuse, note = go_cli.planner_gate(road, card_seen=False)
+    assert refuse is False
+    assert "unmeasured card" in note and "no auto road fits" in note

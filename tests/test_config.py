@@ -233,10 +233,22 @@ def test_km_opt4_admits_pbl_off_vertical_diffusion(tmp_path):
     # PBL scheme without one (it consumes UST/HFX/QFX/WSPD/RMOL from it), and
     # gpuwm/core/physics.py initialize_physics has always refused the same
     # pair at driver construction.  91 is classic MM5, the production choice.
+    #
+    # ``moist`` is NOT one of them, and this cell's dry fixture is the
+    # pin for that.  Audit R-025 briefly refused every dry PBL plan at
+    # this door, reading the rule off the state allocation; it came back
+    # out because a dry state is not an absent state -- the physics seam
+    # hands every closure the persistent zero moisture planes and
+    # nothing consumes their zero tendencies.  A dry km_opt=4 + YSU +
+    # classic-MM5 run is admitted here and reaches the driver.  The two
+    # per-scheme rows that DO refuse a dry column, MYJ's and SASE's, are
+    # each raised by their own validator on their own reason
+    # (tests/test_myj_port.py::
+    # test_a_dry_myj_run_is_refused_the_way_wrf_refuses_it).
     cfg = load_config(_write_toml(
         tmp_path,
         dynamics="km_opt = 4\nbl_pbl_physics = 1\nsf_sfclay_physics = 91"))
-    assert cfg.km_opt == 4 and cfg.bl_pbl_physics == 1
+    assert cfg.km_opt == 4 and cfg.bl_pbl_physics == 1 and not cfg.moist
 
 
 def test_rejects_nonmonotonic_diff6_with_moist(tmp_path):

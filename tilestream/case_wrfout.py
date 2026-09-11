@@ -177,7 +177,12 @@ DROPPED_HYDROMETEORS: dict[str, str] = {
 #: whole lane exists to show, and a light frame without it would be a
 #: surface-only file with nothing to animate.
 REFL_NAME = "REFL_10CM"
-REFL_KEY = "scratch/refl_10cm"
+#: ONE spelling for the stash key, re-exported from this package's carrier
+#: inventory, which itself re-exports :data:`gpuwm.core.streaming
+#: .REFL_STORE_KEY` -- the module that owns the whole ``refl_10cm`` handoff
+#: for every streamed route.  Audit R-052 found the string typed out in
+#: three modules and one lane's store built without the slot at all.
+from tilestream.physics_inventory import REFL_KEY          # noqa: E402,F401
 
 
 def _host(value) -> np.ndarray:

@@ -158,8 +158,17 @@ def test_loads_explicit_mp8_to_mp18_domain_transition(tmp_path, monkeypatch):
     assert exp.domain(2).run.nest_microphysics_transition == \
         "mp8-to-mp18-mass-diagnosed-v1"
 
-    with pytest.raises(ValueError, match="requires explicit"):
-        load_experiment(_write(tmp_path, shared=shared, d02="mp_physics = 18"))
+    # With the key left out the edge resolves to its ratified closure; the
+    # coupler receipt records the requested and the effective policy.
+    from gpuwm.core.microphysics_transition import (
+        resolve_microphysics_transition)
+
+    exp = load_experiment(_write(tmp_path, shared=shared, d02="mp_physics = 18"))
+    assert exp.domain(2).run.nest_microphysics_transition == "same-scheme-only"
+    contract = resolve_microphysics_transition(
+        exp.domain(1).run, exp.domain(2).run)
+    assert contract.mixed
+    assert contract.policy_id == "mp8-to-mp18-mass-diagnosed-v1"
 
 
 def test_column_chunk_is_positive_experiment_integer(tmp_path):
@@ -986,6 +995,133 @@ def test_declared_map_proj_against_the_table_is_refused(tmp_path):
         + _projection_table()
     assert load_experiment(
         _write(tmp_path, text=text)).root.run.map_proj == 1
+
+
+#: A single-domain real experiment whose root geometry and projection are
+#: both the test's to choose.  Separate from BASE because the pole guard is
+#: about the ROOT footprint, and a nested tree would answer a second
+#: question (child placement) in the same fixture.
+POLE_BASE = """[experiment]
+name = "pole"
+start_time = 1974-04-03T12:00:00
+run_seconds = 3600.0
+restart_interval_s = 0.0
+
+[shared]
+nz = 8
+ztop = 12000.0
+
+[[domain]]
+grid_id = 1
+parent_id = 0
+i_parent_start = 1
+j_parent_start = 1
+parent_grid_ratio = 1
+parent_time_step_ratio = 1
+nx = {nx}
+ny = {ny}
+time_step = 60
+dx = {dx}
+history_interval_s = 3600.0
+
+[projection]
+map_proj = "{map_proj}"
+ref_lat = {ref_lat}
+ref_lon = 180.0
+truelat1 = {truelat1}
+truelat2 = {truelat2}
+stand_lon = 180.0
+"""
+
+
+def _pole_case(tmp_path, *, map_proj, ref_lat, truelat1, truelat2,
+               nx, ny, dx):
+    return _write(tmp_path, text=POLE_BASE.format(
+        map_proj=map_proj, ref_lat=ref_lat, truelat1=truelat1,
+        truelat2=truelat2, nx=nx, ny=ny, dx=dx))
+
+
+def test_hand_authored_root_enclosing_the_pole_is_refused_at_plan_review(
+        tmp_path):
+    """The companion doors' pole limit applies to a typed config too.
+
+    Before 2.7.3 the measurement ran only at the doors, so this file
+    passed plan review (`gpuwm check` said the configuration was good)
+    and was refused later by the door that prepared it.  The footprint is
+    the wizard's own refused row: a 300 x 240 Lambert root at 30 km
+    centred at 75 N swallows the north pole.
+    """
+    path = _pole_case(tmp_path, map_proj="lambert", ref_lat=75.0,
+                      truelat1=30.0, truelat2=60.0,
+                      nx=300, ny=240, dx=30000.0)
+    with pytest.raises(ValueError) as excinfo:
+        load_experiment(path)
+    message = str(excinfo.value)
+    # The breakage, and the two things that move, in the door's words.
+    assert "contains or touches the north pole" in message
+    assert "not pole-capable" in message
+    assert "ref_lat" in message and "nx/ny/dx" in message
+
+
+def test_the_case_file_door_reviews_the_same_footprint(tmp_path):
+    """`gpuwm run` and `gpuwm check` read a case file through the other
+    loader, so the review runs there too -- and ahead of the
+    missing-[case_data] refusal, because the geometry is wrong whatever
+    tables follow it."""
+    from gpuwm.case_data import load_experiment_case_bytes
+    path = _pole_case(tmp_path, map_proj="lambert", ref_lat=75.0,
+                      truelat1=30.0, truelat2=60.0,
+                      nx=300, ny=240, dx=30000.0)
+    with pytest.raises(ValueError,
+                       match="contains or touches the north pole"):
+        load_experiment_case_bytes(path.read_bytes(), source=str(path),
+                                   base_dir=path.parent)
+
+
+def test_polar_root_off_the_pole_loads(tmp_path):
+    """Polar stereographic is not the thing refused -- the footprint is.
+
+    The same projection whose whole purpose is high latitudes loads at
+    65 N, because a 100 x 80 root at 12 km clears the pole by more than
+    two thousand kilometres.
+    """
+    exp = load_experiment(_pole_case(
+        tmp_path, map_proj="polar", ref_lat=65.0, truelat1=60.0,
+        truelat2=60.0, nx=100, ny=80, dx=12000.0))
+    assert exp.projection.map_proj == "polar"
+    assert exp.root.run.map_proj == 2
+
+
+def test_mid_latitude_root_loads(tmp_path):
+    """The ordinary case is untouched by the guard."""
+    exp = load_experiment(_pole_case(
+        tmp_path, map_proj="lambert", ref_lat=39.7, truelat1=30.0,
+        truelat2=60.0, nx=100, ny=80, dx=12000.0))
+    assert exp.projection.map_proj == "lambert"
+    assert exp.root.run.nx == 100
+
+
+def test_plan_review_and_the_companion_door_measure_one_footprint():
+    """Same question, one function: the wizard's private predicate is
+    the shared measurement plan review refuses on, not a second copy of
+    the arithmetic that can drift away from it."""
+    from gpuwm import domain_wizard
+    from gpuwm.static.projection import footprint_contains_pole
+
+    projection = {"map_proj": "lambert", "ref_lat": 75.0, "ref_lon": 180.0,
+                  "truelat1": 30.0, "truelat2": 60.0, "stand_lon": 180.0}
+    for ref_lat, expected in ((75.0, True), (65.0, False)):
+        candidate = dict(projection, ref_lat=ref_lat)
+        assert footprint_contains_pole(
+            candidate, 300, 240, 30000.0) is expected
+        assert domain_wizard._footprint_contains_pole(
+            candidate, 300, 240, 30000.0) is expected
+    # Mercator cannot reach a pole at any size, so it is answered without
+    # a grid at all.
+    assert footprint_contains_pole(
+        {"map_proj": "mercator", "ref_lat": 89.0, "ref_lon": 0.0,
+         "truelat1": 0.0, "truelat2": 0.0, "stand_lon": 0.0},
+        4000, 4000, 30000.0) is False
 
 
 def test_rejects_moving_nest_keys_in_experiment_table(tmp_path):

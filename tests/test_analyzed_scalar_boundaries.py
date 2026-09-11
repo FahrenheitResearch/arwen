@@ -28,7 +28,7 @@ def _dimensions(cfg):
 
 def _input(path, cfg):
     _small_wrfinput(path, nx=cfg.nx, ny=cfg.ny, nz=cfg.nz,
-                    moisture_names=tuple(wi._active_moisture_map(cfg)))
+                    moisture_names=tuple(wi.active_moisture_map(cfg)))
     with netCDF4.Dataset(path, 'a') as ds:
         ds.createDimension('soil_layers_stag', 4)
         for name in ('QNWFA2D', 'QNIFA2D'):
@@ -96,7 +96,7 @@ def test_aerosol_reader_and_surface_restore_preserve_supplied_words(tmp_path):
     from gpuwm.core.state import DomainState
     state=DomainState(cfg,array_module=np)
     wi._restore_active_moisture(state,initial.raw,cfg,np)
-    for wrf,name in wi._active_moisture_map(cfg).items():
+    for wrf,name in wi.active_moisture_map(cfg).items():
         np.testing.assert_array_equal(getattr(state,name),initial.raw[wrf])
         np.testing.assert_array_equal(getattr(state,name+'0'),initial.raw[wrf])
     for wrf,name in [('QNWFA2D','nwfa2d'),('QNIFA2D','nifa2d')]:

@@ -69,6 +69,11 @@ fn read(directory:&Path,command:&[String])->Result<Value,String>{
     let ended=read_json(&directory.join("result.json"),128*1024).ok().filter(|r|r["schema"]=="gpuwm-tui-result-v1"&&r["pid"].as_u64()==Some(pid)&&r["cli_args"]==process["cli_args"])
         .and_then(|r|r["ended_at"].as_str().and_then(|s|utc_ms(s).ok()));
     let flag=|name:&str|command.iter().position(|v|v==name).and_then(|i|command.get(i+1)).map(String::as_str);
+    // The Downscale guide writes `--flag=value` for every setting except
+    // `--out`, which it writes as two tokens. One reader for both spellings,
+    // so a route is never mis-read as "unnamed" because of the separator.
+    let setting=|name:&str|command.iter().find_map(|value|value.strip_prefix(name)?.strip_prefix('=')).or_else(||flag(name));
+    let downscale=command[3]=="downscale";
     let (config,base,plan)=if command[3]=="run-plan"{
         let path=resolve(&command[4],&cwd)?;let bytes=raw(&path,4*1024*1024)?;let value:Value=serde_json::from_slice(&bytes).map_err(|_|"The saved plan is not JSON")?;
         if value["schema"]!="gpuwm.run-plan.v1"{return Err("Unknown local run plan schema".into());}
@@ -78,13 +83,24 @@ fn read(directory:&Path,command:&[String])->Result<Value,String>{
         let name=flag("--experiment-config").or_else(||flag("--config")).or_else(||(command[3]=="go").then_some(command[4].as_str())).ok_or("This local route has not named its saved configuration")?;
         let config=resolve(name,&cwd)?;let base=flag("--outdir").map(|p|resolve(p,&cwd)).transpose()?.unwrap_or_else(||config.with_file_name(format!("{}-go",config.file_stem().unwrap_or_default().to_string_lossy())));
         (config,canonical(&base)?,None)
+    }else if downscale{
+        // The child's run directory IS `--out`: no stamped run folder, no
+        // `latest-run.txt`, no prepared `chain/`. Its configuration is the
+        // one the caller supplied, or the one this door derived inside the
+        // directory it describes.
+        let out=setting("--out").ok_or("This downscale job has not named its output directory")?;
+        let base=resolve(out,&cwd)?;
+        let config=match setting("--child-config"){Some(path)=>resolve(path,&cwd)?,None=>canonical(&base.join("child.toml"))?};
+        (config,base,None)
     }else{return Err("This command is not a forecast run".into());};
     let config_bytes=raw(&config,128*1024)?;let config_sha=digest(&config_bytes);
-    let root=if plan.is_some(){base.clone()}else{pointed(&base)?.unwrap_or(base.clone())};
+    let root=if plan.is_some()||downscale{base.clone()}else{pointed(&base)?.unwrap_or(base.clone())};
     let (parent,parent_bytes,parent_started)=manifest(&root,pid,started,ended)?;
     if let Some((path,sha))=&plan{
         if parent["plan_sha256"]!=*sha||!same(text(&parent,"plan_source")?,path){return Err("Native manifest does not match the exact reviewed local plan".into());}
-    }else if !parent["plan_source"].as_str().and_then(|s|s.strip_prefix("gpuwm go ")).is_some_and(|p|same(p,&config)){
+    }else if !parent["plan_source"].as_str()
+        .and_then(|s|s.strip_prefix(if downscale{"gpuwm downscale "}else{"gpuwm go "}))
+        .is_some_and(|p|same(p,&config)){
         return Err("Native manifest does not identify this saved local configuration".into());
     }
     resolved(&parent,&root,parent_started,&config,&config_sha)?;
@@ -114,6 +130,12 @@ fn read(directory:&Path,command:&[String])->Result<Value,String>{
     let heartbeat=heartbeat_path.as_ref().and_then(|p|read_json(p,64*1024).ok()).filter(|h|h["schema"]=="gpuwm.run-progress/v1"&&h["run_id"]==manifest["run_id"]&&h["pid"].as_u64()==Some(pid)&&h["config_digest"]==config_sha
         &&h["started_at_utc"].as_str().and_then(|s|utc_ms(s).ok())==Some(start)&&h["updated_at_utc"].as_str().and_then(|s|utc_ms(s).ok()).is_some_and(|ms|ms>=start));
     let mut result=summarize(&config_bytes,&config_sha,&manifest,&manifest_bytes,&stream,heartbeat.as_ref(),&root)?;
+    if downscale{
+        // A child's identity is its manifest's: the derived TOML carries no
+        // [experiment] name and no start time -- its clock comes from the
+        // parent archive -- so the run that published it says who it is.
+        for key in ["name","start_time","parent"]{result[key]=manifest[key].clone();}
+    }
     result["pipeline_progress"]=pipeline_progress(&stream,&result,start,ended);
     for (key,value) in [("run_dir",json!(root)),("outputs_dir",json!(root)),("run_manifest_path",json!(root.join("run-manifest.json"))),("events_path",json!(event_path)),("progress_path",json!(heartbeat_path)),("manifest_ready",json!(true)),("source_config_path",json!(config)),("source_config_sha256",json!(config_sha))]{result[key]=value;}
     result["ready_dir"]=if root.join("ready").is_dir(){json!(root.join("ready"))}else{Value::Null};Ok(result)
@@ -140,7 +162,7 @@ pub(crate) fn utc_text(milliseconds:i64)->Result<String,String>{
     Ok(if within%1000==0{format!("{base}Z")}else{format!("{base}.{:03}Z",within%1000)})
 }
 fn seconds(value:&Value)->Option<f64>{value.as_f64().filter(|v|v.is_finite()&&*v>=0.)}
-fn pipeline_progress(events:&[Value],result:&Value,started:i64,ended:Option<i64>)->Value{
+pub(crate) fn pipeline_progress(events:&[Value],result:&Value,started:i64,ended:Option<i64>)->Value{
     let stage=result["stage"].as_str().unwrap_or("starting");let stage=if stage.starts_with("preparing:"){"prepare"}else{stage};
     let mut phase=result["phase"].as_str().unwrap_or(stage).to_owned();let(mut began,mut updated,mut finished)=(started,started,None);
     let mut acquisition=json!({});let mut preparation=Value::Null;let mut files:BTreeMap<String,Value>=BTreeMap::new();
@@ -178,17 +200,35 @@ fn table_number(table:&toml_edit::Table,key:&str)->Option<f64>{table.get(key).an
 fn planned(current:Option<f64>,interval:f64,total:f64)->Option<f64>{let now=current?;if interval<=0.||now>=total{return None;}let next=((now/interval+1e-9).floor()+1.)*interval;(next<=total+1e-7).then_some(next)}
 fn summarize(config:&[u8],config_sha:&str,manifest:&Value,manifest_bytes:&[u8],events:&[Value],heartbeat:Option<&Value>,root:&Path)->Result<Value,String>{
     let doc=std::str::from_utf8(config).map_err(|_|"Saved configuration is not UTF-8")?.parse::<toml_edit::DocumentMut>().map_err(|_|"Saved configuration is not valid TOML")?;
-    let experiment=doc.get("experiment").and_then(|v|v.as_table()).ok_or("Saved configuration has no experiment")?;
-    let start=experiment.get("start_time").ok_or("Saved configuration has no start time")?;
-    let start=utc_ms(&start.as_str().map(str::to_owned).or_else(||start.as_datetime().map(ToString::to_string)).ok_or("Invalid saved start time")?)?;
-    let total=table_number(experiment,"run_seconds").filter(|v|*v>0.).ok_or("Saved configuration has no positive forecast duration")?;
-    let restart=table_number(experiment,"restart_interval_s").ok_or("Saved configuration has no checkpoint policy")?;
-    let tables=doc.get("domain").and_then(|v|v.as_array_of_tables()).filter(|v|!v.is_empty()&&v.len()<=999).ok_or("Saved configuration has no domain timing")?;
-    let mut schedule=BTreeMap::new();for table in tables{
-        let id=table.get("grid_id").and_then(|v|v.as_integer()).filter(|n|(1..=999).contains(n)).ok_or("Invalid saved domain ID")? as u64;
-        let interval=table_number(table,"history_interval_s").filter(|v|*v>0.).ok_or("Invalid saved output interval")?;
-        if schedule.insert(id,interval).is_some(){return Err("Duplicate saved domain ID".into());}
-    }
+    let (start,total,restart,schedule)=if manifest["route"]=="downscale"{
+        // A downscaled child is a legacy [grid]/[run] RunConfig: one domain,
+        // no [experiment] and no start time of its own, because its clock is
+        // the parent archive's. The run that published the manifest is the
+        // authority for the clock; the configuration is the authority for
+        // the duration and the cadence it will actually save at.
+        let run=doc.get("run").and_then(|v|v.as_table()).ok_or("Derived child configuration has no run settings")?;
+        let start=utc_ms(text(manifest,"start_time")?)?;
+        let total=table_number(run,"run_seconds").filter(|v|*v>0.).ok_or("Derived child configuration has no positive forecast duration")?;
+        let interval=table_number(run,"output_interval_s").filter(|v|*v>0.).ok_or("Derived child configuration has no output interval")?;
+        let id=run.get("grid_id").and_then(|v|v.as_integer()).filter(|n|(1..=999).contains(n)).unwrap_or(1) as u64;
+        // No restart POLICY on this route: the child writes one final
+        // checkpoint. A zero interval is what `planned` already reads as
+        // "nothing scheduled", so no next-checkpoint countdown is invented.
+        (start,total,0.0,BTreeMap::from([(id,interval)]))
+    }else{
+        let experiment=doc.get("experiment").and_then(|v|v.as_table()).ok_or("Saved configuration has no experiment")?;
+        let start=experiment.get("start_time").ok_or("Saved configuration has no start time")?;
+        let start=utc_ms(&start.as_str().map(str::to_owned).or_else(||start.as_datetime().map(ToString::to_string)).ok_or("Invalid saved start time")?)?;
+        let total=table_number(experiment,"run_seconds").filter(|v|*v>0.).ok_or("Saved configuration has no positive forecast duration")?;
+        let restart=table_number(experiment,"restart_interval_s").ok_or("Saved configuration has no checkpoint policy")?;
+        let tables=doc.get("domain").and_then(|v|v.as_array_of_tables()).filter(|v|!v.is_empty()&&v.len()<=999).ok_or("Saved configuration has no domain timing")?;
+        let mut schedule=BTreeMap::new();for table in tables{
+            let id=table.get("grid_id").and_then(|v|v.as_integer()).filter(|n|(1..=999).contains(n)).ok_or("Invalid saved domain ID")? as u64;
+            let interval=table_number(table,"history_interval_s").filter(|v|*v>0.).ok_or("Invalid saved output interval")?;
+            if schedule.insert(id,interval).is_some(){return Err("Duplicate saved domain ID".into());}
+        }
+        (start,total,restart,schedule)
+    };
     let mut result=json!({});let mut model=None;let mut outputs=BTreeMap::new();
     if let Some(h)=heartbeat{
         if let Some(elapsed)=seconds(&h["model_elapsed_seconds"]){result["model_elapsed_seconds"]=json!(elapsed);}

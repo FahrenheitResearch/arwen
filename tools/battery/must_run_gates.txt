@@ -125,6 +125,11 @@ tests/test_excluded_subsystem_absent.py  scans tracked files, so it needs a git
 tests/test_no_forecast_gate.py  needs bash and the gate script; skipped on a
 #                              Windows box with no bash on PATH.
 tests/test_remote_worker_linux.py  needs Linux /proc process ownership and POSIX process groups; runs on the hosted Linux CPU lane and skips on Windows.
+tests/test_remote_completion_transition.py  needs Linux pidfd ownership (os.pidfd_open and signal.pidfd_send_signal); it drives real wrapper and runner exits, so nothing restores it on Windows or macOS, and it runs on the hosted Linux CPU lane.
 
 # Independent met_em fixtures are generated locally; reading them needs native decode.
 tests/test_metem_ingest.py    needs netCDF4 and the compiled Rust rw_netcdf decoder; build tools/rustwx and set GPUWM_RW_NETCDF to execute this deck.
+
+# The saved-setups deck: every test saves or starts a forecast setup, and both
+# doors republish the configuration through the native domain editor.
+tests/test_companion_setups.py  needs the compiled Rust static-fields bridge; build tools/rustwx (cargo build --release -p static-fields) or install a wheel that carries it, and the whole deck runs.

@@ -118,6 +118,12 @@ _RRTMG_LEGACY_ASSETS = (
     "data/wrf_radiation/ozone.formatted",
     "data/wrf_radiation/ozone_lat.formatted",
     "data/wrf_radiation/ozone_plev.formatted",
+    # SHA-pinned and REQUIRED (gpuwm/core/rrtmg_legacy.py builds the
+    # longwave coefficient set from it and refuses on a digest mismatch),
+    # and absent from this list until audit R-030: a stripped install
+    # passed the readiness check and then died inside the coefficient
+    # build, which is the failure this check exists to move earlier.
+    "data/wrf_radiation/rrtmg_lw_statics.npz",
     "core/kernels/rrtmg_lw.cu",
     "core/kernels/rrtmg_lw_chain.cu",
     "core/kernels/rrtmg_lw_taugb02_10_11_12.cu",
@@ -218,6 +224,17 @@ def packaged_thompson_table_root() -> "Path":
     return data_assets.thompson_table_dir()
 
 
+#: ``~/.gpuwm/tables/thompson`` as path SEGMENTS under the home directory.
+#:
+#: Declared so a caller that must not resolve ``~`` can still read the one
+#: spelling of this root.  The registry builder is that caller: it writes a
+#: ``~``-relative string into a document required to be byte-identical on
+#: every machine, and it had re-typed the three segments -- a second
+#: spelling of a path, which is the drift class audit R-045 exists to
+#: retire.
+USER_THOMPSON_TABLE_ROOT_PARTS = (".gpuwm", "tables", "thompson")
+
+
 def user_thompson_table_root() -> "Path":
     """User-level staging directory: ``~/.gpuwm/tables/thompson``.
 
@@ -237,7 +254,7 @@ def user_thompson_table_root() -> "Path":
 
     from pathlib import Path
 
-    return Path.home() / ".gpuwm" / "tables" / "thompson"
+    return Path.home().joinpath(*USER_THOMPSON_TABLE_ROOT_PARTS)
 
 
 def _table_root_is_complete(root: "Path") -> bool:
@@ -364,10 +381,13 @@ def thompson_guard_exports() -> tuple[str, str]:
 #
 # The ceiling below is still the LARGEST MEASURED configuration and nothing
 # wider.  It is not a performance target and raising it makes nothing
-# faster: above it a Noah-MP request is refused unless the caller states the
-# column budget they accept, which is the same shape as the retired Thompson
-# enable gate once had -- an unmeasured width is refused before the run
-# starts, not discovered mid-forecast.  Until 2026-07-27 the ceiling was
+# faster: above it a Noah-MP request WARNS -- it names the measured cost
+# and the linear projection to the requested width, and continues.  It is
+# not a blocker and has not been one since the warn-not-block ruling: the
+# width is measurement coverage, not a correctness or memory limit, and a
+# projection is not a defect.  The environment budget below silences the
+# warning; it consents to a cost, it does not lift a refusal.  Until
+# 2026-07-27 the ceiling was
 # 352, the widest the host-era solver was ever measured at; the slab
 # measurement at d04's full 360,000 columns is what moved it.
 NOAHMP_EXPERT_COLUMN_BUDGET_ENV = "GPUWM_NOAHMP_EXPERT_COLUMN_BUDGET"
@@ -1100,6 +1120,20 @@ CONSTANT_DOWNWARD_LONGWAVE_ACK = "constant-downward-longwave-v1"
 #: The land-surface schemes that READ GLW every surface step, and are
 #: therefore what turns an absent longwave scheme into a wrong forecast
 #: rather than an unused buffer.  ``sf_surface_physics`` numbering.
+#:
+#: MEMBERSHIP IS NOT DECIDED HERE any more, only the display names are.
+#: The fact "this scheme reads GLW" belongs to the scheme's own carrier
+#: contract (``gpuwm.core.radiation_carriers.CONSUMER_CARRIERS``, which
+#: refuses a scheme it has no row for rather than defaulting it to "reads
+#: nothing"); the registry builder derives every land-surface option's
+#: ``consumers.reads_glw`` row from that contract, and
+#: :func:`_require_agreement_with_the_registry` below holds this mapping's
+#: keys equal to those rows at import.  So a future GLW-consuming LSM --
+#: the Pleim-Xiu case -- cannot be registered, run and silently pass this
+#: guard: it fails the import agreement until it appears here, and what it
+#: needs here is a NAME, not a judgement.  The keys are not imported from
+#: the contract directly because ``gpuwm.config`` imports this module and
+#: the contract imports ``gpuwm.config``; the registry sits between them.
 _GLW_CONSUMING_SURFACE_SCHEMES = MappingProxyType({
     2: "Noah LSM", 3: "RUC LSM", 4: "Noah-MP",
 })
@@ -1681,10 +1715,40 @@ def _resolve_physics_component_options(
                     "execution": "gpuwm.core.radiation_composition.make_radiation",
                 }))
         if len(candidates) != 1:
+            # TWO DIFFERENT FAILURES, two messages.  The comment above
+            # fixed the ALL-absent case; a mapping that names SOME of a
+            # component's selector keys still landed here and was told it
+            # had no option for `{'ra_lw_physics': 4, 'ra_sw_physics':
+            # None}` -- a value nobody wrote, printed back as if they
+            # had.  Selector keys are deliberately absent from the
+            # registry's parameter declarations, so there is no default
+            # to fill in and substituting one would be the silent
+            # substitution this refusal exists to prevent: the answer is
+            # to say which keys are missing and that they are chosen
+            # together.
+            absent = sorted(
+                key for key in selector_keys if raw_selected[key] is _ABSENT)
+            if absent:
+                named = {key: value for key, value in selected.items()
+                         if key not in absent}
+                raise PhysicsCapabilityError(
+                    f"{_registry_pointer(component_id)} is selected by "
+                    f"{list(selector_keys)} TOGETHER, and this request "
+                    f"names only {named}: {absent} carry no value here. "
+                    "These keys have no registry default on purpose -- an "
+                    "option is a whole selector tuple, and filling one in "
+                    "would substitute a scheme nobody asked for. Give "
+                    "every key a value, or omit the component entirely "
+                    "and let the run configuration supply its own")
+            implemented = sorted(
+                str(option.get("selectors", {}))
+                for option in component["options"].values()
+                if option.get("implemented") is True)
             raise PhysicsCapabilityError(
                 f"{_registry_pointer(component_id)} has no implemented "
                 f"option for selectors {selected}; no source/profile "
-                "substitution is allowed")
+                "substitution is allowed. Implemented selector tuples for "
+                f"this component: {'; '.join(implemented)}")
         option_id, option = candidates[0]
         if option.get("implemented") is not True:
             declaration = option.get("reachability", {})
@@ -1713,7 +1777,8 @@ def validate_physics_capabilities(
     """
 
     from gpuwm.physics_registry import (
-        _conditional_refusal_fires, _conditional_refusals, physics_registry)
+        _conditional_refusal_fires, _conditional_refusals,
+        conditional_refusal_sentence, physics_registry)
 
     resolved, options_by_component = _resolve_physics_component_options(
         settings)
@@ -1739,6 +1804,38 @@ def validate_physics_capabilities(
                 raise PhysicsCapabilityError(
                     f"{_registry_pointer(component_id, option_id)} requires "
                     f"settings {drift}")
+        # The multi-valued twin of required_settings, read here for the
+        # reason the conditional kind is read here: this resolver and
+        # gpuwm.physics_registry.validate_physics_plan are two readers of
+        # ONE constraint table, and a kind only one door understands is a
+        # constraint that fires or not depending on which door the user
+        # came through.
+        admitted = constraints.get("admitted_setting_values", {})
+        admitted_reasons = constraints.get(
+            "admitted_setting_values_reasons", {})
+        if not isinstance(admitted_reasons, Mapping):
+            admitted_reasons = {}
+        if isinstance(admitted, Mapping):
+            for name, values in admitted.items():
+                if not isinstance(values, list):
+                    continue
+                observed = _selection_value(settings, name)
+                if observed is None:
+                    # The registry's own declared default, so this door
+                    # and validate_physics_plan answer alike when the
+                    # caller never named the setting.
+                    spec = parameter_specs.get(name)
+                    observed = (spec.get("default")
+                                if isinstance(spec, Mapping) else None)
+                if observed is None or observed in values:
+                    continue
+                option_id = resolved[component_id]
+                reason = admitted_reasons.get(name)
+                detail = (f": {reason}"
+                          if isinstance(reason, str) and reason else "")
+                raise PhysicsCapabilityError(
+                    f"{_registry_pointer(component_id, option_id)} admits "
+                    f"{name} in {values!r}, got {observed!r}{detail}")
         requirements = constraints.get("requires_components", {})
         if isinstance(requirements, Mapping):
             for required_component, allowed in requirements.items():
@@ -1777,7 +1874,8 @@ def validate_physics_capabilities(
                     option_id = resolved[component_id]
                     raise PhysicsCapabilityError(
                         f"{_registry_pointer(component_id, option_id)} is "
-                        f"refused here: {rule['reason']}")
+                        f"refused here: "
+                        f"{conditional_refusal_sentence(rule)}")
 
     # Runtime-only coupled restrictions and measured-width rails remain the
     # executable authority.  They cite the exact WRF/CUDA reason in their
@@ -1799,6 +1897,67 @@ def validate_physics_capabilities(
     return resolved
 
 
+def conditional_refusals_for(
+        settings: Mapping[str, object] | object,
+) -> list[dict[str, object]]:
+    """Every ``refused_when`` rule the registry fires for these settings.
+
+    The same table and the same evaluator
+    :func:`validate_physics_capabilities` raises on, asked to REPORT
+    instead.  A front end that has already met the parser's refusal needs
+    two things the sentence does not carry -- which option the rule
+    belongs to, and the machine-applicable way out -- and re-deriving
+    either one by matching substrings of the prose is what
+    gpuwm/companion_physics.py did for one scheme: the branch fired on
+    "mp_physics=9" and "cloud-optics" appearing in the error, so every
+    other scheme with the same refusal got no tailored repair and a
+    reworded sentence would have silently dropped the one that existed.
+
+    Each returned row is ``{"component", "option", "reason", "remedy_label",
+    "remedy_settings"}``: ``reason`` is the whole sentence a reader is
+    shown, remedy included, and ``remedy_settings`` is that remedy as an
+    edit, or ``None`` where the rule declares none.  Nothing is raised
+    for a draft whose selectors resolve to no implemented option -- there
+    are no rules to report about a combination the resolver cannot place,
+    and the door that called here already holds its own refusal.
+    """
+
+    from gpuwm.physics_registry import (
+        _conditional_refusal_fires, _conditional_refusals,
+        conditional_refusal_remedy, conditional_refusal_sentence,
+        physics_registry)
+
+    try:
+        resolved, options_by_component = _resolve_physics_component_options(
+            settings)
+    except PhysicsCapabilityError:
+        return []
+    parameter_specs = physics_registry().get("parameters", {})
+    fired: list[dict[str, object]] = []
+    for component_id, option in options_by_component.items():
+        constraints = option.get("constraints", {})
+        if not isinstance(constraints, Mapping):
+            continue
+        for rule in _conditional_refusals(constraints):
+            named = {name for name in (rule.get("settings") or {})}
+            observed = {
+                name: _selection_value(settings, name)
+                for name in named
+                if _selection_value_or_absent(settings, name) is not _ABSENT
+            }
+            if not _conditional_refusal_fires(
+                    rule, resolved, observed, parameter_specs):
+                continue
+            fired.append({
+                "component": component_id,
+                "option": resolved[component_id],
+                "reason": conditional_refusal_sentence(rule),
+                "remedy_label": rule.get("remedy_label"),
+                "remedy_settings": conditional_refusal_remedy(rule),
+            })
+    return fired
+
+
 def validate_resolved_physics_vertical_levels(
         settings: Mapping[str, object] | object, *,
         p_top: float | None = None,
@@ -1810,7 +1969,8 @@ def validate_resolved_physics_vertical_levels(
     radiation adapters can include their WRF above-model cap layers.
     """
 
-    resolved, _ = _resolve_physics_component_options(settings)
+    resolved, options_by_component = _resolve_physics_component_options(
+        settings)
     raw_nz = _selection_value(settings, "nz")
     if isinstance(raw_nz, bool):
         raise PhysicsVerticalPreflightError("nz must be an integer")
@@ -1842,61 +2002,36 @@ def validate_resolved_physics_vertical_levels(
             violations.append(f"{label} requires "
                               f"{vertical_bounds_wording(bounds)}, got nz={nz}")
 
+    from gpuwm.physics_registry import CONSUMER_ROWS_KEY
     from gpuwm.physics_vertical_contract import (
-        KESSLER_VERTICAL_LEVEL_BOUNDS,
-        GF_VERTICAL_LEVEL_BOUNDS,
-        KF_VERTICAL_LEVEL_BOUNDS,
         MAX_LEGACY_LONGWAVE_LAYERS,
         MAX_LEGACY_SHORTWAVE_LAYERS,
         MAX_RRTMGP_LAYERS,
-        MORRISON_VERTICAL_LEVEL_BOUNDS,
-        MYJ_VERTICAL_LEVEL_BOUNDS,
-        MYNN_VERTICAL_LEVEL_BOUNDS,
-        NSSL2_VERTICAL_LEVEL_BOUNDS,
-        SASE_VERTICAL_LEVEL_BOUNDS,
-        SHINHONG_VERTICAL_LEVEL_BOUNDS,
-        THOMPSON_AEROSOL_VERTICAL_LEVEL_BOUNDS,
-        THOMPSON_VERTICAL_LEVEL_BOUNDS,
-        WSM6_VERTICAL_LEVEL_BOUNDS,
-        YSU_VERTICAL_LEVEL_BOUNDS,
         legacy_radiation_layer_counts,
         rrtmgp_above_model_layer_counts,
     )
 
-    # EVERY implemented PBL scheme, not just the one that happened to be
-    # asked about.  The defect this closes: the preflight covered cumulus,
-    # radiation and microphysics, so a 130-level YSU configuration passed
-    # `gpuwm check` and both preparation stages and then died on the first
-    # physics call, after the user had paid for fetch and preparation.
-    pbl_bounds = {
-        "mynn": ("MYNN PBL", MYNN_VERTICAL_LEVEL_BOUNDS),
-        "ysu": ("YSU PBL", YSU_VERTICAL_LEVEL_BOUNDS),
-        "myj": ("MYJ PBL", MYJ_VERTICAL_LEVEL_BOUNDS),
-        "shinhong": ("Shin-Hong PBL", SHINHONG_VERTICAL_LEVEL_BOUNDS),
-        "sase": ("SASE PBL", SASE_VERTICAL_LEVEL_BOUNDS),
-    }
-    pbl = resolved.get("pbl")
-    if pbl in pbl_bounds:
-        bounded(*pbl_bounds[pbl])
-    if resolved.get("cumulus") == "kain-fritsch":
-        bounded("Kain-Fritsch cumulus", KF_VERTICAL_LEVEL_BOUNDS)
-    if resolved.get("cumulus") == "grell-freitas":
-        bounded("Grell-Freitas cumulus", GF_VERTICAL_LEVEL_BOUNDS)
-
-    microphysics = resolved.get("microphysics")
-    if microphysics == "kessler-mp1":
-        bounded("Kessler microphysics", KESSLER_VERTICAL_LEVEL_BOUNDS)
-    elif microphysics == "wsm6-mp6":
-        bounded("WSM6 microphysics", WSM6_VERTICAL_LEVEL_BOUNDS)
-    elif microphysics == "thompson-mp8":
-        bounded("Thompson microphysics", THOMPSON_VERTICAL_LEVEL_BOUNDS)
-    elif microphysics == MP28_REGISTRY_OPTION_ID:
-        bounded("Thompson aerosol-aware microphysics",
-                THOMPSON_AEROSOL_VERTICAL_LEVEL_BOUNDS)
-    elif microphysics == "morrison-mp10":
-        bounded("Morrison microphysics", MORRISON_VERTICAL_LEVEL_BOUNDS)
-    elif microphysics == "nssl2-mp18":
-        bounded("NSSL-2 microphysics", NSSL2_VERTICAL_LEVEL_BOUNDS)
+    # EVERY implemented component option, from the REGISTRY's own row for
+    # it (``consumers.vertical_level_bounds``, generated from the contract
+    # constants by tools/build_registry.py) rather than from an if/elif
+    # chain here.  Two defects this closes: the chain once covered cumulus,
+    # radiation and microphysics but not the PBL, so a 130-level YSU
+    # configuration passed `gpuwm check` and both preparation stages and
+    # died on the first physics call; and it later covered six of nine
+    # microphysics schemes and two of three cumulus schemes, so a WDM6,
+    # Milbrandt-Yau, P3 or New Tiedtke configuration was never asked at
+    # all and met its bound at the first call the same way.  A scheme with
+    # no row is now a plan-review refusal (gpuwm.physics_registry.
+    # consumer_row_gaps), not a silent skip.
+    for component_id in ("pbl", "cumulus", "microphysics"):
+        option = options_by_component.get(component_id)
+        if not isinstance(option, Mapping):
+            continue
+        rows = option.get(CONSUMER_ROWS_KEY)
+        window = rows.get("vertical_level_bounds") if isinstance(rows, Mapping) else None
+        if isinstance(window, Mapping):
+            bounded(str(window["label"]),
+                    (window.get("minimum"), window.get("maximum")))
 
     from types import SimpleNamespace
     from gpuwm.config import radiation_scheme_ids
@@ -2289,54 +2424,28 @@ def single_domain_physics_selection(
         governance_route_modes=("experiment-per-domain", "fixed-template"))
 
 
-#: Route/source pairs whose declared template list this front door
-#: enforces at PREPARATION time.
-#:
-#: The registry has always published which templates each route offers
-#: each source (``runner_routes.<route>.source_template_ids.<source>``),
-#: but until now only plan validation and the GUI read it -- nothing
-#: consulted it before a preparation ran.  That is how RUC came to be
-#: selectable through the GFS front door, preparable in full, and unable
-#: to complete its first integration step.  Declaring and enforcing in
-#: two places that never met is the whole "selectable but not usable"
-#: pattern; this is the missing half.
-_ROUTE_FOR_SOURCE = {
-    "gfs": "tools.prepared_single_domain_forecast",
-}
-
-
-def offered_land_surfaces(source: str) -> frozenset[str] | None:
-    """Land-surface components this source's declared templates reach.
-
-    ``None`` where no route/source declaration is enforced here, which
-    means "this function has no opinion" and never "everything is
-    allowed": callers keep whatever other gates they already applied.
-    """
-
-    from gpuwm.physics_registry import physics_registry
-
-    route_id = _ROUTE_FOR_SOURCE.get(source)
-    if route_id is None:
-        return None
-    registry = physics_registry()
-    route = registry["runner_routes"].get(route_id)
-    if not isinstance(route, Mapping):
-        return None
-    declared = []
-    for route_key in ("source_template_ids", "expert_template_ids"):
-        values = route.get(route_key, {}).get(source)
-        if isinstance(values, list):
-            declared.extend(values)
-    if not declared:
-        return None
-    offered = set()
-    for template_id in declared:
-        template = registry["templates"].get(template_id)
-        if isinstance(template, Mapping):
-            component = template.get("components", {}).get("land_surface")
-            if isinstance(component, str):
-                offered.add(component)
-    return frozenset(offered)
+# RETIRED: ``_ROUTE_FOR_SOURCE`` and ``offered_land_surfaces`` stood here
+# and were deleted with nothing to replace them.  They were the residue of
+# a preparation-time gate that refused a land-surface scheme for not
+# appearing in a source's declared TEMPLATE list -- template membership is
+# a maturity catalogue, never a runtime requirement, so the refusal never
+# named a breakage a user could act on.  The physical failure it proxied
+# (a GFS-initialised RUC run dying on its first surface call, `mavail must
+# be finite`) was fixed at source instead: every door now routes soil
+# categories through gpuwm/ingest/soil.py door_reconciled_soil_category,
+# the way real.exe reconciles that shoreline column, and the gate, its
+# front-door caller and its menu rule went with the fix.  The table and
+# this function were what survived it -- no caller anywhere in the tree,
+# and a docstring still claiming enforcement that had already been
+# removed.
+#
+# NO REPLACEMENT GATE.  What replaced it is default-on and already here:
+# scheme/soil-geometry coherence at config load, each door's own runtime
+# field and category checks (which fail closed on an unrouted selector),
+# and the template-route-evidence WARNING at plan review.  A future
+# per-source land-surface refusal must key on a runtime REQUIREMENT -- a
+# field the scheme reads that this source does not carry, named in the
+# message -- and never on template membership.
 
 
 def land_surface_component_for_selector(value) -> str | None:
@@ -2742,10 +2851,16 @@ class PhysicsPortBlocker:
     the thing to change -- and the elements after it explain the
     mechanism that makes the rule necessary.  ``action_count`` names
     where that boundary falls instead of leaving it to a reader (or a
-    formatter) to infer, because one blocker breaks the pattern: the
-    Noah-MP column budget's second element is the remedy, an
-    environment variable to set, and burying a remedy behind a flag is
-    the one thing this layering must never do.
+    formatter) to infer: a blocker whose second element is a REMEDY
+    rather than a mechanism raises its count, because burying a remedy
+    behind a flag is the one thing this layering must never do.
+
+    The example that used to be given here -- the Noah-MP column budget --
+    is no longer a blocker at all: the width advisory warns and continues
+    (see the ceiling comment above), so no ``PhysicsPortBlocker`` named
+    "Noah-MP column budget" is constructed anywhere in this tree.  Every
+    blocker that IS constructed here refuses at plan review, and the
+    default ``action_count`` of one holds for all of them.
     """
 
     component: str
@@ -2818,11 +2933,26 @@ def pending_wrf_physics_components(
     included in its blocker even though WRF also supports a six-layer RUC
     configuration; the target suite explicitly requests nine.
 
-    This function is the single readiness authority.  ``gpuwm/config.py``
-    deliberately accepts every selector value in its schema tables and lets
-    this receipt do the refusing, so admitting a scheme is an edit here and
-    a dispatch row in ``gpuwm/core/physics.py`` -- never a silent widening of
-    a numeric range check.
+    This function is the readiness authority for the ported selector set
+    it represents, and it is NOT the only one.  Three selector values are
+    deliberately outside :mod:`gpuwm.wrf461_compatibility`'s axes and are
+    refused, or admitted, elsewhere -- and the guard below skips the
+    matrix lookup for them rather than crashing on a table that has no row
+    to have:
+
+    * ``bl_pbl_physics=2`` and ``sf_sfclay_physics=2`` (MYJ and its Eta
+      surface layer) carry WRF's own law implemented directly and in both
+      directions, in ``gpuwm.config.validate_myj_pairing``, which
+      ``validate_run_config`` reaches BEFORE this function;
+    * ``bl_pbl_physics=900`` (SASE) has no WRF counterpart to transcribe
+      and is admitted by ``gpuwm.config.validate_sase_config``.
+
+    Those exclusions are declared, with their reasons, in
+    ``gpuwm.wrf461_compatibility.AXIS_EXCLUSIONS``.  For everything else
+    ``gpuwm/config.py`` accepts every selector value in its schema tables
+    and lets this receipt do the refusing, so admitting a scheme is an
+    edit here and a dispatch row in ``gpuwm/core/physics.py`` -- never a
+    silent widening of a numeric range check.
     """
     blockers: list[PhysicsPortBlocker] = []
     # mp_physics == 8 no longer appends a blocker: Thompson was promoted to
@@ -2879,11 +3009,13 @@ def pending_wrf_physics_components(
     #   * WDM5 (14) and WDM7 (26) fail closed in gpuwm.config with the
     #     scheme spelled out -- different hydrometeor sets, and WDM6 may not
     #     stand in for either;
-    #   * a MIXED nest edge touching 16 is refused by
-    #     gpuwm.core.microphysics_transition.UNVALIDATED_MIXED_EDGE_SELECTORS
-    #     because no closure for the CCN reservoir across a scheme change
-    #     has been measured, and an offline downscale from a WDM6 parent is
-    #     refused by gpuwm.offline_child for the QNCCN naming reason;
+    #   * a MIXED nest edge touching 16 RESOLVES (audit R-004): the entry
+    #     closure seeds nc=0, nr=0 and nn at the domain's own ccn_conc,
+    #     which is what this tree's cold start writes and what WRF's
+    #     flow_dep_bdy_qnn pushes through an inflow face.  An OFFLINE
+    #     downscale from a WDM6 parent is still refused, by
+    #     gpuwm.offline_child for the QNCCN naming reason and by its own
+    #     named unbuilt-leg gate;
     #   * a run with no XLAND is refused by the adapter rather than given a
     #     fabricated land mask, because the mask picks the autoconversion
     #     threshold (module_mp_wdm6.F:607-614);
@@ -2894,6 +3026,13 @@ def pending_wrf_physics_components(
     # comparison against WRF's own module_mp_wdm6.F has been run.  That
     # belongs on the registry option's maturity and warning, where a user
     # reads it, not in a blocker that would refuse the scheme outright.
+    # THE ONE DECISION IN THIS FUNCTION THAT USED TO CARRY NO COMMENT.
+    # It is not a filter, it is a DELEGATION: a pair outside these axes
+    # has no transcribed WRF cell -- pbl_surface_layer_verdict raises for
+    # it rather than returning a verdict -- and it is answered by the
+    # authority named in this function's docstring, which runs earlier.
+    # Read as a filter it looks like silent admission, which is how a
+    # reader concludes that MYJ or SASE reaches a run unchecked.
     if (
         bl_pbl_physics in PBL_OPTIONS
         and sf_sfclay_physics in SURFACE_LAYER_OPTIONS
@@ -2906,8 +3045,34 @@ def pending_wrf_physics_components(
                 selectors=(("sf_sfclay_physics", sf_sfclay_physics),
                            ("bl_pbl_physics", bl_pbl_physics)),
                 missing=(
-                    "WRF v4.6.1 refuses this pairing",
+                    "WRF v4.6.1 refuses this pairing, and so does gpuwm: "
+                    "select the revised MM5 (1) or classic MM5 (91) "
+                    "surface layer, which publish the full similarity "
+                    "functions every ported PBL scheme reads, or pair "
+                    "each PBL scheme with the surface layer its own "
+                    "registry option declares",
                     f"{pair_citation.anchor}: {pair_citation.law}",
+                    # ARWEN'S OWN BREAKAGE, beside WRF's citation and not
+                    # instead of it.  A refusal that says only "WRF
+                    # refuses this" tells a user which authority to argue
+                    # with, not what would go wrong here -- and under the
+                    # own-way ruling WRF's verdict is evidence, not the
+                    # reason.  The mechanism is one missing pair of
+                    # fields: gpuwm/core/physics_inventory.py's
+                    # SFCLAY_OUTPUTS carries fm/fh and the MYNN surface
+                    # layer's output set does not, while _run_ysu and
+                    # _run_shinhong bind psim=f["fm"], psih=f["fh"] and
+                    # reconstruct zol = br*fm^2/fh from them.  Every
+                    # surface-layer output is allocated as zeros for all
+                    # schemes, so the pairing does not raise: it
+                    # integrates on fm=fh=0 for the whole forecast.
+                    "in gpuwm the mechanism is the fm/fh pair: only the "
+                    "MM5 surface layers publish the full similarity "
+                    "denominators ln(z/z0)-psi, and YSU and Shin-Hong "
+                    "bind them directly and divide by them, so a pairing "
+                    "that leaves them unwritten runs on the allocated "
+                    "zeros -- finite, plausible and wrong -- rather than "
+                    "failing",
                 )))
     if sf_surface_physics == 3:
         # Deferred exactly as gpuwm.config defers it: ruc_contract is
@@ -2943,7 +3108,13 @@ def pending_wrf_physics_components(
                 "tabulates zs for those lengths only and leaves zs "
                 "uninitialised otherwise; :1189-1192 is fatal at 4 and 5, "
                 "and share/module_check_a_mundo.F:3574-3581 coerces every "
-                "other request to 6",
+                "other request to 6. In gpuwm the same fact is one table: "
+                "gpuwm.ingest.ruc_soil.RUC_LEVEL_DEPTHS_M holds the zs "
+                "column for each admitted count and dzs is derived from "
+                "it, so a count with no row there has no soil column at "
+                "all. Adding a geometry is adding that row -- an evidenced "
+                "zs table, not a code path -- and the admitted set, the "
+                "ingest and this refusal all widen with it",
             )))
     elif sf_surface_physics == 3 and num_soil_layers != RUC_NUM_SOIL_LAYERS:
         # EVIDENCE, not a missing branch.  The forecast column compiles and
@@ -3006,9 +3177,21 @@ def pending_wrf_physics_components(
                        ("num_soil_layers", num_soil_layers)),
             missing=(
                 "Noah-MP is admitted at num_soil_layers=4 only",
-                "every Noah-MP oracle fixture in the tree is four-layer, so "
-                "another count would extrapolate TRANSFER_MP_PARAMETERS to "
-                "layers nothing has measured",
+                # THE GEOMETRY, not the fixtures.  Arguing from missing
+                # oracle coverage invites the answer the tree already
+                # gives RUC at six levels -- warn, do not block -- and
+                # that answer is wrong here: RUC's six-level geometry is
+                # reproduced exactly and only its forecast column lacks an
+                # oracle, whereas Noah-MP at another count has no layer
+                # depths in existence to run on.
+                "Noah-MP takes its layer depths from init_soil_depth_2 "
+                "(share/module_soil_pre.F:1128-1151), the same generator "
+                "as Noah, which is fatal at any count but 4; "
+                "gpuwm.core.noah.SOIL_LAYER_THICKNESS_M is that "
+                "generator's only output and nothing in the tree produces "
+                "zs/dzs for another count, so a different count has no "
+                "layer depths to run on -- a row here would be invented "
+                "soil, not a table entry",
             )))
     return tuple(blockers)
 
@@ -3022,6 +3205,7 @@ def require_ready_wrf_physics(**selection: int) -> None:
 
 __all__ = [
     "ASYMMETRIC_RADIATION_NOCTURNAL_ACK",
+    "conditional_refusals_for",
     "CONSTANT_DOWNWARD_LONGWAVE_ACK",
     "EXPERIMENTAL_THOMPSON_ENV",
     "KESSLER_PROFILE_ID",
@@ -3041,7 +3225,6 @@ __all__ = [
     "MULTI_DOMAIN_SELECTION_SCHEMA",
     "land_surface_component_for_selector",
     "multi_domain_physics_selection",
-    "offered_land_surfaces",
     "noahmp_expert_column_budget",
     "noahmp_projected_call_seconds",
     "NSSL2_PROFILE_ID",
@@ -3086,3 +3269,73 @@ __all__ = [
     "validate_resolved_physics_vertical_levels",
     "validate_single_domain_physics_profile",
 ]
+
+
+# ---------------------------------------------------------------------------
+# AGREEMENT WITH THE REGISTRY, AT IMPORT.
+#
+# ``_GLW_CONSUMING_SURFACE_SCHEMES`` is the source of every land-surface
+# option's ``consumers.reads_glw`` row; the two profile menus are hand-kept
+# lists of template ids, and an implemented composition with no menu row
+# has no front door.  Each deliberate omission is cited, so the retirement
+# sweep is a grep (audit R-067 for the compositions with no template at
+# all, R-068 for the two templates the runtime-switch table never learned).
+def _templates_outside_the_single_domain_menu() -> dict[str, str]:
+    """The two R-068 omissions, named through the registry's own records.
+
+    Neither is spelled as an id literal here: one template's id carries
+    the forcing source it was registered on, and this module is a
+    protected zone for source and case tokens.  The omission is a fact
+    about the template's COMPOSITION (the one WSM6 + KF template on the
+    aggregate RTE+RRTMGP radiation option) and about the registry's
+    default template, so both are resolved from the registry.
+    """
+
+    from gpuwm.physics_registry import (
+        DEFAULT_TEMPLATE_ID, template_ids_with_components)
+
+    aggregate_kf = template_ids_with_components(
+        microphysics="wsm6-mp6", cumulus="kain-fritsch",
+        radiation="rte-rrtmgp-legacy-aggregate")
+    if len(aggregate_kf) != 1:
+        raise RuntimeError(
+            "the audit R-068 citation names THE ONE WSM6 + KF template on "
+            "the aggregate RTE+RRTMGP radiation option and the registry now "
+            f"has {len(aggregate_kf)}: {list(aggregate_kf)}; give each its "
+            "_SINGLE_DOMAIN_RUNTIME_SWITCHES row or cite each omission")
+    return {
+        aggregate_kf[0]: (
+            "audit R-068: registered as the WSM6 + KF composition on the "
+            "aggregate RTE+RRTMGP option but never given a "
+            "_SINGLE_DOMAIN_RUNTIME_SWITCHES row, so the single-domain "
+            "runner refuses it as an unsupported profile"),
+        DEFAULT_TEMPLATE_ID: (
+            "audit R-068: the registry's DEFAULT_TEMPLATE_ID, registered for "
+            "plan review, never given a _SINGLE_DOMAIN_RUNTIME_SWITCHES row"),
+    }
+
+
+_TEMPLATES_OUTSIDE_THE_SINGLE_DOMAIN_MENU = (
+    _templates_outside_the_single_domain_menu())
+
+
+def _require_agreement_with_the_registry() -> None:
+    from gpuwm.physics_registry import (
+        require_consumer_rows_agreement, require_template_menu_agreement)
+
+    require_consumer_rows_agreement(
+        "gpuwm.physics_compat._GLW_CONSUMING_SURFACE_SCHEMES",
+        "land_surface", "reads_glw",
+        {value: True for value in _GLW_CONSUMING_SURFACE_SCHEMES},
+        cited_absences={0: "no land surface reads GLW"})
+    require_template_menu_agreement(
+        "gpuwm.physics_compat.SINGLE_DOMAIN_PHYSICS_PROFILES",
+        SINGLE_DOMAIN_PHYSICS_PROFILES,
+        cited_absences=_TEMPLATES_OUTSIDE_THE_SINGLE_DOMAIN_MENU)
+    require_template_menu_agreement(
+        "gpuwm.physics_compat._SINGLE_DOMAIN_RUNTIME_SWITCHES",
+        tuple(_SINGLE_DOMAIN_RUNTIME_SWITCHES),
+        cited_absences=_TEMPLATES_OUTSIDE_THE_SINGLE_DOMAIN_MENU)
+
+
+_require_agreement_with_the_registry()

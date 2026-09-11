@@ -352,8 +352,16 @@ def test_the_cudt_law_for_16_exists_and_refuses_a_hold():
     cfg()                                     # the valid shape is accepted
     with _pytest.raises(ValueError, match="cudt_minutes=0"):
         cfg(cudt_minutes=5.0)
-    with _pytest.raises(ValueError, match="requires a PBL scheme"):
-        cfg(bl_pbl_physics=0)
+    # NEW TIEDTKE WITH THE PBL SLOT OFF IS ADMITTED.  This asserted a
+    # refusal cloned from Grell-Freitas, whose reason is GF's own read of
+    # fields["kpbl"] as a one-based index; New Tiedtke reads no kpbl
+    # anywhere, its hfx/qfx come from the surface stack (which runs
+    # independently of bl_pbl_physics) and its advective-forcing lanes are
+    # the zero planes WRF's cumulus driver folds in when no PBL tendency
+    # exists.  The registry agrees: new-tiedtke declares no pbl
+    # requirement, and tests/test_authority_agreement.py holds the two
+    # authorities together over the whole cross-product.
+    cfg(bl_pbl_physics=0)
 
 
 def test_the_optional_tendency_components_branch_for_16():
@@ -571,15 +579,22 @@ def test_every_cumulus_scheme_has_a_restart_identity():
     assert len(set(strings)) == len(strings), (
         f"two cumulus schemes share a restart identity: {strings}")
 
-    # And the second table, read out of the source because it is a literal
-    # inside the function rather than a module constant.
-    src = inspect.getsource(physics_setup_identity)
+    # And the second table: the stock adapter class per scheme, which used
+    # to be a literal dict inside physics_setup_identity (read out of its
+    # source here) and is now the registry's consumers.stock_callable_class
+    # row, resolved through gpuwm.physics_registry.stock_callable_class.  A
+    # scheme with no row is refused there by name, not routed down the
+    # custom-callable path.
+    from gpuwm.physics_registry import stock_callable_class
+    assert "gpuwm.core.kf.KainFritsch" not in inspect.getsource(
+        physics_setup_identity), "the literal class dict is back"
     for scheme, cls in ((1, "gpuwm.core.kf.KainFritsch"),
                         (3, "gpuwm.core.gf.GrellFreitas"),
                         (16, "gpuwm.core.ntiedtke.NewTiedtke")):
-        assert cls in src, (
-            f"cu_physics={scheme} has no expected-class row, so its stock "
-            f"adapter would be routed down the custom-callable path")
+        assert stock_callable_class("cumulus", {"cu_physics": scheme}) == cls
+    assert stock_callable_class("cumulus", {"cu_physics": 0}) is None
+    with pytest.raises(KeyError):
+        stock_callable_class("cumulus", {"cu_physics": 99})
 
 
 def test_the_new_tiedtke_restart_identity_names_this_port():

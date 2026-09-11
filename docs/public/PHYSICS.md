@@ -85,7 +85,7 @@ verdict. `docs/public/receipts/physics-composition-walk.json` is that
 record, and `tests/test_physics_composition_walk.py` regenerates it on
 every release cut and compares it byte for byte. As measured:
 
-- **2895 of 9831 admission attempts are accepted**, covering **2887 distinct
+- **2981 of 9831 admission attempts are accepted**, covering **2973 distinct
   accepted suites**, against 19 registered templates. The presets are a
   corner of the space, not the space.
 - **Every accepted run keeps every switch the file set**, checked
@@ -95,7 +95,7 @@ every release cut and compares it byte for byte. As measured:
   no exceptions left. `ra_lw_physics = 1` (WRF RRTM longwave) was the
   last one; 1.9 ports it, and it now reaches 676 distinct accepted suites,
   including 169 paired with Dudhia shortwave.
-- **6936 refusals fall into 17 distinct rules**, every one of which
+- **6850 refusals fall into 15 distinct rules**, every one of which
   names the selector to change, and each of which has a
   demonstrated remedy -- the receipt carries a before/after pair per
   rule showing that doing what the message says reaches an accepted
@@ -162,15 +162,60 @@ prints both:
 
 | registry `unreachable` option | selectors | what a config naming it actually gets |
 |---|---|---|
-| land surface `off` | `sf_surface_physics = 0` | **type it in your config**: **759 accepted**. Off the menus by policy (its blocker says so), not by the loader |
-| surface layer `off` | `sf_sfclay_physics = 0` | **type it in your config**: **103 accepted**, same reason |
-| radiation `analytic-clear-sky` | `ra_lw_physics = ra_sw_physics = 90` | **type it in your config**: **209 accepted**, same reason |
+| land surface `off` | `sf_surface_physics = 0` | **type it in your config**: **785 accepted**. Off the menus by policy (its blocker says so), not by the loader |
+| surface layer `off` | `sf_sfclay_physics = 0` | **type it in your config**: **113 accepted**, same reason |
+| radiation `analytic-clear-sky` | `ra_lw_physics = ra_sw_physics = 90` | **type it in your config**: **213 accepted**, same reason |
 | microphysics `sase` | none declared | **not ported yet**: publishes a porting target and declares no selector, so nothing can resolve to it |
 
 Counts are distinct accepted suites naming every listed selector together.
 Read each option's blocker before using it: the reason it stays off the
 named routes applies to your config too, even though the loader does not
 enforce it. These are suite counts, not separate per-axis attempt totals.
+
+### Every consumer of a scheme is answered before step 0
+
+A scheme is more than its kernel.  The checkpoint writer names it, the
+vertical preflight bounds it, the nest-edge resolver decides whether a
+mixed parent/child edge has a closure, the radar operator needs its
+clear-air floor and its H(x) route, the analysis needs its prognostic
+moment structure, the offline downscale lane decides whether it can read a
+parent of it, the specified-zone ring guard prices and captures its state
+fields, the reflectivity operator reads its input species, the stock-WRF
+export writes its `wrfinput` members.  Each of those used to be a separate
+hand-kept list, consulted for the first time inside the run -- which is
+how an accepted, dispatched Milbrandt-Yau forecast integrated for
+59 minutes and died writing its first hourly checkpoint.
+
+The registry now publishes, per implemented option, a `consumers` block
+carrying every one of those rows (`authority.consumer_rows_declaration`
+states the contract).  Every consumer module derives its table from that
+block or asserts equality with it when it is imported, and each deliberate
+omission is named by the defect that keeps it out, so a scheme that lands
+without its rows fails the test suite rather than a forecast.  Plan review
+asks the same question of every configuration: `validate_run_config`
+resolves the selected tuple through every consumer row it will reach and
+refuses, naming the scheme, the consumer and the way out, if a row is
+missing -- and `validate_physics_plan` mirrors it as
+`consumer-row-missing`.  After the registry carries every row this gate is
+silent; it exists so the next missing row costs a launch, never a run.
+
+One row is outside a `RunConfig`'s field of view: a run configuration
+carries no data-assimilation settings, so `validate_run_config` cannot
+ask whether the active scheme has a radar H(x).  The DA door asks it
+itself, at its own plan review: `RadarAssimilationConfig` reads the
+`radar_da` row when a cycle is configured and refuses, before the first
+analysis, a scheme whose clear-air floor is unread or whose reflectivity
+has no H(x) route, naming the scheme, the reason and the way out
+(velocity-only assimilation, or a scheme with a routed operator).
+
+One row publishes a decision rather than a capability, and the receipts
+say so: a scheme whose clear-air floor nobody has read yet
+(`radar_da.clear_air_floor_status = "unread"`).  The second such row --
+a scheme whose mixed nest edges have no ported closure
+(`nest_transition.mixed_edge_ported = false`) -- is empty in 2.7.3: every
+ported selector's mixed edge runs, and the plan-review refusal
+(`transition-unported-endpoint`) stands only for a future scheme whose
+closure is genuinely missing.
 
 ## Microphysics (`mp_physics`)
 
@@ -314,15 +359,46 @@ mp=9 has exactly one form in WRF v4.6.1 and ArWen ships that one;
 because the 154-entry constant table is derived under those settings.
 
 **Radiation.** WRF leaves `has_reqc/has_reqi/has_reqs` at 0 for this
-scheme and the scheme's own effective-radius block is commented out, so
-it hands radiation no radii. The legacy RRTMG port computes its own, the
-way WRF does; the RTE+RRTMGP variant is **refused** rather than given an
-invented cloud-optics coupling. Use `ra_rrtmg_variant = "rrtmg_legacy"`
-or Dudhia shortwave.
+scheme and ships the scheme's own effective-radius block commented out
+(`module_mp_milbrandt2mom.F:3351-3378`), so WRF's RRTMG computes its own
+radii for it. The legacy RRTMG port does the same. The RTE+RRTMGP variant,
+the default, radiates the scheme's **own** radii: that commented block,
+evaluated from the transported `nc`/`ni` on every radiation call
+(`0.664639/lambda_c` for the alpha=1, mu=3 cloud distribution,
+`1.5/lambda_i` for exponential ice, the scheme's own `iLAMDA_x`
+constants and floors), extended to snow as `1.5/lambda_s` over the
+scheme's exponential snow with the Brandes `m(D)` pair, then merged into
+RRTMGP's one ice species by number exactly as Morrison's row is. This is
+an ArWen coupling with no WRF referent (WRF has no RRTMGP); the two
+radiation arms therefore radiate different cloud radii for mp=9 by
+design, and obs skill, not agreement between them, is the referee. A
+bare `mp_physics = 9` with the 4/4 pair validates and runs on the default
+variant; nothing has to be switched.
 
 **Reflectivity** comes from the scheme itself: WRF binds its `Zet` output
 straight to `refl_10cm`, so a history frame carries Milbrandt-Yau's own
-dBZ rather than ArWen's generic radar operator.
+dBZ rather than ArWen's generic radar operator. That block updates
+nothing, so it is also available as an observation operator: radar
+assimilation simulates mp=9 reflectivity by running the scheme's own Z on
+the background, and the two are held bitwise equal by a gate. Its
+clear-air floor is **-99 dBZ**, not the -35 the WSM6/Thompson/Morrison
+family floors at, so a clear-air observation assimilated against an mp=9
+H(x) must carry the matching floor; the DA door reads it from the scheme
+and refuses a mismatch rather than manufacturing a 64 dB innovation.
+
+**What else mp=9 reaches.** A Milbrandt-Yau domain checkpoints and
+resumes; it nests under, or over, a domain running a different scheme;
+the edge diagnoses the child's twelve moments with the scheme's own
+mass-to-number consistency block, which is the same block the scheme
+would run on its first step, so nothing is invented and nothing is
+borrowed from another scheme; a LETKF analysis knows its six mass/number
+pairs; and the offline downscale lane reads a Milbrandt-Yau parent
+archive for a Milbrandt-Yau child. Changing microphysics between an
+offline parent and its child is a different question and is refused by
+name at that lane. What is still refused is the RTE+RRTMGP pairing above
+and, on the stock-WRF export route only, writing a `wrfinput` for an
+unchanged WRF: no evidenced Registry package contract for milbrandt2mom
+is packaged, which says nothing about running the scheme here.
 
 ### NSSL variants (`nssl_hail_on`, `nssl_ccn_on`) — one scheme, four modes
 
@@ -576,10 +652,13 @@ bitwise agreement on the effective-radius branches.
 
 **No REAL-DATA or NESTED forecast has ever been validated against WRF, and
 none can be yet.** WRF's own `real.exe` is a fatal error on
-`wif_input_opt = 0` with `mp_physics = 28`, and ArWen has no aerosol lateral
-boundary condition — the depletion front advances at 0.993 of the wind speed,
-so a 100 km nest sits at WRF's aerosol floor within 83 minutes. That, not an
-absence of running, is what holds the label at `implemented-unverified`.
+`wif_input_opt = 0` with `mp_physics = 28`, so the two models cannot be
+started from the same place on a real case. That, not an absence of running,
+is what holds the label at `implemented-unverified`. ArWen does couple
+`nwfa`/`nifa` from the lateral boundary when its aerosol initial state came
+from WRF's monthly WIF climatology; without that dataset a domain with
+external lateral boundaries is refused at the run door, before step 0,
+rather than run into the depletion described below.
 
 **A matched IDEALIZED trajectory does now exist**, and it publishes its own
 failed gate:
@@ -704,16 +783,29 @@ neither is an open deviation and neither is a registry warning:
   consequence worth stating plainly: an ArWen mp=28 run and a
   WIF-initialised WRF mp=28 run are **not** directly comparable, and a
   comparison between them must not be reported as one.
-- **No aerosol lateral boundary condition, and this is the deviation
-  that grows with run length.** On a specified (external BC) domain
-  ArWen couples only `qv` from boundary snapshots and gives every other
-  scalar flow-dependent boundaries with zero inflow, so aerosol-free air
-  advects in at the upstream face and monotonically depletes
-  `nwfa`/`nifa` for as long as the run continues — with no NaN, no
-  negative and no health trip, because WRF's own terminal clamps
-  (`nwfa >= 11.1e6`, `nifa >= 5.0e3` per m3) hold the floor. WRF's
-  Registry gives `qnwfa`/`qnifa` real `bdy` arrays and forces them from
-  the boundary file. **Measured** on a deliberately cloud-free run, so
+- **The aerosol lateral boundary condition depends on the WIF
+  climatology, and without it the deviation grows with run length.** On
+  a specified (external BC) domain ArWen couples `qv` from boundary
+  snapshots always, and `nwfa`/`nifa` beside it whenever the run's
+  aerosol initial state came from WRF's monthly WIF climatology, which
+  is the default whenever `QNWFA_QNIFA_SIGMA_MONTHLY.dat` resolves. When it does
+  not, those two fall back to flow-dependent boundaries with zero inflow,
+  aerosol-free air advects in at the upstream face and monotonically
+  depletes `nwfa`/`nifa` for as long as the run continues, with no NaN,
+  no negative and no health trip, because WRF's own terminal clamps
+  (`nwfa >= 11.1e6`, `nifa >= 5.0e3` per m3) hold the floor. A domain
+  with external lateral boundaries in that state is refused by the run
+  door, naming the dataset and both ways out, before anything is fetched
+  and long before step 0: `gpuwm go`, `gpuwm run` and `gpuwm run-plan`
+  each ask the moment the configuration loads. Plan review and the option
+  panel report the same fact without deciding a verdict, because whether
+  the dataset is on this disk is a question about the machine and not
+  about the configuration. Reaching the numbers below takes a
+  deliberate `mp28_aerosol_source='synthetic'`. A nest edge is not in that
+  state: `nwfa`/`nifa` are coupled scalars and cross it from the parent. WRF's Registry gives
+  `qnwfa`/`qnifa` real `bdy` arrays and forces them from the same monthly
+  dataset through `constants_name`. **Measured** on a deliberately
+  cloud-free run, so
   every kilogram lost is the boundary policy: with a 20.0 m/s inflow the
   depletion front advances at **19.8638 m/s** (0.99319 of the wind), and
   over 1800 s the domain-interior mean `nwfa` falls to 0.4566 of its
@@ -746,14 +838,20 @@ neither is an open deviation and neither is a registry warning:
   in which those species carry real values and the withholding is
   physically visible. (Snow is a separate contract and is *not*
   withheld — see the second list below.)
-- **Mixed mp=8 ↔ mp=28 nesting is refused by name.** An mp=28 domain
-  may only sit under an mp=28 parent. No cross-scheme transition rule
-  is registered, so the registry refuses the edge with
-  `unsupported-component-transition` and
-  `gpuwm/core/microphysics_transition.py` refuses it at runtime with a
-  message that says why. WRF's own non-aerosol-aware fallbacks
-  (`nc = 100e6/rho`, `nwfa = 11.1e6/rho`, `nifa = 5.0e3/rho`) would
-  hand a nested child fabricated aerosol instead of its parent's, and
+- **Mixed mp=8 ↔ mp=28 nesting runs, with a declared entry closure.**
+  An mp=28 child under a different-scheme parent takes its rain and ice
+  numbers from Thompson's own two closures (the same ones the ratified
+  mp=8 edge runs) and its droplet and aerosol numbers from WRF's own
+  non-aerosol-aware fallbacks (`nc = 100e6/rho`, `nwfa = 11.1e6/rho`,
+  `nifa = 5.0e3/rho`, `module_mp_thompson.F:1248-1255`). Those are the
+  values WRF itself uses whenever `is_aerosol_aware` is false, so the
+  child starts from the scheme's own defined state rather than from
+  nothing; the edge receipt names each seeded value and its authority,
+  and plan review prints one line naming the seed for the child that
+  will run the edge.
+  Leaving mp=28 for another scheme needs no closure at all: the target's
+  moments come from target mass and the aerosol numbers are dropped.
+  What this does NOT do is carry the parent's aerosol field across, and
   no gate here would notice.
 - **mp=28 and mp=8 are deliberately not bit-identical thermodynamics.**
   mp=28's `RSLF`/`RSIF` saturation Horner chains are
@@ -828,7 +926,12 @@ Notes with teeth:
   wheel-only exclusion -- a checkout carries it) are staged by
   `gpuwm fetch-tables` (the install scripts run it automatically)
   under the same pins.  `GPUWM_THOMPSON_TABLE_ROOT` can relocate the
-  root but never bypasses the pins.
+  root but never bypasses the pins.  A plan report says which of them
+  resolved here, in its `install_state` block, naming what is missing
+  and where it was looked for; it does not turn the plan unlaunchable,
+  because a physics plan is portable and a staged table set is not. The
+  launch is where the refusal lands, by name and with the command that
+  stages the set.
 - **mp=28 needs a fifth table, and ArWen ships it.**
   `CCN_ACTIVATE.BIN` (35,288 bytes, sha256 `f2b8d391...`) is the CCN
   activation lookup.  It is the one Thompson artifact that is *not* a
@@ -959,19 +1062,19 @@ lines:
 
 ```
 requested WRF physics suite is not executable in gpuwm yet; no substitutions were applied:
-  - WRF v4.6.1 PBL/surface-layer compatibility (sf_sfclay_physics=5, bl_pbl_physics=1): WRF v4.6.1 refuses this pairing
+  - WRF v4.6.1 PBL/surface-layer compatibility (sf_sfclay_physics=5, bl_pbl_physics=1): WRF v4.6.1 refuses this pairing, and so does gpuwm: select the revised MM5 (1) or classic MM5 (91) surface layer, which publish the full similarity functions every ported PBL scheme reads, or pair each PBL scheme with the surface layer its own registry option declares
 [[explain]]
 why these pairings are refused:
-  - WRF v4.6.1 PBL/surface-layer compatibility: phys/module_physics_init.F:3213-3219,3699-3701: MYNN surface sets isfc=5, and YSU fatals unless isfc=1
+  - WRF v4.6.1 PBL/surface-layer compatibility: phys/module_physics_init.F:3213-3219,3699-3701: MYNN surface sets isfc=5, and YSU fatals unless isfc=1; in gpuwm the mechanism is the fm/fh pair: only the MM5 surface layers publish the full similarity denominators ln(z/z0)-psi, and YSU and Shin-Hong bind them directly and divide by them, so a pairing that leaves them unwritten runs on the allocated zeros -- finite, plausible and wrong -- rather than failing
 ```
 
 The MYNN *PBL* carries no such restriction: 5/91, 5/1 and 5/5 are all
-accepted -- **192, 192 and 231 distinct accepted combinations**
+accepted -- **192, 192 and 235 distinct accepted combinations**
 respectively, counted from the walk receipt's `accepted_combinations`.
 Which field is counted matters, so it is said rather than left to be
-inferred: `mynn_slice.accepted` in the same receipt reads **232** for
+inferred: `mynn_slice.accepted` in the same receipt reads **236** for
 the 5/5 pairing because that field counts ATTEMPTS, and the walk
-re-tries its 5/5 anchor suite in a second tier -- 232 attempts over 231
+re-tries its 5/5 anchor suite in a second tier -- 236 attempts over 235
 distinct configurations. Distinct configurations are what a reader
 asking "what may I compose?" wants, so that is what the three numbers
 above are. Earlier revisions of this page described the 5/5 pairing as
@@ -998,7 +1101,7 @@ Naming a composition is not evidence, and none was claimed for it.
 All four run. In plain words: `template` means **a preset exists**, and
 `component-override` means **a preset exists** on the routes that
 declare it and you **type it in your config** anywhere else -- which is
-how the revised MM5 row's 1038 distinct accepted combinations were measured.
+how the revised MM5 row's 1046 distinct accepted combinations were measured.
 Maturity and reachability are separate registry axes, quoted verbatim
 from the registry: `maturity` is the option's evidence tier and
 `reachability.state` is how a NAMED route can offer it. Neither column
@@ -1138,7 +1241,7 @@ time. Choosing this pair on a large domain remains a deliberate trade.
 |---|---|---|---|
 | Kain-Fritsch | 1 | supported | outer (>=10 km) domains; packaged lookup table; cudt 5 min in the certified templates |
 | Grell-Freitas (scale-aware) | 3 | implemented-unverified | whole GFDRV at the WRF v4.6.1 boundary, CPU and CUDA; no template selects it, so among the named routes it is a per-domain override -- a config writing `cu_physics = 3` is accepted directly; runs on the model step (cudt pinned 0) |
-| New Tiedtke | 16 | implemented-unverified | the WRF v4.6.1 `module_cu_ntiedtke` scheme; all 21 stages and the assembled pipeline reproduce the byte-frozen Fortran bitwise over an 18-case, 6-spacing oracle corpus, and `scientific_evidence` is `none`. Requires a PBL scheme (the closure reads the boundary-layer tendencies and the surface fluxes) and runs on the model step (cudt pinned 0); no template selects it, so it is a per-domain override -- a config writing `cu_physics = 16` is accepted directly. See [cumulus-new-tiedtke.md](../cumulus-new-tiedtke.md) |
+| New Tiedtke | 16 | implemented-unverified | the WRF v4.6.1 `module_cu_ntiedtke` scheme; all 21 stages and the assembled pipeline reproduce the byte-frozen Fortran bitwise over an 18-case, 6-spacing oracle corpus, and `scientific_evidence` is `none`. Runs with or without a PBL scheme -- it reads no `KPBL`, takes its surface fluxes from the surface layer and the land-surface model, and folds zero advective-forcing lanes exactly as WRF's cumulus driver does when no PBL tendency exists (the PBL-off configuration is admitted on that field contract, not on evidence: every measured run carries a PBL scheme) -- and runs on the model step (cudt pinned 0); no template selects it, so it is a per-domain override -- a config writing `cu_physics = 16` is accepted directly. See [cumulus-new-tiedtke.md](../cumulus-new-tiedtke.md) |
 | off | 0 | supported | the convection-permitting nests run with cumulus off |
 
 What is certified for Grell-Freitas, and what is not. The certified

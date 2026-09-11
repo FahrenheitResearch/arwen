@@ -10,6 +10,8 @@ import sys
 import pytest
 
 from gpuwm.physics_registry import (
+    expert_template_ids_for_source,
+    INSTALL_STATE_CODES,
     MORRISON_TEMPLATE_ID,
     PLAN_SCHEMA,
     REGISTRY_SCHEMA,
@@ -96,8 +98,8 @@ def _source_offering(template_id: str) -> str:
     for source_id in ("gfs", *sorted(declared)):
         if template_id in declared.get(source_id, ()):
             return source_id
-    for source_id, ids in route.get("expert_template_ids", {}).items():
-        if template_id in ids:
+    for source_id in ("gfs", *sorted(route.get("source_ids", []))):
+        if template_id in expert_template_ids_for_source(route, source_id):
             return source_id
     raise AssertionError(
         f"no source offers {template_id}; it is unreachable on this route")
@@ -240,6 +242,89 @@ def test_mixed_thompson_outer_and_nssl_inner_plan_is_launchable():
     warning_codes = {warning["code"] for warning in report["warnings"]}
     assert "maturity" in warning_codes
     assert "component-warning" in warning_codes
+
+
+def _wheel_shaped_companion(tmp_path, monkeypatch, requirement):
+    """Point the packaged rung at a companion laid out the way a WHEEL is.
+
+    The two externalized classic-Thompson tables are excluded from the
+    gpuwm-data wheel by size, but a source checkout tracks them and an
+    editable install of the companion carries them, so on a developer
+    machine the packaged rung resolves the whole set and the fresh-install
+    state these tests reproduce never appears.  The mirror built here
+    holds exactly the members a wheel carries, at their declared sizes
+    (sparse files; the resolver checks existence and size, never bytes),
+    so the state is the test's decision on any machine.
+    """
+
+    from gpuwm import data_assets
+    from gpuwm.table_assets import EXTERNALIZED_TABLE_FILENAMES
+
+    mirror = tmp_path / "wheel-companion"
+    tables = mirror.joinpath(*str(
+        requirement["resolution"]["data_relative"]).split("/"))
+    tables.mkdir(parents=True)
+    for asset in requirement["assets"]:
+        if asset["filename"] in EXTERNALIZED_TABLE_FILENAMES:
+            continue
+        with open(tables / asset["filename"], "wb") as handle:
+            handle.truncate(int(asset["bytes"]))
+    monkeypatch.setattr(data_assets, "companion_root", lambda: mirror)
+    return mirror
+
+
+def test_a_machine_short_of_a_table_set_still_gets_a_launchable_plan(
+        tmp_path, monkeypatch):
+    """The install question is REPORTED at plan review, never the verdict.
+
+    THE STATE THIS REPRODUCES is a fresh install: ``freezeH2O.dat`` and
+    ``qr_acr_qg_V4.dat`` are excluded from the wheel and arrive only
+    through ``gpuwm fetch-tables``, so classic Thompson's requirement
+    cannot resolve until an operator stages them -- and classic Thompson
+    is the DEFAULT template.  A verdict that read the machine therefore
+    called the default plan unlaunchable on every fresh install, exited
+    ``gpuwm source --validate-physics-plan`` nonzero on a correct plan,
+    and turned six tests in this file red in exactly the state the
+    clean-venv release replay runs in.
+
+    A plan is portable; an install is not.  ``launchable`` answers the
+    plan, ``install_state`` answers the machine -- naming what is
+    missing, where it was looked for and how to stage it -- and the door
+    about to load the scheme is what refuses (walked by
+    ``tests/test_authority_agreement.py::
+    test_every_install_state_code_is_raised_by_a_run_door``).
+    """
+
+    empty = tmp_path / "no-tables"
+    empty.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "no-staged-tables"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "no-staged-tables"))
+    monkeypatch.setenv("GPUWM_THOMPSON_TABLE_ROOT", str(empty))
+    _wheel_shaped_companion(
+        tmp_path, monkeypatch,
+        physics_registry()["components"]["microphysics"]["options"][
+            "thompson-mp8"][
+            "asset_requirements"][0])
+
+    report = validate_physics_plan(_single_plan(THOMPSON_TEMPLATE_ID))
+    assert report["launchable"] is True, report["errors"]
+    assert report["errors"] == []
+
+    reported = [row for row in report["install_state"]
+                if row["code"] == "asset-unresolved"]
+    assert reported, report["install_state"]
+    said = " ".join(row["message"] for row in reported)
+    assert "gpuwm fetch-tables" in said, said
+    for row in report["install_state"]:
+        assert row["code"] in INSTALL_STATE_CODES, row
+        assert set(row) == {"code", "path", "message"}, row
+
+    # And the CLI agrees: a correct plan on a machine short of a table
+    # set exits 0 and carries the same report.
+    plan_path = tmp_path / "thompson.json"
+    plan_path.write_text(json.dumps(_single_plan(THOMPSON_TEMPLATE_ID)),
+                         encoding="utf-8")
+    assert main(["--validate-physics-plan", str(plan_path)]) == 0
 
 
 def test_same_microphysics_nested_edge_is_launchable():
@@ -509,8 +594,7 @@ def test_registry_routes_drift_check_against_live_runner_capabilities():
     assert single_route["source_ids"] == single_capabilities["supported_sources"]
     for source_id, source in single_capabilities["source_profiles"].items():
         routed = list(single_route["source_template_ids"][source_id])
-        routed.extend(
-            single_route.get("expert_template_ids", {}).get(source_id, ()))
+        routed += expert_template_ids_for_source(single_route, source_id)
         assert routed == source["physics_profile_ids"]
 
     tree_capabilities = tree_runner_capabilities()
@@ -596,15 +680,16 @@ def test_tree_route_admits_morrison_to_nssl_only_with_matrix_policy():
 def test_registry_advertises_every_mixed_edge_honestly():
     """Every ordered pair of transported-moment schemes, one row each.
 
-    The count is n*(n-1) over the six schemes the original topology
-    enumerates (mp 1/6/8/9/10/18 give 30), plus the ten mp=50 rows added
-    when P3's rime-pair closure was ratified: p3-mp50 pairs both ways with
-    the five selectors the runtime resolver's PORTED_MP_PHYSICS actually
-    admits (1/6/8/10/18), and deliberately NOT with milbrandt2mom-mp9,
-    whose mixed edges the resolver refuses -- advertising those would
-    repeat the mp=9 rows' pre-existing over-claim rather than contain it.
-    Exactly one row is ratified.  Written out rather than derived from the
-    rules under test, which would make the assertion vacuous.
+    The count is n*(n-1) over the nine schemes whose mixed edges the
+    runtime resolver ports: mp 1/6/8/9/10/16/18/28/50 give 72.  The last
+    four joined by ratification -- mp=50 with its rime-pair closure, mp=9
+    with the scheme's own consistency-block closure, and mp=16 and mp=28
+    with their entry closures -- and each joined with every partner at
+    once, because the build resolves every published row through the
+    resolver itself, so an over-claim fails the build instead of being
+    contained by a skip.  Exactly one row is ratified.  Written out
+    rather than derived from the rules under test, which would make the
+    assertion vacuous.
     """
     rules = physics_registry()["transitions"][
         "microphysics-one-way-v1"]["cross_options"]
@@ -612,25 +697,26 @@ def test_registry_advertises_every_mixed_edge_honestly():
         (rule["parent_option_id"], rule["child_option_id"])
         for rule in rules
     }
-    assert len(rules) == len(pairs) == 40
+    assert len(rules) == len(pairs) == 72
+    others = ("kessler-mp1", "wsm6-mp6", "thompson-mp8", "morrison-mp10",
+              "nssl2-mp18", "milbrandt2mom-mp9", "wdm6-mp16",
+              "thompson-aerosol-mp28")
     p3_pairs = {pair for pair in pairs if "p3-mp50" in pair}
     assert p3_pairs == {
-        *((other, "p3-mp50") for other in (
-            "kessler-mp1", "wsm6-mp6", "thompson-mp8", "morrison-mp10",
-            "nssl2-mp18")),
-        *(("p3-mp50", other) for other in (
-            "kessler-mp1", "wsm6-mp6", "thompson-mp8", "morrison-mp10",
-            "nssl2-mp18")),
+        *((other, "p3-mp50") for other in others),
+        *(("p3-mp50", other) for other in others),
     }
-    assert ("milbrandt2mom-mp9", "p3-mp50") not in pairs
-    assert ("p3-mp50", "milbrandt2mom-mp9") not in pairs
+    my2_pairs = {pair for pair in pairs if "milbrandt2mom-mp9" in pair}
+    assert len(my2_pairs) == 16
+    for option_id in ("wdm6-mp16", "thompson-aerosol-mp28"):
+        assert len({pair for pair in pairs if option_id in pair}) == 16
     ratified = [rule for rule in rules if rule["status"] == "ratified"]
     assert [(rule["parent_option_id"], rule["child_option_id"])
             for rule in ratified] == [("thompson-mp8", "nssl2-mp18")]
     experimental = [
         rule for rule in rules if rule["status"] == "experimental"
     ]
-    assert len(experimental) == 39
+    assert len(experimental) == 71
     assert {
         rule["maturity"] for rule in experimental
     } == {"experimental-runtime"}
@@ -645,14 +731,52 @@ def test_data_driven_component_constraints_reject_engine_impossible_settings():
         error["code"] for error in dry_mp6["errors"]
     }
 
+    # Noah at nine layers.  The code is component-admitted-setting, not
+    # component-required-setting: soil geometry is the one setting a
+    # scheme can admit MORE THAN ONE value for (RUC defines six and nine),
+    # so it is stated as a set read from the schemes' own modules rather
+    # than as a single pinned value.  The single-value kind could only say
+    # one of RUC's two, which is how plan review came to refuse a
+    # six-level column the loader admits and a forecast has run on.
     plan = _uniform_tree(MORRISON_TEMPLATE_ID)
     plan["domains"][1]["parameters"] = {"num_soil_layers": 9}
     wrong_soil = validate_physics_plan(plan)
     assert wrong_soil["launchable"] is False
     assert {error["code"] for error in wrong_soil["errors"]} >= {
         "parameter-route",
-        "component-required-setting",
+        "component-admitted-setting",
     }
+    admitted = [error for error in wrong_soil["errors"]
+                if error["code"] == "component-admitted-setting"]
+    assert admitted and "LEVEL DEPTHS" in admitted[0]["message"]
+
+
+def test_ruc_admits_both_soil_geometries_its_own_module_defines():
+    """Plan review is not narrower than the run door on soil geometry.
+
+    ``gpuwm.config`` admits a six-level RUC column, ``ruc.cu`` sizes
+    itself for it and a completed forecast has written a wrfout on it.
+    Plan review refused it, twice -- a parameter enum of [4, 9] and a
+    ``required_settings`` pin of 9 -- with a message naming no breakage.
+    Both are now read from
+    ``gpuwm.core.ruc_contract.WRF_SUPPORTED_NUM_SOIL_LAYERS``.
+    """
+
+    from gpuwm.config import LAND_SURFACE_SOIL_LAYERS
+    from gpuwm.physics_registry import physics_registry
+
+    registry = physics_registry()
+    assert registry["parameters"]["num_soil_layers"]["enum"] == [4, 6, 9]
+    for option_id, selector in (("noah", 2), ("ruc-lsm", 3), ("noah-mp", 4)):
+        constraints = (registry["components"]["land_surface"]["options"]
+                       [option_id]["constraints"])
+        assert "num_soil_layers" not in constraints.get(
+            "required_settings", {})
+        assert (constraints["admitted_setting_values"]["num_soil_layers"]
+                == [int(count)
+                    for count in LAND_SURFACE_SOIL_LAYERS[selector]])
+        assert constraints["admitted_setting_values_reasons"][
+            "num_soil_layers"]
 
 
 def test_graph_policy_rejects_nonzero_spec_exp_on_nested_child():
@@ -789,14 +913,35 @@ def test_template_maturity_and_warning_are_preserved_for_20cr_profile():
 
 
 def test_mynn_component_dependencies_are_the_wrf_v461_cells():
+    """WRF's 16-cell matrix, PLUS the one PBL that is outside it.
+
+    The MYNN surface layer's dependency row transcribes WRF's isfc class
+    check, and that check has no cell for SASE at all: bl_pbl_physics=900
+    is an ArWen closure, outside the transcription's PBL axis, and asking
+    it for a verdict raises rather than answering.  Excluding SASE was
+    therefore an intersection of two tables, not a physical statement --
+    and the physical statement runs the other way: SASE reads
+    ust/hfx/qfx/wspd, MYNN_SURFACE_OUTPUTS publishes all four, and the
+    MYNN surface result is allocated on sf_sfclay_physics=5 alone,
+    independent of the PBL selector.  The pairing is unmeasured, which is
+    maturity, and maturity warns here rather than blocking.
+    """
+
     components = physics_registry()["components"]
     assert components["surface_layer"]["options"]["mynn"]["constraints"][
         "requires_components"
-    ] == {"pbl": ["off", "mynn"]}
+    ] == {"pbl": ["off", "mynn", "sase"]}
     assert components["pbl"]["options"]["mynn"]["constraints"][
         "requires_components"
     ] == {
         "surface_layer": ["revised-mm5", "classic-mm5", "mynn"]}
+    sase = components["pbl"]["options"]["sase"]["constraints"]
+    assert sase["requires_components"]["surface_layer"] == [
+        "revised-mm5", "classic-mm5", "mynn"]
+    # The cadence pin went with it: the driver runs SASE at bldt_seconds
+    # and holds/recouples its tendencies across skipped calls, and
+    # tests/test_sase_cadence*.py exercise 0.1 s and 5.0 s.
+    assert "bldt" not in sase["required_settings"]
 
 
 def test_mynn_is_implemented_and_warns_rather_than_blocking():
@@ -1258,10 +1403,21 @@ def _mp28_option() -> dict:
 
 
 def _mp28_tree_plan() -> dict:
-    """Both domains on mp=28, which is the only nesting the port admits."""
+    """Both domains on mp=28, with the aerosol source said out loud.
+
+    An mp=28 domain with EXTERNAL lateral boundaries needs WRF's monthly
+    WIF climatology or a deliberate ``mp28_aerosol_source``.  A test plan
+    cannot depend on a 225 MB dataset being staged on whatever machine
+    runs it, so it takes the other way out, which is the way out the
+    refusal names and the one a user without the dataset takes.  (A child
+    would not need it -- nwfa/nifa cross a nest edge as coupled scalars --
+    but this tree's root is where the plan carries ``specified``.)
+    """
     plan = _uniform_tree()
     for domain in plan["domains"]:
         domain["components"] = {"microphysics": MP28_OPTION_ID}
+        domain.setdefault("parameters", {})[
+            "mp28_aerosol_source"] = "synthetic"
     return plan
 
 
@@ -1770,15 +1926,19 @@ def test_mp28_plan_warns_at_every_deviation_rather_than_blocking():
         assert phrase in text, f"the mp=28 warnings no longer say: {phrase}"
 
 
-def test_mp28_mixed_nest_edge_is_refused_by_registry_and_runtime_alike():
-    """One refusal, asserted on both authorities.
+def test_mp28_mixed_nest_edge_is_published_by_registry_and_runtime_alike():
+    """One decision, asserted on both authorities.
 
-    The registry refuses the edge by having registered no transition rule for
-    it; ``gpuwm/core/microphysics_transition.py`` refuses it by name.  Two
-    independent mechanisms for one decision is exactly the shape that drifts,
-    so both are exercised here against the same pair, and the runtime's
-    message is required to explain itself rather than fall through to a
-    generic "not a ported selector".
+    The registry publishes the edge as a cross-scheme rule and
+    ``gpuwm/core/microphysics_transition.py`` resolves it with a receipt
+    that names each seeded value.  Two independent mechanisms for one
+    decision is exactly the shape that drifts, so both are exercised here
+    against the same pair.
+
+    This test used to require the opposite, and audit R-004 turned it over
+    with the refusal it guarded: what the old refusal called an unmeasured
+    closure was WRF's own non-aerosol-aware fallback set, the values WRF
+    installs whenever ``is_aerosol_aware`` is false.
     """
     from types import SimpleNamespace
 
@@ -1789,37 +1949,48 @@ def test_mp28_mixed_nest_edge_is_refused_by_registry_and_runtime_alike():
 
     def cfg(mp_physics, policy=None):
         return SimpleNamespace(
-            mp_physics=mp_physics,
+            mp_physics=mp_physics, moist=True, moist_cq=True,
+            morr_rimed_ice=1, wsm6_hail_opt=0, wdm6_hail_opt=0,
+            wdm6_ccn_conc=1.0e8,
             nest_microphysics_transition=(
                 SAME_SCHEME_POLICY if policy is None else policy))
 
     rules = physics_registry()["transitions"]["microphysics-one-way-v1"]
-    assert not any(
-        MP28_OPTION_ID in (rule["parent_option_id"], rule["child_option_id"])
-        for rule in rules["cross_options"]), (
-        "a cross-scheme rule for mp=28 would advertise a nest edge the "
-        "runtime refuses")
+    published = {
+        (rule["parent_option_id"], rule["child_option_id"])
+        for rule in rules["cross_options"]
+    }
+    assert ("thompson-mp8", MP28_OPTION_ID) in published
+    assert (MP28_OPTION_ID, "thompson-mp8") in published
 
     mixed = _uniform_tree()
     mixed["domains"][0]["components"] = {"microphysics": "thompson-mp8"}
     mixed["domains"][1]["components"] = {"microphysics": MP28_OPTION_ID}
+    child_parameters = mixed["domains"][1].setdefault("parameters", {})
+    child_parameters["nest_microphysics_transition"] = (
+        "mp-edge-mass-diagnosed-v1")
+    child_parameters["mp28_aerosol_source"] = "synthetic"
     report = validate_physics_plan(mixed)
-    assert report["launchable"] is False
-    assert "unsupported-component-transition" in {
-        error["code"] for error in report["errors"]}
+    assert "unsupported-component-transition" not in {
+        error["code"] for error in report["errors"]}, report["errors"]
 
     for parent_mp, child_mp in ((8, 28), (28, 8)):
-        with pytest.raises(ValueError) as caught:
-            resolve_microphysics_transition(
-                cfg(parent_mp), cfg(child_mp, "mp-edge-mass-diagnosed-v1"))
-        message = str(caught.value)
-        assert "28" in message, (parent_mp, child_mp, message)
-        assert "aerosol" in message.lower(), (parent_mp, child_mp, message)
-        assert "not a ported" not in message.lower(), (
-            "mp=28 IS ported; a generic 'not a ported selector' message would "
-            f"tell an operator the scheme is unavailable: {message}")
+        contract = resolve_microphysics_transition(
+            cfg(parent_mp), cfg(child_mp, "mp-edge-mass-diagnosed-v1"))
+        assert contract.mixed is True
+        seeded = {row["target_field"]: row.get("seeded_value")
+                  for row in contract.species_actions()
+                  if row["action"] == "diagnosed"}
+        if child_mp == 28:
+            assert seeded["nc"] == 100.0e6
+            assert seeded["nwfa"] == 11.1e6
+            assert seeded["nifa"] == 5.0e3
+        else:
+            # Leaving mp=28 needs no closure: the aerosol numbers are
+            # dropped and the target's own moments come from target mass.
+            assert set(seeded) == {"nr", "ni"}
 
-    # The same-scheme edge, which IS admitted, on both authorities.
+    # The same-scheme edge, which was always admitted, on both authorities.
     uniform = validate_physics_plan(_mp28_tree_plan())
     assert uniform["launchable"] is True, uniform["errors"]
     contract = resolve_microphysics_transition(cfg(28), cfg(28))
@@ -1836,9 +2007,15 @@ def test_mp28_activation_table_is_declared_as_a_shipped_but_separate_asset():
     the operator has to supply it would send every user to a WRF ``run/``
     directory for a file already installed beside the code.
 
-    ``kind`` deliberately stays out of ``packaged-table-set``: that value
-    names the CLASSIC set an mp=8 launch resolves through ``TABLE_SET_ID``,
-    and this asset must never join it.  The pins are read back from
+    ``kind`` is ``packaged-table-set`` (audit R-045).  It read
+    ``operator-supplied-table-set`` from before the file shipped, and the
+    row's own note and its ``redistributed_by_gpuwm`` field said the
+    opposite in the same object; the stale word reached the refusal text a
+    user saw.  ``kind`` names how the bytes ARRIVE.  What must never join
+    the CLASSIC mp=8 set is this ASSET, and the thing that keeps it out is
+    the ``id`` -- a separate set with its own root and its own environment
+    overrides -- which is asserted below along with the classic contract
+    being unchanged.  The pins are read back from
     ``gpuwm/core/thompson_aerosol_contract.py`` so the registry and the
     loader cannot disagree about which bytes are meant, and the classic mp=8
     contract is asserted UNCHANGED so no existing launch inherits the
@@ -1855,7 +2032,7 @@ def test_mp28_activation_table_is_declared_as_a_shipped_but_separate_asset():
     assert len(requirements) == 1
     requirement = requirements[0]
     assert requirement["id"] == AEROSOL_TABLE_SET_ID
-    assert requirement["kind"] != "packaged-table-set"
+    assert requirement["kind"] == "packaged-table-set"
     assert requirement["redistributed_by_gpuwm"] is AEROSOL_ASSET_REDISTRIBUTED
     assert AEROSOL_ASSET_REDISTRIBUTED is True
     assert requirement["regenerable"] is False
@@ -1863,7 +2040,10 @@ def test_mp28_activation_table_is_declared_as_a_shipped_but_separate_asset():
     # numbers, so a lost copy is fetched from a WRF release, not rebuilt.
     # Inside the gpuwm-data companion distribution since 2.5.0, at the same
     # relative path it always had.
-    assert requirement["search_root"] == "gpuwm_data/data/thompson/tables"
+    assert requirement["installed_root"] == "gpuwm_data/data/thompson/tables"
+    # And it declares the ladder plan review resolves it down, so a
+    # missing table refuses at review rather than inside the run.
+    assert requirement["resolution"]["data_relative"] == "thompson/tables"
 
     pinned = AEROSOL_TABLE_ASSETS[0]
     assert requirement["assets"] == [{

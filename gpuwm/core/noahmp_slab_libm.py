@@ -49,8 +49,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from gpuwm.certify.kernel_manifest import record_module
-from gpuwm.core.noahmp_kernel_sources import translation_unit_source
+from gpuwm.core.noahmp_kernel_sources import compile_runtime_unit
 
 #: One CUDA thread per column; these kernels are memory bound and elementwise.
 THREADS = 128
@@ -66,16 +65,9 @@ def _module():
     """Compile ``noahmp_libm_slab`` as the three-part unit it is."""
     global _MODULE_CACHE
     if _MODULE_CACHE is None:
-        import cupy as cp
-
-        source = translation_unit_source(_MODULE_NAME)
-        _MODULE_CACHE = cp.RawModule(
-            code=source,
-            options=("-std=c++17",), name_expressions=None)
-        _MODULE_CACHE.compile()
-        record_module(f"gpuwm.core.noahmp_slab_libm:{_MODULE_NAME}",
-                      source=source, options=("-std=c++17",),
-                      module=_MODULE_CACHE)
+        _MODULE_CACHE = compile_runtime_unit(
+            _MODULE_NAME,
+            module_key=f"gpuwm.core.noahmp_slab_libm:{_MODULE_NAME}")
     return _MODULE_CACHE
 
 

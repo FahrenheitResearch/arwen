@@ -459,6 +459,13 @@ def stage_forecast(args) -> None:
 
     shim = _Case()
     shim.cfg, shim.store, shim.geo_store = cfg, store, geo
+    # This lane's store is the plain carrier inventory -- no REFL_10CM slot
+    # -- so the composite is the slab recompute, for the schemes the
+    # operator dispatches.  Said out loud because ``composite_reflectivity``
+    # asks the case, not the store: a case that claimed "computed" with no
+    # slot would be refused, and one that stayed silent would be a shim
+    # missing a field rather than a lane making a choice.
+    shim.refl_stash = "absent"
     history.bind(shim)
 
     elapsed = float(scalars["elapsed_seconds"])

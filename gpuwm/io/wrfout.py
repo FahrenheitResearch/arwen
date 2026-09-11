@@ -683,7 +683,18 @@ def _live_state_history_fields(state) -> dict[str, object]:
             # any state.  QNCLOUD/QNRAIN need no new rows -- WDM6's nc/nr
             # are already mapped above, and under mp=16 they simply carry a
             # double-moment warm-rain pair instead of Morrison's.
-            ("QNCCN", "nn")):
+            ("QNCCN", "nn"),
+            # Milbrandt-Yau's hail NUMBER moment (Registry.EM_COMMON:3025
+            # declares scalar:qh,qnc,qnr,qni,qns,qng,qnh for
+            # milbrandt2mom).  QHAIL is already published by the NSSL-facing
+            # loop below -- it is presence-guarded on state.qh, which mp=9
+            # allocates -- but nothing published ``nh``, so an mp=9 parent
+            # wrote eleven of its twelve transported species and the
+            # offline-child lane's completeness check would fail on a
+            # history file ArWen itself had written (audit R-017).  The row
+            # is safe by the same never-both argument QNCCN above makes:
+            # mp=9 allocates ``nh`` and mp=18 allocates ``qnh``, never both.
+            ("QNHAIL", "nh")):
         value = getattr(state, state_name, None)
         if value is not None:
             fields[output_name] = value

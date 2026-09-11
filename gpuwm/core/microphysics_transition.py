@@ -31,6 +31,14 @@ from typing import Mapping
 
 import numpy as np
 
+# The constants module, not the table contract: this module is staged
+# into the standalone RW-WPS preparation wheel and the contract (with the
+# correctly rounded libm behind it) is not, so the edge reads the three
+# scalars from the import-free module both of them share.
+from gpuwm.core.thompson_aerosol_constants import (
+    NIFA_FLOOR, NT_C, NWFA_FLOOR)
+from gpuwm.core.wdm6_constants import WDM6_NUMBER_SPECIES
+
 
 SAME_SCHEME_POLICY = "same-scheme-only"
 MP8_TO_MP18_POLICY = "mp8-to-mp18-mass-diagnosed-v1"
@@ -110,51 +118,170 @@ P3_EDGE_MAX_TOTAL_NI_PER_M3 = 2000.0e3
 #: construction: entry diagnoses densities in [100, 400] and exit runs the
 #: exact ``calc_bulkRhoRime`` clamps (:6784-6830) before splitting.
 P3_RIME_DENSITY_BOUNDS_KG_M3 = (50.0, 900.0)
+#: WDM6's entry closure on a mixed nest edge (mp_physics=16 as TARGET).
+#:
+#: nc and nr enter at zero and nn at the domain's ``wdm6_ccn_conc``.  This
+#: is not a new number: it is the identical triple
+#: ``ingest/microphysics_cold_start.source_absent_microphysics`` writes for
+#: a WDM6 domain whose analyzed input carries no number species, and
+#: ``ccn_conc`` is the value WRF's ``flow_dep_bdy_qnn`` pushes through an
+#: inflow face (module_bc.F; ported at ``ingest/lateral_bc.py``).  A
+#: one-way nest edge is a lateral boundary, so the edge uses the boundary's
+#: own value rather than inventing one.  WDM6's clamp
+#: ``min(max(nn,1.e8),2.e10)`` (module_mp_wdm6.F:584) admits it, and
+#: ``validate_run_config`` already holds ``wdm6_ccn_conc`` inside that
+#: interval for mp=16, so the seed cannot be outside the scheme's own bound.
+WDM6_EDGE_ENTRY_CLOUD_NUMBER = 0.0
+WDM6_EDGE_ENTRY_RAIN_NUMBER = 0.0
+
+#: Thompson-aerosol's entry closure on a mixed nest edge (mp_physics=28 as
+#: TARGET), for the three species classic Thompson does not carry.
+#:
+#: These are WRF's OWN non-aerosol-aware values -- the ELSE branch
+#: ``mp_gt_driver`` takes when ``is_aerosol_aware`` is FALSE
+#: (module_mp_thompson.F:1248-1255): ``nc = Nt_c/rho``,
+#: ``nwfa = 11.1E6/rho``, ``nifa = naIN1*0.01/rho == 5.0E3/rho``.  They are
+#: read from :mod:`gpuwm.core.thompson_aerosol_constants`, the module the
+#: table contract itself re-exports them from, rather than re-typed, so the
+#: edge and the scheme's own floors cannot drift.  nr and
+#: ni are NOT here: they are diagnosed by the same two Thompson closures
+#: the ratified mp=8 edge already runs, with the same field codes.
+MP28_EDGE_ENTRY_CLOUD_NUMBER_PER_M3 = NT_C
+MP28_EDGE_ENTRY_NWFA_PER_M3 = NWFA_FLOOR
+MP28_EDGE_ENTRY_NIFA_PER_M3 = NIFA_FLOOR
+
+#: Per-field receipt reasons for the two entry closures, so a
+#: ``species_actions`` row names the seeded value's authority rather than
+#: the generic mass-moment closure.
+_WDM6_EDGE_ENTRY_REASONS = {
+    "nn": "wdm6_ccn_reservoir_seeded_at_domain_ccn_conc_as_inflow_face",
+    "nc": "wdm6_cloud_number_enters_at_zero_as_on_a_cold_start",
+    "nr": "wdm6_rain_number_enters_at_zero_as_on_a_cold_start",
+}
+_MP28_EDGE_ENTRY_REASONS = {
+    "nc": "thompson_non_aerosol_aware_droplet_number_fallback",
+    "nwfa": "thompson_water_friendly_aerosol_floor_fallback",
+    "nifa": "thompson_ice_friendly_aerosol_floor_fallback",
+}
+_MP28_EDGE_ENTRY_VALUES = {
+    "nc": MP28_EDGE_ENTRY_CLOUD_NUMBER_PER_M3,
+    "nwfa": MP28_EDGE_ENTRY_NWFA_PER_M3,
+    "nifa": MP28_EDGE_ENTRY_NIFA_PER_M3,
+}
+
+#: One line per selector whose mixed-edge ENTRY seeds a moment from a
+#: ported default instead of mapping it from the parent's own field.
+#: Plan review prints it for the child that will run the edge, so the
+#: mapping is named before the run rather than found in a receipt.  A
+#: scheme whose every moment maps from the parent has no row here.
+MIXED_EDGE_ENTRY_NOTES = {
+    16: ("WDM6 child: nc and nr enter at zero and the CCN reservoir nn at "
+         "this domain's wdm6_ccn_conc, the seed a WDM6 inflow face uses."),
+    28: ("Thompson aerosol-aware child: nr and ni are diagnosed as on the "
+         "mp=8 edge; nc, nwfa and nifa enter at WRF's non-aerosol-aware "
+         "values."),
+}
+
+
+def mixed_edge_entry_note(contract) -> str | None:
+    """The plan-review line for ``contract``, or ``None``.
+
+    Only a MIXED edge into a selector with a seeded moment has one; a
+    same-scheme edge and a fully mapped mixed edge print nothing.
+    """
+    if not getattr(contract, "mixed", False):
+        return None
+    return MIXED_EDGE_ENTRY_NOTES.get(int(contract.target_mp_physics))
+
+
 #: Selectors with a ported MIXED nest edge.  APPEND ONLY: ``_ALL_EDGE_FIELDS``
 #: iterates this tuple in order and ``_EDGE_FIELD_CODES`` is ``enumerate``
 #: over the result, so inserting a selector anywhere but the end silently
 #: renumbers the stable host field codes ``kernels/nest_microphysics.cu``
 #: switches on -- which would re-point the ratified MP8 -> MP18 nest edge at
-#: different fields with nothing raising.
-#:
-#: mp_physics=28 is DELIBERATELY ABSENT.  It is a fully ported scheme, and
-#: an mp=28 parent forcing an mp=28 child works: ``resolve_microphysics_
-#: transition`` returns the same-scheme contract before this tuple is ever
-#: consulted.  What is absent is a *mixed* edge, because none has been
-#: validated -- see :data:`UNVALIDATED_MIXED_EDGE_SELECTORS`.  Listing 28
-#: here and then refusing all of its mixed pairs would be a
-#: self-contradiction: this tuple's whole meaning is "the mixed edges that
-#: work".  When a closure is ratified, APPEND 28 here; it will contribute
-#: nc/nwfa/nifa at codes 22/23/24 and move nothing.
+#: different fields with nothing raising.  That is why the tuple is no
+#: longer in ascending order: 16 and 28 were APPENDED when their closures
+#: were ratified, and moving them to their numeric places would move
+#: everything after them.
 #:
 #: mp_physics=50 (P3) was APPENDED after its rime-pair closure was defined,
 #: documented and unit-tested (the ``P3_EDGE_*`` constants above): its
 #: qv/qc/qr/qi and nr/ni reuse existing codes and its rime pair took the
 #: next free codes 20/21, moving nothing -- exactly the append discipline
 #: this tuple's comment demands.
-PORTED_MP_PHYSICS = (1, 6, 8, 10, 18, 50)
+#: mp_physics=9 (Milbrandt-Yau) was APPENDED after its edge closure was
+#: read off the scheme itself: MY2 runs a mass-to-number consistency block
+#: on entry (module_mp_milbrandt2mom.F:1459-1528, transcribed at
+#: gpuwm/core/kernels/milbrandt2.cu:547-600), so the numbers a mixed edge
+#: has to diagnose are the numbers the scheme would build from those masses
+#: at its own first call -- no intercept is invented and nothing is
+#: borrowed from another scheme.  Its qv/qc/qr/qi/qs/qg/qh reuse existing
+#: codes and only nc and nh were new, taking 22 and 23, so the append moved
+#: nothing.  It is the second DUAL-RIMED selector beside mp=18 (graupel AND
+#: hail as separate categories), which is what
+#: :data:`_DUAL_RIMED_SELECTORS` below exists to say once.
+#:
+#: mp_physics=16 (WDM6) and mp_physics=28 (Thompson aerosol-aware) were
+#: APPENDED next, on the same discipline and with the same shape of
+#: closure: every moment they add is diagnosed by an operation this tree
+#: ALREADY ships as the correct one for a laterally forced WDM6 or
+#: aerosol-Thompson domain, so nothing here is a new approximation.
+#:
+#:   * WDM6 entry seeds nc=0, nr=0 and nn=``wdm6_ccn_conc``.  That is
+#:     byte for byte what ``ingest/microphysics_cold_start.py`` and
+#:     ``ingest/wrfinput.py`` already write for a fresh WDM6 domain, and
+#:     ``ccn_conc`` is exactly what WRF's ``flow_dep_bdy_qnn`` feeds in
+#:     through an INFLOW face (ported at ``ingest/lateral_bc.py``).  A
+#:     one-way nest edge IS a lateral boundary, so the edge and the
+#:     boundary now agree instead of the edge refusing what the boundary
+#:     does every step.
+#:   * Thompson-aerosol entry seeds nr/ni from the same two Thompson
+#:     closures the mp=8 edge already runs, and nc/nwfa/nifa from WRF's
+#:     own non-aerosol-aware fallbacks (module_mp_thompson.F:1248-1255,
+#:     the ELSE branch mp_gt_driver takes when is_aerosol_aware is FALSE),
+#:     whose constants are packaged in ``core/thompson_aerosol_contract``.
+#:
+#: EXIT edges needed no closure at all and were being refused anyway: the
+#: target's moments are diagnosed from target mass by the arms already in
+#: the kernel and the departing scheme's reservoir/aerosol fields are
+#: dropped, which is what ``species_actions`` has always receipted.
+PORTED_MP_PHYSICS = (1, 6, 8, 10, 18, 50, 9, 16, 28)
+
+#: Selectors that carry graupel and hail as SEPARATE prognostic categories,
+#: so ``qg`` means graupel unambiguously and ``qh`` is its own species.
+#: Every other ported scheme has ONE rimed category whose physical meaning
+#: is a namelist switch (:func:`_rimed_category`), and the mass mapping
+#: turns on which of the two shapes each end of an edge has.  Spelled once,
+#: because ``mass_source`` asked ``== 18`` in four places and a second
+#: dual-rimed scheme would otherwise have had its hail dropped and its
+#: graupel mapped by a rimed-category comparison that returns None for it.
+_DUAL_RIMED_SELECTORS = (9, 18)
 
 #: Schemes ArWen has ported but whose MIXED nest edges are refused rather
 #: than approximated.  Consulted by :func:`resolve_microphysics_transition`
 #: purely so the refusal names a reason instead of falling through to the
-#: generic "ported selectors are ..." message, which would read as "mp=28 is
-#: not implemented" when in fact only the edge closure is missing.
-#: mp=16 (WDM6) joins for the same reason and needs its own sentence,
-#: because its missing closure is a different one: a mixed edge would have
-#: to fill or drain the CCN reservoir nn across the boundary, and the
-#: reservoir is not a diagnostic of any other scheme's state -- Morrison's
-#: nc is a droplet count, not a count of unactivated nuclei.  Same-scheme
-#: mp=16 nesting is unaffected: resolve_microphysics_transition returns the
-#: same-scheme contract before this tuple is consulted.
-#: mp=50 (P3) LEFT this tuple when its rime-pair closure was defined and
-#: ratified into :data:`PORTED_MP_PHYSICS`: entering P3 diagnoses the rime
-#: pair from named densities, leaving P3 splits the single category by rime
-#: state, both mass-conserving -- see the ``P3_EDGE_*`` constants.
-UNVALIDATED_MIXED_EDGE_SELECTORS = (16, 28)
+#: generic "ported selectors are ..." message, which would read as
+#: "the scheme is not implemented" when in fact only the edge closure is
+#: missing.
+#:
+#: EMPTY, and that is the finished state rather than a stub.  mp=50 left it
+#: when its rime-pair closure was ratified; mp=16 and mp=28 left it
+#: together (R-004) when the closures described on
+#: :data:`PORTED_MP_PHYSICS` were ratified -- each is an operation this
+#: tree already performs on a laterally forced domain of that scheme, so
+#: refusing the edge was refusing at a nest boundary what the lateral
+#: boundary does every step.  The refusal MACHINERY stays: it is
+#: scheme-independent, it is held to its two tables by the import-time
+#: check below, and it is how the next scheme with a genuinely missing
+#: closure gets named instead of falling into the generic message.
+UNVALIDATED_MIXED_EDGE_SELECTORS: tuple[int, ...] = ()
 
 _DYNAMIC_FIELDS = ("u", "v", "w", "t", "ph", "mu")
 _MASS_FIELDS = {
     1: ("qv", "qc", "qr"),
+    # Milbrandt-Yau (Registry.EM_COMMON:3025): the six-species set plus a
+    # separate hail category, the same mass shape NSSL carries.
+    9: ("qv", "qc", "qr", "qi", "qs", "qg", "qh"),
     6: ("qv", "qc", "qr", "qi", "qs", "qg"),
     8: ("qv", "qc", "qr", "qi", "qs", "qg"),
     10: ("qv", "qc", "qr", "qi", "qs", "qg"),
@@ -163,9 +290,21 @@ _MASS_FIELDS = {
     # qs and no qg.  The rime pair rides _MOMENT_FIELDS below: like NSSL's
     # volume moments it is DIAGNOSED on a mixed edge, never mapped.
     50: ("qv", "qc", "qr", "qi"),
+    # WDM6 (Registry.EM_COMMON:3031) carries WSM6's six masses unchanged;
+    # only the number moments below are new.
+    16: ("qv", "qc", "qr", "qi", "qs", "qg"),
+    # Thompson aerosol-aware (Registry.EM_COMMON:3036) carries classic
+    # Thompson's six masses unchanged and adds no rimed category.
+    28: ("qv", "qc", "qr", "qi", "qs", "qg"),
 }
 _MOMENT_FIELDS = {
     1: (),
+    # A number moment for every one of the six hydrometeors; the WRF
+    # driver binds qnc/qnr/qni/qns/qng/qnh at
+    # module_microphysics_driver.F:1857-1862 and gpuwm/core/state.py's mp=9
+    # arm allocates nc/nr/ni/ns/ng/nh.  ``nr``/``ni``/``ns``/``ng`` already
+    # hold codes 6..9; ``nc`` and ``nh`` took 22 and 23.
+    9: ("nc", "nr", "ni", "ns", "ng", "nh"),
     6: (),
     8: ("nr", "ni"),
     10: ("nr", "ni", "ns", "ng"),
@@ -174,70 +313,45 @@ _MOMENT_FIELDS = {
         "qvolg", "qvolh",
     ),
     50: ("nr", "ni", "qir", "qib"),
+    # WDM6: the CCN reservoir and the two warm-rain numbers, spelled
+    # ONCE in gpuwm/core/wdm6_constants.WDM6_NUMBER_SPECIES so the
+    # allocator, the ring guard and this edge cannot drift apart.
+    16: WDM6_NUMBER_SPECIES,
+    # Thompson aerosol-aware, in gpuwm/core/state.py's allocation order.
+    28: ("nc", "nr", "ni", "nwfa", "nifa"),
 }
 
 #: What a mixed edge touching each refused selector WOULD have to move,
 #: recorded so the refusal is specific and so a future package does not have
-#: to rediscover it.  Every tuple leads with the moments that ALREADY have a
-#: stable host field code, so appending the selector to
-#: :data:`PORTED_MP_PHYSICS` extends the code table and reorders nothing:
-#: mp=28's nr/ni are codes 6/7 and its nc/nwfa/nifa would take 22/23/24
-#: (mp=50's ratification allocated 20/21 to qir/qib); mp=16's nr is code 6
-#: and its nc/nn would take the next two free codes (22/23 on their own, or
-#: 22/25 if 28 is ratified first, since the two schemes' ``nc`` is one
-#: field name and therefore one code).  mp=50's row left this table when
-#: its closure was ratified -- the append-only discipline it describes was
-#: followed and is pinned by ``tests/test_mp8_frozen.py``'s R5 receipt.
-UNVALIDATED_MIXED_EDGE_MOMENTS = {
-    16: ("nr", "nc", "nn"),
-    28: ("nr", "ni", "nc", "nwfa", "nifa"),
-}
+#: to rediscover it.  Every tuple must lead with the moments that ALREADY
+#: have a stable host field code, so appending the selector to
+#: :data:`PORTED_MP_PHYSICS` extends the code table and reorders nothing.
+#:
+#: EMPTY: mp=50's row left when its rime-pair closure was ratified, and
+#: mp=16's and mp=28's left together with theirs.  The moments the two
+#: rows described are now REAL rows in :data:`_MOMENT_FIELDS` with real
+#: field codes (nn = 24 for WDM6; nwfa = 25 and nifa = 26 for
+#: Thompson-aerosol, both schemes' nr/ni/nc reusing 6/7/22), which is what
+#: ratification means -- the append discipline this comment describes was
+#: followed and no pre-existing code moved.
+UNVALIDATED_MIXED_EDGE_MOMENTS: dict[int, tuple[str, ...]] = {}
 
 #: The scheme's own name, and the paragraph that says why ITS closure is
 #: missing.  One row per :data:`UNVALIDATED_MIXED_EDGE_SELECTORS` entry: the
-#: refusals are NOT the same refusal, and a WDM6 operator must never be
-#: handed Thompson's reason, Thompson's fallback constants or Thompson's
-#: Fortran citation.  Each ``reason`` is a sentence fragment that completes
-#: "... but it has no validated cross-scheme entry closure for its moments
-#: (...) -- ".
-_UNVALIDATED_MIXED_EDGE_REASONS = {
-    16: (
-        "WDM6, double-moment warm rain",
-        "a prognostic cloud droplet number, a prognostic rain number and a "
-        "CCN reservoir (nn) that no other ported scheme carries in any form. "
-        "The reservoir is the hard one: it counts UNACTIVATED nuclei, so it "
-        "is not a diagnostic of any other scheme's state -- Morrison's nc "
-        "and Thompson-aerosol's nc are activated droplet counts, and NSSL's "
-        "qnn is a different scheme's reservoir under the same WRF Registry "
-        "name.  WRF's own cold start for the field is a UNIFORM fill, "
-        "scalar(:,:,:,p_qnn) = ccn_conc, and only when the whole array is "
-        "still below 1.0 (dyn_em/start_em.F:1750-1774; note the WDM5/WDM6 "
-        "arm of that IF is explicitly a NO OP, so the value used is the "
-        "Registry default ccn_conc=1.0E8 m-3, Registry.EM_COMMON:2664).  "
-        "Seeding a child that way is the obvious candidate and it is the "
-        "wrong forecast: it would erase the parent's DEPLETED reservoir "
-        "under active convection and hand the nest a fresh 1.0E8 m-3 "
-        "everywhere, re-arming activation exactly where the parent had "
-        "consumed its aerosol.  Nothing would flag it -- WDM6's own clamp "
-        "min(max(nn,1.e8),2.e10) (module_mp_wdm6.F:584) admits that value "
-        "as its floor, so the seeded field is inside every bound this tree "
-        "checks and the trajectory is still different"
-    ),
-    28: (
-        "Thompson aerosol-aware",
-        "a prognostic cloud droplet number plus two aerosol number tracers "
-        "that no other ported scheme carries.  WRF's own non-aerosol-aware "
-        "fallbacks -- nc = Nt_c/rho, nwfa = 11.1E6/rho, "
-        "nifa = naIN1*0.01/rho == 5.0E3/rho "
-        "(module_mp_thompson.F:1248-1255, the ELSE branch mp_gt_driver "
-        "takes when is_aerosol_aware is FALSE) -- are the obvious "
-        "candidate, but nothing has measured them across an ArWen nest "
-        "edge, and they would seed the child with the scheme's own floor "
-        "values instead of the parent's aerosol field.  That is a "
-        "different forecast, and it is one no bound, health rule or "
-        "conservation check in this tree would flag"
-    ),
-}
+#: refusals are NOT the same refusal, and an operator must never be handed
+#: another scheme's reason, another scheme's fallback constants or another
+#: scheme's Fortran citation.  Each ``reason`` is a sentence fragment that
+#: completes "... but it has no validated cross-scheme entry closure for
+#: its moments (...) -- ".
+#:
+#: EMPTY, with :data:`UNVALIDATED_MIXED_EDGE_SELECTORS`.  The two rows that
+#: stood here (WDM6's CCN reservoir, Thompson-aerosol's three aerosol
+#: numbers) were retired by R-004: both named a seeding operation as
+#: unmeasured while the same operation shipped as the correct one on the
+#: LATERAL boundary of a domain running that very scheme.  The closures
+#: they asked for are now on :data:`PORTED_MP_PHYSICS`, with the WRF lines
+#: that define them.
+_UNVALIDATED_MIXED_EDGE_REASONS: dict[int, tuple[str, str]] = {}
 
 # A selector may not join UNVALIDATED_MIXED_EDGE_SELECTORS without bringing
 # its own moments and its own sentence.  Adding 16 to the selector tuple and
@@ -269,17 +383,19 @@ _ALL_EDGE_FIELDS = tuple(dict.fromkeys(
 #:   qv/qc/qr/qi/qs/qg = 0..5, nr/ni/ns/ng = 6..9, qh = 10,
 #:   qndrop/qnr/qni/qns/qng/qnh/qnn/qvolg/qvolh = 11..19,
 #:   qir = 20, qib = 21   (mp_physics=50, allocated with its ratification),
-#:   nc = 22, nwfa = 23, nifa = 24   (mp_physics=28, RESERVED).
+#:   nc = 22, nh = 23     (mp_physics=9, allocated with its ratification),
+#:   nn = 24              (mp_physics=16, allocated with its ratification),
+#:   nwfa = 25, nifa = 26 (mp_physics=28, allocated with its ratification).
 #:
-#: Codes 22..24 are RESERVED for mp_physics=28's nc/nwfa/nifa and are not
-#: allocated today: 28 is absent from :data:`PORTED_MP_PHYSICS` because every
-#: mixed edge touching it is refused, so ``microphysics_edge_field`` can
-#: never be launched with ``target_mp == 28`` nor with ``field >= 22``.  The
-#: kernel's own comment block therefore documents and decodes 0..21 only, and
-#: that is correct rather than stale.  Ratifying the closure means appending
-#: 28 to PORTED_MP_PHYSICS, which extends this table rather than renumbering
-#: it, and adding a kernel arm -- exactly how mp=50's ratification allocated
-#: 20/21 to its rime pair without moving a pre-existing code.
+#: 22..26 were allocated by APPENDING 9, then 16, then 28 to
+#: :data:`PORTED_MP_PHYSICS`, so every code below kept the value it had --
+#: the discipline mp=50's ratification set.  ``nc`` is ONE field name and
+#: therefore ONE code (22), shared by mp=9, mp=16 and mp=28, which is why
+#: WDM6 adds only ``nn`` and Thompson-aerosol only ``nwfa``/``nifa``.
+#: mp=16's masses reuse 0..5 and its nr reuses 6; mp=28's masses reuse
+#: 0..5 and its nr/ni reuse 6/7.  This block and the kernel's own comment
+#: decode the same table; the kernel is the consumer, so changing one
+#: without the other is the defect the append rule exists to prevent.
 _EDGE_FIELD_CODES = {
     name: code for code, name in enumerate(_ALL_EDGE_FIELDS)
 }
@@ -330,6 +446,12 @@ def _rimed_category(cfg) -> str | None:
         return "graupel"
     if mp == 6:
         return "hail" if int(getattr(cfg, "wsm6_hail_opt", 0)) else "graupel"
+    if mp == 16:
+        # WDM6 carries WSM6's rimed category and WSM6's hail_opt arm
+        # (module_mp_wdm6.F:2096-2108 sets the same five constants), under
+        # its own RunConfig field because the two schemes' namelist knob is
+        # read inside the scheme it belongs to.
+        return "hail" if int(getattr(cfg, "wdm6_hail_opt", 0)) else "graupel"
     if mp == 10:
         return "hail" if int(getattr(cfg, "morr_rimed_ice", 1)) else "graupel"
     return None
@@ -346,6 +468,10 @@ class MicrophysicsTransitionContract:
     source_rimed_category: str | None = None
     target_rimed_category: str | None = None
     target_morrison_rimed_density: float = 900.0
+    #: The child's ``wdm6_ccn_conc``, carried so the WDM6 entry closure
+    #: seeds the reservoir from the DOMAIN's own value rather than from a
+    #: constant restated in the kernel.  Inert unless the target is mp=16.
+    target_wdm6_ccn_conc: float = 1.0e8
 
     def mass_source(self, target_field: str) -> str | None:
         """Source mass field for one target mass, or ``None`` for default."""
@@ -361,19 +487,21 @@ class MicrophysicsTransitionContract:
                     if target_field in _MASS_FIELDS[self.source_mp_physics]
                     else None)
         if target_field == "qg":
-            if self.target_mp_physics == 18:
-                if self.source_mp_physics == 18:
+            if self.target_mp_physics in _DUAL_RIMED_SELECTORS:
+                if self.source_mp_physics in _DUAL_RIMED_SELECTORS:
+                    # Both ends name graupel and hail separately, so the
+                    # two categories map straight across.
                     return "qg"
                 return ("qg"
                         if self.source_rimed_category == "graupel" else None)
-            if self.source_mp_physics == 18:
+            if self.source_mp_physics in _DUAL_RIMED_SELECTORS:
                 return ("qh" if self.target_rimed_category == "hail"
                         else "qg")
             return ("qg"
                     if self.source_rimed_category
                     == self.target_rimed_category else None)
         if target_field == "qh":
-            if self.source_mp_physics == 18:
+            if self.source_mp_physics in _DUAL_RIMED_SELECTORS:
                 return "qh"
             return ("qg" if self.source_rimed_category == "hail" else None)
         raise AssertionError(target_field)
@@ -445,7 +573,7 @@ class MicrophysicsTransitionContract:
                     "reason": "shared_physical_mass_species",
                 })
         for target in _MOMENT_FIELDS[self.target_mp_physics]:
-            rows.append({
+            row = {
                 "action": "diagnosed",
                 "source_field": None,
                 "target_field": target,
@@ -453,7 +581,23 @@ class MicrophysicsTransitionContract:
                     "p3_rime_state_diagnosed_from_source_frozen_species"
                     if p3_entry and target in ("qir", "qib")
                     else "target_scheme_mass_moment_closure"),
-            })
+            }
+            # The seeded entries name their VALUE and its authority, so a
+            # receipt reader can see what a mixed edge put in the child
+            # rather than only that something was diagnosed.
+            if self.mixed and self.target_mp_physics == 16:
+                row["reason"] = _WDM6_EDGE_ENTRY_REASONS[target]
+                row["seeded_value"] = (
+                    self.target_wdm6_ccn_conc if target == "nn"
+                    else 0.0)
+                row["units"] = ("number_per_m3" if target == "nn"
+                                else "number_per_kg")
+            elif self.mixed and self.target_mp_physics == 28 and (
+                    target in _MP28_EDGE_ENTRY_REASONS):
+                row["reason"] = _MP28_EDGE_ENTRY_REASONS[target]
+                row["seeded_value"] = _MP28_EDGE_ENTRY_VALUES[target]
+                row["units"] = "number_per_m3_divided_by_air_density"
+            rows.append(row)
         for source in _MASS_FIELDS[self.source_mp_physics]:
             if source not in consumed:
                 rows.append({
@@ -596,6 +740,17 @@ def transition_implementation_identity() -> Mapping[str, str]:
             "max_total_ice_number_per_m3": P3_EDGE_MAX_TOTAL_NI_PER_M3,
             "qsmall_kg_per_kg": P3_EDGE_QSMALL_KG_PER_KG,
             "rime_density_bounds_kg_m3": list(P3_RIME_DENSITY_BOUNDS_KG_M3),
+        },
+        "wdm6_edge_constants": {
+            "entry_cloud_number": WDM6_EDGE_ENTRY_CLOUD_NUMBER,
+            "entry_rain_number": WDM6_EDGE_ENTRY_RAIN_NUMBER,
+            "entry_reservoir": "domain wdm6_ccn_conc",
+        },
+        "mp28_edge_constants": {
+            "entry_cloud_number_per_m3":
+                MP28_EDGE_ENTRY_CLOUD_NUMBER_PER_M3,
+            "entry_nwfa_per_m3": MP28_EDGE_ENTRY_NWFA_PER_M3,
+            "entry_nifa_per_m3": MP28_EDGE_ENTRY_NIFA_PER_M3,
         },
     }
     payload = json.dumps(
@@ -755,15 +910,24 @@ def _canonical_source_sha256(path: Path) -> str:
 
 def resolve_microphysics_transition(
         parent_cfg, child_cfg) -> MicrophysicsTransitionContract:
-    """Resolve one of the 36 ported ordered edges or fail closed.
+    """Resolve one ported ordered edge or fail closed.
 
-    A same-scheme edge resolves for ANY ported ``mp_physics``, including
-    mp=16 and mp=28, before the mixed-edge matrix is consulted.  A MIXED
-    edge with mp=16 or mp=28 on either side is refused by name, each with
-    its OWN missing closure (see
-    :data:`UNVALIDATED_MIXED_EDGE_SELECTORS` and
-    :data:`_UNVALIDATED_MIXED_EDGE_REASONS`).  mp=50 mixed edges resolve
-    through the matrix with the documented P3 rime-pair closure.
+    A same-scheme edge resolves for ANY ported ``mp_physics`` before the
+    mixed-edge matrix is consulted.  Every MIXED pair drawn from
+    :data:`PORTED_MP_PHYSICS` now resolves too, mp=16 and mp=28 included
+    (R-004): their entry closures are the documented ones on that tuple,
+    and their exit edges never needed a closure at all.  The named-refusal
+    branch below survives for the next scheme whose closure is genuinely
+    missing; its two tables are empty today.
+
+    THE DEFAULT IS THE EDGE THE PAIR TAKES.  ``nest_microphysics_transition``
+    left at its default (``same-scheme-only``) resolves a mixed edge to the
+    one closure this matrix defines for it, with the receipt recording the
+    requested and the effective policy side by side (gpuwm.core.nest).
+    Until 2.7.3 the default REFUSED every mixed edge for want of the key,
+    which put an opt-in string in front of a working correctness path.
+    Naming a policy still means something: the id the pair takes is
+    admitted, and the OTHER mixed id is a contradiction and is refused.
     """
 
     source = int(getattr(parent_cfg, "mp_physics", 0))
@@ -780,12 +944,12 @@ def resolve_microphysics_transition(
             source_mp_physics=source, target_mp_physics=target,
             policy_id=policy, mixed=False)
 
-    # NAMED refusal before the generic "not a ported selector" message.
-    # mp=16 and mp=28 ARE ported; only their cross-scheme entry closures
-    # are missing, and an operator who reads "ported selectors are
-    # (1, 6, 8, 10, 18, 50)" would reasonably conclude the scheme itself is
-    # unavailable.  The message body is looked up per scheme, never shared:
-    # the two closures are missing for different reasons.
+    # NAMED refusal before the generic "not a ported selector" message,
+    # for a scheme that IS ported but whose cross-scheme entry closure is
+    # missing: an operator who reads "ported selectors are (...)" would
+    # reasonably conclude the scheme itself is unavailable.  The message
+    # body is looked up per scheme, never shared -- two closures are never
+    # missing for the same reason.  No scheme is in this state today.
     unvalidated = sorted(
         {source, target} & set(UNVALIDATED_MIXED_EDGE_SELECTORS))
     if unvalidated:
@@ -795,9 +959,8 @@ def resolve_microphysics_transition(
         raise ValueError(
             f"mixed nest microphysics edge MP{source}->MP{target} is REFUSED: "
             f"MP{mp} ({scheme}) is ported and runs, but it has "
-            f"no validated cross-scheme entry closure for its moments "
-            f"({moments}) -- {reason}.  An honest refusal "
-            f"beats an unvalidated closure: configure both domains with "
+            f"no cross-scheme entry closure for its moments "
+            f"({moments}) -- {reason}.  Configure both domains with "
             f"mp_physics={mp}, or keep MP{mp} on a single domain.")
 
     if source not in PORTED_MP_PHYSICS or target not in PORTED_MP_PHYSICS:
@@ -808,11 +971,17 @@ def resolve_microphysics_transition(
         MP8_TO_MP18_POLICY if (source, target) == (8, 18)
         else EDGE_MATRIX_POLICY
     )
-    if policy != required_policy:
+    if policy == SAME_SCHEME_POLICY:
+        # The unset default: the edge resolves to the closure this pair
+        # takes.  The coupler's receipt carries requested_policy beside
+        # effective_policy, so a reader sees that nothing was named.
+        policy = required_policy
+    elif policy != required_policy:
         raise ValueError(
-            f"MP{source}->MP{target} nest forcing requires explicit "
-            f"nest_microphysics_transition={required_policy!r}, got "
-            f"{policy!r}")
+            f"MP{source}->MP{target} takes nest_microphysics_transition="
+            f"{required_policy!r}; {policy!r} is the closure of another "
+            f"edge. Set {required_policy!r}, or leave the key out and the "
+            "edge resolves to it.")
     missing = []
     for role, cfg in (("parent", parent_cfg), ("child", child_cfg)):
         if not bool(cfg.moist):
@@ -834,6 +1003,8 @@ def resolve_microphysics_transition(
         source_rimed_category=_rimed_category(parent_cfg),
         target_rimed_category=_rimed_category(child_cfg),
         target_morrison_rimed_density=target_density,
+        target_wdm6_ccn_conc=float(
+            getattr(child_cfg, "wdm6_ccn_conc", 1.0e8)),
     )
 
 
@@ -854,12 +1025,29 @@ def transition_parent_field_shape(state, field_name: str) -> tuple[int, ...]:
     return shape
 
 
+#: The parent planes :func:`launch_microphysics_edge_parent_field` may read,
+#: horizontally windowed.  THE LIST IS THE KERNEL'S INPUT SET and must stay
+#: it: the windowed namespace is the whole parent as far as the launcher can
+#: see, so a plane an arm reads and this tuple omits is not a slow path, it
+#: is an ``AttributeError`` on a run the registry already admitted at plan
+#: review.  Milbrandt-Yau's arm was exactly that -- it reads ``thp`` and
+#: ``p`` beside the masses, the tile-streamed nest route
+#: (gpuwm/ingest/reconstruction_store.py -> parent_only_init(window=...))
+#: is the only route that windows, and a windowed mp=9 edge died on
+#: ``thb`` while the same edge on a resident parent ran.
+_WINDOWED_EDGE_PLANES = (
+    "alt", "qv", "qc", "qr", "qi", "qs", "qg", "qh",
+    "qir", "qib", "mub2d", "mup", "thp", "p",
+)
+
+
 def transition_parent_window(state, window):
     """Bounded, contiguous inputs for the existing column-local edge kernel.
 
     The caller obtains ``window`` from the SINT registration's exact donor
     halo. No transition is recomputed on the full parent just to interpolate
-    a child slab. Vertical coefficients are borrowed unchanged.
+    a child slab. Vertical coefficients are borrowed unchanged, and so is a
+    columnar ``thb``: a base profile has no horizontal extent to cut.
     """
     from types import SimpleNamespace
     import cupy as cp
@@ -872,11 +1060,13 @@ def transition_parent_window(state, window):
                 or not 0 <= sl.start < sl.stop <= extent):
             raise ValueError("transition window is outside the parent")
     fields = {}
-    for name in ("alt", "qv", "qc", "qr", "qi", "qs", "qg", "qh",
-                 "qir", "qib", "mub2d", "mup"):
+    for name in _WINDOWED_EDGE_PLANES:
         value = getattr(state, name, None)
         fields[name] = (None if value is None else
                         cp.ascontiguousarray(cp.asarray(value[(...,)+window])))
+    thb = getattr(state, "thb", None)
+    fields["thb"] = (None if thb is None else cp.ascontiguousarray(cp.asarray(
+        thb if thb.ndim == 1 else thb[(...,)+window])))
     fields.update(c1h=cp.ascontiguousarray(cp.asarray(state.c1h)),
                   c2h=cp.ascontiguousarray(cp.asarray(state.c2h)))
     return SimpleNamespace(**fields)
@@ -909,16 +1099,51 @@ def _validate_transition_arrays(contract, state, out, shape) -> None:
     if not out.flags.c_contiguous:
         raise ValueError("microphysics transition output must be contiguous")
     ny, nx = shape[1:]
-    for name, value, expected in (
-            ("alt", state.alt, shape),
-            ("mub2d", state.mub2d, (ny, nx)),
-            ("mup", state.mup, (ny, nx)),
-            ("c1h", state.c1h, (shape[0],)),
-            ("c2h", state.c2h, (shape[0],))):
+    checks = [
+        ("alt", state.alt, shape),
+        ("mub2d", state.mub2d, (ny, nx)),
+        ("mup", state.mup, (ny, nx)),
+        ("c1h", state.c1h, (shape[0],)),
+        ("c2h", state.c2h, (shape[0],)),
+    ]
+    if contract.target_mp_physics == 9:
+        # Entering Milbrandt-Yau the kernel forms the scheme's absolute
+        # temperature per cell, so thb/thp/p are inputs exactly like the
+        # masses and are checked exactly like them.  Named here rather than
+        # left to the launch: a parent namespace missing one of the three
+        # used to reach the kernel as a bare AttributeError, on a mixed
+        # edge the registry had already admitted at plan review.
+        thb = getattr(state, "thb", None)
+        if thb is None:
+            raise ValueError(
+                "the Milbrandt-Yau nest edge diagnoses the scheme's own "
+                "numbers from absolute temperature and needs the parent's "
+                "thb; the state it was handed carries none. A windowed "
+                "donor namespace comes from transition_parent_window, "
+                "whose plane list is the kernel's input set")
+        checks.append(
+            ("thb", thb, (shape[0],) if thb.ndim == 1 else shape))
+        for name in ("thp", "p"):
+            value = getattr(state, name, None)
+            if value is None:
+                raise ValueError(
+                    "the Milbrandt-Yau nest edge diagnoses the scheme's own "
+                    f"numbers from absolute temperature and needs the "
+                    f"parent's {name}; the state it was handed carries "
+                    "none. A windowed donor namespace comes from "
+                    "transition_parent_window, whose plane list is the "
+                    "kernel's input set")
+            checks.append((name, value, shape))
+    for name, value, expected in checks:
         if tuple(value.shape) != expected or value.dtype != cp.float32:
             raise ValueError(
                 f"microphysics transition {name} must be float32 with "
                 f"shape {expected}")
+        if name in ("thb", "thp", "p") and not value.flags.c_contiguous:
+            # The three MY2 planes are the ones a windowed donor produces by
+            # slicing, so contiguity is the property that route can lose.
+            raise ValueError(
+                f"microphysics transition {name} must be contiguous")
 
 
 def launch_microphysics_edge_parent_field(
@@ -926,7 +1151,6 @@ def launch_microphysics_edge_parent_field(
         *, out, coupled: bool) -> object:
     """Write one target field diagnosed on the parent before SINT."""
 
-    import cupy as cp
     from gpuwm.core.kernels import get_kernel
 
     if not transition_handles_field(contract, field_name):
@@ -950,6 +1174,32 @@ def launch_microphysics_edge_parent_field(
     for name in ("qir", "qib"):
         value = getattr(state, name, None)
         rime_arrays.append(placeholder if value is None else value)
+    # Milbrandt-Yau's entry closure is the only arm that reads a
+    # temperature (Cooper's ice number and Thompson's snow intercept are
+    # both N(T)), a pressure (the scheme's own de = pres/(Rd*T), :3400) and
+    # the scheme's constant vector.  The temperature is not built here: the
+    # kernel forms it from thb/thp/p per cell, so the arm needs no array of
+    # its own and reads the same three planes whether ``state`` is a
+    # resident DomainState or the bounded namespace transition_parent_window
+    # hands a tile-streamed nest.  Every other target gets the same
+    # placeholder plane the rime pair gets off a P3 edge.
+    if contract.target_mp_physics == 9:
+        # The scheme's constant TABLE, not the scheme: this module is staged
+        # into the standalone RW-WPS preparation wheel and
+        # gpuwm.core.milbrandt2 is not, so importing the scheme here left an
+        # unresolvable internal import that the wheel's staging gate refuses
+        # (tools/build_rw_wps_release.py, tests/test_native_wrf_distribution.py).
+        # milbrandt2_constants is pure numpy and holds the one device cache
+        # both callers use.
+        from gpuwm.core.milbrandt2_constants import ck_vector_device
+        from gpuwm.core import constants as _c
+
+        my2_arrays = (state.thb, state.thp, state.p, ck_vector_device())
+        my2_scalars = (np.float32(_c.P0), np.float32(_c.RCP),
+                       np.int32(1 if state.thb.ndim == 1 else 0))
+    else:
+        my2_arrays = (placeholder, placeholder, placeholder, placeholder)
+        my2_scalars = (np.float32(0.0), np.float32(0.0), np.int32(0))
     mass_sources = [
         _SOURCE_MASS_CODES.get(contract.mass_source(name), -1)
         if name in _MASS_FIELDS[contract.target_mp_physics] else -1
@@ -967,13 +1217,16 @@ def launch_microphysics_edge_parent_field(
     ny, nx = shape[1:]
     get_kernel("nest_microphysics", "microphysics_edge_field")(
         ((count + _THREADS - 1) // _THREADS,), (_THREADS,), (
-            state.alt, *source_arrays, *rime_arrays, state.mub2d, state.mup,
+            state.alt, *source_arrays, *rime_arrays, *my2_arrays,
+            state.mub2d, state.mup,
             state.c1h, state.c2h, out,
             *[np.int32(code) for code in mass_sources],
             np.int32(_EDGE_FIELD_CODES[field_name]),
             np.int32(contract.source_mp_physics),
             np.int32(contract.target_mp_physics),
             np.float32(contract.target_morrison_rimed_density),
+            *my2_scalars,
+            np.float32(contract.target_wdm6_ccn_conc),
             np.int32(coupled), np.int32(shape[0]), np.int32(ny),
             np.int32(nx),
         ))
@@ -1041,7 +1294,52 @@ __all__ = [
     "UNVALIDATED_MIXED_EDGE_MOMENTS", "UNVALIDATED_MIXED_EDGE_SELECTORS",
     "launch_microphysics_edge_parent_field",
     "launch_mp8_to_mp18_parent_field", "p3_edge_entry_reference",
+    "MIXED_EDGE_ENTRY_NOTES", "mixed_edge_entry_note",
     "p3_edge_exit_reference", "resolve_microphysics_transition",
     "transition_handles_field", "transition_implementation_identity",
     "transition_parent_field_shape",
 ]
+
+
+# ---------------------------------------------------------------------------
+# AGREEMENT WITH THE REGISTRY, AT IMPORT.  ``PORTED_MP_PHYSICS`` stays
+# hand-written because its ORDER is the host field-code table; the registry
+# publishes each option's ``consumers.nest_transition`` row from it
+# (tools/build_registry.py), and this holds the two to each other so a
+# scheme appended here without a rebuilt registry -- or a registry edited
+# without this tuple -- fails this import instead of a tree load.  The two
+# selectors in neither tuple are cited by defect id; a mixed edge touching
+# them falls through to the generic refusal today.
+def _require_agreement_with_the_registry() -> None:
+    from gpuwm.physics_registry import require_consumer_rows_agreement
+
+    observed = {
+        mp: {"mixed_edge_ported": True,
+             "mass_fields": list(_MASS_FIELDS[mp]),
+             "moment_fields": list(_MOMENT_FIELDS[mp])}
+        for mp in PORTED_MP_PHYSICS
+    }
+    observed.update({
+        mp: {"mixed_edge_ported": False}
+        for mp in UNVALIDATED_MIXED_EDGE_SELECTORS
+    })
+
+    def project(row):
+        if row.get("mixed_edge_ported") is True:
+            return {"mixed_edge_ported": True,
+                    "mass_fields": list(row["mass_fields"]),
+                    "moment_fields": list(row["moment_fields"])}
+        return {"mixed_edge_ported": False}
+
+    require_consumer_rows_agreement(
+        "gpuwm.core.microphysics_transition (PORTED_MP_PHYSICS, "
+        "UNVALIDATED_MIXED_EDGE_SELECTORS, _MASS_FIELDS, _MOMENT_FIELDS)",
+        "microphysics", "nest_transition", observed, project=project,
+        cited_absences={
+            0: ("mp_physics=0 carries no hydrometeors to close a mixed edge "
+                "over; a 0->X or X->0 edge falls through to the generic "
+                "refusal"),
+        })
+
+
+_require_agreement_with_the_registry()

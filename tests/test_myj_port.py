@@ -728,16 +728,102 @@ def test_a_half_myj_suite_is_refused_at_load(sfclay, pbl):
     assert "sf_sfclay_physics=" in message and "bl_pbl_physics=" in message
 
 
-def test_a_dry_myj_run_is_refused_the_way_wrf_refuses_it():
-    """WRF's own fatal, transcribed.
+#: The ported PBL slot and the surface layer each scheme is paired with.
+#: SASE (900) is not here: it states its own moist requirement, for its own
+#: reason (saturated-N2 stability and condensate rows), at plan review and
+#: again at the driver, and it is its own audit item.
+_DRY_PBL_SLOT = ((1, 1), (2, 2), (5, 5), (11, 1))
 
-    module_pbl_driver.F:1441-1443 guards MYJPBL with PRESENT(qv_curr) and
-    PRESENT(qc_curr) and calls wrf_error_fatal('Lack arguments to call MYJ
-    pbl') otherwise (:1500-1513).  The scheme mixes both as species rows.
+
+def test_a_dry_pbl_config_is_admitted_by_both_config_doors():
+    """The dry refusal is retired at plan review, and the reason it was wrong.
+
+    It read ``PRESENT(qv_curr) .AND. PRESENT(qc_curr)``
+    (module_pbl_driver.F:1500-1513) as MYJ's own law.  That is the
+    OPTIONAL-argument plumbing every scheme arm in WRF's PBL driver
+    carries, and in WRF the presence of qv/qc is decided by the mp_physics
+    package, not by the PBL selector.
+
+    THIS TEST MEASURES THE CONFIG DOORS ONLY -- ``validate_myj_pairing``
+    and ``validate_run_config``.  Admission is not a run: the test that
+    says a dry PBL configuration STARTS and MIXES is
+    :func:`test_a_dry_pbl_run_reaches_the_driver_and_mixes` below, and
+    until this candidate it would have failed for every scheme in the slot
+    because ``initialize_physics`` carried a blanket dry refusal of its
+    own.  Both are needed; neither substitutes for the other.
+
+    The property here is symmetry: whatever the PBL slot admits dry, it
+    admits for every scheme in it, so a future scheme cannot quietly
+    acquire a moisture gate of its own.
     """
-    with pytest.raises(ValueError, match="requires moist=true"):
-        validate_myj_pairing(_cfg(sf_sfclay_physics=2, bl_pbl_physics=2,
-                                  moist=False))
+    from gpuwm.config import PBL_SCHEMES, validate_run_config
+
+    validate_myj_pairing(_cfg(sf_sfclay_physics=2, bl_pbl_physics=2,
+                              moist=False))
+    for pbl in PBL_SCHEMES:
+        if pbl == 900:
+            continue
+        sfclay = 2 if pbl == 2 else 1
+        validate_run_config(_cfg(sf_sfclay_physics=sfclay,
+                                 bl_pbl_physics=pbl, moist=False))
+    assert {pbl for pbl, _ in _DRY_PBL_SLOT} == {
+        pbl for pbl in PBL_SCHEMES if pbl not in (0, 900)}, (
+        "a scheme joined the PBL slot without joining the dry run below")
+
+
+@requires_gpu
+@pytest.mark.parametrize("pbl,sfclay", _DRY_PBL_SLOT)
+def test_a_dry_pbl_run_reaches_the_driver_and_mixes(pbl, sfclay):
+    """A dry PBL configuration STARTS, stays finite, and actually mixes.
+
+    The refusal this replaces lived at ``initialize_physics`` and read
+    ``bl_pbl_physics and state.qv is None`` -- every scheme in the slot,
+    after the config door had already admitted the run, naming no breakage
+    and no way out.  A dry state is not an absent state:
+    ``_atmosphere_for_physics`` hands every seam the persistent zero
+    ``physics_dry_qv``/``physics_dry_qc`` planes, the moisture rows solve
+    against zero surface boundary values so their tendencies are exactly
+    zero, and with no moist scalar advance nothing consumes them.
+
+    The bars are the ones that separate "called" from "coupled": the
+    diffusivity grows away from the cold state and the PBL top is a real
+    depth, on a state whose ``qv`` is ``None``.
+    """
+    import cupy as cp
+
+    from gpuwm.core.dycore import run_steps
+    from gpuwm.core.grid import make_base_state, make_vertical_coord
+    from gpuwm.core.physics import (
+        DECLARED_CONSTANT_GLW_WM2, initialize_physics)
+    from gpuwm.core.state import init_at_rest
+
+    cfg = _cfg(nx=6, ny=5, nz=24, dt=6.0, run_seconds=60.0, moist=False,
+               sf_sfclay_physics=sfclay, bl_pbl_physics=pbl,
+               sf_surface_physics=2, num_soil_layers=4, bldt=0.0, radt=0.0,
+               cu_physics=0, mp_physics=0, km_opt=4, c_s=0.25)
+    coord = make_vertical_coord(cfg.nz)
+    base = make_base_state(
+        coord, lambda z: 300.0 + 0.003 * np.asarray(z, np.float64),
+        p_surf=cfg.p_surf, ztop=cfg.ztop)
+    state = init_at_rest(cfg, coord, base)
+    assert state.qv is None, "the fixture is not dry"
+    state.u[...] = cp.asarray(
+        np.full(tuple(state.u.shape), 6.0), dtype=state.u.dtype)
+    driver = initialize_physics(state, cfg, landmask=1.0, tsk=305.0,
+                                glw=DECLARED_CONSTANT_GLW_WM2, swdown=0.0)
+
+    run_steps(state, cfg, 10)
+
+    assert driver.call_counts["ysu"] > 0        # the PBL-slot counter
+    assert driver.call_counts["sfclay"] > 0
+    for name in ("exch_h", "pblh", "hfx", "ust"):
+        values = cp.asnumpy(driver.fields[name])
+        assert np.all(np.isfinite(values)), name
+    # Coupled, not merely called: the diffusivity left the cold state and
+    # the PBL top is a depth rather than the first interface.
+    assert float(np.max(cp.asnumpy(driver.fields["exch_h"]))) > 0.0
+    assert float(np.max(cp.asnumpy(driver.fields["pblh"]))) > 0.0
+    assert np.all(np.isfinite(cp.asnumpy(state.thp)))
 
 
 def test_the_matched_pair_is_admitted():

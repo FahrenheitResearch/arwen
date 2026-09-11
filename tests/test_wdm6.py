@@ -452,47 +452,57 @@ def test_the_registry_row_is_honest_about_having_no_oracle():
 # The mixed nest edge, and its offline mirror
 # --------------------------------------------------------------------------
 
-def test_a_mixed_nest_edge_touching_wdm6_names_wdm6_and_not_thompson():
-    """The refusal mp=16 advertises must actually be a refusal.
+def test_a_mixed_nest_edge_touching_wdm6_seeds_wdm6_and_not_thompson():
+    """The edge mp=16 advertises must actually run, with WDM6's own values.
 
-    Regression: 16 was added to ``UNVALIDATED_MIXED_EDGE_SELECTORS`` and to
-    no other table, so ``resolve_microphysics_transition`` looked up a
-    missing moments row and raised a bare ``KeyError(16)`` -- while
-    ``gpuwm/physics_compat.py`` and the registry warning both advertised the
-    named refusal as working.  The message body was also hard-coded
-    Thompson-mp28 prose, so the first user to get past the KeyError would
-    have been told their scheme is Thompson and pointed at Thompson's
-    fallback constants.
+    History: 16 was added to ``UNVALIDATED_MIXED_EDGE_SELECTORS`` and to no
+    other table, so the resolver raised a bare ``KeyError(16)`` while two
+    other surfaces advertised a named refusal.  That refusal is now retired
+    (audit R-004) -- its premise was that seeding the CCN reservoir from the
+    domain's ``ccn_conc`` was unmeasured, while the cold start and the
+    lateral inflow face do exactly that on every WDM6 run -- so what this
+    test protects is the same property one level up: a WDM6 edge is closed
+    with WDM6's own values and nobody else's, and the receipt says so.
     """
     from gpuwm.core import microphysics_transition as mt
 
     for source, target in ((16, 6), (6, 16), (16, 28), (28, 16)):
-        parent = SimpleNamespace(mp_physics=source)
+        parent = SimpleNamespace(mp_physics=source, moist=True, moist_cq=True,
+                                 wdm6_hail_opt=0, wsm6_hail_opt=0,
+                                 morr_rimed_ice=1, wdm6_ccn_conc=1.0e8)
         child = SimpleNamespace(
-            mp_physics=target,
+            mp_physics=target, moist=True, moist_cq=True,
+            wdm6_hail_opt=0, wsm6_hail_opt=0, morr_rimed_ice=1,
+            wdm6_ccn_conc=1.0e8,
             nest_microphysics_transition=mt.EDGE_MATRIX_POLICY)
-        with pytest.raises(ValueError) as caught:
-            mt.resolve_microphysics_transition(parent, child)
-        message = str(caught.value)
-        assert f"MP{source}->MP{target} is REFUSED" in message
-        # The refusal names the LOWEST refused selector in the pair, and for
-        # every pair above that is 16.
-        assert "MP16 (WDM6" in message, message
-        # WDM6's own moments and WDM6's own Fortran, not Thompson's.
-        assert "(nr, nc, nn)" in message
-        assert "module_mp_wdm6.F:584" in message
-        assert "start_em.F:1750-1774" in message
-        assert "module_mp_thompson.F" not in message
-        assert "nwfa" not in message and "nifa" not in message
-
-    # And mp=28's own refusal did not move.
-    parent = SimpleNamespace(mp_physics=28)
-    child = SimpleNamespace(mp_physics=6,
-                            nest_microphysics_transition=mt.EDGE_MATRIX_POLICY)
-    with pytest.raises(ValueError) as caught:
-        mt.resolve_microphysics_transition(parent, child)
-    assert "MP28 (Thompson aerosol-aware)" in str(caught.value)
-    assert "module_mp_thompson.F:1248-1255" in str(caught.value)
+        contract = mt.resolve_microphysics_transition(parent, child)
+        assert contract.mixed is True
+        note = mt.mixed_edge_entry_note(contract)
+        if target not in (16, 28):
+            # Leaving WDM6 needs no closure: the target's moments come
+            # from target mass and the reservoir is dropped, so plan
+            # review has nothing to name.
+            assert note is None
+        else:
+            assert len(note.split(". ")) <= 2
+        rows = {row["target_field"]: row
+                for row in contract.species_actions()
+                if row["action"] == "diagnosed"}
+        if target == 16:
+            # WDM6's own triple, out of WDM6's own table.
+            assert rows["nn"]["seeded_value"] == 1.0e8
+            assert rows["nc"]["seeded_value"] == 0.0
+            assert rows["nr"]["seeded_value"] == 0.0
+            assert "wdm6" in rows["nn"]["reason"]
+            assert "thompson" not in rows["nn"]["reason"]
+            assert "wdm6_ccn_conc" in note
+            assert contract.target_wdm6_ccn_conc == 1.0e8
+        if target == 28:
+            # And Thompson-aerosol's own, out of Thompson's.
+            assert rows["nwfa"]["seeded_value"] == 11.1e6
+            assert "thompson" in rows["nwfa"]["reason"]
+            assert "wdm6" not in rows["nwfa"]["reason"]
+            assert "non-aerosol-aware" in note
 
 
 def test_same_scheme_wdm6_nesting_is_unaffected_by_the_refusal():
@@ -518,37 +528,34 @@ def test_a_refused_selector_cannot_join_without_its_own_sentence():
 
     source = Path(mt.__file__).read_text(encoding="utf-8")
     patched = source.replace(
-        "UNVALIDATED_MIXED_EDGE_SELECTORS = (16, 28)",
-        "UNVALIDATED_MIXED_EDGE_SELECTORS = (16, 28, 99)")
+        "UNVALIDATED_MIXED_EDGE_SELECTORS: tuple[int, ...] = ()",
+        "UNVALIDATED_MIXED_EDGE_SELECTORS: tuple[int, ...] = (99,)")
     assert patched != source, "the selector tuple moved; re-point this test"
     namespace = {"__name__": "mt_probe", "__file__": mt.__file__}
     with pytest.raises(RuntimeError, match=r"\[99\]"):
         exec(compile(patched, mt.__file__, "exec"), namespace)
 
 
-def test_the_offline_cross_scheme_refusal_mirrors_the_online_one():
-    """The invariant the mirror test protects, from the WDM6 side.
+def test_the_offline_cross_scheme_mirror_is_empty_with_the_online_tuple():
+    """The mirror is DERIVED, so ratifying mp=16's edge emptied it.
 
-    ``OFFLINE_CHILD_MP_PHYSICS`` already excludes 16, so an mp=16 parent is
-    refused EARLIER -- but "unreadable" is a different guarantee from "this
-    closure is unmeasured", and it stops being a refusal the day the QNCCN
-    field-map row lands.  The set is DERIVED from the online tuple now, so
-    the two cannot drift.
+    mp=16 is still absent from ``OFFLINE_CHILD_MP_PHYSICS`` and from
+    ``PARENT_SCHEME_CONTRACT``, but for their OWN reasons -- the offline
+    lane cannot read the QNCCN field and has no conversion leg -- not
+    because a closure is unmeasured.
     """
     from gpuwm import offline_child as oc
     from gpuwm.core import microphysics_transition as mt
 
     assert (set(oc._CROSS_SCHEME_REFUSED_MP_PHYSICS)
-            == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS))
-    assert 16 in oc._CROSS_SCHEME_REFUSED_MP_PHYSICS
+            == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS) == set())
     assert 16 not in oc.OFFLINE_CHILD_MP_PHYSICS
     assert 16 not in oc.PARENT_SCHEME_CONTRACT
-    # The offline message names WDM6 too, out of the same table.
     with pytest.raises(oc.OfflineChildContractError) as caught:
         oc.map_microphysics_to_nssl18({}, source_mp_physics=16)
-    assert "mp_physics=16 (WDM6" in str(caught.value)
-    assert "nr/nc/nn" in str(caught.value)
-    assert "Thompson" not in str(caught.value)
+    message = str(caught.value)
+    assert "no measured mapping" not in message
+    assert "16" in message
 
 
 # --------------------------------------------------------------------------

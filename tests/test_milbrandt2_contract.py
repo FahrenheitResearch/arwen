@@ -118,6 +118,111 @@ def test_cuda_define_block_still_matches_the_shipped_translation_unit():
         "milbrandt2_constants.CK_ORDER; regenerate it")
 
 
+def test_every_hand_typed_ck_alias_is_checked_at_import():
+    """The two SUBSET blocks are guarded, not just the generated one.
+
+    ``cuda_define_block()`` covers kernels/milbrandt2.cu because that
+    whole block is emitted.  kernels/nest_microphysics.cu's ``MY2E_``
+    rows and kernels/milbrandt2_zet.cu's ``my2z_`` rows are hand-typed
+    subsets of the same positional table, and until this guard they had
+    nothing: an insertion into ``_build()`` told the author to regenerate
+    ONE file and the other two silently misindexed.
+    """
+    from gpuwm.core.milbrandt2_constants import (
+        CK_ALIAS_ROWS_CHECKED, CK_ALIAS_TRANSLATION_UNITS)
+
+    assert set(CK_ALIAS_ROWS_CHECKED) == set(CK_ALIAS_TRANSLATION_UNITS), (
+        "a positional-index unit was skipped at import; the check runs on "
+        "whichever of these files is present, and in a checkout all of "
+        "them are")
+    # The counts are the measurement, not a target: 154 generated rows,
+    # 15 in the mixed nest edge, 7 in the lifted Z block.
+    assert CK_ALIAS_ROWS_CHECKED == {
+        "milbrandt2.cu": 154,
+        "nest_microphysics.cu": 15,
+        "milbrandt2_zet.cu": 7,
+    }
+
+
+def test_no_translation_unit_indexes_ck_outside_the_checked_set():
+    """A fourth unit cannot appear without joining the guard.
+
+    The import-time check reads a named tuple rather than the whole
+    kernels directory, because it runs on doors that only want a constant
+    vector.  This is the other half: nothing in the tree may index ``ck``
+    positionally and be absent from that tuple.
+    """
+    from pathlib import Path
+
+    import gpuwm.core.kernels as kernels
+    from gpuwm.core.milbrandt2_constants import (
+        _CK_ALIAS_DEFINE, CK_ALIAS_TRANSLATION_UNITS)
+
+    directory = Path(kernels.__file__).parent
+    indexing = {
+        path.name for path in sorted(directory.glob("*.cu"))
+        if _CK_ALIAS_DEFINE.search(path.read_text(encoding="utf-8"))}
+    assert indexing == set(CK_ALIAS_TRANSLATION_UNITS), (
+        "these translation units read the Milbrandt-Yau constant vector by "
+        "position and are not checked at import: "
+        f"{sorted(indexing - set(CK_ALIAS_TRANSLATION_UNITS))}; add them to "
+        "milbrandt2_constants.CK_ALIAS_TRANSLATION_UNITS")
+
+
+def test_a_shifted_ck_index_is_refused_by_name(tmp_path):
+    """The positive control, one perturbed row per translation unit.
+
+    A guard nobody has seen fire is a guard nobody has tested, and the
+    failure it exists for is invisible in every other diagnostic: the
+    kernel compiles, the launch succeeds, and the constants are wrong.
+    """
+    import shutil
+    from pathlib import Path
+
+    import gpuwm.core.kernels as kernels
+    from gpuwm.core.milbrandt2_constants import (
+        CK_ALIAS_TRANSLATION_UNITS, verify_ck_alias_defines)
+
+    source = Path(kernels.__file__).parent
+    for unit, row, shifted in (
+            ("nest_microphysics.cu", "#define MY2E_icmr  ck[16]",
+             "#define MY2E_icmr  ck[17]"),
+            ("milbrandt2_zet.cu", "#define my2z_Gzr ck[149]",
+             "#define my2z_Gzr ck[150]"),
+            ("milbrandt2.cu", "#define GC13 ck[", "#define GC13 ck[3] //"),
+    ):
+        room = tmp_path / unit.replace(".cu", "")
+        room.mkdir()
+        for name in CK_ALIAS_TRANSLATION_UNITS:
+            shutil.copy(source / name, room / name)
+        path = room / unit
+        text = path.read_text(encoding="utf-8")
+        assert row in text, f"{unit}: the control's anchor row moved"
+        path.write_text(text.replace(row, shifted, 1), encoding="utf-8")
+        with pytest.raises(RuntimeError) as raised:
+            verify_ck_alias_defines(room)
+        message = str(raised.value)
+        assert unit in message and "CK_ORDER" in message
+        assert "regenerate" in message.lower()
+
+    # And an alias that resolves to no constant at all, which is the other
+    # way a hand-typed row goes wrong.
+    room = tmp_path / "unknown"
+    room.mkdir()
+    for name in CK_ALIAS_TRANSLATION_UNITS:
+        shutil.copy(source / name, room / name)
+    path = room / "milbrandt2_zet.cu"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "#define my2z_cxr ck[147]", "#define my2z_cxrr ck[147]", 1),
+        encoding="utf-8")
+    with pytest.raises(RuntimeError, match="names no constant"):
+        verify_ck_alias_defines(room)
+
+    # The shipped tree is silent.
+    assert verify_ck_alias_defines(source)
+
+
 # ---------------------------------------------------------------------------
 # The two numeric-identity decisions, pinned (no GPU needed)
 # ---------------------------------------------------------------------------
@@ -252,12 +357,27 @@ def test_config_refuses_mp9_without_moisture():
         validate_run_config(_cfg(moist=False))
 
 
-def test_config_refuses_the_rrtmgp_pairing_and_names_the_way_through():
-    with pytest.raises(NotImplementedError) as excinfo:
-        validate_run_config(_cfg(ra_lw_physics=4, ra_sw_physics=4))
-    message = str(excinfo.value)
-    assert "has_reqc" in message
-    assert "rrtmg_legacy" in message
+def test_config_admits_the_default_rrtmgp_pairing():
+    """The bare mp=9 + 4/4 configuration validates on the DEFAULT variant.
+
+    This used to be a refusal naming ``ra_rrtmg_variant='rrtmg_legacy'`` as
+    the way through, because gpuwm.core.rrtmgp had no cloud-optics row for
+    9; with the variant defaulting to rte-rrtmgp that refused every bare
+    mp=9 run.  The row exists now (``9: "milbrandt2"``), so the pairing
+    resolves to it and nothing has to be switched -- fixed means default.
+    """
+    from gpuwm.core.rrtmgp import (
+        cloud_optics_scheme, scheme_has_snow_species, scheme_is_ice_active)
+
+    cfg = validate_run_config(_cfg(ra_lw_physics=4, ra_sw_physics=4))
+    assert cfg.mp_physics == 9
+    assert cfg.ra_rrtmg_variant == "rte-rrtmgp"
+    validate_milbrandt2_options(cfg)          # must not raise
+    scheme = cloud_optics_scheme(cfg.mp_physics)
+    assert scheme == "milbrandt2"
+    # Registry.EM_COMMON:3025: moist carries qi AND qs, so cal_cldfra1
+    # takes the QCLD = QI + QC + QS arm.
+    assert scheme_is_ice_active(scheme) and scheme_has_snow_species(scheme)
 
 
 def test_config_accepts_mp9_on_the_legacy_rrtmg_variant():

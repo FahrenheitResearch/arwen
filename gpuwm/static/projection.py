@@ -658,6 +658,55 @@ def projection_class(map_proj: str) -> type[ProjectedGrid]:
     return classes[key]
 
 
+#: Cells of clearance between a root domain's footprint and the
+#: projection pole.  A footprint that contains (or touches within this
+#: margin) the pole is refused: lat-lon source interpolation and
+#: static-tile windowing are not pole-capable, which is a property of
+#: the pipeline rather than of any one projection.
+POLE_CLEARANCE_CELLS = 2.0
+
+
+def footprint_contains_pole(projection, nx: int, ny: int, dx_m: float,
+                            margin_cells: float = POLE_CLEARANCE_CELLS
+                            ) -> bool:
+    """Does a root of ``nx`` x ``ny`` mass points at ``dx_m`` metres on
+    ``projection`` contain (or come within ``margin_cells`` of) the
+    projection pole?
+
+    ONE expression of the geometry, because three readers depend on it
+    agreeing with itself: the companion doors, which refuse a drawn or
+    fitted footprint that reaches the pole and size a point request to
+    stay clear of it (:mod:`gpuwm.domain_wizard`); plan review, which
+    refuses a hand-authored root with the same footprint
+    (:func:`gpuwm.experiment.review_root_footprint`); and
+    ``tools/pole_blast_radius.py``, which sweeps it.  A door computing
+    it one way and plan review another is how a configuration passes
+    review and is refused by the door that prepares it.
+
+    ``projection`` is any mapping carrying the six WPS keys
+    (``map_proj``, ``ref_lat``, ``ref_lon``, ``truelat1``, ``truelat2``,
+    ``stand_lon``).  Mercator never reaches a pole, so it is answered
+    without building a grid.
+    """
+
+    if str(projection["map_proj"]).lower() == "mercator":
+        return False
+    grid = projection_class(projection["map_proj"])(
+        ref_lat=float(projection["ref_lat"]),
+        ref_lon=float(projection["ref_lon"]),
+        truelat1=float(projection["truelat1"]),
+        truelat2=float(projection["truelat2"]),
+        stand_lon=float(projection["stand_lon"]),
+        dx=float(dx_m), dy=float(dx_m),
+        e_we=int(nx) + 1, e_sn=int(ny) + 1)
+    pole_lat = 90.0 if float(projection["truelat1"]) >= 0.0 else -90.0
+    px, py = (float(value) for value in
+              grid.latlon_to_ij(pole_lat, float(projection["stand_lon"])))
+    margin = float(margin_cells)
+    return bool(0.5 - margin <= px <= grid.e_we - 0.5 + margin
+                and 0.5 - margin <= py <= grid.e_sn - 0.5 + margin)
+
+
 def _parse_wps_namelist(path) -> dict:
     """Minimal Fortran-namelist reader: ``key = v1, v2, ...`` lines only
     (matches WPS namelist style; no multi-line continuations)."""

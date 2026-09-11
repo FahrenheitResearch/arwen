@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 import json
+import math
 import textwrap
 
 import pytest
@@ -123,6 +124,41 @@ history_interval_s = 3600.0
     return path
 
 
+def _total_from_terms(env, *, radiation_storage=True):
+    """Re-add the terms the refusal prints, the way the model states them.
+
+    The itemized prepared model (:mod:`gpuwm.core.prepared_tile_memory`)
+    prices a streamed process as: ``nbuffers`` buffers of the compute
+    window, each the sum of its named categories, plus the retained
+    template and the k-tables, held at no less than the loader's
+    initialization peak plus the k-tables; that pool under the allocator
+    headroom; plus the CUDA context, the local-memory reservation and the
+    unmodelled floor.  This helper performs exactly that arithmetic from
+    ``env.terms`` -- the lines ``gpuwm go`` and ``gpuwm check`` print under
+    a refusal -- so every figure below is derived from the priced terms
+    rather than copied from a run.
+
+    ``radiation_storage=False`` leaves the per-buffer RTE named storage
+    out, which is what the process holds BETWEEN radiation calls: the
+    model retains that storage per stream inside ``vram_bytes`` instead of
+    reserving a separate transient, so the pair (without, with) is the
+    steady-versus-peak straddle the fixtures below are built on.
+    """
+    terms = dict(env.terms)
+    per_buffer = int(terms["buffer/total_bytes"])
+    if not radiation_storage:
+        per_buffer -= int(terms["buffer/radiation_named_storage_bytes"])
+    pool = (int(env.nbuffers) * per_buffer
+            + int(terms["fixed/template_resident_bytes"])
+            + int(terms["fixed/k_tables_bytes"]))
+    pool = max(pool, int(terms["fixed/loader_pool_peak_bytes"])
+               + int(terms["fixed/k_tables_bytes"]))
+    return (math.ceil(preflight.ALLOCATOR_HEADROOM * pool)
+            + int(terms["fixed/cuda_context_bytes"])
+            + int(terms["fixed/local_memory_bytes"])
+            + int(terms["fixed/unmodelled_bytes"]))
+
+
 def _plan(config_path):
     return {"config": str(config_path), "source": "gfs", "cadence": None}
 
@@ -161,15 +197,19 @@ def test_the_streamed_config_a_user_types_is_admitted_with_no_flags(
     assert "streamed forecast" in gate["verdict"]
     assert "tile buffer(s) of 236x236" in gate["verdict"]
     # And it is genuinely cheaper, not merely relabelled: the streamed
-    # envelope has to be a fraction of the resident one it replaced.  The
-    # HOLD is under half of it; the reported figure is the radiation peak,
-    # which carries a rung-sized transient the resident arithmetic prices
-    # elsewhere, and is still the smaller number.
+    # figure is the itemized model's own total for two 236x236 buffers --
+    # re-added here from the terms the refusal would print -- and it is
+    # below the resident envelope it replaced.  It used to be asserted
+    # under half of the resident figure; that fraction belonged to the
+    # affine measured-rung model, which priced no radiation storage in
+    # the hold.  The itemized model retains the RTE peak per buffer, so
+    # the streamed run costs what its two windows cost and no fraction
+    # of the resident number is a contract.
     phases = gate["phases"]
-    assert (phases.streamed.vram_bytes
-            < 0.5 * phases.resident_forecast_envelope_bytes)
+    assert phases.streamed.vram_bytes == _total_from_terms(phases.streamed)
+    assert phases.forecast_envelope_bytes == phases.streamed.peak_vram_bytes
     assert (phases.forecast_envelope_bytes
-            < 0.7 * phases.resident_forecast_envelope_bytes)
+            < phases.resident_forecast_envelope_bytes)
 
 
 def test_the_same_config_without_tiles_is_still_refused(tmp_path, card):
@@ -285,22 +325,26 @@ def test_the_check_advisory_no_longer_claims_there_is_no_streamed_model(
 # refused, in streamed numbers.
 
 #: Straddles the streamed envelope of the 550sq/200-tile config above
-#: (9.45 GiB at the radiation peak against the 10.79 GiB envelope budget
-#: this declares) while leaving the resident one (14.30 GiB) far outside
-#: it.  ``--budget-gib`` alone, with no ``--vram-gib``: naming a capacity
-#: would let the report recognise the card under the desk and price the
-#: local profile, which makes the numbers a property of the machine
-#: running the tests.
+#: (11.80 GiB under the itemized model, 2026-09-10, against the 12.80 GiB
+#: envelope budget this declares) while leaving the resident one (14.31
+#: GiB) outside it.  ``--budget-gib`` alone, with no ``--vram-gib``:
+#: naming a capacity would let the report recognise the card under the
+#: desk and price the local profile, which makes the numbers a property
+#: of the machine running the tests.
 #:
-#: IT USED TO BE 6, and it moved for a fix rather than a drift: the
-#: streamed envelope carried only what the tiling HOLDS, so 6 straddled
-#: 6.71 GiB against an 8.79 GiB budget.  With the measured RRTMGP
-#: transient in the figure the same config reaches 9.45 GiB and 6 no
-#: longer admits it -- correctly, because the run meets that peak at its
-#: first radiation call.  See the radiation-transient section below.
-_FITS_STREAMED_GIB = 8
+#: IT USED TO BE 6, THEN 8, and each move was a fix rather than a drift.
+#: At 6 the streamed envelope carried only what the affine rung model
+#: said the tiling HOLDS (6.71 GiB against an 8.79 GiB budget); at 8 the
+#: measured RRTMGP transient was added on top (9.45 GiB against 10.79).
+#: The itemized prepared model prices each buffer at its own window --
+#: state, physics, scratch, forcing, the step transient, the RTE named
+#: storage retained per stream and the column workspace -- and the two
+#: 236x236 buffers of this fixture come to 11.80 GiB with the floors and
+#: the allocator headroom, which 8 no longer admits.  The tests below do
+#: not pin that figure: they re-add it from the printed terms.
+_FITS_STREAMED_GIB = 10
 
-#: Below the streamed envelope too (5.79 GiB envelope budget).  The gate
+#: Below the streamed envelope too (5.80 GiB envelope budget).  The gate
 #: has to keep refusing here or it is not a gate.
 _FITS_NEITHER_GIB = 3
 
@@ -341,11 +385,15 @@ def test_check_prices_the_streamed_forecast_when_ingest_is_unpriced(
 
     streamed = _streamed(config)
     assert payload["peak_envelope_bytes"] == int(streamed.peak_vram_bytes)
-    # ...and it is genuinely the smaller figure, not a relabelled one:
-    # the tiling holds under half what the resident domain would, and the
-    # radiation peak on top of it is still below the resident envelope.
-    assert (payload["observed_peak_envelope_bytes"]
-            > 2 * payload["streamed"]["vram_bytes"])
+    # ...and it is genuinely the smaller figure, not a relabelled one: the
+    # streamed term is the itemized model's total for the two windows,
+    # re-added from the terms the report prints, and it is below the
+    # resident envelope.  (It was once asserted under half the resident
+    # figure; that fraction was the affine rung model's, which priced no
+    # radiation storage into the hold.)
+    assert (payload["streamed"]["vram_bytes"]
+            == int(streamed.vram_bytes)
+            == _total_from_terms(streamed))
     assert (payload["peak_envelope_bytes"]
             < payload["observed_peak_envelope_bytes"])
     assert payload["observed_peak_envelope_exceeds_budget"] is False
@@ -542,39 +590,52 @@ def test_an_unconfigured_run_is_priced_exactly_as_it_always_was(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# The RADIATION TRANSIENT: what the card holds when RRTMGP actually fires
+# The RADIATION PEAK: what the card holds when RRTMGP actually fires
 # ---------------------------------------------------------------------------
 #
-# ``StreamedEnvelope.vram_bytes`` prices what a streamed forecast HOLDS --
-# the CUDA context, the rung's per-process fixed cost and the tile buffers.
-# A radiation step then allocates, uses and frees a working set on top of
-# that, MEASURED at +2.74 GiB on the three-domain 9/3/1 km run and carried
-# as ``tilestream.autoplan.RADIATION_TRANSIENT_BYTES``.  It recurs every
-# radiation period and lasts 60-75 s of it, and the first call is
-# ``itimestep == 1``.
+# ``StreamedEnvelope.vram_bytes`` prices what a streamed forecast HOLDS.
+# Under the affine measured-rung model that was the CUDA context, the
+# rung's per-process fixed cost and the tile buffers, and a radiation
+# step then allocated, used and freed a working set on top of it --
+# MEASURED at +2.74 GiB on the three-domain 9/3/1 km run and carried as
+# ``tilestream.autoplan.RADIATION_TRANSIENT_BYTES``, added to the hold as
+# ``radiation_transient_bytes`` to make ``peak_vram_bytes``.
 #
-# THE OMISSION.  The planner already reserves it before it picks a tile
-# (``autoplan.budget_for``), and the streamed-init road already adds it
-# before it picks a road (``psdf._streamed_peak_bytes``).  The ESTIMATE
-# surfaces -- the wizard's fit, ``gpuwm check``'s streamed alloc leg,
-# ``run-plan --estimate`` and ``gpuwm go``'s memory gate -- priced the
-# steady state alone.  A PINNED tiling makes that the whole story: it
-# consults no planner, so nothing anywhere on its path had the number at
-# all.  A card between the 6.71 GiB steady state and the 9.45 GiB
-# radiation peak of the fixture above was admitted by every one of those
-# surfaces and then met the transient at the first radiation call.
+# THE ITEMIZED MODEL PRICES THE PEAK INSIDE THE BUFFER.  A prepared
+# forecast is priced by :mod:`gpuwm.core.prepared_tile_memory`, which
+# itemizes each buffer at its own window and RETAINS the RTE named storage
+# per stream (``buffer/radiation_named_storage_bytes``: the standalone
+# workspace of the unfused LW/SW call at that window's column count), so
+# what the card holds at the instant radiation fires is already in
+# ``vram_bytes`` and the separate transient is zero for these fixtures.
+# The straddle that mattered -- a card or budget that holds the process
+# BETWEEN radiation calls and not AT one -- is still the defect the
+# omission of 2.5 admitted (a download, a preparation and a forecast that
+# dies at ``itimestep == 1``), and it is built below from the model's own
+# terms: the total WITHOUT the per-buffer radiation storage on one side,
+# the priced total WITH it on the other.
+#
+# THE OMISSION, as it was found: the planner reserved the transient before
+# it picked a tile (``autoplan.budget_for``) and the streamed-init road
+# added it before it picked a road, but the ESTIMATE surfaces -- the
+# wizard's fit, ``gpuwm check``'s streamed alloc leg, ``run-plan
+# --estimate`` and ``gpuwm go``'s memory gate -- priced the steady state
+# alone.  A PINNED tiling made that the whole story: it consults no
+# planner, so nothing anywhere on its path had the number at all.
 
-#: Free VRAM above every OTHER phase of the fixture -- its 6.71 GiB
-#: streamed steady state and its 8.34 GiB ingest phase -- and below the
-#: 9.45 GiB the forecast reaches when radiation fires.  This is the card
+#: Free VRAM above what the fixture holds BETWEEN radiation calls (its
+#: two buffers without their RTE named storage: 7.80 GiB under the
+#: itemized model, 2026-09-10, and above its 8.34 GiB ingest phase) and
+#: below the 11.80 GiB it holds when radiation fires.  This is the card
 #: the omission admits and the run dies on, and the FORECAST is what has
-#: to bind here or the leg is measuring the ingest term instead.
+#: to bind here or the leg is measuring the ingest term instead.  The
+#: tests do not pin either figure: they re-add both from the terms.
 _FITS_STEADY_NOT_PEAK_BYTES = int(9.0 * GIB)
 
-#: ``--budget-gib`` whose 8.79 GiB envelope budget straddles the same
-#: pair: the 6.71 GiB steady figure fits it and the 9.45 GiB radiation
-#: peak does not.  This is the value ``_FITS_STREAMED_GIB`` held before
-#: the transient reached these surfaces, which is the same statement from
+#: ``--budget-gib`` whose 8.80 GiB envelope budget straddles the same
+#: pair: the hold without radiation storage fits it and the priced peak
+#: does not.  This is the value ``_FITS_STREAMED_GIB`` held before the
+#: radiation peak reached these surfaces, which is the same statement from
 #: the other side -- it was admitting a run this card cannot finish.
 #: ``_FITS_STREAMED_GIB`` itself is the arm that must still be ADMITTED,
 #: because a fix that refused everything would pass the legs below.
@@ -625,30 +686,48 @@ history_interval_s = 3600.0
     return path
 
 
-def test_the_streamed_envelope_carries_the_measured_radiation_transient(
+def test_the_streamed_envelope_carries_the_radiation_peak_inside_its_buffers(
         tmp_path):
     """THE OMISSION, at the object every estimate surface reads.
 
-    Both halves traceable to the constant they came from, and the peak
-    stated as its own field rather than left for four callers to add on.
+    Every term traceable to the arithmetic it came from.  The itemized
+    prepared model retains the RTE named storage per buffer, so the
+    radiation peak is a line of the buffer the refusal prints -- equal to
+    the standalone workspace at that window's column count -- and the
+    separate transient is zero; the peak every surface compares is then
+    the hold itself.  The total is re-added from the printed terms, and
+    the hold without that storage is strictly less, which is the straddle
+    the legs below stand on.
     """
-    from tilestream import autoplan
+    from gpuwm.core.prepared_tile_memory import standalone_rte_storage_bytes
 
     config = _config(tmp_path)
     exp = preflight._load_experiment_any(config)
     env = _streamed(config)
 
     assert env is not None, "fixture no longer streams"
-    fp = autoplan.footprint_for(exp.domains[0].run)
     assert env.rung == "full"
-    assert (env.radiation_transient_bytes
-            == fp.radiation_transient_bytes
-            == autoplan.RADIATION_TRANSIENT_BYTES["full"])
-    assert env.peak_vram_bytes == (env.vram_bytes
-                                   + env.radiation_transient_bytes)
-    # 6.71 GiB held, 2.74 GiB more when RRTMGP fires.
-    assert env.vram_bytes / GIB == pytest.approx(6.71, abs=0.05)
-    assert env.peak_vram_bytes / GIB == pytest.approx(9.45, abs=0.05)
+    terms = dict(env.terms)
+    # The radiation peak is a named term of the buffer, not a reservation
+    # beside it: the standalone unfused LW/SW storage at the window's own
+    # column count, retained for every stream.
+    radiation = int(terms["buffer/radiation_named_storage_bytes"])
+    assert radiation > 0
+    assert radiation == sum(standalone_rte_storage_bytes(
+        int(exp.root.run.nz), env.window_nx * env.window_ny,
+        int(exp.column_chunk), exp.vertical.p_top).values())
+    assert terms["radiation_transient_bytes"] == env.radiation_transient_bytes == 0
+    assert env.peak_vram_bytes == env.vram_bytes
+    # A buffer is the sum of the categories printed for it, and the total
+    # is the model's arithmetic over those terms.
+    categories = ("state", "physics", "scratch", "lbc", "diagnostic",
+                  "step_transient", "radiation_named_storage",
+                  "column_workspace")
+    assert terms["buffer/total_bytes"] == sum(
+        int(terms[f"buffer/{name}_bytes"]) for name in categories)
+    assert terms["buffers_bytes"] == env.nbuffers * terms["buffer/total_bytes"]
+    assert env.vram_bytes == terms["vram_bytes"] == _total_from_terms(env)
+    assert _total_from_terms(env, radiation_storage=False) < env.vram_bytes
 
 
 def test_a_rung_that_runs_no_radiation_prices_no_transient(tmp_path):
@@ -671,10 +750,11 @@ def test_go_refuses_a_card_that_only_fits_the_steady_state(
         tmp_path, monkeypatch):
     """THE REGRESSION at the door that spends the user's bandwidth.
 
-    9.0 GiB free holds the 6.71 GiB the tiling steadily holds and does
-    not hold the 9.45 GiB it reaches when radiation fires.  Admitting it
-    is a download, a preparation and a forecast that stops completing
-    steps at the first radiation call.
+    9.0 GiB free holds what the tiling holds between radiation calls
+    (its buffers without their RTE named storage) and does not hold what
+    it reaches when radiation fires.  Admitting it is a download, a
+    preparation and a forecast that stops completing steps at the first
+    radiation call.
     """
     def _probe(*_args, **_kwargs):
         return {"free_bytes": _FITS_STEADY_NOT_PEAK_BYTES,
@@ -734,16 +814,19 @@ def test_check_alloc_gate_refuses_a_budget_that_only_fits_the_steady_state(
     """THE REGRESSION at the report door, on the gate that exits 1.
 
     The same pair as the ``go`` leg above, declared rather than probed:
-    the streamed alloc leg weighed 6.71 GiB against an 8.79 GiB envelope
-    budget and passed, on a card that meets 9.45 GiB at the first
-    radiation call.
+    the streamed alloc leg once weighed the hold alone against an 8.80
+    GiB envelope budget and passed, on a card that meets the radiation
+    peak at the first call.  The straddle is re-added from the model's
+    terms: the hold without the per-buffer RTE storage fits the budget,
+    the priced peak does not.
     """
     config = _config(tmp_path, source="hrrr")
     rc, payload = _check(capsys, config, "--budget-gib",
                          str(_BUDGET_FITS_STEADY_NOT_PEAK_GIB))
     env = _streamed(config)
 
-    assert int(env.vram_bytes) <= payload["envelope_budget_bytes"], (
+    assert (_total_from_terms(env, radiation_storage=False)
+            <= payload["envelope_budget_bytes"]), (
         "fixture no longer straddles the budget")
     assert int(env.peak_vram_bytes) > payload["envelope_budget_bytes"]
     assert payload["gates"]["alloc_estimate_le_wddm_budget"] is False
@@ -812,5 +895,8 @@ def test_the_wizard_fit_seam_weighs_the_radiation_peak(tmp_path):
     budget = sizing_budget_bytes(
         exp, free_bytes=_FITS_STEADY_NOT_PEAK_BYTES, vram_gib=None,
         forcing_interval_seconds=21600.0)
-    assert int(env.vram_bytes) <= budget, "fixture no longer straddles"
+    # The straddle from the model's own terms: the hold between radiation
+    # calls fits this budget, the priced peak does not.
+    assert (_total_from_terms(env, radiation_storage=False) <= budget), (
+        "fixture no longer straddles")
     assert phases.peak_envelope_bytes > budget

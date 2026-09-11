@@ -1997,7 +1997,11 @@ def run_prepared_tree(
     started = time.perf_counter()
     # The estimator and core.model allocate shared arenas only for a tree.
     # A single external domain keeps DomainState's own storage.
-    arena = build_shared_scratch_arena(resident_domains) if len(exp.domains) > 1 and resident_domains else None
+    # The whole tree rides along so a resident child under a STREAMED root
+    # still sizes its force slots from that root (the mixed road the plan
+    # report prices; looking the parent up among the resident domains
+    # alone died here with KeyError).
+    arena = build_shared_scratch_arena(resident_domains, exp.domains) if len(exp.domains) > 1 and resident_domains else None
     rebuilt = build_shared_dycore_state_workspace(resident_domains) if len(exp.domains) > 1 and resident_domains else None
     # The shared helper, never a local restatement of the predicate: the
     # persistent workspace exists only for the MODERN RTE+RRTMGP
@@ -2016,7 +2020,7 @@ def run_prepared_tree(
         else None
     )
     from gpuwm.core.preflight import shared_scratch_arena_bytes, shared_dycore_state_workspace_bytes
-    expected_scratch = (shared_scratch_arena_bytes(resident_domains) if len(exp.domains) > 1 and resident_domains else 0)
+    expected_scratch = (shared_scratch_arena_bytes(resident_domains, exp.domains) if len(exp.domains) > 1 and resident_domains else 0)
     expected_rebuilt = (shared_dycore_state_workspace_bytes(resident_domains) if len(exp.domains) > 1 and resident_domains else 0)
     if (0 if arena is None else arena.nbytes) != expected_scratch:
         raise RuntimeError("shared scratch allocation differs from preflight")

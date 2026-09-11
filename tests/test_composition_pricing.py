@@ -41,6 +41,22 @@ WHAT IS MEASURED
     still be ACCEPTED, so a lossy decode fails loudly instead of quietly
     testing something else.
 
+WHAT CARD IT PRICES ON
+    Every composition is priced on ONE explicit profile,
+    :data:`PRICING_PROFILE`: the reference card's geometry carrying the
+    compile platform of the tree's first Noah-MP composed-unit recording
+    (:data:`gpuwm.core.kernel_frame_recordings.NOAHMP_COMPOSED_FRAME_RECORDINGS`).
+    Given a profile, the estimator reads no device, so the walk's outcome
+    is the same on a box with a card, on a box without one, and under
+    ``GPUWM_NO_LOCAL_GPU`` -- and ``sf_surface_physics = 4`` prices from
+    its recorded row instead of refusing because the machine running the
+    suite was never read.  (Before this profile the walk priced with no
+    profile at all, which for scheme 4 means "read this machine's card":
+    green under the switch only because a declared rule excused the
+    refusal, red the moment a recorded card was visible.)  The estimator's
+    card-class refusals for scheme 4 -- absent, unread, unrecorded, stale
+    -- are held by ``tests/test_noahmp_frame_provenance.py``, not here.
+
 WHAT A REFUSAL IS ALLOWED TO BE
     Not every accepted composition has to price.  A preflight refusal is
     legitimate when it is a DECLARED rule: a stated, reasoned refusal that
@@ -49,7 +65,8 @@ WHAT A REFUSAL IS ALLOWED TO BE
     that says which compositions it may fire on.  A refusal matching no
     declared rule is a defect.  A declared rule that fires on nothing is
     dead text and also fails -- the escape hatch is not allowed to grow
-    quietly.
+    quietly.  The list is empty right now: every composition the loader
+    accepts prices.
 """
 from __future__ import annotations
 
@@ -57,11 +74,14 @@ import json
 import re
 import tomllib
 import warnings
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from gpuwm.core.preflight import estimate_experiment, physics_kernel_modules
+from gpuwm.core.kernel_frame_recordings import NOAHMP_COMPOSED_FRAME_RECORDINGS
+from gpuwm.core.preflight import (
+    MEASURED_LOCAL_MEMORY_PROFILE, estimate_experiment, physics_kernel_modules)
 from gpuwm.experiment import build_experiment
 from tools import report_physics_composition_walk as walk
 
@@ -120,32 +140,33 @@ def build(combination: dict[str, object]):
 # The declared refusals.
 # ---------------------------------------------------------------------------
 
-def _selects_noahmp(combination: dict[str, object]) -> bool:
-    return int(combination.get("sf_surface_physics", 0)) == 4
-
-
 #: Preflight refusals that are RULES, not gaps.  Each entry is
 #: ``(id, predicate, signature)``: the predicate says which compositions
 #: the rule may fire on, and the signature is a fragment the refusal's own
 #: message must contain.  Both halves matter -- a rule that fires outside
 #: its predicate is a different defect wearing a declared rule's name.
-DECLARED_PRICING_RULES = (
-    (
-        "noahmp-translation-unit-has-no-measured-composite-frame",
-        _selects_noahmp,
-        "cannot price the local-memory reservation",
-        # gpuwm/core/preflight.py UNMEASURED_KERNEL_MODULES: Noah-MP's
-        # driver/energy/thermal fragments compile only through
-        # noahmp_kernel_sources.translation_unit_source and fail NVRTC
-        # standalone, so their per-thread frame has never been measured.
-        # The refusal is deliberate, is not a missing selector row, and
-        # names both the way through (sf_surface_physics = 2) and the
-        # fix (a CHAINED_TRANSLATION_UNIT_FRAMES row).  It becomes a
-        # green row the day that composite frame is measured; nothing
-        # here has to be remembered for that to happen, because the
-        # dead-rule check below fails the moment it stops firing.
-    ),
-)
+#:
+#: Empty: nothing the loader accepts is refused by the estimator.  The
+#: Noah-MP entry that lived here (``sf_surface_physics = 4`` refused for
+#: want of a measured composite frame, then for want of a read card) left
+#: with the per-platform recording that prices scheme 4 and with
+#: :data:`PRICING_PROFILE`, which hands the walk that platform explicitly.
+DECLARED_PRICING_RULES: tuple[tuple[str, object, str], ...] = ()
+
+
+#: The card every composition is priced on.  A present-card profile in
+#: the estimator's own terms: the reference geometry with the compile
+#: platform of the first recorded Noah-MP row, so the walk asks "does
+#: this composition price on a card whose platform has a reading" and
+#: never "was the machine running this suite read".
+assert NOAHMP_COMPOSED_FRAME_RECORDINGS, (
+    "the tree carries no Noah-MP composed-unit recording, so no card can "
+    "price sf_surface_physics = 4 and this walk has no platform to hand "
+    "the estimator")
+PRICING_PROFILE = replace(
+    MEASURED_LOCAL_MEMORY_PROFILE,
+    name="composition-pricing walk card (reference geometry, recorded platform)",
+    compile_platform=NOAHMP_COMPOSED_FRAME_RECORDINGS[0].platform_key)
 
 
 @pytest.fixture(scope="module")
@@ -158,7 +179,8 @@ def accepted_keys() -> tuple[str, ...]:
 
 @pytest.fixture(scope="module")
 def priced(accepted_keys) -> dict[str, object]:
-    """Build and price every accepted composition, once, for the file."""
+    """Build and price every accepted composition, once, for the file,
+    on :data:`PRICING_PROFILE` -- no device is read."""
 
     ok: list[str] = []
     refused: list[tuple[str, dict[str, object], str]] = []
@@ -175,7 +197,7 @@ def priced(accepted_keys) -> dict[str, object]:
             rebuild_refused.append((key, f"{type(error).__name__}: {error}"))
             continue
         try:
-            estimate_experiment(experiment)
+            estimate_experiment(experiment, profile=PRICING_PROFILE)
         except Exception as error:  # noqa: BLE001 -- the verdict IS the error
             refused.append((key, combination, str(error)))
         else:

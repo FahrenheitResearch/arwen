@@ -99,7 +99,7 @@ def test_matrix_has_every_cell_every_citation_and_pinned_counts():
     each increment was read off the enlarged matrix rather than derived.
     """
     cells = tuple(iter_compatibility_matrix())
-    assert len(cells) == MATRIX_CELL_COUNT == 5760
+    assert len(cells) == MATRIX_CELL_COUNT == 12800
     assert len({
         (
             cell.mp_physics,
@@ -124,15 +124,28 @@ def test_matrix_has_every_cell_every_citation_and_pinned_counts():
     # verdict scaled by exactly 3/2 (LEGAL 1584 -> 2376, reconfigured
     # 528 -> 792, FATAL 1200 -> 1800, not-expressible 528 -> 792), and
     # each count below was read off the enlarged matrix, not derived.
+    #
+    # Re-pinned when cu_physics=16 (New Tiedtke) joined the cumulus axis
+    # (5760 -> 7680, every verdict scaled by 4/3) and again when mp_physics
+    # 0, 9, 16 and 50 joined the microphysics axis (audit R-012; 7680 ->
+    # 12800).  Both are independent axes -- compatibility_cell reads the
+    # PBL/surface-layer pair, the radiation label and sf_surface_physics,
+    # and takes only a citation from cu_physics and mp_physics -- so every
+    # verdict scaled by exactly 4/3 and then 10/6, and each count below was
+    # read off the enlarged matrix, not derived.
     assert Counter(cell.verdict for cell in cells) == {
-        WRFVerdict.LEGAL: 2376,
-        WRFVerdict.LEGAL_RECONFIGURED: 792,
-        WRFVerdict.FATAL: 1800,
-        WRFVerdict.NOT_EXPRESSIBLE: 792,
+        WRFVerdict.LEGAL: 5280,
+        WRFVerdict.LEGAL_RECONFIGURED: 1760,
+        WRFVerdict.FATAL: 4000,
+        WRFVerdict.NOT_EXPRESSIBLE: 1760,
     }
+    # Every represented cumulus value carries its own Registry citation,
+    # on the same terms the mp assertion below states.
+    assert {cell.cu_physics for cell in cells} == {0, 1, 3, 16}
     # Every represented mp value carries its own Registry citation, so the
     # matrix cannot grow an axis value that is admitted without one.
-    assert {cell.mp_physics for cell in cells} == {1, 6, 8, 10, 18, 28}
+    assert {cell.mp_physics for cell in cells} == {
+        0, 1, 6, 8, 9, 10, 16, 18, 28, 50}
     assert WRF_COMMIT == "d66e442fccc04111067e29274c9f9eaccc3cef28"
 
 
@@ -214,9 +227,26 @@ def test_every_front_door_tuple_agrees_with_the_wrf_matrix():
     # (pbl=0, cu=3) cells WRF admits and ArWen refuses -- 480 pbl-off
     # cells at cu=3 minus the 90 whose LSM refusal fires first in
     # validate_run_config's ordering.
+    #
+    # Re-measured when cu_physics=16 joined the axis (5760 -> 7680).  Its
+    # 1920 cells carry NO cumulus-specific refusal at all -- New Tiedtke
+    # reads no KPBL, so the seam that gives GF its 390 cells does not
+    # exist for it -- and they split exactly as the cumulus-off cells do:
+    # 600 wrf-fatal, 90 lsm-structural, 1230 admitted.  That the two
+    # cumulus schemes split differently is the point of the count: the GF
+    # seam is a scheme's own read, not a cumulus-slot rule.
+    #
+    # Re-measured when mp 0/9/16/50 joined the axis (7680 -> 12800, audit
+    # R-012).  None of the four adds a refusal or removes one: the
+    # RTE+RRTMGP adapter derives Milbrandt-Yau's radii from the scheme's
+    # own moments (gpuwm/core/rrtmgp.py), so the cloud-optics seam that
+    # once refused mp=9 on that radiation pair no longer exists and every
+    # mp=9 cell reaches the same verdict its neighbours do.  wrf-fatal, the
+    # LSM seam and the GF/PBL seam therefore all scaled by exactly 10/6,
+    # and every count below was read off the enlarged walk.
     assert observed == {
-        "admitted": 3300,
-        "arwen-structural": 270,
-        "arwen-structural-gf-pbl": 390,
-        "wrf-fatal": 1800,
+        "admitted": 7550,
+        "arwen-structural": 600,
+        "arwen-structural-gf-pbl": 650,
+        "wrf-fatal": 4000,
     }

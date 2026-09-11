@@ -154,6 +154,26 @@ def _route_emission_physics_gates() -> dict[str, Any]:
     return {"hrrr": route_physics_blocker}
 
 
+def switch_route_blocker(switches, source) -> str | None:
+    """Why ``source``'s emission route refuses these resolved switches.
+
+    The switch-level spelling of the same gate
+    :func:`profile_route_blocker` asks about a shipped suite, for the
+    callers that hold a resolved domain rather than a profile id -- the
+    companion's option availability is one.  It reads the SAME table, so
+    a greyed cell in a front end and the refusal a run meets later
+    cannot disagree, and a source registered tomorrow is answered here
+    with no edit.
+    """
+
+    if switches is None or source is None:
+        return None
+    emission_gate = _route_emission_physics_gates().get(str(source))
+    if emission_gate is None:
+        return None
+    return emission_gate(dict(switches))
+
+
 def profile_route_blocker(profile, source) -> str | None:
     """Why ``source`` cannot prepare ``profile``, or ``None``.
 
@@ -174,10 +194,7 @@ def profile_route_blocker(profile, source) -> str | None:
         switches = single_domain_runtime_switches(profile)
     except (KeyError, ValueError):
         return None
-    emission_gate = _route_emission_physics_gates().get(str(source))
-    if emission_gate is None:
-        return None
-    return emission_gate(switches)
+    return switch_route_blocker(switches, source)
 
 
 def shipped_profiles() -> tuple[str, ...]:
@@ -536,6 +553,33 @@ def admissibility_rules() -> list[dict[str, Any]]:
             },
         },
         {
+            # The pairing laws, which are TABLE DATA and not this
+            # module's own: an option's constraints say which sibling
+            # component option it requires and which combination is
+            # refused outright.  Named here so a front end that greys a
+            # cell for a coupling can say who owns the refusal it is
+            # anticipating, instead of a GUI implying it invented the
+            # pairing.  Where the cells come from is stated too, because
+            # they arrive on a different payload from these profiles.
+            "rule": "component-coupling",
+            "owner": "gpuwm.physics_registry.validate_physics_plan",
+            "applies_to": "every component option carrying constraints",
+            "declares": {
+                "requires_components":
+                    "{component_id: [option_id, ...]} -- the sibling "
+                    "options this option must be paired with",
+                "refused_when":
+                    "conjunction rules over sibling options and settings, "
+                    "each carrying its reason and, where one exists, its "
+                    "remedy_label and remedy_settings",
+                "reported_as":
+                    "physics_components[].options[].requires_components "
+                    "and .refused_when",
+                "configuration_authority":
+                    "gpuwm.config.validate_run_config",
+            },
+        },
+        {
             "rule": "vertical-level-bounds",
             "owner": "gpuwm.physics_compat."
                      "validate_resolved_physics_vertical_levels",
@@ -599,5 +643,64 @@ __all__ = [
     "day_only_reason", "default_basis", "default_profile_for", "maturity",
     "nocturnal_remedy", "profile_facts", "radiation_scheme_ids",
     "registered_sources", "shipped_profiles", "source_menu",
+    "switch_route_blocker",
     "universally_admissible_profile", "vertical_levels",
 ]
+
+
+# ---------------------------------------------------------------------------
+# AGREEMENT WITH THE REGISTRY, AT IMPORT.  The wizard menu is a hand-kept
+# list of template ids; an implemented composition it omits has no front
+# door through the wizard.  Every omission is cited so the sweep is a grep:
+# the Kessler probe is an HRRR-only ratification product, the three Noah-MP
+# expert templates sit behind their acknowledgement, and two templates were
+# never given a runtime-switch row at all (audit R-068).
+_TEMPLATES_OUTSIDE_THE_WIZARD_MENU = {
+    "kessler-mp1-ysu-mm5-noah-dudhia-v1": (
+        "native-HRRR Kessler ratification probe; its evidence is bound to "
+        "the HRRR route and it is deliberately not offered as a wizard suite"),
+    "wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1": (
+        "expert-only Noah-MP template behind noahmp-host-column-throughput-v1"),
+    "wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1": (
+        "expert-only Noah-MP template behind noahmp-host-column-throughput-v1"),
+    "wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1": (
+        "expert-only Noah-MP template behind noahmp-host-column-throughput-v1"),
+}
+# The two audit R-068 templates are named through the registry's own
+# records (their composition and the default-template constant) rather
+# than as id literals, the same way gpuwm/physics_compat.py cites them:
+# one id carries the forcing source it was registered on, and a citation
+# keyed on a spelling stops being a citation when the template is renamed.
+
+
+def _templates_without_a_runtime_switch_row() -> dict[str, str]:
+    from gpuwm.physics_registry import (
+        DEFAULT_TEMPLATE_ID, template_ids_with_components)
+
+    reason = ("audit R-068: no _SINGLE_DOMAIN_RUNTIME_SWITCHES row, so no "
+              "runner accepts it")
+    aggregate_kf = template_ids_with_components(
+        microphysics="wsm6-mp6", cumulus="kain-fritsch",
+        radiation="rte-rrtmgp-legacy-aggregate")
+    if len(aggregate_kf) != 1:
+        raise RuntimeError(
+            "the audit R-068 citation names THE ONE WSM6 + KF template on "
+            "the aggregate RTE+RRTMGP radiation option and the registry now "
+            f"has {len(aggregate_kf)}: {list(aggregate_kf)}; give each its "
+            "wizard row or cite each omission")
+    return {aggregate_kf[0]: reason, DEFAULT_TEMPLATE_ID: reason}
+
+
+_TEMPLATES_OUTSIDE_THE_WIZARD_MENU.update(
+    _templates_without_a_runtime_switch_row())
+
+
+def _require_agreement_with_the_registry() -> None:
+    from gpuwm.physics_registry import require_template_menu_agreement
+
+    require_template_menu_agreement(
+        "gpuwm.physics_menu.WIZARD_PHYSICS_PROFILES", WIZARD_PHYSICS_PROFILES,
+        cited_absences=_TEMPLATES_OUTSIDE_THE_WIZARD_MENU)
+
+
+_require_agreement_with_the_registry()

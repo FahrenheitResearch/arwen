@@ -35,23 +35,48 @@ from gpuwm.core.constants import CUDA_DEFINES
 REPO = Path(__file__).resolve().parents[1]
 KERNEL_DIR = REPO / "gpuwm" / "core" / "kernels"
 
-#: Every module in the tree that constructs a ``cp.RawModule``.
+#: The manifest sites: every module that constructs a ``cp.RawModule`` for
+#: a forecast translation unit or records one.  The Noah-MP factories no
+#: longer construct anything themselves -- they delegate to the one site in
+#: ``noahmp_kernel_sources.py`` -- and stay listed so :func:`audit_source`
+#: keeps reading them: a factory that grew a RawModule of its own again
+#: would be caught here.  :func:`test_every_rawmodule_constructor_in_the_tree_is_named`
+#: is the census behind this list; nothing under ``gpuwm/`` may construct a
+#: RawModule without appearing either here or in its explained allow-list.
 SITE_FILES = (
     "gpuwm/core/kernels/__init__.py",
     "gpuwm/core/nest_interp.py",
     "gpuwm/core/noahmp_driver_gpu.py",
     "gpuwm/core/noahmp_energy_gpu.py",
+    "gpuwm/core/noahmp_glacier_gpu.py",
+    "gpuwm/core/noahmp_kernel_sources.py",
     "gpuwm/core/noahmp_slab_libm.py",
     "gpuwm/core/noahmp_thermal_gpu.py",
     "gpuwm/core/noahmp_vegeflux_gpu.py",
     "gpuwm/core/rrtmg_sw.py",
 )
 
-#: Two cached loaders in ``kernels/__init__.py`` plus six other sites.
-#: ``rrtmg_sw.py`` is NOT among them any more -- it compiles through
-#: :data:`EXPECTED_NVRTC_SITE_COUNT`'s route instead, see the module
-#: docstring -- but it stays in :data:`SITE_FILES` because it still records.
-EXPECTED_SITE_COUNT = 8
+#: Two cached loaders, nest interpolation, and the one Noah-MP compile
+#: site (``noahmp_kernel_sources.compile_runtime_unit``); the six Noah-MP
+#: factories that used to be sites each delegate to it.  ``rrtmg_sw.py`` is
+#: NOT among them -- it compiles through :data:`EXPECTED_NVRTC_SITE_COUNT`'s
+#: route instead, see the module docstring -- but it stays in
+#: :data:`SITE_FILES` because it still records.
+EXPECTED_SITE_COUNT = 4
+
+#: ``cp.RawModule`` constructors under ``gpuwm/`` that are NOT manifest
+#: sites, each with the reason.  Closed and literal: a new constructor
+#: anywhere else fails the census below until it is either made a site or
+#: explained here.
+RAWMODULE_CONSTRUCTORS_OUTSIDE_THE_MANIFEST = {
+    "gpuwm/core/p3_device.py": (
+        "the P3 composed unit's own compile site; it records through "
+        "record_module in the same function and its frame is re-audited on a "
+        "device by tests/test_p3_cuda_gpu.py"),
+    "gpuwm/doctor.py": (
+        "a one-kernel self-contained probe inside a subprocess source string, "
+        "compiled to prove the toolchain works; not a forecast translation unit"),
+}
 
 #: ``compile_using_nvrtc`` sites among :data:`SITE_FILES`: rrtmg_sw only.
 #: (``rrtmg_lw.py`` and ``rrtmg_mcica.py`` take the same route but record
@@ -162,6 +187,48 @@ def test_every_rawmodule_site_is_accounted_for():
     assert total == EXPECTED_SITE_COUNT, (
         f"expected {EXPECTED_SITE_COUNT} RawModule sites, found {total}; the "
         "manifest covers a fixed inventory and a new site must join it")
+
+
+def test_every_rawmodule_constructor_in_the_tree_is_named():
+    """The census behind SITE_FILES: no RawModule constructor may hide.
+
+    The breakage this prevents: a module that compiles a translation unit
+    outside the manifest records nothing about it, and a frame table, a
+    parity receipt or a memory price can then describe a source the run
+    never compiled.  Found when the Noah-MP factories were collapsed onto
+    one site and the count dropped 8 -> 4: the old contract said "every
+    module that constructs a RawModule" and nothing checked it.  In
+    particular ``noahmp_frame_provenance.py`` constructs none -- its
+    measurement compiles through the one Noah-MP site -- and this is
+    where that stays asserted.
+    """
+    constructors = set()
+    for path in sorted((REPO / "gpuwm").rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if "RawModule" not in text and "RawKernel" not in text:
+            continue
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = (func.attr if isinstance(func, ast.Attribute)
+                    else func.id if isinstance(func, ast.Name) else None)
+            if name in ("RawModule", "RawKernel"):
+                constructors.add(path.relative_to(REPO).as_posix())
+    # gpuwm/core/preflight.py's probe compiles nothing; doctor's probe is a
+    # string, so its constructor is found by the text scan below instead.
+    doctor = (REPO / "gpuwm/doctor.py").read_text(encoding="utf-8")
+    if "RawModule(" in doctor:
+        constructors.add("gpuwm/doctor.py")
+    named = set(SITE_FILES) | set(RAWMODULE_CONSTRUCTORS_OUTSIDE_THE_MANIFEST)
+    assert constructors <= named, sorted(constructors - named)
+    assert "gpuwm/core/noahmp_frame_provenance.py" not in constructors
+    assert "gpuwm/core/noahmp_kernel_sources.py" in constructors
+    for path in RAWMODULE_CONSTRUCTORS_OUTSIDE_THE_MANIFEST:
+        assert path in constructors, f"{path} no longer constructs one; drop it"
+    for path, reason in RAWMODULE_CONSTRUCTORS_OUTSIDE_THE_MANIFEST.items():
+        assert len(reason.split()) >= 12, path
 
 
 def test_every_direct_nvrtc_site_is_accounted_for():

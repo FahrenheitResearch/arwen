@@ -178,9 +178,14 @@ def test_nested_legacy_ozone_is_carried_and_unknown_leaf_arrays_refuse(monkeypat
 
 
 @pytest.mark.parametrize("lw,sw", [(4,0),(0,4),(4,1),(1,4)])
-def test_modern_mixed_microphysics_keeps_actual_missing_optics_guard(lw,sw):
-    with pytest.raises(NotImplementedError, match="no cloud-optics coupling"):
-        validate_run_config(replace(_cfg(lw,sw), mp_physics=9, moist=True))
+def test_modern_mixed_microphysics_admits_every_coupled_two_moment_scheme(lw,sw):
+    # This used to pin the mp=9 refusal on every pair with a modern arm.
+    # Every implemented microphysics selector has an RTE+RRTMGP
+    # cloud-optics row now -- Milbrandt-Yau's is its own two-moment radii
+    # -- so a modern arm beside an off, Dudhia or RRTM arm validates for
+    # mp=9 exactly as it does for Morrison, at plan review.
+    for mp_physics in (9, 10):
+        validate_run_config(replace(_cfg(lw,sw), mp_physics=mp_physics, moist=True))
 
 
 @pytest.mark.gpu
@@ -314,8 +319,13 @@ def test_classic_pair_geography_and_dycore_cross_reused_tile_buffers(inactive_op
 def test_scalar_radiation_options_validate_only_selected_engines(lw,sw,variant):
     cfg = replace(_cfg(lw,sw,variant),o3input=0,use_mp_re=0)
     if 4 in (lw,sw) and variant == "rte-rrtmgp":
-        with pytest.raises(ValueError,match="selected modern-RRTMG spectrum"):
+        # One message per knob: each names the operation this arm
+        # substitutes, so a caller who moved one switch is not told the
+        # other is a problem too.
+        with pytest.raises(ValueError,match=r"o3input=0 is not implemented"):
             validate_run_config(cfg)
+        with pytest.raises(ValueError,match=r"use_mp_re=0 is not implemented"):
+            validate_run_config(replace(_cfg(lw,sw,variant),use_mp_re=0))
     else:
         actual = validate_run_config(cfg)
         assert (actual.o3input,actual.use_mp_re,actual.ra_rrtmg_variant) == (0,0,variant)

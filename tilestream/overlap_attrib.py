@@ -307,7 +307,12 @@ def main() -> None:
     # step is what a past-the-ceiling domain cannot take; build_stores'
     # own docstring carries the measurement, and run_tiled's inventory
     # match guards the skip.
-    case = realcase.build_stores(prep, exp, settle=False)
+    # ``reflectivity=False``: this lane's product is the TRANSPORT -- where
+    # a streamed step's wall clock goes -- and it renders nothing.  Carrying
+    # the REFL_10CM slot would put a diagnostic launch on every tile step of
+    # a measurement whose whole subject is per-step cost.  Every lane that
+    # renders takes the default, which is on.
+    case = realcase.build_stores(prep, exp, settle=False, reflectivity=False)
     realcase.release_prepared(prep)
     prep = None
 

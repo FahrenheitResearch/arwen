@@ -62,7 +62,8 @@ from gpuwm.vertical_contract import (
     validate_coordinate_shapes,
     validate_explicit_eta_grid,
 )
-from gpuwm.wrf_physics_inventory import stock_wrf_physics_inventory
+from gpuwm.wrf_physics_inventory import (
+    WRFINPUT_2D_DIMS, stock_wrf_physics_inventory)
 
 
 _CONTRACT_PATH = Path(__file__).with_name("wrf_direct_v461_contract.json")
@@ -353,7 +354,72 @@ _PACKAGE_FIELD_METADATA = {
     # failure mode the mp=28 row's docstring names as a known downstream gap.
     "QIR": ("Rime ice mass-1 mixing ratio", "kg kg(-1)"),
     "QIB": ("Rime ice volume-1 mixing ratio", "m(3) kg(-1)"),
+    # Thompson aerosol-aware (mp_physics=28, Registry.EM_COMMON:3036 for
+    # the scalars and :492-493 for the two 2-D emission members).  These
+    # six rows are audit R-054: without them an mp=28 stock export wrote 8
+    # of its 14 inventoried members and dropped the six that carry the
+    # scheme's entire aerosol state, silently -- the same failure the P3
+    # comment above describes, met a second time by the package whose own
+    # docstring had named it as a known gap.
+    "QNCLOUD": ("cloud water Number concentration", "# kg(-1)"),
+    "QNWFA": ("water-friendly aerosol number concentration", "# kg(-1)"),
+    "QNIFA": ("ice-friendly aerosol number concentration", "# kg(-1)"),
+    "QNBCA": ("black carbon aerosol number concentration", "# kg(-1)"),
+    "QNWFA2D": ("water-friendly aerosol number tendency", "# kg(-1) s(-1)"),
+    "QNIFA2D": ("ice-friendly aerosol number tendency", "# kg(-1) s(-1)"),
 }
+
+#: Inventoried wrfinput members ``_PACKAGE_FIELD_METADATA`` has NO row for,
+#: each with the defect that leaves it out.  ``_physics_contract_bundle``
+#: skips an inventoried member this dict does not name WITHOUT A WORD, so a
+#: row here is a silent truncation of somebody's stock export.
+#:
+#: EMPTY (audit R-054).  Its six rows were mp=28's, and they are now real
+#: metadata rows above with a 2-D prototype branch beneath them.  The
+#: agreement check below holds this set equal to the difference between the
+#: registry's inventory and the metadata, so the truncation cannot come
+#: back unnamed: a new package member with no row fails at import.
+_PACKAGE_FIELDS_NOT_YET_EXPORTED: dict[str, str] = {}
+
+
+def _require_agreement_with_the_registry() -> None:
+    """Every inventoried wrfinput member is either exportable or cited."""
+
+    import os
+
+    from gpuwm.physics_registry import (
+        REGISTRY_REBUILD_ENV, consumer_rows_by_selector)
+
+    if os.environ.get(REGISTRY_REBUILD_ENV) == "1":
+        return
+    inventoried: set[str] = set()
+    for row in consumer_rows_by_selector("microphysics", "stock_wrf_export").values():
+        if row.get("inventoried") is True:
+            inventoried.update(
+                field["netcdf_name"] for field in row["wrfinput_fields"])
+    extensions = inventoried - _FROZEN_CONTRACT_MOIST_MEMBERS
+    exportable = set(_PACKAGE_FIELD_METADATA)
+    problems = []
+    for name in sorted(extensions - exportable - set(_PACKAGE_FIELDS_NOT_YET_EXPORTED)):
+        problems.append(
+            f"{name} is inventoried and has neither a _PACKAGE_FIELD_METADATA "
+            "row nor a cited reason; it would be dropped from a stock export "
+            "silently")
+    for name in sorted(set(_PACKAGE_FIELDS_NOT_YET_EXPORTED) & exportable):
+        problems.append(
+            f"{name} is cited as not yet exported but has a metadata row; "
+            "retire the citation")
+    for name in sorted(set(_PACKAGE_FIELDS_NOT_YET_EXPORTED) - extensions):
+        problems.append(
+            f"{name} is cited as not yet exported but no registry inventory "
+            "names it; retire the citation")
+    if problems:
+        raise RuntimeError(
+            "gpuwm.wrf_direct._PACKAGE_FIELD_METADATA disagrees with the "
+            "registry's stock_wrf_export inventory: " + "; ".join(problems))
+
+
+_require_agreement_with_the_registry()
 
 
 def _physics_contract_bundle(
@@ -409,20 +475,39 @@ def _physics_contract_bundle(
             item for item in bdy_contract["variables"]
             if item["name"].split("_B")[0] not in undeclared
         ]
-    extension_names = [
-        field.netcdf_name
+    extensions = [
+        field
         for field in inventory.wrfinput_fields
         if field.netcdf_name in _PACKAGE_FIELD_METADATA
     ]
+    extension_names = [field.netcdf_name for field in extensions]
     input_names = {item["name"] for item in input_contract["variables"]}
     input_prototype = next(
         item for item in input_contract["variables"]
         if item["name"] == "QCLOUD")
-    for name in extension_names:
+    # A package member is not necessarily 3-D.  mp=28's two surface
+    # emission members are XY (Registry.EM_COMMON:492-493), and cloning
+    # QCLOUD for them would declare QNWFA2D with a bottom_top dimension --
+    # a variable stock WRF's own reader rejects, which is why adding the
+    # metadata rows alone was never the whole fix (audit R-054).  The
+    # frozen contract already carries 2-D prototypes; HGT is one, and it is
+    # READ from the contract rather than constructed, so the rank, the
+    # MemoryOrder and the stagger come from the same file every other
+    # variable's do.
+    surface_prototype = next(
+        item for item in input_contract["variables"]
+        if item["name"] == "HGT")
+    two_dimensional = {
+        field.netcdf_name for field in extensions
+        if len(field.dimensions) == len(WRFINPUT_2D_DIMS)
+    }
+    for field in extensions:
+        name = field.netcdf_name
         if name in input_names:
             continue
         description, units = _PACKAGE_FIELD_METADATA[name]
-        spec = copy.deepcopy(input_prototype)
+        spec = copy.deepcopy(
+            surface_prototype if name in two_dimensional else input_prototype)
         spec["name"] = name
         spec["attributes"]["description"] = description
         spec["attributes"]["units"] = units
@@ -434,6 +519,11 @@ def _physics_contract_bundle(
         if item["name"].startswith("QCLOUD_B")
     ]
     for name in extension_names:
+        if name in two_dimensional:
+            # A 2-D surface emission member has no lateral boundary arrays
+            # in WRF's Registry either: there is nothing to force on the
+            # face of a field with no vertical extent.
+            continue
         description, units = _PACKAGE_FIELD_METADATA[name]
         for prototype in bdy_prototypes:
             suffix = prototype["name"].removeprefix("QCLOUD")
@@ -1488,10 +1578,24 @@ def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
     for field in inventory.wrfinput_fields:
         if field.netcdf_name in result:
             continue
-        state_key = f"state/{field.registry_name}"
+        # The key is DECLARED, not guessed.  It used to be
+        # f"state/{field.registry_name}", and gpuwm drops WRF's leading q
+        # on exactly mp=28's six new rows, so every one of them missed the
+        # cache and exported zeros -- including on a run whose WIF
+        # climatology lane had filled nwfa/nifa with real values (R-054).
+        # ``state_key`` is None only for a member gpuwm has no species for
+        # (QNBCA), where zeros ARE what real.exe writes.
+        state_name = field.state_key
+        state_key = None if state_name is None else f"state/{state_name}"
+        # Rank comes from the inventory too: mp=28's two emission members
+        # are XY, and a 3-D zero array for them would not match the
+        # contract's own 2-D declaration.
+        shape = (qv.shape if len(field.dimensions) != len(WRFINPUT_2D_DIMS)
+                 else qv.shape[-2:])
         result[field.netcdf_name] = (
-            cache.array(state_key) if state_key in cache._arrays
-            else np.zeros(qv.shape, dtype=np.float32)
+            cache.array(state_key)
+            if state_key is not None and state_key in cache._arrays
+            else np.zeros(shape, dtype=np.float32)
         )
     return result
 

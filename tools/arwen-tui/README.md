@@ -24,7 +24,9 @@ the desktop's progress, node and settings actions reveal it, and **Ctrl+Q** or t
 Its close button and Alt+F4 are disabled and Ctrl+C / Ctrl+Break do not end
 the process; closing it from the taskbar or Task Manager still ends the
 controller and any forecast it owns. The controller exits on its own once the
-visual workspace has closed, no job is running and the window is hidden. Without an attached console, or with stdin/stdout redirected, the
+visual workspace has closed and no job is running: the terminal window goes
+with it whether it was revealed or hidden, because the controller serves the
+desktop's window and the job it owns and nothing else keeps it alive. Without an attached console, or with stdin/stdout redirected, the
 controller notes that in `<output>/.arwen-tui/controller.log` and runs the
 terminal-less loop instead. That log also receives every fatal controller error
 in `--headless-companion` mode, because stderr there is a hidden console at best.
@@ -39,6 +41,28 @@ while it keeps heartbeating, the second start exits with that reason instead of
 becoming a second owner of the same forecast. A controller that is closed,
 silent for 30 s or a read-only run viewer is not reused; a session directory
 younger than 30 s without a status is waited for.
+
+Every run viewer opened from **Runs** publishes its own read-only session
+beside the controller's, and that directory is scratch: the viewer writes
+`state: "closed"` and then removes `companion-<session>` when the run is
+closed or the controller exits, so an evening of opened saved runs leaves no
+closed sessions under `.arwen-tui`. It takes with it the raw and processed
+frames that viewer downloaded into `remote-artifacts` and `processed-store`,
+which only that viewer's handoff could ever reach; the caches keyed by node
+and job under the output root, `.arwen-viewer-cache` and
+`.arwen-native-plots-cache`, outlive every viewer and are kept. When a file a
+reader still holds open prevents the removal, the directory keeps its closed
+status and the controller retries it on its own heartbeat, again when it exits
+and again when it next starts, so a viewer whose frames a reader was still
+holding does not outlive the session that opened it. A session that published
+`closed` is finished whoever owns it; any other read-only session is removed
+only once it has been silent for 30 s and its own process has ended, so a
+viewer this terminal still has open is never removed however long its
+heartbeat has paused; an emptied session directory that is no longer young and
+carries the name of this terminal or of a terminal that has ended goes with
+them. The
+controller's own session and the `<job-id>` receipt directories are never
+removed.
 
 - New forecast asks five essentials (location, source, start cycle, duration, new filename), then shows every setting in an editable summary. Ctrl+A opens that summary early. Its visible source recommendation is read from the installed guided CLI; any source ID or alias can replace it. It collects exact native `domain` arguments, shows them before execution, and opens the emitted TOML with **Review launch plan** selected. The full TOML remains editable, including all settings outside the questions.
 - **Calendar (F3)** in a cycle/start-time question shows the selected source's UTC hours, current forecast horizons, publication guidance and documented archive bounds. Click a day and hour, use arrows/Tab, change month with PgUp/PgDn (Ctrl changes year), or type/paste an exact date. New forecast starts with `latest`: Next opens an asynchronous check through the ordinary acquisition resolver, then **Use date** keeps the exact selected cycle. **Latest complete (F4)** checks required final-hour objects where public probes exist. ERA5 instead says **Latest expected**, accounts for the whole requested analysis window behind its approximate publication delay, and labels recent ERA5T data and account requirements. Unknown archive bounds stay unknown; historical file versions still undergo normal acquisition/compatibility checks. Esc cancels the lookup and preserves the original guide value.
@@ -131,6 +155,10 @@ Windows copying uses the native Unicode clipboard and supports Windows Terminal/
 `--snapshot FILE.html` writes a static render of the same Ratatui widgets without starting a command. It is a preview tool, not a browser interface.
 
 The visual-workspace handoff (`handoff.json`), every `status.json` heartbeat and every queue response carry `tui_version` (this crate's version); the handoff also carries `engine_version`, read once from the configured interpreter's `gpuwm.__version__` (null when that interpreter cannot answer). The fields are additive under the unchanged `arwen.companion-*.v1` schemas. Follow-up for the visual workspace: read both on `Handoff::parse`, compare them with its own version, and say "terminal 2.6.5, workspace 2.7.0" instead of treating an `action: "unknown"` reply as a response for another run.
+
+`launch_downscale` is the queue action a visual workspace uses to downscale a finished local forecast. It is local only: downscaling reads the parent's history and its restart from this computer's disk, and the refusal for an SSH target says so and names `gpuwm downscale` in the node's own terminal. The request carries `target` (`{"kind":"local"}`), `parent_run_dir` (the parent row's `run_dir`), either `point` (`{"lat","lon"}`) or `child_config`, and the optional `parent_domain`, `parent_restart` (absent means the parent's newest complete checkpoint set), `ratio` (default 3), one of `child_size` / `vram_gib` / `auto_vram` (default `true`), `hours`, `output_interval_seconds`, `tiles`, one of `accept_parent_cadence` (default `true`) / `max_boundary_interval_seconds`, `out_dir` (absolute, must not exist) and `mode` (`plan` or `run`). Unknown keys are refused, as for every other action. The answers become Downscale guide answers and the command comes from `Guide::request`, so the queue and the terminal's own guided setup build the same `gpuwm downscale` argument list; `plan` adds `--dry-run`. The response carries the usual `job_id`/`job_dir` plus `mode`, `child_config_path` and `downscale_plan_path`. Both documents are written beside `--out` for a plan (a run refuses an output directory that already exists) and inside it for a run; a supplied `child_config` is reported as itself, because that file is not derived and not rewritten. Read them once `status.json`'s `job.state` is `completed`. A failure's reason is `result.json`'s `error.message`, surfaced as the job's `error`: the worker records an uncaught exception there, and an engine refusal as well -- the `gpuwm downscale: <sentence>` line the CLI prints before it returns 2 -- so a caller shows the same sentence the terminal shows. `job.log` keeps the complete output, warnings included.
+
+A downscale run publishes the same receipts every other run publishes -- `run-manifest.json` (`route: "downscale"`, `plan_source: "gpuwm downscale <child config>"`) and `events.jsonl` -- so it appears in **My forecasts** with live progress and opens in a run viewer like any other forecast. `--dry-run` plan jobs stay out of that list, as every other non-forecast job does. Every verified local row additionally carries `downscale: {history_dir, checkpoint_dir, history_frames, restart_sets, history_interval_s}`, read from the directories that run's own event stream says it committed its frames and its last checkpoint to (the prepared routes write frames under `<run>/wrfout/` and checkpoints in `<run>/` above it; a run whose stream names neither is read where its manifest lives): a child needs at least two history frames to be forced between and one complete restart set for its physics, so a front door reads eligibility from receipts instead of guessing it, and sends `history_dir` as the `parent_run_dir` the engine reads.
 
 For Rust tests, set `GPUWM_TUI_TEST_PYTHON` to the absolute Python executable in the ArWen environment, then run `cargo test --locked --offline`. The suite exercises actual owned worker processes and native guided configuration emission, without launching a forecast.
 

@@ -316,7 +316,7 @@ per-domain VALUE is also refused by name: `bl_pbl_physics = 900`
 | `rdlai2d` | `rdlai2d` | false | bool | Noah read-in LAI |
 | `opt_thcnd` | `opt_thcnd` | 1 | 1, 2 | Noah soil thermal conductivity (Johansen/McCumber-Pielke) |
 | `num_soil_layers` | `num_soil_layers` | 4 | scheme-defined | ArWen *refuses* a count the scheme does not define where WRF silently overwrites it |
-| `nest_microphysics_transition` | -- | `same-scheme-only` | + `mp8-to-mp18-mass-diagnosed-v1`, `mp-edge-mass-diagnosed-v1` | ArWen-only, one-way nest MP edges; the first id preserves the ratified Thompson→NSSL path and the matrix id selects the other ported mixed edges. **`mp_physics = 28` is excluded from both mixed ids**: an mp=28 domain may only nest under an mp=28 parent, and a mixed edge is refused by name rather than closed with WRF's non-aerosol-aware fallback constants |
+| `nest_microphysics_transition` | -- | `same-scheme-only` | + `mp8-to-mp18-mass-diagnosed-v1`, `mp-edge-mass-diagnosed-v1` | ArWen-only, one-way nest MP edges. Left at the default, a mixed edge between two ported schemes resolves to the closure that pair takes (`mp8-to-mp18-mass-diagnosed-v1` for Thompson over NSSL-2, the matrix id for every other pair) and the coupler receipt records the requested and the effective policy; naming the pair's own id pins it, and naming the other mixed id is refused. An `mp_physics = 28` child entering from another scheme is seeded with WRF's own non-aerosol-aware droplet number and aerosol floors, named in the receipt |
 
 Scheme selectors (`mp_physics`, `bl_pbl_physics`, `ra_lw/sw_physics`,
 `sf_sfclay_physics`, `sf_surface_physics`, `cu_physics`) and their

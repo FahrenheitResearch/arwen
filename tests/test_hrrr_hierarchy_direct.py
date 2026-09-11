@@ -257,26 +257,32 @@ def test_public_gate_accepts_generic_parent_ordered_easy_physics_slice():
         _slice(replace(_native(), feedback=1), target)
     # A mixed WSM6 -> Morrison edge that names no transition policy.
     #
-    # This used to refuse as "unsupported mixed": before v1.3.1 the only
-    # admitted mixed edge was Thompson -> NSSL.  The nest-edge lane
-    # admits all 20 ordered mixed edges now, and the refusal moved from
-    # "the pair is unsupported" to "the pair needs its policy named" --
-    # which is the stronger statement, because a silent default is what
-    # a cross-scheme translation must never have.  The gate is not
-    # weakened: the same hierarchy still fails closed.
-    drifted = replace(
+    # This used to refuse as "unsupported mixed" (before v1.3.1 the only
+    # admitted mixed edge was Thompson -> NSSL), then as "the pair needs
+    # its policy named".  Since 2.7.3 the unset key resolves to the
+    # closure the pair takes and the coupler receipt records the requested
+    # and the effective policy, so the tree is admitted with the moist/CQ
+    # contract the transition requires on both domains ...
+    unnamed = replace(
         _native(), domains=(
-            _native().domains[0],
+            replace(_native().domains[0], run=replace(
+                _native().domains[0].run, moist=True, moist_cq=True)),
             replace(_native().domains[1], run=replace(
-                _native().domains[1].run, mp_physics=10))))
-    with pytest.raises(ValueError,
-                       match="requires explicit nest_microphysics_transition"):
-        _slice(drifted, target)
+                _native().domains[1].run, mp_physics=10,
+                moist=True, moist_cq=True))))
+    _slice(unnamed, target)
 
-    # ...and naming it, with the moist/CQ contract the transition also
-    # requires on both domains, admits the same tree.  That is the other
-    # half of the contract, and it is what makes the refusal above a
-    # named gate rather than a blanket one.
+    # ... while naming the closure of ANOTHER edge for this pair is a
+    # contradiction and still fails closed by name.
+    contradicted = replace(
+        unnamed, domains=(unnamed.domains[0], replace(
+            unnamed.domains[1], run=replace(
+                unnamed.domains[1].run,
+                nest_microphysics_transition="mp8-to-mp18-mass-diagnosed-v1"))))
+    with pytest.raises(ValueError, match="closure of another edge"):
+        _slice(contradicted, target)
+
+    # Naming the pair's own closure admits the same tree.
     admitted = replace(
         _native(), domains=(
             replace(_native().domains[0], run=replace(
@@ -319,14 +325,15 @@ def test_public_gate_admits_explicit_thompson_to_nssl_tree_without_consent():
 
     _slice(mixed, _target())
 
-    missing_policy = replace(
+    # The same tree with the key left at its default on the mixed edge
+    # resolves to the Thompson -> NSSL closure and is admitted.
+    unnamed_policy = replace(
         mixed, domains=(*mixed.domains[:2], replace(
             mixed.domains[2], run=replace(
                 mixed.domains[2].run,
                 nest_microphysics_transition="same-scheme-only")),
             mixed.domains[3]))
-    with pytest.raises(ValueError, match="requires explicit"):
-        _slice(missing_policy, _target())
+    _slice(unnamed_policy, _target())
 
 
 def test_public_gate_admits_a_same_scheme_p3_hierarchy():
@@ -351,9 +358,9 @@ def test_public_gate_admits_mixed_p3_edges_under_the_named_policy():
 
     A Thompson root carrying a P3 child (entry closure: qi/qs/qg merge,
     rime pair diagnosed) and a P3 root carrying a Thompson child (exit
-    closure: split by rime state), each admitted only when the edge
-    policy is NAMED -- the same explicit-policy contract every other
-    mixed edge on this route carries.
+    closure: split by rime state), each admitted with the edge policy
+    named and again with the key left at its default, which resolves to
+    the same closure.
     """
     base = _native()
     for root_mp, child_mp in ((8, 50), (50, 8)):
@@ -373,8 +380,7 @@ def test_public_gate_admits_mixed_p3_edges_under_the_named_policy():
             mixed.domains[1], run=replace(
                 mixed.domains[1].run,
                 nest_microphysics_transition="same-scheme-only"))))
-        with pytest.raises(ValueError, match="requires explicit"):
-            _slice(unnamed, _target())
+        _slice(unnamed, _target())
 
 
 def test_public_gate_accepts_short_ohio_z80_sealed_root():
@@ -740,8 +746,13 @@ def test_coupled_legacy_import_is_admitted_by_the_radiation_slice(tmp_path):
     compares the RESOLVED pair through gpuwm.config.radiation_scheme_ids,
     the production resolver; emission is untouched (sealed bytes stay
     sealed).
+
+    The resolver admits the aggregate restated on both streams for the
+    same reason: it is one selection written twice, and only a
+    disagreement between the spellings is refused.
     """
 
+    from gpuwm.config import radiation_scheme_ids
     from gpuwm.experiment import load_experiment
     from gpuwm.hrrr_hierarchy_direct import _native_experiment
     from gpuwm.hrrr_route_inputs import target_domain
@@ -771,13 +782,26 @@ def test_coupled_legacy_import_is_admitted_by_the_radiation_slice(tmp_path):
     _supported_hierarchy_slice(radiation_off, target,
                                forcing_hours=tuple(range(25)))
 
-    # CONTROL 2: an incoherent spelling (explicit pair beside a nonzero
-    # aggregate) is refused by the resolver itself, by name.
-    # RunConfig now enforces this invariant while the request is built.
-    with pytest.raises(ValueError, match="require ra_physics=0"):
+    # CONTROL 2: the imported aggregate RESTATED on both streams is the
+    # same selection written twice, so it resolves to (4, 4) and the
+    # slice admits it.  Refusing this was refusing a caller for agreeing
+    # with the importer.
+    restated = replace(exp, domains=tuple(
+        replace(domain, run=replace(domain.run, ra_lw_physics=4,
+                                    ra_sw_physics=4))
+        for domain in exp.domains))
+    assert all(radiation_scheme_ids(domain.run) == (4, 4)
+               for domain in restated.domains)
+    _supported_hierarchy_slice(restated, target,
+                               forcing_hours=tuple(range(25)))
+
+    # CONTROL 3: a spelling that CONTRADICTS itself (the aggregate names
+    # one engine, the explicit pair another) is refused by the resolver
+    # itself, by name.
+    with pytest.raises(ValueError, match="contradict each other"):
         incoherent = replace(exp, domains=tuple(
-            replace(domain, run=replace(domain.run, ra_lw_physics=4,
-                                        ra_sw_physics=4))
+            replace(domain, run=replace(domain.run, ra_lw_physics=1,
+                                        ra_sw_physics=1))
             for domain in exp.domains))
         _supported_hierarchy_slice(incoherent, target,
                                    forcing_hours=tuple(range(25)))

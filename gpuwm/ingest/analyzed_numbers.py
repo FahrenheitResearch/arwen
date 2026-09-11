@@ -12,9 +12,9 @@ def metgrid_number_targets(cfg):
     only when the corresponding P_QN* belongs to num_3d_s. In particular,
     QNC targets P_QNC, never NSSL's distinct P_QNDROP scalar.
     """
-    from gpuwm.ingest.wrfinput import _active_moisture_map
+    from gpuwm.ingest.wrfinput import active_moisture_map
     from gpuwm.core.nest_fields import nest_field_kinds
-    active = _active_moisture_map(cfg)
+    active = active_moisture_map(cfg)
     transported = set(nest_field_kinds(cfg))
     return {name: active[wrf] for name, wrf in _WRF_NAMES.items()
             if wrf in active and active[wrf] in transported}

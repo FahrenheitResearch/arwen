@@ -22,7 +22,8 @@ import zlib
 
 import numpy as np
 
-from gpuwm.config import RunConfig, validate_aerosol_source_options
+from gpuwm.config import (RunConfig, validate_aerosol_source_options,
+                          validate_run_preparation)
 from gpuwm.core import constants as c
 from gpuwm.core.grid import (BaseState, VerticalCoord,
                              finalize_vertical_coord,
@@ -2644,6 +2645,24 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         # fallback (MP28_AEROSOL_SYNTHETIC_FALLBACK) rather than a
         # deviation notice.
         validate_aerosol_source_options(cfg)
+        # AND THE RUN DOOR'S half: the machine-dependent preconditions.
+        # ``validate_run_config`` deliberately does not ask them -- it is
+        # also the namelist importer's battery, and that door emits a
+        # TOML, reads no dataset and cannot be handed the way out -- so
+        # the question "is WRF's monthly aerosol climatology installed on
+        # this machine" is asked where nwfa/nifa would otherwise be filled
+        # with the synthetic profile and a specified-BC domain handed
+        # zero-inflow aerosol boundaries.
+        #
+        # THIS IS THE FLOOR, NOT THE FRONT DOOR.  It catches a RunConfig
+        # that reached initialization without passing any door -- but it
+        # is late on every route a user types: in the prepare stage of
+        # `gpuwm go` (after the cycle has been fetched and its manifest
+        # verified) and inside runtime's time loop on `gpuwm run`.  The
+        # same sentence is raised from the same inventory at the doors
+        # that commit to building a forecast, before they spend anything
+        # (``gpuwm.config.validate_experiment_preparation``).
+        validate_run_preparation(cfg)
     if use_sh_qv is None:
         use_sh_qv = getattr(snapshot, "specific_humidity_authority", False)
     if not isinstance(use_sh_qv, (bool, np.bool_)):

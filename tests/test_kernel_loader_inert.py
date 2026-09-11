@@ -176,3 +176,31 @@ def test_preamble_is_unchanged_by_the_hook():
     assert preamble.endswith(
         (_KDIR / "common.cuh").read_text(encoding="utf-8") + "\n")
     assert "thompson_aa_" not in preamble
+
+
+def test_the_noahmp_runtime_route_assembles_the_loader_source_byte_for_byte():
+    """``load_module`` sends a standalone Noah-MP unit through
+    ``noahmp_kernel_sources.compile_runtime_unit``; the string that route
+    compiles must be exactly ``module_source(name)``.
+
+    The two assemblers agree today because no ``noahmp_*`` module is in the
+    header allow-list.  The breakage this prevents is the day one is added:
+    ``module_source`` would gain a header the runtime unit does not carry,
+    the recorded frame row would describe one image and the loader another,
+    and nothing would say so.  ``noahmp_vegeflux`` is excluded on purpose --
+    its runtime unit is C++14 without the preamble and takes its own
+    factory, and ``load_module`` does not route it.
+    """
+    from gpuwm.core.noahmp_kernel_sources import (
+        NOAHMP_TRANSLATION_UNITS, runtime_unit)
+
+    routed = [name for name, parts in NOAHMP_TRANSLATION_UNITS.items()
+              if len(parts) == 1 and name != "noahmp_vegeflux"]
+    assert routed, "the loader route covers no unit at all"
+    for name in routed:
+        unit = runtime_unit(name)
+        assert unit.source == kernel_loader.module_source(name), name
+        assert unit.options == ("-std=c++17",), name
+        assert name not in kernel_loader.EXTRA_HEADERS, (
+            f"{name} joined the header allow-list; the Noah-MP runtime unit "
+            "must carry the same header or the loader must stop routing it")

@@ -2096,14 +2096,18 @@ def test_mp28_external_lbc_uses_supplied_aerosols_and_retains_synthetic_behavior
             np.testing.assert_array_equal(snapshot["nifa"], 4560000.)
 
 
-def test_mp28_mixed_nest_edge_is_refused_by_name():
+def test_mp28_mixed_nest_edge_resolves_on_every_partner_by_name():
     """gpuwm/core/microphysics_transition.py.
 
-    v1 refuses rather than inventing an entry closure for nc/nwfa/nifa
-    across a scheme boundary.  The refusal must (a) fire for BOTH
-    directions and every partner scheme, (b) name mp=28 and its moments
-    rather than reading as "mp=28 is not implemented", and (c) NOT touch
-    the same-scheme mp28 -> mp28 nest, which is a supported configuration.
+    v1 REFUSED rather than inventing an entry closure for nc/nwfa/nifa
+    across a scheme boundary.  Audit R-004 ratified that closure, so what
+    is measured now is the same three properties with the verdict turned
+    over: the edge must (a) resolve in BOTH directions and for every
+    partner scheme, (b) carry a receipt that names mp=28's seeded moments
+    and the value each one takes rather than a generic diagnosis, and (c)
+    still leave the same-scheme mp28 -> mp28 nest alone.  The name said
+    "is refused" long after the assertions said the opposite, which is a
+    trap for the next reader running ``-k``.
     """
     import types
 
@@ -2119,29 +2123,59 @@ def test_mp28_mixed_nest_edge_is_refused_by_name():
     assert same.mixed is False
     assert same.policy_id == mt.SAME_SCHEME_POLICY
 
-    partners = [mp for mp in mt.PORTED_MP_PHYSICS]
+    # RATIFIED (audit R-004).  Every mp=28 mixed pair now RESOLVES, in
+    # both directions, and its receipt names the seeded aerosol values
+    # rather than a refusal.  The entry closure is WRF's own
+    # non-aerosol-aware fallback set (module_mp_thompson.F:1248-1255) and
+    # the exit direction never needed a closure at all: the target's
+    # moments come from target mass and the aerosol numbers are dropped.
+    partners = [mp for mp in mt.PORTED_MP_PHYSICS if mp != 28]
     assert partners, "PORTED_MP_PHYSICS became empty"
     for other in partners:
         for parent, child in ((other, 28), (28, other)):
-            with pytest.raises(ValueError) as excinfo:
-                mt.resolve_microphysics_transition(
-                    run(parent), run(child, mt.EDGE_MATRIX_POLICY))
-            message = str(excinfo.value)
-            assert "REFUSED" in message
-            assert "MP28" in message
-            for moment in ("nc", "nwfa", "nifa"):
-                assert moment in message, (parent, child, moment)
-            # It must not masquerade as "scheme not ported".
-            assert "ported selectors are" not in message
+            if parent == child:
+                continue
+            contract = mt.resolve_microphysics_transition(
+                run(parent), run(child, mt.EDGE_MATRIX_POLICY))
+            assert contract.mixed is True
+            rows = {row["target_field"]: row
+                    for row in contract.species_actions()
+                    if row["action"] == "diagnosed"}
+            if child == 28:
+                for moment, expected in (("nc", 100.0e6),
+                                         ("nwfa", 11.1e6),
+                                         ("nifa", 5.0e3)):
+                    assert rows[moment]["seeded_value"] == expected, (
+                        parent, child, moment)
+                assert "thompson" in rows["nwfa"]["reason"]
+                note = mt.mixed_edge_entry_note(contract)
+                assert "non-aerosol-aware" in note
 
     # And the ratified MP8 -> MP18 edge codes are untouched.  mp=50's
-    # ratification APPENDED its rime pair at 20/21 (the discipline the
-    # PORTED_MP_PHYSICS comment demands), moving nothing below it.
+    # ratification APPENDED its rime pair at 20/21 and mp=9's appended its
+    # nc/nh at 22/23 (the discipline the PORTED_MP_PHYSICS comment demands),
+    # each moving nothing below it.  The length is the count of DISTINCT
+    # field names the ported selectors carry between them, so it is read
+    # from those selectors rather than retyped: this assertion was pinned at
+    # 22 and went red the moment mp=9 joined, which is a guard describing a
+    # tree that no longer exists rather than a guard on mp=28.
     assert mt._EDGE_FIELD_CODES["qvolh"] == 19
     assert mt._EDGE_FIELD_CODES["qir"] == 20
     assert mt._EDGE_FIELD_CODES["qib"] == 21
-    assert len(mt._EDGE_FIELD_CODES) == 22
-    assert 28 not in mt.PORTED_MP_PHYSICS
+    assert mt._EDGE_FIELD_CODES["nc"] == 22
+    assert mt._EDGE_FIELD_CODES["nh"] == 23
+    # mp=16 then mp=28 appended next, again moving nothing below them.
+    assert mt._EDGE_FIELD_CODES["nn"] == 24
+    assert mt._EDGE_FIELD_CODES["nwfa"] == 25
+    assert mt._EDGE_FIELD_CODES["nifa"] == 26
+    ported_names = {
+        name
+        for mp in mt.PORTED_MP_PHYSICS
+        for name in mt._MASS_FIELDS[mp] + mt._MOMENT_FIELDS[mp]
+    }
+    assert len(mt._EDGE_FIELD_CODES) == len(ported_names) == 27
+    assert set(mt._EDGE_FIELD_CODES) == ported_names
+    assert {16, 28} <= set(mt.PORTED_MP_PHYSICS)
 
 
 def test_mp28_survives_a_restart_round_trip(tmp_path):
@@ -4390,17 +4424,42 @@ def test_physics_kernel_modules_fails_closed_on_an_unpriced_selector():
         pf.physics_kernel_modules(broken)
 
 
-def test_a_module_that_does_not_compile_is_refused_not_guessed():
-    """Noah-MP's driver/energy/thermal kernels fail NVRTC at this checkout,
-    so their local frame has never been measured.  A configuration that
-    selects them must refuse, not price zero."""
-    exp = load_experiment_case(CONFIG_4DOM_MYNN_KF)[0]
-    noahmp = tuple(
-        dataclasses.replace(dc, run=dataclasses.replace(
-            dc.run, sf_surface_physics=4)) for dc in exp.domains)
-    with pytest.raises(ValueError, match="do not compile at this checkout"):
-        pf.kernel_local_memory_bytes(
-            dataclasses.replace(exp, domains=noahmp))
+def test_noahmp_on_an_unread_card_is_priced_from_the_ceiling_and_says_so(monkeypatch):
+    """Scheme 4 prices the composed units the model launches, from the row
+    read on the card's own compile platform when there is one.  With no
+    card read there is no platform to match, and the estimator prices the
+    units from the ceiling over the recorded platforms -- the same rule
+    every standalone kernel gets on an unrecorded platform -- and says so
+    beside the number, naming the recorded platforms and the command that
+    makes the price a reading of this card.
+
+    CPU-only: no forcing bundle and no device.
+    """
+    from gpuwm.core import noahmp_frame_provenance as prov
+
+    monkeypatch.setenv("GPUWM_NO_LOCAL_GPU", "1")
+    cfg = RunConfig(**(_TINY | dict(nx=40, ny=40, nz=40)), moist=True,
+                    mp_physics=0, bl_pbl_physics=1, sf_sfclay_physics=1,
+                    sf_surface_physics=4, ra_physics=90)
+    exp = experiment_from_run_config(cfg, datetime(1974, 4, 3, 12))
+    modules = pf.physics_kernel_modules(exp)
+    assert {"noahmp_driver_composed", "noahmp_energy_composed",
+            "noahmp_thermal_composed", "noahmp_glacier_composed",
+            "noahmp_libm_slab_composed", "noahmp_vegeflux_runtime"} <= modules
+    assert not modules & pf.UNMEASURED_KERNEL_MODULES
+    frames = pf.kernel_local_frame_bytes(exp)
+    ceiling = prov.composed_frame_ceiling(prov.usable_recordings())
+    assert ceiling, "the shipped rows describe this tree"
+    for key in ceiling:
+        assert frames[key] == ceiling[key]
+    reference = pf.MEASURED_LOCAL_MEMORY_PROFILE
+    assert pf.kernel_local_memory_bytes(exp) == reference.reservation_bytes(max(frames.values()))
+    basis = pf.non_pool_basis(reference, exp)
+    assert "Noah-MP local frames priced from the ceiling over the recorded platforms" in basis
+    for row in prov.usable_recordings():
+        assert prov.platform_label(row) in basis
+    assert "not measured on this card" in basis
+    assert "measure_noahmp_frames.py measure" in basis
 
 
 def test_the_reflectivity_diagnostic_is_priced_only_when_it_can_fire():

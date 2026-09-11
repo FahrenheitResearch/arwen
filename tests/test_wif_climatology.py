@@ -357,7 +357,7 @@ def test_an_explicitly_named_missing_dataset_raises_rather_than_degrades():
         MissingWifClimatologyDataset, resolve_wif_climatology)
 
     with pytest.raises(MissingWifClimatologyDataset,
-                       match="chosen deliberately"):
+                       match="there is no such file"):
         resolve_wif_climatology("nowhere/QNWFA_QNIFA_SIGMA_MONTHLY.dat")
 
 

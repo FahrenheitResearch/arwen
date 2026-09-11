@@ -7,6 +7,8 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+import importlib.util
+
 import numpy as np
 import pytest
 
@@ -507,6 +509,179 @@ def test_resume_suppresses_every_committed_domain_alarm():
         committed_initial_history_grid_ids={1, 2},
         on_history=lambda gid, ticks: alarms.append((gid, ticks)))
     assert alarms == [(1, 60), (2, 60)]
+
+
+#: The checkpoint-question tests below stub ``gpuwm.core.dycore.step`` and
+#: hold a ``PhysicsDriver`` shell, and both modules import cupy when they
+#: are imported.  No device is opened (the driver is never built), so the
+#: tests run on any box whose install carries cupy and are declared skipped,
+#: with the reason, where it is not installed at all.
+needs_cupy_import = pytest.mark.skipif(
+    importlib.util.find_spec("cupy") is None,
+    reason=("cupy is not installed, and gpuwm.core.dycore / "
+            "gpuwm.core.physics import it at module scope"))
+
+@needs_cupy_import
+def test_the_checkpoint_question_is_asked_before_step_0_of_every_domain(
+        monkeypatch):
+    """R-046: a run that will checkpoint names its physics setup FIRST.
+
+    The defect: nothing asked whether a checkpoint could name a domain's
+    physics until the writer did, at the first restart interval, with the
+    forecast to that point already spent.  The gate is in
+    ``execute_experiment`` and this pins WHERE it fires -- before any step,
+    once per domain, parent first -- rather than only that it fires.
+    """
+    from gpuwm.core.physics import PhysicsDriver
+    from gpuwm.io import restart as restart_mod
+
+    order = []
+
+    def fake_step(state, cfg, **_kwargs):
+        order.append(("step", cfg.grid_id))
+
+    monkeypatch.setattr("gpuwm.core.dycore.step", fake_step)
+    monkeypatch.setattr(
+        restart_mod, "physics_setup_identity",
+        lambda state, cfg: order.append(("identity", int(cfg.grid_id))) or {})
+
+    model = _history_model(1800.0)
+    for node in model.walk_parent_first():
+        # A driver-shaped object without a driver's cost: the gate asks the
+        # question of a PhysicsDriver, and building a real one needs a card.
+        node.state.physics = object.__new__(PhysicsDriver)
+    execute_experiment(model, validate_state=False,
+                       restart_handler=lambda _tree, _ticks: None)
+
+    assert order[:2] == [("identity", 1), ("identity", 2)], order[:4]
+    assert order[2][0] == "step", order[:4]
+
+
+@needs_cupy_import
+def test_the_checkpoint_question_is_not_asked_of_a_foreign_physics_object(
+        monkeypatch):
+    """The identity is defined over a ``PhysicsDriver`` and over nothing else.
+
+    ``gpuwm/core/physics.py`` is the one production site that attaches a
+    driver and it attaches a ``PhysicsDriver``, so a state carrying another
+    object is a route this identity is not defined over: it would fail on an
+    ATTRIBUTE, naming the gate rather than whatever attached the object, and
+    it meets the restart writer at the writer's own door unchanged.
+    """
+    from gpuwm.io import restart as restart_mod
+
+    asked = []
+    monkeypatch.setattr("gpuwm.core.dycore.step",
+                        lambda state, cfg, **_kwargs: None)
+    monkeypatch.setattr(restart_mod, "physics_setup_identity",
+                        lambda state, cfg: asked.append(cfg) or {})
+
+    model = _history_model(1800.0)
+    execute_experiment(model, validate_state=False,
+                       restart_handler=lambda _tree, _ticks: None)
+    assert asked == []
+
+
+@needs_cupy_import
+def test_the_checkpoint_question_is_one_function_both_doors_call(monkeypatch):
+    """The rule about WHO is asked lives in one place (audit R-046).
+
+    ``execute_experiment`` skips a foreign physics object and asks a
+    driverless domain; ``gpuwm.runtime.integrate_prepared_case`` used to
+    ask ``physics_setup_identity`` itself, so the same foreign object raised
+    there on an attribute -- a difference visible only to whichever door a
+    user happened to run.  Both call this function; here is what it does.
+    """
+    from types import SimpleNamespace
+
+    from gpuwm.core.physics import PhysicsDriver
+    from gpuwm.io import restart as restart_mod
+
+    asked = []
+    monkeypatch.setattr(restart_mod, "physics_setup_identity",
+                        lambda state, cfg: asked.append(state) or {})
+
+    cfg = SimpleNamespace()
+    foreign = SimpleNamespace(physics=SimpleNamespace(step=lambda: None))
+    restart_mod.ask_checkpoint_physics_identity(foreign, cfg)
+    assert asked == [], "a route this identity is not defined over"
+
+    driverless = SimpleNamespace(physics=None)
+    driver_state = SimpleNamespace(physics=object.__new__(PhysicsDriver))
+    restart_mod.ask_checkpoint_physics_identity(driverless, cfg)
+    restart_mod.ask_checkpoint_physics_identity(driver_state, cfg)
+    assert asked == [driverless, driver_state]
+
+
+@needs_cupy_import
+def test_the_checkpoint_question_is_asked_once_per_domain(monkeypatch):
+    """A delayed-start child is asked before step 0, and not again at it.
+
+    The second ask was justified by a comment saying a delayed child "has
+    no state and no physics driver" before step 0.  It has both:
+    ``build_experiment`` builds every configured child's state and prepares
+    its driver, withholding only ``_started``, and ``walk_parent_first``
+    yields the whole tree -- so the pre-step-0 walk already asks it, hours
+    before its activation, which is the earlier and better placement.  No
+    second ask stands at activation: on_domain_start is reached only for
+    configured delayed children, which that walk already covered.
+    """
+    from types import SimpleNamespace
+
+    from gpuwm.core.physics import PhysicsDriver
+    from gpuwm.io import restart as restart_mod
+    from test_delayed_nest_activation import (DELAY_SECONDS, _stashing_step,
+                                              _tree)
+
+    exp, model = _tree(delay_s=DELAY_SECONDS)
+    assert model.node(2)._started is False, "the fixture is not delayed"
+    monkeypatch.setattr("gpuwm.core.nest.NestCoupler", _Coupler)
+    monkeypatch.setattr("gpuwm.core.dycore.step", _stashing_step)
+
+    asked = []
+    monkeypatch.setattr(
+        restart_mod, "physics_setup_identity",
+        lambda state, cfg: asked.append(int(cfg.grid_id)) or {})
+    for node in model.walk_parent_first():
+        node.state.physics = object.__new__(PhysicsDriver)
+    analysis = _HistoryState()
+    analysis.physics = object.__new__(PhysicsDriver)
+    case = SimpleNamespace(initial_result=SimpleNamespace(state=analysis))
+
+    activations = []
+
+    def initialize(node, clock):
+        activations.append(int(node.cfg.grid_id))
+        return SimpleNamespace(grid=node.grid, state=analysis), case
+
+    execute_experiment(
+        model, validate_state=False, delayed_child_initializer=initialize,
+        skip_feedback_path=True,
+        restart_handler=lambda _tree, _ticks: None)
+
+    assert activations == [2], activations
+    assert asked == [1, 2], (
+        "the checkpoint question is asked once per domain, before step 0; "
+        f"got {asked}")
+
+
+@needs_cupy_import
+def test_a_run_that_writes_no_checkpoints_is_not_asked_at_all(monkeypatch):
+    """No ``restart_handler`` is exactly "this run writes no checkpoints"."""
+    from gpuwm.core.physics import PhysicsDriver
+    from gpuwm.io import restart as restart_mod
+
+    asked = []
+    monkeypatch.setattr("gpuwm.core.dycore.step",
+                        lambda state, cfg, **_kwargs: None)
+    monkeypatch.setattr(restart_mod, "physics_setup_identity",
+                        lambda state, cfg: asked.append(cfg) or {})
+
+    model = _history_model(900.0)
+    for node in model.walk_parent_first():
+        node.state.physics = object.__new__(PhysicsDriver)
+    execute_experiment(model, validate_state=False)
+    assert asked == []
 
 
 def test_real_history_handler_30_minute_restart_split_has_exact_frames(

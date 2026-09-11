@@ -1754,12 +1754,14 @@ class GriddedObservations:
     #:
     #: There is deliberately **no** ``z0_obs``: the dBZ value a zero
     #: differences against is the *forward operator's* clear-air floor
-    #: (-35 dBZ for mp_physics 1/6/8/10, 0 dBZ for NSSL mp18), which is a
+    #: (-35 dBZ for the refl10cm family, 0 dBZ for NSSL mp18, -99 dBZ
+    #: for Milbrandt-Yau mp9), which is a
     #: property of the model the DA lane is running, not of the radar.
     #: Writing a value here would bake one scheme's floor into an
     #: observation file that outlives the run that consumed it, and a
-    #: floor mismatch manufactures a 35 dB innovation out of two agreeing
-    #: clear skies.  The DA adapter supplies the value.
+    #: floor mismatch manufactures a 35, 64 or 99 dB innovation -- one
+    #: per pair of those three floors -- out of two agreeing clear skies.
+    #: The DA adapter supplies the value.
     z0_mask: np.ndarray | None = None
     z0_count: np.ndarray | None = None
     z0_err: np.ndarray | None = None

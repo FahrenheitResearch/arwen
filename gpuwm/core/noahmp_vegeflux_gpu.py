@@ -20,12 +20,11 @@ mis-fold FP32 ties at compile time.
 from __future__ import annotations
 
 from functools import lru_cache
-from pathlib import Path
 from typing import Sequence
 
 import numpy as np
 
-from gpuwm.certify.kernel_manifest import record_module
+from gpuwm.core.noahmp_kernel_sources import compile_runtime_unit, runtime_unit
 import gpuwm.core.noahmp_libm as _libm
 import gpuwm.core.noahmp_vegeflux as _host
 from gpuwm.core.noahmp_vegeflux import R4, VegeFluxState
@@ -76,9 +75,6 @@ CALL_NAMES = (
 
 assert len(INPUT_NAMES) == N_INPUT
 assert len(OUTPUT_NAMES) == N_OUTPUT
-
-_KERNEL = Path(__file__).resolve().parent / "kernels" / "noahmp_vegeflux.cu"
-
 
 def _flat_pairs(values) -> np.ndarray:
     return np.asarray([word for pair in values for word in pair],
@@ -149,23 +145,15 @@ def _module_on(_device: int, use_device_libm: bool = False):
     scheme later -- caught, but by luck of a downstream check, not by
     anything here.
     """
-    import cupy as cp
-
-    options = ["-std=c++14"]
+    options = runtime_unit("noahmp_vegeflux").options
     if use_device_libm:
-        # Negative control only.  CUDA's device libm is not the WRF function.
-        options.append("-DUSE_DEVICE_LIBM")
-    code = _KERNEL.read_text(encoding="ascii")
-    module = cp.RawModule(
-        code=code,
-        backend="nvrtc",
-        options=tuple(options),
-    )
-    module.compile()
-    record_module(
-        "gpuwm.core.noahmp_vegeflux_gpu:vegeflux"
+        # Negative control only. CUDA's device libm is not the WRF function.
+        options += ("-DUSE_DEVICE_LIBM",)
+    module = compile_runtime_unit(
+        "noahmp_vegeflux",
+        module_key="gpuwm.core.noahmp_vegeflux_gpu:vegeflux"
         + ("(device-libm)" if use_device_libm else ""),
-        source=code, options=tuple(options), module=module)
+        options=options)
     for name, value in _constant_tables().items():
         _copy_constant(module, name, value)
     return module

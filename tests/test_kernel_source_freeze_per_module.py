@@ -184,6 +184,16 @@ BASELINE_PINNED: dict[str, str] = {
     # c1563f187 fix(release-scan): the gate reads by content, and sees an escaped path
     "milbrandt2":
         "381aa37f9509ac8663e0333131ae44aa963820cd7712c88e89d555ef5b92b574",
+    # 6933d5762 fix(physics): Milbrandt-Yau joins the radar operator -- the pure
+    # Z block of mp_milbrandt2mom_main's final diagnostics
+    # (module_mp_milbrandt2mom.F:3400-3466), lifted out of the byte-frozen
+    # milbrandt2.cu so gpuwm.da.obsop can launch H_Z(x) without the scheme's
+    # state update.  It shipped with nothing checking its bytes at all, which
+    # this pin closes; the duplication is held equal to the original by
+    # tests/test_da_obsop_milbrandt_gpu.py::
+    # test_the_operator_is_the_schemes_own_z_block_bitwise.
+    "milbrandt2_zet":
+        "dfab83f02bc23e2f4d019015203fb942cd4fbfe02bae4dc342b6816b062f532c",
     # f1e9adbf1 fix(myj): seed TKE_MYJ at WRF's EPSQ2, make the mutation controls real, decl
     "myjpbl":
         "d0e0b3dde6ba1729460694a3bf730ac82420e85d3979327953a7e45bf85719f1",

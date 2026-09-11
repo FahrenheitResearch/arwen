@@ -326,6 +326,26 @@ _MP_DECLARES_RADII = {
 }
 
 
+def _require_agreement_with_the_registry() -> None:
+    """``_MP_DECLARES_RADII`` is the registry's ``cloud_optics.legacy_declares_radii``.
+
+    Pulled by tools/build_registry.py and held equal here at import, so
+    a scheme with no row is a plan-review refusal rather than the
+    NotImplementedError :func:`legacy_scheme_declares_radii` raises at
+    the first radiation call.
+    """
+
+    from gpuwm.physics_registry import require_consumer_rows_agreement
+
+    require_consumer_rows_agreement(
+        "gpuwm.core.rrtmg_legacy._MP_DECLARES_RADII", "microphysics",
+        "cloud_optics", dict(_MP_DECLARES_RADII),
+        project=lambda row: row["legacy_declares_radii"])
+
+
+_require_agreement_with_the_registry()
+
+
 def legacy_scheme_declares_radii(mp_physics, use_mp_re):
     """WRF v4.6.1's ``use_mp_re`` gate around its scheme table.
 

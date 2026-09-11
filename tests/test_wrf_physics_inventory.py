@@ -112,7 +112,16 @@ def test_unknown_package_fails_closed_with_actionable_message():
     # with a real package that this module deliberately does not inventory.
     # It replaces 28, which now HAS a row -- the refusal is still the
     # subject, only the uninventoried example moved.
-    with pytest.raises(ValueError, match=r"mp_physics=38.*Registry package"):
+    #
+    # The pattern followed the refusal when audit R-014 reworded it: the
+    # message names its EXPORT-ONLY scope now, and says "Registry.EM_COMMON
+    # package contract" where it used to say "Registry package".  What this
+    # asserts is unchanged -- the scheme id and the missing contract -- and
+    # the scope clause is asserted below, because a refusal that reads as
+    # "ArWen cannot run mp=38" is the thing R-014 was opened about.
+    with pytest.raises(
+            ValueError,
+            match=r"mp_physics=38.*Registry\.EM_COMMON package contract"):
         stock_wrf_physics_inventory(38)
     with pytest.raises(TypeError, match="WRF integer"):
         stock_wrf_physics_inventory(True)
@@ -120,6 +129,10 @@ def test_unknown_package_fails_closed_with_actionable_message():
         pytest.raises(ValueError, stock_wrf_physics_inventory, 38).value)
     assert "28" in message, (
         "the refusal must list mp_physics=28 among the evidenced schemes")
+    assert "says NOTHING about running the scheme in ArWen" in message, (
+        "the refusal is export-only and must say so: ArWen's forecast route "
+        "runs every scheme the physics registry publishes as implemented, "
+        "and this message used to read as though it did not (audit R-014)")
 
 
 @pytest.mark.parametrize("mass_levels", [35, 49, 80])

@@ -106,6 +106,8 @@ from typing import Mapping
 import numpy as np
 
 from gpuwm.core.correctly_rounded_libm import exp_cr, log_cr
+from gpuwm.core.thompson_aerosol_constants import (  # noqa: F401 -- re-exported
+    NIFA_FLOOR, NT_C, NWFA_FLOOR)
 from gpuwm.core.thompson_contract import (
     AUXILIARY_TABLE_FILE,
     CLASSIC_TABLE_ASSETS,
@@ -136,12 +138,13 @@ NA_IN0 = 1.5e6            # :94   ice-friendly aerosol profile amplitude, m-3
 NA_IN1 = 0.5e6            # :95   ice-friendly aerosol profile floor, m-3
 NA_CCN0 = 300.0e6         # :96   water-friendly aerosol profile amplitude
 NA_CCN1 = 50.0e6          # :97   water-friendly aerosol profile floor
-NT_C = 100.0e6            # :88   the mp=8 constant droplet number, m-3
+# NT_C (:88), NWFA_FLOOR (:1805) and NIFA_FLOOR (:1806) are defined in
+# gpuwm/core/thompson_aerosol_constants.py and imported above, because the
+# nest-edge entry closure reads them from a module the standalone
+# preparation wheel stages; they are re-exported here unchanged.
 NT_C_MAX = 1999.0e6       # :89   droplet-number ceiling, m-3
 NC_FLOOR_PER_M3 = 2.0     # :1830, :3217, :3486
 NC_SEDIMENT_FLOOR = 10.0  # :3835 -- the only 10.0 floor in the scheme
-NWFA_FLOOR = 11.1e6       # :1805 == naCCN1*0.222
-NIFA_FLOOR = 5.0e3        # :1806 == naIN1*0.01
 AEROSOL_CEILING = 9999.0e6  # :1805-1806, :3979-3981
 
 # thompson_init:493-558.  The synthetic profile used when metgrid supplies no

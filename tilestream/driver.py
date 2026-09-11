@@ -332,6 +332,84 @@ def physics_run_kwargs(cfg, parent_state, *, builder=None, seed: int = 4242,
     )
 
 
+def reflectivity_run_kwargs(kwargs: dict, store) -> dict:
+    """``run_tiled`` keywords that make a sweep WRITE the REFL_10CM slot.
+
+    A streamed run publishes the model's own reflectivity only when four
+    things are true at once, and every one of them is a published piece of
+    :mod:`gpuwm.core.streaming` rather than a rule invented here:
+
+    * the STORE carries ``scratch/refl_10cm``, because its builder put it
+      there: ``tilestream.realcase.build_stores(reflectivity=True)``, the
+      default, and ``tilestream.bigdomain.carrier_manifest_for``;
+    * every TILE BUFFER carries it too, or ``TiledRun`` refuses the sweep
+      for an inventory differing from the store's by exactly that key.
+      ``prime_refl_10cm`` allocates the slot and steps nothing, which is
+      what a buffer needs before its inventory is taken;
+    * the inventory rule the transport gathers and scatters by NAMES it --
+      ``physics_inventory.carrier_inventory_with_refl``, which is
+      ``streaming.refl_inventory`` over this package's manifest -- because
+      the plain manifest is the RESTART manifest and a pure diagnostic is
+      correctly absent from it; and
+    * every tile step is told a frame is due.  ``refl_10cm`` is written from
+      the ``refl_10cm_due`` branch of the microphysics drivers and from
+      nowhere else, so without the keyword each buffer scatters an unwritten
+      window and the domain field is whatever the buffers were primed with.
+      Audit R-052: the store-side inventory alone left exactly this half
+      undone, and the composite silently fell back to recomputing one
+      scheme's formulation from another scheme's species.
+
+    ``streaming.refl_handoff_hook`` is the fifth thing, and it is why this
+    is a function rather than a paragraph in a docstring: ``stash_refl_10cm``
+    parks one frame's array on a driver and REFUSES to overwrite an
+    unconsumed handoff.  That refusal is right for a resident domain, where
+    two microphysics calls between two frames is a cadence bug, and wrong
+    for a sweep, where the handoff is per TILE and the frame is per DOMAIN
+    -- without the hook the second tile a buffer serves raises "REFL_10CM
+    stash was not consumed before reuse" and stops the forecast.
+
+    Returns ``kwargs`` unchanged for a store that carries no slot, so a lane
+    that asked for ``reflectivity=False`` is unaffected.  Each lane marks
+    its own store as swept afterwards -- ``CaseStores.reflectivity_swept``,
+    ``bigdomain.snapshot(refl_stash=...)`` -- because that is what tells the
+    composite the slot holds a field a microphysics call WROTE rather than
+    the zeros it was primed with, and zeros rendered as dBZ are a
+    domain-wide 0 dBZ product that reads like weak echo.
+    """
+    from gpuwm.core.streaming import prime_refl_10cm, refl_handoff_hook
+    from tilestream import physics_inventory as physinv
+
+    if physinv.REFL_KEY not in store:
+        return dict(kwargs)
+    out = dict(kwargs)
+    out["inventory_fn"] = physinv.carrier_inventory_with_refl
+    factory = out.get("tile_state_factory")
+    if factory is None:
+        raise TiledRunError(
+            "a reflectivity-carrying sweep needs the physics tile factory "
+            "(driver.physics_run_kwargs / geography_run_kwargs); there is "
+            "no buffer to prime the refl_10cm slot on")
+
+    def _factory_with_refl(tile_cfg):
+        tile = factory(tile_cfg)
+        prime_refl_10cm(tile, tile_cfg)
+        return tile
+
+    out["tile_state_factory"] = _factory_with_refl
+    step_kwargs = dict(out.get("step_kwargs") or {})
+    step_kwargs["refl_10cm_due"] = True
+    out["step_kwargs"] = step_kwargs
+    existing = out.get("post_step_hook")
+    if existing is not None:
+        raise TiledRunError(
+            "this sweep already carries a post_step_hook and the "
+            "reflectivity route needs its own (streaming.refl_handoff_hook, "
+            "which clears each tile's one-frame REFL stash); compose them "
+            "at the call site rather than losing one silently")
+    out["post_step_hook"] = refl_handoff_hook()
+    return out
+
+
 def geography_run_kwargs(cfg, parent_state, *, geography_fn=None,
                          geography=None, seed: int = 4242, warmup: int = 1,
                          host: bool | None = None, coord_fn=None) -> dict:
@@ -2122,9 +2200,13 @@ class TiledRun:
                         #   which reads exactly like a perfectly closed
                         #   budget.
                         #
-                        # Inert for every existing caller: ``run_tiled`` and
-                        # every gate pass nothing, so ``step_kwargs`` is
-                        # ``{}`` and this is the identical call.
+                        # ``{}`` for a caller that passes none, which is
+                        # still every gate.  NOT empty for the streamed
+                        # product lanes since audit R-052: ``run_tiled``
+                        # forwards a keyword set now, and
+                        # ``reflectivity_run_kwargs`` puts ``refl_10cm_due``
+                        # in it so every tile writes the ``refl_10cm`` slot
+                        # its store carries.
                         if graph_steppers is None:
                             step(tiles[b], tile_cfg, **step_kwargs)
                         else:
@@ -2136,8 +2218,10 @@ class TiledRun:
                             # a frame with the field silently absent -- which
                             # is the exact defect feat-route-wire and
                             # feat-wrfout-stream each measured and fixed on
-                            # the ordinary path.  Inert for every caller
-                            # today: the graph gate passes no kwargs.
+                            # the ordinary path.  The graph gate itself
+                            # passes no kwargs; a lane that asked for
+                            # reflectivity under graph capture is refused
+                            # here by name rather than losing the field.
                             if step_kwargs:
                                 raise TiledRunError(
                                     "use_graph is on and this sweep carries "
@@ -2666,7 +2750,7 @@ def run_tiled(store, cfg, tile_nx, tile_ny, halo: int = 16,
               graph_verify_host: bool = True,
               graph_verify_topology: bool = False,
               report: dict | None = None, progress=None,
-              on_sweep=None) -> None:
+              on_sweep=None, step_kwargs=None) -> None:
     """Build a :class:`TiledRun` and sweep it ``nsteps`` times.
 
     The whole-run entry point, and the one the gate drives.  Every
@@ -2680,6 +2764,15 @@ def run_tiled(store, cfg, tile_nx, tile_ny, halo: int = 16,
     pre-built buffers instead.  Holding a ``TiledRun`` remains the better
     answer where it is possible, because it reuses the transfer plans and the
     ring arena too, not only the buffers.
+
+    ``step_kwargs=`` is :meth:`TiledRun.sweep`'s, forwarded verbatim to every
+    tile's ``dycore.step``.  It was reachable ONLY by holding a ``TiledRun``
+    until audit R-052, and the one keyword the product lanes need is
+    ``refl_10cm_due``: without it no tile runs calc_refl10cm, the
+    ``refl_10cm`` scratch slot is never written on any buffer, and a store
+    that lists the slot has every tile scatter an unwritten window over it.
+    That is the half of R-052 the store-side inventory alone did not reach.
+    ``None`` is the identical call every existing caller makes.
     """
     run = TiledRun(
         store, cfg, tile_nx, tile_ny, halo, nbuffers,
@@ -2705,7 +2798,8 @@ def run_tiled(store, cfg, tile_nx, tile_ny, halo: int = 16,
         on_sweep=on_sweep,
     )
     try:
-        run.sweep(nsteps, report=report, progress=progress)
+        run.sweep(nsteps, step_kwargs=step_kwargs, report=report,
+                  progress=progress)
     except BaseException as error:
         try:
             run.close()

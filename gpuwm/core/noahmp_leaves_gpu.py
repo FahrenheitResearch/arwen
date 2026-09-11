@@ -4,8 +4,11 @@ One thread per column/case.  The device layout is the flat slot layout the
 oracle harness packs, so ``gpuwm/data/noahmp/oracle/noahmp-leaves.csv`` is
 replayed slot for slot with no repacking on either side.
 
-These wrappers are validation surfaces for the leaf ports, not a runtime path:
-Noah-MP is not dispatchable and ``sf_surface_physics=4`` stays blocked.
+These wrappers are validation surfaces for the leaf ports.  The unit they
+compile is also one of the fifteen Noah-MP runtime translation units
+``gpuwm/core/noahmp_kernel_sources.py`` names, so its per-thread local frame
+is part of what ``sf_surface_physics = 4`` is priced on
+(``gpuwm/core/kernel_frame_recordings.py``, ``NOAHMP_COMPOSED_FRAME_RECORDINGS``).
 """
 
 from __future__ import annotations

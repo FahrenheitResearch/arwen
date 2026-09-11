@@ -30,11 +30,21 @@ def capabilities():
         "optional_run_seconds": True, "schedule_request_schema": SCHEDULE_REQUEST_SCHEMA,
         "providers": [{"id": "cds", "label": "Copernicus CDS", "requires_credentials": True,
             "products": [{"id": "reanalysis", "cadence_hours": [1, 3, 6], "members": None},
-                         {"id": "ensemble_members", "cadence_hours": [3], "members": list(range(10))}]}],
+                         {"id": "ensemble_members", "cadence_hours": [3], "members": list(range(10))}]},
+            # ARCO reanalysis was listed nowhere because full forcing through
+            # it had not been qualified, while `gpuwm fetch --era5-provider
+            # arco` shipped it and every step of this editor downstream of the
+            # provider id is already provider-generic.  It is offered, with
+            # what has and has not been exercised said in `validation` below.
+            # EDA stays CDS-only for a product reason, not an evidence one:
+            # the ARCO archive carries no ensemble members, which
+            # era5_member.validate_selection refuses by name.
+            {"id": "arco", "label": "Google ARCO ERA5", "requires_credentials": False,
+             "products": [{"id": "reanalysis", "cadence_hours": [1, 3, 6], "members": None}]}],
         "validation": {"eda_member_payload": "real CDS GRIB1 fixtures; all ten identities and byte-preserving selection verified",
             "full_eda_forcing_acquisition": "passed on a real 3x3 CDS grid, 37 levels, full surface fields, and two UTC times",
             "preparation": "not_qualified", "forecast": "not_run"},
-        "limits": ["ARCO quickmap success does not qualify full forcing; this editor exposes CDS only.",
+        "limits": ["ARCO full forcing is offered and has not been exercised end to end here; its acquisition is the shipped `gpuwm fetch --era5-provider arco` path.",
             "EDA requires an existing experiment initialization at an exact 3-hourly UTC time.",
             "Acquisition is verified on a small real fixture; preparation, including the existing water-temperature preparation issue, remains unqualified."]}
 
@@ -55,7 +65,11 @@ def edit_configuration(request):
     if request["schema"] != REQUEST_SCHEMA:
         raise ValueError("Unsupported forcing edit request schema")
     if request["provider"] not in {p["id"] for p in capabilities()["providers"]}:
-        raise ValueError("This forcing editor currently exposes the CDS provider only; ARCO full forcing is not qualified here")
+        raise ValueError(
+            "Unknown ERA5 provider "
+            f"{request['provider']!r}. Select "
+            + " or ".join(repr(p["id"]) for p in capabilities()["providers"])
+            + ".")
     authority = read_config_authority(request["config_path"])
     if request["expected_sha256"] != authority.sha256:
         raise ValueError("The selected configuration changed; refresh it before editing forcing")

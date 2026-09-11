@@ -3,6 +3,7 @@ from copy import deepcopy
 from datetime import datetime
 import hashlib
 import json
+import math
 from pathlib import Path
 import tomllib
 
@@ -11,7 +12,21 @@ import pytest
 from gpuwm import companion_domains as editor
 from gpuwm.hrrr_prepared_bundle import render_wps_namelist
 from gpuwm.namelist_import import parse_namelist_text
+from gpuwm.static import rust_bridge
 from gpuwm.toml_document import emit_experiment_toml
+
+#: The tests below that cross the seam through the NATIVE editor refuse with
+#: "Domain editing requires the native static-fields bridge" when that
+#: library is not built.  The marker is per test rather than a module-level
+#: pytestmark on purpose: the pure-geometry half of this deck answers the
+#: same questions with no bridge at all, and a whole-module gate would retire
+#: it on every box that has not built tools/rustwx.
+_STATIC_BRIDGE_UNAVAILABLE = rust_bridge.unavailable_reason()
+
+needs_static_bridge = pytest.mark.skipif(
+    _STATIC_BRIDGE_UNAVAILABLE is not None,
+    reason=("the native static-fields bridge is not built, so native domain "
+            f"editing cannot run here: {_STATIC_BRIDGE_UNAVAILABLE}"))
 
 
 def topology(parents=(0, 1, 2)):
@@ -732,6 +747,54 @@ def test_physics_menu_uses_registered_implemented_choices():
                 assert option["label"] == native["label"]
 
 
+def test_every_option_carries_the_registrys_own_couplings():
+    """The pairing laws reach the panel as the table states them.
+
+    They were dropped from this payload, so the only place a reader met
+    "MYJ needs the Eta surface layer" was the refusal after choosing.
+    Forwarded verbatim: no second vocabulary, and a pairing added to the
+    registry needs no code change here to reach a front end.
+    """
+    from gpuwm.physics_registry import _conditional_refusals, physics_registry
+
+    registry = physics_registry()
+    couplings = 0
+    for component in editor.physics_components():
+        for option in component["options"]:
+            native = registry["components"][component["id"]]["options"][
+                option["registry_option_id"]]
+            constraints = native.get("constraints", {})
+            assert option["requires_components"] == constraints.get(
+                "requires_components", {})
+            # The validator's own filter, so a malformed rule is dropped in
+            # one place rather than reaching a caller that renders it.
+            assert option["refused_when"] == _conditional_refusals(constraints)
+            couplings += bool(option["requires_components"]) + bool(
+                option["refused_when"])
+    assert couplings, "no coupling reached the payload; the forward is dead"
+
+    # The pairing this began with, both directions, as data.
+    options = {option["id"]: option for component in editor.physics_components()
+               for option in component["options"]}
+    assert options["myj"]["requires_components"] == {
+        "surface_layer": ["eta-similarity"]}
+    assert options["eta-similarity"]["requires_components"] == {"pbl": ["myj"]}
+    # The conditional refusal this began with, Milbrandt-Yau against
+    # RTE+RRTMGP, retired with the defect it described (the adapter carries
+    # the scheme's own cloud-optics row), so no option declares a
+    # ``refused_when`` rule today; the forward is held equal to the table
+    # above and a rule a later pass writes reaches the payload unchanged.
+    assert all(option["refused_when"] == [] for option in options.values())
+    # The ra_rrtmg_variant fan-out gives one registry option several ids;
+    # every one of them carries that registry option's couplings.
+    variants = [option for option in options.values()
+                if option["registry_option_id"] == "rte-rrtmgp"]
+    assert len(variants) > 1
+    assert all(option["requires_components"] == variants[0]["requires_components"]
+               and option["refused_when"] == variants[0]["refused_when"]
+               for option in variants)
+
+
 def test_shared_physics_controls_do_not_claim_per_domain_support(tmp_path):
     source, original = configured_case(tmp_path)
     request = request_for(source, 1)
@@ -743,3 +806,441 @@ def test_shared_physics_controls_do_not_claim_per_domain_support(tmp_path):
     candidate = tomllib.loads(Path(result["config_path"]).read_text())
     assert candidate["shared"]["icloud"] == 0
     assert candidate["domain"] == original["domain"]
+
+
+# Antimeridian export contract. A domain that crosses the seam must not export
+# an edge that a Cartesian consumer reads as the 340-degree complement of a
+# 20-degree domain (RFC 7946 3.1.9), and a domain that does not cross it must
+# export exactly what it exported before seam cutting existed. Inputs here are
+# synthetic rectangles and one native Mercator grid. Ring winding and repeated
+# vertices are deliberately NOT asserted: both are legal GeoJSON, no producer
+# in this tree emits them, and no consumer in this tree rejects them.
+def _dateline_outline(ring, *, grid_id=1):
+    return {"grid_id": grid_id, "parent_id": 0 if grid_id == 1 else 1,
+            "nx": 180, "ny": 160, "nz": 8, "dx_m": 12000., "dy_m": 12000.,
+            "width_km": 2160., "height_km": 1920., "history_interval_s": 60.,
+            "center_latlon": (0., 180.),
+            "perimeter_latlon": [(lat, lon) for lon, lat in ring]}
+
+
+def _dateline_rectangle(west, south, east, north):
+    return [[west, south], [east, south], [east, north], [west, north]]
+
+
+def _dateline_polygons(geometry):
+    assert geometry["type"] in ("Polygon", "MultiPolygon")
+    return ([geometry["coordinates"]] if geometry["type"] == "Polygon"
+            else geometry["coordinates"])
+
+
+def _dateline_area(ring):
+    # Translate first to avoid cancellation at a large longitude offset.
+    x0, y0 = ring[0]
+    return sum((a[0] - x0) * (b[1] - y0) - (b[0] - x0) * (a[1] - y0)
+               for a, b in zip(ring, ring[1:])) / 2
+
+
+def _dateline_lifted_area(perimeter):
+    """The requested ring's area, computed from the input, not from the export.
+
+    Each step follows the short arc, the same rule the perimeter sampler used
+    to walk the native edge, so this is the area the export has to preserve.
+    """
+    lifted, previous = [], None
+    for latitude, longitude in perimeter:
+        if previous is not None:
+            longitude = previous + (longitude - previous + 180.) % 360. - 180.
+        lifted.append([longitude, latitude])
+        previous = longitude
+    return abs(_dateline_area(lifted + [lifted[0]]))
+
+
+def _dateline_check_geometry(geometry, expected_area):
+    polygons = _dateline_polygons(geometry)
+    assert polygons
+    area = 0.
+    for polygon in polygons:
+        # Native model perimeters are one shell, not a requested-area mask.
+        # No hole can be introduced into these rectangular synthetic cases.
+        assert len(polygon) == 1
+        ring = polygon[0]
+        assert len(ring) >= 4 and ring[0] == ring[-1]
+        # A cut part must be a polygon, not the sliver a clipper leaves when it
+        # grazes a strip edge; such a part draws as a hairline map artefact.
+        assert len({tuple(p) for p in ring[:-1]}) >= 3
+        assert all(-180. <= lon <= 180. and -90. <= lat <= 90. for lon, lat in ring)
+        for a, b in zip(ring, ring[1:]):
+            assert a != b, "the exporter emitted a zero-length edge"
+            assert abs(b[0] - a[0]) <= 180., "world-spanning signed-longitude edge"
+        area += abs(_dateline_area(ring))
+    assert area == pytest.approx(expected_area, rel=1e-10, abs=1e-10)
+
+
+_DATELINE_CASES = [
+    pytest.param(170., 10., -170., 20., id="170E-to-170W"),
+    pytest.param(170., -10., -170., 10., id="dateline-and-equator"),
+    pytest.param(-20., -10., 20., 10., id="equator-only"),
+    pytest.param(120., -40., 140., -20., id="southern-hemisphere"),
+    pytest.param(-110., 30., -90., 40., id="ordinary"),
+    pytest.param(170., -10., 180., 10., id="exact-east-seam"),
+    pytest.param(-180., -10., -170., 10., id="exact-west-seam"),
+]
+
+
+@pytest.mark.parametrize("west,south,east,north", _DATELINE_CASES)
+def test_dateline_export_canonical_topology(west, south, east, north):
+    ring = _dateline_rectangle(west, south, east, north)
+    domain = _dateline_outline(ring)
+    before = deepcopy(domain)
+    result = editor.domain_geojson([domain])
+    assert domain == before
+    assert len(result["features"]) == 1
+    feature = result["features"][0]
+    assert feature["id"] == "domain-1-initial"
+    assert feature["properties"]["nx"] == domain["nx"]
+    assert feature["properties"]["parent_id"] == domain["parent_id"]
+    _dateline_check_geometry(feature["geometry"], ((east - west) % 360) * (north - south))
+
+
+@pytest.mark.parametrize("west,south,east,north", _DATELINE_CASES)
+def test_dateline_export_leaves_an_uncrossed_domain_byte_identical(west, south, east, north):
+    """Seam cutting may not change the export of a domain that never reaches it.
+
+    Every ordinary domain in the tree goes through this one path, so the change
+    has to be inert away from the seam or it silently re-authors the published
+    geometry of every existing case.
+    """
+    ring = _dateline_rectangle(west, south, east, north)
+    geometry = editor.domain_geojson([_dateline_outline(ring)])["features"][0]["geometry"]
+    if max(point[0] for point in ring) <= 180. and ((east - west) % 360.) < 180. and west <= east:
+        assert geometry == {"type": "Polygon", "coordinates": [ring + [ring[0]]]}
+    else:
+        assert geometry["type"] == "MultiPolygon"
+
+
+def test_dateline_export_cuts_the_seam_into_the_canonical_two_parts():
+    """The exported document itself, so a consumer-contract change is visible."""
+    ring = _dateline_rectangle(170., -10., -170., 10.)
+    result = editor.domain_geojson([_dateline_outline(ring)])
+    assert result["features"][0]["geometry"] == {"type": "MultiPolygon", "coordinates": [
+        [[[170., -10.], [180., -10.], [180., 10.], [170., 10.], [170., -10.]]],
+        [[[-180., -10.], [-170., -10.], [-170., 10.], [-180., 10.], [-180., -10.]]]]}
+    assert result["features"][0]["properties"]["label"] == "d01"
+    assert result["features"][0]["id"] == "domain-1-initial"
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_dateline_export_mixed_exact_seam_vertices(reverse):
+    # Explicit +180 and -180 denote the same point, not an edge around Earth.
+    ring = [[170., -10.], [180., -10.], [-180., -10.], [-170., -10.],
+            [-170., 10.], [-180., 10.], [180., 10.], [170., 10.]]
+    if reverse:
+        ring.reverse()
+    result = editor.domain_geojson([_dateline_outline(ring)])
+    _dateline_check_geometry(result["features"][0]["geometry"], 400.)
+
+
+def test_dateline_export_refuses_an_antipodal_perimeter_step():
+    """Two equally short arcs leave the exported domain no defined interior."""
+    ring = [[0., -10.], [180., -10.], [180., 10.], [0., 10.]]
+    with pytest.raises(ValueError, match="exactly 180 degrees"):
+        editor.domain_geojson([_dateline_outline(ring)])
+
+
+def test_dateline_export_refuses_a_perimeter_that_re_enters_the_seam():
+    """A shell crossing the seam twice would clip to one false, filled part."""
+    ring = [[170., -20.], [-170., -20.], [-170., -10.], [170., -10.],
+            [170., 10.], [-170., 10.], [-170., 20.], [170., 20.]]
+    with pytest.raises(ValueError, match="re-enters the antimeridian"):
+        editor.domain_geojson([_dateline_outline(ring)])
+
+
+def test_dateline_export_refuses_a_perimeter_with_no_area():
+    """An empty or collapsed perimeter used to export as an empty filled ring."""
+    with pytest.raises(ValueError, match="three distinct corners"):
+        editor.domain_geojson([_dateline_outline([])])
+    with pytest.raises(ValueError, match="three distinct corners"):
+        editor.domain_geojson([_dateline_outline([[170., -10.], [170., -10.]])])
+
+
+def test_dateline_export_refuses_a_perimeter_that_encircles_a_pole():
+    """A ring around a pole has no seam crossing and no canonical strip form.
+
+    Cutting it at the strip edges leaves parts that still carry a world-spanning
+    edge, which is the class this exporter exists to remove, so it is refused by
+    name instead of emitted.
+    """
+    ring = [[-180. + 30. * step, 80.] for step in range(12)]
+    with pytest.raises(ValueError, match="encircles a pole"):
+        editor.domain_geojson([_dateline_outline(ring)])
+    # Southern, and starting away from the seam, refuse the same way.
+    ring = [[150. - 45. * step, -75.] for step in range(8)]
+    with pytest.raises(ValueError, match="encircles a pole") as refusal:
+        editor.domain_geojson([_dateline_outline(ring)])
+    # The refusal points at the tree's own reason such a domain cannot be run --
+    # the pipeline is not pole-capable -- rather than inventing a map-shaped
+    # rationale, and it carries that wall's own way through.
+    message = str(refusal.value)
+    assert "not pole-capable" in message
+    assert "not a domain this pipeline can run" in message
+    # It claims nothing about a warning the caller never received: nothing hands a
+    # footprint to the wizard, and a hand-authored polar root reaches this export
+    # unwarned.
+    assert "warn" not in message and "domain wizard" not in message
+    assert "away from the pole" in message and "shrink the domain" in message
+
+
+def test_dateline_export_keeps_a_pole_free_polar_ring_whole():
+    """The refusal is about enclosing the pole, not about being near it."""
+    ring = _dateline_rectangle(-40., 65., -20., 75.)
+    geometry = editor.domain_geojson([_dateline_outline(ring)])["features"][0]["geometry"]
+    assert geometry == {"type": "Polygon", "coordinates": [ring + [ring[0]]]}
+
+
+def test_dateline_export_target_track_has_no_world_spanning_edges():
+    outline = _dateline_outline(_dateline_rectangle(170., -10., -170., 10.), grid_id=2)
+    targets = [{"time": datetime(2020, 1, 1, hour), "outline": outline,
+                "requested_latlon": (lat, lon), "i_parent_start": 20,
+                "j_parent_start": 20}
+               for hour, (lat, lon) in enumerate([(0., 175.), (2., -175.)])]
+    before = deepcopy(targets)
+    exported = editor.domain_geojson([], targets)
+    assert targets == before
+    track = next(f for f in exported["features"] if f["properties"]["kind"] == "target_track")
+    assert track["id"] == "scheduled-target-track"
+    geometry = track["geometry"]
+    assert geometry["type"] in ("LineString", "MultiLineString")
+    lines = ([geometry["coordinates"]] if geometry["type"] == "LineString"
+             else geometry["coordinates"])
+    assert lines
+    for line in lines:
+        assert len(line) >= 2
+        assert all(-180. <= lon <= 180. for lon, _ in line)
+        assert all(abs(b[0] - a[0]) <= 180. for a, b in zip(line, line[1:]))
+    assert lines[0][0] == [175., 0.]
+    assert lines[-1][-1] == [-175., 2.]
+    points = [f for f in exported["features"] if f["properties"]["kind"] == "target_point"]
+    assert [f["geometry"]["coordinates"] for f in points] == [[175., 0.], [-175., 2.]]
+    assert [f["properties"]["target_time_utc"] for f in points] == [
+        "2020-01-01T00:00:00Z", "2020-01-01T01:00:00Z"]
+
+
+def test_dateline_export_track_away_from_the_seam_is_one_unchanged_linestring():
+    outline = _dateline_outline(_dateline_rectangle(-110., 30., -90., 40.), grid_id=2)
+    targets = [{"time": datetime(2020, 1, 1, hour), "outline": outline,
+                "requested_latlon": (lat, lon), "i_parent_start": 20, "j_parent_start": 20}
+               for hour, (lat, lon) in enumerate([(30., -105.), (32., -95.)])]
+    exported = editor.domain_geojson([], targets)
+    track = next(f for f in exported["features"] if f["properties"]["kind"] == "target_track")
+    assert track["geometry"] == {"type": "LineString",
+                                 "coordinates": [[-105., 30.], [-95., 32.]]}
+
+
+def test_dateline_export_track_that_does_not_move_keeps_two_positions():
+    """Two scheduled times at one place must not export a one-position LineString.
+
+    RFC 7946 3.1.4 needs two positions; a stationary target is an ordinary
+    schedule, so the repeated position is kept rather than collapsed.
+    """
+    outline = _dateline_outline(_dateline_rectangle(170., -10., -170., 10.), grid_id=2)
+    # The third column is the exported document itself, so a consumer-contract
+    # change is visible: away from the seam it is what this case always exported.
+    for lat, lon, expected in [(10., 175., [[175., 10.], [175., 10.]]),
+                               (10., 180., [[-180., 10.], [-180., 10.]]),
+                               (-5., -30., [[-30., -5.], [-30., -5.]])]:
+        targets = [{"time": datetime(2020, 1, 1, hour), "outline": outline,
+                    "requested_latlon": (lat, lon), "i_parent_start": 20,
+                    "j_parent_start": 20} for hour in range(2)]
+        exported = editor.domain_geojson([], targets)
+        track = next(f for f in exported["features"] if f["properties"]["kind"] == "target_track")
+        assert track["geometry"] == {"type": "LineString", "coordinates": expected}
+
+
+def _dateline_native_case(tmp_path, center_lat=0.):
+    source, raw = configured_case(tmp_path)
+    raw["projection"] = {"map_proj": "mercator", "ref_lat": center_lat,
+                         "ref_lon": 180., "truelat1": 0., "truelat2": 0., "stand_lon": 180.}
+    return source, raw
+
+
+@pytest.mark.parametrize("center_lat", [-35., 0., 35.])
+@needs_static_bridge
+def test_dateline_native_resize_keeps_directed_arc_and_tree(tmp_path, center_lat):
+    from gpuwm.experiment import validate_spawn_placement
+    source, raw = _dateline_native_case(tmp_path, center_lat)
+    results = []
+    for west, east in [(170., -170.), (170., 190.), (-190., -170.)]:
+        candidate = deepcopy(raw)
+        action = {"kind": "resize_domain", "grid_id": 1, "bounds": {
+            "south": center_lat - 5., "north": center_lat + 5., "west": west, "east": east}}
+        editor._resize_domain(candidate, action, source)
+        exp = editor._build(candidate, source)
+        for child in exp.domains[1:]:
+            validate_spawn_placement(exp, child.grid_id, child.i_parent_start, child.j_parent_start)
+        # Exporting has no authority to modify projection, geometry or nesting.
+        before = deepcopy(candidate)
+        outlines = editor.native_domain_outlines(exp)
+        original_outlines = deepcopy(outlines)
+        exported = editor.domain_geojson(outlines)
+        assert outlines == original_outlines and candidate == before
+        assert editor.native_domain_outlines(exp) == original_outlines
+        assert candidate["shared"] == raw["shared"]
+        assert candidate["domain"][1:] == raw["domain"][1:]
+        # The artifact itself: this native root perimeter is where the
+        # 359.89-degree exported longitude jump was measured. Every domain of
+        # the tree is checked, not only the crossing root.
+        assert len(exported["features"]) == len(outlines)
+        for feature, outline in zip(exported["features"], outlines):
+            _dateline_check_geometry(feature["geometry"],
+                                     _dateline_lifted_area(outline["perimeter_latlon"]))
+        results.append(candidate)
+    assert results[0]["domain"] == results[1]["domain"] == results[2]["domain"]
+    for result in results[1:]:
+        assert result["projection"] == pytest.approx(results[0]["projection"])
+
+
+@needs_static_bridge
+def test_dateline_native_polar_root_on_the_pole_refuses_by_name(tmp_path):
+    """The front door itself: editor._build -> outlines -> export, on the pole.
+
+    A polar root centred on the pole encircles it, so its perimeter spans a full
+    turn. Before the refusal this exported parts carrying a 228-degree edge, the
+    very class the seam cut removes.
+    """
+    source, raw = configured_case(tmp_path, parents=(0,))
+    for ref_lat, dx in [(90., 12000.), (90., 30000.), (85., 12000.),
+                        (-90., 12000.), (-90., 30000.), (-85., 12000.)]:
+        truelat = math.copysign(60., ref_lat)  # A polar grid stands on its own hemisphere.
+        candidate = deepcopy(raw)
+        candidate["projection"] = {"map_proj": "polar", "ref_lat": ref_lat, "ref_lon": 0.,
+                                   "truelat1": truelat, "truelat2": truelat, "stand_lon": 0.}
+        candidate["domain"][0]["dx"] = dx
+        exp = editor._build(candidate, source)
+        outlines = editor.native_domain_outlines(exp)
+        perimeter = outlines[0]["perimeter_latlon"]
+        assert max(lon for _, lon in perimeter) - min(lon for _, lon in perimeter) > 300.
+        with pytest.raises(ValueError, match="encircles a pole"):
+            editor.domain_geojson(outlines)
+
+
+#: Arctic roots on the antimeridian that enclose a pole, and one at the same
+#: projection and resolution that does not.  Measured, not assumed: the
+#: footprint geometry this exporter refuses on is the same one the doors and
+#: plan review refuse on (gpuwm.static.projection.footprint_contains_pole), and
+#: tools/pole_blast_radius.py sweeps it over lambert/polar/mercator x six
+#: latitudes x three resolutions -- 16 of 54 configurations enclose the pole.
+#: The five rows below are this exporter's own outcomes and agree with that
+#: measurement row for row.
+#: None of the four below is centred on a pole, which is the point of the test:
+#: the refusal is about a footprint that ENCLOSES a pole, and ordinary wide
+#: Arctic domains reach it.
+_DATELINE_ARCTIC_ROOTS = [
+    ("lambert", 75., 30000., 300, 240, 30., 60., "refuse"),
+    ("lambert", 75., 30000., 200, 180, 30., 60., "refuse"),
+    ("polar", 65., 30000., 200, 180, 60., 60., "refuse"),
+    ("polar", 75., 30000., 200, 180, 60., 60., "refuse"),
+    ("lambert", 65., 30000., 300, 240, 30., 60., "export"),
+]
+
+
+@pytest.mark.parametrize("map_proj,ref_lat,dx,nx,ny,truelat1,truelat2,outcome",
+                         _DATELINE_ARCTIC_ROOTS)
+@needs_static_bridge
+def test_dateline_native_arctic_root_refuses_only_when_it_encloses_the_pole(
+        tmp_path, map_proj, ref_lat, dx, nx, ny, truelat1, truelat2, outcome):
+    """The refusal is not a ref_lat 90 special case, and not a latitude band either.
+
+    The last row is the control: the same projection, resolution and cell count
+    as the first, four hundred kilometres further south, so its footprint clears
+    the pole. It exports, and its export passes the same geometry check every
+    other seam-crossing case in this file passes.
+    """
+    source, raw = configured_case(tmp_path, parents=(0,))
+    raw["projection"] = {"map_proj": map_proj, "ref_lat": ref_lat, "ref_lon": 180.,
+                         "truelat1": truelat1, "truelat2": truelat2, "stand_lon": 180.}
+    raw["domain"][0].update(dx=dx, nx=nx, ny=ny)
+    outlines = editor.native_domain_outlines(editor._build(raw, source))
+    perimeter = outlines[0]["perimeter_latlon"]
+    # Every row here is on the antimeridian, so every row's raw perimeter spans
+    # the world before the lift; that is what makes the exported form the whole
+    # question rather than a detail.
+    assert max(lon for _, lon in perimeter) - min(lon for _, lon in perimeter) > 300.
+    if outcome == "refuse":
+        with pytest.raises(ValueError, match="encircles a pole"):
+            editor.domain_geojson(outlines)
+        return
+    exported = editor.domain_geojson(outlines)
+    for feature in exported["features"]:
+        _dateline_check_geometry(feature["geometry"],
+                                 _dateline_lifted_area(perimeter))
+
+
+@needs_static_bridge
+def test_dateline_native_polar_root_off_the_pole_still_exports(tmp_path):
+    """The same projection away from the pole keeps its ordinary single ring."""
+    source, raw = configured_case(tmp_path, parents=(0,))
+    raw["projection"] = {"map_proj": "polar", "ref_lat": 70., "ref_lon": -40.,
+                         "truelat1": 70., "truelat2": 70., "stand_lon": -40.}
+    outlines = editor.native_domain_outlines(editor._build(raw, source))
+    geometry = editor.domain_geojson(outlines)["features"][0]["geometry"]
+    assert geometry["type"] == "Polygon"
+    _dateline_check_geometry(geometry, _dateline_lifted_area(outlines[0]["perimeter_latlon"]))
+
+
+def test_dateline_native_resize_rejects_sorted_complement(tmp_path):
+    source, raw = _dateline_native_case(tmp_path)
+    before = deepcopy(raw)
+    with pytest.raises(ValueError, match="less than 180"):
+        editor._resize_domain(raw, {"kind": "resize_domain", "grid_id": 1,
+            "bounds": {"south": -5., "west": -170., "north": 5., "east": 170.}}, source)
+    assert raw == before
+
+
+def test_dateline_wizard_polygon_and_multipolygon_keep_same_arc(tmp_path):
+    from gpuwm import domain_wizard as dw
+    # Reader already supports both types. This is not a desktop rendering check.
+    full = _dateline_rectangle(170., -10., -170., 10.)
+    left = _dateline_rectangle(170., -10., 180., 10.)
+    right = _dateline_rectangle(-180., -10., -170., 10.)
+    docs = [{"type": "Polygon", "coordinates": [full + [full[0]]]},
+            {"type": "MultiPolygon", "coordinates": [[left + [left[0]]], [right + [right[0]]]]}]
+    spans = []
+    for index, document in enumerate(docs):
+        path = tmp_path / f"requested-{index}.geojson"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        footprint = dw.load_polygon_footprint(path)
+        spans.append((footprint.south, footprint.north, footprint.longitude_span))
+    assert spans == [(-10., 10., 20.), (-10., 10., 20.)]
+
+
+def test_dateline_exported_geometry_round_trips_through_the_wizard_reader(tmp_path):
+    """The seam-cut export reads back as the one area it was cut from.
+
+    Without this, the two parts could be read as two requested areas and fit a
+    root spanning the whole world instead of the 20 degrees asked for.
+    """
+    from gpuwm import domain_wizard as dw
+    exported = editor.domain_geojson([_dateline_outline(
+        _dateline_rectangle(170., -10., -170., 10.))])
+    path = tmp_path / "requested-area.geojson"
+    path.write_text(json.dumps(exported["features"][0]["geometry"]), encoding="utf-8")
+    footprint = dw.load_polygon_footprint(path)
+    assert (footprint.south, footprint.north) == (-10., 10.)
+    assert footprint.longitude_span == pytest.approx(20.)
+
+
+@needs_static_bridge
+def test_dateline_forcing_crop_is_not_the_native_outline(tmp_path):
+    from gpuwm import domain_wizard as dw
+    source, raw = _dateline_native_case(tmp_path)
+    exp = editor._build(raw, source)
+    before = editor.native_domain_outlines(exp)
+    projection = deepcopy(raw["projection"])
+    crop = dw._fetch_area(projection, exp.domains[0].run.nx, exp.domains[0].run.ny,
+                          margin_deg=5., root_dx_m=12000.)
+    outline = before[0]["perimeter_latlon"]
+    assert crop[0] < min(lat for lat, _ in outline)
+    assert crop[2] > max(lat for lat, _ in outline)
+    assert crop[1] > crop[3]  # Crossing signed bounds, not their sorted complement.
+    assert raw["projection"] == projection
+    assert editor.native_domain_outlines(exp) == before

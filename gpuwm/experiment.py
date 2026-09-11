@@ -55,6 +55,7 @@ from gpuwm.config import (DEFAULT_COLUMN_CHUNK,
                           auto_mix_isotropic_selection, radiation_enabled,
                           validate_run_config, warn_anisotropic_w_mixing)
 from gpuwm.explain import layered, warn
+from gpuwm.static.projection import footprint_contains_pole
 
 #: Relative tolerance for cross-checking hand-typed child dx/dt against the
 #: exact chain-derived rational.  Wide enough for a truncated decimal of
@@ -136,7 +137,7 @@ _GUARD_DEFAULTS = {
 _EXPERIMENT_KEYS = frozenset({
     "name", "start_time", "run_seconds", "feedback", "smooth_option",
     "blend_width", "spec_bdy_width", "restart_interval_s",
-    "column_chunk", "acknowledgements",
+    "column_chunk", "acknowledgements", "constant_glw_wm2",
     # The physics-fidelity axis (gpuwm/physics_mode.py).  Experiment-scope
     # because a tree whose domains ran different ledger entries could not be
     # compared across its own nest boundary, and because the whole point of
@@ -1088,6 +1089,16 @@ class ExperimentConfig:
     domains: tuple[DomainConfig, ...]
     column_chunk: int = DEFAULT_COLUMN_CHUNK
     acknowledgements: tuple[str, ...] = ()
+    #: The downward longwave a constant-GLW experiment DECLARES, W m-2.
+    #: ``None`` means the shipped default
+    #: (:data:`gpuwm.core.physics.DECLARED_CONSTANT_GLW_WM2`).  Read only
+    #: when the acknowledgement that fabricates GLW is present -- the
+    #: refusal it lifts is unchanged, and this is not a way to lift it --
+    #: and it exists because the acknowledgement could name the CLAIM but
+    #: not the NUMBER: an experiment whose case radiates near 410 W m-2
+    #: had to run at 300 and call the difference declared.  The engine
+    #: takes any float here already; the receipt prints the value.
+    constant_glw_wm2: float | None = None
     #: Discrete-relocation admissibility bounds.  Default-disabled, so an
     #: experiment that never mentions [relocation] carries a static nest
     #: and is byte-for-byte the experiment it was before this existed.
@@ -1173,6 +1184,29 @@ class ExperimentConfig:
             raise ValueError(
                 "acknowledgements must be a tuple of non-empty ids, got "
                 f"{self.acknowledgements!r}.")
+        if self.constant_glw_wm2 is not None:
+            import math as _math
+            if (isinstance(self.constant_glw_wm2, bool)
+                    or not isinstance(self.constant_glw_wm2, (int, float))
+                    or not _math.isfinite(float(self.constant_glw_wm2))
+                    or float(self.constant_glw_wm2) <= 0.0):
+                raise ValueError(
+                    "constant_glw_wm2 must be a finite positive downward "
+                    "longwave flux in W m-2, got "
+                    f"{self.constant_glw_wm2!r}.")
+            from gpuwm.physics_compat import CONSTANT_DOWNWARD_LONGWAVE_ACK
+            if CONSTANT_DOWNWARD_LONGWAVE_ACK not in self.acknowledgements:
+                raise ValueError(
+                    "constant_glw_wm2 names the fabricated downward "
+                    "longwave a run consumes for its whole forecast, so it "
+                    "is only readable where that fabrication is declared: "
+                    "this experiment does not carry "
+                    f"acknowledgements = [{CONSTANT_DOWNWARD_LONGWAVE_ACK!r}]. "
+                    "A run with a longwave scheme has its GLW written by "
+                    "that scheme every radiation step and would ignore "
+                    "this number, which is exactly the setting that looks "
+                    "like it took effect and did not. Remove the key, or "
+                    "declare the fabrication.")
 
         from dataclasses import replace
         from gpuwm.config import radiation_scheme_ids
@@ -1369,7 +1403,61 @@ def load_experiment(path: str | Path) -> ExperimentConfig:
     raw = tomllib.load(io.BytesIO(authority.payload))
     source = str(authority.source)
     base_dir = Path(authority.source).parent
-    return build_experiment_from_config_tables(raw, source=source, base_dir=base_dir)
+    experiment = build_experiment_from_config_tables(
+        raw, source=source, base_dir=base_dir)
+    review_root_footprint(experiment, source)
+    return experiment
+
+
+def review_root_footprint(experiment: "ExperimentConfig", source: str) -> None:
+    """Refuse a configuration whose ROOT footprint encloses the
+    projection pole.
+
+    The companion doors have always measured this and refused it -- the
+    wizard on a drawn or fitted root, the GeoJSON exporter on a
+    perimeter that spans a full turn of longitude -- and until 2.7.3
+    that was the only place it ran.  A hand-authored [projection] plus
+    [[domain]] carrying the same footprint passed plan review, so the
+    file was called good and then refused by the door that prepared it.
+    It is a geometric impossibility rather than a missing piece of
+    evidence: lat-lon source interpolation and static-tile windowing are
+    not pole-capable, on any projection, so no smaller card and no other
+    selector makes this configuration runnable.
+
+    Called from the two doors that read a config FILE
+    (:func:`load_experiment` and
+    :func:`gpuwm.case_data.load_experiment_case_bytes`), which is what a
+    plan is.  Not from :func:`build_experiment` itself, because the
+    wizard's fitting search builds a real experiment per ladder rung in
+    order to price it and shrinks off the poleward rungs with its own
+    bound (:func:`gpuwm.domain_wizard.point_request_bound`); refusing to
+    build them would kill the search instead of steering it.
+
+    Children are not asked: a child lies inside its parent, so a root
+    that clears the pole clears it for the whole tree.  Idealized
+    configurations (no [projection]) carry no footprint to measure.
+    """
+
+    projection = experiment.projection
+    if projection is None:
+        return
+    root = experiment.root.run
+    if not footprint_contains_pole(
+            {"map_proj": projection.map_proj, "ref_lat": projection.ref_lat,
+             "ref_lon": projection.ref_lon, "truelat1": projection.truelat1,
+             "truelat2": projection.truelat2,
+             "stand_lon": projection.stand_lon},
+            root.nx, root.ny, root.dx):
+        return
+    pole = "north" if projection.truelat1 >= 0.0 else "south"
+    raise ValueError(
+        f"experiment config {source}: the root domain ({root.nx} x "
+        f"{root.ny} mass points at {root.dx / 1000:g} km on "
+        f"{projection.map_proj!r}) contains or touches the {pole} pole; "
+        "lat-lon source interpolation and static-tile windowing are not "
+        "pole-capable, so no projection holds this footprint. Move "
+        "[projection] ref_lat away from the pole, or shrink the root "
+        "(nx/ny/dx), until the footprint clears it.")
 
 
 def build_experiment_from_config_tables(raw: dict, *, source: str,
@@ -1444,14 +1532,22 @@ def _reject_moving_nest_keys(table_name: str, entries: dict,
     present = sorted(_MOVING_NEST_KEYS & set(entries))
     if present:
         raise ValueError(
-            f"continuous moving-nest key(s) {present} in [{table_name}] of "
-            f"{source} are rejected: they drive per-step nest motion, which "
-            "invalidates the SINT donor index/weight tables inside the "
-            "integration. A nest that follows weather is expressed here as "
-            "DISCRETE relocation instead -- whole parent cells at cycle "
-            "boundaries, donor tables rebuilt once per placement generation "
-            "-- through the [relocation] table (enabled = true) and the "
-            "gpuwm.core.nest_relocation primitive. Remove the key(s).")
+            f"WRF moving-nest key(s) {present} in [{table_name}] of "
+            f"{source} are rejected: they drive nest motion from INSIDE "
+            "the integration -- WRF's specified moves land on whole parent "
+            "cells too, but on the model's own schedule, rebuilding the "
+            "donor tables as it runs -- and gpuwm's SINT donor "
+            "index/weight tables are built once per placement generation, "
+            "which is what makes a move's overlap transplant bitwise and "
+            "its donor alignment checkable. A nest that follows weather is "
+            "expressed here as DISCRETE relocation instead -- whole parent "
+            "cells at cycle boundaries -- through the [relocation] table "
+            "(enabled = true): [[relocation.move]] for a specified "
+            "itinerary, or [relocation.follow] with [relocation.track] for "
+            "storm following. The vortex controls have no equivalent at "
+            "all: gpuwm's tracker is field/threshold/cooldown shaped, not "
+            "corral/max-speed shaped, so translating them would substitute "
+            "different physics under the same key. Remove the key(s).")
 
 
 def _build_relocation(raw: dict, source: str, domains,
@@ -2521,6 +2617,15 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     column_chunk = _positive_int(
         "experiment", "column_chunk",
         exp.get("column_chunk", DEFAULT_COLUMN_CHUNK), source)
+    raw_constant_glw = exp.get("constant_glw_wm2")
+    if raw_constant_glw is not None:
+        if (isinstance(raw_constant_glw, bool)
+                or not isinstance(raw_constant_glw, (int, float))):
+            raise ValueError(
+                f"constant_glw_wm2 in [experiment] of {source} must be a "
+                "downward longwave flux in W m-2 (a number), got "
+                f"{raw_constant_glw!r}.")
+        raw_constant_glw = float(raw_constant_glw)
     raw_acknowledgements = exp.get("acknowledgements", [])
     if not isinstance(raw_acknowledgements, list):
         raise ValueError(
@@ -3402,10 +3507,17 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     # Same-scheme trees retain their original behavior; mixed schemes require
     # an explicit GPUWM transition instead of reaching a missing parent field.
     from gpuwm.core.microphysics_transition import (
-        resolve_microphysics_transition,
+        mixed_edge_entry_note, resolve_microphysics_transition,
     )
     for dc in domains[1:]:
-        resolve_microphysics_transition(by_id[dc.parent_id].run, dc.run)
+        contract = resolve_microphysics_transition(
+            by_id[dc.parent_id].run, dc.run)
+        # A mixed edge that seeds a moment from a ported default rather
+        # than from the parent's own field runs, and says which mapping
+        # it used, in one line here.
+        note = mixed_edge_entry_note(contract)
+        if note is not None:
+            warn(f"domain grid_id = {dc.grid_id}: {note}")
 
     # km_opt=2 on a nest child: refused only where the nest COUPLING of the
     # prognostic TKE carrier is actually exercised, which is when the parent
@@ -3484,6 +3596,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         restart_interval_s=restart_interval_s, domains=tuple(domains),
         column_chunk=column_chunk,
         acknowledgements=tuple(acknowledgements),
+        constant_glw_wm2=raw_constant_glw,
         relocation=relocation,
         physics_mode=physics_mode,
         perturbation=perturbation,

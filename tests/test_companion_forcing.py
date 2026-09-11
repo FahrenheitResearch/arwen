@@ -223,3 +223,38 @@ def test_preparation_metadata_uses_the_existing_native_stage_counts():
     assert [e["event"] for e in details]==["started","finished"]
     assert all(e["index"]==2 and e["count"]==3 and e["backend"]=="native" for e in details)
     assert details[-1]["elapsed_seconds"]>=0
+
+
+def test_arco_reanalysis_is_offered_and_builds_a_candidate(tmp_path, monkeypatch):
+    """The 2.7.3 sweep: the editor stopped refusing a shipped provider.
+
+    ARCO was absent from the provider list because full forcing through
+    it had not been qualified, while `gpuwm fetch --era5-provider arco`
+    ships it and everything downstream of the provider id here is
+    provider-generic.  EDA stays CDS-only for a product reason -- the
+    ARCO archive carries no ensemble members -- and says so.
+    """
+    providers = {p["id"]: p for p in companion_forcing.capabilities()["providers"]}
+    assert set(providers) == {"cds", "arco"}
+    assert providers["arco"]["requires_credentials"] is False
+    assert [p["id"] for p in providers["arco"]["products"]] == ["reanalysis"]
+
+    request = candidate(tmp_path, monkeypatch)
+    request.update(provider="arco", product_type="reanalysis", member=None,
+                   cadence_hours=6)
+    result = companion_forcing.edit_configuration(request)
+    assert result["selection"]["provider"] == "arco"
+    raw = tomllib.loads(Path(result["config_path"]).read_text())
+    assert raw["fetch"]["era5_provider"] == "arco"
+
+    # An unknown provider still refuses, naming the two that exist.
+    request["provider"] = "not-a-provider"
+    with pytest.raises(ValueError) as caught:
+        companion_forcing.edit_configuration(request)
+    assert "'cds'" in str(caught.value) and "'arco'" in str(caught.value)
+
+    # EDA on ARCO refuses for its own product reason, not for evidence.
+    with pytest.raises(ValueError, match="EDA requires CDS"):
+        era5_member.validate_selection(
+            product_type="ensemble_members", member=3, cadence=3,
+            provider="arco")

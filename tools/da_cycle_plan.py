@@ -164,14 +164,38 @@ def _filter_config_problems(namespace, where: str) -> list[str]:
     baseline: the filter refuses anything below 1 because deflating a
     stated observation error is a claim of skill nobody measured, and it
     refused it forty-nine seconds into the arm rather than here.
+
+    WHAT THIS PROBE CANNOT ASK, and where that question is asked instead.
+    The filter's scheme-dependent refusals -- a microphysics option the
+    radar operator has no H(x) for, a clear-air arm whose floor nobody has
+    read -- need ``mp_physics``, and ``mp_physics`` is not in this argv:
+    it comes from the prepared authority's own experiment configuration,
+    which this planner does not open.  Stating a guess here would check
+    the wrong row.  Those refusals are asked by the cycling driver itself,
+    in ``tools.da_cycle_prepared.plan_radar_assimilation``, called once
+    above its leg loop before a member is perturbed (audit R-051).
+
+    The ARMS are known from argv and are passed, so the refusals that turn
+    on an arm rather than on a scheme -- above all a reflectivity or CWP
+    analysis against a wind-only state vector -- are asked here.  The
+    field set is ``gpuwm.da.moments.DEFAULT_BASE_FIELDS`` when the step
+    analyses hydrometeors, which is the scheme-independent floor of what
+    the driver derives per leg, so this probe cannot refuse a step whose
+    real field set the driver would have accepted.  The clear-air arm is
+    deliberately left off: its floor question needs the scheme, so passing
+    it here would refuse every clear-air plan on a missing ``mp_physics``.
     """
 
     try:
+        from gpuwm.da import moments
         from gpuwm.da.letkf import Localization
         from gpuwm.da.radar_assimilation import (RadarAssimilationConfig,
                                                  RadarAssimilationError)
     except Exception:                               # pragma: no cover
         return []
+    hydrometeors = bool(getattr(namespace, "hydrometeors", False))
+    fields = (tuple(moments.DEFAULT_BASE_FIELDS) if hydrometeors
+              else ("u", "v"))
     try:
         RadarAssimilationConfig(
             localization=Localization(
@@ -179,12 +203,18 @@ def _filter_config_problems(namespace, where: str) -> list[str]:
                 vertical_m=namespace.vertical_loc_m),
             rtps_alpha=namespace.rtps_alpha,
             relaxation=namespace.relaxation,
-            analysis_fields=("u", "v"),
-            velocity=True, reflectivity=False, fall_speed="none",
+            analysis_fields=fields,
+            velocity=True,
+            reflectivity=bool(getattr(
+                namespace, "reflectivity_analysis", False)),
+            fall_speed="none",
             velocity_thinning_cells=namespace.thin_cells,
             velocity_error_inflation=namespace.err_inflation,
             reflectivity_thinning_cells=namespace.z_thin_cells,
             reflectivity_error_inflation=namespace.z_err_inflation,
+            cwp=bool(getattr(namespace, "goes_cwp", None)),
+            cwp_thinning_cells=namespace.cwp_thin_cells,
+            cwp_error_inflation=namespace.cwp_err_inflation,
             positivity_policy=namespace.positivity_policy,
             solve_device=namespace.solve_device,
             memory_budget_mib=namespace.memory_budget_mib)

@@ -315,6 +315,270 @@ def test_config_refuses_unknown_z_source():
         _config(z_source="z_mean")
 
 
+def test_reflectivity_for_a_scheme_with_no_hx_route_is_refused_at_config_time():
+    """The DA door's own plan review: the registry's radar_da row is read
+    when the cycle is configured, so a scheme the operator cannot simulate
+    is refused here and never inside the first analysis."""
+
+    from gpuwm.physics_registry import consumer_rows_by_selector
+
+    rows = consumer_rows_by_selector("microphysics", "radar_da")
+    routes = {mp: row["reflectivity_route"] for mp, row in rows.items()}
+    assert set(routes.values()) <= {
+        "operator", "scheme-diagnostic", "native-not-separable", "none"}, routes
+    fused = [mp for mp, route in routes.items()
+             if route == "native-not-separable"]
+    # NO SCHEME IS "unrouted" ANY MORE, and mp=50 is the only fused one.
+    # mp=9 was unrouted, then recorded as fused when audit R-050 read its
+    # kernel; its Z block has since been lifted into its own kernel
+    # (gpuwm/core/kernels/milbrandt2_zet.cu), which updates nothing, so it
+    # is routed as a scheme diagnostic.  The gate that refuses an unrouted
+    # scheme is exercised below on a synthesised row, because a positive
+    # control that can only run while the defect exists is not a control.
+    assert not [mp for mp, route in routes.items() if route == "unrouted"]
+    assert set(fused) == {50}, routes
+    for mp in fused:
+        with pytest.raises(RadarAssimilationError,
+                           match="Turn off the arm"):
+            _config(reflectivity=True, analysis_fields=HYDRO_FIELDS,
+                    positivity_policy="clip", mp_physics=mp)
+    with pytest.raises(RadarAssimilationError, match="not an implemented"):
+        _config(reflectivity=True, analysis_fields=HYDRO_FIELDS,
+                positivity_policy="clip", mp_physics=99)
+    for mp, route in routes.items():
+        if route in ("operator", "scheme-diagnostic"):
+            cfg = _config(reflectivity=True, analysis_fields=HYDRO_FIELDS,
+                          positivity_policy="clip", mp_physics=mp)
+            assert cfg.mp_physics == mp
+    # Velocity-only cycles never consult the route: the way out works.
+    assert _config(mp_physics=fused[0]).reflectivity is False
+
+
+def test_an_unrouted_scheme_would_be_refused_at_config_time(monkeypatch):
+    """The unrouted arm of the same gate, on a synthesised registry row.
+
+    See the note in the test above: the shipped registry has no unrouted
+    scheme left, so the arm is driven by making one option's row say so.
+    """
+
+    from gpuwm import physics_registry
+    from gpuwm.physics_registry import consumer_row_for_selector
+
+    def unrouted_row(component_id, key, selector):
+        row = consumer_row_for_selector(component_id, key, selector)
+        if (component_id, key, int(selector)) == ("microphysics",
+                                                  "radar_da", 6):
+            row = dict(row)
+            row["reflectivity_route"] = "unrouted"
+            row["reflectivity_route_reason"] = "synthesised for this test"
+        return row
+
+    monkeypatch.setattr(physics_registry, "consumer_row_for_selector",
+                        unrouted_row)
+    with pytest.raises(RadarAssimilationError, match=r"no H\(x\) route"):
+        _config(reflectivity=True, analysis_fields=HYDRO_FIELDS,
+                positivity_policy="clip", mp_physics=6)
+def test_the_unrouted_class_is_still_refused_by_name(monkeypatch):
+    """Positive control for the class no shipped scheme is in.
+
+    "unrouted" is what a scheme added ahead of its operator row would be.
+    Nothing ships in that state, so the refusal is exercised against a
+    perturbed registry rather than left as a comment -- and the sentence
+    it produces has to be about THIS scheme, not the one a nonexistent
+    selector gets.
+    """
+
+    from copy import deepcopy
+
+    import gpuwm.physics_registry as pr
+    from gpuwm.da.obsop import _refuse_unrouted_reflectivity
+
+    perturbed = deepcopy(pr.registry_view())
+    option = perturbed["components"]["microphysics"]["options"]["kessler-mp1"]
+    option["consumers"]["radar_da"]["reflectivity_route"] = "unrouted"
+    option["consumers"]["radar_da"]["reflectivity_route_reason"] = (
+        "a probe row, not a shipped state")
+    monkeypatch.setattr(pr, "_REGISTRY", perturbed)
+
+    with pytest.raises(NotImplementedError, match="a probe row"):
+        _refuse_unrouted_reflectivity(1)
+    with pytest.raises(RadarAssimilationError, match=r"no H\(x\) route"):
+        _config(reflectivity=True, analysis_fields=HYDRO_FIELDS,
+                positivity_policy="clip", mp_physics=1)
+    # Every other scheme is untouched by the probe.
+    assert _config(reflectivity=True, analysis_fields=HYDRO_FIELDS,
+                   positivity_policy="clip", mp_physics=10).mp_physics == 10
+
+
+def test_the_way_out_of_a_reflectivity_refusal_names_the_arm_that_is_ON():
+    """A refusal whose way out leaves the run refused is not a refusal.
+
+    The third arm (``fall_speed="reflectivity"``, which reads the simulated
+    dBZ whether or not reflectivity is assimilated) was gated with a
+    sentence written for the other two: it told a cycle that already had
+    ``reflectivity=False, clear_air=False`` to set exactly those, and never
+    named ``fall_speed="none"``.  Following it verbatim left the
+    configuration refused.  The way out is now composed from the arms that
+    are actually on, and every branch of it is followed here to a config
+    that constructs.
+    """
+    fused = 50  # fused Z, no operator (see the route test above)
+    with pytest.raises(RadarAssimilationError) as third_arm:
+        _config(velocity=True, reflectivity=False, clear_air=False,
+                fall_speed="reflectivity", mp_physics=fused)
+    message = str(third_arm.value)
+    assert "fall_speed='none'" in message, message
+    assert "reflectivity=False" not in message, message
+    # ... and the sentence, followed verbatim, constructs.
+    kept = _config(velocity=True, reflectivity=False, clear_air=False,
+                   fall_speed="none", mp_physics=fused)
+    assert kept.fall_speed == "none" and kept.velocity
+
+    with pytest.raises(RadarAssimilationError) as obs_arm:
+        _config(reflectivity=True, analysis_fields=HYDRO_FIELDS,
+                positivity_policy="clip", mp_physics=fused)
+    obs_message = str(obs_arm.value)
+    assert "reflectivity=False" in obs_message, obs_message
+    assert "fall_speed='none'" not in obs_message, obs_message
+    assert _config(reflectivity=False, analysis_fields=HYDRO_FIELDS,
+                   positivity_policy="clip",
+                   mp_physics=fused).reflectivity is False
+
+
+def test_a_reflectivity_cycle_that_states_no_scheme_is_still_accepted():
+    """``mp_physics=None`` is not a refusal on any arm.
+
+    A first pass at the R-051 gate refused every reflectivity-evaluating
+    cycle that stated no scheme.  Those cycles run: this module never
+    derives the operator from this field (``assimilate_radar_grid`` takes a
+    caller-supplied ``reflectivity_provider``, built off the RUN config),
+    and the field's own documented meaning is "detect the moment structure
+    from the checkpoint".  The clear-air arm is the exception and is
+    refused by its own older guard, which needs the floor rather than the
+    operator.
+    """
+    assert _config(reflectivity=True, analysis_fields=HYDRO_FIELDS,
+                   positivity_policy="clip",
+                   mp_physics=None).mp_physics is None
+    assert _config(fall_speed="reflectivity",
+                   mp_physics=None).mp_physics is None
+    with pytest.raises(RadarAssimilationError, match="clear-air floor"):
+        _config(clear_air=True, reflectivity=True,
+                analysis_fields=HYDRO_FIELDS, positivity_policy="clip",
+                mp_physics=None)
+
+
+def test_the_unimplemented_selectors_two_ways_out_are_both_reachable():
+    """Both sentences the refusal offers lead to a config that constructs.
+
+    The unimplemented-selector refusal names two: state the ACTIVE scheme,
+    or leave it ``None``.  A sibling gate that refused ``None`` made the
+    second one instruct the opposite of what it promised, from one
+    configuration -- so both are followed here.
+    """
+    with pytest.raises(RadarAssimilationError) as exc:
+        _config(reflectivity=True, analysis_fields=HYDRO_FIELDS,
+                positivity_policy="clip", mp_physics=99)
+    message = str(exc.value)
+    assert "leave it None" in message, message
+    assert _config(reflectivity=True, analysis_fields=HYDRO_FIELDS,
+                   positivity_policy="clip",
+                   mp_physics=None).mp_physics is None
+    routed = _routed_reflectivity_schemes()
+    assert routed, "no scheme carries a routed H(x)"
+    assert _config(reflectivity=True, analysis_fields=HYDRO_FIELDS,
+                   positivity_policy="clip",
+                   mp_physics=routed[0]).mp_physics == routed[0]
+    assert str(routed) in message, message
+
+
+def _routed_reflectivity_schemes():
+    from gpuwm.physics_registry import consumer_rows_by_selector
+
+    rows = consumer_rows_by_selector("microphysics", "radar_da")
+    return sorted(
+        mp for mp, row in rows.items()
+        if isinstance(row, dict)
+        and row.get("reflectivity_route") in ("operator", "scheme-diagnostic"))
+
+
+def test_the_clear_air_floor_refusal_names_its_own_way_out(monkeypatch):
+    """A sibling refusal that names no way out is still a dead end.
+
+    The clear-air arm is refused for a scheme whose floor nobody has read,
+    which is right -- the floor is not guessable and a wrong one
+    manufactures a 35 dB innovation over a genuinely clear sky.  What was
+    missing is the half that makes it a refusal rather than a wall: the
+    two things the caller can do.  Both are followed here to a
+    configuration that constructs.  Every routed scheme's floor has been
+    read on this tree, so the row is taken out of the table for the test,
+    which is what a scheme added ahead of its floor reading presents.
+    """
+    from gpuwm.da.obsop import CLEAR_AIR_FLOOR_DBZ
+
+    routed = _routed_reflectivity_schemes()
+    mp = 16 if 16 in routed else routed[0]
+    monkeypatch.delitem(CLEAR_AIR_FLOOR_DBZ, mp, raising=False)
+    with pytest.raises(RadarAssimilationError) as refusal:
+        _config(clear_air=True, analysis_fields=HYDRO_FIELDS,
+                positivity_policy="clip", mp_physics=mp)
+    message = str(refusal.value)
+    assert "clear_air_value_dbz" in message, message
+    assert "clear_air=False" in message, message
+    # Way out 1: state the floor.
+    stated = _config(clear_air=True, clear_air_value_dbz=-35.0,
+                     analysis_fields=HYDRO_FIELDS,
+                     positivity_policy="clip", mp_physics=mp)
+    assert stated.clear_air_value_dbz == -35.0
+    # Way out 2: turn the arm off, keeping the rest of the cycle.
+    without = _config(clear_air=False, analysis_fields=HYDRO_FIELDS,
+                      positivity_policy="clip", mp_physics=mp)
+    assert without.velocity and without.clear_air is False
+
+
+def test_a_scheme_with_no_operator_is_refused_before_the_floor_question():
+    """Order matters because the floor's way out assumes an operator.
+
+    For a scheme the radar operator cannot simulate at all, "state
+    clear_air_value_dbz" reaches a sibling refusal rather than a running
+    configuration -- the exact shape this lane already retired once.  The
+    route question is therefore asked first, so such a cycle is answered
+    with the arm-composed way out, and the floor refusal is only ever
+    reached by a scheme that has an H(x).
+    """
+    from gpuwm.da.obsop import CLEAR_AIR_FLOOR_DBZ
+
+    routes = _all_reflectivity_routes()
+    fused = [mp for mp, route in routes.items()
+             if route == "native-not-separable"
+             and mp not in CLEAR_AIR_FLOOR_DBZ]
+    assert fused, (routes, sorted(CLEAR_AIR_FLOOR_DBZ))
+    # No stated floor and no recorded one: BOTH refusals are live, and the
+    # one that answers first decides whether the caller is sent somewhere
+    # that works.
+    with pytest.raises(RadarAssimilationError) as refusal:
+        _config(clear_air=True, analysis_fields=HYDRO_FIELDS,
+                positivity_policy="clip", mp_physics=fused[0])
+    message = str(refusal.value)
+    assert "clear_air=False" in message, message
+    assert "no clear-air reflectivity floor is recorded" not in message, (
+        "the floor refusal answered first, and its 'state "
+        "clear_air_value_dbz' way out reaches the route refusal rather "
+        f"than a running configuration: {message}")
+    # And the sentence it names constructs.
+    assert _config(clear_air=False, analysis_fields=HYDRO_FIELDS,
+                   positivity_policy="clip",
+                   mp_physics=fused[0]).clear_air is False
+
+
+def _all_reflectivity_routes():
+    from gpuwm.physics_registry import consumer_rows_by_selector
+
+    rows = consumer_rows_by_selector("microphysics", "radar_da")
+    return {mp: row.get("reflectivity_route")
+            for mp, row in rows.items() if isinstance(row, dict)}
+
+
 def test_config_refuses_unknown_fall_speed():
     with pytest.raises(RadarAssimilationError, match="fall_speed"):
         _config(fall_speed="always")
@@ -330,11 +594,13 @@ def test_reflectivity_without_provider_is_a_refusal(world, grid):
         assimilate_radar_grid(checkpoints, world.obs_path, grid,
                               _config(reflectivity=True,
                                       analysis_fields=HYDRO_FIELDS,
-                                      positivity_policy="clip"))
+                                      positivity_policy="clip",
+                                      mp_physics=10))
     with pytest.raises(RadarAssimilationError,
                        match="reflectivity_provider"):
         assimilate_radar_grid(checkpoints, world.obs_path, grid,
-                              _config(fall_speed="reflectivity"))
+                              _config(fall_speed="reflectivity",
+                                      mp_physics=10))
 
 
 def test_reflectivity_against_a_wind_only_state_vector_is_refused():
@@ -347,7 +613,8 @@ def test_reflectivity_against_a_wind_only_state_vector_is_refused():
     """
     with pytest.raises(RadarAssimilationError,
                        match="no analysed field is a thermodynamic"):
-        _config(reflectivity=True, analysis_fields=("u", "v"))
+        _config(reflectivity=True, analysis_fields=("u", "v"),
+                mp_physics=10)
 
 
 def test_constrained_field_without_a_positivity_policy_is_refused():
@@ -536,7 +803,7 @@ def test_full_operator_with_fall_speed(world, grid):
         for index, info in world.member_states.items()}
     increments, provenance = assimilate_radar_grid(
         checkpoints, world.obs_path, grid,
-        _config(fall_speed="reflectivity"),
+        _config(fall_speed="reflectivity", mp_physics=1),
         reflectivity_provider=provider)
     assert provenance["fall_speed"] == "reflectivity"
     for member in increments.values():

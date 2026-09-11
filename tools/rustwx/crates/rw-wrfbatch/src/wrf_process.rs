@@ -247,7 +247,11 @@ const ISO_VOLUME_NAMES: &[&str] = &[
 /// Raw WRF model outputs pulled verbatim (no `getvar` diagnostic) for the
 /// `Raw` extras group. Single source of truth shared by the processor loop and
 /// the planned-field preview.
-const RAW_EXTRA_CATALOG: &[&str] = &[
+///
+/// Public so `tests/engine_precipitation_catalog.rs` can hold it to the
+/// engine's own precipitation inventory
+/// (gpuwm/physics_consumer_export_v1.json).
+pub const RAW_EXTRA_CATALOG: &[&str] = &[
     "PBLH",
     "HFX",
     "LH",
@@ -258,6 +262,23 @@ const RAW_EXTRA_CATALOG: &[&str] = &[
     "SST",
     "SNOWNC",
     "GRAUPELNC",
+    // Hail accumulator. The engine writes HAILNC for every run
+    // (gpuwm/io/wrf_output_schema.py PRECIPITATION_OUTPUT_FIELDS) and two
+    // shipped schemes fill it -- Milbrandt-Yau mp=9 and NSSL-2 mp=18 --
+    // but it had no catalog row, so it was absent from the planned-field
+    // preview and reached a panel only through the stored-plane fallback
+    // on the generic ramp (audit R-053). `engine_precipitation_catalog.rs`
+    // holds this list to the engine's own inventory.
+    //
+    // Its unit comes from the file, not from wrf-core's raw-name fallback
+    // table: WRF's Registry declares HAILNC in mm (Registry.EM_COMMON:1592)
+    // and every wrfout this renderer reads -- stock WRF's and ArWen's
+    // alike -- carries that attribute, which is what the viewer's QPF
+    // palette arm matches on. The fallback table lives under
+    // `vendor/crates-io`, which VENDOR.md forbids editing (each crate
+    // carries a `.cargo-checksum.json` cargo validates at build time), so
+    // the row that would have been added there is deliberately not.
+    "HAILNC",
     "WSPD10MAX",
     "UP_HELI_MAX",
     // Column extremes of vertical velocity. The same family as the two

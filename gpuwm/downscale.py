@@ -425,6 +425,153 @@ def _derive_child_run_config(parent_config: dict, *, parent, ratio: int,
 #: describes.
 DERIVED_CHILD_CONFIG_NAME = "child.toml"
 
+#: The machine-readable plan this door writes for its callers.  The
+#: stdout ``downscale_plan`` line is for a person reading a terminal; a
+#: controller has to be able to show the child's grid, its memory fit
+#: and its boundary cadence before anyone commits to the run, and it
+#: cannot parse a terminal.
+DOWNSCALE_PLAN_SCHEMA = "gpuwm.downscale-plan.v1"
+
+#: What that document is called inside the run directory it describes.
+DOWNSCALE_PLAN_NAME = "downscale-plan.json"
+
+#: The ``--parent-restart`` spelling that asks the parent's own run
+#: directory for its newest complete checkpoint set instead of naming a
+#: file.  A caller that has the parent's ``run_dir`` (every front door
+#: that lists finished runs does) then needs nothing else.
+PARENT_RESTART_LATEST = "latest"
+
+
+def downscale_plan_path(outdir: Path, *, dry_run: bool) -> Path:
+    """Where the derived plan document lands, on each of the two routes.
+
+    Same rule as :func:`derived_child_config_path`, and for the same
+    reason: a dry run may not fill ``--out``, because the run that
+    follows refuses a directory that already exists.
+    """
+
+    if dry_run:
+        return outdir.parent / f"{outdir.name}.{DOWNSCALE_PLAN_NAME}"
+    return outdir / DOWNSCALE_PLAN_NAME
+
+
+def _write_downscale_plan(path: Path, plan: dict) -> Path:
+    """Publish one plan document atomically, beside or inside ``--out``."""
+
+    from gpuwm.supervisor import atomic_write_json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(path, plan)
+    return path
+
+
+def _resolve_parent_restart(spec, frames: list[Path]) -> Path:
+    """``--parent-restart latest`` -> the parent run's newest valid set.
+
+    Discovery runs where a run writes its checkpoints: beside the frames
+    when the history sits in the run directory itself, and -- the layout
+    every prepared route writes -- in the run directory ABOVE a
+    ``wrfout/`` folder that holds only the frames
+    (``<run>/wrfout/wrfout_d01_*`` with ``<run>/gpuwmrst_d01_*``).  A
+    parent with no checkpoint in either place is refused HERE, naming
+    both directories and the setting that would have produced one,
+    rather than at the physics-binding read with a file-not-found.
+    """
+
+    if str(spec) != PARENT_RESTART_LATEST:
+        return Path(spec)
+    from gpuwm.resume import (
+        LATEST, discover_checkpoint_sets, resolve_resume_checkpoint)
+
+    parent_dir = frames[0].parent
+    searched = [parent_dir]
+    if parent_dir.name == "wrfout" and parent_dir.parent != parent_dir:
+        searched.append(parent_dir.parent)
+    found = next((directory for directory in searched
+                  if discover_checkpoint_sets(directory)), None)
+    if found is None:
+        # The remedy is the parent's OWN setting, not a resume flag: this
+        # parent has to be re-run to be downscalable, and saying so here
+        # is the only place a caller learns it before paying for one.
+        where = " or ".join(str(directory) for directory in searched)
+        raise OfflineChildContractError(
+            f"no complete gpuwmrst checkpoint set in {where}; the "
+            "parent needs restart_interval_s inside its window to be "
+            "downscalable")
+    try:
+        return resolve_resume_checkpoint(found, LATEST).checkpoint
+    except ValueError as error:
+        # Sets exist but none validate: the reasons are the answer, and
+        # they are already newest-first in that message.
+        raise OfflineChildContractError(
+            f"no complete gpuwmrst checkpoint set in {found}: "
+            f"{error}") from error
+
+
+def _budget_bytes(vram_gib: float,
+                  measured_free_bytes: int | None = None) -> tuple[int, int]:
+    """(free bytes, the ceiling the fit actually applies).
+
+    ONE arithmetic for both sizing routes.  The fitted route walks
+    sizes against this ceiling; an explicit size is priced against the
+    same one, so ``memory.fits`` means the same thing whichever route
+    produced the extent.
+    """
+
+    from gpuwm.core.preflight import EXTERNAL_MARGIN_BYTES, GIB
+    from gpuwm.domain_wizard import card_assumed_free_gib, fit_headroom_bytes
+
+    free_bytes = (int(card_assumed_free_gib(float(vram_gib)) * GIB)
+                  if measured_free_bytes is None else int(measured_free_bytes))
+    budget = free_bytes - EXTERNAL_MARGIN_BYTES
+    return free_bytes, budget - fit_headroom_bytes(budget)
+
+
+def _price_child_config(cfg, vram_gib: float, profile=None):
+    """The estimator's answer for the config that will actually run.
+
+    ``profile`` is the same device the fitted route prices on (see
+    :func:`_fit_child_size`): the measured card's own profile when the
+    door measured one, ``None`` for a declared capacity.  An explicit
+    extent is priced once, here, and a route that dropped the profile
+    would send a Noah-MP child on a measured card back into the
+    "declared card that is not in this machine" refusal the fitted route
+    retired.
+    """
+
+    from datetime import datetime, timezone
+
+    from gpuwm.core.preflight import estimate_experiment
+    from gpuwm.experiment import experiment_from_run_config
+
+    # The memory model is start-time independent; the wrapper needs A
+    # datetime and the child's real clock comes from the parent frames.
+    exp = experiment_from_run_config(
+        cfg, datetime(2000, 1, 1, tzinfo=timezone.utc))
+    return estimate_experiment(exp, vram_gib=float(vram_gib), profile=profile)
+
+
+def _memory_receipt(*, basis: str, vram_gib: float,
+                    measured_free_bytes: int | None, estimate) -> dict:
+    """What the child costs, against the budget it was judged on.
+
+    ``peak_envelope_bytes``/``fits`` are ``None`` when the estimator
+    could not price this config -- never a guess.  A caller showing the
+    number is showing the engine's own, which is the only one that
+    means anything.
+    """
+
+    free_bytes, limit = _budget_bytes(vram_gib, measured_free_bytes)
+    peak = None if estimate is None else int(estimate.peak_envelope_bytes)
+    return {
+        "basis": basis,
+        "vram_gib": float(vram_gib),
+        "free_bytes": int(free_bytes),
+        "budget_bytes": int(limit),
+        "peak_envelope_bytes": peak,
+        "fits": None if peak is None else bool(peak <= limit),
+    }
+
 
 def derived_child_config_path(outdir: Path, *, dry_run: bool) -> Path:
     """Where ``--point`` derivation writes the child config it just built.
@@ -501,8 +648,28 @@ def _render_child_toml(config: dict, *, tiles_mode: str | None = None) -> str:
 def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
                     run_seconds: float, output_interval_s: float,
                     vram_gib: float, child_eta_levels=None,
-                    measured_free_bytes: int | None = None) -> int:
+                    measured_free_bytes: int | None = None,
+                    profile=None) -> tuple:
     """Largest centered square child whose peak envelope fits the card.
+
+    Returns ``(size, estimate)``: the extent AND the estimator's own
+    answer for it, so the plan document reports the number the fit was
+    decided on instead of a second, separately computed one.
+
+    ``profile`` is the device the non-pool terms are priced against: the
+    local card's own profile when ``--auto-vram`` measured it (the
+    sizing probe returns it beside the free figure), ``None`` for a
+    declared ``--card`` / ``--vram-gib`` target, which is priced on the
+    reference profile exactly as ``gpuwm check --vram-gib`` prices a
+    machine that is elsewhere.  The distinction matters most to a Noah-MP
+    parent: scheme 4 is priced from a reading of the card's own compile
+    platform when the profile carries a recorded one, so a measured local
+    card is priced from its own row, while a declared card -- or a probe
+    that returned no profile -- is priced from the ceiling over the
+    recorded Noah-MP platforms with the basis stated.  Before this
+    argument existed the measured route handed the estimator no profile
+    and was refused as "a declared card that is not in this machine" on
+    the one machine whose card had just been measured.
 
     Budget and criterion are the live sizing path's, the same arithmetic
     the domain wizard and ``gpuwm check`` price with: the free VRAM a
@@ -528,14 +695,10 @@ def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
     from datetime import datetime, timezone
 
     from gpuwm.core.preflight import (
-        EXTERNAL_MARGIN_BYTES, GIB, estimate_experiment)
-    from gpuwm.domain_wizard import card_assumed_free_gib, fit_headroom_bytes
+        estimate_experiment)
     from gpuwm.experiment import experiment_from_run_config
 
-    free_bytes = (int(card_assumed_free_gib(float(vram_gib)) * GIB)
-                  if measured_free_bytes is None else int(measured_free_bytes))
-    budget = free_bytes - EXTERNAL_MARGIN_BYTES
-    limit = budget - fit_headroom_bytes(budget)
+    _, limit = _budget_bytes(vram_gib, measured_free_bytes)
     # The memory model is start-time independent; the wrapper needs A
     # datetime, and the child's real clock comes from the parent frames
     # at run time.
@@ -547,6 +710,7 @@ def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
     # 2.4.1 restart's recorded key was refused by a newer validation).
     last_config_error: ValueError | None = None
     any_size_fit = False
+    priced: dict[int, object] = {}
 
     def fits(size: int) -> bool:
         nonlocal last_config_error, any_size_fit
@@ -573,7 +737,9 @@ def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
         from gpuwm.config import RunConfig
         run = RunConfig(**merged)
         exp = experiment_from_run_config(run, estimate_epoch)
-        estimate = estimate_experiment(exp, vram_gib=float(vram_gib))
+        estimate = estimate_experiment(exp, vram_gib=float(vram_gib),
+                                       profile=profile)
+        priced[size] = estimate
         if estimate.peak_envelope_bytes <= limit:
             any_size_fit = True
             return True
@@ -608,7 +774,7 @@ def _fit_child_size(parent, parent_config, *, j0: int, i0: int, ratio: int,
     size = unit * (high if fits(unit * high) else low)
     if size < 2 * unit:
         raise cannot_plan()
-    return size
+    return size, priced.get(size)
 
 
 def _parent_cadence_seconds(frames: list[Path]) -> float:
@@ -695,9 +861,16 @@ class _OutputReservation:
 def downscale_main(args) -> int:
     """``gpuwm downscale``, with its output reservation held transactionally."""
 
+    from gpuwm.runplan import collect_warnings
+
     reservation = _OutputReservation()
+    warnings: list[dict] = []
     try:
-        return _downscale_main(args, reservation)
+        # The plan document carries every advisory this command raised.
+        # A controller shows them beside the grid it is about to run; a
+        # terminal reader still gets the same sentences on stderr.
+        with collect_warnings(warnings):
+            return _downscale_main(args, reservation, warnings)
     except BaseException:
         # Every exit that is not this command's own success releases the
         # directory it reserved -- refusals, Ctrl-C, and the failures the
@@ -707,15 +880,28 @@ def downscale_main(args) -> int:
         raise
 
 
-def _downscale_main(args, reservation: _OutputReservation) -> int:
+def _downscale_main(args, reservation: _OutputReservation,
+                    warnings: list[dict]) -> int:
     auto_vram = bool(getattr(args, "auto_vram", False))
     if auto_vram and (args.card is not None or args.vram_gib is not None):
         raise ValueError("--auto-vram measures the local GPU; omit --card and --vram-gib")
     if auto_vram and (args.point is None or args.child_size is not None):
         raise ValueError("--auto-vram requires --point sizing without an explicit --child-size")
     sizing_receipt = None
+    # How the child's extent was decided, and on which budget.  Filled on
+    # both routes below so the plan document never has to infer it.
+    memory_basis = "explicit-size"
+    memory_vram_gib = None
+    memory_free_bytes = None
+    memory_estimate = None
+    # The device the price is taken on: the measured card's own profile
+    # when --auto-vram read one, None for a declared capacity.
+    memory_profile = None
     frames = _discover_parent_series(
         [Path(p) for p in args.parent], args.parent_domain)
+    if args.parent_restart is not None:
+        args.parent_restart = _resolve_parent_restart(
+            args.parent_restart, frames)
     cadence = _parent_cadence_seconds(frames)
     # Provenance: True whenever the ceiling is the archive's own
     # cadence (by flag or by default), False for an explicit bound.
@@ -735,9 +921,12 @@ def _downscale_main(args, reservation: _OutputReservation) -> int:
                  why="Boundary cadence is a scientific choice tied to "
                      "child resolution; write parent history at 15-min "
                      "or denser cadence when planning to downscale.")
+    cadence_warning = None
     if cadence > CADENCE_GUIDANCE_SECONDS:
-        warn(f"parent cadence {cadence:g} s is coarser than the "
-             f"{CADENCE_GUIDANCE_SECONDS:g} s guidance for downscaling",
+        cadence_warning = (
+            f"parent cadence {cadence:g} s is coarser than the "
+            f"{CADENCE_GUIDANCE_SECONDS:g} s guidance for downscaling")
+        warn(cadence_warning,
              why="The child sees interval-linear boundary forcing where "
                  "a live nest is forced every parent step -- expect "
                  "boundary-swept differences to grow with the cadence "
@@ -791,6 +980,9 @@ def _downscale_main(args, reservation: _OutputReservation) -> int:
                 "instead (nz must equal len(eta_levels) - 1); the child "
                 "route reads it there and remaps onto it.")
         child_config = Path(args.child_config)
+        from gpuwm.domain_wizard import declared_card_gib
+        memory_vram_gib = (float(args.vram_gib) if args.vram_gib is not None
+                           else declared_card_gib(args.card or "24gb"))
         ratio = int(args.ratio)
         i_start, j_start = int(args.i_parent_start), int(args.j_parent_start)
         if not args.dry_run:
@@ -825,6 +1017,10 @@ def _downscale_main(args, reservation: _OutputReservation) -> int:
             parts = [int(p) for p in str(args.child_size).split(",")]
             child_nx = parts[0]
             child_ny = parts[1] if len(parts) > 1 else parts[0]
+            from gpuwm.domain_wizard import declared_card_gib
+            memory_vram_gib = (float(args.vram_gib)
+                               if args.vram_gib is not None
+                               else declared_card_gib(args.card or "24gb"))
         else:
             from gpuwm.domain_wizard import CARD_VRAM_GIB
             measured_free_bytes = None
@@ -840,13 +1036,20 @@ def _downscale_main(args, reservation: _OutputReservation) -> int:
             elif args.vram_gib is not None:
                 vram_gib = float(args.vram_gib)
             else:
-                vram_gib = CARD_VRAM_GIB[args.card or "24gb"]
-            child_nx = child_ny = _fit_child_size(
+                from gpuwm.domain_wizard import declared_card_gib
+                vram_gib = declared_card_gib(args.card or "24gb")
+            child_nx, memory_estimate = _fit_child_size(
                 parent, parent_config, j0=j0, i0=i0, ratio=ratio,
                 run_seconds=run_seconds,
                 output_interval_s=output_interval_s, vram_gib=vram_gib,
                 child_eta_levels=child_levels,
-                **({"measured_free_bytes": measured_free_bytes} if auto_vram else {}))
+                **({"measured_free_bytes": measured_free_bytes,
+                    "profile": sizing.device_profile} if auto_vram else {}))
+            child_ny = child_nx
+            memory_basis = "measured-local" if auto_vram else "capacity"
+            memory_vram_gib = vram_gib
+            memory_free_bytes = measured_free_bytes
+            memory_profile = sizing.device_profile if auto_vram else None
         placement = _centered_placement(
             parent, j0=j0, i0=i0, ratio=ratio,
             child_nx=child_nx, child_ny=child_ny)
@@ -991,7 +1194,50 @@ def _downscale_main(args, reservation: _OutputReservation) -> int:
     }
     if sizing_receipt is not None:
         plan["gpu_sizing"] = sizing_receipt
+    if memory_estimate is None and memory_vram_gib is not None:
+        # An extent that was GIVEN is still priced, once, on the config
+        # that will run -- against the same budget the fit walks.  The
+        # verdict is reported, never enforced: refusing an allocation is
+        # the engine's own job at the moment it makes it.
+        try:
+            memory_estimate = _price_child_config(
+                cfg, memory_vram_gib, profile=memory_profile)
+        except Exception as error:  # noqa: BLE001 - a price is not a gate
+            plan["memory_note"] = (
+                f"this child could not be priced before the run: {error}")
+    plan["schema"] = DOWNSCALE_PLAN_SCHEMA
+    plan["child_grid"] = {
+        "nx": int(cfg.nx), "ny": int(cfg.ny), "nz": int(cfg.nz),
+        "dx": float(cfg.dx), "dy": float(cfg.dy), "dt": float(cfg.dt),
+        "run_seconds": float(cfg.run_seconds),
+        "output_interval_s": float(cfg.output_interval_s),
+        "ratio": int(ratio), "i_parent_start": int(i_start),
+        "j_parent_start": int(j_start),
+    }
+    plan["memory"] = (
+        None if memory_vram_gib is None else _memory_receipt(
+            basis=memory_basis, vram_gib=memory_vram_gib,
+            measured_free_bytes=memory_free_bytes,
+            estimate=memory_estimate))
+    plan["cadence"] = {
+        "seconds": float(contract.interval_seconds),
+        "guidance_seconds": float(CADENCE_GUIDANCE_SECONDS),
+        "accepted_parent_cadence": bool(cadence_is_parents),
+        "max_boundary_interval_seconds": float(max_interval),
+        "warning": cadence_warning,
+    }
+    plan["parent"] = {
+        "run_dir": str(frames[0].parent),
+        "restart": (None if args.parent_restart is None
+                    else str(args.parent_restart)),
+        "frames": len(frames),
+        "domain": int(_FRAME_RE.match(frames[0].name).group("dom"))
+                  if _FRAME_RE.match(frames[0].name) else None,
+    }
+    plan["warnings"] = [dict(record) for record in warnings]
+    plan_path = downscale_plan_path(Path(args.out), dry_run=bool(args.dry_run))
     if args.dry_run:
+        _write_downscale_plan(plan_path, plan)
         print(json.dumps({"event": "downscale_plan", **plan}, indent=2,
                          sort_keys=True))
         return 0
@@ -1021,6 +1267,11 @@ def _downscale_main(args, reservation: _OutputReservation) -> int:
     # mid-integration leaves frames a reader needs, and no report.json to
     # claim it finished.  Deleting that would be destroying evidence.
     reservation.hand_off()
+    # Written AFTER the hand-off and BEFORE the child launches: a reader
+    # watching the new run directory finds the grid, the price and the
+    # cadence there from the first moment, and a refusal that still
+    # released --out never had to account for this file.
+    _write_downscale_plan(plan_path, plan)
     report = offline_child_run.run(namespace)
     return 0 if report["result"] == "PASS" else 1
 
@@ -1038,9 +1289,13 @@ def register_cli(subparsers) -> None:
                              "several (e.g. 3 for the innermost archived "
                              "parent)")
     evidence = parser.add_mutually_exclusive_group()
-    evidence.add_argument("--parent-restart", type=Path, default=None,
+    evidence.add_argument("--parent-restart", default=None,
+                          metavar="PATH|latest",
                           help="gpuwm restart of the parent run "
-                               "(authoritative physics evidence)")
+                               "(authoritative physics evidence); "
+                               "'latest' discovers the newest complete "
+                               "checkpoint set in the parent's own run "
+                               "directory")
     evidence.add_argument("--parent-namelist", type=Path, default=None,
                           help="stock-WRF namelist.input of the parent run")
     parser.add_argument("--parent-namelist-domain", type=int, default=1,
@@ -1082,10 +1337,11 @@ def register_cli(subparsers) -> None:
     # in --point sizing, was an argparse rejection here and nowhere
     # else.  Two commands quoting different tier lists for the same
     # concept is a documentation bug you cannot fix in the docs.
-    parser.add_argument("--card", choices=sorted(_card_vram_gib()),
-                        default=None,
-                        help="VRAM tier for --point sizing (default 24gb; "
-                             "the same tiers `gpuwm domain` accepts)")
+    parser.add_argument("--card", default=None,
+                        help="card for --point sizing (default 24gb): a tier "
+                             "(12gb/16gb/24gb/32gb), a size ('10gb') or a "
+                             "model with a recorded size ('RTX 3080'), the "
+                             "same spellings `gpuwm domain` accepts")
     parser.add_argument("--vram-gib", type=float, default=None,
                         help="explicit VRAM capacity for --point sizing")
     parser.add_argument("--auto-vram", action="store_true",
@@ -1143,4 +1399,6 @@ def register_cli(subparsers) -> None:
     parser.set_defaults(func=downscale_main)
 
 
-__all__ = ["downscale_main", "register_cli"]
+__all__ = ["DOWNSCALE_PLAN_NAME", "DOWNSCALE_PLAN_SCHEMA",
+           "PARENT_RESTART_LATEST", "downscale_main",
+           "downscale_plan_path", "register_cli"]

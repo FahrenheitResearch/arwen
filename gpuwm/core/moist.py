@@ -129,16 +129,12 @@ NSSL_SCALAR_SPECIES = (
 NSSL_SPECIES = NSSL_MASS_SPECIES + NSSL_SCALAR_SPECIES
 
 # Milbrandt-Yau option 9 carries hail mass beside graupel and a number
-# moment for EVERY one of the six hydrometeors -- the WRF driver's
-# CASE(MILBRANDT2MOM) arm binds qnc/qnr/qni/qns/qng/qnh
-# (module_microphysics_driver.F:1857-1862) and Registry.EM_COMMON declares
-# all six in the ``scalar`` package.  ``nc`` is transported here, unlike
-# Morrison's diagnostic droplet number, because the scheme prognoses it:
-# NccnFNC activation writes it at :3014 and evaporation depletes it at
-# :3022.
-MY2_MASS_SPECIES = ("qi", "qs", "qg", "qh")
-MY2_NUMBER_SPECIES = ("nc", "nr", "ni", "ns", "ng", "nh")
-MY2_SPECIES = MY2_MASS_SPECIES + MY2_NUMBER_SPECIES
+# moment for EVERY one of the six hydrometeors.  The tuples are defined in
+# gpuwm.core.milbrandt2_constants (with the WRF line references) so that
+# the offline child's transport inventory can read them without this
+# module's CuPy import; they are re-exported here under their names.
+from gpuwm.core.milbrandt2_constants import (  # noqa: E402,F401 -- re-exported
+    MY2_MASS_SPECIES, MY2_NUMBER_SPECIES, MY2_SPECIES)
 
 # P3 one-category (mp=50) is the first scheme in the tree with ``qi`` and NO
 # ``qs``/``qg``, so it cannot reuse ICE_MASS_SPECIES: that tuple would name

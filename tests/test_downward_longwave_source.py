@@ -397,6 +397,82 @@ def _small_declared_experiment():
     return build_experiment(raw, source="<alloc-declared>")
 
 
+def test_a_declared_experiment_can_name_its_own_constant():
+    """The acknowledgement names the CLAIM; the field names the NUMBER.
+
+    Until ``[experiment] constant_glw_wm2`` existed, an experiment whose
+    case radiates near 410 W m-2 had to run at the shipped 300 and call
+    the difference declared -- the engine accepts any float, and only the
+    config had no way to say one.  The field is readable exactly where
+    the fabrication is declared, because a number that looks like it took
+    effect and did not is the defect this whole guard is about.
+    """
+
+    import tomllib
+    from pathlib import Path
+
+    import pytest as _pytest
+
+    from gpuwm import runtime
+    from gpuwm.core.physics import DECLARED_CONSTANT_GLW_WM2
+    from gpuwm.experiment import build_experiment
+    from gpuwm.physics_compat import CONSTANT_DOWNWARD_LONGWAVE_ACK
+
+    raw = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "configs"
+         / "real74_4dom_mynn_norad.toml").read_text(encoding="utf-8"))
+    raw.pop("case_data", None)
+    raw["domain"] = raw["domain"][:1]
+    raw["domain"][0]["nx"] = 24
+    raw["domain"][0]["ny"] = 20
+
+    exp = build_experiment(dict(raw), source="<declared-default>")
+    assert CONSTANT_DOWNWARD_LONGWAVE_ACK in exp.acknowledgements
+    assert runtime.declared_constant_glw(exp) == DECLARED_CONSTANT_GLW_WM2
+
+    named = dict(raw)
+    named["experiment"] = dict(raw["experiment"]) | {"constant_glw_wm2": 410.0}
+    exp = build_experiment(named, source="<declared-410>")
+    assert runtime.declared_constant_glw(exp) == 410.0
+
+    undeclared = dict(raw)
+    undeclared["experiment"] = dict(raw["experiment"]) | {
+        "constant_glw_wm2": 410.0,
+        "acknowledgements": [
+            token for token in raw["experiment"].get("acknowledgements", [])
+            if token != CONSTANT_DOWNWARD_LONGWAVE_ACK],
+    }
+    with _pytest.raises(ValueError) as caught:
+        build_experiment(undeclared, source="<undeclared-410>")
+    assert "constant_glw_wm2" in str(caught.value)
+    assert CONSTANT_DOWNWARD_LONGWAVE_ACK in str(caught.value)
+
+    negative = dict(raw)
+    negative["experiment"] = dict(raw["experiment"]) | {
+        "constant_glw_wm2": -1.0}
+    with _pytest.raises(ValueError, match="finite positive"):
+        build_experiment(negative, source="<negative>")
+
+
+def test_an_absent_constant_leaves_the_restart_identity_where_it_was():
+    """ABSENT stays absent, the convention every added field follows.
+
+    A new experiment field that serialized as ``null`` would move the
+    fingerprint of every experiment written before it existed and refuse
+    every checkpoint on disk, so the identity payload drops it when it is
+    None and binds it when it is declared -- a resume across 300 and 410
+    is not the same trajectory.
+    """
+
+    from gpuwm.core.model import restart_identity_payload
+
+    exp = _small_declared_experiment()
+    assert "constant_glw_wm2" not in restart_identity_payload(exp)
+    from dataclasses import replace
+    assert restart_identity_payload(
+        replace(exp, constant_glw_wm2=410.0))["constant_glw_wm2"] == 410.0
+
+
 @pytest.mark.gpu
 @requires_gpu
 def test_alloc_preflight_reaches_the_device_for_a_declared_config():

@@ -136,10 +136,63 @@ _RUNTIME_OUTPUT_KEYS = {
     "namelist_quilt": set(),
 }
 
-_MOVING_NEST_KEYS = {
-    "time_to_move", "corral_dist", "track_level", "tile_sz_x", "tile_sz_y",
-    "num_moves", "move_id", "move_interval", "move_cd_x", "move_cd_y",
-}
+#: Domain TILING keys, which are not moving-nest keys at all -- they
+#: shared this set only because both are refused in the same report.
+_MOVING_NEST_TILING_KEYS = frozenset({"tile_sz_x", "tile_sz_y"})
+
+
+def _noah_soil_layer_count() -> int:
+    """Noah's soil layer count, from Noah.
+
+    One number, owned by the scheme that defines it
+    (``gpuwm.core.noah.NUM_SOIL_LAYERS``, the only output of WRF's
+    init_soil_depth_2), rather than a literal 4 in a report that predates
+    RUC and Noah-MP being admitted at all.  Resolved on call for the
+    reason :func:`_moving_nest_keys` gives.
+    """
+
+    from gpuwm.core.noah import NUM_SOIL_LAYERS
+    return int(NUM_SOIL_LAYERS)
+
+
+def _runtime_microphysics_reasons(mp) -> list[str]:
+    """Per-domain reasons this ENGINE cannot run the requested scheme.
+
+    Derived from the registry's implemented microphysics options rather
+    than a literal set: the literal this replaced lacked 0, 1 and 9 and
+    answered "gpuwm runtime does not implement" for three selectors the
+    loader admits and the dispatcher runs (0 being the no-microphysics
+    option).  An empty list means the engine runs every domain's
+    scheme, whatever the stock-WRF export can or cannot write.
+    """
+
+    from gpuwm.physics_registry import implemented_selector_values
+
+    implemented = implemented_selector_values("microphysics")
+    return [
+        f"d{index + 1:02d}: gpuwm runtime does not implement "
+        f"mp_physics={value}; the stock-WRF export inventory is a "
+        "separate question."
+        for index, value in enumerate(mp) if value not in implemented
+    ]
+
+
+def _moving_nest_keys() -> frozenset[str]:
+    """WRF moving-nest keys, from the loader that refuses them.
+
+    A second hand-written copy of one concept is the drift family this
+    audit exists for, and this copy had already drifted: it omitted
+    vortex_interval and max_vortex_speed -- the two whose controls have
+    no gpuwm equivalent at all -- so this report stayed silent about
+    exactly the pair a migrating user is most likely to have written.
+
+    Resolved on call rather than imported at module scope: this module
+    stages in the standalone preprocessing distribution and
+    gpuwm.experiment reaches the forecast side.
+    """
+
+    from gpuwm.experiment import _MOVING_NEST_KEYS as loader_keys
+    return frozenset(loader_keys) | _MOVING_NEST_TILING_KEYS
 
 
 @dataclass(frozen=True)
@@ -741,7 +794,7 @@ def analyze_namelists(
             ))
 
         moving = sorted(
-            (set(domains) | set(geogrid)) & _MOVING_NEST_KEYS
+            (set(domains) | set(geogrid)) & _moving_nest_keys()
         )
         if moving:
             issues.append(_issue(
@@ -942,8 +995,18 @@ def analyze_namelists(
                 raise ValueError(
                     "&physics/usemonalb and &physics/rdlai2d must contain "
                     "logicals")
+            # THE RUNTIME QUESTION IS ASKED FIRST, and never inside the
+            # stock-export inventory's reach.  It used to sit after
+            # ``stock_wrf_physics_inventory(mp[index])`` in the loop body,
+            # so for a scheme with no packaged WRF contract -- mp=9, the
+            # scheme that triggered this audit -- the inventory raised on
+            # the first domain, the runtime line was unreachable, and the
+            # report told a migrating user with a runnable Milbrandt-Yau
+            # namelist that ArWen's runtime did not implement it. The two
+            # questions are independent: one asks what an UNCHANGED WRF
+            # needs in its wrfinput, the other asks what this engine runs.
+            gpuwm_reasons.extend(_runtime_microphysics_reasons(mp))
             for index in range(max_dom):
-                inventory = stock_wrf_physics_inventory(mp[index])
                 configuration_errors = []
                 if pbl[index] != 1:
                     configuration_errors.append(
@@ -954,10 +1017,20 @@ def analyze_namelists(
                         f"sf_sfclay_physics={sfclay[index]} "
                         "(only classic MM5=91 inventoried)"
                     )
-                if surface[index] != 2 or soil[index] != 4:
+                # Noah's layer count comes from Noah, not from a literal.
+                # The "4" here was an independent copy of a number
+                # gpuwm.core.noah owns, written before RUC and Noah-MP were
+                # admitted anywhere; the SCOPE (this export inventories the
+                # Noah package only) is a real statement about the export
+                # and stays.
+                if (surface[index] != 2
+                        or soil[index] != _noah_soil_layer_count()):
                     configuration_errors.append(
                         f"sf_surface_physics={surface[index]}, "
-                        f"num_soil_layers={soil[index]} (only Noah=2/4 layers)"
+                        f"num_soil_layers={soil[index]} (the stock-WRF "
+                        "export inventories the Noah package only: "
+                        f"sf_surface_physics=2 at "
+                        f"{_noah_soil_layer_count()} soil layers)"
                     )
                 if urban[index] != 0:
                     configuration_errors.append(
@@ -989,6 +1062,30 @@ def analyze_namelists(
                         "Select an evidenced combination or implement its exact "
                         "WRF Registry/real.exe initialized-state adapter.",
                     ))
+                try:
+                    inventory = stock_wrf_physics_inventory(mp[index])
+                except ValueError as error:
+                    # EXPORT-ONLY.  No evidenced Registry.EM_COMMON package
+                    # contract is packaged for this selector, so a
+                    # wrfinput written for an UNCHANGED WRF would
+                    # under-declare its own package.  It says nothing about
+                    # running the scheme here, and the reason and the way
+                    # out both say so (audit R-013 / R-014).
+                    issues.append(_issue(
+                        "STOCK_WRF_EXPORT_INVENTORY_MISSING",
+                        f"d{index + 1:02d} &physics/mp_physics",
+                        str(error),
+                        "This is the stock-WRF export route only. To run "
+                        "this configuration in ArWen, take it through "
+                        "`gpuwm import-namelist` and `gpuwm run`; the "
+                        "runtime verdict below is answered independently. "
+                        "To export a wrfinput for an unchanged WRF "
+                        "v4.6.1, add that scheme's exact Registry package "
+                        "and real.exe initialized-state policy to "
+                        "gpuwm/wrf_physics_inventory.py, or select an "
+                        "inventoried scheme.",
+                    ))
+                    continue
                 stock_rows.append({
                     "grid_id": index + 1,
                     "mp_physics": mp[index],
@@ -1005,53 +1102,14 @@ def analyze_namelists(
                         for field in inventory.runtime_state_not_wrfinput
                     ],
                 })
-                # Thompson 8 is first-class since the classic tables became
-                # package data (mp8 promotion, product/v1 packaging lane
-                # 2026-07-28): no enable guard, packaged table root with an
-                # environment override, byte validation still at setup.
-                # NSSL 18 is selectable since the certified
-                # campaign/real74-fixed-nssl merge (product/v1 NSSL lane
-                # 2026-07-29); its registry maturity stays
-                # "wrf-matched-run-candidate", which this report does not restate.
-                # Thompson aerosol-aware 28 is selectable since the mp=28
-                # port landed its adapter, transport and driver dispatch.
-                # Its registry maturity is a separate question this report
-                # does not restate, exactly as for NSSL 18 above.
+                # The per-domain RUNTIME verdict used to stand here, one
+                # line below the stock inventory that had already raised
+                # for any uninventoried scheme -- so it was unreachable for
+                # exactly the schemes it needed to answer, and reachable
+                # only to say "supported" for the ones the export already
+                # covered.  It moved above this loop, where it is answered
+                # for every domain whatever the export says (audit R-013).
                 #
-                # The port wrote this arm believing 28 was unreachable here,
-                # because the enclosing try block calls
-                # stock_wrf_physics_inventory(mp[index]) first and
-                # gpuwm/wrf_physics_inventory.py then carried no mp=28 row.
-                # It carries one now -- the port added it later in its own
-                # run (_INVENTORIES[28], wrf_physics_inventory.py:281) -- so
-                # 28 reaches this line and the value is load-bearing, not
-                # aspirational.
-                # P3 one-category 50 is selectable since the mp=50 port
-                # landed its adapter (gpuwm/core/p3.py), its device arms
-                # (gpuwm/core/p3_device.py plus gpuwm/core/kernels/p3.cu,
-                # selected by cfg.p3_backend) and the driver dispatch arm at
-                # gpuwm/core/microphysics.py:721.  Its Registry package is
-                # p3_1category (Registry.EM_COMMON:3038) and WRF's driver
-                # calls it in exactly the one-category shape gpuwm ports
-                # (module_microphysics_driver.F:1569-1602: no nc_3d, no
-                # qzi1_3d, n_iceCat = 1).
-                #
-                # Until this value carried 50, the line answered "gpuwm
-                # runtime on paired head does not implement mp_physics=50"
-                # -- once per domain -- for a selector
-                # gpuwm.config.MP_PHYSICS_ACCEPTED admits, the inventory
-                # eleven lines above resolves
-                # (wrf_physics_inventory.py:363), the restart identity binds
-                # and wrfout writes QIR/QIB for.  The stock export row was
-                # written and the runtime verdict then denied the scheme
-                # exists, in the same report.
-                runtime_supported = mp[index] in {6, 8, 10, 16, 18, 28, 50}
-                if not runtime_supported:
-                    gpuwm_reasons.append(
-                        f"d{index + 1:02d}: gpuwm runtime on paired head does not "
-                        f"implement mp_physics={mp[index]} ({inventory.scheme}); "
-                        "stock-WRF export inventory is independent and supported."
-                    )
                 # The mp=50 + ra 4/4 arm that stood here mirrored
                 # gpuwm.config.validate_p3_radiation and retired with it:
                 # rrtmgp._MP_CLOUD_OPTICS_SCHEME carries ``50: "p3"`` now
@@ -1059,12 +1117,19 @@ def analyze_namelists(
                 # namelist resolves to a pairing that runs and there is
                 # no refusal left to mirror.
         except (KeyError, TypeError, ValueError) as error:
+            # The physics columns themselves would not parse.  The
+            # per-scheme export gap has its own issue
+            # (STOCK_WRF_EXPORT_INVENTORY_MISSING, raised per domain
+            # above) and no longer arrives here, so this arm names what it
+            # actually caught.
             issues.append(_issue(
-                "UNSUPPORTED_MICROPHYSICS_INVENTORY", "&physics/mp_physics",
+                "UNREADABLE_PHYSICS_COLUMNS", "&physics",
                 str(error),
-                "Use an inventoried scheme (6 WSM6, 8 Thompson, 10 Morrison, "
-                "18 NSSL, 28 Thompson aerosol-aware, or 50 P3) or add its "
-                "exact WRF Registry/real.exe state contract.",
+                "Give every &physics selector one value per domain "
+                "(mp_physics, bl_pbl_physics, sf_sfclay_physics, "
+                "sf_surface_physics, num_soil_layers, sf_urban_physics, "
+                "sf_surface_mosaic, usemonalb, rdlai2d) with integer or "
+                "logical values as WRF's Registry declares them.",
             ))
 
     timing = None
@@ -1261,8 +1326,16 @@ def _finish_report(
                 "target": "unchanged WRF v4.6.1",
                 "domains": stock_domains,
             },
+            # The RUNTIME verdict is the runtime's own.  It used to read
+            # ``stock_pass and not gpuwm_reasons``, so ANY stock-export
+            # issue -- a scheme with no packaged WRF Registry package
+            # contract, an uninventoried PBL, a mosaic land state --
+            # forced the runtime verdict to FAIL with an EMPTY reason
+            # list: a report that said the runtime could not run the
+            # configuration and would not say why, for a configuration
+            # ArWen runs (audit R-013).
             "gpuwm_runtime": {
-                "verdict": "PASS" if stock_pass and not gpuwm_reasons else "FAIL",
+                "verdict": "PASS" if not gpuwm_reasons else "FAIL",
                 "reasons": gpuwm_reasons,
             },
         },

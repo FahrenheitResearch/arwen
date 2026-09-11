@@ -103,9 +103,14 @@ def _spacing(record, domain):
     return load_experiment(record["snapshot_config"]).domain(domain).run.dx
 
 
-def work_once(workspace, job, *, render=True):
+def work_once(workspace, job, *, render=True, _completion=None):
     from gpuwm.remote_worker import TERMINAL
-    record, state, bound, commits = legacy._job(workspace, job)
+    record, state, bound, commits = legacy._job(
+        workspace, job, **({"completion": True} if _completion is not None else {}))
+    if _completion is not None:
+        # Revalidate before any receipt, render or store request, including the
+        # first pass that observes the wrapper's terminal result.
+        _completion.validate(record, state, bound, commits)
     root = _root(workspace, job)
     compact_root = viewer._root(workspace)
     selection = viewer._selection()
@@ -181,23 +186,50 @@ def ensure(workspace, job):
                 stdout=log, stderr=log, start_new_session=True, close_fds=True)
 
 
-def worker(workspace, job):
+def _receipt_state(root, job, state, error, *, done):
+    legacy._write(root / "status.json", {"schema": STATUS_SCHEMA, "job_id": job, "state": state,
+        "done": done, "error": str(error)[:2000]})
+
+
+def worker(workspace, job, *, cancel=None):
     root = _root(workspace, job)
     with Lease(root / "worker.lock", timeout=3) as lease:
         if lease.file is None:
             return 0
         if hasattr(os, "nice"):
             os.nice(5)
+        completion = ra.CompletionWait(workspace, job, cancel, time)
         while True:
             try:
-                value = work_once(workspace, job)
-                if value["done"]:
+                completion.check()
+                completion.begin()
+                value = None
+                try:
+                    value = work_once(workspace, job, _completion=completion)
+                except ra.ProducerCompletionPending as pending:
+                    # The runner exited and its wrapper has not settled. No
+                    # receipt is written and no renderer runs in that window.
+                    completion.pending(pending)
+                except ra.ProducerCompletionUnprovable as unprovable:
+                    # This job's runner-exit window cannot be proved and no
+                    # renderer runs inside it either. A terminal receipt here
+                    # would make ensure() refuse to relaunch this gallery for
+                    # the life of the job, so the receipt stays non-terminal
+                    # and says why the gallery is still pending.
+                    completion.unprovable(unprovable)  # Raises if this wait held proof.
+                    _receipt_state(root, job, "waiting_for_producer_completion",
+                                   unprovable, done=False)
+                if value is not None and value["done"]:
                     return 0
-            except Exception as error:
-                legacy._write(root / "status.json", {"schema": STATUS_SCHEMA, "job_id": job, "state": "failed",
-                    "done": True, "error": str(error)[:2000]})
+                completion.wait(.1 if value is not None and value.get("active") else 2)
+            except ra.ProducerCompletionCancelled as cancelled:
+                # ensure() refuses to relaunch on any done receipt, so a
+                # cancelled gallery must stay non-terminal.
+                _receipt_state(root, job, "cancelled", cancelled, done=False)
                 return 2
-            time.sleep(.1 if value.get("active") else 2)
+            except Exception as error:
+                _receipt_state(root, job, "failed", error, done=True)
+                return 2
 
 
 def catalog(request, workspace):
@@ -210,9 +242,14 @@ def catalog(request, workspace):
     from gpuwm.remote_preparation_v2 import ensure as prepare_stores
     prepare_stores(workspace, job)
     ensure(workspace, job)
-    record, _state, bound, commits = legacy._job(workspace, job)
     value = {"schema": SCHEMA, "job_id": job, "domain": domain, "sequence": sequence,
         "waiting": True, "progress": status(workspace, job)}
+    try:
+        record, _state, bound, commits = legacy._job_completing(workspace, job)
+    except ra.ProducerCompletionPending:
+        # The interactive door waits with the watcher instead of refusing for
+        # the seconds a settling wrapper owns. No authority is published here.
+        return {**value, "producer_completing": True}
     if bound is None:
         return value
     _, manifest_path, manifest, manifest_bytes, _started, binding = bound
@@ -324,7 +361,8 @@ def main(argv=None):
     parser.add_argument("--job", required=True)
     args = parser.parse_args(argv)
     from gpuwm.remote_worker import _workspace
-    return worker(_workspace({"workspace": args.workspace}), args.job)
+    return worker(_workspace({"workspace": args.workspace}), args.job,
+                  cancel=ra.cancel_on_shutdown())
 
 
 if __name__ == "__main__":

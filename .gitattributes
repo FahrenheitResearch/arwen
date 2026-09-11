@@ -18,6 +18,16 @@
 # normalizes on the way IN for files a contributor might author with
 # CRLF.  tests/test_line_ending_stability.py holds the promise.
 * -text
+# A trailing CR is a line TERMINATOR here, not trailing whitespace.
+# Under `* -text` git records the CR in the blob, and `git diff --check`
+# then reports every changed line of a CRLF file as "trailing
+# whitespace".  The public release export fails closed on that check and
+# stopped on 50 such lines in two files that were already CRLF in the
+# published tree.  Flattening them would rewrite whole files; this
+# states the convention instead.  Fresh carriage returns are still
+# refused, by tools/git_hooks/pre_commit_line_endings.py and
+# tests/test_line_ending_stability.py, which read the bytes.
+* whitespace=cr-at-eol
 
 gpuwm/data/** -text
 tools/grib1_bridge/vendor/** -text

@@ -695,10 +695,14 @@ def run_worker(directory, token):
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
         raise OSError(ctypes.get_errno(), "cannot own orphaned remote job descendants")
-    _write(directory / "started.json", {"token": token, "identity": _process(os.getpid()), "started_at": _now()})
+    owner = _process(os.getpid())
+    _write(directory / "started.json", {"token": token, "identity": owner, "started_at": _now()})
     code, stopped, error = 1, False, None
     child = None
     try:
+        job_bytes = _read(directory / "job.json")
+        if json.loads(job_bytes) != record:
+            raise ValueError("job ownership changed before the worker started")
         for name, digest in record["snapshot_inputs"].items():
             if _file_sha(directory / "inputs" / name) != digest:
                 raise ValueError("captured configuration or companion changed before the worker started")
@@ -713,7 +717,27 @@ def run_worker(directory, token):
                 raise ValueError("captured raw forcing or its receipt changed before the worker started")
         child = subprocess.Popen(record["argv"], cwd=record["cwd"], stdin=subprocess.DEVNULL,
                                  start_new_session=True, close_fds=True)
+        recorded_runner = False
+
+        def capture_runner():
+            # Capture once, from a live and token-owning child. Unverifiable
+            # children get no receipt and therefore no completion retry
+            # privilege. Attempted before the first poll as well: a runner that
+            # exits inside the first loop interval would otherwise leave its
+            # own exit window unprovable and permanently refused.
+            nonlocal recorded_runner
+            if recorded_runner or record.get("action") != "start-plan":
+                return
+            identity = _process(child.pid)
+            if (identity is not None and _has_token(child.pid, token)
+                    and _process(child.pid) == identity):
+                _write(directory / "runner.json", {"token": token, "owner": owner,
+                    "identity": identity, "job_sha256": _sha(job_bytes)})
+                recorded_runner = True
+
+        capture_runner()
         while child.poll() is None:
+            capture_runner()
             marker = directory / "stop.json"
             if marker.exists() and _json(marker).get("token") == token:
                 stopped = True

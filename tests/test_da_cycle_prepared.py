@@ -214,3 +214,157 @@ def test_the_driver_refuses_a_source_it_has_no_background_registry_for(
         da_cycle_prepared.main()
     assert exit_info.value.code == 2
     assert "invalid choice" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------
+# plan review for the DA door: the refusal has to land before the legs
+# ---------------------------------------------------------------------
+#
+# Audit R-051 moved the radar operator's scheme refusals into
+# ``RadarAssimilationConfig.__post_init__``, which means they fire
+# wherever that configuration is first BUILT.  In this driver that used
+# to be inside ``for leg in range(legs)``, at the first analysis seam --
+# so a cycle whose scheme has no H(x) burned leg 0's whole ensemble
+# integration before being told.  These cells pin the placement, not the
+# wording: the driver builds the configuration once above the leg loop,
+# and the leg's own configuration comes from that same function.
+
+
+def _plan_args(**updates):
+    """The knobs ``plan_radar_assimilation`` reads, at driver defaults."""
+    from types import SimpleNamespace
+
+    values = dict(
+        horizontal_loc_m=12000.0, vertical_loc_m=3000.0, rtps_alpha=0.9,
+        relaxation="rtps", thin_cells=1, err_inflation=1.0, z_thin_cells=1,
+        z_err_inflation=1.0, z0_thin_cells=4, z0_err_inflation=1.0,
+        cwp_thin_cells=1, cwp_err_inflation=1.0,
+        cwp_horizontal_loc_m=None, cwp_vertical_loc_m=None,
+        positivity_policy="clip", solve_device="host",
+        memory_budget_mib=512.0, hydrometeors=True,
+        reflectivity_analysis=False, clear_air_analysis=False,
+        goes_cwp=[])
+    values.update(updates)
+    return SimpleNamespace(**values)
+
+
+def _routed_and_fused_schemes():
+    from gpuwm.physics_registry import consumer_rows_by_selector
+
+    rows = consumer_rows_by_selector("microphysics", "radar_da")
+    routed = sorted(mp for mp, row in rows.items()
+                    if row.get("reflectivity_route")
+                    in ("operator", "scheme-diagnostic"))
+    fused = sorted(mp for mp, row in rows.items()
+                   if row.get("reflectivity_route") == "native-not-separable")
+    return routed, fused
+
+
+def test_the_plan_probe_refuses_a_scheme_the_radar_operator_cannot_simulate():
+    """The refusal a cycle used to get after leg 0, before leg 0.
+
+    Same function the leg builds its configuration with, so what is
+    checked here is what will run.
+    """
+    from gpuwm.da.radar_assimilation import RadarAssimilationError
+    from tools.da_cycle_prepared import (plan_radar_assimilation,
+                                         planned_analysis_fields)
+
+    routed, fused = _routed_and_fused_schemes()
+    assert routed and fused, (routed, fused)
+
+    args = _plan_args(reflectivity_analysis=True)
+    with pytest.raises(RadarAssimilationError) as refusal:
+        plan_radar_assimilation(
+            args, fused[0], cwp=False,
+            analysis_fields=planned_analysis_fields(args, fused[0]))
+    message = str(refusal.value)
+    # A refusal names its way out, and the way out has to work.
+    assert "reflectivity=False" in message, message
+    kept = plan_radar_assimilation(
+        _plan_args(reflectivity_analysis=False), fused[0], cwp=False,
+        analysis_fields=planned_analysis_fields(_plan_args(), fused[0]))
+    assert kept.reflectivity is False and kept.velocity
+
+    ok = plan_radar_assimilation(
+        args, routed[0], cwp=False,
+        analysis_fields=planned_analysis_fields(args, routed[0]))
+    assert ok.mp_physics == routed[0] and ok.reflectivity
+
+
+def test_the_plan_probe_asks_for_the_fields_the_legs_will_analyse():
+    """Plan time is the leg's field set before spread narrows it.
+
+    The leg drops whole species the ensemble is constant in, so its set
+    is a subset of this one.  That direction is what makes the probe
+    safe: it cannot refuse a cycle the legs would have run.
+    """
+    from gpuwm.da import moments
+    from tools.da_cycle_prepared import planned_analysis_fields
+
+    routed, _ = _routed_and_fused_schemes()
+    mp = routed[0]
+    assert planned_analysis_fields(_plan_args(hydrometeors=False), mp) == (
+        "u", "v")
+    assert planned_analysis_fields(_plan_args(), mp) == tuple(
+        moments.analysis_fields(int(mp)))
+
+
+def _main_body():
+    import ast
+    import inspect
+
+    from tools import da_cycle_prepared
+
+    tree = ast.parse(inspect.getsource(da_cycle_prepared))
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "main":
+            return node
+    raise AssertionError("tools/da_cycle_prepared.py has no main()")
+
+
+def test_the_driver_plans_the_analysis_before_it_integrates_a_leg():
+    """Deleting the probe, or sinking it into the loop, fails here.
+
+    Structural on purpose: the defect is a PLACEMENT, and a cell that
+    only called the function would still pass with the call sitting
+    where it was -- inside ``for leg in range(legs)``, one ensemble
+    integration too late.
+    """
+    import ast
+
+    main = _main_body()
+    probes = [stmt.lineno for stmt in main.body
+              if isinstance(stmt, ast.Expr)
+              and isinstance(stmt.value, ast.Call)
+              and getattr(stmt.value.func, "id", None)
+              == "plan_radar_assimilation"]
+    assert len(probes) == 1, (
+        "the DA plan review must be called exactly once at the top level "
+        f"of main(), found {len(probes)}")
+    loops = [stmt.lineno for stmt in main.body
+             if isinstance(stmt, ast.For)
+             and getattr(stmt.target, "id", None) == "leg"]
+    assert len(loops) == 1, loops
+    assert probes[0] < loops[0], (
+        "the analysis configuration is built inside the leg loop, so its "
+        "refusals arrive with an ensemble integration already spent")
+
+
+def test_every_analysis_configuration_in_the_driver_comes_from_one_function():
+    """No second construction, so the reviewed plan is the one that runs."""
+    import ast
+
+    main = _main_body()
+    direct = [node.lineno for node in ast.walk(main)
+              if isinstance(node, ast.Call)
+              and getattr(node.func, "id", None) == "RadarAssimilationConfig"]
+    assert not direct, (
+        "RadarAssimilationConfig is constructed directly in main() at "
+        f"{direct}; every construction goes through plan_radar_assimilation")
+    through = [node.lineno for node in ast.walk(main)
+               if isinstance(node, ast.Call)
+               and getattr(node.func, "id", None) == "plan_radar_assimilation"]
+    assert len(through) == 2, (
+        "main() should build the plan-time configuration and the leg's own "
+        f"through the same function, found {len(through)} call(s)")

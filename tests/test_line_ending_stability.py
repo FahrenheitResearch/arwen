@@ -197,6 +197,18 @@ _CRLF_DEBT = frozenset({
     "gpuwm/core/rrtm_taumol.py",
     "gpuwm/da/letkf.py",
     "gpuwm/da/obs_goes.py",
+    # gpuwm/da/obs_radar.py is STILL on this list, and its 650 CR bytes
+    # are deliberate.  The mp=9 radar-DA rows flattened the whole file to
+    # LF inside the commit that changed ten lines of it, which is the one
+    # thing `test_no_authored_file_gains_a_carriage_return` forbids while
+    # telling an author to normalize: "the change must be CR-only".  A
+    # whole-file rewrite folded into a content commit is how two merges
+    # went line-for-line conflicted on 2026-08-27, and history is
+    # forward-only, so the rewrite was undone rather than explained: the
+    # file's endings are the ones it was received with, its diff against
+    # the branch point is 9 insertions and 6 deletions, and the debt entry
+    # is true again.  Normalizing it stays available to anyone who wants
+    # it, as its own commit that changes nothing else.
     "gpuwm/da/obs_radar.py",
     "gpuwm/obs/goes_cwp.py",
     "gpuwm/obs/goes_grid.py",

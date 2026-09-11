@@ -1,44 +1,41 @@
-"""Which Noah-MP ``.cu`` files are translation units, and which are fragments.
+"""Authoritative Noah-MP runtime translation units and compilation identities.
 
-Three of the Noah-MP kernel sources do not compile on their own::
+Five source files are fragments rather than standalone translation units:
+``noahmp_driver``, ``noahmp_energy``, ``noahmp_thermal``, ``noahmp_glacier``
+and ``noahmp_libm_slab``. They borrow the r_pow/r_exp/r_log helpers from
+``noahmp_leaves``; the slab also borrows helpers from ``noahmp_energy``.
+Some standalone units carry independent libm transcriptions. In particular,
+prepending leaves to fluxprep would introduce duplicate definitions. Nothing
+here changes CUDA math or consolidates those transcriptions.
 
-    noahmp_driver.cu
-    noahmp_energy.cu
-    noahmp_thermal.cu      NVRTC: identifier "r_pow" is undefined
+Runtime factories and memory measurement share :func:`runtime_unit`, which
+binds ordered parts, the common preamble, exact compiler options and all global
+exports (including inherited helpers). VEGE_FLUX deliberately uses C++14 and no
+common preamble; the other production units use C++17 with the preamble.
 
-That is deliberate and it is the whole reason ``r_pow`` has that name.  glibc
-2.39's ``powf``, ``expf`` and ``logf`` are transcribed **once** in this tree, in
-``noahmp_leaves.cu``, because two copies of a 32-entry constant table can drift
-and only one of them would be audited against ``glibc-libm-fp32.csv``.  The
-three files above borrow that single copy, so each is compiled *after*
-``noahmp_leaves.cu`` -- which is what :func:`gpuwm.core.noahmp_thermal_gpu
-.thermal_source` and :func:`gpuwm.core.noahmp_energy_gpu.energy_source` already
-do, and why those kernels compile and launch perfectly well on the real path.
+:func:`translation_unit_source` remains the generic compilation-check helper
+for existing tools, not a memory-measurement identity. Its optional preamble
+switch must not erase the distinct runtime VEGE_FLUX contract.
 
-The reverse is equally true and equally easy to get wrong: ``noahmp_fluxprep.cu``
-carries its own libm tables, so prepending ``noahmp_leaves.cu`` to *it* is a
-duplicate-definition error.  "Compile each file alone" and "compile everything
-after the libm" are therefore both wrong, and neither one is discoverable from
-the directory listing.
-
-This module states the answer once, in a form a tool can read.  A whole-project
-sweep -- a VRAM census, a static-analysis pass, a compile-warning gate -- should
-build its source text from :func:`translation_unit_source` rather than from
-``Path.read_text`` on each ``.cu``, or it will price ``sf_surface_physics = 4``
-off three kernels that never compiled.
-
-``tests/test_noahmp_kernel_sources.py`` pins every entry, and pins that the
-three composed ones really do fail alone, so this table cannot quietly become
-decorative.
+The CPU provenance tests check factory inputs and source drift. The existing
+GPU compile tests check that the five composed fragments fail alone.  The
+per-thread local frames these units compile to are recorded per compile
+platform in :mod:`gpuwm.core.kernel_frame_recordings`
+(``NOAHMP_COMPOSED_FRAME_RECORDINGS``) and priced by
+:mod:`gpuwm.core.noahmp_frame_provenance`.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+import hashlib
+import json
 from pathlib import Path
+import re
 
 KERNEL_DIR = Path(__file__).resolve().parent / "kernels"
 
-#: The one device transcription of glibc's powf/expf/logf.  Its ``r_pow``,
+#: The shared helper transcription for composed units. Its ``r_pow``,
 #: ``r_exp`` and ``r_log`` are what the composed units below are missing.
 LIBM_UNIT = "noahmp_leaves"
 
@@ -90,14 +87,11 @@ def translation_unit_source(name: str, *, preamble: bool = True) -> str:
         raise KeyError(
             f"{name!r} is not a Noah-MP translation unit; the units are "
             f"{sorted(NOAHMP_TRANSLATION_UNITS)}") from None
-    text = "".join(
-        (KERNEL_DIR / f"{part}.cu").read_text(encoding="ascii")
-        for part in parts)
-    if not preamble:
-        return text
-    from gpuwm.core.kernels import _preamble
-
-    return _preamble() + text
+    prefix = ""
+    if preamble:
+        from gpuwm.core.kernels import _preamble
+        prefix = _preamble()
+    return _assemble(_component_texts(parts), prefix)
 
 
 def kernel_files() -> tuple[str, ...]:
@@ -113,3 +107,166 @@ __all__ = [
     "kernel_files",
     "translation_unit_source",
 ]
+
+
+# Runtime identity is deliberately separate from a standalone .cu stem.  In
+# particular, load_module("noahmp_driver") must STILL fail: that is a fragment,
+# not the unit the driver factory compiles.  The old standalone census and its
+# measurements retain their meanings.
+DEFAULT_OPTIONS = ("-std=c++17",)
+
+
+def pricing_key(name: str) -> str:
+    """The memory-inventory key for the runtime unit (never a raw fragment)."""
+    parts = NOAHMP_TRANSLATION_UNITS[name]
+    if len(parts) > 1:
+        return name + "_composed"
+    if name == "noahmp_vegeflux":
+        # Its runtime uses C++14 WITHOUT the common preamble.  A generic
+        # load_module(name) C++17 measurement does not describe that image.
+        return name + "_runtime"
+    return name
+
+
+NOAHMP_PRICING_MODULES = tuple(pricing_key(name)
+                              for name in NOAHMP_TRANSLATION_UNITS)
+
+
+@dataclass(frozen=True)
+class RuntimeUnit:
+    """A snapshot of the *actual* RawModule inputs, constructed without CuPy.
+
+    The source SHA hashes the exact UTF-8 string passed to RawModule, including
+    the common header/defines when present.  The identity additionally binds
+    ordered components, compiler options and every exported kernel, including
+    helper exports inherited by a composed unit.  No byte measurements live
+    here: ``identity()["identity_sha256"]`` is what a frame recording row
+    binds itself to, so a row read from a different source or option tuple
+    stops matching and the platform is refused until re-read.
+    """
+
+    name: str
+    source: str
+    parts: tuple[tuple[str, str], ...]
+    preamble_sha256: str
+    options: tuple[str, ...]
+    exports: tuple[str, ...]
+
+    @property
+    def key(self) -> str:
+        return pricing_key(self.name)
+
+    def identity(self) -> dict:
+        payload = {
+            "name": self.name,
+            "pricing_key": self.key,
+            "parts": [{"file": name + ".cu", "sha256": digest}
+                      for name, digest in self.parts],
+            "preamble_sha256": self.preamble_sha256,
+            "source_sha256": _sha(self.source),
+            "backend": "nvrtc",
+            "options": list(self.options),
+            "name_expressions": None,
+            "exports": list(self.exports),
+        }
+        payload["identity_sha256"] = _sha(json.dumps(
+            payload, sort_keys=True, separators=(",", ":")))
+        return payload
+
+
+_COMMENT = re.compile(r'/\*.*?\*/|//[^\n]*', re.S)
+_EXPORT = re.compile(
+    r'extern\s+"C"\s+__global__\s+void\s+([A-Za-z_]\w*)\s*\(')
+
+
+def exported_kernels(source: str) -> tuple[str, ...]:
+    """Enumerate all exports; refuse unfamiliar declarations instead of omitting.
+
+    The shipped Noah-MP sources use explicit extern-C global functions.  This
+    is a checked source contract, not a general CUDA parser: a new macro,
+    template or linkage-block spelling must extend this parser and its tests.
+    """
+    text = _COMMENT.sub("", source)
+    names = _EXPORT.findall(text)
+    if (not names or len(names) != len(set(names))
+            or len(names) != len(re.findall(r"\b__global__\b", text))):
+        raise ValueError("Noah-MP exports are empty, duplicated or use an "
+                         "unrecognised __global__ declaration")
+    return tuple(sorted(names))
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _component_texts(parts):
+    return tuple((part, (KERNEL_DIR / f"{part}.cu").read_text(encoding="ascii"))
+                 for part in parts)
+
+
+def _assemble(texts, prefix):
+    return prefix + "".join(text for _, text in texts)
+
+
+def runtime_unit(name: str) -> RuntimeUnit:
+    """Snapshot the production composition and options, including VEGE_FLUX.
+
+    All custom runtime factories and the compile-only measurement harness use
+    this function.  Ordinary standalone units have byte-identical inputs to
+    kernels.load_module; the CPU factory-interception tests enforce that too.
+    """
+    parts = NOAHMP_TRANSLATION_UNITS[name]
+    # Read each component ONCE so its recorded digest and compiled text cannot
+    # describe different reads of a concurrently edited file.
+    texts = _component_texts(parts)
+    if name == "noahmp_vegeflux":
+        prefix = ""
+        options = ("-std=c++14",)
+    else:
+        from gpuwm.core.kernels import _preamble
+        prefix = _preamble()
+        options = DEFAULT_OPTIONS
+    source = _assemble(texts, prefix)
+    return RuntimeUnit(
+        name=name, source=source,
+        parts=tuple((part, _sha(text)) for part, text in texts),
+        preamble_sha256=_sha(prefix), options=options,
+        exports=exported_kernels(source))
+
+
+def compile_runtime_unit(name: str, *, module_key: str,
+                         options: tuple[str, ...] | None = None,
+                         source: str | None = None, log_stream=None):
+    """Compile and load one Noah-MP runtime unit; no launch, no constant upload.
+
+    THE one ``cp.RawModule`` site for Noah-MP.  Every runtime factory
+    (driver, energy, thermal, glacier, the libm slab, the generic loader's
+    standalone units) and the frame measurement in
+    :func:`gpuwm.core.noahmp_frame_provenance.measure_live` compile through
+    here, so the source string and option tuple a forecast hands NVRTC are
+    the ones the recorded frames were read from -- by construction rather
+    than by a second assembler agreeing with the first.
+
+    ``source`` / ``options`` exist for the negative controls the parity
+    suites compile (a perturbed copy, ``-fmad=false``); they are recorded
+    under the caller's own ``module_key`` and are not the production unit.
+    """
+    import cupy as cp
+    from gpuwm.certify.kernel_manifest import record_module
+
+    unit = runtime_unit(name)
+    code = unit.source if source is None else source
+    opts = unit.options if options is None else tuple(options)
+    module = cp.RawModule(code=code, options=opts, backend="nvrtc",
+                          name_expressions=None)
+    if log_stream is None:
+        module.compile()
+    else:
+        module.compile(log_stream=log_stream)
+    record_module(module_key, source=code, options=opts, module=module)
+    return module
+
+
+__all__ += ["DEFAULT_OPTIONS", "NOAHMP_PRICING_MODULES", "RuntimeUnit",
+            "compile_runtime_unit", "exported_kernels", "pricing_key",
+            "runtime_unit"]

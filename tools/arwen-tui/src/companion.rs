@@ -48,6 +48,10 @@ pub enum Action {
     SyncProcessedFrameV2 { job: String, domain: u32, sequence: Option<u64>, options: crate::remote::ViewerOptions, reader_leases: bool, cache_bytes: Option<u64> },
     SyncNativePlots { job: String, domain: u32, sequence: u64 },
     ArtifactIndex { job: String, domain: u32, after_sequence: u64 },
+    /// Offline downscaling of a finished local run: the parent's history
+    /// and its restart evidence become a standalone child forecast. Local
+    /// only, because both inputs are read from this computer's disk.
+    LaunchDownscale(Box<DownscaleRequest>),
     OpenConfig(PathBuf),
     ResetSetup,
     FocusLogs,
@@ -59,6 +63,36 @@ pub enum Action {
     /// controller to show its workspace instead of starting a duplicate.
     OpenWorkspace,
 }
+/// One `launch_downscale` request, already checked field by field. Every
+/// value here becomes a Downscale guide answer, never a command token of
+/// its own: the guide is the single place that turns settings into
+/// `gpuwm downscale` arguments, so the controller cannot drift from what
+/// the terminal builds for the same answers.
+#[derive(Clone, Debug, Default)]
+pub struct DownscaleRequest {
+    pub parent_run_dir: String,
+    pub parent_domain: Option<u32>,
+    /// `None` asks the engine for the parent's newest complete checkpoint
+    /// set (`--parent-restart=latest`), which is what a caller holding
+    /// only the parent's run directory can name.
+    pub parent_restart: Option<String>,
+    pub point: Option<(f64, f64)>,
+    pub child_config: Option<String>,
+    pub ratio: u32,
+    pub child_size: Option<(u32, u32)>,
+    pub vram_gib: Option<f64>,
+    pub auto_vram: bool,
+    pub hours: Option<f64>,
+    pub output_interval_seconds: Option<f64>,
+    pub tiles: Option<String>,
+    pub accept_parent_cadence: bool,
+    pub max_boundary_interval_seconds: Option<f64>,
+    pub out_dir: String,
+    /// `true` is `mode: "plan"`: validate, derive and price the child,
+    /// write its TOML and plan document, run no forecast.
+    pub plan: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target { Local, Ssh { node_id: String, connection_sha256: String } }
 impl Target {
@@ -73,6 +107,112 @@ pub struct Request {
     pub plan_sha256: Option<String>, pub config_sha256: Option<String>,
     pub review_id: Option<String>, pub review_sha256: Option<String>,
 }
+/// Every key `launch_downscale` accepts. The whitelist stays explicit:
+/// an unknown key is refused rather than ignored, so a caller never
+/// believes it set something the controller dropped.
+const DOWNSCALE_KEYS: &[&str] = &["parent_run_dir", "parent_domain", "parent_restart", "point",
+    "child_config", "ratio", "child_size", "vram_gib", "auto_vram", "hours",
+    "output_interval_seconds", "tiles", "accept_parent_cadence",
+    "max_boundary_interval_seconds", "out_dir", "mode"];
+
+fn absolute_field(value: &Value, key: &str, label: &str) -> Result<String, String> {
+    let text = value[key].as_str().filter(|text| !text.is_empty() && text.len() <= 8192
+        && !text.chars().any(char::is_control)).ok_or_else(|| format!("{label} is required."))?;
+    if !Path::new(text).is_absolute() { return Err(format!("{label} must be an absolute path.")); }
+    Ok(text.to_owned())
+}
+
+fn finite(value: &Value, key: &str, label: &str) -> Result<Option<f64>, String> {
+    match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(number) => Ok(Some(number.as_f64().filter(|value| value.is_finite())
+            .ok_or_else(|| format!("{label} must be a finite number."))?)),
+    }
+}
+
+fn count(value: &Value, key: &str, range: std::ops::RangeInclusive<u64>, label: &str) -> Result<Option<u32>, String> {
+    match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(number) => Ok(Some(number.as_u64().filter(|value| range.contains(value))
+            .ok_or_else(|| format!("{label} must be an integer between {} and {}.", range.start(), range.end()))? as u32)),
+    }
+}
+
+fn parse_downscale(value: &Value) -> Result<DownscaleRequest, String> {
+    let mut request = DownscaleRequest {
+        parent_run_dir: absolute_field(value, "parent_run_dir", "The parent run directory")?,
+        out_dir: absolute_field(value, "out_dir", "The downscaled output directory")?,
+        ratio: count(value, "ratio", 2..=99, "Refinement ratio")?.unwrap_or(3),
+        parent_domain: count(value, "parent_domain", 1..=99, "Parent domain")?,
+        hours: finite(value, "hours", "Child duration in hours")?,
+        output_interval_seconds: finite(value, "output_interval_seconds", "Child output interval")?,
+        max_boundary_interval_seconds: finite(value, "max_boundary_interval_seconds", "Maximum boundary interval")?,
+        vram_gib: finite(value, "vram_gib", "GPU memory capacity")?,
+        ..DownscaleRequest::default()
+    };
+    if !Path::new(&request.parent_run_dir).is_dir() {
+        return Err("The parent run directory does not exist on this computer. Choose a finished local forecast in My forecasts.".into());
+    }
+    request.parent_restart = match value.get("parent_restart") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(absolute_field(value, "parent_restart", "The parent restart checkpoint")?),
+    };
+    request.child_config = match value.get("child_config") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(absolute_field(value, "child_config", "The child configuration")?),
+    };
+    request.point = match value.get("point") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(point)) if point.len() == 2 => {
+            let coordinate = |key: &str, limit: f64| point.get(key).and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && value.abs() <= limit)
+                .ok_or_else(|| "The child centre needs a finite latitude and longitude inside geographic bounds.".to_owned());
+            Some((coordinate("lat", 90.0)?, coordinate("lon", 360.0)?))
+        }
+        Some(_) => return Err("The child centre must be an object with lat and lon.".into()),
+    };
+    if request.point.is_some() == request.child_config.is_some() {
+        return Err("Choose either a child centre point or an existing child configuration.".into());
+    }
+    request.child_size = match value.get("child_size") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(size)) if size.len() == 2 => {
+            let extent = |key: &str| size.get(key).and_then(Value::as_u64).filter(|value| (2..=8192).contains(value))
+                .map(|value| value as u32).ok_or_else(|| "Explicit child size needs nx and ny cell counts.".to_owned());
+            Some((extent("nx")?, extent("ny")?))
+        }
+        Some(_) => return Err("Explicit child size must be an object with nx and ny.".into()),
+    };
+    request.auto_vram = match value.get("auto_vram") {
+        None | Some(Value::Null) => request.child_size.is_none() && request.vram_gib.is_none() && request.child_config.is_none(),
+        Some(flag) => flag.as_bool().ok_or("Fit to this GPU must be true or false.")?,
+    };
+    if request.auto_vram && (request.child_size.is_some() || request.vram_gib.is_some() || request.child_config.is_some()) {
+        return Err("Fitting the child to this GPU measures it: leave explicit size, capacity and a supplied child configuration unset, or turn fitting off.".into());
+    }
+    if request.child_size.is_some() && request.vram_gib.is_some() {
+        return Err("Choose an explicit child size or a GPU capacity to size against, not both.".into());
+    }
+    request.accept_parent_cadence = match value.get("accept_parent_cadence") {
+        None | Some(Value::Null) => request.max_boundary_interval_seconds.is_none(),
+        Some(flag) => flag.as_bool().ok_or("Accepting the parent cadence must be true or false.")?,
+    };
+    if request.accept_parent_cadence && request.max_boundary_interval_seconds.is_some() {
+        return Err("Choose a maximum boundary interval or accept the parent's own cadence, not both.".into());
+    }
+    request.tiles = match value.get("tiles") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(mode)) if matches!(mode.as_str(), "on" | "auto") => Some(mode.clone()),
+        Some(_) => return Err("Streaming must be on or auto.".into()),
+    };
+    request.plan = match value["mode"].as_str() {
+        Some("plan") => true,
+        Some("run") => false,
+        _ => return Err("Downscale mode must be plan or run.".into()),
+    };
+    Ok(request)
+}
+
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 80 && id.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
 }
@@ -81,7 +221,7 @@ fn parse_request(value: &Value, id: &str, session: &str) -> Result<Request, Stri
         return Err("Request schema, session or ID does not match this control queue.".into());
     }
     let name = value["action"].as_str().ok_or("Request action is missing.")?;
-    let field = match name { "review_plan" | "launch_plan" => Some("plan_path"), "stop_job" | "sync_artifacts" | "sync_processed_frame" | "sync_processed_frame_v2" | "sync_native_plots" | "artifact_index" | "open_run" | "close_run" => Some("job_id"), "open_config" => Some("config_path"), "reset_setup" | "focus_logs" | "focus_nodes" | "focus_setup" | "select_target" | "browse_runs" | "open_workspace" => None,
+    let field = match name { "review_plan" | "launch_plan" => Some("plan_path"), "stop_job" | "sync_artifacts" | "sync_processed_frame" | "sync_processed_frame_v2" | "sync_native_plots" | "artifact_index" | "open_run" | "close_run" => Some("job_id"), "open_config" => Some("config_path"), "reset_setup" | "focus_logs" | "focus_nodes" | "focus_setup" | "select_target" | "browse_runs" | "open_workspace" | "launch_downscale" => None,
         _ => return Err("Unsupported companion action.".into()) };
     let object = value.as_object().ok_or("Request must be a JSON object.")?;
     let plan_action = matches!(name, "review_plan" | "launch_plan");
@@ -96,6 +236,7 @@ fn parse_request(value: &Value, id: &str, session: &str) -> Result<Request, Stri
         && !(name=="artifact_index" && key=="after_sequence")
         && !(plan_action && ["plan_sha256","config_sha256"].contains(&key.as_str()))
         && !(name=="launch_plan" && ["review_id","review_sha256"].contains(&key.as_str()))
+        && !(name=="launch_downscale" && DOWNSCALE_KEYS.contains(&key.as_str()))
         && Some(key.as_str()) != field) {
         return Err("Unknown field in companion request.".into());
     }
@@ -116,6 +257,12 @@ fn parse_request(value: &Value, id: &str, session: &str) -> Result<Request, Stri
     let ssh=matches!(target,Some(Target::Ssh{..}));
     if matches!(name,"browse_runs"|"open_run"|"close_run")&&target.is_none(){return Err("Runs requests require an explicit local or saved SSH target.".into());}
     if name=="select_target"&&target.is_none(){return Err("Select target requires its explicit local or SSH identity.".into());}
+    // Named here, at the whitelist, so the reason travels with the refusal:
+    // downscaling reads the parent's history and its restart from THIS
+    // computer's disk, and a node has no staged-inputs review for them.
+    if name=="launch_downscale"&&!matches!(target,Some(Target::Local)){
+        return Err("Downscaling reads the parent's history and restart from this computer's disk; a node has no staged-inputs review for them. Run `gpuwm downscale` in the node's terminal.".into());
+    }
     let plan_sha256=hash("plan_sha256")?;
     let config_sha256=hash("config_sha256")?;
     let review_sha256=hash("review_sha256")?;
@@ -160,6 +307,7 @@ fn parse_request(value: &Value, id: &str, session: &str) -> Result<Request, Stri
         "sync_native_plots"=>Action::SyncNativePlots{job:argument.unwrap().to_owned(),domain:domain()?,sequence:value["sequence"].as_u64().filter(|n|*n>0&&*n<=i64::MAX as u64).ok_or("Native plots require an exact positive frame sequence.")?},
         "artifact_index"=>Action::ArtifactIndex{job:argument.unwrap().to_owned(),domain:domain()?,
             after_sequence:match value.get("after_sequence"){None=>0,Some(value)=>value.as_u64().filter(|n|*n<=i64::MAX as u64).ok_or("Artifact cursor must be a nonnegative integer.")?}},
+        "launch_downscale" => Action::LaunchDownscale(Box::new(parse_downscale(value)?)),
         "open_config" => Action::OpenConfig(PathBuf::from(argument.unwrap())),
         "reset_setup" => Action::ResetSetup,
         "focus_nodes" => Action::FocusNodes,
@@ -192,7 +340,8 @@ fn write_response(directory:&Path,session_id:&str,id:&str,action:&str,result:Res
     if let Some(fields)=details.as_object(){for(key,value)in fields{
         if !["target","job_id","job_dir","remote_output_root","review_id","review_sha256","review_path",
             "artifact_manifest_path","artifact_manifest_sha256","artifact_index_path","artifact_index_sha256",
-            "transferred_bytes","waiting","cache_recovery","jobs","handoff","processed_frame","native_plots"].contains(&key.as_str()) {return Err("Unsupported companion response detail.".into());}
+            "transferred_bytes","waiting","cache_recovery","jobs","handoff","processed_frame","native_plots",
+            "downscale_plan_path","child_config_path","mode"].contains(&key.as_str()) {return Err("Unsupported companion response detail.".into());}
         response[key]=value.clone();
     }}
     atomic_json(&directory.join("responses").join(format!("{id}.json")), &response).map_err(|e|e.to_string())
@@ -336,6 +485,155 @@ fn reap_abandoned_claims(parent: &Path, current_id: &str) {
     }
 }
 
+/// A session still publishing inside this window may still be running and is
+/// never removed, whoever started it. It matches the abandoned-claim limit and
+/// the 30 s the single-controller rule already uses.
+const VIEWER_SESSION_LIVE: Duration = ABANDONED_CLAIM;
+
+/// Whether `pid` still names a running process. Anything that cannot be
+/// established answers `true`: a sweep must never remove the directory a
+/// running viewer is still publishing into, while keeping a dead session's
+/// directory until one more start costs nothing.
+fn process_is_running(pid: u32) -> bool {
+    if pid == 0 { return true; }
+    #[cfg(unix)]
+    {
+        if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 { return true; }
+        // EPERM: the process exists and belongs to another user.
+        io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER};
+        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            // A pid with no process answers ERROR_INVALID_PARAMETER; a refusal
+            // for any other reason means the process is there.
+            if handle.is_null() { return GetLastError() != ERROR_INVALID_PARAMETER; }
+            let mut code = 0u32;
+            let read = GetExitCodeProcess(handle, &mut code);
+            CloseHandle(handle);
+            // 0x103 is STILL_ACTIVE. A process that genuinely exited with that
+            // code reads as running, which only keeps its directory.
+            read == 0 || code == 0x103
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    { true }
+}
+
+/// The published status of a read-only run viewer session under `directory`
+/// that nothing can still be using, if that is what `directory` is. Three
+/// shapes qualify. The viewer published `closed`, which only a session's own
+/// end writes, so it is finished whoever owns it -- that is the shape a removal
+/// a held-open file blocked leaves behind, and the process that wrote it is
+/// usually gone by the time anything sweeps. Or it stopped publishing longer
+/// ago than VIEWER_SESSION_LIVE and its process is no longer running, which is
+/// what a killed TUI leaves. Or the directory is empty, no longer young, and
+/// named for this process or for a pid that has ended, which is what a removal
+/// blocked on the status file itself leaves once its reader lets go.
+/// Everything else answers `None`: a viewer that still heartbeats, an
+/// unfinished session whose own process is still running -- this process
+/// included, because a run viewer runs inside the controller's process and a
+/// live one whose heartbeat has paused must never be swept -- a session that
+/// is not read-only (a controller owns forecasts and answers requests), a
+/// directory whose status is missing or names another session, and every
+/// `job-*` receipt directory, which never carries a `companion-` name in the
+/// first place.
+fn finished_viewer_session(directory: &Path, now: u128) -> Option<Value> {
+    let id = directory.file_name().and_then(|name| name.to_str())?.strip_prefix("companion-")?;
+    if !directory.is_dir() { return None; }
+    let Ok(status) = read_json(&directory.join("status.json"), 1024 * 1024) else {
+        // An empty session directory carrying no status at all is what a
+        // removal a reader blocked on the status file itself leaves behind once
+        // that reader lets go. Nothing inside it can say whether it was
+        // read-only, so its owner comes from its name, which every session
+        // builds as `<pid>-<nanos>`: this process, whose own viewers it may
+        // finish while it runs, or a pid that has ended. Another live TUI's
+        // debris is left to that TUI. A session that is starting always holds
+        // its request queues, and a young directory is waited for, so no live
+        // session of any kind is ever this shape.
+        let owner = id.split_once('-').and_then(|(pid, _)| pid.parse::<u32>().ok())?;
+        if owner != std::process::id() && process_is_running(owner) { return None; }
+        let empty = fs::read_dir(directory).ok()?.next().is_none();
+        let old = fs::metadata(directory).and_then(|meta| meta.modified()).map(unix_ms)
+            .is_ok_and(|at| now.saturating_sub(at) >= VIEWER_SESSION_LIVE.as_millis());
+        return (empty && old).then_some(Value::Null);
+    };
+    if status["schema"] != "arwen.companion-status.v1" || status["session_id"] != id || status["read_only"] != true { return None; }
+    if status["state"] == "closed" { return Some(status); }
+    let quiet = status["heartbeat_unix_ms"].as_u64().map(u128::from)
+        .is_none_or(|beat| now.saturating_sub(beat) >= VIEWER_SESSION_LIVE.as_millis());
+    let pid = status["tui_pid"].as_u64().and_then(|pid| u32::try_from(pid).ok())?;
+    // Not `pid == std::process::id()`: a run viewer lives in the controller's
+    // own process, so this process's pid on an unfinished session is a viewer
+    // that is very likely still open. A viewer of this process that has ended
+    // published `closed` above, and one that never published a status has no
+    // status to reach here, so nothing needs the shortcut and it was the only
+    // thing that made a live viewer of this process removable.
+    let ended = !process_is_running(pid);
+    (quiet && ended).then_some(status)
+}
+
+/// Removes one finished viewer session directory, with the raw and processed
+/// frame caches that viewer downloaded into it. Best effort: a file a reader
+/// still holds open leaves the rest of the directory in place, and the closed
+/// status stays or is written again so the leftovers remain a recognisable
+/// finished session for the next sweep rather than a statusless directory that
+/// a starting controller would wait VIEWER_SESSION_LIVE for. A directory that
+/// is already gone is the wanted state, not a blocked removal.
+fn discard_viewer_session(directory: &Path, closed: &Value) -> bool {
+    let status = directory.join("status.json");
+    // Everything but the status first. A file another process holds open
+    // cannot be replaced on Windows once it is marked for deletion, so the
+    // status a blocked removal has to leave behind is only removed when
+    // nothing else is left to block it.
+    let mut blocked = false;
+    if let Ok(entries) = fs::read_dir(directory) {
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path == status { continue; }
+            let removed = if entry.file_type().is_ok_and(|kind| kind.is_dir()) { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
+            blocked |= removed.is_err() && path.exists();
+        }
+    }
+    if !blocked {
+        let _ = fs::remove_file(&status);
+        match fs::remove_dir(directory) {
+            Ok(()) => return true,
+            // Already gone is the wanted state, not a blocked removal:
+            // recreating the directory here would leave the leftover this
+            // exists to take away.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return true,
+            Err(_) => {}
+        }
+    }
+    if closed.is_object() && fs::create_dir_all(directory).is_ok() && !status.exists() {
+        let _ = atomic_json(&status, closed);
+    }
+    false
+}
+
+/// The controller's startup and exit sweep: every finished read-only viewer
+/// session directory under `parent`, except `keep`, is removed. A live session,
+/// a controller session and a job directory are never touched. Leftovers exist
+/// only when a viewer's own removal could not finish, so this normally removes
+/// nothing. Returns how many directories went.
+fn remove_finished_viewer_sessions(parent: &Path, keep: &str) -> usize {
+    let Ok(entries) = fs::read_dir(parent) else { return 0; };
+    let keep = format!("companion-{keep}");
+    let now = now_ms();
+    let mut removed = 0;
+    for entry in entries.filter_map(Result::ok).take(4096) {
+        let directory = entry.path();
+        if directory.file_name().and_then(|name| name.to_str()) == Some(keep.as_str()) { continue; }
+        let Some(status) = finished_viewer_session(&directory, now) else { continue; };
+        if discard_viewer_session(&directory, &status) { removed += 1; }
+    }
+    removed
+}
+
 /// A controller whose status heartbeat (500 ms cadence) is older than this is
 /// not asked to reopen its workspace. It matches the abandoned-claim limit
 /// rather than the desktop's 10 s rule because a controller's heartbeat pauses
@@ -461,13 +759,26 @@ pub struct Session {
     pub id: String,
     pub directory: PathBuf,
     pub handoff: PathBuf,
+    /// A read-only run viewer's session: it owns no forecast, answers only
+    /// read requests, and its directory lives exactly as long as the viewer.
+    read_only: bool,
+    /// When this controller last swept finished viewer sessions. A removal a
+    /// held-open file blocked has to be retried while the workspace is open:
+    /// the reader releases the file seconds later, and waiting for the next
+    /// start would leave every remote viewer of an evening on disk.
+    swept: Instant,
     last_status: Value,
     published: Instant,
 }
 impl Session {
     #[cfg(test)]
     pub(crate) fn test_session(output:&Path)->Result<Self,String>{Self::create(output)}
-    pub(crate) fn create(output: &Path) -> Result<Self, String> {
+    pub(crate) fn create(output: &Path) -> Result<Self, String> { Self::open(output, false) }
+    /// A read-only run viewer's session. Its directory is scratch: `Drop`
+    /// publishes `closed` and then removes it, so opening saved runs several
+    /// times in an evening leaves nothing behind under `.arwen-tui`.
+    pub(crate) fn create_read_only(output: &Path) -> Result<Self, String> { Self::open(output, true) }
+    fn open(output: &Path, read_only: bool) -> Result<Self, String> {
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
         let id = format!("{}-{stamp}", std::process::id());
         let parent = output.join(".arwen-tui");
@@ -477,7 +788,10 @@ impl Session {
         let directory = directory.canonicalize().map_err(|e| e.to_string())?;
         for child in ["requests", "responses", "claimed"] { fs::create_dir(directory.join(child)).map_err(|e| e.to_string())?; }
         reap_abandoned_claims(&parent, &id);
-        Ok(Self { id, handoff: directory.join("handoff.json"), directory,
+        // The controller sweeps at startup; a viewer removes only its own
+        // directory, so one viewer never decides another viewer is finished.
+        if !read_only { remove_finished_viewer_sessions(&parent, &id); }
+        Ok(Self { id, handoff: directory.join("handoff.json"), directory, read_only, swept: Instant::now(),
             last_status: Value::Null, published: Instant::now() - Duration::from_secs(1) })
     }
     pub fn publish(&mut self, mut status: Value, force: bool) -> Result<(), String> {
@@ -487,9 +801,18 @@ impl Session {
         status["tui_pid"] = json!(std::process::id());
         status["tui_version"] = json!(TUI_VERSION);
         status["heartbeat_unix_ms"] = json!(now_ms());
+        if self.read_only { status["read_only"] = json!(true); }
         atomic_json(&self.directory.join("status.json"), &status).map_err(|e| e.to_string())?;
         self.last_status = status;
         self.published = Instant::now();
+        // The controller retries the blocked removals on its own heartbeat, so
+        // a viewer whose frames a reader still held stops surviving the
+        // session that opened it. One scan per VIEWER_SESSION_LIVE reads only
+        // the `companion-*` statuses beside this one.
+        if !self.read_only && self.swept.elapsed() >= VIEWER_SESSION_LIVE {
+            self.swept = Instant::now();
+            if let Some(parent) = self.directory.parent() { remove_finished_viewer_sessions(parent, &self.id); }
+        }
         Ok(())
     }
     pub fn due(&self) -> bool { self.published.elapsed() >= Duration::from_millis(500) }
@@ -569,6 +892,22 @@ impl Drop for Session {
             let mut status = self.last_status.clone();
             status["state"] = json!("closed");
             let _ = self.publish(status, true);
+        }
+        if self.read_only {
+            // The viewer published `closed` above and every transfer it
+            // started has ended. Its directory holds that session's handoff,
+            // queues and receipts, and the raw and processed frames it
+            // downloaded into `remote-artifacts` and `processed-store`. The
+            // desktop confines a frame lease to the control directory of the
+            // handoff it is holding, and every viewer publishes a new session,
+            // so those two caches are reachable only through this viewer and
+            // go with it. The caches keyed by node and job under the output
+            // root, `.arwen-viewer-cache` and `.arwen-native-plots-cache`,
+            // outlive every viewer and are never touched here.
+            discard_viewer_session(&self.directory, &self.last_status);
+        } else if let Some(parent) = self.directory.parent() {
+            // The controller's exit sweep: anything a viewer could not remove.
+            remove_finished_viewer_sessions(parent, &self.id);
         }
     }
 }
@@ -654,10 +993,20 @@ pub fn job_status(job: &crate::job::Job, output: &Path) -> Value {
         "step_progress_path":existing("progress.jsonl"),"ready_dir":existing("ready"),
         "outputs_dir":named("outputs_dir").or_else(|| run.clone()).unwrap_or_else(|| output.to_owned()),
         "latest_run_pointer":output.join("latest-run.txt")});
+    // A finished failure carries the worker's recorded reason -- an uncaught
+    // exception or the refusal sentence the CLI printed -- the way a saved
+    // row does, so a reader of the live status shows the sentence, not
+    // "failed".
+    if state=="failed"{
+        if let Some(message)=read_json(&job.dir.join("result.json"),128*1024).ok()
+            .and_then(|result|result["error"]["message"].as_str().map(str::trim).filter(|text|!text.is_empty()).map(str::to_owned)){
+            status["error"]=json!(message);
+        }
+    }
     // The worker writes process.json before its ready handshake. Until that
     // handshake is released, an absent process receipt is ordinary startup.
     // Running and terminal jobs still require the complete receipt binding.
-    if state!="starting"&&matches!(job.action.as_str(),"run-plan"|"go"|"sim"|"run"|"resume")&&!job.command.iter().any(|arg|matches!(arg.as_str(),"--dry-run"|"--estimate"|"--resolve"|"--physics-profiles")){
+    if state!="starting"&&matches!(job.action.as_str(),"run-plan"|"go"|"sim"|"run"|"resume"|"downscale")&&!job.command.iter().any(|arg|matches!(arg.as_str(),"--dry-run"|"--estimate"|"--resolve"|"--physics-profiles")){
         match local_progress::cached(&job.dir,&job.command){
             Ok(native)=>{if let Some(fields)=native.as_object(){for(key,value)in fields{status[key]=value.clone();}}}
             Err(error)=>{status["progress_error"]=json!(error);status["manifest_ready"]=json!(false);for key in ["events_path","progress_path","ready_dir"]{status[key]=Value::Null;}}
@@ -687,7 +1036,7 @@ pub(crate) fn saved_job_status(directory:&Path)->Result<Value,String>{
         .ok_or("Saved local job has no launch command.")?.iter().map(|value|value.as_str().map(str::to_owned)
             .ok_or_else(||"Saved local command contains a non-string argument.".to_owned())).collect::<Result<Vec<_>,_>>()?;
     if launcher["schema"]!="gpuwm-tui-job-v1"||launcher["action"]!=command[3]
-        ||!matches!(command[3].as_str(),"run-plan"|"go"|"sim"|"run"|"resume")
+        ||!matches!(command[3].as_str(),"run-plan"|"go"|"sim"|"run"|"resume"|"downscale")
         ||command.iter().any(|arg|matches!(arg.as_str(),"--dry-run"|"--estimate"|"--resolve"|"--physics-profiles"|"--help")){
         return Err("This saved command is not a forecast run.".into());
     }
@@ -737,6 +1086,94 @@ pub(crate) fn saved_job_status(directory:&Path)->Result<Value,String>{
         Err(error)=>return Err(error),
     }
     Ok(status)
+}
+
+#[cfg(test)]
+mod downscale_requests {
+    use super::*;
+    fn scratch(label: &str) -> PathBuf {
+        let path = env::temp_dir().join(format!("arwen-downscale-{label}-{}-{}", std::process::id(), now_ms()));
+        fs::create_dir_all(&path).unwrap();
+        path.canonicalize().unwrap()
+    }
+    fn payload(parent: &Path, out: &Path) -> Value {
+        json!({"schema":"arwen.companion-request.v1","session_id":"s","id":"r","action":"launch_downscale",
+            "target":{"kind":"local"},"parent_run_dir":parent,"point":{"lat":39.5,"lon":-84.0},
+            "out_dir":out,"mode":"plan"})
+    }
+    fn parse(value: &Value) -> Result<DownscaleRequest, String> {
+        match parse_request(value, "r", "s")?.action {
+            Action::LaunchDownscale(body) => Ok(*body),
+            _ => Err("not a downscale action".into()),
+        }
+    }
+    #[test]
+    fn the_defaults_are_the_narrow_door_and_every_exclusion_is_refused_by_name() {
+        let root = scratch("defaults");
+        let parent = root.join("parent-run");
+        fs::create_dir(&parent).unwrap();
+        let out = root.join("child-run");
+        let body = parse(&payload(&parent, &out)).unwrap();
+        assert_eq!(body.ratio, 3);
+        assert!(body.auto_vram && body.accept_parent_cadence && body.plan);
+        assert_eq!(body.parent_restart, None);
+        assert_eq!(body.child_config, None);
+        assert_eq!(body.point.map(|(lat, _)| lat), Some(39.5));
+        assert_eq!(body.out_dir, out.to_string_lossy());
+
+        // A node has neither input on its disk, and the refusal says which.
+        let mut remote = payload(&parent, &out);
+        remote["target"] = json!({"kind":"ssh","node_id":"node-1","connection_sha256":"a".repeat(64)});
+        let refusal = parse(&remote).unwrap_err();
+        assert!(refusal.contains("this computer's disk") && refusal.contains("gpuwm downscale"), "{refusal}");
+
+        let mut unknown = payload(&parent, &out);
+        unknown["child_levels"] = json!("40,2.5");
+        assert!(parse(&unknown).unwrap_err().contains("Unknown field"));
+
+        let mut both = payload(&parent, &out);
+        both["child_config"] = json!(root.join("child.toml"));
+        assert!(parse(&both).unwrap_err().contains("either a child centre point"));
+
+        let mut neither = payload(&parent, &out);
+        neither["point"] = Value::Null;
+        assert!(parse(&neither).unwrap_err().contains("either a child centre point"));
+
+        let mut sized = payload(&parent, &out);
+        sized["child_size"] = json!({"nx":300,"ny":300});
+        sized["auto_vram"] = json!(true);
+        assert!(parse(&sized).unwrap_err().contains("measures it"));
+        // Absent, fitting turns itself off for a caller that named an
+        // extent: the default is the narrow door, not a contradiction.
+        sized["auto_vram"] = Value::Null;
+        let body = parse(&sized).unwrap();
+        assert_eq!(body.child_size, Some((300, 300)));
+        assert!(!body.auto_vram);
+
+        let mut cadence = payload(&parent, &out);
+        cadence["max_boundary_interval_seconds"] = json!(600);
+        cadence["accept_parent_cadence"] = json!(true);
+        assert!(parse(&cadence).unwrap_err().contains("not both"));
+        // Absent, an explicit ceiling turns acceptance off by itself, the
+        // way the guide's own two settings resolve each other.
+        cadence["accept_parent_cadence"] = Value::Null;
+        let body = parse(&cadence).unwrap();
+        assert_eq!(body.max_boundary_interval_seconds, Some(600.0));
+        assert!(!body.accept_parent_cadence);
+
+        let mut missing = payload(&parent, &out);
+        missing["mode"] = json!("go");
+        assert!(parse(&missing).unwrap_err().contains("plan or run"));
+
+        let mut relative = payload(&parent, &out);
+        relative["out_dir"] = json!("child-run");
+        assert!(parse(&relative).unwrap_err().contains("absolute"));
+
+        let mut absent = payload(&parent, &out);
+        absent["parent_run_dir"] = json!(root.join("never-ran"));
+        assert!(parse(&absent).unwrap_err().contains("does not exist on this computer"));
+        fs::remove_dir_all(root).ok();
+    }
 }
 
 #[cfg(test)]
@@ -970,6 +1407,256 @@ mod tests {
             let mut other=value.clone();other[key]=extra;
             assert!(parse_request(&other,"open-1","s").is_err(),"{key}");
         }
+    }
+    #[test]
+    fn a_read_only_viewer_session_removes_its_directory_when_it_ends(){
+        let root=env::temp_dir().join(format!("arwen-companion-viewer-end-{}-{}",std::process::id(),now_ms()));
+        fs::create_dir_all(&root).unwrap();
+        let mut viewer=Session::create_read_only(&root).unwrap();
+        let session=viewer.directory.clone();
+        viewer.publish(json!({"state":"ready"}),true).unwrap();
+        let published=read_json(&session.join("status.json"),128*1024).unwrap();
+        assert_eq!(published["read_only"],true,"a viewer session declares itself read-only: {published}");
+        drop(viewer);
+        assert!(!session.exists(),"the run viewer's session directory outlived the viewer");
+        let mut controller=Session::create(&root).unwrap();
+        let owned=controller.directory.clone();
+        controller.publish(json!({"state":"ready"}),true).unwrap();
+        assert!(read_json(&owned.join("status.json"),128*1024).unwrap()["read_only"].is_null());
+        drop(controller);
+        assert_eq!(read_json(&owned.join("status.json"),128*1024).unwrap()["state"],"closed",
+            "the controller's own session stays readable after it closes");
+        let _=fs::remove_dir_all(root);
+    }
+    /// A process to attribute a session to. `running` stays alive until it is
+    /// killed; the other has ended before its pid is used, which is what a
+    /// killed or crashed TUI leaves behind in a session status.
+    fn other_process(running:bool)->Child{
+        #[cfg(windows)]
+        let mut command={let mut command=Command::new("cmd");command.args(["/c",if running{"ping -n 60 127.0.0.1"}else{"exit"}]);command};
+        #[cfg(unix)]
+        let mut command={let mut command=Command::new("sh");command.args(["-c",if running{"sleep 60"}else{"exit 0"}]);command};
+        command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap()
+    }
+    /// The pid of a process that has already ended.
+    fn ended_process()->u32{
+        let mut child=other_process(false);
+        child.wait().unwrap();
+        child.id()
+    }
+    #[test]
+    fn a_running_process_is_told_from_one_that_ended(){
+        assert!(process_is_running(std::process::id()),"this process is running");
+        let mut alive=other_process(true);
+        assert!(process_is_running(alive.id()),"a spawned child that has not exited is running");
+        assert!(!process_is_running(ended_process()),"a child that already exited is not running");
+        let _=alive.kill();let _=alive.wait();
+    }
+    #[test]
+    fn finished_viewer_sessions_are_swept_and_live_controller_and_job_directories_are_kept(){
+        let root=env::temp_dir().join(format!("arwen-companion-viewer-sweep-{}-{}",std::process::id(),now_ms()));
+        let parent=root.join(".arwen-tui");
+        fs::create_dir_all(&parent).unwrap();
+        let now=now_ms();
+        let publish=|id:&str,state:&str,read_only:bool,pid:u32,beat:u128|{
+            let directory=parent.join(format!("companion-{id}"));
+            fs::create_dir_all(directory.join("responses")).unwrap();
+            atomic_json(&directory.join("status.json"),&json!({"schema":"arwen.companion-status.v1","session_id":id,"state":state,
+                "read_only":read_only,"tui_pid":pid,"heartbeat_unix_ms":beat as u64})).unwrap();
+            directory
+        };
+        let own=std::process::id();
+        let mut running=other_process(true);let foreign=running.id();
+        let ended=ended_process();
+        // `closed` is written only by a session's own end, so it is finished
+        // whoever owns it, including a viewer of a TUI that is still running.
+        let closed=publish("closed-viewer","closed",true,ended,now);
+        let closed_foreign=publish("closed-foreign-viewer","closed",true,foreign,now);
+        // A run viewer lives inside the controller's own process, so an
+        // unfinished session carrying this pid is a viewer that is still open,
+        // whatever its heartbeat says. It is never swept.
+        let quiet_own=publish("quiet-own-viewer","ready",true,own,now-60_000);
+        let quiet_ended=publish("quiet-ended-viewer","ready",true,ended,now-60_000);
+        let live=publish("live-viewer","ready",true,foreign,now);
+        let quiet_foreign=publish("quiet-foreign-viewer","ready",true,foreign,now-60_000);
+        let controller=publish("dead-controller","closed",false,ended,now-60_000);
+        let current=publish("current-viewer","closed",true,own,now);
+        let starting=parent.join("companion-starting");fs::create_dir_all(starting.join("requests")).unwrap();
+        let job=parent.join("job-1");fs::create_dir_all(&job).unwrap();fs::write(job.join("job.json"),"{}").unwrap();
+        assert_eq!(remove_finished_viewer_sessions(&parent,"current-viewer"),3);
+        assert!(!closed.exists(),"a closed run viewer's directory is swept");
+        assert!(!closed_foreign.exists(),"a closed run viewer is finished whoever owns it");
+        assert!(quiet_own.is_dir(),"an open viewer of this process whose heartbeat paused was swept");
+        assert!(!quiet_ended.exists(),"a viewer of a TUI that was killed is swept");
+        assert!(live.is_dir(),"a heartbeating viewer is never touched");
+        assert!(quiet_foreign.is_dir(),"a viewer of a TUI that is still running is left to it");
+        assert!(controller.is_dir(),"a controller session is never swept");
+        assert!(current.is_dir(),"the caller's own session is never swept");
+        assert!(starting.is_dir(),"a session that has not published a status yet is waited for, not removed");
+        assert!(job.join("job.json").is_file(),"a job directory is never a sweep target");
+        let _=running.kill();let _=running.wait();
+        let _=fs::remove_dir_all(root);
+    }
+    /// A run viewer runs inside the controller's process, and a viewer that is
+    /// busy downloading frames can go longer than VIEWER_SESSION_LIVE without
+    /// republishing its heartbeat. Nothing about the order in which the poll
+    /// republishes heartbeats and the controller sweeps may decide whether that
+    /// viewer's directory survives: the predicate itself has to keep it, or the
+    /// user watching that run loses its frames mid-read.
+    #[test]
+    fn an_open_viewer_of_this_process_survives_a_paused_heartbeat(){
+        let root=env::temp_dir().join(format!("arwen-companion-viewer-paused-{}-{}",std::process::id(),now_ms()));
+        fs::create_dir_all(&root).unwrap();
+        let mut controller=Session::create(&root).unwrap();
+        controller.publish(json!({"state":"ready"}),true).unwrap();
+        let mut viewer=Session::create_read_only(&root).unwrap();
+        let session=viewer.directory.clone();
+        // The heartbeat this viewer published a minute ago, before it started a
+        // transfer that has held its poll ever since.
+        viewer.publish(json!({"state":"ready"}),true).unwrap();
+        let path=session.join("status.json");
+        let mut published=read_json(&path,128*1024).unwrap();
+        published["heartbeat_unix_ms"]=json!((now_ms()-60_000) as u64);
+        atomic_json(&path,&published).unwrap();
+        assert!(finished_viewer_session(&session,now_ms()).is_none(),"a live viewer of this process was called finished: {published}");
+        let parent=root.join(".arwen-tui");
+        assert_eq!(remove_finished_viewer_sessions(&parent,&controller.id),0,"the sweep removed a live viewer of this process");
+        assert!(session.join("status.json").is_file(),"the live viewer's session was swept");
+        // And at the controller's exit, whichever of the two is dropped first.
+        drop(controller);
+        assert!(session.join("status.json").is_file(),"the controller's exit sweep took a live viewer with it");
+        drop(viewer);
+        assert!(!session.exists(),"the viewer's own end left its directory");
+        let _=fs::remove_dir_all(root);
+    }
+    #[test]
+    fn a_viewer_session_directory_that_is_already_gone_is_never_put_back(){
+        let root=env::temp_dir().join(format!("arwen-companion-viewer-gone-{}-{}",std::process::id(),now_ms()));
+        fs::create_dir_all(&root).unwrap();
+        let mut viewer=Session::create_read_only(&root).unwrap();
+        let session=viewer.directory.clone();
+        viewer.publish(json!({"state":"ready"}),true).unwrap();
+        // Anything may have taken the directory first: the controller's own
+        // exit sweep, a cleaning tool, the user. Its end must not rebuild it.
+        fs::remove_dir_all(&session).unwrap();
+        drop(viewer);
+        assert!(!session.exists(),"a viewer that ended after its directory was already gone recreated it");
+        let _=fs::remove_dir_all(root);
+    }
+    /// A reader that still holds a downloaded frame blocks the removal. What is
+    /// left has to stay an identifiable finished session, and the controller
+    /// has to finish the job once the reader lets go -- otherwise every remote
+    /// viewer of an evening survives on disk, which is the defect.
+    #[test]
+    fn a_removal_a_reader_blocks_stays_identifiable_and_the_controller_finishes_it(){
+        let root=env::temp_dir().join(format!("arwen-companion-viewer-blocked-{}-{}",std::process::id(),now_ms()));
+        fs::create_dir_all(&root).unwrap();
+        let mut viewer=Session::create_read_only(&root).unwrap();
+        let session=viewer.directory.clone();
+        viewer.publish(json!({"state":"ready"}),true).unwrap();
+        // The state a viewer's own end publishes before it removes itself.
+        viewer.publish(json!({"state":"closed"}),true).unwrap();
+        let frames=session.join("remote-artifacts").join("node-2").join("job-1").join("objects");
+        fs::create_dir_all(&frames).unwrap();
+        let frame=frames.join("frame.wrf");fs::write(&frame,b"raw").unwrap();
+        // A native reader that does not share delete access holds the file on
+        // Windows; on Unix, where an open file never blocks a removal, a
+        // session directory that cannot be written to does.
+        #[cfg(windows)]
+        let (held,blocking)={
+            use std::os::windows::fs::OpenOptionsExt;
+            // FILE_SHARE_READ only: no delete while this handle is open.
+            (fs::OpenOptions::new().read(true).share_mode(1).open(&frame).unwrap(),true)
+        };
+        #[cfg(unix)]
+        let (held,blocking)={
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&session,fs::Permissions::from_mode(0o555)).unwrap();
+            (fs::File::open(&frame).unwrap(),unsafe{libc::geteuid()}!=0)
+        };
+        let closed=viewer.last_status.clone();
+        let blocked=!discard_viewer_session(&session,&closed);
+        if blocking{
+            assert!(blocked,"the removal finished while a reader still held a downloaded frame");
+            let status=read_json(&session.join("status.json"),128*1024).unwrap();
+            assert_eq!(status["read_only"],true);assert_eq!(status["session_id"],viewer.id);
+            assert!(finished_viewer_session(&session,now_ms()).is_some(),"a blocked removal stopped being a recognisable finished session: {status}");
+        }
+        drop(held);
+        #[cfg(unix)]
+        {use std::os::unix::fs::PermissionsExt;let _=fs::set_permissions(&session,fs::Permissions::from_mode(0o755));}
+        // The next controller's startup sweep, once the reader has let go.
+        let controller=Session::create(&root).unwrap();
+        assert!(!session.exists(),"a viewer whose frames a reader held survived the session that opened it");
+        assert_eq!(remove_finished_viewer_sessions(&root.join(".arwen-tui"),&controller.id),0,"the sweep found more than the one leftover");
+        drop(viewer);
+        assert!(!session.exists(),"the viewer's end put back a directory the sweep had taken");
+        drop(controller);let _=fs::remove_dir_all(root);
+    }
+    #[test]
+    fn an_emptied_session_directory_that_is_no_longer_young_is_swept(){
+        let root=env::temp_dir().join(format!("arwen-companion-viewer-empty-{}-{}",std::process::id(),now_ms()));
+        let parent=root.join(".arwen-tui");
+        let empty=|id:String|{let directory=parent.join(format!("companion-{id}"));fs::create_dir_all(&directory).unwrap();directory};
+        let young=empty(format!("{}-1",std::process::id()));
+        let later=now_ms()+VIEWER_SESSION_LIVE.as_millis()+1_000;
+        // A starting controller always holds its queues; only a removal that a
+        // reader blocked on the status file itself leaves an empty directory.
+        let starting=parent.join("companion-starting");fs::create_dir_all(starting.join("requests")).unwrap();
+        // An empty directory says nothing about what it was, so its name has to
+        // name an owner this process may finish. Another TUI that is still
+        // running keeps its own debris, and a name that is not a session's is
+        // not this sweep's to take.
+        let mut running=other_process(true);
+        let foreign=empty(format!("{}-2",running.id()));
+        let ended=empty(format!("{}-3",ended_process()));
+        let unnamed=empty("young".into());
+        assert!(finished_viewer_session(&young,now_ms()).is_none(),"a young directory is waited for, not swept");
+        assert!(finished_viewer_session(&starting,later).is_none(),"a session that holds its queues is not empty debris");
+        assert!(finished_viewer_session(&foreign,later).is_none(),"a live TUI's empty session directory is not this process's to remove");
+        assert!(finished_viewer_session(&unnamed,later).is_none(),"a directory whose name names no session was treated as debris");
+        assert!(finished_viewer_session(&ended,later).is_some(),"an emptied session of a TUI that ended is never removed");
+        assert!(finished_viewer_session(&young,later).is_some(),"an emptied session directory is never removed");
+        let _=running.kill();let _=running.wait();
+        let _=fs::remove_dir_all(root);
+    }
+    #[test]
+    fn the_controller_retries_a_blocked_removal_on_its_own_heartbeat(){
+        let root=env::temp_dir().join(format!("arwen-companion-viewer-heartbeat-{}-{}",std::process::id(),now_ms()));
+        fs::create_dir_all(&root).unwrap();
+        let mut controller=Session::create(&root).unwrap();
+        controller.publish(json!({"state":"ready"}),true).unwrap();
+        let parent=root.join(".arwen-tui");
+        let leftover=parent.join("companion-blocked-leftover");
+        fs::create_dir_all(&leftover).unwrap();
+        atomic_json(&leftover.join("status.json"),&json!({"schema":"arwen.companion-status.v1","session_id":"blocked-leftover","state":"closed",
+            "read_only":true,"tui_pid":4242,"heartbeat_unix_ms":now_ms() as u64})).unwrap();
+        controller.publish(json!({"state":"ready"}),true).unwrap();
+        assert!(leftover.is_dir(),"the heartbeat sweep must not read every status twice a second");
+        controller.swept=Instant::now()-VIEWER_SESSION_LIVE;
+        controller.publish(json!({"state":"ready"}),true).unwrap();
+        assert!(!leftover.exists(),"a blocked removal waited for the next TUI start instead of the next heartbeat");
+        drop(controller);let _=fs::remove_dir_all(root);
+    }
+    #[test]
+    fn the_controller_sweeps_leftover_viewer_sessions_at_startup_and_at_exit(){
+        let root=env::temp_dir().join(format!("arwen-companion-viewer-controller-{}-{}",std::process::id(),now_ms()));
+        let parent=root.join(".arwen-tui");
+        let leftover=|name:&str|{
+            let directory=parent.join(format!("companion-{name}"));
+            fs::create_dir_all(&directory).unwrap();
+            atomic_json(&directory.join("status.json"),&json!({"schema":"arwen.companion-status.v1","session_id":name,"state":"closed",
+                "read_only":true,"tui_pid":4242,"heartbeat_unix_ms":now_ms() as u64})).unwrap();
+            directory
+        };
+        let at_startup=leftover("startup-leftover");
+        let mut controller=Session::create(&root).unwrap();
+        assert!(!at_startup.exists(),"the controller sweeps leftover viewer sessions when it starts");
+        controller.publish(json!({"state":"ready"}),true).unwrap();
+        let at_exit=leftover("exit-leftover");
+        drop(controller);
+        assert!(!at_exit.exists(),"the controller sweeps leftover viewer sessions when it exits");
+        let _=fs::remove_dir_all(root);
     }
     #[test]
     fn live_controller_scan_ignores_closed_stale_and_read_only_sessions(){

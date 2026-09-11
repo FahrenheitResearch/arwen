@@ -737,6 +737,56 @@ WIF_REFERENCE_SHA256 = (
 WIF_REFERENCE_SOURCE = "WRF 4.7.1 run/QNWFA_QNIFA_SIGMA_MONTHLY.dat"
 
 
+def is_wif_intermediate_file(path) -> bool:
+    """True when ``path`` BEGINS with a complete IFV=5 field record.
+
+    Presence is not the question the precondition means to ask.  The gate
+    that decides whether an externally forced mp=28 domain may launch used
+    to ask ``is_file()`` alone, so a zero-byte file -- which is what a failed
+    download, an interrupted copy or a placeholder leaves behind --
+    satisfied it, and the run then died in the ingest lane with "WPS
+    intermediate file holds no records".  A refusal that fires after step 0
+    is the shape the gate law forbids, and it fired here because the check
+    at step 0 measured the wrong thing.
+
+    What is measured is the FIRST record group, read with this module's own
+    reader: the IFV version record, the header it sizes fields out of, the
+    projection record, the wind-relative flag and a data record of exactly
+    ``4 * nx * ny`` bytes.  That is a few hundred kilobytes on WRF's own
+    copy and it is the same decode the ingest performs, so a file that
+    passes here cannot fail the ingest's first record.  It is deliberately
+    NOT a byte or digest comparison against
+    :data:`WIF_REFERENCE_BYTES`/:data:`WIF_REFERENCE_SHA256`: a user may
+    hold a different WRF release's copy, and the receipt content-addresses
+    whatever was read.  Structure is the property every legitimate copy
+    shares.
+    """
+
+    try:
+        with open(path, "rb") as handle:
+            version_record = _read_record(handle)
+            if version_record is None or len(version_record) != 4:
+                return False
+            (version,) = struct.unpack(">i", version_record)
+            if version != 5:
+                return False
+            header = _read_record(handle)
+            if header is None or len(header) < 156:
+                return False
+            _xlvl, nx, ny, _iproj = struct.unpack(">fiii", header[140:156])
+            if nx <= 0 or ny <= 0:
+                return False
+            projection = _read_record(handle)
+            if projection is None or len(projection) < 28:
+                return False
+            if _read_record(handle) is None:
+                return False
+            data = _read_record(handle)
+            return data is not None and len(data) == 4 * nx * ny
+    except (OSError, struct.error, WifClimatologyError, ValueError):
+        return False
+
+
 # ONE exception class, not two.  lane/static-dataset-door landed a second
 # MissingWifClimatologyDataset in gpuwm/ingest/wif_dataset.py.  That would
 # have made `except MissingWifClimatologyDataset` catch the refusal from
@@ -781,7 +831,9 @@ def resolve_wif_climatology(path=None, *, env=None, cwd=None,
 
     Precedence, highest first:
 
-    1. ``path`` -- ``RunConfig.wif_climatology_path``, when non-empty.
+    1. ``path`` -- ``RunConfig.wif_climatology_path`` (the TOML's
+       ``[shared] wif_climatology_path``, which is how the refusals below
+       spell it), when non-empty.
     2. ``$GPUWM_WIF_CLIMATOLOGY`` -- one file.
     3. ``$GPUWM_WIF_CLIMATOLOGY_ROOT`` / ``QNWFA_QNIFA_SIGMA_MONTHLY.dat``.
     4. ``<cwd>/QNWFA_QNIFA_SIGMA_MONTHLY.dat`` -- WRF's own rule.
@@ -806,7 +858,7 @@ def resolve_wif_climatology(path=None, *, env=None, cwd=None,
     chosen = None
     origin = ""
     if path:
-        chosen, origin = Path(path), "RunConfig.wif_climatology_path"
+        chosen, origin = Path(path), "[shared] wif_climatology_path"
     elif environ.get(WIF_CLIMATOLOGY_PATH_ENV):
         chosen = Path(environ[WIF_CLIMATOLOGY_PATH_ENV])
         origin = "$" + WIF_CLIMATOLOGY_PATH_ENV
@@ -815,17 +867,24 @@ def resolve_wif_climatology(path=None, *, env=None, cwd=None,
         origin = "$" + WIF_CLIMATOLOGY_ROOT_ENV + "/" + WIF_CLIMATOLOGY_FILE
     if chosen is not None:
         tried.append(str(chosen))
-        if chosen.is_file():
+        if is_wif_intermediate_file(chosen):
             return WifSourceResolution(chosen, origin, tuple(tried))
+        if chosen.is_file():
+            raise MissingWifClimatologyDataset(
+                origin + " names " + str(chosen) + ", which does not begin "
+                "with a WPS intermediate (IFV=5) field record, so it is not "
+                "the WIF aerosol climatology -- a truncated or empty "
+                "download is the usual cause. Re-fetch it with `gpuwm "
+                "fetch-tables --wif`, or point the setting at WRF's "
+                + WIF_CLIMATOLOGY_FILE + " ("
+                + str(WIF_REFERENCE_BYTES) + " bytes, " + WIF_REFERENCE_SOURCE
+                + ").")
         raise MissingWifClimatologyDataset(
-            "the mp_physics=28 WIF aerosol climatology was named through "
-            + origin + " as " + str(chosen) + ", and there is no such file. "
-            "This path was chosen deliberately, so it is not demoted to the "
-            "synthetic fallback: an override that is silently ignored is how "
-            "a run ends up with an aerosol initial condition nobody chose. "
-            "Either point it at WRF's " + WIF_CLIMATOLOGY_FILE + " ("
-            + WIF_REFERENCE_SOURCE + ", " + str(WIF_REFERENCE_BYTES)
-            + " bytes) or clear it to take the automatic search.")
+            origin + " names " + str(chosen) + ", and there is no such file. "
+            "Re-fetch it with `gpuwm fetch-tables --wif`, or point the "
+            "setting at WRF's " + WIF_CLIMATOLOGY_FILE + " ("
+            + str(WIF_REFERENCE_BYTES) + " bytes, " + WIF_REFERENCE_SOURCE
+            + ").")
 
     # THE STAGED ROOT (lane/static-dataset-door).  `gpuwm fetch-tables
     # --wif` installs the dataset into $GPUWM_WIF_DATA_ROOT, defaulting to
@@ -838,13 +897,13 @@ def resolve_wif_climatology(path=None, *, env=None, cwd=None,
     # the two human-chosen overrides, because those were typed for this run.
     staged = resolve_wif_data_root(None, env=environ) / WIF_CLIMATOLOGY_FILE
     tried.append(str(staged))
-    if staged.is_file():
+    if is_wif_intermediate_file(staged):
         return WifSourceResolution(
             staged, "staged by `gpuwm fetch-tables --wif`", tuple(tried))
 
     probe = base / WIF_CLIMATOLOGY_FILE
     tried.append(str(probe))
-    if probe.is_file():
+    if is_wif_intermediate_file(probe):
         return WifSourceResolution(
             probe,
             "working directory (WRF constants_name rule: bare relative "
@@ -853,10 +912,14 @@ def resolve_wif_climatology(path=None, *, env=None, cwd=None,
 
     reason = (
         "no " + WIF_CLIMATOLOGY_FILE + " was found. Searched, in order: "
-        "RunConfig.wif_climatology_path (unset), $" + WIF_CLIMATOLOGY_PATH_ENV
+        "[shared] wif_climatology_path (unset), $" + WIF_CLIMATOLOGY_PATH_ENV
         + " (unset), $" + WIF_CLIMATOLOGY_ROOT_ENV + " (unset), the root "
         "`gpuwm fetch-tables --wif` stages into (" + str(staged) + "), and "
-        "the working directory (" + str(probe) + "). ArWen does not "
+        "the working directory (" + str(probe) + "). A candidate that "
+        "exists but does not begin with a complete WPS intermediate "
+        "(IFV=5) field record is not counted as found, because an empty "
+        "or truncated copy would refuse in the ingest lane instead of "
+        "here. ArWen does not "
         "redistribute this 225 MB dataset; it is WRF's own, downloaded with "
         "WRF, taken from a WRF run/ directory (" + WIF_REFERENCE_SOURCE
         + "), or staged with `gpuwm fetch-tables --wif --from DIR`.")

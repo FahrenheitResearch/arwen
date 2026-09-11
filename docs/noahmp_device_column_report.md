@@ -697,7 +697,10 @@ noahmp_driver.cu   noahmp_energy.cu   noahmp_thermal.cu
 They are not broken. They are **fragments**. glibc 2.39's `powf`/`expf`/`logf`
 are transcribed exactly once in this tree, in `noahmp_leaves.cu`, because two
 copies of a 32-entry constant table can drift and only one of them would be
-audited against `glibc-libm-fp32.csv`. Those three files borrow that single
+audited against `glibc-libm-fp32.csv`. (As of 2026-09-10 the memory estimator
+prices the composed units rather than the fragments, from per-platform
+readings in `gpuwm/core/kernel_frame_recordings.py`; see
+`docs/noahmp_composed_frame_qualification.md`.) Those three files borrow that single
 copy and are compiled after it, which is what `thermal_source()` and
 `energy_source()` have always done -- so they compile and launch perfectly well
 on the real path, including on the new TSNOSOI / PHASECHANGE / THERMOPROP

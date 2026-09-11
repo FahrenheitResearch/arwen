@@ -7,7 +7,8 @@ import numpy as np
 import pytest
 
 from gpuwm.io import restart
-from test_restart import _cfg, _shim_state, _fill_setup, _fill_serialized, _rewrite_restart_archive
+from test_restart import (_cfg, _shim_state, _fill_setup, _fill_serialized,
+                          _rewrite_restart_archive, _identity_bound_physics_state)
 
 
 @pytest.mark.parametrize(("key", "match"), [
@@ -239,3 +240,77 @@ def test_diagnostic_carrier_is_checked_before_any_state_copy(monkeypatch, tmp_pa
     for key, value in restart.state_manifest(live).items():
         np.testing.assert_array_equal(value, before[key])
     assert not target_driver.olr.any()
+
+
+def _rrtmgp_4_4_checkpoint(monkeypatch, tmp_path, name):
+    """One written 4/4 checkpoint, and the config that wrote it."""
+    cfg = _cfg(moist=True, mp_physics=10, morr_rimed_ice=1,
+               sf_sfclay_physics=1, sf_surface_physics=2, bl_pbl_physics=1,
+               ra_physics=4, cu_physics=1)
+    state, _ = _identity_bound_physics_state(cfg, monkeypatch)
+    monkeypatch.setattr(restart, "_asset_sha256",
+                        lambda path: f"test-sha256:{Path(path).name}")
+    return cfg, restart.write_restart(tmp_path / name, state, cfg)
+
+
+def test_a_crossed_4_4_radiation_resume_is_refused_by_its_breakage(
+        monkeypatch, tmp_path):
+    """AUDIT R-048.  Radiation scheme id 4 is worn by two different codes --
+    the WRF v4.6.1 RRTMG port and the RTE+RRTMGP substitution -- and a
+    resume must not swap them under a running trajectory.  It never could:
+    the configuration walk reported ``ra_rrtmg_variant`` as a changed field
+    and the physics identity reported "radiation, algorithms" as differing
+    components.  Neither sentence said WHAT breaks, so the reader learned
+    that two records differ, not that the two implementations transcribe
+    different algorithms, treat the atmosphere above the model top
+    differently (WRF's 4 mb buffer layers against RRTMGP's) and pin
+    different coefficient tables.
+
+    The refusal now names both implementations, the breakage and both ways
+    out, and it is asked BEFORE the configuration walk so it is the
+    sentence the user reads -- asserted here by the message, since the
+    generic walk would otherwise answer this same file first.
+    """
+    cfg, path = _rrtmgp_4_4_checkpoint(monkeypatch, tmp_path, "modern.npz")
+
+    def _claim_the_legacy_port_wrote_it(payload, header):
+        header["config"]["ra_rrtmg_variant"] = "rrtmg_legacy"
+
+    crossed = _rewrite_restart_archive(
+        path, tmp_path / "crossed.npz", _claim_the_legacy_port_wrote_it)
+
+    live = _shim_state(cfg, monkeypatch)
+    _fill_setup(live)
+    with pytest.raises(restart.RestartMismatchError) as raised:
+        restart.restore_restart(crossed, live, cfg)
+    message = str(raised.value)
+    assert "WRF v4.6.1 RRTMG port" in message
+    assert "RTE+RRTMGP substitution" in message
+    # The breakage, not a field name in a list of differences.
+    assert "heating-rate" in message and "buffer layers" in message
+    # Both ways out, each spelled as the setting that takes it.
+    assert "ra_rrtmg_variant='rrtmg_legacy'" in message
+    assert "start a new run from t = 0" in message
+    # And it answered before the generic configuration walk did.
+    assert "written under a different configuration" not in message
+
+
+def test_a_same_variant_4_4_resume_is_untouched_by_that_refusal(
+        monkeypatch, tmp_path):
+    """NEGATIVE CONTROL for the R-048 gate: it refuses nothing that was
+    resumable before it existed.  A 4/4 checkpoint restores into a run of
+    the SAME variant, and a header written before the variant field existed
+    restores as the RTE+RRTMGP substitution -- the migration rule the
+    configuration walk already applies, which never infers the legacy port.
+    """
+    cfg, path = _rrtmgp_4_4_checkpoint(monkeypatch, tmp_path, "same.npz")
+    live, _ = _identity_bound_physics_state(cfg, monkeypatch)
+    restart.restore_restart(path, live, cfg)
+
+    def _drop_the_variant_field(payload, header):
+        header["config"].pop("ra_rrtmg_variant", None)
+
+    pre_field = _rewrite_restart_archive(
+        path, tmp_path / "pre-field.npz", _drop_the_variant_field)
+    fresh, _ = _identity_bound_physics_state(cfg, monkeypatch)
+    restart.restore_restart(pre_field, fresh, cfg)

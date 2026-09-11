@@ -69,6 +69,7 @@ import json
 import hashlib
 import math
 import os
+import re
 import shlex
 import shutil
 import tomllib
@@ -125,11 +126,82 @@ from gpuwm.source_adapters import (get_source_adapter, source_adapters,
                                    source_forcing_interval_seconds,
                                    wizard_planable_source_ids)
 from gpuwm.source_coverage import points_outside, window_centre
-from gpuwm.static.projection import (EARTH_RADIUS_M, WRF_MAP_PROJ_CODES,
-                                     _wrap180, projection_class)
+from gpuwm.static.projection import (EARTH_RADIUS_M, POLE_CLEARANCE_CELLS,
+                                     WRF_MAP_PROJ_CODES,
+                                     footprint_contains_pole, _wrap180,
+                                     projection_class)
 
 #: Card tiers -> total VRAM (GiB).  ``--vram-gib`` accepts anything else.
 CARD_VRAM_GIB = {"12gb": 12.0, "16gb": 16.0, "24gb": 24.0, "32gb": 32.0}
+
+#: Board memory of the NVIDIA models a ``--card`` spelling is matched
+#: against, in GiB, keyed by the model token left after the vendor words,
+#: spaces and hyphens are stripped ("RTX 3080" -> "3080", "5070 Ti" ->
+#: "5070ti").  Where a model shipped in two sizes the smaller is listed,
+#: because a budget that is too large fails on the card and one that is
+#: too small only refuses a fit; put the size in the name ("4060 Ti 16GB")
+#: to say otherwise.  Longer tokens are tried first so "3080ti" is not
+#: read as "3080".  A model with no row is not refused for being
+#: unrecorded: the size in the name or ``--vram-gib`` prices it.
+KNOWN_CARD_VRAM_GIB = {
+    "3060ti": 8.0, "3060": 12.0, "3070ti": 8.0, "3070": 8.0,
+    "3080ti": 12.0, "3080": 10.0, "3090ti": 24.0, "3090": 24.0,
+    "4060ti": 8.0, "4060": 8.0, "4070tisuper": 16.0, "4070ti": 12.0,
+    "4070super": 12.0, "4070": 12.0, "4080super": 16.0, "4080": 16.0,
+    "4090": 24.0,
+    "5060ti": 8.0, "5060": 8.0, "5070ti": 16.0, "5070": 12.0,
+    "5080": 16.0, "5090": 32.0,
+    "a6000": 48.0, "a5000": 24.0, "a4000": 16.0, "a40": 48.0,
+    "a30": 24.0, "a10": 24.0, "a100": 40.0, "h100": 80.0, "h200": 141.0,
+    "l40s": 48.0, "l40": 48.0, "l4": 24.0, "t4": 16.0, "v100": 16.0,
+}
+
+_CARD_SIZE_IN_NAME = re.compile(r"(\d+(?:\.\d+)?)\s*gi?b\b")
+_CARD_VENDOR_WORDS = ("nvidia", "geforce", "quadro", "tesla", "rtx", "gtx")
+
+
+def card_capacity_gib(card: str) -> float | None:
+    """The VRAM capacity a ``--card`` spelling names, or ``None``.
+
+    Three spellings are read, in order: a tier (``12gb``/``16gb``/``24gb``/
+    ``32gb``), a size written into the name (``10gb``, ``"RTX 3080 10GB"``,
+    a bare ``10``), and a model with a row in :data:`KNOWN_CARD_VRAM_GIB`
+    (``"RTX 3080"``, ``rtx3080``, ``"5070 Ti"``).  ``None`` means the
+    spelling carries no capacity, which is the only thing the sizing door
+    refuses it for.
+    """
+    text = str(card).strip().lower()
+    if text in CARD_VRAM_GIB:
+        return CARD_VRAM_GIB[text]
+    sized = _CARD_SIZE_IN_NAME.search(text)
+    if sized:
+        return float(sized.group(1))
+    token = text
+    for word in _CARD_VENDOR_WORDS:
+        token = token.replace(word, " ")
+    token = re.sub(r"[\s_\-]+", "", token)
+    for model in sorted(KNOWN_CARD_VRAM_GIB, key=len, reverse=True):
+        if model in token:
+            return KNOWN_CARD_VRAM_GIB[model]
+    # A bare number is a GiB figure only where it can be one; "3080" with
+    # no vendor word is a model number with no row, not 3 TiB.
+    try:
+        bare = float(text)
+    except ValueError:
+        return None
+    return bare if 0 < bare <= 512 else None
+
+
+def declared_card_gib(card: str) -> float:
+    """``card_capacity_gib`` that refuses a spelling with no capacity in it."""
+    capacity = card_capacity_gib(card)
+    if capacity is None:
+        raise ValueError(
+            f"--card {card!r} names no capacity this tree knows: it is not a "
+            f"tier ({'/'.join(sorted(CARD_VRAM_GIB))}), carries no size, and "
+            "has no model row. Put the size in the name (--card 'ada 9000 "
+            "24gb') or pass --vram-gib N beside it.")
+    return capacity
 
 #: Nest ladders: dx chain in km (root fixed at 12 km) -> parent grid/time
 #: ratios.  Ratios follow the certified 12->3->1 chain (4, 3); the 500 m
@@ -359,8 +431,76 @@ MERCATOR_MAX_LAT, LAMBERT_MAX_LAT = 25.0, 60.0
 #: Cells of clearance between the domain footprint and the projection
 #: pole; a domain containing (or touching) the pole is refused -- the
 #: lat-lon source interpolation and static-tile windowing are not
-#: pole-capable (genuine limit, not a projection-math one).
-_POLE_CLEARANCE_CELLS = 2.0
+#: pole-capable (genuine limit, not a projection-math one).  The number
+#: and the measurement that reads it live beside the projection math
+#: (:mod:`gpuwm.static.projection`), because plan review refuses the
+#: same footprint and the two answers have to be one answer.
+_POLE_CLEARANCE_CELLS = POLE_CLEARANCE_CELLS
+
+#: Cells of pole clearance the point FIT sizes to, as distinct from the
+#: clearance the refusal above enforces.  The fit works on a discretised
+#: ladder -- every candidate is rounded to even mass points, and a nest
+#: chain rounds again -- so a search that stopped exactly on the
+#: refusal's own margin would emit layouts that sometimes land on the
+#: wrong side of it.  Sizing to four times the margin puts the emitted
+#: layout clear of the refusal instead of on its edge.
+_FIT_POLE_CLEARANCE_CELLS = 4.0 * _POLE_CLEARANCE_CELLS
+
+#: Largest ROOT extent, per axis, that a POINT request is sized to (km).
+#:
+#: A point carries no extent, so the fit has to choose one, and until
+#: 2.7.3 the only thing that chose was the card: the search grew the
+#: root until memory bound.  With streaming on (``--tiles auto``, what
+#: the desktop asks for) memory stops binding at all, and a 7 GiB card
+#: sized a 12 km root of 2326 x 1860 mass points -- 27,912 x 22,320 km,
+#: wider than the Earth's circumference at that latitude, wrapped around
+#: the projection pole, and therefore refused at plan review by the
+#: pole guard for a request that named a point in the mid-latitudes.
+#: Large resident cards reached the same place more slowly (180 GiB
+#: sized 26,952 km).
+#:
+#: 6,000 km per axis is the product's own documented continental
+#: examples, measured as GROUND: they run 60-80 degrees of longitude and
+#: 30-50 of latitude (the range :data:`_WIDE_FOOTPRINT_DEGREES` and
+#: :data:`_TALL_FOOTPRINT_DEGREES` record), which between 35 and 45 N is
+#: about 4,700-7,300 km of longitude and 3,300-5,600 km of latitude.  A
+#: 6,000 x 4,800 km root sits inside both spans, so a point is sized to
+#: the largest domain this product actually shows anyone running, and
+#: not to whatever the card holds.
+#:
+#: What it is NOT is a promise about the FETCH BOX, which this comment's
+#: first version claimed it was.  Those two degree thresholds are
+#: applied to the margined lat/lon box (:func:`oversized_footprint_advisory`
+#: reads the ``--area`` string), not to the root, and a conformal root
+#: of this size fans out well past them: measured on the desktop's own
+#: argument shape, the box is 108 x 76 degrees at 30 N, 129 x 77 at
+#: 41.5 N, and the source's full 360-degree band at 60 N, where a
+#: 4,800 km tall Lambert domain reaches into the high Arctic.  So the
+#: oversized-footprint advisory still fires on a capped point fit, by
+#: design: the download IS large and the reader should hear it once.  It
+#: fires saying which bound chose the size and naming ``--polygon``,
+#: because on this bound the card is no longer the lever
+#: (:func:`point_request_bound`).  A fetch that spans the whole band
+#: keeps its own separate warning, which the cap did not silence.
+#:
+#: It caps every fit that starts from a point -- :func:`fit_ladder` is
+#: also the sizer behind ``gpuwm domain-fit --point``, the starter
+#: template's own door, at that template's own root dx -- and nothing
+#: else.  A drawn area is sized to the drawing by
+#: :func:`fit_polygon_ladder`, which never consults this number, so
+#: asking for more ground than the cap is done by drawing it, with
+#: ``gpuwm domain --polygon``.
+POINT_FIT_MAX_EXTENT_KM = 6000.0
+
+#: Names for the two bounds a POINT request carries, as
+#: :func:`point_request_bound` returns them and
+#: :func:`point_fit_cap_note` speaks them.  They are constants because
+#: three call sites compare against them and a fourth prints them; a
+#: literal that drifted in one of the four would silently stop the fit
+#: and the plan summary agreeing.
+POINT_FIT_EXTENT_SCOPE = "REQUESTED EXTENT"
+POINT_FIT_PROJECTION_SCOPE = "PROJECTION"
+POINT_FIT_SCOPES = (POINT_FIT_EXTENT_SCOPE, POINT_FIT_PROJECTION_SCOPE)
 
 #: Degrees of latitude the SUGGESTED FORCING BOX keeps clear of a pole.
 #:
@@ -907,7 +1047,9 @@ def _area_span_degrees(area: str) -> tuple[float, float] | None:
     return north - south, lon
 
 
-def oversized_footprint_advisory(area: str) -> list[str]:
+def oversized_footprint_advisory(area: str, *,
+                                 request_bound: str | None = None
+                                 ) -> list[str]:
     """Say when the sized domain fills the card rather than the map.
 
     An advisory, never a refusal, and it changes no sizing: the layout
@@ -923,6 +1065,23 @@ def oversized_footprint_advisory(area: str) -> list[str]:
     sentence states what the thresholds above actually measure -- the
     box is much bigger than the documented examples -- and keeps the
     remedy, which is true either way.
+
+    ``request_bound``, added in 2.7.3, is the other half of that same
+    correction and the reason the sentence is not one string.  The point
+    fit now stops on bounds the REQUEST carries rather than on the card
+    (:func:`point_request_bound`), and on those the card-shaped remedy
+    is not merely unhelpful, it is inert: with streaming on, the mode
+    the desktop asks for, memory never binds at all, so every
+    ``--vram-gib`` above the refusal floor emits the identical grid.
+    Measured on the shipped 2.7.2 door's own argument shape, that was
+    every mid-latitude point request -- the advisory fired at 30, 41.5,
+    48.5 and 60 N and named a flag that changed nothing.  When a request
+    bound is in force the sentence names ``--polygon`` instead, which is
+    how a point request asks for different ground and is the one lever
+    that still moves the answer.  It makes no claim about ``--vram-gib``
+    in that branch: a resident fit (``--tiles off``) on a small enough
+    card is still bounded by memory below the extent cap, and saying
+    otherwise would install the mirror image of the defect being fixed.
 
     Two things the first version got wrong, both found by a wheel user
     on Linux at ``--card 24gb --ladder 12``.  It measured longitude
@@ -943,10 +1102,18 @@ def oversized_footprint_advisory(area: str) -> list[str]:
     if (lon_span < _WIDE_FOOTPRINT_DEGREES
             and lat_span < _TALL_FOOTPRINT_DEGREES):
         return []
+    box = (f"this domain is much wider than the documented examples: the "
+           f"fetch command below downloads a {lon_span:.0f} x "
+           f"{lat_span:.0f} degree --area box")
+    if request_bound is not None:
+        return [
+            f"{box}.  A point carries no extent, so the fit chose this "
+            f"one and stopped on the {request_bound}, not on the card "
+            f"-- draw the ground you want with --polygon for a smaller "
+            f"first run; narrowing --area on its own would starve the "
+            f"domain it feeds"]
     return [
-        f"this domain is much wider than the documented examples: the "
-        f"fetch command below downloads a {lon_span:.0f} x "
-        f"{lat_span:.0f} degree --area box, so pass --vram-gib N (or a "
+        f"{box}, so pass --vram-gib N (or a "
         f"finer --root-dx KM) for a smaller first run -- narrowing "
         f"--area on its own would starve the domain it feeds"]
 
@@ -1265,7 +1432,21 @@ _SHARED_CERTIFIED = shared_physics(DEFAULT_PHYSICS_PROFILE)
 
 
 class DomainFitError(ValueError):
-    """The requested ladder cannot fit the requested card."""
+    """The requested ladder cannot fit; only typed memory failures are retryable."""
+
+    def __init__(self, message, *, resource=None, phases=None):
+        super().__init__(message)
+        self.resource = resource
+        self.phases = phases
+
+
+class DomainFitCancelled(RuntimeError):
+    """An author cancelled a fit before accepting or publishing it."""
+
+
+def check_fit_cancelled(cancelled=None):
+    if cancelled is not None and cancelled():
+        raise DomainFitCancelled("Domain fitting cancelled")
 
 
 #: Appended to every --point parse refusal: the one form that cannot be
@@ -2643,26 +2824,132 @@ def _root_grid(projection: dict, nx: int, ny: int,
 
 
 def _footprint_contains_pole(projection: dict, nx: int, ny: int,
-                             root_dx_m: float = ROOT_DX_M) -> bool:
-    """Does this root contain (or nearly touch) the projection pole?
+                             root_dx_m: float = ROOT_DX_M,
+                             margin_cells: float = _POLE_CLEARANCE_CELLS
+                             ) -> bool:
+    """Does this root contain (or come within ``margin_cells`` of) the
+    projection pole?
 
     The predicate behind :func:`_pole_clearance_refusal`, split out
-    because a second caller needs to ASK it without refusing: a
-    pole-containing footprint spans every longitude, so it also trips
+    because two other callers need to ASK it without refusing.
+
+    A pole-containing footprint spans every longitude, so it also trips
     the 180-degree servable-crop bound, and the crop bound's remedy
     ("size a narrower domain") is the wrong instruction for a domain
     whose problem is the singularity inside it.
+
+    The point fit asks it too, with a wider margin
+    (``_FIT_POLE_CLEARANCE_CELLS``), so that the SIZE it chooses stays
+    inside the projection's usable envelope instead of growing past it
+    and being refused afterwards.
+
+    The geometry itself is
+    :func:`gpuwm.static.projection.footprint_contains_pole`, shared with
+    plan review: a hand-authored root that encloses a pole is refused
+    when the experiment loads, and a door measuring the footprint
+    differently from the loader is how a configuration passes review and
+    dies at the door that prepares it.  This wrapper only supplies the
+    door's root-spacing default.
     """
 
-    if projection["map_proj"] == "mercator":  # never reaches a pole
-        return False
-    grid = _root_grid(projection, nx, ny, root_dx_m)
-    pole_lat = 90.0 if projection["truelat1"] >= 0.0 else -90.0
-    px, py = (float(v) for v in grid.latlon_to_ij(
-        pole_lat, projection["stand_lon"]))
-    margin = _POLE_CLEARANCE_CELLS
-    return bool(0.5 - margin <= px <= grid.e_we - 0.5 + margin
-                and 0.5 - margin <= py <= grid.e_sn - 0.5 + margin)
+    return footprint_contains_pole(projection, nx, ny, root_dx_m,
+                                   margin_cells)
+
+
+def point_request_bound(projection: dict, nx: int, ny: int,
+                        root_dx_m: float = ROOT_DX_M
+                        ) -> tuple[str, str] | None:
+    """Which bound says this layout is larger than a POINT may ask for,
+    and why -- or ``None`` when neither does.
+
+    The card is not the only thing that decides how big a domain grown
+    from a single point should be, and until 2.7.3 it was the only thing
+    that did.  Two bounds, both properties of the REQUEST:
+
+    * the projection's own usable envelope.  A Lambert or polar root
+      grown far enough poleward swallows the projection pole, where
+      lat-lon source interpolation and static-tile windowing do not work
+      -- the limit :func:`_pole_clearance_refusal` states.  It is a
+      SIZING bound here, not a refusal: the point is a legal request and
+      shrinking the domain honours it, so the fit shrinks.  The refusal
+      stays where a smaller domain cannot help -- a drawn area that
+      itself reaches the pole, and a point so close to one that even the
+      minimum layout contains it.
+
+    * a maximum extent (:data:`POINT_FIT_MAX_EXTENT_KM`).  A point
+      carries no extent at all, so "as much ground as this card can
+      hold" is an answer to a question nobody asked; with streaming on
+      it is not even bounded by the card.
+
+    Monotone in scale, which is what :func:`fit_ladder`'s bisection
+    requires: growing a centered root moves its poleward edge further
+    poleward and every axis further out, so a layout rejected here stays
+    rejected at every larger scale.
+
+    Module level rather than a closure inside the fit so the bounds can
+    be asked about and tested on their own.  Only the fit calls it: what
+    stopped the search is carried forward by ``fit_ladder``'s
+    ``stop_out``, not re-derived, because the two consumers of that
+    answer -- the plain fact the plan summary states and the flag the
+    oversized-footprint advisory is allowed to name -- must agree with
+    the search and with each other exactly, and a re-derivation off the
+    emitted root misattributes a fit that stopped one discretisation
+    step under a cap.
+    """
+
+    dx_km = float(root_dx_m) / 1000.0
+    extent_km = max(nx, ny) * dx_km
+    if extent_km > POINT_FIT_MAX_EXTENT_KM:
+        return (POINT_FIT_EXTENT_SCOPE,
+                f"a {nx} x {ny} root at {dx_km:g} km spans "
+                f"{extent_km:.0f} km, past the "
+                f"{POINT_FIT_MAX_EXTENT_KM:.0f} km a point request "
+                "is sized to (draw the area to ask for more ground)")
+    if _footprint_contains_pole(projection, nx, ny, root_dx_m,
+                                _FIT_POLE_CLEARANCE_CELLS):
+        pole = "north" if projection["truelat1"] >= 0.0 else "south"
+        return (POINT_FIT_PROJECTION_SCOPE,
+                f"a {nx} x {ny} root at {dx_km:g} km reaches the "
+                f"{pole} pole, where lat-lon source interpolation "
+                "and static-tile windowing are not pole-capable")
+    return None
+
+
+def point_fit_cap_note(scope: str, dims, root_dx_m: float = ROOT_DX_M) -> str:
+    """One plain sentence of plan-summary fact for a capped point fit.
+
+    Not a warning, and deliberately not on stderr.  The cap is the
+    DEFAULT sizing of a request that carries no extent, so it fires on
+    the ordinary mid-latitude point on any card from about 16 GiB up --
+    every such run, on the door the desktop drives.  A stderr
+    ``warning:`` there would say a normal request is abnormal, and it
+    said it loudly enough to turn the release suite red
+    (``tests/test_go_chain.py`` holds the door to an empty stderr on its
+    default emission, which is the same promise stated as a test).  The
+    reader still has to be able to see why the grid stopped where it did
+    -- an invisible saturation is the defect
+    ``tests/test_domain_wizard_budget_monotonic.py`` exists for -- so
+    the fact is stated once, on stdout, beside the sizing line that
+    prints the envelope it is under.
+
+    A stderr warning is left for a request that is itself unusual: a
+    drawn area reaching the pole still refuses, and ``|lat| 90`` and a
+    centre no layout clears still refuse.
+    """
+
+    nx, ny = dims[0]
+    dx_km = float(root_dx_m) / 1000.0
+    extent_km = max(nx, ny) * dx_km
+    if scope == POINT_FIT_EXTENT_SCOPE:
+        return (f"point request: extent capped at {extent_km:.0f} km "
+                f"({nx}x{ny} at {dx_km:g} km), memory allows more; draw "
+                f"the ground you want with --polygon for a larger domain")
+    if scope == POINT_FIT_PROJECTION_SCOPE:
+        return (f"point request: extent capped at {extent_km:.0f} km "
+                f"({nx}x{ny} at {dx_km:g} km) to stay clear of the "
+                f"projection pole, memory allows more; move --point "
+                f"equatorward for a larger domain")
+    raise ValueError(f"not a point-request bound: {scope!r}")
 
 
 def _pole_clearance_refusal(projection: dict, nx: int, ny: int,
@@ -2671,17 +2958,36 @@ def _pole_clearance_refusal(projection: dict, nx: int, ny: int,
     """Refuse a root footprint that contains (or nearly touches) the
     projection pole -- a genuine pipeline limit (lat-lon source
     interpolation and static windowing are not pole-capable), not a
-    projection-math one.  Mercator never reaches a pole."""
+    projection-math one.  Mercator never reaches a pole.
+
+    The remedy it names changed with 2.7.3, because the old one stopped
+    being one.  It used to offer "choose a smaller layout (--vram-gib /
+    a shallower --ladder)", which was true while an unbounded point fit
+    could grow a mid-latitude request into the pole: a smaller card then
+    did clear it.  The fit now shrinks off the projection's polar
+    envelope by itself (:func:`point_request_bound`), so every request
+    that still reaches here has already been sized to the smallest
+    layout its ladder has, and a smaller card cannot make it smaller --
+    it can only refuse it for a different reason.  A drawn footprint was
+    never shrinkable at all.  So the sentence names the one thing that
+    moves: the centre, or the drawing.
+    """
     if _footprint_contains_pole(projection, nx, ny, root_dx_m):
         pole_lat = 90.0 if projection["truelat1"] >= 0.0 else -90.0
+        drawn = target_option == "--polygon"
+        remedy = ("the domain has to contain what you drew, so no card "
+                  "and no ladder clears the pole: the drawing is what "
+                  "moves" if drawn else
+                  "this request was already sized to the smallest "
+                  "layout its ladder has, so no card and no shallower "
+                  "ladder clears the pole: the centre is what moves")
         raise ValueError(
             f"the fitted root domain ({nx} x {ny} mass points at "
             f"{float(root_dx_m) / 1000:g} km) contains or touches the "
             f"{'north' if pole_lat > 0 else 'south'} pole; lat-lon "
             "source interpolation and static-tile windowing are not "
-            f"pole-capable -- move {target_option} away from the pole or "
-            "choose "
-            "a smaller layout (--vram-gib / a shallower --ladder)")
+            f"pole-capable -- move {target_option} away from the pole; "
+            f"{remedy}")
 
 
 def _margined_longitude_span(lon_c, center: float,
@@ -3458,18 +3764,67 @@ def _sizing_phases(exp, *, free_bytes: int, machine=None, **kwargs):
                                         machine=machine,
                                         resident_estimate=phases.forecast)
         except (streaming.StreamingRefused, CannotPlan) as error:
-            raise DomainFitError(f"--tiles {options.mode}: {error}") from error
+            raise DomainFitError(f"--tiles {options.mode}: {error}",
+                                 resource=getattr(error, "resource", None),
+                                 phases=phases) from error
     if len(exp.domains) > 1:
         road = phases.tree_road
         if road is None or not road.priced or road.refusal:
-            reason = (road.refusal if road is not None else None)
+            reason = ((road.refusal or getattr(road, "report_error", None))
+                      if road is not None else None)
             raise DomainFitError(
                 f"--tiles {options.mode}: "
-                f"{reason or 'the shared planner could not price this tree'}")
+                f"{reason or 'the shared planner could not price this tree'}",
+                resource=getattr(road, "refusal_resource", None), phases=phases)
     elif decision.stream and phases.streamed is None:
         raise DomainFitError(
             f"--tiles {options.mode}: the shared planner could not price this domain")
     return phases
+
+
+def _exhausted_point_bound_remedy(scope: str) -> str:
+    """What moves when EVERY rung of a bounded ladder is past a bound the
+    REQUEST itself carries.
+
+    The bisecting road cannot end here: it shrinks to its minimum layout
+    and the post-fit guard (:func:`_pole_clearance_refusal`) names the
+    remedy there.  The bounded road runs out of rungs instead, and said
+    only which bound rejected the last one -- a refusal naming no way
+    out, on the one road a ``--point`` door now takes.
+    """
+
+    if scope == POINT_FIT_PROJECTION_SCOPE:
+        return ("every rung of this ladder reaches it, so no card and no "
+                "smaller layout clears the pole: the centre is what "
+                "moves -- request a point further from it")
+    return ("every rung of this ladder is past it, so no card buys more "
+            "ground here: draw the ground you want with --polygon")
+
+
+def _warn_source_stop(root, reason) -> None:
+    """A fit stopped by the SOURCE rather than by the card, said once.
+
+    Both roads through :func:`fit_ladder` can end this way and both owe
+    the same warning: a source-shaped ceiling (a coverage window, or a
+    forcing box too wide to be fetched as one crop) stops the search
+    below what the card affords, and from the outside that is
+    indistinguishable from a comfortable fit -- the sizing line prints an
+    envelope well under budget and says nothing about why the grid is not
+    larger.  It lived inside the bisection, so the bounded largest-first
+    road filled the same ``stop_out`` while saying nothing on stderr, and
+    a bounded-road caller stopped by a coverage window would have been
+    told nothing at all.
+
+    The REQUEST-shaped bounds (:func:`point_request_bound`) do not come
+    through here on either road; they are the ordinary sizing of a
+    request that carries no extent and are reported as plan summary
+    (:func:`point_fit_cap_note`), not as a warning.
+    """
+
+    warn(f"domain search stopped at {root[0]}x{root[1]} on the SOURCE, "
+         "not the card: a larger card buys no more grid here",
+         why="The fit is bounded by every constraint, not only memory."
+             f"  The next larger layout was rejected because {reason}")
 
 
 def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
@@ -3491,6 +3846,9 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                minimum_axis: int = 1,
                dimensions_builder=None,
                layout_label: str | None = None,
+               stop_out: dict | None = None,
+               candidate_scales: tuple[float, ...] | None = None,
+               cancelled=None,
                ) -> tuple[list[tuple[int, int]], ExperimentConfig]:
     """Largest centered layout whose peak envelope fits the budget, with
     headroom left over.
@@ -3516,13 +3874,44 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
     The same hosting search, complete candidate validation, source bounds,
     and phase budget apply; the callback changes only proposed grid sizes.
 
+    ``candidate_scales`` opts into a bounded, largest-first search instead
+    of bisection. At most 64 strictly decreasing positive scales are allowed;
+    the first fully admitted candidate wins. This avoids assuming monotonic
+    tiling/host admission. It uses the SAME candidate, coverage, REQUEST
+    and headroom checks, and retries only explicitly typed memory refusals.
+    ``cancelled`` is a nonblocking predicate checked around expensive
+    candidate operations.
+
+    The request bounds are not optional on that road.  Both searches serve
+    ``--point``, which carries no extent, so both have to be bounded by
+    what a point may ask for (:func:`point_request_bound`) and both report
+    what stopped them the same way, through ``stop_out``: one plain line of
+    plan summary on stdout (:func:`point_fit_cap_note`), never a stderr
+    warning, because a cap that fires on the ordinary request is not an
+    abnormality.  A bounded search that skipped them would have grown a
+    high-latitude cyclone request into the projection pole on a large card
+    while the bisecting search shrank away from it -- the same door
+    answering the same question two ways.
+
     Takes FREE VRAM, not a budget: the reserve is a property of the
     candidate experiment (see :func:`sizing_budget_bytes`), so it cannot
     be computed before the candidate exists.  And it stops short of the
     budget by :func:`fit_headroom_bytes` -- a config that exactly touches
     its budget is a config with nothing left for the machine to be
     slightly less generous than the model.
+
+    ``stop_out``, when given, is filled with ``{"scope", "reason"}`` for
+    the bound that actually stopped the search -- the one the tightest
+    rejected candidate crossed -- and left EMPTY when memory stopped it.
+    It exists so a caller can attribute the stall exactly rather than
+    guessing at it: the first version of the point cap re-priced the
+    emitted root one cell larger per axis and read the bound off that
+    neighbour, which misattributes a fit that stopped one discretisation
+    step under a cap.  The search already knows the answer; this hands
+    it over instead of reconstructing it.
     """
+    if stop_out is not None:
+        stop_out.clear()
     if (ladder is None) == (ratios is None):
         raise ValueError("fit_ladder takes exactly one of ladder / ratios")
     if ratios is None:
@@ -3532,7 +3921,16 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
     interval = (source_forcing_interval_seconds(source)
                 if forcing_interval_seconds is None else forcing_interval_seconds)
 
+    if candidate_scales is not None:
+        if (not isinstance(candidate_scales, tuple)
+                or not 1 <= len(candidate_scales) <= 64
+                or any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0
+                       for v in candidate_scales)
+                or any(a <= b for a, b in zip(candidate_scales, candidate_scales[1:]))):
+            raise ValueError("candidate_scales must be a tuple of 1..64 decreasing positive finite scales")
+
     def candidate(scale: float):
+        check_fit_cancelled(cancelled)
         dims = (_dims_for_scale(scale, ratios, clearance_rows=clearance_rows)
                 if dimensions_builder is None else dimensions_builder(scale))
         if candidate_builder is not None:
@@ -3555,6 +3953,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                 history_interval_s=history_interval_s,
                 nest_history_interval_s=nest_history_interval_s)
             exp = experiment_from_text(text, source=f"<candidate {label}>")
+        check_fit_cancelled(cancelled)
         # Every PHASE, not just the forecast.  Sizing a domain against the
         # forecast alone is what let this wizard hand a user a config that
         # fit their card, take a multi-gigabyte download, and then OOM in
@@ -3567,6 +3966,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         budget = sizing_budget_bytes(
             exp, free_bytes=free_bytes, vram_gib=vram_gib,
             forcing_interval_seconds=interval, profile=device_profile)
+        check_fit_cancelled(cancelled)
         return dims, exp, phases.peak_envelope_bytes, budget
 
     def uncovered(exp, dims) -> str | None:
@@ -3618,18 +4018,98 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         # one of the three that costs a fresh grid evaluation on the
         # global sources, which have no window to answer from.
         #
-        # A pole-containing footprint is handed back to the genuine-limit
-        # refusal that runs after the fit (:func:`_pole_clearance_refusal`,
-        # whose call site says so): such a footprint spans every longitude,
-        # so this bound is true of it and useless -- shrinking a domain
-        # does not move the pole out of it, and the crop bound's remedy
-        # would send the reader after the wrong flag.
+        # A pole-containing footprint is not this bound's business:
+        # such a footprint spans every longitude, so the crop bound is
+        # true of it and useless, and its remedy ("size a narrower
+        # domain") would send the reader after the wrong flag.  The
+        # search never offers one -- `over_extent` shrinks away from the
+        # pole first -- and one that survives to here came from the
+        # minimum layout, where the post-fit refusal
+        # (:func:`_pole_clearance_refusal`) is the right answer.
         if _footprint_contains_pole(
                 projection, dims[0][0], dims[0][1], root_dx_m):
             return None
         return fetch_crop_refusal(
             projection, dims[0][0], dims[0][1], source=source,
             root_dx_m=root_dx_m)
+
+    def over_extent(dims) -> tuple[str, str] | None:
+        """This layout against the bounds a POINT request carries.
+
+        The bounds themselves live at module level
+        (:func:`point_request_bound`) because the advisory printed after
+        the fit has to know which of them stopped the search before it
+        can name a flag that still moves the answer.
+        """
+
+        return point_request_bound(projection, dims[0][0], dims[0][1],
+                                   root_dx_m)
+
+    if candidate_scales is not None:
+        # A bounded, largest-first search over an authored ladder of
+        # scales, bounded by EXACTLY what the bisection below is bounded
+        # by.  The REQUEST's own bounds are asked before the source's for
+        # the same reason they are asked first there: a layout past them
+        # is not a question about the source at all, and a pole-wrapped
+        # footprint would otherwise reach `uncovered`, which hands that
+        # case straight back with no bound.
+        #
+        # What stopped the search leaves through `stop_out`, not
+        # re-derived downstream, so a point request that this door sizes
+        # is cap-bound and fit-bound in one answer and the plan summary
+        # states it ONCE, on stdout (:func:`point_fit_cap_note`).  A
+        # memory rejection clears the carried bound because memory is
+        # visible from the outside -- the sizing line prints the envelope
+        # against the budget -- and claiming a cap that did not bind is
+        # the misattribution `point_request_bound` documents.
+        last_error = None
+        last_bound: str | None = None
+        binding: tuple[str, str] | None = None
+        for scale in candidate_scales:
+            try:
+                dims, exp, envelope, budget = candidate(scale)
+            except DomainFitError as error:
+                check_fit_cancelled(cancelled)
+                if error.resource not in {"vram", "host", "memory"}:
+                    raise
+                last_error = error
+                binding = last_bound = None
+                continue
+            target = budget - fit_headroom_bytes(budget)
+            if envelope > target:
+                last_error = DomainFitError(
+                    f"{dims}: peak {envelope} bytes exceeds the {target} byte "
+                    "fit target (including headroom)", resource="vram")
+                binding = last_bound = None
+                continue
+            bounded = over_extent(dims)
+            scope, reason = bounded if bounded else ("SOURCE",
+                                                     uncovered(exp, dims))
+            check_fit_cancelled(cancelled)
+            if reason is None:
+                if binding is not None:
+                    if stop_out is not None:
+                        stop_out["scope"], stop_out["reason"] = binding
+                    # The same warning the bisection owes, on the road
+                    # that was silently exempt from it.
+                    if binding[0] == "SOURCE":
+                        _warn_source_stop(dims[0], binding[1])
+                return dims, exp
+            binding = (scope, reason)
+            last_bound = scope if bounded else None
+            last_error = DomainFitError(
+                reason, resource="extent" if bounded else "coverage")
+        check_fit_cancelled(cancelled)
+        # A ladder exhausted against a REQUEST bound has a way out, and it
+        # is not the card: every rung is bounded the same way, so the
+        # sentence names what actually moves.  A coverage stop already
+        # carries its own remedy (:func:`source_coverage_refusal`), and a
+        # memory stop is the card, which the envelope numbers state.
+        raise DomainFitError(
+            f"No candidate in the bounded {label} search fits: {last_error}"
+            + ("" if last_bound is None
+               else "; " + _exhausted_point_bound_remedy(last_bound)),
+            resource=last_error.resource, phases=last_error.phases) from last_error
 
     # The MINIMUM layout is a property of the ladder, not a constant: a
     # chain deeper than any preset needs a larger root before its
@@ -3769,6 +4249,10 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
     # ``None`` means nothing SOURCE-shaped bound: the card did, or the
     # experiment loader refused the layout on its own terms.
     binding_reason: str | None = None
+    # Which bound spoke, for the announcement below: the SOURCE's own
+    # coverage, the extent a point request is sized to, or the
+    # PROJECTION's polar envelope.
+    binding_scope = "SOURCE"
     for _ in range(36):
         mid = 0.5 * (lo + hi)
         try:
@@ -3785,13 +4269,20 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
             hi = mid
             binding_reason = None
             continue
-        reason = uncovered(exp, dims)
+        # The REQUEST's own bounds first: a layout past them is not a
+        # question about the source at all, and a pole-wrapped
+        # footprint would otherwise reach `uncovered` -- which hands
+        # that case straight back with no bound (see its closing
+        # paragraph) and lets the search keep growing.
+        bounded = over_extent(dims)
+        scope, reason = bounded if bounded else ("SOURCE",
+                                                 uncovered(exp, dims))
         if reason is None:
             best = (dims, exp)
             lo = mid
         else:
             hi = mid
-            binding_reason = reason
+            binding_reason, binding_scope = reason, scope
     # A search that converges on its own upper bracket did not find the grid
     # the budget affords -- it found the largest grid it was willing to look
     # at.  Those are different answers and they used to be indistinguishable
@@ -3808,20 +4299,31 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                  "result sitting on the upper bracket means memory never "
                  "became the binding constraint, so a larger card will not "
                  "buy a larger domain until the ceiling is raised.")
-    elif binding_reason is not None:
+        # The BRACKET stopped this search, whatever a candidate above it
+        # was rejected for, so there is no binding bound to report to a
+        # caller reading `stop_out`.
+        binding_reason = None
+    elif binding_reason is not None and binding_scope == "SOURCE":
         # The same defect one bound over.  A source-shaped ceiling
         # (coverage window, or a forcing box too wide to be fetched as
         # one crop) stops the search below what the card affords, and
         # from the outside that is indistinguishable from a comfortable
-        # fit -- the sizing line prints an envelope well under budget and
-        # says nothing about why the grid is not larger.  So the wizard
-        # says it, and says that a bigger card is not the lever.
-        root = best[0][0]
-        warn(f"domain search stopped at {root[0]}x{root[1]} on the SOURCE, "
-             "not the card: a larger card buys no more grid here",
-             why="The fit is bounded by every constraint, not only memory."
-                 f"  The next larger layout was rejected because "
-                 f"{binding_reason}")
+        # fit -- the sizing line prints an envelope well under budget
+        # and says nothing about why the grid is not larger.  So the
+        # wizard says it, and says that a bigger card is not the lever.
+        #
+        # The REQUEST-shaped bounds do not come through here.  They are
+        # the default sizing of a request that carries no extent, so
+        # they bind on the ordinary mid-latitude point on any card from
+        # about 16 GiB up -- warning about that is warning about the
+        # normal case, and it turned the release suite red on the door's
+        # own default emission.  They are reported instead as one plain
+        # line of plan summary (:func:`point_fit_cap_note`) built from
+        # `stop_out` below, which is stdout and is not a warning.
+        _warn_source_stop(best[0][0], binding_reason)
+    if stop_out is not None and binding_reason is not None:
+        stop_out["scope"] = binding_scope
+        stop_out["reason"] = binding_reason
     return best
 
 
@@ -4570,15 +5072,13 @@ def resolve_sizing_budget(card: str | None, vram_gib: float | None) -> SizingBud
     """
 
     if card is not None or vram_gib is not None:
-        if card is not None:
-            card = str(card).strip().lower()
-            if card not in CARD_VRAM_GIB:
-                raise ValueError(
-                    f"--card {card!r} is not a named GPU tier. "
-                    f"Choose --card {'/'.join(sorted(CARD_VRAM_GIB))}, or use "
-                    "--vram-gib N for an exact capacity (for example, "
-                    "--vram-gib 8 for an 8 GiB GPU).")
-        capacity = CARD_VRAM_GIB[card] if card is not None else float(vram_gib)
+        # --vram-gib beside --card is the capacity; the card is then a
+        # label.  A card alone must carry its capacity in one of the three
+        # spellings card_capacity_gib reads.
+        if vram_gib is not None:
+            capacity = float(vram_gib)
+        else:
+            capacity = declared_card_gib(card)
         if not math.isfinite(capacity) or capacity <= 0:
             raise ValueError(f"--vram-gib {capacity:g} is not a size: "
                              "pass a finite positive card capacity in GiB")
@@ -4945,6 +5445,11 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
         chain=getattr(args, "chain", None),
         ladder=args.ladder)
     level_buffers = None
+    # What stopped the point fit, straight from the search that stopped.
+    # A polygon fit never writes here (it is sized to the drawing, so no
+    # request bound is in force), and a memory-bound point fit leaves it
+    # empty.
+    fit_stop: dict = {}
     if custom is not None:
         root_dx_m, ratios = custom
         if polygon is None:
@@ -4960,7 +5465,8 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                 forcing_interval_seconds=forcing_interval_seconds,
                 forcing_intervals=forcing_intervals,
                 history_interval_s=args.history_interval,
-                nest_history_interval_s=args.nest_history_interval)
+                nest_history_interval_s=args.nest_history_interval,
+                stop_out=fit_stop)
         else:
             level_buffers = _buffers_for_levels(
                 level_buffer_values, len(ratios) + 1)
@@ -5014,7 +5520,8 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                         forcing_interval_seconds=forcing_interval_seconds,
                         forcing_intervals=forcing_intervals,
                         history_interval_s=args.history_interval,
-                        nest_history_interval_s=args.nest_history_interval)
+                        nest_history_interval_s=args.nest_history_interval,
+                        stop_out=fit_stop)
                     candidate_buffers = None
                 else:
                     candidate_buffers = _buffers_for_levels(
@@ -5053,6 +5560,17 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                 "free, minus this suite's reserve)")
         ladder, dims, level_buffers = chosen
         ratios = LADDER_RATIOS[ladder]
+    # Which bound stopped the POINT fit, if one did -- read off the
+    # search itself rather than reconstructed from the emitted root.  It
+    # decides two things below: the plain fact the plan summary states,
+    # and which flag the oversized-footprint advisory is allowed to name
+    # (a bound that makes --vram-gib inert takes it out of that
+    # sentence).  A drawn area was sized to the drawing, so no request
+    # bound applies to it.
+    request_bound = (None if polygon is not None
+                     else fit_stop.get("scope"))
+    if request_bound not in POINT_FIT_SCOPES:
+        request_bound = None
     # Genuine-limit refusal first (its message names the real problem;
     # a pole-containing footprint would otherwise also trip the
     # 180-degree fetch-span refusal below with a less useful message).
@@ -5228,6 +5746,13 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
         print(f"gpuwm domain: {name!r} at ({lat:g}, {lon:g}), ladder {ladder} "
               f"({'-'.join(f'{v:g}' for v in _ladder_dx_km(ratios, root_dx_m))} km), "
               f"card {vram_gib:g} GiB")
+        # A point carries no extent, so the fit chose one and bounded
+        # its own choice.  Stated as fact, once, beside the sizing line
+        # that prints the envelope it is under -- never as a warning:
+        # this is the ordinary request on the ordinary card.
+        if request_bound is not None:
+            print("domain: " + point_fit_cap_note(
+                request_bound, dims, root_dx_m))
     else:
         buffers = ",".join(f"{value:g}" for value in level_buffers)
         print(f"gpuwm domain: {name!r}, polygon center ({lat:g}, {lon:g}), "
@@ -5390,7 +5915,11 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None) -> int:
                  "ground the grid does not carry; the clamped box still "
                  "contains the whole fitted domain, whose source "
                  "coverage was proven during fitting.")
-    for note in oversized_footprint_advisory(fetch_hints["area"]):
+    # Which flag the advisory may name depends on what stopped the fit
+    # (`request_bound`, resolved above): when one of the request's own
+    # bounds chose the size, the card is not the lever any more.
+    for note in oversized_footprint_advisory(fetch_hints["area"],
+                                             request_bound=request_bound):
         print(f"advisory: {note}")
     if args.source == "hrrr":
         for note in coverage_advisory(exp):
@@ -5578,16 +6107,21 @@ def register_cli(subparsers) -> None:
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--point", metavar="LAT,LON",
                         help="domain center in decimal degrees. |lat| 90 "
-                             "is refused, and so is any center whose "
-                             "FITTED domain reaches the pole -- a domain "
-                             "containing one is unsupported -- so the "
-                             "usable limit is set by the domain's size, "
-                             "not by the center, and lands well short of "
-                             "90 (near |lat| 72 on the default card and "
-                             "ladder, further equatorward as either "
-                             "grows). The refusal names the fitted size "
-                             "when it fires; the projection is "
-                             "auto-selected from |lat| (<25 Mercator, "
+                             "is refused. A point carries no extent, so "
+                             "the fit chooses one: the largest layout "
+                             "the budget affords, capped at "
+                             f"{POINT_FIT_MAX_EXTENT_KM:.0f} km per axis "
+                             "and kept clear of the projection pole, "
+                             "where lat-lon source interpolation and "
+                             "static-tile windowing do not work. Both "
+                             "caps SHRINK the domain rather than refuse "
+                             "it, and the plan summary states which one "
+                             "bound; the "
+                             "pole refusal is left for a center so close "
+                             "to one that even the smallest layout "
+                             "contains it. Draw a --polygon to ask for "
+                             "more ground than the cap. The projection "
+                             "is auto-selected from |lat| (<25 Mercator, "
                              "25-60 Lambert conformal, >60 polar "
                              "stereographic) unless --projection is set. "
                              "Negative (southern/western) values work in "
@@ -5614,10 +6148,11 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--name", default=None,
                         help="experiment name (default derived from the "
                              "center)")
-    parser.add_argument("--card", choices=sorted(CARD_VRAM_GIB),
-                        default=None,
-                        help="GPU tier; sets the VRAM budget with no "
-                             "local probe. With no --card, --vram-gib or "
+    parser.add_argument("--card", default=None,
+                        help="GPU to size for: a tier (12gb/16gb/24gb/32gb), "
+                             "a size ('10gb'), or a model with a recorded "
+                             "size ('RTX 3080', '5070 Ti'); sets the VRAM "
+                             "budget with no local probe. With no --card, --vram-gib or "
                              "--hardware-json the wizard MEASURES the local "
                              "card's capacity (short-lived probe, "
                              "suppressed by GPUWM_NO_LOCAL_GPU) and "
@@ -5784,6 +6319,9 @@ __all__ = [
     "load_polygon_footprint", "max_fetch_abs_lat",
     "oversized_footprint_advisory", "parse_chain",
     "parse_custom_ladder", "parse_level_buffers", "pole_clearance_deg",
+    "POINT_FIT_EXTENT_SCOPE", "POINT_FIT_MAX_EXTENT_KM",
+    "POINT_FIT_PROJECTION_SCOPE", "POINT_FIT_SCOPES",
+    "point_fit_cap_note", "point_request_bound",
     "polygon_ladder_dims", "radiation_cadence_advisory",
     "radt_ladder_minutes", "register_cli", "render_config",
     "render_wps_namelist", "root_time_step_s", "seconds_per_km",

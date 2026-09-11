@@ -137,8 +137,12 @@ impl Manager {
             replies.push(Completion { session_id: pending.parent, request: pending.request, result, details });
         }
         for viewer in &mut self.viewers { viewer.poll(live); }
-        // No cache/receipt deletion: readers may still hold their native file
-        // leases after the UI closes. Pending transfers finish before detach.
+        // Pending transfers finish before detach, and a finished viewer takes
+        // its own session directory with it, including the raw and processed
+        // frames it downloaded there, which only its own handoff could reach.
+        // The caches under the output root are never deleted: readers may still
+        // hold their native file leases after the UI closes, and the next
+        // viewer of the same node and job reads them again.
         self.viewers.retain(|viewer| !viewer.finished());
         replies
     }
@@ -188,7 +192,7 @@ fn live_status_for(live: Option<&Value>, directory: &Path) -> Option<Value> {
 fn forecast_job_directory(directory: &Path) -> bool {
     let Ok(launcher) = companion::read_json(&directory.join("job.json"), 128 * 1024) else { return true; };
     let command: Vec<&str> = launcher["command"].as_array().map(|values| values.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
-    command.get(3).is_some_and(|action| matches!(*action, "run-plan" | "go" | "sim" | "run" | "resume"))
+    command.get(3).is_some_and(|action| matches!(*action, "run-plan" | "go" | "sim" | "run" | "resume" | "downscale"))
         && !command.iter().any(|argument| matches!(*argument, "--dry-run" | "--estimate" | "--resolve" | "--physics-profiles" | "--help"))
 }
 
@@ -248,12 +252,106 @@ fn snapshot_summary(status: &Value) -> Value {
     result
 }
 
+/// One saved checkpoint set's group key, or `None` for a filename that is
+/// not a gpuwm restart. Same grouping the engine's own discovery applies
+/// (`gpuwm.resume`): one instant plus its optional set id is one set,
+/// however many domain members it holds.
+fn checkpoint_group(name: &str) -> Option<String> {
+    let rest = name.strip_prefix("gpuwmrst_d")?.strip_suffix(".npz")?;
+    let (grid, rest) = rest.split_once('_')?;
+    if grid.is_empty() || !grid.bytes().all(|byte| byte.is_ascii_digit()) || !rest.is_ascii() || rest.len() < 19 { return None; }
+    let (instant, tail) = rest.split_at(19);
+    let bytes = instant.as_bytes();
+    if ![4, 7].iter().all(|index| bytes[*index] == b'-') || ![10, 13, 16].iter().all(|index| bytes[*index] == b'_') { return None; }
+    if !instant.bytes().enumerate().all(|(index, byte)| matches!(index, 4 | 7 | 10 | 13 | 16) || byte.is_ascii_digit()) { return None; }
+    if !(tail.is_empty() || tail.starts_with("__")) { return None; }
+    Some(format!("{instant}{tail}"))
+}
+
+/// The last `limit` bytes of a file, so a long event stream is read from
+/// its end without loading the whole of it.
+fn read_tail(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(path)?;
+    let size = file.metadata()?.len();
+    file.seek(SeekFrom::Start(size.saturating_sub(limit)))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Where a finished run committed its frames and its last checkpoint, read
+/// from the run's own event stream (`output_committed.path` for domain 1 and
+/// `model_progress.last_checkpoint`). The prepared routes write the frames
+/// under `<run>/wrfout/` and the checkpoints in `<run>/` above it; other
+/// routes write both beside the manifest. A reader that assumed one layout
+/// counted zero frames and zero sets on the other, so the layout is read from
+/// the receipts instead of assumed.
+fn committed_directories(status: &Value) -> (Option<PathBuf>, Option<PathBuf>) {
+    let Some(path) = status["events_path"].as_str().map(Path::new).filter(|path| path.is_file()) else { return (None, None); };
+    let Ok(bytes) = read_tail(path, 64 * 1024 * 1024) else { return (None, None); };
+    let (mut history, mut checkpoint) = (None, None);
+    for line in bytes.split(|byte| *byte == b'\n').rev() {
+        if history.is_some() && checkpoint.is_some() { break; }
+        let Ok(text) = std::str::from_utf8(line) else { continue; };
+        if history.is_none() && text.contains("\"output_committed\"") {
+            if let Ok(event) = serde_json::from_str::<Value>(text) {
+                if event["event"] == "output_committed" && event["domain"].as_u64() == Some(1) {
+                    history = event["path"].as_str().and_then(|frame| Path::new(frame).parent()).map(Path::to_path_buf);
+                }
+            }
+        }
+        if checkpoint.is_none() && text.contains("\"last_checkpoint\"") {
+            if let Ok(event) = serde_json::from_str::<Value>(text) {
+                checkpoint = event["last_checkpoint"].as_str().and_then(|set| Path::new(set).parent()).map(Path::to_path_buf);
+            }
+        }
+    }
+    (history, checkpoint)
+}
+
+/// What a finished local run can offer an offline downscale, read from the
+/// directories its own stream says it wrote to (`history_dir` holds the
+/// `wrfout_d01_*` frames, `checkpoint_dir` the `gpuwmrst_*` sets; a run whose
+/// stream names neither is read where its manifest lives). A child needs at
+/// least two history frames to be forced between and one complete restart
+/// set for its physics, so the front door that offers downscaling reads
+/// eligibility from these receipts instead of guessing it from a run's
+/// settings, and hands the engine `history_dir` as the parent to read.
+fn downscale_inputs(status: &Value) -> Value {
+    let Some(root) = status["run_dir"].as_str().map(PathBuf::from).filter(|path| path.is_dir()) else { return Value::Null; };
+    let (history, checkpoint) = committed_directories(status);
+    let history_dir = history.filter(|path| path.is_dir()).unwrap_or_else(|| root.clone());
+    let checkpoint_dir = checkpoint.filter(|path| path.is_dir()).unwrap_or_else(|| history_dir.clone());
+    let (mut frames, mut sets) = (0_usize, BTreeSet::new());
+    let mut directories = vec![&history_dir];
+    if checkpoint_dir != history_dir { directories.push(&checkpoint_dir); }
+    for (index, directory) in directories.iter().enumerate() {
+        let Ok(entries) = fs::read_dir(directory) else { continue; };
+        for entry in entries.filter_map(Result::ok).take(20_000) {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue; };
+            if name.starts_with("wrfout_d01_") { if index == 0 { frames += 1; } }
+            else if let Some(group) = checkpoint_group(name) { sets.insert(group); }
+        }
+    }
+    json!({"history_dir": history_dir, "checkpoint_dir": checkpoint_dir,
+        "history_frames": frames, "restart_sets": sets.len(),
+        "history_interval_s": status["progress"]["domains"][0]["history_interval_s"]})
+}
+
 fn run_summary(status: &Value) -> Value {
     let mut value = snapshot_summary(status);
     for key in ["id", "job_id", "job_dir", "state", "action", "created_at", "started_at", "ended_at", "exit_code", "outdir", "run_dir", "source_config_path", "source_config_sha256", "model_elapsed_seconds", "valid_time", "phase", "stage", "error"] {
         value[key] = status[key].clone();
     }
     if value["job_id"].is_null() { value["job_id"] = status["id"].clone(); }
+    // A downscaled child has no [experiment] block to be named or dated by:
+    // its identity comes from the manifest the child itself published.
+    if value["name"].is_null() { value["name"] = status["name"].clone(); }
+    if value["forecast_start_time"].is_null() { value["forecast_start_time"] = status["start_time"].clone(); }
+    value["parent_run_dir"] = status["parent"]["run_dir"].clone();
+    value["downscale"] = downscale_inputs(status);
     value["domain_count"] = json!(status["progress"]["domains"].as_array().map(Vec::len));
     value["rendered_png_count"] = status["render_summary"]["rendered_png_count"].clone();
     value
@@ -384,7 +482,8 @@ impl Viewer {
         Ok(viewer)
     }
     fn create(client: Client, target: Target, source: Source, status: Value) -> Result<Self, String> {
-        let session = Session::create(&client.output)?;
+        // A run viewer's session directory is scratch: it ends with the viewer.
+        let session = Session::create_read_only(&client.output)?;
         let mut endpoint = target.value();
         if let Source::Remote { node, .. } = &source {
             endpoint["name"] = json!(node.name); endpoint["workspace"] = json!(node.workspace);
@@ -573,6 +672,33 @@ mod tests {
     /// engine version; the local-run tests therefore need a real interpreter.
     fn test_python()->PathBuf{PathBuf::from(std::env::var_os("GPUWM_TUI_TEST_PYTHON").expect("set test Python path"))}
     #[test]
+    fn downscale_receipts_follow_the_runs_own_committed_paths(){
+        // The prepared routes' layout: frames under <run>/wrfout, checkpoints
+        // in <run>, and the run directory the row names two levels above.
+        let root=directory("downscale-receipts");
+        let run=root.join("chain").join("run-1").join("run");fs::create_dir_all(run.join("wrfout")).unwrap();
+        for name in ["wrfout_d01_2026-09-09_12_00_00","wrfout_d01_2026-09-09_12_15_00","wrfout_d01_2026-09-09_12_30_00","wrfout_d02_2026-09-09_12_00_00"]{fs::write(run.join("wrfout").join(name),b"frame").unwrap();}
+        for name in ["gpuwmrst_d01_2026-09-09_13_00_00__aa.npz","gpuwmrst_d02_2026-09-09_13_00_00__aa.npz","gpuwmrst_d01_2026-09-09_14_00_00__bb.npz","not-a-checkpoint.npz"]{fs::write(run.join(name),b"set").unwrap();}
+        let events=root.join("events.jsonl");
+        let lines=[json!({"schema_version":"gpuwm.run-plan.event.v1","sequence":1,"event":"output_committed","domain":1,"valid_time":"2026-09-09T12:00:00","path":run.join("wrfout").join("wrfout_d01_2026-09-09_12_00_00")}),
+            json!({"schema_version":"gpuwm.run-plan.event.v1","sequence":2,"event":"model_progress","domain":1,"model_seconds":3600.0,"last_checkpoint":run.join("gpuwmrst_d01_2026-09-09_13_00_00__aa.npz")}),
+            json!({"schema_version":"gpuwm.run-plan.event.v1","sequence":3,"event":"completed"})];
+        fs::write(&events,lines.iter().map(|event|serde_json::to_string(event).unwrap()+"\n").collect::<String>()).unwrap();
+        let receipts=downscale_inputs(&json!({"run_dir":root,"events_path":events,"progress":{"domains":[{"history_interval_s":900.0}]}}));
+        assert_eq!(receipts["history_dir"],json!(run.join("wrfout")));
+        assert_eq!(receipts["checkpoint_dir"],json!(run));
+        assert_eq!(receipts["history_frames"],3);
+        assert_eq!(receipts["restart_sets"],2);
+        assert_eq!(receipts["history_interval_s"],900.0);
+        // A run whose stream names no paths is read where its manifest lives.
+        let plain=directory("downscale-plain");
+        fs::write(plain.join("wrfout_d01_2026-09-09_12_00_00"),b"frame").unwrap();fs::write(plain.join("gpuwmrst_d01_2026-09-09_13_00_00.npz"),b"set").unwrap();
+        let receipts=downscale_inputs(&json!({"run_dir":plain,"progress":{"domains":[]}}));
+        assert_eq!(receipts["history_dir"],json!(plain));assert_eq!(receipts["checkpoint_dir"],json!(plain));
+        assert_eq!(receipts["history_frames"],1);assert_eq!(receipts["restart_sets"],1);
+        fs::remove_dir_all(root).ok();fs::remove_dir_all(plain).ok();
+    }
+    #[test]
     fn runs_resolve_the_requested_saved_node_without_changing_the_active_one(){
         let mut store=remote::Store::default();let first=node("node-1");let second=node("node-2");
         store.active=Some(first.id.clone());store.nodes=vec![first.clone(),second.clone()];
@@ -648,10 +774,67 @@ mod tests {
         for action in [Action::SelectTarget,Action::ResetSetup,Action::OpenConfig(root.join("another.toml")),Action::LaunchPlan(root.join("plan.json")),Action::StopJob(viewer.job_id().into())]{
             assert!(viewer.begin(&request(action,Target::Local)).unwrap_err().contains("read-only"));
         }
-        let session=viewer.session.directory.clone();let held=fs::File::open(session.join("status.json")).unwrap();
+        let session=viewer.session.directory.clone();
+        assert_eq!(companion::read_json(&session.join("status.json"),128*1024).unwrap()["read_only"],true);
         viewer.begin(&request(Action::CloseRun(viewer.job_id().into()),Target::Local)).unwrap();
-        manager.poll(None);assert!(manager.viewers.is_empty());assert!(session.join("status.json").is_file());drop(held);
-        assert_eq!(companion::read_json(&session.join("status.json"),128*1024).unwrap()["state"],"closed");
+        manager.poll(None);assert!(manager.viewers.is_empty());
+        // The viewer's session directory is scratch and ends with the viewer;
+        // the controller's own session and the job receipts stay.
+        assert!(!session.exists(),"the closed run viewer left its session directory behind");
+        assert!(parent.directory.is_dir());assert!(job.join("job.json").is_file());
+        drop(parent);let _=fs::remove_dir_all(root);
+    }
+    /// The defect this covers: every Runs window left a `companion-*` session
+    /// directory under `.arwen-tui`, so an evening of opening saved runs filled
+    /// the output root with closed sessions nothing would ever read again.
+    #[test]
+    fn an_evening_of_opened_and_closed_run_viewers_leaves_no_session_directories(){
+        let root=directory("evening");let(output,job)=local_fixture(&root);
+        let parent=Session::create(&output).unwrap();let store=remote::Store::default();let mut manager=Manager::default();
+        let sessions=||{
+            let mut names:Vec<String>=fs::read_dir(output.join(".arwen-tui")).unwrap().filter_map(Result::ok)
+                .filter_map(|entry|entry.file_name().to_str().map(str::to_owned)).filter(|name|name.starts_with("companion-")).collect();
+            names.sort();names
+        };
+        for _ in 0..3{
+            manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local),&parent,&store,&test_python(),&output,&root,None).unwrap().unwrap();
+            assert_eq!(sessions().len(),2,"an open viewer publishes its own session beside the controller's");
+            let viewer=&mut manager.viewers[0];
+            viewer.begin(&request(Action::CloseRun(viewer.job_id().into()),Target::Local)).unwrap();
+            manager.poll(None);
+            assert!(manager.viewers.is_empty());
+        }
+        assert_eq!(sessions(),vec![format!("companion-{}",parent.id)],"closed run viewers accumulated under .arwen-tui");
+        drop(parent);let _=fs::remove_dir_all(root);
+    }
+    /// The frames a viewer downloads into its own session directory
+    /// (`remote-artifacts`, `processed-store`) are reachable only through that
+    /// viewer's handoff -- the desktop confines a frame lease to the control
+    /// directory of the handoff it holds, and every open publishes a new one --
+    /// so they end with the viewer. The node-and-job caches under the output
+    /// root are read again by the next viewer of the same run and are kept.
+    #[test]
+    fn a_closed_viewer_takes_its_own_downloaded_frames_and_keeps_the_output_root_caches(){
+        let root=directory("viewer-caches");let(output,job)=local_fixture(&root);
+        let parent=Session::create(&output).unwrap();let store=remote::Store::default();let mut manager=Manager::default();
+        manager.begin(request(Action::OpenRun(job.to_string_lossy().into_owned()),Target::Local),&parent,&store,&test_python(),&output,&root,None).unwrap().unwrap();
+        let session=manager.viewers[0].session.directory.clone();
+        // The shape a remote viewer fills: raw objects and their leases under
+        // its own session, converted frames beside them, shared caches outside.
+        let raw=session.join("remote-artifacts").join("node-2").join("job-1");
+        let processed=session.join("processed-store").join("node-2").join("job-1");
+        for made in [raw.join("objects"),raw.join("leases"),processed.clone()]{fs::create_dir_all(&made).unwrap();}
+        fs::write(raw.join("objects").join("frame.wrf"),b"raw").unwrap();
+        fs::write(raw.join("leases").join("frame.lock"),b"").unwrap();
+        fs::write(processed.join("frame.json"),b"{}").unwrap();
+        let shared=[output.join(".arwen-viewer-cache").join("node-2").join("job-1"),
+            output.join(".arwen-native-plots-cache").join("node-2").join("job-1")];
+        for cache in &shared{fs::create_dir_all(cache).unwrap();fs::write(cache.join("frame.bin"),b"kept").unwrap();}
+        let viewer=&mut manager.viewers[0];
+        viewer.begin(&request(Action::CloseRun(viewer.job_id().into()),Target::Local)).unwrap();
+        manager.poll(None);assert!(manager.viewers.is_empty());
+        assert!(!session.exists(),"frames only this viewer's handoff could reach outlived the viewer");
+        for cache in &shared{assert!(cache.join("frame.bin").is_file(),"a cache under the output root went with a viewer: {}",cache.display());}
         drop(parent);let _=fs::remove_dir_all(root);
     }
     #[test]

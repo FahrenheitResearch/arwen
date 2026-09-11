@@ -91,14 +91,42 @@ def _square_moist_state(ny=8, nx=9, nz=40, mp=1, dt=30.0, **flags):
     return s, cfg
 
 
-def _mp_state_fields(cfg):
-    """State attributes the configured scheme (plus finish) mutates."""
-    fields = ["thp", "h_diabatic", "qv", "qc", "qr"]
-    if cfg.mp_physics in (6, 10):
-        fields += ["qi", "qs", "qg", "effc", "effi", "effs"]
-    if cfg.mp_physics == 10:
-        fields += ["nc", "nr", "ni", "ns", "ng", "effr"]
-    return fields
+def _mp_state_fields(state, cfg):
+    """State attributes the configured scheme (plus finish) mutates.
+
+    DERIVED from the registry's ``consumers.ring_guard`` row -- the same
+    row gpuwm.core.microphysics captures and gpuwm.core.physics_inventory
+    prices -- rather than restated here.  Audit R-066: the hand-written
+    table this replaces was the THIRD copy of that list, it covered only
+    the three schemes this module parametrizes, and it is exactly how
+    NSSL-2's nine number and volume moments came to be advanced in a ring
+    WRF's clipped tiles never touch with no test able to see it.
+
+    ``h_diabatic`` is added back: the guard pins it to WRF's exact 0
+    rather than restoring it, so it is deliberately absent from the
+    registry row and is still a field this pin must watch.  Fields the
+    configured state does not allocate are dropped, so one derivation
+    serves every scheme.
+    """
+    from gpuwm.core.physics_inventory import ring_guard_row
+
+    names = list(ring_guard_row(int(cfg.mp_physics))["state_fields"])
+    if "h_diabatic" not in names:
+        names.append("h_diabatic")
+    return [name for name in names if getattr(state, name, None) is not None]
+
+
+# THE EVERY-SCHEME RING-GUARD CELLS ARE NOT IN THIS MODULE, deliberately.
+# tests/conftest.py marks every test in a module that imports cupy
+# anywhere ``gpu`` and skips the lot under GPUWM_NO_LOCAL_GPU=1.  This
+# module opens a device in _square_moist_state, so its whole file is
+# marked -- and CPU cells placed here never ran on a CPU-only runner
+# (23 skipped) while a card-bearing runner could not compile them either.
+# The registry-derived coverage the audit item bought therefore lives in
+# tests/test_ring_guard_registry.py, which imports no device and runs on
+# a CPU-only runner.  What stays here is the live three-scheme ring
+# evidence, which needs the card by design, beside the WRF oracle in this
+# module's docstring that says what those pins are pinning.
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +168,7 @@ def test_specified_run_never_touches_the_spec_zone_ring(mp, ncalls):
 
     s, cfg = _square_moist_state(mp=mp, specified=True)
     ring = _ring_mask(cfg.ny, cfg.nx, cfg.spec_zone)
-    fields = _mp_state_fields(cfg)
+    fields = _mp_state_fields(s, cfg)
     before = {k: cp.asnumpy(getattr(s, k)).copy() for k in fields}
     result = None
     hd_first_interior_max = None

@@ -13,10 +13,14 @@ import pytest
 #: does; not hand-extended.
 _ACCEPTED_MP_PHYSICS = (0, 1, 6, 8, 9, 10, 16, 18, 28, 50)
 
-#: The admitted selector without a cloud-optics coupling. P3 now has a
-#: dedicated single-ice remap and independent cloud-fraction flags; the
-#: device controls in test_mpas_column_batch_gpu exercise that full path.
-_NO_RTE_RRTMGP_CLOUD_OPTICS = (9,)
+#: The admitted selectors without a cloud-optics coupling.  EMPTY, and
+#: measured empty below.  P3 (50) left this tuple when its single-ice
+#: remap row landed; Milbrandt-Yau (9) left it when its own-radii row
+#: landed (``9: "milbrandt2"``: the block WRF ships commented out at
+#: module_mp_milbrandt2mom.F:3351-3378, evaluated over the transported
+#: number moments).  The tuple stays so the partition checks below keep
+#: asserting that nothing is admitted and uncoupled.
+_NO_RTE_RRTMGP_CLOUD_OPTICS = ()
 
 #: The selectors the RTE+RRTMGP cross-checks below may actually drive.
 #: Derived, so a scheme cannot be dropped from coverage by hand.
@@ -44,22 +48,23 @@ def test_every_accepted_selector_is_judged():
     assert coupled | uncoupled == set(_ACCEPTED_MP_PHYSICS), (
         "these accepted selectors are neither coupled nor refused: "
         f"{sorted(set(_ACCEPTED_MP_PHYSICS) - coupled - uncoupled)}")
+    assert uncoupled == set(), (
+        "an accepted selector is refused against RTE+RRTMGP again; the "
+        "last two (50, then 9) were retired by writing their rows")
 
-    for mp_physics in sorted(uncoupled):
-        cfg = RunConfig(
+    # Every coupled selector validates against the 4/4 pair on the DEFAULT
+    # variant -- the pairing every bare configuration lands on.  mp=9 is
+    # in this loop now; it used to be the one refusal, and with the
+    # variant defaulting to rte-rrtmgp that refusal fired on every bare
+    # mp=9 run.
+    for mp_physics in sorted(coupled):
+        if mp_physics == 0:
+            continue
+        cfg = validate_run_config(RunConfig(
             nx=4, ny=3, nz=12, dx=2000.0, dy=2000.0, ztop=8000.0, dt=10.0,
             run_seconds=0.0, time_step_sound=4, moist=True,
-            mp_physics=mp_physics, ra_lw_physics=4, ra_sw_physics=4)
-        with pytest.raises(NotImplementedError) as caught:
-            validate_run_config(cfg)
-        message = str(caught.value)
-        assert "has no cloud-optics coupling" in message, mp_physics
-        assert "ra_rrtmg_variant='rrtmg_legacy'" in message, mp_physics
-        # And the remedy is admitted, so the refusal is not a dead end.
-        validate_run_config(RunConfig(
-            nx=4, ny=3, nz=12, dx=2000.0, dy=2000.0, ztop=8000.0, dt=10.0,
-            run_seconds=0.0, time_step_sound=4, moist=True,
-            mp_physics=mp_physics, ra_lw_physics=0, ra_sw_physics=1))
+            mp_physics=mp_physics, ra_lw_physics=4, ra_sw_physics=4))
+        assert cfg.ra_rrtmg_variant == "rte-rrtmgp", mp_physics
 
 
 def test_the_uncoupled_selectors_are_a_decision_in_the_module_that_raises():
@@ -79,26 +84,30 @@ def test_the_uncoupled_selectors_are_a_decision_in_the_module_that_raises():
         f"{sorted(set(_ACCEPTED_MP_PHYSICS) - coupled - recorded)}")
     assert (tuple(sorted(_NO_CLOUD_OPTICS_COUPLING))
             == tuple(sorted(_NO_RTE_RRTMGP_CLOUD_OPTICS)))
+    assert _NO_CLOUD_OPTICS_COUPLING == {}, (
+        "a recorded exclusion is back; the last one (mp=9) was retired by "
+        "writing the scheme's own row")
 
-    # 2. The refusal reads as a decision, and names both live adapters.
-    for selector in sorted(_NO_CLOUD_OPTICS_COUPLING):
-        with pytest.raises(NotImplementedError) as caught:
-            cloud_optics_scheme(selector)
-        message = str(caught.value)
-        assert f"mp_physics={selector}" in message
-        assert "cloud-optics" in message
-        assert "deliberately" in message
-        assert "add a row" not in message, (
-            f"mp_physics={selector} is a recorded exclusion but its "
-            "refusal still tells the reader to widen the table")
-        assert _CLOUD_OPTICS_REMEDY in message
+    # 2. The remedy sentence still exists for the refusal path an UNJUDGED
+    #    selector takes (checked at 5.), and still names both live doors.
+    assert "rrtmg_legacy" in _CLOUD_OPTICS_REMEDY
+    assert "Dudhia" in _CLOUD_OPTICS_REMEDY
 
-    # P3's implemented coupling consumes its single ice category without
-    # claiming a snow species or asking for an unallocated snow radius.
+    # 3. P3's implemented coupling consumes its single ice category without
+    #    claiming a snow species or asking for an unallocated snow radius.
     assert cloud_optics_scheme(50) == "p3"
     assert scheme_is_ice_active("p3")
     assert not scheme_has_snow_species("p3")
     assert 50 not in recorded
+
+    # 4. Milbrandt-Yau's implemented coupling is its OWN row (not a borrowed
+    #    Morrison or Kessler one), and Registry.EM_COMMON:3025's
+    #    ``moist:qv,qc,qr,qi,qs,qg,qh`` makes it ice-active WITH a snow
+    #    species, so cal_cldfra1 takes the QCLD = QI + QC + QS arm.
+    assert cloud_optics_scheme(9) == "milbrandt2"
+    assert scheme_is_ice_active("milbrandt2")
+    assert scheme_has_snow_species("milbrandt2")
+    assert 9 not in recorded
 
     # 5. The record does not soften the gate.  An unjudged selector still
     #    fails closed, and is told how to make the omission speak.

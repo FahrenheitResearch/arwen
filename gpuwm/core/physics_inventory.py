@@ -20,7 +20,6 @@ interpreter where cupy does not resolve.
 from __future__ import annotations
 
 from gpuwm.config import RunConfig, SASE_PBL_SCHEME, radiation_enabled
-from gpuwm.core.wdm6_constants import WDM6_NUMBER_SPECIES
 
 #: HORIZONTAL EDDY-VISCOSITY DIAGNOSTIC (cfg.hmix_k_diag): the (momentum,
 #: scalar) history names each horizontal mixing producer publishes under.
@@ -238,6 +237,58 @@ MYNN_PBL_DIAGNOSTICS_INT_2D = ("ktop_plume",)
 # Hoisted from gpuwm.core.microphysics (module-scope cupy) for the
 # same reason as the tables above: the preflight scratch registry
 # prices these snapshot slots on installs with no GPU runtime.
+def ring_guard_row(mp_physics: int) -> dict[str, list[str]]:
+    """The registry's ``consumers.ring_guard`` row for ``mp_physics``.
+
+    ``state_fields`` are the 3-D state arrays the guard captures around a
+    microphysics call; ``surface_slots`` the (ny, nx) accumulator and
+    diagnostic slots the scheme writes.  A scheme without a row is refused
+    by name: pricing a ring the guard would then capture differently is
+    exactly the under-budgeting the allocation gate exists to stop.
+    """
+
+    from gpuwm.physics_registry import consumer_rows_by_selector
+
+    row = consumer_rows_by_selector("microphysics", "ring_guard").get(
+        int(mp_physics))
+    if not isinstance(row, dict):
+        raise ValueError(
+            f"mp_physics={mp_physics} has no consumers.ring_guard row in "
+            "gpuwm/physics_registry_v2.json, so its specified-zone ring "
+            "cannot be priced; give the option its row in "
+            "tools/build_registry.py and regenerate the registry")
+    return {"state_fields": list(row["state_fields"]),
+            "surface_slots": list(row["surface_slots"])}
+
+
+def ring_guard_state_fields() -> tuple[str, ...]:
+    """The union, over every implemented scheme, of the ring guard's rows.
+
+    The family ``gpuwm.core.microphysics`` captures around a call, in row
+    order: presence guards at the capture site keep a scheme unaffected by
+    another scheme's names, so the union is what lets a scheme's registry
+    moment names be captured at all.
+
+    Hoisted here for the same reason :func:`ring_guard_row` was -- that
+    module imports cupy at module scope, so on a card-free install (a CPU
+    runner, a preflight-only install) the union could not be read at all,
+    and the every-scheme coverage that says the captured family and the
+    priced family are ONE family could not be checked anywhere.
+    """
+
+    from gpuwm.physics_registry import consumer_rows_by_selector
+
+    rows = consumer_rows_by_selector("microphysics", "ring_guard")
+    names: list[str] = []
+    for mp in sorted(rows):
+        if not isinstance(rows[mp], dict):
+            continue
+        for name in rows[mp]["state_fields"]:
+            if name not in names:
+                names.append(name)
+    return tuple(names)
+
+
 def spec_zone_ring_save_slots(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     """Preflight-registry helper: every ``mp_ring_save_*`` snapshot slot the
     ring guard creates for this config, with its exact shape.
@@ -256,39 +307,16 @@ def spec_zone_ring_save_slots(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     if sz <= 0 or cfg.mp_physics == 0 or not cfg.moist:
         return {}
     nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
-    fields = ["thp", "qv", "qc", "qr"]
-    if cfg.mp_physics in (6, 8, 9, 10, 16, 28):
-        fields += ["qi", "qs", "qg"]
-    if cfg.mp_physics == 8:
-        fields += ["nr", "ni"]
-    if cfg.mp_physics == 9:
-        # Milbrandt-Yau: hail mass beside graupel plus all six numbers.
-        fields += ["qh", "nc", "nr", "ni", "ns", "ng", "nh"]
-    if cfg.mp_physics == 16:
-        # WDM6's three transported moments (gpuwm/core/wdm6.py).  nn is in
-        # the set because the scheme WRITES it -- rain that fully evaporates
-        # returns its number to the CCN reservoir (module_mp_wdm6.F:
-        # 1249-1252) and cloud that fully evaporates does the same
-        # (:1990-1994) -- so an unguarded ring would keep the change.
-        fields += list(WDM6_NUMBER_SPECIES)
-    if cfg.mp_physics == 10:
-        fields += ["nc", "nr", "ni", "ns", "ng"]
-    if cfg.mp_physics == 28:
-        # The exact mp=28 moment set (gpuwm/core/state.py's mp==28 arm and
-        # gpuwm/core/moist.py::THOMPSON_AERO_NUMBER_SPECIES).  nwfa2d/nifa2d
-        # are NOT here: WRF passes them INTENT(IN) and no microphysics
-        # kernel writes them, so the guard has nothing to restore.
-        fields += ["nr", "ni", "nc", "nwfa", "nifa"]
-    if cfg.mp_physics == 50:
-        # P3 one-category: one ice mass with its rime mass/volume, two
-        # number moments, and the two previous-step carriers.  No qs/qg
-        # and no effs -- P3 does not have those species (state.py mp==50).
-        fields += ["qi", "qir", "qib", "ni", "nr", "th_old", "qv_old",
-                   "effc", "effi"]
-    if cfg.mp_physics in (6, 8, 9, 10, 16, 28):
-        fields += ["effc", "effi", "effs"]
-    if cfg.mp_physics == 10:
-        fields += ["effr"]
+    # The scheme's snapshot family comes from the REGISTRY's row for it
+    # (``consumers.ring_guard``, tools/build_registry.py), the same row
+    # gpuwm.core.microphysics captures the union of, so the priced family
+    # and the captured family cannot drift from each other.  The if-chain
+    # this replaces priced the condensate and radii arm for
+    # (6, 8, 9, 10, 16, 28) and not for 18, so an NSSL-2 nested run was
+    # under-priced and its nine number/volume moments were left advancing
+    # in the ring WRF's clipped tiles never touch.
+    ring = ring_guard_row(int(cfg.mp_physics))
+    fields = list(ring["state_fields"])
     # Every scheme (Kessler's rain-only fallback included) stashes due
     # reflectivity into the same persistent refl_10cm slot, and the guard
     # captures that slot unconditionally once it exists -- so the family
@@ -296,26 +324,7 @@ def spec_zone_ring_save_slots(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     # call would allocate unbudgeted mp_ring_save_refl_10cm_* buffers
     # behind the allocation gate.
     volume_slots = ["refl_10cm"]
-    if cfg.mp_physics == 1:
-        surface_slots = ["mp_rainnc", "mp_rainncv", "mp_kessler_sr"]
-    elif cfg.mp_physics == 50:
-        # P3's wrapper writes RAINNC/RAINNCV/SNOWNC/SNOWNCV/SR and nothing
-        # else (module_mp_p3.F:894-898): there is no graupel category and
-        # the driver arm passes no GRAUPELNC (:1590-1595).
-        surface_slots = ["mp_rainnc", "mp_rainncv", "mp_snownc",
-                         "mp_snowncv", "mp_sr"]
-    else:
-        surface_slots = ["mp_rainnc", "mp_rainncv", "mp_snownc",
-                         "mp_snowncv", "mp_graupelnc", "mp_graupelncv",
-                         "mp_sr"]
-        if cfg.mp_physics in (9, 18):
-            # The two hail-bearing schemes.  Both bind HAILNC/HAILNCV in
-            # WRF's driver (module_microphysics_driver.F:1841-1842 for
-            # mp=9), both are written by clipped tiles only, and both must
-            # therefore be captured -- mp=18's pair was previously outside
-            # the guard's slot family, so its ring HAILNC accumulated where
-            # WRF's is exactly zero.
-            surface_slots += ["mp_hailnc", "mp_hailncv"]
+    surface_slots = list(ring["surface_slots"])
     n_lo = min(sz, ny)
     n_hi = max(ny - sz, n_lo)
     e_lo = min(sz, nx)

@@ -6,8 +6,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
+
+try:
+    import termios
+except ImportError:  # Windows has no POSIX terminal to put back.
+    termios = None
 
 
 def cache_directory(state: Path) -> Path:
@@ -47,6 +53,71 @@ def child_environment(state: Path, python: Path, cds_credentials: Path | None = 
         env['CDSAPI_RC'] = str(cds_credentials)
     env['PATH'] = str(python.parent) + os.pathsep + env.get('PATH', '')
     return env
+
+
+# The bytes the controller itself writes on the way out, in its order: SGR,
+# urxvt, any-event, button-event and normal mouse reporting off, bracketed
+# paste off, leave the alternate screen, show the cursor.  Kept identical to
+# ``TERMINAL_RESTORE`` in ``tools/arwen-tui/src/main.rs``.
+TERMINAL_RESTORE = ('\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l'
+                    '\x1b[?1000l\x1b[?2004l\x1b[?1049l\x1b[?25h')
+
+
+def terminal_mode():
+    """The terminal's attributes before the controller takes it, or None.
+
+    THE BREAKAGE THIS PREVENTS: the controller puts the terminal into raw
+    mode, the alternate screen and mouse reporting, and undoes all three
+    itself on every exit it can see -- but a SIGKILL or an OOM kill runs no
+    code in the process at all.  A user whose controller was killed during a
+    fetch was left with a shell that still reported mouse motion, so every
+    mouse move became a run of ``ESC[<35;..M`` "command not found" lines, on
+    the alternate screen, with no cursor.  The launcher outlives the
+    controller, so it is the one process that can always put the terminal
+    back.
+    """
+    if termios is None or os.name == 'nt' or not sys.stdout.isatty():
+        return None
+    try:
+        return termios.tcgetattr(sys.stdout.fileno())
+    except (OSError, ValueError, termios.error):
+        return None
+
+
+def restore_terminal(saved) -> None:
+    """Undo raw mode, mouse reporting and the alternate screen after a kill."""
+    if termios is None or os.name == 'nt' or not sys.stdout.isatty():
+        return
+    try:
+        sys.stdout.write(TERMINAL_RESTORE)
+        sys.stdout.flush()
+    except (OSError, ValueError):
+        pass
+    if saved is None:
+        return
+    try:
+        termios.tcsetattr(sys.stdout.fileno(), termios.TCSADRAIN, saved)
+    except (OSError, ValueError, termios.error):
+        pass
+
+
+def controller_log(command: list[str], state: Path) -> Path:
+    """The controller's own crash record, in the run directory it was given."""
+    try:
+        output = Path(command[command.index('--output') + 1])
+    except (ValueError, IndexError):
+        output = state / 'runs'
+    return output / '.arwen-tui/controller.log'
+
+
+def signal_report(status: int, command: list[str], state: Path) -> str:
+    """One plain line: which signal ended the controller, and where its log is."""
+    try:
+        name = signal.Signals(-status).name
+    except ValueError:
+        name = 'signal ' + str(-status)
+    return ('ArWen: the terminal controller ' + Path(command[0]).name + ' was stopped by '
+            + name + '. Its log is ' + str(controller_log(command, state)))
 
 
 def launch(arguments: list[str]) -> int:
@@ -101,7 +172,14 @@ def launch(arguments: list[str]) -> int:
         return 0
     state.mkdir(parents=True, exist_ok=True)
     (state / 'appdata').mkdir(exist_ok=True)
-    return subprocess.run(command, cwd=state, env=env, check=False).returncode
+    saved = terminal_mode()
+    try:
+        status = subprocess.run(command, cwd=state, env=env, check=False).returncode
+    finally:
+        restore_terminal(saved)
+    if status < 0 and sys.stdout.isatty():
+        print(signal_report(status, command, state))
+    return status
 
 
 if __name__ == '__main__':

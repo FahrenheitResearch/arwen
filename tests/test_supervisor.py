@@ -784,6 +784,11 @@ def test_captured_config_loader_keeps_original_source_and_relative_base(
         return "case-data"
 
     monkeypatch.setattr(case_data, "build_experiment", build_experiment)
+    # The door reviews the experiment it just built (the pole footprint,
+    # gpuwm.experiment.review_root_footprint); this test hands it a string
+    # in place of an experiment, so the review is stubbed with the builder.
+    monkeypatch.setattr(case_data, "review_root_footprint",
+                        lambda _experiment, _source: None)
     monkeypatch.setattr(case_data, "build_case_data", build_case_data)
 
     result = case_data.load_experiment_case_bytes(
@@ -1384,6 +1389,10 @@ def test_worker_refuses_forcing_glob_path_set_toctou_after_restore(
     captured.write_bytes(payload)
     monkeypatch.setattr(
         case_data, "build_experiment", lambda *_args, **_kwargs: object())
+    # A bare object stands in for the experiment, so the door's plan review
+    # of it (review_root_footprint) is stubbed beside the builder.
+    monkeypatch.setattr(case_data, "review_root_footprint",
+                        lambda _experiment, _source: None)
 
     # Parent parse, hashing, and CAS publication all see exactly {a, b}.
     parent_hashes = supervisor.resolved_input_hashes(
@@ -1882,6 +1891,10 @@ def test_worker_failure_capsule_embeds_the_exact_config_and_small_text_inputs(
     captured.write_bytes(payload)
     monkeypatch.setattr(
         case_data, "build_experiment", lambda *_args, **_kwargs: object())
+    # A bare object stands in for the experiment, so the door's plan review
+    # of it (review_root_footprint) is stubbed beside the builder.
+    monkeypatch.setattr(case_data, "review_root_footprint",
+                        lambda _experiment, _source: None)
     parent_hashes = supervisor.resolved_input_hashes(
         config, config_bytes=payload)
 

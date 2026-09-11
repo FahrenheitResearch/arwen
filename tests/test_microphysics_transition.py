@@ -45,11 +45,18 @@ def test_same_scheme_transition_preserves_existing_contract():
     }
 
 
-def test_mp8_to_mp18_requires_exact_explicit_policy_and_cq():
+def test_mp8_to_mp18_resolves_by_default_and_refuses_the_other_edges_id():
     parent = _run(8)
     child = _run(18, nested=True)
-    with pytest.raises(ValueError, match="requires explicit"):
-        resolve_microphysics_transition(parent, child)
+    # The unset default resolves to the closure this pair takes ...
+    default = resolve_microphysics_transition(parent, child)
+    assert default.mixed
+    assert default.policy_id == MP8_TO_MP18_POLICY
+    # ... and naming the OTHER mixed closure for this pair is a
+    # contradiction, refused with the id the pair takes.
+    with pytest.raises(ValueError, match="closure of another edge"):
+        resolve_microphysics_transition(
+            parent, replace(child, nest_microphysics_transition=EDGE_MATRIX_POLICY))
 
     child = replace(child, nest_microphysics_transition=MP8_TO_MP18_POLICY)
     contract = resolve_microphysics_transition(parent, child)
@@ -87,7 +94,7 @@ def test_transition_identity_binds_field_map_and_normalizes_newlines(
         transition._canonical_source_sha256(crlf)
 
 
-def test_all_thirty_mixed_edges_require_their_explicit_policy():
+def test_every_ordered_edge_requires_its_explicit_policy():
     resolved = []
     for source in PORTED_MP_PHYSICS:
         for target in PORTED_MP_PHYSICS:
@@ -102,11 +109,13 @@ def test_all_thirty_mixed_edges_require_their_explicit_policy():
             )
             assert contract.mixed is (source != target)
             resolved.append((source, target))
-    # Six ported selectors (mp=50 joined with its rime-pair closure) give
-    # 30 ordered mixed edges plus 6 same-scheme edges.
-    assert len(resolved) == 36
+    # Nine ported selectors -- mp=50 joined with its rime-pair closure,
+    # mp=9 with the scheme's own consistency-block closure, and mp=16 and
+    # mp=28 with their entry closures -- give 72 ordered mixed edges plus
+    # 9 same-scheme edges.
+    assert len(resolved) == 81
 
-    with pytest.raises(ValueError, match="requires explicit"):
+    with pytest.raises(ValueError, match="closure of another edge"):
         resolve_microphysics_transition(
             _run(18),
             _run(8, nested=True, transition=MP8_TO_MP18_POLICY),
@@ -331,7 +340,7 @@ def test_a_mixed_p3_edge_resolves_both_directions_with_the_matrix_policy():
     from gpuwm.core import microphysics_transition as mt
 
     partners = [mp for mp in mt.PORTED_MP_PHYSICS if mp != 50]
-    assert partners == [1, 6, 8, 10, 18]
+    assert partners == [1, 6, 8, 10, 18, 9, 16, 28]
     for other in partners:
         for source, target in ((other, 50), (50, other)):
             contract = resolve_microphysics_transition(
@@ -346,21 +355,26 @@ def test_a_mixed_p3_edge_resolves_both_directions_with_the_matrix_policy():
             assert block["dense_rime_density_kg_m3"] == 400.0
             assert block["rime_density_bounds_kg_m3"] == [50.0, 900.0]
             assert block["mass_conserving"] is True
-            # The policy is still explicit, never implied.
-            with pytest.raises(ValueError, match="requires explicit"):
-                resolve_microphysics_transition(
-                    _run(source), _run(target, nested=True))
+            # Left unset, the key resolves to this same closure.
+            unset = resolve_microphysics_transition(
+                _run(source), _run(target, nested=True))
+            assert unset.policy_id == EDGE_MATRIX_POLICY
+            assert unset.receipt() == receipt
 
-    # mp=16 stays refused, and a WDM6/P3 pair gets WDM6's OWN refusal --
-    # the lowest refused selector owns the message, and 50 is no longer
-    # refused at all.
-    parent = SimpleNamespace(mp_physics=16)
-    child = SimpleNamespace(mp_physics=50,
-                            nest_microphysics_transition=EDGE_MATRIX_POLICY)
-    with pytest.raises(ValueError) as caught:
-        resolve_microphysics_transition(parent, child)
-    assert "MP16 (WDM6" in str(caught.value)
-    assert "MP50" not in str(caught.value).replace("MP16->MP50", "")
+    # A WDM6/P3 pair RESOLVES too (audit R-004 ratified mp=16's closure
+    # after mp=50's): entering P3 from WDM6 merges the six masses and
+    # diagnoses the rime pair exactly as from WSM6, and entering WDM6 from
+    # P3 splits by rime state and then seeds WDM6's own triple.
+    contract = resolve_microphysics_transition(
+        _run(16), _run(50, nested=True, transition=EDGE_MATRIX_POLICY))
+    assert contract.mixed is True
+    assert contract.receipt()["p3_edge"]["direction"] == "enter"
+    back = resolve_microphysics_transition(
+        _run(50), _run(16, nested=True, transition=EDGE_MATRIX_POLICY))
+    seeded = {row["target_field"]: row.get("seeded_value")
+              for row in back.species_actions()
+              if row["action"] == "diagnosed"}
+    assert seeded == {"nn": 1.0e8, "nc": 0.0, "nr": 0.0}
 
 
 def test_p3_entry_receipt_merges_every_frozen_species():
@@ -624,13 +638,29 @@ def test_the_offline_cross_scheme_mirror_no_longer_refuses_p3():
     from gpuwm import offline_child as oc
     from gpuwm.core import microphysics_transition as mt
 
+    # The mirror is DERIVED, so mp=16's and mp=28's ratification emptied
+    # it the same way mp=50's did: no selector is refused offline for a
+    # missing closure any more.
     assert (set(oc._CROSS_SCHEME_REFUSED_MP_PHYSICS)
-            == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS) == {16, 28})
+            == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS) == set())
     assert 50 not in oc._CROSS_SCHEME_REFUSED_MP_PHYSICS
     assert 50 in oc.OFFLINE_CHILD_MP_PHYSICS
+    # P3 alone is held at the named offline gate: leaving WDM6 or
+    # Thompson aerosol-aware for NSSL needs no entry closure, and 16 is
+    # not read by the offline lane at all (no scheme-qualified QNCCN
+    # row), so the gate has one row.
     assert oc._P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS == frozenset({50})
     assert 50 not in oc.PARENT_SCHEME_CONTRACT
-    assert oc.PARENT_SCHEME_CONTRACT == frozenset({6, 8, 10, 18})
+    # 0, 1 and 9 are READ by the offline lane now (audit R-017) but are
+    # held out of the CROSS-scheme contract by their own named reasons
+    # (_OFFLINE_CROSS_LEG_UNBUILT_REASONS), so the converting site is
+    # unchanged.
+    # mp=28 joined the cross-scheme contract when its edge was ratified:
+    # its masses are classic Thompson's and its nc rides the qndrop alias,
+    # so the conversion is the one mp=8 already runs.
+    assert oc.PARENT_SCHEME_CONTRACT == frozenset({6, 8, 10, 18, 28})
+    assert set(oc._OFFLINE_CROSS_LEG_UNBUILT_MP_PHYSICS) == {0, 1, 9}
+    assert {0, 1, 9} <= oc.OFFLINE_CHILD_MP_PHYSICS
 
 
 @pytest.mark.gpu
@@ -677,6 +707,118 @@ def test_p3_entry_kernel_matches_the_cpu_reference_bitwise():
                 host["qi"][index], host["qs"][index], host["qg"][index],
                 host["qh"][index], inv_rho[index])[field]
         cp.testing.assert_array_equal(actual, expected)
+    cp.cuda.Stream.null.synchronize()
+
+
+def test_the_entry_kernels_constants_are_the_contracts_own_constants():
+    """Hold nest_microphysics.cu's mp=28 literals equal to the contract.
+
+    The kernel hand-types ``100.0e6f``, ``11.1e6f`` and ``5.0e3f`` while
+    the Python side re-exports the same three numbers from
+    :mod:`gpuwm.core.thompson_aerosol_contract`, and the only thing that
+    compared them was the GPU test below -- which does not run on a
+    machine with no device, so on every CPU-only run the two spellings
+    were free to drift apart silently.  This reads the kernel source, so
+    it is the same measurement without the card.
+
+    The FIELD CODES are read from the contract too: the codes are
+    ``enumerate`` over an append-only tuple, so a selector inserted in the
+    wrong place would re-point these arms at other species, and a
+    constant that still matched would prove nothing about which field it
+    reaches.
+    """
+
+    import re
+    from pathlib import Path
+
+    from gpuwm.core import microphysics_transition as mt
+
+    source = (Path(mt.__file__).resolve().parent / "kernels"
+              / "nest_microphysics.cu").read_text(encoding="utf-8")
+    arm = source.split("if (target_mp == 28) {", 1)[1].split("return 0.0f;",
+                                                             1)[0]
+    written = {
+        int(code): float(literal)
+        for code, literal in re.findall(
+            r"if \(field == (\d+)\) return __fdiv_rn\(([0-9.eE+-]+)f, rho\);",
+            arm)
+    }
+    codes = mt._EDGE_FIELD_CODES
+    assert written == {
+        codes["nc"]: mt.MP28_EDGE_ENTRY_CLOUD_NUMBER_PER_M3,
+        codes["nwfa"]: mt.MP28_EDGE_ENTRY_NWFA_PER_M3,
+        codes["nifa"]: mt.MP28_EDGE_ENTRY_NIFA_PER_M3,
+    }, written
+
+
+@pytest.mark.gpu
+def test_wdm6_and_thompson_aerosol_entry_kernels_seed_their_own_values():
+    """The target_mp==16 and target_mp==28 arms, on device (audit R-004).
+
+    Every value these two arms write is a CONSTANT or a per-cell division
+    by air density, so the reference is arithmetic rather than a second
+    transcription: WDM6 seeds the reservoir at the child's own
+    ``wdm6_ccn_conc`` and its two warm-rain numbers at zero, and
+    Thompson-aerosol divides WRF's own non-aerosol-aware constants by rho
+    while its nr/ni run the two closures the mp=8 edge already runs.
+    """
+    import cupy as cp
+
+    from gpuwm.core import microphysics_transition as mt
+
+    shape = (2, 3, 4)
+    cell = cp.arange(np.prod(shape), dtype=cp.float32).reshape(shape)
+    parent = SimpleNamespace(
+        alt=cp.float32(1.0) / (cp.float32(0.65) + cell * cp.float32(0.02)),
+        mub2d=cp.full(shape[1:], cp.float32(90000.0)),
+        mup=cp.full(shape[1:], cp.float32(100.0)),
+        c1h=cp.asarray([0.8, 0.6], dtype=cp.float32),
+        c2h=cp.asarray([1.0, 2.0], dtype=cp.float32),
+        qv=cp.float32(0.006) + cell * cp.float32(1.0e-5),
+        qc=(cell % 4) * cp.float32(5.0e-6),
+        qr=(cell % 5) * cp.float32(4.0e-6),
+        qi=(cell % 6) * cp.float32(3.0e-6),
+        qs=(cell % 7) * cp.float32(2.0e-6),
+        qg=(cell % 8) * cp.float32(2.5e-6),
+        qh=cp.zeros(shape, dtype=cp.float32),
+    )
+    rho = np.float32(1.0) / cp.asnumpy(parent.alt)
+
+    contract = mt.resolve_microphysics_transition(
+        _run(6), _run(16, nested=True, transition=EDGE_MATRIX_POLICY))
+    assert contract.target_wdm6_ccn_conc == 1.0e8
+    for field, expected_value in (("nn", np.float32(1.0e8)),
+                                  ("nc", np.float32(0.0)),
+                                  ("nr", np.float32(0.0))):
+        actual = cp.empty(shape, dtype=cp.float32)
+        launch_microphysics_edge_parent_field(
+            contract, parent, field, out=actual, coupled=False)
+        cp.testing.assert_array_equal(
+            actual, cp.full(shape, expected_value, dtype=cp.float32))
+
+    contract = mt.resolve_microphysics_transition(
+        _run(6), _run(28, nested=True, transition=EDGE_MATRIX_POLICY))
+    for field, constant in (
+            ("nc", np.float32(mt.MP28_EDGE_ENTRY_CLOUD_NUMBER_PER_M3)),
+            ("nwfa", np.float32(mt.MP28_EDGE_ENTRY_NWFA_PER_M3)),
+            ("nifa", np.float32(mt.MP28_EDGE_ENTRY_NIFA_PER_M3))):
+        actual = cp.empty(shape, dtype=cp.float32)
+        launch_microphysics_edge_parent_field(
+            contract, parent, field, out=actual, coupled=False)
+        expected = np.empty(shape, dtype=np.float32)
+        for index in np.ndindex(shape):
+            expected[index] = np.float32(constant / rho[index])
+        cp.testing.assert_array_equal(actual, expected)
+    # And its rain number is the mp=8 closure's, not a fourth constant.
+    thompson = cp.empty(shape, dtype=cp.float32)
+    launch_microphysics_edge_parent_field(
+        contract, parent, "nr", out=thompson, coupled=False)
+    classic = mt.resolve_microphysics_transition(
+        _run(6), _run(8, nested=True, transition=EDGE_MATRIX_POLICY))
+    reference = cp.empty(shape, dtype=cp.float32)
+    launch_microphysics_edge_parent_field(
+        classic, parent, "nr", out=reference, coupled=False)
+    cp.testing.assert_array_equal(thompson, reference)
     cp.cuda.Stream.null.synchronize()
 
 
@@ -733,3 +875,217 @@ def test_p3_exit_kernel_matches_the_cpu_reference_bitwise():
         assert (values[expected_split[mass] > 1.0e-13] > 0.0).all()
     cp.cuda.Stream.null.synchronize()
 
+
+
+def _loop_literals(function: "ast.FunctionDef", variable: str) -> set[str]:
+    """String constants a ``for <variable> in (...)`` inside ``function``
+    walks, so a getattr driven by a loop counts as reading each of them."""
+    import ast
+
+    found: set[str] = set()
+    for node in ast.walk(function):
+        if (isinstance(node, ast.For) and isinstance(node.target, ast.Name)
+                and node.target.id == variable):
+            for item in ast.walk(node.iter):
+                if isinstance(item, ast.Constant) and isinstance(
+                        item.value, str):
+                    found.add(item.value)
+    return found
+
+
+def _parent_planes_a_launcher_reads() -> set[str]:
+    """Every ``state.<plane>`` the two edge launchers can touch.
+
+    Read out of the source rather than listed here, because a list beside
+    the code is exactly what went stale: the launcher gained MY2's arm,
+    which reads the parent's theta pair and pressure, and the namespace a
+    tile-streamed nest hands it did not gain them.
+    """
+    import ast
+    import inspect
+
+    from gpuwm.core import microphysics_transition as transition
+
+    tree = ast.parse(inspect.getsource(transition))
+    wanted = {
+        "launch_microphysics_edge_parent_field",
+        "launch_mp8_to_mp18_parent_field",
+        "_validate_transition_arrays",
+        "transition_parent_field_shape",
+    }
+    planes: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.FunctionDef) and node.name in wanted):
+            continue
+        wanted.discard(node.name)
+        for inner in ast.walk(node):
+            if (isinstance(inner, ast.Attribute)
+                    and isinstance(inner.value, ast.Name)
+                    and inner.value.id == "state"):
+                planes.add(inner.attr)
+            if (isinstance(inner, ast.Call)
+                    and isinstance(inner.func, ast.Name)
+                    and inner.func.id == "getattr"
+                    and inner.args
+                    and isinstance(inner.args[0], ast.Name)
+                    and inner.args[0].id == "state"):
+                if isinstance(inner.args[1], ast.Constant):
+                    planes.add(inner.args[1].value)
+                elif isinstance(inner.args[1], ast.Name):
+                    # ``for name in ("qv", ...): getattr(state, name)`` --
+                    # the loop's own literals are the planes it reads.
+                    planes |= _loop_literals(node, inner.args[1].id)
+    assert not wanted, f"launcher functions not found in the source: {wanted}"
+    return planes
+
+
+def test_the_windowed_donor_carries_every_plane_a_launcher_reads():
+    """The guard the tile-streamed mp=9 edge defect earned.
+
+    ``parent_only_init(window=...)`` hands the edge launcher the namespace
+    ``transition_parent_window`` builds and nothing else, so a plane the
+    launcher reads and that helper omits is an ``AttributeError`` on a run
+    plan review has already admitted -- which is what a windowed mp=9 edge
+    was.  This holds the two sides equal from the source, without a card.
+    """
+    from gpuwm.core.microphysics_transition import _WINDOWED_EDGE_PLANES
+
+    # thb is borrowed rather than cut (a base profile has no horizontal
+    # extent) and c1h/c2h are vertical coefficients; all three are on the
+    # namespace, just not in the windowed tuple.
+    carried = set(_WINDOWED_EDGE_PLANES) | {"thb", "c1h", "c2h"}
+    read = _parent_planes_a_launcher_reads()
+    assert read <= carried, (
+        "the edge launchers read parent planes the windowed donor namespace "
+        f"does not carry: {sorted(read - carried)}; add them to "
+        "_WINDOWED_EDGE_PLANES or a tile-streamed nest dies with an "
+        "AttributeError after plan review admitted the edge")
+
+
+def test_the_windowed_donor_carries_nothing_it_is_not_asked_for():
+    """The other direction: a windowed plane is a copy, and copies cost.
+
+    ``transition_parent_window`` allocates one contiguous device array per
+    entry on every slab of a tile-streamed child, so an entry nothing reads
+    is measurable waste, not harmless.
+    """
+    from gpuwm.core.microphysics_transition import _WINDOWED_EDGE_PLANES
+
+    read = _parent_planes_a_launcher_reads()
+    assert set(_WINDOWED_EDGE_PLANES) <= read, (
+        "these planes are windowed and copied but no launcher reads them: "
+        f"{sorted(set(_WINDOWED_EDGE_PLANES) - read)}")
+
+
+# --------------------------------------------------------------------------
+# The 2.7.3 sweep: no mixed edge is refused for a missing measurement
+# --------------------------------------------------------------------------
+
+def test_no_selector_is_refused_for_a_missing_closure():
+    """The two tables that carried the refusal are empty, and stay empty.
+
+    An entry here is a refusal whose only reason is that a closure has
+    not been validated, which this release does not ship.  The machinery
+    survives for a scheme whose closure is genuinely missing; nothing is
+    in that state.
+    """
+    from gpuwm.core import microphysics_transition as mt
+
+    assert mt.UNVALIDATED_MIXED_EDGE_SELECTORS == ()
+    assert mt.UNVALIDATED_MIXED_EDGE_MOMENTS == {}
+
+
+def test_the_wdm6_and_aerosol_entry_closures_seed_the_ported_values():
+    """Each seeded moment names its value and the authority for it.
+
+    WDM6 takes the domain's own ccn_conc for the reservoir and zero for
+    the two warm-rain numbers -- what a WDM6 inflow face and a WDM6 cold
+    start already write.  Thompson-aerosol takes WRF's own
+    non-aerosol-aware values for nc/nwfa/nifa.
+    """
+    from gpuwm.core import microphysics_transition as mt
+    from gpuwm.core.thompson_aerosol_contract import (
+        NIFA_FLOOR, NT_C, NWFA_FLOOR)
+
+    child = _run(16, nested=True, transition=EDGE_MATRIX_POLICY)
+    contract = resolve_microphysics_transition(_run(6), child)
+    rows = {row["target_field"]: row for row in contract.species_actions()}
+    assert rows["nn"]["seeded_value"] == child.wdm6_ccn_conc
+    assert rows["nn"]["units"] == "number_per_m3"
+    assert rows["nc"]["seeded_value"] == 0.0
+    assert rows["nr"]["seeded_value"] == 0.0
+
+    contract = resolve_microphysics_transition(
+        _run(6), _run(28, nested=True, transition=EDGE_MATRIX_POLICY))
+    rows = {row["target_field"]: row for row in contract.species_actions()}
+    assert rows["nc"]["seeded_value"] == NT_C
+    assert rows["nwfa"]["seeded_value"] == NWFA_FLOOR
+    assert rows["nifa"]["seeded_value"] == NIFA_FLOOR
+    # nr and ni are DIAGNOSED by the mp=8 closures, not seeded.
+    assert "seeded_value" not in rows["nr"]
+    assert "seeded_value" not in rows["ni"]
+
+
+def test_the_kernel_decodes_the_same_field_codes_the_host_allocates():
+    """The host table and the kernel's arms are one statement.
+
+    The append discipline is only worth something if the consumer agrees:
+    a code the host allocates and the kernel decodes differently would
+    re-point a ratified edge at the wrong field with nothing raising.
+    """
+    from pathlib import Path
+
+    from gpuwm.core import microphysics_transition as mt
+
+    codes = mt._EDGE_FIELD_CODES
+    assert codes["nc"] == 22 and codes["nh"] == 23
+    assert codes["nn"] == 24
+    assert codes["nwfa"] == 25 and codes["nifa"] == 26
+    source = (Path(mt.__file__).parent / "kernels"
+              / "nest_microphysics.cu").read_text(encoding="utf-8")
+    assert f"if (field == {codes['nn']}) return wdm6_ccn;" in source
+    for name in ("nwfa", "nifa"):
+        assert f"if (field == {codes[name]}) return __fdiv_rn(" in source
+
+
+def test_plan_review_names_the_mapping_in_one_line():
+    """The note a mixed edge into a seeded scheme prints, and its shape."""
+    from gpuwm.core import microphysics_transition as mt
+
+    for target, word in ((16, "wdm6_ccn_conc"), (28, "non-aerosol-aware")):
+        contract = resolve_microphysics_transition(
+            _run(6), _run(target, nested=True, transition=EDGE_MATRIX_POLICY))
+        note = mt.mixed_edge_entry_note(contract)
+        assert word in note
+        assert len(note.split(". ")) <= 2, "plan-review notes stay short"
+    # A same-scheme edge and a fully mapped mixed edge print nothing.
+    assert mt.mixed_edge_entry_note(
+        resolve_microphysics_transition(_run(6), _run(6, nested=True))) is None
+    assert mt.mixed_edge_entry_note(
+        resolve_microphysics_transition(
+            _run(16), _run(6, nested=True,
+                           transition=EDGE_MATRIX_POLICY))) is None
+
+
+def test_the_registry_publishes_every_ratified_cross_edge():
+    """The registry's claim and the runtime's answer are one statement.
+
+    tools/build_registry.py resolves every published row through the
+    runtime resolver as it writes the table, so this pins the COUNT: nine
+    ported selectors give 72 ordered cross rows.
+    """
+    import json
+    from pathlib import Path
+
+    from gpuwm.core import microphysics_transition as mt
+
+    registry = json.loads(
+        (Path(mt.__file__).parents[1] / "physics_registry_v2.json"
+         ).read_text(encoding="utf-8"))
+    rows = registry["transitions"]["microphysics-one-way-v1"]["cross_options"]
+    n = len(mt.PORTED_MP_PHYSICS)
+    assert len(rows) == n * (n - 1) == 72
+    published = {(row["parent_option_id"], row["child_option_id"])
+                 for row in rows}
+    assert ("wdm6-mp16", "thompson-aerosol-mp28") in published
+    assert ("thompson-aerosol-mp28", "wdm6-mp16") in published

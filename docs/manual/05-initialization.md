@@ -152,9 +152,23 @@ too-short staged series): sentence plus remedy on stderr, exit 78, no traceback
 
 Other wizard refusals worth knowing: `--hours` past the row's horizon refuses with
 the horizon named (GDAS stops at f009); a fitted domain reaching a pole refuses
-naming the fitted size (the usable limit lands near |lat| 72 for the sizes a
-24 GiB budget fits under the default ladder, further equatorward as either
-grows [docs/public/CLI-OPTIONS.md]); the no-radiation and validation profiles
+naming the fitted size, but only where a smaller domain cannot help -- a drawn
+`--polygon` that reaches the pole, and a `--point` so close to one that even the
+minimum layout contains it.  A point carries no extent, so the fit chooses one
+and bounds its own choice: at most 6,000 km per axis, and clear of the
+projection pole, both of which SHRINK the domain rather than refuse it
+[docs/public/CLI-OPTIONS.md]. Neither is a warning -- an ordinary mid-latitude
+point on an ordinary card is sized by them, so a `warning:` would flag the
+normal case; the plan summary states which one bound in one line beside the
+sizing line (`domain: point request: extent capped at ...`) and stderr stays
+clean. That domain is still continental, so its fetch box is large and says so
+once: the advisory names `--polygon`, the flag that asks for different ground,
+because on those two bounds a bigger or smaller card buys no different grid. The box widens with latitude as a conformal domain's corners
+fan out (measured under the default 12 km ladder: 108 degrees of longitude at
+30 N, 147 at 48.5, 179 at 58), and once it passes 180 the fetch takes the
+source's full band with the forecast grid and latitude bounds unchanged -- a
+separate warning, also at plan review. The
+no-radiation and validation profiles
 are refused for a window including local night unless explicitly acknowledged;
 profile/route pairings that cannot be prepared refuse naming the missing
 component, while a profile cadence landing on a fractional root step is snapped

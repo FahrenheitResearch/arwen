@@ -649,9 +649,15 @@ def test_p3_refuses_by_name_rather_than_being_absent_from_the_gate():
     # And the gate itself is unchanged: naming the refusal is not a licence
     # to widen it.  50 would fall through to the Kessler arm.
     assert 50 in SCHEME_NATIVE_REFL_10CM
+    # The gate reads the PUBLISHED input-species table now (one row per
+    # dispatched scheme, the same row the physics registry carries), so the
+    # pin is on the table's keys rather than on a literal tuple in the
+    # source, and the source is asserted to read the table.
+    from gpuwm.core.refl import REFL_10CM_INPUT_SPECIES
+    assert set(REFL_10CM_INPUT_SPECIES) == {1, 6, 8, 10, 16, 28}
     import gpuwm.core.refl as refl_module
     source = Path(refl_module.__file__).read_text(encoding="utf-8")
-    assert "cfg.mp_physics not in (1, 6, 8, 10, 16, 28)" in source
+    assert "cfg.mp_physics not in REFL_10CM_INPUT_SPECIES" in source
 
 
 def test_native_reflectivity_table_is_the_consumer_minus_producer_set():

@@ -631,7 +631,7 @@ def _explicit_wrfinput_dimensions(
     return MappingProxyType(normalized)
 
 
-def _active_moisture_inventory(cfg) -> tuple[frozenset[str], frozenset[str]]:
+def active_moisture_inventory(cfg) -> tuple[frozenset[str], frozenset[str]]:
     """Return required/allowed wrfinput moisture names for ``cfg``.
 
     ``cfg=None`` is the registered N5S compatibility path and retains the
@@ -699,9 +699,9 @@ def _active_moisture_inventory(cfg) -> tuple[frozenset[str], frozenset[str]]:
     return frozenset(required), allowed
 
 
-def _active_moisture_map(cfg) -> Mapping[str, str]:
+def active_moisture_map(cfg) -> Mapping[str, str]:
     """Return the exact WRF-name -> DomainState-name map for ``cfg``."""
-    _, allowed = _active_moisture_inventory(cfg)
+    _, allowed = active_moisture_inventory(cfg)
     if cfg is None or int(cfg.mp_physics) != 18:
         candidates = MOISTURE_MAP
     else:
@@ -756,7 +756,7 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
     """
     path = Path(path)
     expected_extents = _explicit_wrfinput_dimensions(expected_dimensions)
-    required_moisture, allowed_moisture = _active_moisture_inventory(cfg)
+    required_moisture, allowed_moisture = active_moisture_inventory(cfg)
     # Foreign input: WRF real.exe's own wrfinput, decoded field by
     # field through the Rust bridge. Times is validated by file identity.
     with netcdf_bridge.open_dataset(path) as dataset:
@@ -890,7 +890,7 @@ def _restore_active_moisture(state, raw: Mapping[str, np.ndarray], cfg,
             target[...] = array_module.asarray(
                 raw[wrf_name], dtype=array_module.float32)
     state_names = []
-    for wrf_name, state_name in _active_moisture_map(cfg).items():
+    for wrf_name, state_name in active_moisture_map(cfg).items():
         target = getattr(state, state_name, None)
         if target is None:
             raise ValueError(
@@ -1398,7 +1398,7 @@ def read_wrfbdy(path: str | Path, *, run_seconds: float,
     from gpuwm.boundary_fields import external_scalar_fields
     layouts = dict(_WRFBDY_FIELDS)
     if cfg is not None:
-        by_state = {state: wrf for wrf, state in _active_moisture_map(cfg).items()}
+        by_state = {state: wrf for wrf, state in active_moisture_map(cfg).items()}
         for name in external_scalar_fields(cfg):
             layouts[name] = (by_state[name], "bottom_top", "south_north", "west_east")
     field_names = {name: layout[0] for name, layout in layouts.items()}
@@ -1849,6 +1849,11 @@ def format_scheme_matrix() -> str:
 __all__ = [
     "BoundaryCoverage", "RELOCATION_REQUIREMENT", "RestoredDomain",
     "SUPPORTED_MICROPHYSICS", "UNSUPPORTED_MICROPHYSICS",
+    # PUBLIC because the N5S verification battery reads this door's
+    # moisture contract instead of keeping a fork of it: the fork's copy
+    # stopped at mp=50 and refused Milbrandt-Yau by hard-coded literal
+    # while the door had read the scheme in (audit R-019).
+    "active_moisture_inventory", "active_moisture_map",
     "WRF_LAND_SURFACE_SCHEMES", "WrfinputMetadata",
     "check_boundary_coverage", "check_grid_agreement",
     "check_supported_schemes", "format_scheme_matrix", "read_wrfbdy",

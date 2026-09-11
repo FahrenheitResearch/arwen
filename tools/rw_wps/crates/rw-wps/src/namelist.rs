@@ -46,24 +46,34 @@ pub const NAMELIST_SUPPORT_SCHEMA: &str = "rw-wps.namelist-support.v1";
 /// dimensions, so mp=50 satisfies the field-shape invariant enforced below
 /// as well as the id check here.
 ///
-/// Ids the paired engine inventories that this set still refuses.  They are
-/// RECORDED rather than merely absent, so the next reader finds a decision
-/// instead of an omission:
+/// mp=28 and mp=18 joined on audit R-054.  Both had been RECORDED here as
+/// refusals rather than left as omissions, and neither reason survived
+/// examination:
 ///
-///   * mp=28, Thompson aerosol-aware.  Its package carries two 2-D
-///     `wrfinput` members, `qnwfa2d`/`qnifa2d` (`Registry.EM_COMMON:492-493`,
-///     dimension spec `ij`, I/O string `i01{17}rhdu` -- an `i` list that
-///     begins with stream 0, so they are initialization-file variables), and
-///     a 2-D runtime diagnostic `taod5502d` (:1739).  The field-shape check
-///     below accepts only `Time,bottom_top,south_north,west_east`, so adding
-///     28 to this id set ALONE would move the refusal one loop iteration
-///     later and leave it just as unnamed.  Admitting mp=28 means teaching
-///     that check WRF's `ij` spec first; it is not a value this constant can
-///     supply on its own.
-///   * mp=18, NSSL 2-moment.  Every member is 3-D float32, so unlike mp=28
-///     there is no structural obstacle -- this frontend has simply never
-///     ruled on it.  Stated as an open question rather than left as a gap.
-const STOCK_WRF_INVENTORIED_MP_PHYSICS: &[u16] = &[6, 8, 10, 50];
+///   * mp=28, Thompson aerosol-aware, was refused because its package
+///     carries two 2-D `wrfinput` members, `qnwfa2d`/`qnifa2d`
+///     (`Registry.EM_COMMON:492-493`, dimension spec `ij`, I/O string
+///     `i01{17}rhdu` -- an `i` list that begins with stream 0, so they are
+///     initialization-file variables), and a 2-D runtime diagnostic
+///     `taod5502d` (:1739), while the field-shape check below accepted only
+///     `Time,bottom_top,south_north,west_east`.  That was a real obstacle
+///     and it is now removed rather than worked around: the check reads
+///     each member's DECLARED rank from the engine inventory and admits
+///     the 2-D shape for a member declared 2-D, so the frontend certifies
+///     what the package actually is instead of refusing every package that
+///     is not uniformly 3-D.
+///   * mp=18, NSSL 2-moment.  Every member is 3-D float32, so it had no
+///     structural obstacle at all -- this frontend had simply never ruled
+///     on it.  It rules now.
+///
+/// A refusal survives here only for an id the paired engine inventories and
+/// this frontend has no evidenced Registry contract for; there is none
+/// today, and a new engine package arrives as a new id here plus whatever
+/// its members' shapes require, never as a silently narrowed export.
+///
+/// Public so `tests/engine_stock_inventory.rs` can hold it to the engine's
+/// own inventory (gpuwm/physics_consumer_export_v1.json).
+pub const STOCK_WRF_INVENTORIED_MP_PHYSICS: &[u16] = &[6, 8, 10, 18, 28, 50];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NamelistSupportRequest {
@@ -355,12 +365,21 @@ pub fn validate_namelist_support_report(report: &NamelistSupportReport) -> Resul
             .iter()
             .chain(&domain.runtime_state_not_wrfinput)
         {
-            if field.dtype != "float32"
-                || field.dimensions != ["Time", "bottom_top", "south_north", "west_east"]
-            {
+            // WRF's Registry gives a package member either the four 3-D
+            // dimensions or the three 2-D ones (`ij` spec:
+            // Registry.EM_COMMON:492-493 for mp=28's surface aerosol
+            // emission pair, :1739 for taod5502d).  Both are valid stock
+            // declarations, so both are admitted BY SHAPE; anything else
+            // is still a declaration this frontend cannot certify.
+            const STOCK_3D: [&str; 4] = ["Time", "bottom_top", "south_north", "west_east"];
+            const STOCK_2D: [&str; 3] = ["Time", "south_north", "west_east"];
+            let shape_ok = field.dimensions == STOCK_3D || field.dimensions == STOCK_2D;
+            if field.dtype != "float32" || !shape_ok {
                 return Err(RwWpsError::Engine(format!(
-                    "invalid stock-WRF state declaration for {}",
-                    field.netcdf_name
+                    "invalid stock-WRF state declaration for {}: dtype {} \
+                     dimensions {:?}; WRF v4.6.1 declares a package member \
+                     as float32 on {:?} or {:?}",
+                    field.netcdf_name, field.dtype, field.dimensions, STOCK_3D, STOCK_2D
                 )));
             }
         }

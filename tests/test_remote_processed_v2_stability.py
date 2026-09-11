@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from gpuwm import remote_processed_v2 as viewer
+from gpuwm import remote_artifacts as ra, remote_processed_v2 as viewer
 
 
 def test_worker_services_queued_job_after_large_historical_workspace(tmp_path, monkeypatch):
@@ -16,7 +16,10 @@ def test_worker_services_queued_job_after_large_historical_workspace(tmp_path, m
     queued = [True]
     processed = []
 
-    def work(_workspace, job):
+    def work(_workspace, job, *, completion):
+        # Faithful to the callee: the worker hands every job its completion
+        # wait, so a runner-exit window cannot empty this queue.
+        assert isinstance(completion, ra.CompletionWait)
         processed.append(job)
         queued.clear()
         return False

@@ -49,7 +49,7 @@ _NAMELIST_RS = (
 #: records why the set stops where it does.
 _DECLARATION = re.compile(
     r"(?P<reasons>(?:^/{3}.*\n)+)"
-    r"^const STOCK_WRF_INVENTORIED_MP_PHYSICS: &\[u16\] = &\[(?P<ids>[^\]]*)\];",
+    r"^(?:pub )?const STOCK_WRF_INVENTORIED_MP_PHYSICS: &\[u16\] = &\[(?P<ids>[^\]]*)\];",
     re.M,
 )
 

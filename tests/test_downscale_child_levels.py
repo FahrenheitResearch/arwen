@@ -149,7 +149,8 @@ def test_the_auto_sizer_prices_the_child_on_the_childs_own_ladder():
     assert shallow_peak <= limit < deep_peak
 
     # The fix: the search prices on the ladder the run will actually use.
-    size = _fit_child_size(
+    # (The fitter returns the extent with the price it was decided on.)
+    size, _ = _fit_child_size(
         {"nx": 100, "ny": 100, "dx": 3000.0, "dy": 3000.0},
         parent_config, j0=50, i0=50, ratio=3,
         run_seconds=1800.0, output_interval_s=300.0, vram_gib=10.0,
@@ -162,7 +163,7 @@ def test_the_auto_sizer_prices_the_child_on_the_childs_own_ladder():
     # NEGATIVE CONTROL and the defect in one: the size the OLD sizer would
     # have returned -- priced at the parent's 49 levels -- does not fit on
     # the 128-level ladder the run would then have been built with.
-    unladdered = _fit_child_size(
+    unladdered, _ = _fit_child_size(
         {"nx": 100, "ny": 100, "dx": 3000.0, "dy": 3000.0},
         parent_config, j0=50, i0=50, ratio=3, run_seconds=1800.0,
         output_interval_s=300.0, vram_gib=10.0)

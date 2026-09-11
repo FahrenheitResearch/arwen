@@ -11,11 +11,15 @@ its measurements is under `docs/ntiedtke/`.
 * `cu_physics = 16`, per domain, on the tree route (`reachability:
   component-override`, the same posture as Grell-Freitas).
 * `cudt_minutes = 0` is enforced: the scheme is called every step, as WRF calls it.
-* A PBL scheme is required (`ysu`, `mynn`, `shinhong`, `sase` or `myj`).
-  `validate_run_config` refuses `cu_physics = 16` with `bl_pbl_physics = 0` and
-  names why: the closure reads the boundary-layer tendencies and the surface
-  fluxes, and with no PBL scheme nothing writes them. WRF itself does not
-  prohibit the pairing; the refusal is ArWen's structural check.
+* No PBL scheme is required. `bl_pbl_physics = 0` is admitted with this scheme:
+  the port reads no PBL index anywhere, its surface fluxes (`hfx`, `qfx`) come
+  from the surface stack, which runs on its own selectors, and the
+  boundary-layer forcing lanes it folds are allocated zero and stay zero with
+  the slot off -- which is exactly `RTHBLTEN = 0` in WRF's own cumulus-driver
+  fold. The refusal that used to stand here was copied from Grell-Freitas,
+  where it is real (that scheme indexes its columns with `kpbl`, which only a
+  PBL scheme writes); New Tiedtke never had that dependency, and `cu_physics =
+  3` still carries the refusal for its own reason.
 * No new required configuration. `ntiedtke_tiedtke_closure` (default `False`)
   is the one new knob, described below.
 

@@ -233,7 +233,7 @@ HRRR_BUNDLE_PATHS = MappingProxyType({
 #: ``mp_physics in (1, 6, 8, 10, 18)`` literal anywhere under ``gpuwm/``,
 #: so a fifth copy of this gate cannot be added silently.
 REFL_10CM_MICROPHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50)
-_SOURCE_PHYSICS_PROFILES = MappingProxyType({
+_SOURCE_PHYSICS_PROFILES_BY_SOURCE = {
     "mapped": (),  # No source-specific verification claim; every suite remains selectable.
     # REPORTED METADATA, NOT A GATE (owner ruling 2026-07-31): these
     # per-source lists name the shipped profiles whose verification
@@ -356,6 +356,36 @@ _SOURCE_PHYSICS_PROFILES = MappingProxyType({
         PHYSICS_PROFILE, THOMPSON_PHYSICS_PROFILE,
         MORRISON_PHYSICS_PROFILE, NSSL2_PHYSICS_PROFILE,
         NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE),
+}
+
+#: The three Noah-MP suites, which every source above offers and none of
+#: them lists by hand.  They were declared for ``gfs`` alone while this
+#: runner supports eighteen sources, and a route that declares any expert
+#: list is EXHAUSTIVE -- so on an ERA5 single domain the three were
+#: undeclared: nothing offered them, and a plan that named one was told
+#: the template was off-route instead of being handed the acknowledgement
+#: advisory the option exists to raise.  What gates them is the route's
+#: expert acknowledgement and the option's own evidence warnings, which
+#: are source-independent statements: Noah-MP is implemented-unverified
+#: everywhere, not unverified on era5 and verified on gfs.  Appended per
+#: source rather than written into each tuple so the offer cannot drift
+#: source by source again, and appended in the registry's own order so
+#: the drift check in tests/test_physics_registry.py compares equal.
+_NOAHMP_EXPERT_PROFILES = (
+    NOAHMP_PHYSICS_PROFILE,
+    MYNN_NOAHMP_PHYSICS_PROFILE,
+    MYNN_NOAHMP_RTE_RRTMGP_PHYSICS_PROFILE,
+)
+_SOURCE_PHYSICS_PROFILES = MappingProxyType({
+    source: (
+        profiles if source == "mapped"
+        # "mapped" claims nothing on purpose: it names no model, so it
+        # reports no per-source list at all and its expert offer would
+        # have no source to attach to.
+        else profiles + tuple(
+            profile for profile in _NOAHMP_EXPERT_PROFILES
+            if profile not in profiles))
+    for source, profiles in _SOURCE_PHYSICS_PROFILES_BY_SOURCE.items()
 })
 _TWENTYCRV3_WSM6_RUNTIME_SWITCHES = MappingProxyType({
     "moist": True, "moist_cq": False, "mp_physics": 6,
@@ -553,7 +583,48 @@ _CANONICAL_SURFACE_FIELDS = frozenset({
 _REQUIRED_MET_FIELDS = frozenset({
     "LANDSEA", "SKINTEMP", "T2", "U10", "V10",
 })
-_LBC_FIELDS = ("mu", "phi", "qv", "theta", "u", "v")
+#: The dynamical fields every external LBC interval carries.  The scalar
+#: half (``qv``, and for an aerosol-aware ``mp_physics = 28`` the two
+#: aerosol tracers the preparation read in) comes from
+#: :func:`gpuwm.boundary_fields.external_scalar_fields`, the same function
+#: the preparation writes the inventory from; a hand-typed six-field
+#: constant here refused every mp=28 cache as "differs from forcing".
+_LBC_DYNAMICS_FIELDS = ("mu", "phi", "theta", "u", "v")
+#: The inventory every scheme other than an aerosol-reading mp=28 carries,
+#: in the cache's sorted spelling; kept as the name test fixtures build
+#: their headers from.
+_LBC_FIELDS = tuple(sorted((*_LBC_DYNAMICS_FIELDS, "qv")))
+
+
+def _lbc_field_inventories(cfg) -> tuple[list[str], ...]:
+    """The LBC field lists a prepared cache may legitimately carry for ``cfg``.
+
+    One list for most schemes.  For ``mp_physics = 28`` two: the preparation
+    resolves whether aerosols were read from the dataset when it runs, and
+    the cache records the outcome in its inventory, so both outcomes are
+    admitted here and the aerosol receipt beside them says which happened.
+    """
+    from types import SimpleNamespace
+
+    from gpuwm.boundary_fields import external_scalar_fields
+
+    # The four attributes the inventory reads.  A caller that hands a
+    # boundary-width view rather than a RunConfig (the receipt validators
+    # do) is priced as the moist, non-aerosol run every earlier cache was,
+    # which is the six-field inventory this check used to hard-code.
+    scheme = SimpleNamespace(
+        moist=bool(getattr(cfg, "moist", True)),
+        mp_physics=int(getattr(cfg, "mp_physics", 0)),
+        aer_init_opt=int(getattr(cfg, "aer_init_opt", 0)),
+        mp28_aerosol_source=getattr(cfg, "mp28_aerosol_source", "auto"))
+    inventories = []
+    for aerosol_from_input in (False, True):
+        fields = sorted(
+            (*_LBC_DYNAMICS_FIELDS,
+             *external_scalar_fields(scheme, aerosol_from_input=aerosol_from_input)))
+        if fields not in inventories:
+            inventories.append(fields)
+    return tuple(inventories)
 _HEX = frozenset("0123456789abcdef")
 _TWENTYCRV3_SOURCE = "NOAA-CIRES-DOE 20CRv3 every-member GRIB2"
 _TWENTYCRV3_MEMBER_IDENTITY = "filename_memNNN_not_grib2_pdt"
@@ -4944,15 +5015,27 @@ def _validate_cache_metadata(
     intervals = lbc.get("intervals")
     if not isinstance(intervals, list) or len(intervals) != len(forcing_hours) - 1:
         raise ValueError("prepared cache LBC interval count differs from forcing")
+    admitted_fields = _lbc_field_inventories(cfg)
+    scheme_id = int(getattr(cfg, "mp_physics", 0))
     for index, interval in enumerate(intervals):
-        expected = {
+        window = {
             "start_seconds": float(forcing_hours[index] * 3600),
             "end_seconds": float(forcing_hours[index + 1] * 3600),
-            "fields": list(_LBC_FIELDS),
         }
-        if interval != expected:
+        recorded = interval if isinstance(interval, dict) else {}
+        if {key: recorded.get(key) for key in window} != window:
             raise ValueError(
-                f"prepared cache LBC interval {index} differs from forcing")
+                f"prepared cache LBC interval {index} spans "
+                f"{recorded.get('start_seconds')}-{recorded.get('end_seconds')} s "
+                f"where the forcing has {window['start_seconds']:g}-"
+                f"{window['end_seconds']:g} s; re-prepare against this forcing")
+        fields = recorded.get("fields")
+        if not isinstance(fields, list) or fields not in admitted_fields:
+            raise ValueError(
+                f"prepared cache LBC interval {index} carries fields "
+                f"{fields} where mp_physics={scheme_id} forces "
+                f"{' or '.join(str(f) for f in admitted_fields)}; re-prepare "
+                "with this configuration")
 
 
 def _validate_hierarchy_d01_artifacts(

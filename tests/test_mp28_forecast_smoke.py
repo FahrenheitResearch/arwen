@@ -26,14 +26,21 @@ On a specified-lateral-boundary domain, over a real multi-step integration:
 
 THE REGISTERED LBC DEVIATION, MEASURED
 --------------------------------------
-ArWen carries only ``qv`` from an external lateral-boundary snapshot
-(``gpuwm/ingest/lateral_bc.py``: ``_coupled_device_fields``, and the comment
-at :593-600 that registers this).  Every other advected scalar -- including
-``nc``/``nwfa``/``nifa`` -- takes WRF's ``flow_dep_bdy`` treatment: zero
-gradient on outflow, ZERO on inflow.  WRF itself does not do this for the
-aerosols; ``Registry.EM_COMMON`` declares ``qnwfa``/``qnifa`` with the
-boundary dimension and ``bdy_interp``, so stock WRF forces them at the
-boundary from the WIF metgrid stream that ArWen has no ingest for.
+ArWen carries ``qv`` from an external lateral-boundary snapshot always, and
+``nwfa``/``nifa`` beside it whenever the run's aerosol initial state came
+from WRF's monthly WIF climatology (``gpuwm/boundary_fields.py``
+``external_scalar_fields``; ``gpuwm/ingest/lateral_bc.py``
+``COUPLED_SCALAR_STATE_FIELDS``).  WITHOUT that dataset the two aerosol
+numbers fall back to WRF's ``flow_dep_bdy`` treatment -- zero gradient on
+outflow, ZERO on inflow -- which is the state this file measures below, and
+which an externally forced run now has to select deliberately: the doors
+that commit to building a forecast refuse it otherwise, before they fetch
+anything (``gpuwm.config.validate_experiment_preparation``, measured by
+``mp28_aerosol_lateral_forcing_precondition``).  ``nc`` is on the
+flow-dependent side either way; ``Registry.EM_COMMON`` declares
+``qnwfa``/``qnifa`` with the boundary dimension and ``bdy_interp``, and
+stock WRF forces them from the same monthly dataset through
+``constants_name``.
 
 The consequence is aerosol-free air advecting in at every inflow face.  It
 cannot NaN and cannot go negative -- WRF's own terminal floors
@@ -1101,19 +1108,23 @@ def test_the_runtime_history_lane_admits_28_for_refl_10cm():
     # prices the shared ``refl`` translation unit for exactly the schemes
     # that LOAD it, while the history lane consumes the stash for every
     # moist scheme.  mp=9 fills REFL_10CM inside its own milbrandt2
-    # diagnostics kernel and mp=50 inside p3_main -- on the device for the
-    # default CUDA backend, on the host only for the reference arm -- so
-    # both consume without loading ``refl``.  Both absences carry their
-    # reason in gpuwm/core/preflight.py's _SELF_REFLECTIVITY_MICROPHYSICS,
-    # which domain_kernel_modules now requires an entry in.  Every priced
-    # scheme must still be consumed, or a computed field strands at the
-    # next history frame.
+    # diagnostics kernel, mp=18 from its own radardd02 diagnostic
+    # (gpuwm.core.nssl2_diagnostics) and mp=50 inside p3_main -- on the
+    # device for the default CUDA backend, on the host only for the
+    # reference arm -- so all three consume without loading ``refl``.
+    # Each absence carries its reason in gpuwm/core/preflight.py's
+    # _SELF_REFLECTIVITY_MICROPHYSICS, which domain_kernel_modules now
+    # requires an entry in, and that table is what the difference is
+    # pinned to, so the next scheme that fills the slot itself moves the
+    # pin by landing its reason.  Every priced scheme must still be
+    # consumed, or a computed field strands at the next history frame.
     from gpuwm.core import preflight as pf
 
     assert (set(pf._REFLECTIVITY_MICROPHYSICS)
             <= set(runtime.REFL_10CM_MICROPHYSICS))
     assert (set(runtime.REFL_10CM_MICROPHYSICS)
-            - set(pf._REFLECTIVITY_MICROPHYSICS)) == {9, 50}
+            - set(pf._REFLECTIVITY_MICROPHYSICS)
+            == set(pf._SELF_REFLECTIVITY_MICROPHYSICS) == {9, 18, 50})
 
     runtime_source = (pathlib.Path(__file__).resolve().parent.parent
                       / "gpuwm" / "runtime.py").read_text(encoding="utf-8")

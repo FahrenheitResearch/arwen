@@ -189,7 +189,365 @@ def _hosted_producer(record, state, outer):
     return producer_root, path, producer, payload, started, binding
 
 
-def bound_manifest(record, state):
+# How long a watcher may wait for a wrapper that has already reaped its runner.
+# The wrapper's cleanup ladder is three three-second stages plus a one-second
+# child wait, so 15.0 s covers that ten-second arithmetic worst case. Measured
+# as the wall interval between the runner's last instruction and the wrapper's
+# publication of result.json, on one Linux x86-64 host under CPython 3.14, six
+# runs each: 0.092-0.115 s when the runner simply exits, and 6.375-6.477 s when
+# it leaves an owned descendant that ignores SIGINT and SIGTERM, which is the
+# case the ladder exists for. That measurement runs on the real clock in
+# tests/test_remote_completion_transition.py; every other test there fakes it,
+# so this budget is observed rather than asserted.
+COMPLETION_SECONDS = 15.0
+COMPLETION_POLL_SECONDS = 2.0
+
+
+class ProducerCompletionPending(ValueError):
+    """Verified exited producer; its owning wrapper has not settled yet.
+
+    This is permission to revalidate, never permission to consume artifacts.
+    """
+    def __init__(self, evidence):
+        self.evidence = evidence
+        super().__init__("Owned producer completed; waiting for its wrapper's terminal result")
+
+
+class ProducerCompletionCancelled(ValueError):
+    """This job's own stop request, or its watcher's shutdown, ended the wait.
+
+    A cancelled wait is not a failed one: the watcher writes a non-terminal
+    receipt so the next ensure() relaunches it instead of refusing forever.
+    """
+
+
+class ProducerCompletionUnprovable(ValueError):
+    """This job's runner-exit window cannot be proved, and never will be.
+
+    Raised when the proof itself is unavailable rather than contradicted: the
+    runner exited before its wrapper recorded a receipt, or this platform
+    lacks the process handles the window is proved with. Nothing is published
+    and no completion privilege is granted, exactly as for any other refusal
+    here.
+
+    It is its own type because it is not a job failure. Both messages send the
+    reader to the same way out, retrieving this job's frames once it reports a
+    terminal state, and a watcher that answered this with a terminal done
+    receipt closed that way out: ensure() refuses to relaunch a done watcher,
+    so the gallery and the background map preparation stayed shut for the life
+    of the job. A watcher therefore keeps such a job pending and re-examines
+    it on its ordinary interval.
+
+    The wait needs no deadline of its own. This window exists only while the
+    durable status reads "running", and that state is derived from the
+    wrapper's own live process identity and inherited token on every read: it
+    ends when the wrapper publishes its terminal result (measured at
+    0.092-6.477 s in tests/test_remote_completion_transition.py) or when the
+    wrapper is gone, which reads as lost or ownership_mismatch and is refused
+    terminally by the ordinary ownership refusal.
+    """
+
+
+def _proof_lost(error):
+    """Evidence a wait already hashed is gone: the ordinary changed-evidence failure."""
+    return ValueError("Producer completion proof already hashed by this wait is no longer "
+                      "available: " + str(error))
+
+
+class CompletionWait:
+    """One background watcher's ProducerCompletionPending transition.
+
+    Held across the polls of a single worker loop. ``clock`` is the calling
+    module's ``time``, so a worker's own monotonic clock and sleep remain the
+    ones the loop uses. Every deadline is monotonic: a wall-clock jump can
+    neither extend nor expire the budget.
+    """
+
+    def __init__(self, workspace, job, cancel=None, clock=time):
+        self.workspace, self.job, self.cancel, self.clock = workspace, job, cancel, clock
+        self.evidence = self.deadline = None
+        self.unproven = False
+        self.attempt_started = clock.monotonic()
+
+    @property
+    def waiting(self):
+        return self.evidence is not None or self.unproven
+
+    def check(self):
+        if self.cancel is not None and self.cancel.is_set():
+            raise ProducerCompletionCancelled("Producer completion preparation cancelled")
+        if self.deadline is not None and self.clock.monotonic() >= self.deadline:
+            raise ValueError("Producer completion deadline expired before wrapper settlement")
+
+    def begin(self):
+        self.unproven = False
+        self.attempt_started = self.clock.monotonic()
+
+    def due(self, interval=COMPLETION_POLL_SECONDS):
+        """A waiting job is re-validated on its own interval, not every pass."""
+        return not self.waiting or self.clock.monotonic() >= self.attempt_started + interval
+
+    def pending(self, error):
+        if self.evidence is None:
+            self.evidence = error.evidence
+            self.deadline = self.attempt_started + COMPLETION_SECONDS
+        elif error.evidence != self.evidence:
+            raise ValueError("Producer completion evidence changed while awaiting its wrapper")
+        self.check()
+
+    def unprovable(self, error):
+        """Hold a job whose runner-exit window cannot be proved.
+
+        There is no evidence to hold and nothing to revalidate against, so the
+        pass keeps only the waiting pace: a workspace loop re-examines this job
+        on the completion interval instead of on every pass, and the rest of
+        the workspace keeps its own. The mark lives for exactly one pass;
+        begin() clears it, so a job that stops raising this stops being paced.
+
+        A wait that already hashed its proof is the other case entirely, and
+        this is where the two are separated: proof this wait has held cannot
+        become a reason to keep waiting, so its loss is raised as the ordinary
+        changed-evidence failure and stays terminal.
+        """
+        if self.evidence is not None:
+            raise _proof_lost(error)
+        self.unproven = True
+
+    def validate(self, record, state, bound, commits):
+        self.check()
+        if self.evidence is None:
+            return
+        from gpuwm import remote_worker as rw
+        directory = rw._directory(self.workspace, self.job)
+        if state["state"] != "completed":
+            raise ValueError("Producer completion wrapper did not settle successfully")
+        try:
+            current = _completion_evidence(record, state, bound, directory, commits=commits)
+        except ProducerCompletionUnprovable as vanished:
+            raise _proof_lost(vanished) from vanished
+        if current != self.evidence:
+            raise ValueError("Producer completion evidence changed before terminal settlement")
+        self.check()
+        self.evidence = self.deadline = None
+
+    def wait(self, default):
+        """Sleep at most to the deadline, and wake immediately on cancellation."""
+        self.check()
+        delay = default
+        if self.deadline is not None:
+            delay = min(delay, max(0.0, self.deadline - self.clock.monotonic()))
+        if self.cancel is None:
+            self.clock.sleep(delay)
+        else:
+            self.cancel.wait(delay)
+        return delay
+
+
+def cancel_on_shutdown(numbers=None):
+    """Give a detached watcher a graceful stop instead of a mid-validation death.
+
+    A watcher holds a preparation lease and writes the receipt the operator
+    reads. Dying on SIGTERM inside a validation leaves that receipt stale; a
+    cancelled wait writes a non-terminal one that ensure() will relaunch.
+    """
+    import signal
+    event = threading.Event()
+    for number in numbers if numbers is not None else (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(number, lambda *_: event.set())
+        except (ValueError, OSError, AttributeError):
+            # Not the main thread, or a platform without this signal: the
+            # watcher keeps its previous, ungraceful stop.
+            pass
+    return event
+
+
+def _completion_platform():
+    """Name the platform breakage before any attribute is reached for it."""
+    import select
+    if not (hasattr(os, "pidfd_open") and hasattr(os, "getuid") and hasattr(select, "poll")):
+        raise ProducerCompletionUnprovable(
+            "Producer completion needs Linux pidfd process handles and POSIX file ownership "
+            "for safe job ownership; on this platform the runner-exit window cannot be proved, "
+            "so retrieve this job's frames after it reports a terminal state")
+
+
+def _exited(pid):
+    """Do not mistake an unreadable /proc identity for an exited process."""
+    import select
+    try:
+        handle = os.pidfd_open(pid, 0)
+    except ProcessLookupError:
+        return True
+    try:
+        poll = select.poll()
+        poll.register(handle, select.POLLIN)
+        return bool(poll.poll(0))
+    finally:
+        os.close(handle)
+
+
+def _completion_evidence(record, state, bound, directory, *, commits=None):
+    """Re-read the entire completion proof, including on terminal settlement.
+
+    Only small authorities are hashed. Committed WRF files retain the native
+    reader's device/inode/size/mtime/ctime identity; they are never decoded or
+    rehashed by this metadata watcher. All scans retain the existing bounds.
+    """
+    from gpuwm import remote_worker as rw
+    _completion_platform()
+    if bound is None or state["state"] not in {"running", "completed"}:
+        raise ValueError("Producer completion lost its bound run or successful wrapper state")
+    if rw._directory(directory.parent.parent, record["id"]) != directory:
+        raise ValueError("Producer completion job directory changed")
+    tracked, evidence = [], []
+
+    def track(path, root):
+        path = _inside(str(path), root)
+        stamp = _stamp(path)
+        if path.stat().st_uid != os.getuid():
+            raise ValueError("Producer completion authority is not owned by this account")
+        tracked.append((path, root, stamp))
+        evidence.append((str(path), stamp))
+        return path, stamp
+
+    def metadata(path, root, maximum=rw.MAX_BYTES):
+        path, _ = track(path, root)
+        payload = rw._read(path, maximum)
+        evidence.append(_sha(payload))
+        return payload
+
+    job_bytes = metadata(directory / "job.json", directory)
+    saved = json.loads(job_bytes)
+    if saved != record or rw._record(directory) != record:
+        raise ValueError("Producer completion job/source ownership record changed")
+    owner = json.loads(metadata(directory / "started.json", directory))
+    receipt = directory / "runner.json"
+    if not receipt.exists() and not receipt.is_symlink():
+        raise ProducerCompletionUnprovable(
+            "Producer completion has no runner receipt: this job's runner exited before its "
+            "wrapper recorded one, which is a completion race and not tampering; the ordinary "
+            "refusal applies, so retrieve this job's frames once it reports a terminal state")
+    runner = json.loads(metadata(receipt, directory))
+    identity = owner["identity"]
+    if (owner.get("token") != record["token"] or runner.get("token") != record["token"]
+            or runner.get("job_sha256") != _sha(job_bytes)
+            or runner.get("owner") != identity or runner["identity"]["pid"] != bound[2]["pid"]
+            or runner["identity"]["uid"] != os.getuid()
+            or identity["uid"] != os.getuid() or identity["pid"] == bound[2]["pid"]
+            or runner["identity"]["boot_id"] != identity["boot_id"]
+            or _timestamp(owner["started_at"]) < _timestamp(record["created_at"])):
+        raise ValueError("Producer completion runner/wrapper ownership disagrees with this job")
+
+    def ownership():
+        actual = rw._process(identity["pid"])
+        if actual is not None and (actual != identity or not rw._has_token(identity["pid"], record["token"])
+                                   or rw._process(identity["pid"]) != identity):
+            raise ValueError("Producer completion wrapper ownership changed")
+        if actual is None and not _exited(identity["pid"]):
+            raise ValueError("Cannot verify producer completion wrapper identity")
+        # A live process (including a reused PID) never becomes a retry.
+        if not _exited(runner["identity"]["pid"]):
+            raise ValueError("Producer completion runner process is still live or has conflicting ownership")
+        stop = directory / "stop.json"
+        if stop.exists() or stop.is_symlink():
+            marker, _ = _raw(_inside(str(stop), directory), rw.MAX_BYTES)
+            if marker.get("token") != record["token"]:
+                raise ValueError("Producer completion cancellation ownership disagrees with this job")
+            raise ProducerCompletionCancelled("Producer completion cancelled by this job's stop request")
+        result = directory / "result.json"
+        ended = None
+        if result.exists() or result.is_symlink():
+            ended, _ = _raw(_inside(str(result), directory), rw.MAX_BYTES)
+            if (ended.get("token") != record["token"] or ended.get("state") != "completed"
+                    or type(ended.get("exit_code")) is not int or ended["exit_code"] != 0 or ended.get("error")):
+                raise ValueError("Producer completion wrapper did not publish a successful owned result")
+        if ended is None and (actual is None or state["state"] == "completed"):
+            raise ValueError("Producer completion lost wrapper ownership or its terminal result")
+        return ended
+
+    initial_result = ownership()
+    inputs = directory / "inputs"
+    for name, digest in record["snapshot_inputs"].items():
+        if _sha(metadata(inputs / name, inputs)) != digest:
+            raise ValueError("Producer completion saved input identity changed")
+    for key, digest in (("snapshot_plan", record["plan_sha256"]),
+                        ("snapshot_config", record["config_sha256"])):
+        if _sha(metadata(record[key], inputs)) != digest:
+            raise ValueError("Producer completion saved plan/configuration identity changed")
+    if record["config_sha256"] != record["snapshot_sha256"]:
+        raise ValueError("Producer completion saved configuration binding changed")
+
+    root, path, manifest, payload, started, binding = bound
+    if manifest.get("route") == "prepared" and binding is None:
+        raise ValueError("Producer completion lacks its exact hosted producer binding")
+    authorities = [(root, path, manifest, payload, started)]
+    if binding is not None:
+        evidence.append(binding)
+        parent = binding["parent_manifest"]
+        parent_manifest = json.loads(parent["utf8"])
+        authorities.insert(0, (Path(record["outdir"]), Path(parent["remote_path"]),
+                              parent_manifest, parent["utf8"].encode("utf-8"),
+                              _timestamp(parent_manifest["started_at_utc"])))
+        pointer = binding["chain_pointer"]
+        if metadata(pointer["remote_path"], Path(record["outdir"]), 256) != pointer["utf8"].encode("utf-8"):
+            raise ValueError("Producer completion chain pointer changed")
+    latest = started
+    for root, path, manifest, payload, started in authorities:
+        if metadata(path, root, 48 * 1024) != payload or started < _timestamp(owner["started_at"]):
+            raise ValueError("Producer completion manifest identity changed")
+        events, stamp = track(manifest["events_path"], root)
+        if stamp[2] > MAX_EVENTS:
+            raise ValueError("Producer completion events exceed their metadata bound")
+        previous, scanned, resolved, last = 0, 0, False, None
+        stream_hash, observed = hashlib.sha256(), []
+        with events.open("rb") as stream:
+            for index, line in enumerate(iter(lambda: stream.readline(MAX_LINE + 1), b"")):
+                scanned += len(line)
+                if index >= MAX_RECORDS or scanned > MAX_EVENTS or len(line) > MAX_LINE or not line.endswith(b"\n"):
+                    raise ValueError("Producer completion events are incomplete or exceed their bound")
+                event = json.loads(line)
+                if (not isinstance(event, dict) or event.get("schema_version") != "gpuwm.run-plan.event.v1"
+                        or type(event.get("sequence")) is not int or event["sequence"] <= previous
+                        or type(event.get("emitted_unix_ms")) is not int or event["emitted_unix_ms"] < started
+                        or last is not None and last.get("event") in {"completed", "failed"}):
+                    raise ValueError("Producer completion event identity changed or is invalid")
+                previous, last = event["sequence"], event
+                latest = max(latest, event["emitted_unix_ms"])
+                stream_hash.update(line)
+                if event.get("event") == "resolved_plan":
+                    if (event.get("config_source") != record["snapshot_config"]
+                            or event.get("config_sha256") != record["config_sha256"]):
+                        raise ValueError("Producer completion resolved source identity changed")
+                    resolved = True
+                if event.get("event") == "output_committed":
+                    _domain(event.get("domain")); _timestamp(event.get("valid_time"))
+                    _source, source_stamp = track(event.get("path"), root)
+                    if not 0 < source_stamp[2] <= 16 * 1024**3 or event.get("size_bytes", source_stamp[2]) != source_stamp[2]:
+                        raise ValueError("Producer completion committed artifact size changed")
+                    observed.append((event, _authority(events, line, sequence=previous)))
+        if (not resolved or last is None or last.get("event") != "completed"
+                or last.get("dry_run") is not False or last.get("run_dir") != str(root)
+                or not isinstance(last.get("summary"), dict)):
+            raise ValueError("Producer has no bound executed completion event")
+        track(last.get("receipt_path"), root)
+        evidence.append(stream_hash.hexdigest())
+        if root == bound[0] and commits is not None and observed != commits:
+            raise ValueError("Producer completion commits changed during preparation")
+    # Result publication is the only allowed change, and failure is never a
+    # successful settlement. Recheck ownership after the bounded metadata scan.
+    result = ownership()
+    if initial_result is not None and result != initial_result:
+        raise ValueError("Producer completion terminal result changed")
+    if result is not None and _timestamp(result["ended_at"]) < latest:
+        raise ValueError("Producer completion artifacts postdate the wrapper result")
+    for path, root, stamp in tracked:
+        if _inside(str(path), root) != path or _stamp(path) != stamp:
+            raise ValueError("Producer completion evidence changed during validation")
+    return _sha(_encoded(evidence))
+
+
+def bound_manifest(record, state, *, job_directory=None):
     """Shared native run identity for bounded status and committed frame reads."""
     from gpuwm import remote_worker as rw
     if record.get("action") != "start-plan" or not record.get("snapshot_plan"):
@@ -212,13 +570,19 @@ def bound_manifest(record, state):
             or type(pid) is not int or pid <= 0
             or not isinstance(manifest.get("run_id"), str) or not manifest["run_id"]):
         raise ValueError("Remote run manifest does not match this job's saved plan, process and output identity")
-    if state["state"] in {"running", "starting"} and not rw._has_token(pid, record["token"]):
+    missing_token = state["state"] in {"running", "starting"} and not rw._has_token(pid, record["token"])
+    if missing_token and (job_directory is None or state["state"] != "running"):
         raise ValueError("Cannot prove the run manifest process belongs to this active remote job")
     if state["state"] in {"ownership_mismatch", "lost"}:
         raise ValueError("Resolve this remote job's process ownership before retrieving its frames")
     if state.get("ended_at") and started > _timestamp(state["ended_at"]):
         raise ValueError("Remote manifest was published after this job ended")
-    return _hosted_producer(record, state, (root, manifest_path, manifest, manifest_bytes, started))
+    bound = _hosted_producer(record, state, (root, manifest_path, manifest, manifest_bytes, started))
+    if missing_token:
+        # Opt-in watcher only: all normal artifact readers still refuse. No
+        # artifact authority is returned until the wrapper's result is settled.
+        raise ProducerCompletionPending(_completion_evidence(record, state, bound, job_directory))
+    return bound
 
 
 def _sequence(value, *, cursor=False):

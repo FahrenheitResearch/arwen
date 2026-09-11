@@ -571,6 +571,10 @@ def test_a_physics_refusal_keeps_its_rule_and_defers_its_mechanism():
 
     full = explain.render(message, explain=True, command="gpuwm run")
     assert "phys/module_physics_init.F:3213-3219,3699-3701" in full
+    # ArWen's OWN breakage travels with WRF's citation, in the mechanism
+    # half: a refusal that says only "WRF refuses this" tells a user which
+    # authority to argue with rather than what would go wrong here.
+    assert "fm/fh" in full
 
 
 def test_the_noahmp_budget_is_a_warning_not_a_blocker(capsys):

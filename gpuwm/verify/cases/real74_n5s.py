@@ -21,6 +21,7 @@ import netCDF4
 from gpuwm import netcdf_bridge
 import numpy as np
 
+from gpuwm.ingest import wrfinput as _door
 from gpuwm.verify.n5s_common import restored_input_sha256, stable_hash, write_json
 from gpuwm.verify.n5s_metrics import (
     load_registration, make_registration, require_matching_registrations,
@@ -85,128 +86,36 @@ ALIASES = {
     "P_TOP": ("P_TOP",),
 }
 
-MOISTURE_MAP = {
-    "QVAPOR": "qv", "QCLOUD": "qc", "QRAIN": "qr",
-    "QICE": "qi", "QSNOW": "qs", "QGRAUP": "qg",
-    "QNRAIN": "nr", "QNICE": "ni", "QNSNOW": "ns",
-    "QNGRAUPEL": "ng", "QNCLOUD": "nc",
-    # mp_physics=28 (Thompson aerosol-aware).  QNCLOUD is already above --
-    # Morrison declares the same Registry name -- but for mp=28 it stops
-    # being an optional diagnosed field and becomes a REQUIRED prognostic
-    # (see REQUIRED_QNCLOUD_MICROPHYSICS below).  QNWFA/QNIFA are new here; WRF
-    # declares them as scalars with the input stream in their IO string
-    # (Registry/registry.new3d_wif:87-90, ``i0rhusdf=(bdy_interp:dt)``), so
-    # real.exe writes them into wrfinput exactly as it writes QNRAIN.
-    "QNWFA": "nwfa", "QNIFA": "nifa",
-    # mp_physics=16 (WDM6).  QNCLOUD and QNRAIN are already above and carry
-    # WDM6's prognostic nc/nr unchanged; QNCCN is new here.  It maps to
-    # ``nn``, WDM6's own state name for the CCN reservoir -- NOT to NSSL's
-    # ``qnn``, which is the same WRF variable in a different scheme's state
-    # and is why the two maps stay separate rather than merging.
-    "QNCCN": "nn",
-    # mp_physics=50 (P3 one-category).  QICE/QNICE/QNRAIN are already above
-    # and carry P3's single ice mass and its two number moments unchanged;
-    # QIR and QIB are new here.  They are the rime mass and rime volume P3
-    # carries INSTEAD of a snow/graupel/hail split, so without a name for
-    # them this closed-world importer cannot read a P3 wrfinput at all --
-    # ``read_wrfinput`` rejects the file as carrying "unmapped WRF
-    # variable(s)" before any inventory check is reached.
-    "QIR": "qir", "QIB": "qib",
-}
-
-# NSSL reuses several WRF Registry names carried by Morrison, but the state
-# names are scheme-native (for example QNRAIN -> qnr, not nr).  Keep this as
-# a distinct map so restoration cannot choose a target by whichever attribute
-# happens to exist on DomainState.
-NSSL_MOISTURE_MAP = {
-    "QVAPOR": "qv", "QCLOUD": "qc", "QRAIN": "qr",
-    "QICE": "qi", "QSNOW": "qs", "QGRAUP": "qg", "QHAIL": "qh",
-    "QNDROP": "qndrop", "QNRAIN": "qnr", "QNICE": "qni",
-    "QNSNOW": "qns", "QNGRAUPEL": "qng", "QNHAIL": "qnh",
-    "QNCCN": "qnn", "QVGRAUPEL": "qvolg", "QVHAIL": "qvolh",
-}
-ALL_MOISTURE_WRFINPUT = frozenset(MOISTURE_MAP) | frozenset(
-    NSSL_MOISTURE_MAP)
-
-# ``real.exe`` writes a physics-package-specific moisture inventory.  The
-# first three mass species are active in every gpuwm moist configuration;
-# WSM6 adds the three ice-category masses, while Morrison additionally owns
-# four transported number moments.  Native option-18 NSSL defaults add hail,
-# five two-moment number fields, predicted CCN, and graupel/hail volume.  Its
-# Registry aliases overlap Morrison but map to distinct scheme-native state.
-# QNCLOUD is a documented optional Morrison restart field (WRF's matched
-# default diagnoses cloud number).
-BASE_MOISTURE_WRFINPUT = ("QVAPOR", "QCLOUD", "QRAIN")
-ICE_MASS_WRFINPUT = ("QICE", "QSNOW", "QGRAUP")
-MORRISON_NUMBER_WRFINPUT = ("QNRAIN", "QNICE", "QNSNOW", "QNGRAUPEL")
-MORRISON_OPTIONAL_MOISTURE_WRFINPUT = ("QNCLOUD",)
-THOMPSON_NUMBER_WRFINPUT = ("QNRAIN", "QNICE")
-#: mp_physics=28 adds the prognostic droplet number and the two aerosol
-#: number tracers to classic Thompson's two moments.  All three are
-#: transported scalars in WRF's own Registry (Registry.EM_COMMON:3036's
-#: ``scalar:qni,qnr,qnc,qnwfa,qnifa,qnbca``; qnbca is out of scope, WRF only
-#: activates it at wif_input_opt=2, module_mp_thompson.F:3983-3988) and all
-#: three carry the wrfinput stream in their IO strings
-#: (Registry.EM_COMMON:542 for QNCLOUD, registry.new3d_wif:87-90 for
-#: QNWFA/QNIFA).  Unlike Morrison's QNCLOUD -- which WRF diagnoses and gpuwm
-#: therefore treats as optional -- an mp=28 wrfinput that lacked QNCLOUD
-#: would start every column at nc = 0, and WRF's terminal clamp
-#: (module_mp_thompson.F:3976) would silently hold it at 2/rho rather than
-#: raising.  Required, not optional.
-THOMPSON_AEROSOL_NUMBER_WRFINPUT = ("QNRAIN", "QNICE", "QNCLOUD",
-                                    "QNWFA", "QNIFA")
-#: mp_physics=16 (WDM6).  ``Registry.EM_COMMON:3031`` declares the package
-#: as ``moist:qv,qc,qr,qi,qs,qg;scalar:qnn,qnc,qnr``, so WDM6's wrfinput is
-#: WSM6's six masses plus exactly three transported numbers -- the CCN
-#: reservoir QNCCN (:539), the cloud droplet number QNCLOUD (:541) and the
-#: rain number QNRAIN (:533).  All three are prognostic, none is diagnosed,
-#: so all three are REQUIRED: a WDM6 wrfinput without QNCLOUD would start
-#: every column at nc = 0 and WDM6's own slope floor would hold it there,
-#: which is the mp=28 hazard in the note above, not Morrison's optional
-#: field.
-WDM6_NUMBER_WRFINPUT = ("QNCCN", "QNCLOUD", "QNRAIN")
-#: The schemes for which QNCLOUD is a required prognostic rather than the
-#: optional diagnosed Morrison field.  Consulted by
-#: :func:`_restore_active_moisture`, whose "missing is tolerated" branch
-#: keys on ``MORRISON_OPTIONAL_MOISTURE_WRFINPUT`` alone and would otherwise
-#: extend Morrison's exemption to mp=28.  16 belongs for the same reason:
-#: WDM6 PREDICTS the droplet number (Registry.EM_COMMON:3031's
-#: ``scalar:qnn,qnc,qnr``), so QNCLOUD is the prognostic its double-moment
-#: warm rain is built on, not Morrison's diagnosed convenience field.
-#: Renamed off the mp28 spelling when 16 joined -- a set with two members
-#: named for one of them is how the next scheme gets forgotten.
-REQUIRED_QNCLOUD_MICROPHYSICS = frozenset({16, 28})
-#: mp_physics=50 (P3 one-category).  ``Registry.EM_COMMON:3038`` declares
-#: the package as ``moist:qv,qc,qr,qi;scalar:qni,qnr,qir,qib`` -- ONE ice
-#: mass, and no snow and no graupel anywhere in the package, because P3
-#: predicts rime mass and rime volume in place of a snow/graupel/hail
-#: split.  QICE is therefore added through this tuple rather than through
-#: ``ICE_MASS_WRFINPUT``: putting 50 in the ice-mass branch would demand a
-#: QSNOW and a QGRAUP that a P3 wrfinput never contains and that a P3
-#: ``DomainState`` has no field to receive (gpuwm/core/state.py:464-478).
-#: All four scalars are transported prognostics, and every one carries the
-#: wrfinput stream in its Registry IO string -- ``i0rhusdf=(bdy_interp:dt)``
-#: on QNICE (Registry.EM_COMMON:523), QNRAIN (:533), QIR (:555) and QIB
-#: (:557) -- so real.exe writes all four exactly as it writes Morrison's
-#: QNRAIN.  None of them is diagnosed, so unlike Morrison there is no
-#: optional member here, and a missing one does not raise inside P3, it
-#: silently rewrites the analysis:
-#:   * a zero QNICE beside a real QICE is clamped to ``nsmall`` = 1.e-16
-#:     (module_mp_p3.F:231, :2573) and the mean-mass ice diameter built
-#:     from it (:2578) then indexes the lookup table (:2582) in its
-#:     largest-particle bin for the whole column;
-#:   * a zero QIR/QIB sends ``calc_bulkRhoRime`` (:6784, called at :2580)
-#:     down its ``bi_rim < 1.e-15`` branch, which hard-zeros both and
-#:     returns rho_rime = 0 (:6812-6814), declaring every ice particle in
-#:     the restored state unrimed -- P3's one distinguishing prognostic,
-#:     silently set to nothing.
-#: Both are finite, bounded and wrong: the mp=28 terminal-clamp hazard in
-#: the note above, in P3's own numbers.
-P3_MOISTURE_WRFINPUT = ("QICE", "QNICE", "QNRAIN", "QIR", "QIB")
-NSSL_MOISTURE_WRFINPUT = (
-    "QHAIL", "QNDROP", "QNRAIN", "QNICE", "QNSNOW", "QNGRAUPEL",
-    "QNHAIL", "QNCCN", "QVGRAUPEL", "QVHAIL",
-)
+# THE MOISTURE CONTRACT IS THE DOOR'S, not a fork of it.
+#
+# Every name below used to be declared here, character for character with
+# gpuwm/ingest/wrfinput.py's copy -- two spellings of one table, and the
+# fork stopped being updated: the door learned mp=9 (Milbrandt-Yau) and
+# mp=16 (WDM6), this module's inventory did not, and its own
+# ``_active_moisture_inventory`` refused mp_physics=9 by hard-coded tuple
+# with the bare sentence "unsupported active wrfinput mp_physics=9" for a
+# scheme the loader accepts, the dispatcher runs and this very module's
+# REFLECTIVITY_MICROPHYSICS already contained (audit R-019).  Adding 9 to
+# the tuple alone would have been worse than the refusal -- the fork had no
+# Milbrandt inventory, no QHAIL/QNHAIL rows outside the NSSL map and a
+# REQUIRED_QNCLOUD set of {16, 28} -- so the tables are IMPORTED instead
+# and the two lanes cannot drift again.  The names stay bound here because
+# readers and tests use them.
+MOISTURE_MAP = _door.MOISTURE_MAP
+NSSL_MOISTURE_MAP = _door.NSSL_MOISTURE_MAP
+ALL_MOISTURE_WRFINPUT = _door.ALL_MOISTURE_WRFINPUT
+BASE_MOISTURE_WRFINPUT = _door.BASE_MOISTURE_WRFINPUT
+ICE_MASS_WRFINPUT = _door.ICE_MASS_WRFINPUT
+MORRISON_NUMBER_WRFINPUT = _door.MORRISON_NUMBER_WRFINPUT
+MORRISON_OPTIONAL_MOISTURE_WRFINPUT = (
+    _door.MORRISON_OPTIONAL_MOISTURE_WRFINPUT)
+THOMPSON_NUMBER_WRFINPUT = _door.THOMPSON_NUMBER_WRFINPUT
+THOMPSON_AEROSOL_NUMBER_WRFINPUT = _door.THOMPSON_AEROSOL_NUMBER_WRFINPUT
+WDM6_NUMBER_WRFINPUT = _door.WDM6_NUMBER_WRFINPUT
+MILBRANDT_MOISTURE_WRFINPUT = _door.MILBRANDT_MOISTURE_WRFINPUT
+REQUIRED_QNCLOUD_MICROPHYSICS = _door.REQUIRED_QNCLOUD_MICROPHYSICS
+P3_MOISTURE_WRFINPUT = _door.P3_MOISTURE_WRFINPUT
+NSSL_MOISTURE_WRFINPUT = _door.NSSL_MOISTURE_WRFINPUT
 
 PHYSICS_FIELD_ALIASES = {
     "landmask": ("LANDMASK",), "xland": ("XLAND",),
@@ -443,79 +352,18 @@ def _explicit_wrfinput_dimensions(
 
 
 def _active_moisture_inventory(cfg) -> tuple[frozenset[str], frozenset[str]]:
-    """Return required/allowed wrfinput moisture names for ``cfg``.
+    """Required/allowed wrfinput moisture names for ``cfg``, from the door.
 
-    ``cfg=None`` is the registered N5S compatibility path and retains the
-    historical Morrison contract verbatim.
+    ``cfg=None`` keeps the registered N5S compatibility path (the
+    historical Morrison contract), which is the door's own ``cfg is None``
+    arm, so even that branch is one implementation.
     """
-    if cfg is None:
-        required = frozenset(
-            BASE_MOISTURE_WRFINPUT + ICE_MASS_WRFINPUT
-            + MORRISON_NUMBER_WRFINPUT)
-        return required, required | frozenset(
-            MORRISON_OPTIONAL_MOISTURE_WRFINPUT)
-    if not hasattr(cfg, "moist") or not hasattr(cfg, "mp_physics"):
-        raise TypeError("cfg must expose moist and mp_physics")
-    if not isinstance(cfg.moist, (bool, np.bool_)):
-        raise TypeError("cfg.moist must be boolean")
-    if (isinstance(cfg.mp_physics, (bool, np.bool_))
-            or not isinstance(cfg.mp_physics, (int, np.integer))):
-        raise TypeError("cfg.mp_physics must be an integer")
-    moist = bool(cfg.moist)
-    mp_physics = int(cfg.mp_physics)
-    if mp_physics not in (0, 1, 6, 8, 10, 16, 18, 28, 50):
-        raise ValueError(
-            f"unsupported active wrfinput mp_physics={mp_physics}")
-    if not moist:
-        if mp_physics != 0:
-            raise ValueError(
-                f"mp_physics={mp_physics} requires cfg.moist=True")
-        return frozenset(), frozenset()
-    required = BASE_MOISTURE_WRFINPUT
-    # 16 belongs with the ice-carrying set: wdm6scheme's moist inventory
-    # (Registry.EM_COMMON:3031) is qv,qc,qr,qi,qs,qg -- WSM6's, character
-    # for character.  WDM6 is double-moment in the WARM half only.
-    if mp_physics in (6, 8, 10, 16, 18, 28):
-        required += ICE_MASS_WRFINPUT
-    if mp_physics == 16:
-        required += WDM6_NUMBER_WRFINPUT
-    if mp_physics == 8:
-        required += THOMPSON_NUMBER_WRFINPUT
-    elif mp_physics == 28:
-        # Thompson aerosol-aware: classic Thompson's two moments plus the
-        # prognostic droplet number and the two aerosol tracers.
-        required += THOMPSON_AEROSOL_NUMBER_WRFINPUT
-    elif mp_physics == 10:
-        required += MORRISON_NUMBER_WRFINPUT
-    elif mp_physics == 18:
-        required += NSSL_MOISTURE_WRFINPUT
-    elif mp_physics == 50:
-        # P3 one-category.  Its whole inventory beyond the three base
-        # masses arrives in one tuple because its ice mass does NOT come
-        # from ``ICE_MASS_WRFINPUT`` -- see P3_MOISTURE_WRFINPUT above.
-        # QSNOW and QGRAUP therefore stay out of ``allowed`` as well as out
-        # of ``required``, so a six-species wrfinput handed to a P3 config
-        # is refused as carrying inactive moisture rather than restored
-        # with two frozen species dropped on the floor.
-        required += P3_MOISTURE_WRFINPUT
-    allowed = frozenset(required)
-    if mp_physics == 10:
-        allowed |= frozenset(MORRISON_OPTIONAL_MOISTURE_WRFINPUT)
-    return frozenset(required), allowed
+    return _door.active_moisture_inventory(cfg)
 
 
 def _active_moisture_map(cfg) -> Mapping[str, str]:
-    """Return the exact WRF-name -> DomainState-name map for ``cfg``."""
-    _, allowed = _active_moisture_inventory(cfg)
-    if cfg is None or int(cfg.mp_physics) != 18:
-        candidates = MOISTURE_MAP
-    else:
-        candidates = NSSL_MOISTURE_MAP
-    return MappingProxyType({
-        wrf_name: state_name
-        for wrf_name, state_name in candidates.items()
-        if wrf_name in allowed
-    })
+    """The exact WRF-name -> DomainState-name map for ``cfg``, from the door."""
+    return _door.active_moisture_map(cfg)
 
 
 def _validate_wrfinput_geometry(name: str, variable,

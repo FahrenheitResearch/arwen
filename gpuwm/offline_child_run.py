@@ -30,6 +30,7 @@ from gpuwm.config import (
     soil_layer_count,
 )
 from gpuwm.io.history_selection import HISTORY_VOCABULARY
+from gpuwm.physics_registry import consumer_rows_by_selector
 from gpuwm.io.wrfout import INITIAL_CONDITION_GLOBAL_ATTRS
 from gpuwm.explain import warn
 from gpuwm.offline_child import (
@@ -76,7 +77,18 @@ _CAPABILITIES = {
     # qnn share the QNCCN wrfout name and the field map has no
     # scheme-qualified row.  It is cross-refused as well, so the mirror with
     # the online lane stays exact.
-    "same_scheme_mp_physics": [6, 8, 10, 18, 28, 50],
+    # 9 (Milbrandt-Yau) joined the same-scheme list when the lane learned
+    # its own QHAIL/QNHAIL rows (_MY2_WRF_TO_STATE), the third
+    # scheme-qualified map beside NSSL's -- the shape 16 is still in.  0
+    # (passiveqv) and 1 (Kessler) joined with it: their transported sets
+    # are qv, and qv/qc/qr, which the lane already built.
+    # DERIVED from the registry's consumers.offline_child rows, the same
+    # source gpuwm.offline_child.OFFLINE_CHILD_MP_PHYSICS is built from, so
+    # the capability receipt users read cannot disagree with the gate.
+    "same_scheme_mp_physics": sorted(
+        int(mp) for mp, row in
+        consumer_rows_by_selector("microphysics", "offline_child").items()
+        if row.get("same_scheme") is True),
     "cross_scheme_transitions": [],
     # A child may carry its OWN eta ladder, deeper than the archived
     # parent's, when it declares one (``eta_levels`` in the child config,
@@ -114,6 +126,109 @@ _CAPABILITIES = {
 
 def _log(event: str, **values) -> None:
     print(json.dumps({"event": event, **values}, sort_keys=True), flush=True)
+
+
+class _ChildProgress:
+    """The offline child's own run manifest and native event stream.
+
+    A child used to publish ``report.json`` at the end and a stream of
+    ``{"event": ...}`` lines on stdout, and nothing bound those lines to
+    the process that wrote them.  No run browser could show a downscale
+    in flight, and a finished one could not be listed beside the
+    forecasts it came from.
+
+    So this publishes THE SAME TWO RECEIPTS every other ArWen run
+    publishes -- ``gpuwm.run-manifest.v1`` beside the frames and
+    ``gpuwm.run-plan.event.v1`` in ``events.jsonl`` -- rather than
+    inventing a third progress shape for one route.  Every existing
+    reader (the controller's local progress reader, the desktop's live
+    view) then works on a child unchanged, and the stream is mirrored to
+    stdout so the job log keeps the lines it always had.
+
+    Every method is a no-op until :meth:`start` has run, so a refusal
+    raised before the contracts pass still costs nothing.
+    """
+
+    def __init__(self) -> None:
+        self.events = None
+        self.manifest_path = None
+        self.run_id = None
+        self.outdir = None
+
+    def start(self, *, outdir: Path, child_config: Path, ratio: int,
+              start_time, parent: dict, name: str) -> None:
+        from datetime import datetime, timezone
+        import uuid
+
+        from gpuwm import runplan
+        from gpuwm.supervisor import atomic_write_json
+
+        self.outdir = Path(outdir)
+        events_path = self.outdir / "events.jsonl"
+        # The stream first: the manifest names this file, and a reader
+        # that finds the manifest must find the file it points at.
+        self.events = runplan.EventStream(events_path)
+        self.run_id = f"downscale-{uuid.uuid4().hex}"
+        config = Path(child_config).resolve()
+        document = {
+            "schema": runplan.MANIFEST_SCHEMA,
+            "name": name,
+            "route": "downscale",
+            "run_id": self.run_id,
+            "pid": os.getpid(),
+            "started_at_utc": datetime.now(timezone.utc).isoformat(),
+            # A child's "plan" IS its configuration: this route has no
+            # run-plan document, and the reader's binding is the same
+            # one either way -- name the source and hash it.
+            "plan_source": f"gpuwm downscale {config}",
+            "plan_sha256": _sha256(config),
+            "run_dir": str(self.outdir),
+            "outputs_dir": str(self.outdir),
+            "events_path": str(events_path),
+            "events_schema": runplan.EVENT_SCHEMA,
+            # No supervisor heartbeat on this route.  Null rather than a
+            # path to a file nothing writes: a reader that opened it
+            # would wait forever for a first sample.
+            "progress_path": None,
+            "start_time": start_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "parent": dict(parent),
+        }
+        self.manifest_path = self.outdir / runplan.MANIFEST_FILENAME
+        atomic_write_json(self.manifest_path, document)
+        self.emit("resolved_plan", config_source=str(config),
+                  config_sha256=document["plan_sha256"])
+
+    def emit(self, event: str, **fields) -> None:
+        if self.events is not None:
+            self.events.emit(event, **fields)
+
+    def failed(self, error: BaseException) -> None:
+        message = " ".join(f"{type(error).__name__}: {error}".split())
+        self.emit("failed", stage="forecast", message=message[:1600])
+
+    def close(self) -> None:
+        if self.events is not None:
+            self.events.close()
+            self.events = None
+
+
+#: Folder names every prepared route uses for its layout rather than for
+#: the run's identity: ``<run>/wrfout/`` holds the frames and ``<run>``
+#: is itself called ``run`` under a stamped folder.  A child named after
+#: one of these would be "Downscale of wrfout".
+_LAYOUT_FOLDERS = frozenset({"wrfout", "run"})
+
+
+def _parent_label(frame: Path) -> str:
+    """The parent folder a child is named after: the nearest ancestor of
+    its first history frame that is not a layout folder, so the stamped
+    run folder names the parent on the prepared routes and the history
+    directory itself does everywhere else."""
+
+    for ancestor in frame.parents:
+        if ancestor.name and ancestor.name not in _LAYOUT_FOLDERS:
+            return ancestor.name
+    return frame.parent.name
 
 
 def _sha256(path: Path) -> str:
@@ -461,6 +576,30 @@ def _write_frame(path: Path, state, cfg, initial, valid_time,
 
 
 def run(args: argparse.Namespace) -> dict[str, object]:
+    """One offline child, with its progress receipts published.
+
+    The receipts wrap the whole run so that the LAST event a reader sees
+    is always terminal: ``completed`` for a run that produced a report,
+    ``failed`` carrying the sentence for one that did not -- including a
+    refusal raised before the model started, where the stream exists but
+    is empty and the emit is a no-op.
+    """
+
+    progress = _ChildProgress()
+    try:
+        report = _run(args, progress)
+    except BaseException as error:
+        progress.failed(error)
+        progress.close()
+        raise
+    progress.emit("completed", stage="forecast", result=report["result"],
+                  outputs=len(report.get("outputs", []) or []))
+    progress.close()
+    return report
+
+
+def _run(args: argparse.Namespace,
+         progress: "_ChildProgress") -> dict[str, object]:
     import cupy as cp
     from gpuwm.core import streaming
     from gpuwm.core.refl import consume_refl_10cm, refl_10cm_is_stashed
@@ -592,6 +731,27 @@ def run(args: argparse.Namespace) -> dict[str, object]:
          child_shape=[cfg.nz, cfg.ny, cfg.nx],
          child_spacing_m=[cfg.dy, cfg.dx])
 
+    # PUBLISHED HERE: after every contract that can refuse this child has
+    # passed and before the first minute of preprocessing is spent, so a
+    # reader watching the directory sees a run it can trust, and sees it
+    # from the beginning of the work rather than the end.
+    progress.start(
+        outdir=outdir, child_config=Path(args.child_config),
+        ratio=int(placement.parent_grid_ratio),
+        start_time=contract.start_time,
+        parent={
+            "run_dir": str(Path(contract.frames[0].path).parent),
+            "restart": (None if args.parent_restart is None
+                        else str(args.parent_restart)),
+            "frames": len(contract.frames),
+            "cadence_seconds": float(contract.interval_seconds),
+        },
+        name=(f"Downscale of {_parent_label(Path(contract.frames[0].path))} "
+              f"· d{int(cfg.grid_id):02d} "
+              f"×{int(placement.parent_grid_ratio)} "
+              f"· {float(cfg.dx) / 1000.0:g} km"))
+    progress.emit("stage_started", stage="initialize", phase="preprocess")
+
     initial = interpolate_parent_initial_state(
         contract.frames[0].path, placement,
         physics_binding=binding, target_mp_physics=cfg.mp_physics,
@@ -686,7 +846,11 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         reset_up_heli_max(child)
         _log("child_output", elapsed_seconds=float(clock.elapsed_seconds),
              path=str(path), bytes=path.stat().st_size)
+        progress.emit("output_committed", domain=int(cfg.grid_id),
+                      valid_time=valid.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                      path=str(path), bytes=path.stat().st_size)
 
+    progress.emit("stage_started", stage="forecast", phase="integrate")
     emit_output()
     step_seconds = []
     child_health = child_stability(child, cfg)
@@ -718,6 +882,11 @@ def run(args: argparse.Namespace) -> dict[str, object]:
                  boundary_device_reload_count=lateral_boundary_reload_count(child),
                  memory=memory,
                  wall_seconds=time.perf_counter() - started)
+            progress.emit("model_progress", domain=int(cfg.grid_id),
+                          model_seconds=float(clock.elapsed_seconds),
+                          run_seconds=float(cfg.run_seconds),
+                          outer_step=int(step_index), total_steps=int(steps),
+                          wall_seconds=time.perf_counter() - started)
             if child_health["nan"]:
                 raise RuntimeError(
                     f"offline child became non-finite at step {step_index}")

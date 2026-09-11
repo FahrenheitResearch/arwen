@@ -125,12 +125,24 @@ KESSLER_VERTICAL_LEVEL_BOUNDS = (None, _KMAX)
 #: the end of every call (module_mp_p3.F:5018-5021), so an unrestored ring
 #: would feed the NEXT step's supersaturation tendency (:3171) from columns
 #: WRF's clipped tiles never advanced.  No other scheme allocates them.
-_RING_STATE_FIELDS = (
-    "thp", "qv", "qc", "qr", "qi", "qs", "qg", "qh",
-    "nc", "nr", "ni", "ns", "ng", "nh", "nwfa", "nifa",
-    "qir", "qib", "th_old", "qv_old",
-    "effc", "effr", "effi", "effs",
-)
+#:
+#: DERIVED: the union, over every implemented scheme, of the registry's
+#: ``consumers.ring_guard.state_fields`` row -- the same row
+#: gpuwm.core.physics_inventory prices from -- so the captured family and
+#: the priced family are one family.  Presence guards at the capture site
+#: keep every other scheme unaffected by another scheme's names; the union
+#: is what lets NSSL's registry-native moment names (qndrop, qnr, ..., qvolh)
+#: be captured at all, which the typed tuple this replaces never listed.
+def _ring_state_fields() -> tuple[str, ...]:
+    # The derivation lives beside the per-scheme row it unions, in the
+    # device-free module the preflight prices from, so a card-free install
+    # can read the captured family too.
+    from gpuwm.core.physics_inventory import ring_guard_state_fields
+
+    return ring_guard_state_fields()
+
+
+_RING_STATE_FIELDS = _ring_state_fields()
 
 #: Persistent (ny, nx) surface slots the adapters write: the accumulators
 #: RAINNC/SNOWNC/GRAUPELNC plus the per-call *NCV/SR diagnostics (the

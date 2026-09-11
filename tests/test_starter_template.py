@@ -14,14 +14,26 @@ from gpuwm import starter_template as st
 from gpuwm.experiment import load_experiment
 
 
-def test_card_names_normalize_and_unknown_tier_names_an_exact_capacity(monkeypatch):
+def test_card_spellings_price_and_only_a_capacity_free_name_is_refused(monkeypatch):
     monkeypatch.setattr(dw, "device_memory_probe_subprocess", lambda: pytest.fail("declared card probed GPU"))
     assert dw.resolve_sizing_budget(" 16GB ", None) == dw.resolve_sizing_budget("16gb", None)
     assert dw.resolve_sizing_budget(None, 8).vram_gib == 8
-    with pytest.raises(ValueError, match="--vram-gib 8"):
-        dw.resolve_sizing_budget("8gb", None)
-    with pytest.raises(ValueError, match="not a named GPU tier"):
-        dw.resolve_sizing_budget("not-a-card", None)
+    # A size in the name, a real model name in any spelling, and a model
+    # whose size is written beside it all price without a refusal.
+    assert dw.resolve_sizing_budget("8gb", None).vram_gib == 8
+    assert dw.resolve_sizing_budget("RTX 3080", None).vram_gib == 10
+    assert dw.resolve_sizing_budget("rtx3080", None).vram_gib == 10
+    assert dw.resolve_sizing_budget("NVIDIA GeForce RTX 5070 Ti", None).vram_gib == 16
+    assert dw.resolve_sizing_budget("RTX 3080 Ti", None).vram_gib == 12
+    assert dw.resolve_sizing_budget("ada 9000 24GB", None).vram_gib == 24
+    # --vram-gib beside a card is the capacity; the card is a label.
+    assert dw.resolve_sizing_budget("ada-9000-unrecorded", 10).vram_gib == 10
+    # Only a spelling that carries no capacity at all is refused, and the
+    # refusal names both ways to give it one.
+    with pytest.raises(ValueError, match="names no capacity") as refused:
+        dw.resolve_sizing_budget("ada-9000-unrecorded", None)
+    assert "--vram-gib" in str(refused.value)
+    assert dw.card_capacity_gib("not-a-card") is None
 
 
 def starter(tmp_path, *, nested=False):

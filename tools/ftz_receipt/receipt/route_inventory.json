@@ -9,18 +9,18 @@
     "cupy.ReductionKernel",
     "cupy.cuda.compiler.compile_using_nvrtc"
   ],
-  "site_count": 68,
+  "site_count": 63,
   "site_count_by_kind": {
     "cupy.ElementwiseKernel": 4,
     "cupy.RawKernel": 1,
-    "cupy.RawModule": 48,
+    "cupy.RawModule": 43,
     "cupy.ReductionKernel": 5,
     "cupy.cuda.compiler.compile_using_nvrtc": 10
   },
   "site_count_by_surface": {
     "package": {
       "cupy.ElementwiseKernel": 4,
-      "cupy.RawModule": 10,
+      "cupy.RawModule": 5,
       "cupy.ReductionKernel": 3,
       "cupy.cuda.compiler.compile_using_nvrtc": 3
     },
@@ -107,7 +107,7 @@
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 98,
+      "line": 114,
       "column": 10,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -127,7 +127,7 @@
     },
     {
       "file": "gpuwm/core/kernels/__init__.py",
-      "line": 129,
+      "line": 145,
       "column": 10,
       "surface": "package",
       "constructor": "cp.RawModule",
@@ -232,104 +232,20 @@
       "text": "mod = cp.RawModule(code=src,"
     },
     {
-      "file": "gpuwm/core/noahmp_driver_gpu.py",
-      "line": 150,
+      "file": "gpuwm/core/noahmp_kernel_sources.py",
+      "line": 260,
       "column": 13,
       "surface": "package",
       "constructor": "cp.RawModule",
       "constructor_kind": "cupy.RawModule",
-      "enclosing": "_module",
+      "enclosing": "compile_runtime_unit",
       "takes_caller_options": true,
       "options_argument_present": true,
-      "options_expression": "options",
+      "options_expression": "opts",
       "options": null,
       "options_element_expressions": null,
       "options_are_literal": false,
-      "text": "module = cp.RawModule(code=code,"
-    },
-    {
-      "file": "gpuwm/core/noahmp_energy_gpu.py",
-      "line": 85,
-      "column": 13,
-      "surface": "package",
-      "constructor": "cp.RawModule",
-      "constructor_kind": "cupy.RawModule",
-      "enclosing": "_module",
-      "takes_caller_options": true,
-      "options_argument_present": true,
-      "options_expression": "options",
-      "options": null,
-      "options_element_expressions": null,
-      "options_are_literal": false,
-      "text": "module = cp.RawModule(code=source, options=options)"
-    },
-    {
-      "file": "gpuwm/core/noahmp_glacier_gpu.py",
-      "line": 155,
-      "column": 13,
-      "surface": "package",
-      "constructor": "cp.RawModule",
-      "constructor_kind": "cupy.RawModule",
-      "enclosing": "_module",
-      "takes_caller_options": true,
-      "options_argument_present": true,
-      "options_expression": "options",
-      "options": null,
-      "options_element_expressions": null,
-      "options_are_literal": false,
-      "text": "module = cp.RawModule(code=source, options=options)"
-    },
-    {
-      "file": "gpuwm/core/noahmp_slab_libm.py",
-      "line": 72,
-      "column": 24,
-      "surface": "package",
-      "constructor": "cp.RawModule",
-      "constructor_kind": "cupy.RawModule",
-      "enclosing": "_module",
-      "takes_caller_options": true,
-      "options_argument_present": true,
-      "options_expression": "(\"-std=c++17\",)",
-      "options": [
-        "-std=c++17"
-      ],
-      "options_element_expressions": [
-        "\"-std=c++17\""
-      ],
-      "options_are_literal": true,
-      "text": "_MODULE_CACHE = cp.RawModule("
-    },
-    {
-      "file": "gpuwm/core/noahmp_thermal_gpu.py",
-      "line": 74,
-      "column": 13,
-      "surface": "package",
-      "constructor": "cp.RawModule",
-      "constructor_kind": "cupy.RawModule",
-      "enclosing": "_module",
-      "takes_caller_options": true,
-      "options_argument_present": true,
-      "options_expression": "options",
-      "options": null,
-      "options_element_expressions": null,
-      "options_are_literal": false,
-      "text": "module = cp.RawModule(code=source, options=options)"
-    },
-    {
-      "file": "gpuwm/core/noahmp_vegeflux_gpu.py",
-      "line": 159,
-      "column": 13,
-      "surface": "package",
-      "constructor": "cp.RawModule",
-      "constructor_kind": "cupy.RawModule",
-      "enclosing": "_module_on",
-      "takes_caller_options": true,
-      "options_argument_present": true,
-      "options_expression": "tuple(options)",
-      "options": null,
-      "options_element_expressions": null,
-      "options_are_literal": false,
-      "text": "module = cp.RawModule("
+      "text": "module = cp.RawModule(code=code, options=opts, backend=\"nvrtc\","
     },
     {
       "file": "gpuwm/core/p3_device.py",

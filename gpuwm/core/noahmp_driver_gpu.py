@@ -27,18 +27,11 @@ copy.
 from __future__ import annotations
 
 from functools import lru_cache
-from pathlib import Path
 
 import numpy as np
 
-from gpuwm.certify.kernel_manifest import record_module
-from gpuwm.core.kernels import _preamble
-
-_KDIR = Path(__file__).resolve().parent / "kernels"
-
-# The glibc transcendental block this group borrows lives in noahmp_leaves.cu.
-_LIBM_SOURCE = _KDIR / "noahmp_leaves.cu"
-_DRIVER_SOURCE = _KDIR / "noahmp_driver.cu"
+from gpuwm.core.noahmp_kernel_sources import (
+    DEFAULT_OPTIONS, compile_runtime_unit, runtime_unit)
 
 __all__ = [
     "NSNOW",
@@ -137,27 +130,19 @@ NI_OUT_STRIDE = _base + 4 * NSOIL_MAX + NLAY_MAX + 3 * NSNOW
 
 def driver_source() -> str:
     """The exact translation unit the driver kernels are compiled from."""
-    return (_preamble()
-            + _LIBM_SOURCE.read_text(encoding="ascii")
-            + _DRIVER_SOURCE.read_text(encoding="ascii"))
+    return runtime_unit("noahmp_driver").source
 
 
 @lru_cache(maxsize=None)
 def _module(options: tuple[str, ...], source: str | None):
-    import cupy as cp
-
-    code = source if source is not None else driver_source()
-    module = cp.RawModule(code=code,
-                          options=options)
-    module.compile()
-    record_module(
-        "gpuwm.core.noahmp_driver_gpu:driver"
+    return compile_runtime_unit(
+        "noahmp_driver",
+        module_key="gpuwm.core.noahmp_driver_gpu:driver"
         + ("" if source is None else "(substituted-source)"),
-        source=code, options=options, module=module)
-    return module
+        options=options, source=source)
 
 
-def driver_module(options: tuple[str, ...] = ("-std=c++17",),
+def driver_module(options: tuple[str, ...] = DEFAULT_OPTIONS,
                   source: str | None = None):
     """Compile (once per option set) the composed driver translation unit.
 

@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import time
 import traceback
@@ -17,6 +18,55 @@ import traceback
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+#: How every gpuwm refusal opens its stderr line: ``gpuwm <command>: ``
+#: (the CLI's refusal print boundary) or ``gpuwm <command>: error: ``
+#: (argparse).  Warnings open with ``warning:`` and never match.
+_REFUSAL_LINE = re.compile(r"^gpuwm(?: [A-Za-z0-9_.-]+)*: ", re.MULTILINE)
+
+
+class _StderrTail:
+    """Tee for the worker's stderr that remembers its last stretch.
+
+    A gpuwm refusal is a sentence printed to stderr at a nonzero exit,
+    not an exception: the CLI's refusal boundary catches the error,
+    prints ``gpuwm <command>: <sentence>`` and returns 2.  The job log
+    keeps the line, but a front door reading ``result.json`` saw only
+    ``exit_code: 2`` and had nothing to show the user but "failed".
+    This keeps the tail of what the process said so the worker can copy
+    the refusal into its own receipt.
+    """
+
+    def __init__(self, stream, limit: int = 16384) -> None:
+        self._stream = stream
+        self._limit = limit
+        self._tail = ""
+
+    def write(self, text) -> int:
+        count = self._stream.write(text)
+        self._tail = (self._tail + str(text))[-self._limit:]
+        return count
+
+    def writelines(self, lines) -> None:
+        for line in lines:
+            self.write(line)
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+    def refusal(self) -> str | None:
+        """The last refusal sentence this process printed, or ``None``.
+
+        Everything from the last ``gpuwm <command>: `` prefix to the end
+        of the tail, so a layered refusal keeps its follow-on lines and
+        an advisory ``warning:`` printed earlier is not mistaken for it.
+        """
+
+        matches = list(_REFUSAL_LINE.finditer(self._tail))
+        if not matches:
+            return None
+        return self._tail[matches[-1].end():].strip() or None
 
 
 def _write_result(directory: Path, record: dict) -> None:
@@ -71,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
     record = {"schema": "gpuwm-tui-result-v1", "pid": os.getpid(),
               "cli_args": cli_args, "started_at": _now(), "exit_code": None}
     code = 1
+    stderr = _StderrTail(sys.stderr)
+    sys.stderr = stderr
     try:
         if args.windows_job:
             _join_windows_job(args.windows_job)
@@ -116,6 +168,14 @@ def main(argv: list[str] | None = None) -> int:
         record["error"] = {"type": type(error).__name__, "message": str(error)}
         code = 1
     finally:
+        if code not in (0, 130) and "error" not in record:
+            # A refusal the CLI printed and returned from, recorded the way
+            # an uncaught exception already is: the receipt names the
+            # reason, and a reader of result.json shows that sentence
+            # instead of "failed".
+            refusal = stderr.refusal()
+            if refusal is not None:
+                record["error"] = {"type": "Refusal", "message": refusal}
         record.update(ended_at=_now(), exit_code=code,
                       status=("completed" if code == 0 else
                               "interrupted" if code == 130 else "failed"))

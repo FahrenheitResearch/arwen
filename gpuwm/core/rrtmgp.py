@@ -67,6 +67,38 @@ DATA_DIR = data_assets.rrtmgp_data_dir()
 DTYPE = np.float32
 
 
+#: Every NetCDF member this module opens, declared once.
+#:
+#: The registry publishes an asset requirement for this set
+#: (``gpuwm-rte-rrtmgp-tables-v1``), and plan review RESOLVES asset
+#: requirements -- but a requirement that names no file resolves
+#: vacuously, which is what that row did: it declared a root and no
+#: members, so plan review reported it satisfied without a single
+#: ``stat()`` and an install short of a table still refused at load,
+#: exactly the shape audit R-045 was written to close.  The files are
+#: named here, in the module that opens them, and the builder imports
+#: this tuple; :func:`_table` refuses a filename that is not in it, so a
+#: member cannot be added to the load path without joining the set plan
+#: review checks.
+#:
+#: WHICH DOOR ASKS, stated so the claim cannot grow.  ``gpuwm run`` does
+#: not call :func:`gpuwm.physics_registry.validate_physics_plan` -- its
+#: one caller is ``gpuwm/source_cli.py``'s ``--validate-physics-plan`` --
+#: so on a run the missing member is named by :func:`_table` here, through
+#: ``data_assets.require_companion_member``, when radiation loads its
+#: tables at model construction.  That is before step 0 and it names the
+#: file and the pip line, which is what the gate law asks of it; it is not
+#: plan review, and a report that says an install short of a table refuses
+#: "at plan review" on a bare run is over-claiming.
+RRTMGP_TABLE_FILES: tuple[str, ...] = (
+    "rrtmgp-gas-lw-g256.nc",
+    "rrtmgp-gas-sw-g224.nc",
+    "rrtmgp-clouds-lw-bnd.nc",
+    "rrtmgp-clouds-sw-bnd.nc",
+    "rfmip-clear-sky-inputs.nc",
+)
+
+
 def _table(filename: str):
     """One member, resolved through the refusal that can name it.
 
@@ -78,6 +110,12 @@ def _table(filename: str):
     which ``gpuwm.cli.main`` prints as the sentence it is.
     """
 
+    if filename not in RRTMGP_TABLE_FILES:
+        raise ValueError(
+            f"rrtmgp/{filename} is not in RRTMGP_TABLE_FILES, which is the "
+            "set plan review resolves before a run starts; add it there "
+            "(and regenerate the registry) rather than opening a member "
+            "no plan review checks")
     return data_assets.require_companion_member(f"rrtmgp/{filename}")
 
 # ---------------------------------------------------------------------------
@@ -101,6 +139,44 @@ EFFECTIVE_RADIUS_PLAUSIBLE_UM = {
     "effi": (1.0, 600.0),
     "effs": (1.0, 5000.0),
 }
+
+#: Milbrandt-Yau's band row: the generic bands by value.  See
+#: :func:`effective_radius_bands` for why it gates nothing on the
+#: production path (the radii are derived in-adapter and clipped there).
+MILBRANDT2_EFFECTIVE_RADIUS_BANDS_UM = dict(EFFECTIVE_RADIUS_PLAUSIBLE_UM)
+
+# Milbrandt-Yau's own effective radii, the constants of WRF's commented
+# block (module_mp_milbrandt2mom.F:3351-3378).  ``r_eff = M_D(3)/(2 M_D(2))``
+# over MY2005a eqn (2), the scheme's generalised gamma
+# ``N(D) = N0 D^((alpha+1) mu - 1) exp(-(lambda D)^mu)``:
+#   cloud, alpha_c = 1, mu_c = 3:  r_eff = Gamma(3)/(2 Gamma(8/3)) / lambda
+#                                        = 0.664639 / lambda   (:3362)
+#   ice,   alpha_i = 0, mu_i = 1:  r_eff = Gamma(4)/(2 Gamma(3)) / lambda
+#                                        = 1.5 / lambda        (:3372)
+# and 1/lambda is the scheme's own ``iLAMDA_x(DE, Q, 1/N, icex, 1/dm)``
+# with the per-species ``icex`` from gpuwm/core/milbrandt2_constants.py
+# (icexc9 = Gamma(2)/(Gamma(3) cm_r), icexi9 = Gamma(1)/(Gamma(4) cm_i),
+# iGS20 = Gamma(1)/(Gamma(1 + dms) cm_s) with the Brandes cm_s, dms the
+# pinned snowSpherical=.false. selects, :1290).  Snow is not in WRF's
+# block; the same M3/M2 moment ratio over the scheme's alpha_s = 0
+# exponential gives 1.5/lambda_s, and the adapter merges it into the one
+# RRTMGP ice species by number exactly as Morrison's row does.  ``DE``
+# cancels: the scheme's N is per m^3 inside the main routine (NC = NC*DE,
+# :1228) and gpuwm's state numbers are per kg, so (DE Q icex)/(N_kg DE)
+# is (Q icex)/N_kg.
+MILBRANDT2_CLOUD_RADIUS_PER_ILAMBDA = 0.664639
+MILBRANDT2_ICE_RADIUS_PER_ILAMBDA = 1.5
+MILBRANDT2_SNOW_RADIUS_PER_ILAMBDA = 1.5
+#: The scheme's own floors on 1/lambda for ice and snow (``iLAMmin2``,
+#: module_mp_milbrandt2mom.F:1686/:1706, repeated at :3371 in the radii
+#: block) and its activity thresholds (``epsQ``, ``epsN``, the :3358 and
+#: :3368 tests of the radii block).  epsN is stated per m^3 in the scheme and applied here to
+#: a per-kg number; at the densities a radiation column sees the two
+#: differ by less than an order of magnitude on a threshold that is nine
+#: orders below any cloud.
+MILBRANDT2_ILAMBDA_MIN_M = 1.0e-10
+MILBRANDT2_EPS_Q = 1.0e-14
+MILBRANDT2_EPS_N = 1.0e-3
 
 #: ``itab`` column (1-based, as WRF spells it) that IS P3's ice effective
 #: radius: ``f1pr06 = access_lookup_table(itab, ..., 6, ...)`` and
@@ -170,8 +246,20 @@ def effective_radius_bands(scheme: str) -> dict[str, tuple[float, float]]:
     radius (``resnow1D = MAX(10., re_ice*1.E6)``,
     module_ra_rrtmg_lw.F:12256, _sw.F:10857), so the value in the snow slot
     IS the ice radius and must be judged by the ice radius's range.
+
+    Milbrandt-Yau's row is :data:`MILBRANDT2_EFFECTIVE_RADIUS_BANDS_UM`,
+    the generic bands by value.  The scheme writes no ``effc/effi/effs``
+    (its own block is commented out, module_mp_milbrandt2mom.F:3351-3378,
+    so ``state.eff*`` for mp=9 hold their allocation-time background for
+    the whole run and :func:`hydrometeor_paths` refuses them); the radii
+    it radiates are derived inside the adapter from the transported
+    number moments and clipped to the RRTMGP table domain there, so the
+    band gates nothing on the production path and is published so a
+    caller that asks for a scheme's band gets an answer, not a KeyError.
     """
 
+    if scheme == "milbrandt2":
+        return dict(MILBRANDT2_EFFECTIVE_RADIUS_BANDS_UM)
     if scheme != "p3":
         return dict(EFFECTIVE_RADIUS_PLAUSIBLE_UM)
     lower, upper = p3_ice_radius_band_um()
@@ -296,6 +384,33 @@ _MP_CLOUD_OPTICS_SCHEME = {
     1: "kessler",
     6: "wsm6",       # Registry.EM_COMMON:3021, wsm6scheme
     8: "thompson",   # Registry.EM_COMMON:3024, thompson
+    # Milbrandt-Yau two-moment.  The VALUE is its own coupling name because
+    # the radii are the scheme's own and no other row's: WRF hands
+    # radiation nothing for mp=9 (MILBRANDT2MOM is absent from the
+    # use_mp_re disjunction, module_physics_init.F:1004-1023, so
+    # has_reqc/has_reqi/has_reqs stay 0 and RRTMG computes its own radii),
+    # but the scheme's author DID write the radii -- as a commented-out
+    # block at the end of mp_milbrandt2mom_main
+    # (module_mp_milbrandt2mom.F:3351-3378): ``r_eff = M_D(3)/(2 M_D(2))``
+    # over MY2005a eqn (2), hard-coded for alpha_c=1, mu_c=3 and
+    # alpha_i=0, mu_i=1, giving ``reff_c = 0.664639*iLAMc`` and
+    # ``reff_i = 1.5*iLAMi`` from the scheme's own iLAMDA_x.  gpuwm's
+    # RTE+RRTMGP adapter has no WRF referent for cloud optics (WRF has no
+    # RRTMGP) and already derives Morrison's radii from Morrison's PSD
+    # rather than borrowing WRF's has_reqc=0 fallback, so mp=9 takes the
+    # same design with its own constants: :func:`hydrometeor_paths`
+    # transcribes that block for cloud and ice and extends it to snow with
+    # the scheme's own snow PSD (alpha_s=0 exponential over the Brandes
+    # m(D) pair the pinned snowSpherical=.false. selects), fed by the six
+    # transported number moments.  F_QI/F_QS: Registry.EM_COMMON:3025
+    # declares ``package milbrandt2mom mp_physics==9 -
+    # moist:qv,qc,qr,qi,qs,qg,qh; scalar:qnc,qnr,qni,qns,qng,qnh`` so
+    # cal_cldfra1 takes its QCLD = QI + QC + QS arm
+    # (module_radiation_driver.F:3870-3877), the same as Morrison's.
+    # The row used to be a judged EXCLUSION (recorded below); it was
+    # retired the way P3's was, because with the default variant being
+    # RTE+RRTMGP the exclusion refused mp=9 outright on every bare run.
+    9: "milbrandt2",  # Registry.EM_COMMON:3025, milbrandt2mom
     10: "morrison",  # Registry.EM_COMMON:3026, morr_two_moment
     # WDM6.  The VALUE names a COUPLING, not a scheme -- 28 resolves to
     # "thompson" on the same principle -- and WDM6's coupling is WSM6's,
@@ -371,24 +486,19 @@ _MP_CLOUD_OPTICS_SCHEME = {
 # selector, stating the reason a row would be WRONG -- not a note that one
 # is missing.  A set that merely omits a scheme is an omission, and the
 # next reader cannot tell an omission from an oversight; the tree's other
-# deliberate exclusions (microphysics_transition's
-# UNVALIDATED_MIXED_EDGE_SELECTORS) are recorded the same way.
+# deliberate exclusions (microphysics_transition's named-refusal tables)
+# are recorded the same way.
 #
-# The remaining exclusion is also refused by validate_milbrandt2_options
-# and recorded by tools/build_registry.py. P3 has its own radii remap and
-# separate ice/snow flags above; its former blockers are implemented.
-# An unjudged selector still fails closed with the request for a source row.
-_NO_CLOUD_OPTICS_COUPLING = {
-    9: (
-        "MILBRANDT2MOM is absent from WRF's use_mp_re disjunction "
-        "(phys/module_physics_init.F:1004-1023) and its own "
-        "effective-radius block is commented out "
-        "(phys/module_mp_milbrandt2mom.F:3351-3378), so the scheme hands "
-        "radiation no radii at all; Kessler's row would radiate an "
-        "overcast ice cloud as clear sky and Morrison's would derive the "
-        "radii from a gamma distribution that is not this scheme's."),
-
-}
+# The table is EMPTY: every selector this build accepts has a row above.
+# It stays as a mechanism, not a list -- an unjudged selector still fails
+# closed with the request for a source row or an entry here, and
+# tools/build_registry.py still derives ``constraints.refused_when`` from
+# membership.  Its last entry, mp=9, was retired the day the
+# ``"milbrandt2"`` row landed: the entry said Morrison's row "would derive
+# the radii from a gamma distribution that is not this scheme's", which
+# was true and was the argument for a row of the scheme's own, not for
+# refusing the pairing.  P3's entry went the same way before it.
+_NO_CLOUD_OPTICS_COUPLING: dict[int, str] = {}
 
 #: The two adapters that DO serve these selectors, named by every refusal
 #: so none of them is a dead end.  One copy: a user told different things
@@ -398,12 +508,37 @@ _CLOUD_OPTICS_REMEDY = (
     "the way WRF does), or select ra_lw_physics=0/ra_sw_physics=1 "
     "(Dudhia).")
 
+
+def _require_agreement_with_the_registry() -> None:
+    """The two tables above ARE the registry's ``cloud_optics`` row.
+
+    tools/build_registry.py pulls ``rte_rrtmgp_coupling`` from them, so
+    they are held equal to the generated copy at import: a scheme added
+    to one and not the other fails here, and plan review
+    (gpuwm.physics_registry.consumer_row_gaps) refuses an implemented
+    scheme with no row before step 0 instead of this module refusing it
+    at the first radiation call.
+    """
+
+    from gpuwm.physics_registry import require_consumer_rows_agreement
+
+    observed = {mp: None for mp in _NO_CLOUD_OPTICS_COUPLING}
+    observed.update(_MP_CLOUD_OPTICS_SCHEME)
+    require_consumer_rows_agreement(
+        "gpuwm.core.rrtmgp._MP_CLOUD_OPTICS_SCHEME + _NO_CLOUD_OPTICS_COUPLING",
+        "microphysics", "cloud_optics", observed,
+        project=lambda row: row["rte_rrtmgp_coupling"])
+
+
+_require_agreement_with_the_registry()
+
 #: Schemes whose Registry package carries ``qi`` and ``qs`` in ``moist``,
 #: i.e. the ones for which the radiation driver's ``F_QI``/``F_QS`` are
 #: true and :func:`cal_cldfra1` takes its QCLD = QI + QC + QS arm
 #: (module_radiation_driver.F:3870-3877).  Derived from the table above so
 #: the two can never disagree; Kessler's package has neither species.
-_ICE_ACTIVE_SCHEMES = ("wsm6", "thompson", "morrison", "nssl", "p3")
+_ICE_ACTIVE_SCHEMES = ("wsm6", "thompson", "milbrandt2", "morrison", "nssl",
+                       "p3")
 
 #: The subset of the above whose Registry package ALSO carries ``qs`` in
 #: ``moist``, i.e. the ones for which the driver's ``F_QS`` is true.  P3 is
@@ -412,7 +547,7 @@ _ICE_ACTIVE_SCHEMES = ("wsm6", "thompson", "morrison", "nssl", "p3")
 #: which is what selects cal_cldfra1's own P3 arm
 #: (module_radiation_driver.F:3879-3887) instead of the :3870-3877 arm.
 #: Kessler's package has neither species and is in neither tuple.
-_SNOW_SPECIES_SCHEMES = ("wsm6", "thompson", "morrison", "nssl")
+_SNOW_SPECIES_SCHEMES = ("wsm6", "thompson", "milbrandt2", "morrison", "nssl")
 
 
 def cloud_optics_scheme(mp_physics) -> str:
@@ -1631,6 +1766,18 @@ def hydrometeor_paths(plev, qc, qr=None, qi=None, qs=None, *,
     (``effr`` is accepted for interface parity with Morrison's
     diagnostics and ignored); ice/snow combine by number before clipping
     to the shipped RRTMGP table domains.
+    ``"milbrandt2"`` is mp_physics=9 and is shaped like Morrison's branch
+    with the scheme's own PSD: the radii are WRF's commented-out
+    Milbrandt-Yau block (module_mp_milbrandt2mom.F:3351-3378) evaluated
+    from ``nc``/``ni``/``ns`` -- ``0.664639/lambda_c`` for the alpha_c=1,
+    mu_c=3 cloud distribution and ``1.5/lambda`` for the exponential ice
+    and snow, with the scheme's ``icex`` constants and its ``iLAMmin2``
+    floors -- then the same number-weighted ice/snow merge and clips.  It
+    takes no ``effc/effr/effi/effs``: the scheme never writes them, so
+    ``state.eff*`` for mp=9 hold their allocation-time background and a
+    caller passing them would radiate a constant.  ``play``/``tlay`` are
+    accepted for interface parity with Morrison and not needed (air
+    density cancels between a per-kg mass and a per-kg number).
     """
     import cupy as cp
 
@@ -1798,10 +1945,78 @@ def hydrometeor_paths(plev, qc, qr=None, qi=None, qs=None, *,
             cp.ascontiguousarray(cp.clip(reliq, DTYPE(2.5), DTYPE(21.5))),
             cp.ascontiguousarray(cp.clip(DTYPE(2.0) * reice,
                                          DTYPE(10.0), DTYPE(180.0))))
+    if scheme == "milbrandt2":
+        # Milbrandt-Yau's own radii, transcribed from the block WRF ships
+        # commented out (module_mp_milbrandt2mom.F:3351-3378) and fed by
+        # the six number moments gpuwm transports.  See the constants'
+        # comment block for the moment algebra; the branch is shaped like
+        # Morrison's below because the RADIATIVE side is the same design
+        # -- a two-moment scheme's PSD radii merged by number into the one
+        # RRTMGP ice species -- and only the PSD differs.
+        if any(x is None for x in (nc, ni, ns)):
+            raise ValueError(
+                "milbrandt2 radii require nc, ni and ns (the scheme's "
+                "transported number moments)")
+        if any(value is not None for value in (effc, effr, effi, effs)):
+            raise ValueError(
+                "milbrandt2 supplies no effective radii: mp_physics=9's "
+                "own reff block is commented out "
+                "(module_mp_milbrandt2mom.F:3351-3378) and nothing in "
+                "gpuwm writes state.effc/effi/effs for it, so a value "
+                "passed here is the allocation-time background, not a "
+                "radius the scheme computed; the radii are derived from "
+                "nc/ni/ns instead")
+        from gpuwm.core.milbrandt2_constants import CONSTANTS as _MY2
+
+        ncp, nip, nsp = field(nc, "nc"), field(ni, "ni"), field(ns, "ns")
+        if validate:
+            _require_finite_nonnegative(nc=ncp, ni=nip, ns=nsp)
+            if play is not None or tlay is not None:
+                for name, value in (("play", play), ("tlay", tlay)):
+                    if value is not None and bool(cp.any(~cp.isfinite(
+                            _device_profile(value, qc.shape, name)))):
+                        raise ValueError(
+                            "Milbrandt-Yau thermodynamic inputs must be "
+                            "finite")
+        tiny = DTYPE(1.0e-20)
+        eps_q = DTYPE(MILBRANDT2_EPS_Q)
+        eps_n = DTYPE(MILBRANDT2_EPS_N)
+        ilam_min = DTYPE(MILBRANDT2_ILAMBDA_MIN_M)
+        to_um = DTYPE(1.0e6)
+
+        def inverse_lambda(qmass, number, icex, inverse_dm):
+            # iLAMDA_x(DE, Q, 1/N, icex, 1/dm) = (DE Q icex / N)^(1/dm)
+            # with N per m^3; per-kg numbers cancel DE.  Evaluated where
+            # the species is active; elsewhere the value is masked out.
+            ratio = qmass * DTYPE(icex) / cp.maximum(number, tiny)
+            return cp.power(cp.maximum(ratio, tiny), DTYPE(inverse_dm))
+
+        active_c = (qc > eps_q) & (ncp > eps_n)
+        active_i = (qi > eps_q) & (nip > eps_n)
+        active_s = (qs > eps_q) & (nsp > eps_n)
+        ilam_c = inverse_lambda(qc, ncp, _MY2["icexc9"], 1.0 / 3.0)
+        ilam_i = cp.maximum(
+            ilam_min, inverse_lambda(qi, nip, _MY2["icexi9"], 1.0 / 3.0))
+        ilam_s = cp.maximum(
+            ilam_min, inverse_lambda(qs, nsp, _MY2["iGS20"],
+                                     float(_MY2["idms"])))
+        re_c = DTYPE(MILBRANDT2_CLOUD_RADIUS_PER_ILAMBDA) * ilam_c * to_um
+        re_i = DTYPE(MILBRANDT2_ICE_RADIUS_PER_ILAMBDA) * ilam_i * to_um
+        re_s = DTYPE(MILBRANDT2_SNOW_RADIUS_PER_ILAMBDA) * ilam_s * to_um
+        wi = cp.where(active_i, nip, DTYPE(0.0))
+        ws = cp.where(active_s, nsp, DTYPE(0.0))
+        reliq = cp.where(active_c, re_c, DTYPE(10.0))
+        reice = cp.where(wi + ws > 0, (wi * re_i + ws * re_s)
+                         / cp.maximum(wi + ws, tiny), DTYPE(25.0))
+        return HydrometeorPaths(
+            clwp, ciwp,
+            cp.ascontiguousarray(cp.clip(reliq, DTYPE(2.5), DTYPE(21.5))),
+            cp.ascontiguousarray(cp.clip(DTYPE(2.0) * reice,
+                                         DTYPE(10.0), DTYPE(180.0))))
     if scheme != "morrison":
         raise ValueError(
             "microphysics must be 'kessler', 'wsm6', 'thompson', 'nssl', "
-            "'p3', or 'morrison'")
+            "'p3', 'milbrandt2', or 'morrison'")
     if play is None or tlay is None or any(x is None for x in (nc, nr, ni, ns)):
         raise ValueError("Morrison radii require play, tlay, nc, nr, ni, ns")
     play = _device_profile(play, qc.shape, "play")
@@ -2868,6 +3083,25 @@ class RRTMGPRadiation:
                                for name, value in effective.items()})
                 effective_fields = {
                     name: kwargs[name] for name in effective}
+        elif scheme == "milbrandt2":
+            # Milbrandt-Yau derives its radii from the transported number
+            # moments on EVERY call -- there is no post-update effective
+            # radius to prefer, because the scheme never writes one
+            # (module_mp_milbrandt2mom.F:3351-3378 is commented out and
+            # gpuwm/core/milbrandt2.py writes no eff*), so state.effc/effi/
+            # effs for mp=9 are the allocation-time background for the whole
+            # run and are deliberately NOT read here.  nr rides along for
+            # the fused validator's number scan; hydrometeor_paths ignores
+            # it, as Morrison's branch does (rain carries no radiative mass).
+            for category in ("nc", "nr", "ni", "ns"):
+                value = self._field_from_state(state, (category,), None)
+                if value is None:
+                    raise ValueError(
+                        "Milbrandt-Yau radiation coupling requires "
+                        f"state.{category} (gpuwm/core/milbrandt2.py "
+                        "NUMBER_SPECIES)")
+                numbers[category] = self._columns(value)
+            kwargs.update({"play": play, "tlay": tlay, **numbers})
         elif scheme == "p3":
             # state.effc/state.effi ARE WRF's diag_effc_3d/diag_effi_3d in
             # gpuwm's micron convention (gpuwm/core/p3.py writes them from

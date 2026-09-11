@@ -732,11 +732,14 @@ def test_p3s_clear_air_floor_is_refused_by_name_and_not_by_absence():
     assert "+64 dB" in message and "-62 dB" in message
     assert "module_mp_p3.F" in message
 
-    # And the front door carries it: the config refuses at construction,
-    # not mid-cycle.
-    with pytest.raises(ValueError, match="no single clear-air"):
+    # And the front door refuses at construction, not mid-cycle.  It asks
+    # the H(x) route question before the floor question, so P3 is turned
+    # away as the scheme with no separable operator, and the way out it
+    # names (the clear-air arm off) is one that constructs.
+    with pytest.raises(ValueError, match=r"no H_Z\(x\)") as front:
         _config(clear_air=True, mp_physics=50,
                 analysis_fields=("thp", "qv", "qr", "u", "v"))
+    assert "clear_air=False" in str(front.value)
 
 
 def test_p3s_two_clear_air_values_are_measured_and_not_asserted():
@@ -817,8 +820,71 @@ def test_clear_air_with_neither_a_value_nor_a_scheme_is_refused():
 
 
 def test_clear_air_with_an_unknown_scheme_is_refused_at_config_time():
-    with pytest.raises(ValueError, match="no clear-air reflectivity floor"):
+    # The route question is asked first, so a selector no implemented
+    # option carries is refused as such, before any floor is looked up.
+    with pytest.raises(ValueError,
+                       match="not an implemented microphysics option"):
         _config(clear_air=True, mp_physics=99)
+
+def test_a_stated_floor_that_disagrees_with_the_scheme_is_refused():
+    """The pairing the table exists for, arrived at from the other side.
+
+    Both halves stated and disagreeing was the one arrangement nothing
+    checked: the derive-it route refuses an unknown scheme and the
+    adapter refuses a missing value, but ``mp_physics=9`` beside
+    ``clear_air_value_dbz=-35.0`` was accepted and every clear-air
+    observation then carried a number 64 dB from what the operator writes
+    in the same cells.  docs/public/PHYSICS.md says the door refuses it,
+    so the door refuses it.
+    """
+    with pytest.raises(RadarAssimilationError) as excinfo:
+        _config(clear_air=True, mp_physics=9, clear_air_value_dbz=-35.0,
+                analysis_fields=("thp", "qv", "qr", "nr", "u", "v"))
+    message = str(excinfo.value)
+    assert "-35.0" in message and "-99.0" in message
+    assert "64 dB" in message
+    # The way out, both halves of it.
+    assert "Drop clear_air_value_dbz" in message
+    assert "clear_air=False" in message
+
+    # And the same disagreement the other way round.
+    with pytest.raises(RadarAssimilationError, match="64 dB"):
+        _config(clear_air=True, mp_physics=10, clear_air_value_dbz=-99.0)
+    with pytest.raises(RadarAssimilationError, match="35 dB"):
+        _config(clear_air=True, mp_physics=18, clear_air_value_dbz=-35.0,
+                analysis_fields=("thp", "qv", "qr", "qnr", "u", "v"))
+
+
+def test_a_stated_floor_equal_to_the_schemes_is_accepted():
+    """Agreement is not refused, and it is the same number the operator uses."""
+
+    config = _config(clear_air=True, mp_physics=9,
+                     clear_air_value_dbz=obsop.clear_air_floor_dbz(9),
+                     analysis_fields=("thp", "qv", "qr", "nr", "u", "v"))
+    assert config.clear_air_value_dbz == -99.0
+    assert obsop.clear_air_floor_dbz(9) == -99.0
+    # The majority family too, where the explicit number is the common one.
+    assert _config(clear_air=True, mp_physics=10,
+                   clear_air_value_dbz=-35.0).clear_air_value_dbz == -35.0
+
+
+def test_a_scheme_with_no_single_floor_keeps_the_explicit_route():
+    """The mismatch check compares against a READ floor or not at all.
+
+    P3 reports two clear-air values, so there is no number to disagree
+    with and ``CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER`` says an explicit value
+    is honoured as a claim about H(x).  That route must not be broken by
+    a check that assumes every scheme has one floor -- what refuses mp=50
+    here is the reflectivity route it has no H(x) for, which is a
+    different refusal with a different way out.
+    """
+    assert 50 not in obsop.CLEAR_AIR_FLOOR_DBZ
+
+    with pytest.raises(RadarAssimilationError) as excinfo:
+        _config(clear_air=True, mp_physics=50, clear_air_value_dbz=-35.0,
+                analysis_fields=("thp", "qv", "qr", "u", "v"))
+    message = str(excinfo.value)
+    assert "disagrees with mp_physics" not in message
 
 
 def test_clear_air_error_inflation_below_one_is_refused():

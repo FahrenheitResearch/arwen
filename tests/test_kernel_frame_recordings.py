@@ -38,8 +38,14 @@ real compiler behind them.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
+import tomllib
 from pathlib import Path
+
+import pytest
 
 from gpuwm.core import preflight as pf
 
@@ -221,3 +227,183 @@ def test_complete_recordings_cover_the_current_standalone_source_set():
     for recording in pf.KERNEL_LOCAL_FRAME_RECORDINGS:
         if recording.complete:
             assert set(recording.frames) == standalone, recording.box
+
+
+def test_every_noahmp_composed_recording_is_its_own_platform_and_stays_out_of_the_standalone_tables():
+    """The Noah-MP composed units are priced from their own table.
+
+    One row per compile platform, each recognised from its own
+    fingerprint, and none of the composed keys in any standalone table:
+    the standalone census is read by a different instrument (the ``*.cu``
+    glob) that cannot compile a composition, so a composed key there
+    would be a number nobody measured.  A card on an unrecorded platform
+    is priced from the ceiling over THESE rows, with the basis stated
+    (tests/test_noahmp_frame_provenance.py holds that, and the shape and
+    identity of each row); this is the structural half.
+    """
+    from gpuwm.core import kernel_frame_recordings as kfr
+    from gpuwm.core.noahmp_kernel_sources import NOAHMP_PRICING_MODULES
+
+    rows = kfr.NOAHMP_COMPOSED_FRAME_RECORDINGS
+    assert rows, "with no row there is no ceiling, and scheme 4 is refused on every card"
+    keys = [row.platform_key for row in rows]
+    assert len(keys) == len(set(keys)), "one row per compile platform"
+    for row in rows:
+        assert isinstance(row, kfr.ComposedUnitFrameRecording)
+        assert set(row.frames) == set(NOAHMP_PRICING_MODULES), row.box
+        assert row.platform_key == (row.compute_capability, row.nvrtc_build)
+        assert kfr.noahmp_composed_recording_for(
+            {"device_compute_capability": row.compute_capability,
+             "nvrtc_build": row.nvrtc_build}) is row
+    composed = {key for key in NOAHMP_PRICING_MODULES
+                if key.endswith(("_composed", "_runtime"))}
+    assert composed.isdisjoint(kfr.frame_ceiling())
+    assert composed.isdisjoint(pf.KERNEL_MAX_LOCAL_SIZE_BYTES)
+    assert composed.isdisjoint(pf.CHAINED_TRANSLATION_UNIT_FRAMES)
+    for row in pf.KERNEL_LOCAL_FRAME_RECORDINGS:
+        assert composed.isdisjoint(row.frames), row.box
+    assert kfr.noahmp_composed_recording_for(
+        {"device_compute_capability": "unavailable",
+         "nvrtc_build": "unavailable"}) is None
+
+
+# ---------------------------------------------------------------------------
+# The compile platform a fresh install gets is set by the package's own
+# dependency spec, and the Noah-MP rows must include it.
+# ---------------------------------------------------------------------------
+
+def _gpu_extras() -> dict[str, list[str]]:
+    with (ROOT / "pyproject.toml").open("rb") as stream:
+        extras = tomllib.load(stream)["project"]["optional-dependencies"]
+    return {name: list(reqs) for name, reqs in extras.items()
+            if name.startswith("gpu-cu")}
+
+
+def test_every_gpu_extra_has_one_current_resolved_toolchain_pin():
+    """The declaration in the tree IS the extra, byte for byte.
+
+    The breakage this prevents: someone widens or re-pins
+    ``cupy-cuda13x[ctk]`` in pyproject and the declared resolution -- the
+    NVRTC build every Noah-MP admission claim rests on -- silently
+    describes a requirement the package no longer ships.  One current pin
+    per GPU extra, its requirement equal to the extra's single entry, and
+    every superseded pin still naming a requirement that extra carries.
+    """
+    from gpuwm.core import kernel_frame_recordings as kfr
+
+    extras = _gpu_extras()
+    assert extras, "pyproject declares no gpu-cu* extra"
+    current = [pin for pin in kfr.RESOLVED_TOOLCHAIN_PINS if pin.current]
+    assert sorted(pin.extra for pin in current) == sorted(extras), (
+        "exactly one current pin per gpu-cu* extra")
+    for pin in current:
+        assert extras[pin.extra] == [pin.requirement], (
+            f"pyproject's {pin.extra} is {extras[pin.extra]}; the declared "
+            f"resolution is of {pin.requirement!r}.  Re-resolve with "
+            "`python tools/measure_noahmp_frames.py resolve` and re-declare")
+    for pin in kfr.RESOLVED_TOOLCHAIN_PINS:
+        assert isinstance(pin, kfr.ResolvedToolchainPin)
+        assert pin.requirement in extras.get(pin.extra, ()), pin
+        assert re.fullmatch(r"\d+\.\d+\.\d+", pin.nvrtc_build), pin.nvrtc_build
+        assert re.fullmatch(r"\d+(\.\d+)+", pin.cuda_toolkit), pin.cuda_toolkit
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", pin.resolved), pin.resolved
+        major = pin.nvrtc_build.split(".")[0]
+        assert pin.cuda_toolkit.split(".")[0] == major, (
+            "an NVRTC build and its cuda-toolkit share a CUDA major")
+        assert pin.extra == f"gpu-cu{major}", (
+            f"{pin.extra} cannot resolve to a CUDA {major} compiler")
+        assert pin.nvrtc_distribution.startswith("nvidia-cuda-nvrtc")
+        assert all(re.fullmatch(r"\d+", arch) for arch in pin.noahmp_architectures)
+
+
+def test_the_recorded_noahmp_platforms_include_what_the_spec_resolves_to():
+    """A fresh install must land on a recorded platform, or the docs lie.
+
+    The breakage this prevents is the one that shipped for a day: every
+    Noah-MP row was read on NVRTC 13.3.33 from a venv resolved in the
+    cuda-toolkit 13.3.x window, cuda-toolkit 13.4.1 (2026-09-09) moved the
+    ``[ctk]`` resolution to nvidia-cuda-nvrtc 13.4.59, and from then on
+    `pip install gpuwm[gpu-cu13]` on the very card class the release named
+    refused `gpuwm check` with "no Noah-MP local-frame recording exists for
+    this card class -- sm_120 at NVRTC 13.4.59".  An unrecorded platform is
+    priced from the ceiling now rather than refused, but the docs name the
+    platforms that are MEASURED, and a pin that lists an architecture
+    without a row makes that claim false.  So: every pin that lists an
+    architecture has a composed row at exactly (architecture, its NVRTC
+    build); every row's build is one some pin declares, so a reading
+    taken from a borrowed library is written down as the resolution window
+    it belongs to; every row's architecture is listed by its build's pin,
+    so a row cannot arrive without the pin admitting it; and at least one
+    current install is measured somewhere, or the release ships every
+    Noah-MP price from a ceiling nobody can compare with a reading.
+    """
+    from gpuwm.core import kernel_frame_recordings as kfr
+
+    pins = kfr.RESOLVED_TOOLCHAIN_PINS
+    for pin in pins:
+        for arch in pin.noahmp_architectures:
+            row = kfr.noahmp_composed_recording_for(
+                {"device_compute_capability": arch, "nvrtc_build": pin.nvrtc_build})
+            assert row is not None, (
+                f"a fresh `pip install gpuwm[{pin.extra}]` compiles with NVRTC "
+                f"{pin.nvrtc_build} (cuda-toolkit {pin.cuda_toolkit}, resolved "
+                f"{pin.resolved}) and the tree has no Noah-MP row for sm_{arch} "
+                "on it: the docs name that platform as measured while every "
+                "sf_surface_physics = 4 run on such an install is priced from "
+                "the ceiling.  Take the row with `python "
+                "tools/measure_noahmp_frames.py measure` inside that environment "
+                f"on an sm_{arch} card, or drop the architecture from the pin")
+            assert row.compute_capability == arch
+            assert row.nvrtc_build == pin.nvrtc_build
+    declared_builds = {pin.nvrtc_build for pin in pins}
+    for row in kfr.NOAHMP_COMPOSED_FRAME_RECORDINGS:
+        assert row.nvrtc_build in declared_builds, (
+            f"the {row.box} row was read on NVRTC {row.nvrtc_build}, which no "
+            "declared resolution of any GPU extra installs; say which "
+            "resolution window it belongs to in RESOLVED_TOOLCHAIN_PINS")
+        assert any(row.compute_capability in pin.noahmp_architectures
+                   for pin in pins if pin.nvrtc_build == row.nvrtc_build), (
+            f"the pin for NVRTC {row.nvrtc_build} does not admit Noah-MP on "
+            f"sm_{row.compute_capability}, yet a row exists for it")
+    assert any(pin.current and pin.noahmp_architectures for pin in pins), (
+        "no current install of any GPU extra lands on a measured Noah-MP "
+        "platform: every sf_surface_physics = 4 price this release gives "
+        "would come from a ceiling no fresh install can check against a "
+        "reading of its own")
+
+
+@pytest.mark.network
+def test_the_declared_resolution_is_what_the_index_resolves_today():
+    """The pin declaration is re-checked against the live index.
+
+    Gated twice -- the ``network`` marker and GPUWM_NETWORK_TESTS=1 --
+    because it talks to PyPI.  Exit 1 here means a new cuda-toolkit release
+    moved the compiler every fresh install gets, and the Noah-MP table
+    needs a row on that build before the next cut.
+    """
+    if os.environ.get("GPUWM_NETWORK_TESTS") != "1":
+        pytest.skip("live index resolution needs GPUWM_NETWORK_TESTS=1")
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "tools/measure_noahmp_frames.py"), "resolve"],
+        capture_output=True, text=True, cwd=str(ROOT))
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_assumed_bound_is_never_below_a_reading():
+    """What a module with no reading anywhere is charged.
+
+    It must be a BOUND: not below any frame this tree has recorded, for
+    a standalone kernel or for a Noah-MP composed unit.  Pricing from it
+    is what a missing reading costs; refusing the run was the defect it
+    replaced.
+    """
+    from gpuwm.core import kernel_frame_recordings as kfr
+
+    bound = kfr.assumed_frame_bound()
+    assert bound > 0
+    for module, frame in kfr.frame_ceiling().items():
+        assert bound >= frame, f"{module} is recorded above the assumed bound"
+    for row in kfr.NOAHMP_COMPOSED_FRAME_RECORDINGS:
+        for key, frame in row.frames.items():
+            assert bound >= frame, f"{key} is recorded above the assumed bound"
+    assert kfr.ASSUMED_BOUND_PHRASE == "assumed bound, not measured"

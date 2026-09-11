@@ -70,6 +70,14 @@ WRF_RESOLVED_UNITS_NUMBER_PAREN = "  kg(-1)"
 WRF_RESOLVED_UNITS_NUMBER_PLAIN = "  kg-1"
 
 
+#: Registry members stock WRF allocates for a package that gpuwm has no
+#: species for.  They are still WRITTEN -- real.exe writes them too, at
+#: zero, and a stock file missing a registered member is not a stock file --
+#: but there is no prepared state to look for, so the exporter must not go
+#: looking and must not report the absence as a gap.
+_NO_GPUWM_SPECIES = frozenset({"qnbca"})
+
+
 @dataclass(frozen=True)
 class WrfInputField:
     """One package member written to stock-WRF initialization files."""
@@ -81,6 +89,29 @@ class WrfInputField:
     dimensions: tuple[str, ...] = WRFINPUT_3D_DIMS
     units: str = "kg kg-1"
     initialization: str = "zero_if_source_absent"
+    #: The gpuwm state attribute holding this member's prepared values,
+    #: when it differs from WRF's Registry name, and ``None`` when gpuwm
+    #: has no such species at all (the member is still written, at zero,
+    #: because stock WRF registers it for the package).
+    #:
+    #: It exists because the exporter used to read
+    #: ``state/{registry_name}`` and gpuwm drops WRF's leading ``q`` on
+    #: exactly the aerosol-aware rows: qnc/qnwfa/qnifa/qnwfa2d/qnifa2d
+    #: are nc/nwfa/nifa/nwfa2d/nifa2d in the prepared cache, so every one
+    #: of them missed and exported zeros even on a run whose WIF
+    #: climatology lane had filled them.  A transform ("strip a q") would
+    #: be wrong for qni/qnr/qns/qng/qnh/qndrop/qnn/qvolg/qvolh/qir/qib,
+    #: which DO exist under their Registry names, so the exception is
+    #: declared per row rather than computed.
+    state_name: str | None = None
+
+    @property
+    def state_key(self) -> str | None:
+        """Prepared-cache key for this member, or ``None`` when gpuwm has none."""
+
+        if self.state_name is None and self.registry_name in _NO_GPUWM_SPECIES:
+            return None
+        return self.state_name or self.registry_name
 
 
 @dataclass(frozen=True)
@@ -131,12 +162,14 @@ def _moist(name: str, netcdf_name: str) -> WrfInputField:
 
 def _scalar(
         name: str, netcdf_name: str, *, units: str = "# kg-1",
+        state_name: str | None = None,
 ) -> WrfInputField:
     return WrfInputField(
         registry_name=name,
         netcdf_name=netcdf_name,
         collection="scalar",
         units=units,
+        state_name=state_name,
     )
 
 
@@ -156,7 +189,8 @@ _EFFECTIVE_RADII = (
 )
 
 
-def _aerosol_emission(name: str, netcdf_name: str) -> WrfInputField:
+def _aerosol_emission(name: str, netcdf_name: str, *,
+                      state_name: str | None = None) -> WrfInputField:
     """One of mp=28's two 2-D surface aerosol emission members.
 
     These are ``state:`` members of the ``thompsonaero`` package rather than
@@ -185,6 +219,7 @@ def _aerosol_emission(name: str, netcdf_name: str) -> WrfInputField:
         collection="state",
         dimensions=WRFINPUT_2D_DIMS,
         units="kg-1 s-1",
+        state_name=state_name,
     )
 
 
@@ -284,18 +319,16 @@ _INVENTORIES = {
     # for wif_input_opt), and that is a gpuwm scope statement, not a claim
     # about WRF's package.
     #
-    # KNOWN DOWNSTREAM GAP, named here because this row is what makes it
-    # reachable: gpuwm/wrf_direct.py's ``_PACKAGE_FIELD_METADATA`` (:241-252)
-    # has no entry for QNCLOUD, QNWFA, QNIFA or QNBCA, and
-    # ``_physics_contract_bundle`` (:273-277) SILENTLY skips any inventoried
-    # field the dict does not name, while ``_write_wrfinput`` (:1249-1262)
-    # iterates the contract rather than the field map.  A direct-WRF stock
-    # export of an mp=28 domain therefore writes 8 of these 14 variables and
-    # drops 6 without a word.  It additionally assumes every package member
-    # is 3-D (``np.zeros(qv.shape)``, :1199-1207; the QCLOUD prototype clone
-    # at :279-290), which QNWFA2D/QNIFA2D are not.  That file is not owned
-    # by this package; an integration request is filed with the exact
-    # entries and the 2-D branch it needs.
+    # THAT GAP IS CLOSED (audit R-054).  The block that stood here recorded
+    # a downstream defect and filed a request instead of fixing it: for
+    # want of six rows in gpuwm/wrf_direct.py's ``_PACKAGE_FIELD_METADATA``
+    # a stock export of an mp=28 domain wrote 8 of these 14 variables and
+    # dropped 6 with no error and no receipt line, and the two 2-D members
+    # would have been written with the 3-D QCLOUD prototype's rank if the
+    # rows had simply been added.  wrf_direct.py now carries all six rows,
+    # a 2-D prototype branch, and the per-row ``state_name`` above; the
+    # agreement check at its import holds this inventory and that table
+    # equal, so a future package member cannot be dropped silently either.
     28: StockWrfPhysicsInventory(
         mp_physics=28,
         scheme="Thompson aerosol-aware",
@@ -306,12 +339,17 @@ _INVENTORIES = {
             # blank where the Registry line shows '#'.
             _scalar("qni", "QNICE", units=WRF_RESOLVED_UNITS_NUMBER_PLAIN),
             _scalar("qnr", "QNRAIN", units=WRF_RESOLVED_UNITS_NUMBER_PAREN),
-            _scalar("qnc", "QNCLOUD", units=WRF_RESOLVED_UNITS_NUMBER_PAREN),
-            _scalar("qnwfa", "QNWFA", units=WRF_RESOLVED_UNITS_NUMBER_PAREN),
-            _scalar("qnifa", "QNIFA", units=WRF_RESOLVED_UNITS_NUMBER_PAREN),
+            _scalar("qnc", "QNCLOUD", units=WRF_RESOLVED_UNITS_NUMBER_PAREN,
+                    state_name="nc"),
+            _scalar("qnwfa", "QNWFA", units=WRF_RESOLVED_UNITS_NUMBER_PAREN,
+                    state_name="nwfa"),
+            _scalar("qnifa", "QNIFA", units=WRF_RESOLVED_UNITS_NUMBER_PAREN,
+                    state_name="nifa"),
+            # No gpuwm species: written at zero, which IS stock behaviour
+            # (real.exe's aer_init_opt=0 arm writes exact 0.0 for it).
             _scalar("qnbca", "QNBCA", units=WRF_RESOLVED_UNITS_NUMBER_PAREN),
-            _aerosol_emission("qnwfa2d", "QNWFA2D"),
-            _aerosol_emission("qnifa2d", "QNIFA2D"),
+            _aerosol_emission("qnwfa2d", "QNWFA2D", state_name="nwfa2d"),
+            _aerosol_emission("qnifa2d", "QNIFA2D", state_name="nifa2d"),
         ),
         runtime_state_not_wrfinput=_EFFECTIVE_RADII + (
             # Registry.EM_COMMON:1738-1739.  taod5503d is bare ``r`` and
@@ -391,6 +429,43 @@ def supported_stock_wrf_mp_physics() -> tuple[int, ...]:
     return tuple(sorted(_INVENTORIES))
 
 
+def _require_agreement_with_the_registry() -> None:
+    """The registry's ``consumers.stock_wrf_export`` rows ARE this table.
+
+    Generated from ``_INVENTORIES`` by tools/build_registry.py and held to
+    it here, so a package row added without a rebuilt registry -- or a
+    registry claiming an inventory this module does not carry -- fails this
+    import.  The four uninventoried schemes are an export-only scope
+    decision the row itself states (``inventoried: false`` with its
+    reason); they are not absences to cite, because the registry publishes
+    a row for them too.
+    """
+
+    from gpuwm.physics_registry import require_consumer_rows_agreement
+
+    require_consumer_rows_agreement(
+        "gpuwm.wrf_physics_inventory._INVENTORIES",
+        "microphysics", "stock_wrf_export",
+        {mp: {"inventoried": True,
+              "netcdf_names": [field.netcdf_name
+                               for field in inventory.wrfinput_fields]}
+         for mp, inventory in _INVENTORIES.items()},
+        project=lambda row: (
+            {"inventoried": True,
+             "netcdf_names": [field["netcdf_name"]
+                              for field in row["wrfinput_fields"]]}
+            if row.get("inventoried") is True else None),
+        cited_absences={
+            0: "export-only scope: no evidenced Registry.EM_COMMON package contract packaged (audit R-014)",
+            1: "export-only scope: no evidenced Registry.EM_COMMON package contract packaged (audit R-014)",
+            9: "export-only scope: no evidenced Registry.EM_COMMON package contract packaged (audit R-014)",
+            16: "export-only scope: no evidenced Registry.EM_COMMON package contract packaged (audit R-014)",
+        })
+
+
+_require_agreement_with_the_registry()
+
+
 def stock_wrf_physics_inventory(mp_physics: int) -> StockWrfPhysicsInventory:
     """Return an exact v4.6.1 package inventory or fail closed."""
 
@@ -403,10 +478,17 @@ def stock_wrf_physics_inventory(mp_physics: int) -> StockWrfPhysicsInventory:
     except KeyError:
         supported = ", ".join(str(value) for value in sorted(_INVENTORIES))
         raise ValueError(
-            f"stock-WRF initialization inventory for mp_physics={mp_physics} "
-            f"is not declared; currently evidenced from WRF v4.6.1: {supported}. "
-            "Add the exact Registry package and real.exe initialization policy "
-            "before enabling this configuration."
+            f"stock-WRF wrfinput export for mp_physics={mp_physics} is not "
+            "available on this route: it writes initialization files for an "
+            "UNCHANGED WRF v4.6.1 executable, and no evidenced "
+            "Registry.EM_COMMON package contract (member list plus "
+            "real.exe initialized-state policy) is packaged for that "
+            "selector, so the exported wrfinput would under-declare its own "
+            "package's hydrometeors and moments. This says NOTHING about "
+            "running the scheme in ArWen -- ArWen's own forecast route runs "
+            "every scheme the physics registry publishes as implemented, "
+            "and the runtime verdict is answered separately. Evidenced "
+            f"package contracts: {supported}."
         ) from None
 
 

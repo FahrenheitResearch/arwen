@@ -371,6 +371,8 @@ def build_parser() -> argparse.ArgumentParser:
     companion_domains_register_cli(sub)
     from gpuwm.companion_forcing import register_cli as companion_forcing_register_cli
     companion_forcing_register_cli(sub)
+    from gpuwm.companion_setups import register_cli as companion_setups_register_cli
+    companion_setups_register_cli(sub)
     stream_register_cli(sub)
     geog_register_cli(sub)
     domain_register_cli(sub)
@@ -1046,6 +1048,16 @@ def _dispatch(args) -> int:
             output = runtime.write_ingest(exp, data, args.output)
             print(f"ingest {exp.name}: {output}")
         else:
+            # BEFORE THE RUN IS LAUNCHED, not inside it.  The machine
+            # preconditions (gpuwm.config.RUN_PREPARATION_PRECONDITIONS)
+            # are raised by ``initialize_real`` as the floor, and on this
+            # route that floor sits inside runtime's time loop -- after
+            # the snapshot has been read and interpolated onto the grid.
+            # The question is about the install and is answerable here,
+            # so the refusal costs the reader nothing.
+            from gpuwm.config import validate_experiment_preparation
+
+            validate_experiment_preparation(exp)
             if not args.no_supervise:
                 from gpuwm.supervisor import supervise_from_cli
                 return supervise_from_cli(args)

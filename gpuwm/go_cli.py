@@ -409,6 +409,22 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     except Exception as error:  # a config that will not load is the finding
         raise GoRefusal(f"{config} does not load as an experiment: "
                         f"{error}") from error
+    # WHAT THIS MACHINE CANNOT PREPARE IS REFUSED HERE, on the near side
+    # of the fetch.  Every precondition in the inventory is a question
+    # about the INSTALL -- is a 225 MB dataset staged here -- answerable
+    # the moment the experiment loads.  The floor that raises the same
+    # sentence, ``initialize_real``, sits in the PREPARE stage below:
+    # after the authority stage, after the whole cycle has been
+    # downloaded, after the manifest of those bytes has been verified.
+    # Asking there and only there is the "wizard says PASS, fetch 10-15
+    # GB, then refuse" shape, and it is the shape the route table this
+    # precondition replaced was written against.
+    from gpuwm.config import experiment_preparation_refusals
+
+    unmet = experiment_preparation_refusals(experiment)
+    if unmet:
+        raise GoRefusal("\n".join(
+            f"{label}: {sentence}" for label, sentence in unmet))
     # ``profile`` may be None: the runner executes the config's own
     # suite as written (owner ruling 2026-07-31), so a config matching
     # no shipped profile is not a refusal any more -- the chain just
@@ -1652,10 +1668,26 @@ def memory_refusal_text(gate: dict) -> str:
     free_words = ("" if free is None else
                   f", and the card has {free / (1024 ** 3):.2f} GiB "
                   "free right now")
+    # THE ARITHMETIC UNDER A STREAMED REFUSAL.  The verdict above is one
+    # sentence with one total in it; a user reporting that total has no
+    # way to say which term produced it, and the 2.7.2 report of a
+    # streamed run priced at 2.4x its resident one was exactly that -- a
+    # total nobody could take apart.  The envelope's own named terms go
+    # under it, so the screenshot carries the sum and its parts.
+    phases = gate.get("phases")
+    env = getattr(phases, "streamed", None)
+    lines = getattr(env, "terms_lines", None)
+    terms = "" if lines is None else "".join(
+        f"\n    {line}" for line in lines())
+    streamed_remedy = ("" if env is None or getattr(env, "rows", None) is not None
+                       or not getattr(env, "tile_nx", None) else
+                       "\n  remedy, streamed: a smaller [tiles] tile_nx/tile_ny "
+                       "shrinks the buffer terms above; nbuffers = 1 halves "
+                       "them; the fixed floors do not move with the tile")
     return (
         f"this configuration will not fit: {gate['verdict']}{free_words}."
         "  Refusing here, BEFORE the fetch stage downloads the forcing "
-        "data, rather than in preprocessing after it.\n"
+        f"data, rather than in preprocessing after it.{terms}{streamed_remedy}\n"
         "  remedy: re-size against this machine -- gpuwm domain ... "
         "(bare, it measures this card) -- or pick a lighter "
         "--physics-profile (the wizard's refusal ranks them by priced "

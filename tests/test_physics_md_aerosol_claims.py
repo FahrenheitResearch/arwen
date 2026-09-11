@@ -1471,8 +1471,12 @@ _MUST_BE_FINDABLE = {
     "the spec_zone ring ends at exactly zero aerosol": "spec_zone",
     "MYNN does not mix nc/nwfa/nifa": "bl_mynn_mixscalars",
     "MYNN's snow contract for mp=28": "flag_qs",
-    "mixed mp8/mp28 nesting is refused":
-        "unsupported-component-transition",
+    # Audit R-004 ratified the mixed edge, so what a reader must find is
+    # no longer a refusal but the CLOSURE: the values a mixed edge seeds
+    # into an mp=28 child, and the fact that they are the scheme's own
+    # rather than the parent's aerosol field.
+    "mixed mp8/mp28 nesting seeds WRF's own non-aerosol-aware values":
+        "is_aerosol_aware",
     "mp=28's RSLF is contraction-pinned while mp=8's is not": "RSLF",
     "WRF real.exe refuses this configuration":
         "module_initialize_real.F:2734-2736",

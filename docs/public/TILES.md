@@ -179,6 +179,13 @@ The two budget keys, `vram_budget_bytes` and `host_budget_bytes`, are
 tree decision prices every domain against one number.  Set them on the
 tree-wide table.
 
+`max_redundancy` is the planner's halo-work limit: the multiple of the
+necessary work a tiling may do on halo cells before the planner refuses
+it (4.0 when the key is absent).  A number replaces the limit; `false`
+lifts it, which is the way out the planner names when a domain is too
+small to tile efficiently at its halo and would otherwise be refused at
+any budget.  It may sit on the tree-wide table or on one domain's.
+
 A per-domain road contributes nothing to the restart identity, on the same
 law as the tree-wide one: a domain that streamed must be able to resume
 resident, and one that outgrew its card must be able to resume streamed.

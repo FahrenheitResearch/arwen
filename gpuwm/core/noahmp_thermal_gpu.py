@@ -4,8 +4,9 @@ One thread per column/case.  The device layout is the flat slot layout the
 oracle harness packs, so ``gpuwm/data/noahmp/oracle/noahmp-thermal.csv`` is
 replayed slot for slot with no repacking on either side.
 
-These wrappers are validation surfaces for the leaf ports, not a runtime path:
-Noah-MP is not dispatchable and ``sf_surface_physics=4`` stays blocked.
+These wrappers are used by both the leaf parity tests and the vectorised
+Noah-MP runtime, including the inherited thermoprop export. Scheme-4 memory
+admission requires a measurement of this exact composition on the target.
 
 ``noahmp_thermal.cu`` is compiled **after** ``noahmp_leaves.cu``.  PHASECHANGE
 and FRH2O need glibc 2.39's ``powf`` and ``logf`` on the device, and there must
@@ -18,18 +19,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
 
 import numpy as np
 
-from gpuwm.certify.kernel_manifest import record_module
-from gpuwm.core.kernels import _preamble
-
-_KDIR = Path(__file__).resolve().parent / "kernels"
-
-# The glibc transcendental block this group borrows lives in noahmp_leaves.cu.
-_LIBM_SOURCE = _KDIR / "noahmp_leaves.cu"
-_THERMAL_SOURCE = _KDIR / "noahmp_thermal.cu"
+from gpuwm.core.noahmp_kernel_sources import (
+    DEFAULT_OPTIONS, compile_runtime_unit, runtime_unit)
 
 
 @dataclass(frozen=True)
@@ -61,24 +55,17 @@ _THREADS = 64
 
 def thermal_source() -> str:
     """The exact translation unit the thermal kernels are compiled from."""
-    return (_preamble()
-            + _LIBM_SOURCE.read_text(encoding="ascii")
-            + _THERMAL_SOURCE.read_text(encoding="ascii"))
+    return runtime_unit("noahmp_thermal").source
 
 
 @lru_cache(maxsize=None)
 def _module(options: tuple[str, ...]):
-    import cupy as cp
-
-    source = thermal_source()
-    module = cp.RawModule(code=source, options=options)
-    module.compile()
-    record_module("gpuwm.core.noahmp_thermal_gpu:thermal",
-                  source=source, options=options, module=module)
-    return module
+    return compile_runtime_unit(
+        "noahmp_thermal", module_key="gpuwm.core.noahmp_thermal_gpu:thermal",
+        options=options)
 
 
-def thermal_module(options: tuple[str, ...] = ("-std=c++17",)):
+def thermal_module(options: tuple[str, ...] = DEFAULT_OPTIONS):
     """Compile (once per option set) the composed thermal translation unit."""
     return _module(tuple(options))
 

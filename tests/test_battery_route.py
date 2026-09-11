@@ -198,6 +198,12 @@ def test_faithful_arm_is_admitted_by_every_static_gate():
     assert _gate(receipt, "hrrr.route_inputs.physics")["status"] == "ADMITS"
     assert _gate(receipt, "hrrr.hierarchy.slice")["status"] == "ADMITS"
     assert _gate(receipt, "run_config.validate.d01")["status"] == "ADMITS"
+    # The machine's own preconditions are asked HERE, before a byte is
+    # fetched, and not by the configuration battery beside them: an
+    # install-state question that lived in validate_run_config refused the
+    # namelist importer, which translates a file and runs nothing.  This
+    # tool is the surface that keeps asking it early.
+    assert _gate(receipt, "run_preparation.d01")["status"] == "ADMITS"
     assert _gate(receipt, "hrrr.coverage")["status"] == "ADMITS"
 
 

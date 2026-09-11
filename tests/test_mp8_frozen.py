@@ -390,15 +390,38 @@ FROZEN_MODULE_DIGESTS = {
         '7aa2d1102fbbedaa9655850d1dc3403f3d995f9d1167da8fdd5a8ab7a2ac569f',
         '7b627569381652445f132287d81bda319eb5c7a156f854c46e034cdb98a226ac'),
     'nest_microphysics': (
-        # Re-pinned for the mp=50 (P3) mixed-edge ratification: the generic
-        # microphysics_edge_field kernel gained the source_qir/source_qib
-        # inputs, a source_mp parameter and the two P3 arms.  The frozen
-        # mp8_to_mp18_mass_diagnosed_field entry point in the same file is
-        # byte-unchanged (its own bitwise test still binds it), and no mp=8
-        # trajectory reaches the changed kernel: the edge matrix launches
-        # only on MIXED nest edges, which an all-mp8 run never resolves.
-        'add31c6944c01f68c05c37480f34be461be81de377f8229ed3c63368c262cedc',
-        'fdf0a5b48cc21accb6dc74c2209538d75dbcb20c49e5be5a041fd21f4d1faad7'),
+        # Re-pinned for the mp=9 (Milbrandt-Yau) mixed-edge ratification
+        # (audit R-003): the generic microphysics_edge_field kernel gained
+        # the parent's base and perturbation potential temperature, its
+        # pressure and the scheme's ck constant vector, plus the reference
+        # pressure / R-over-cp pair and the flag saying whether the base
+        # theta is a column or a field -- all read by the mp=9 arm alone,
+        # placeholders for every other target -- plus my2_edge_field and
+        # the two MY2 helper functions.  The absolute temperature that arm
+        # reads is formed IN the kernel: the host has no array to form it
+        # into on the tile-streamed nest route, where the launcher is
+        # handed transition_parent_window's bounded namespace rather than a
+        # DomainState, and a windowed mp=9 edge died there with an
+        # AttributeError.  The frozen mp8_to_mp18_mass_diagnosed_field
+        # entry point in the same file is byte-unchanged (its own bitwise
+        # test still binds it), the P3 and NSSL arms are untouched, and no
+        # mp=8 trajectory reaches the changed kernel: the edge matrix
+        # launches only on MIXED nest edges, which an all-mp8 run never
+        # resolves.  MEASURED on the 5070 Ti by
+        # tests/test_milbrandt_nest_edge_gpu.py, whose windowed arm is
+        # equal cell for cell to the resident parent's.  Previously pinned
+        # at 541288c6/1598bc17 for the host-built temperature plane, and at
+        # add31c69/fdf0a5b4 for the mp=50 ratification.
+        #
+        # RE-PINNED AGAIN for the mp=16 / mp=28 mixed-edge ratification:
+        # the same generic kernel gained one wdm6_ccn scalar and the two
+        # entry arms, and its field-code comment grew codes 24, 25 and 26.
+        # Both reasons above hold unchanged -- the frozen
+        # mp8_to_mp18_mass_diagnosed_field entry point is byte-identical,
+        # and an all-mp8 run never launches the edge matrix at all.
+        # Previously pinned at 9031874d/ae17b2a2.
+        '6584d2be8f237eb3991ab4ccef25d5bf8e9426de1dc5f4c2884afd624ffefc0a',
+        'ab4befec0c24f28d9f096ca962543a8db5f2f9e9ca5c195ad3ce83916a7b99c2'),
     'noah': (
         # RE-PINNED by the WRF-parity FRZX repair (NOAH-01).  WRF renames
         # this quantity twice on its way down and gpuwm followed the NAME

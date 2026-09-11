@@ -40,11 +40,59 @@ def test_split_radiation_config_preserves_legacy_and_validates_pairs():
         assert radiation_scheme_ids(validated) == (1, shortwave)
     with pytest.raises(ValueError, match="both be explicit"):
         validate_run_config(_cfg(ra_lw_physics=1))
-    with pytest.raises(ValueError, match="do not mix"):
+    # The aggregate restated on both streams is ONE selection written
+    # twice, so it resolves and validates rather than being refused.
+    consistent = validate_run_config(_cfg(
+        ra_physics=4, ra_lw_physics=4, ra_sw_physics=4))
+    assert radiation_scheme_ids(consistent) == (4, 4)
+    # A genuine contradiction still refuses, naming both spellings.
+    with pytest.raises(ValueError, match="contradict each other"):
         validate_run_config(_cfg(
             ra_physics=4, ra_lw_physics=1, ra_sw_physics=1))
     assert radiation_scheme_ids(validate_run_config(_cfg(
         ra_lw_physics=4, ra_sw_physics=1))) == (4, 1)
+
+
+def test_the_aggregate_restated_on_both_streams_is_admitted():
+    """One selection written twice is not two selections.
+
+    ra_physics=N means "N on both streams", so restating it as
+    ra_lw_physics=N/ra_sw_physics=N adds no information and contradicts
+    nothing.  It is the shape the WRF namelist importer's aggregate
+    output takes the moment a caller also writes the split fields, and
+    every run-path consumer reads the pair through radiation_scheme_ids,
+    so the resolved pair and the raw echo in the receipts agree.
+    """
+
+    for aggregate in (4, 90):
+        cfg = validate_run_config(_cfg(ra_physics=aggregate,
+                                       ra_lw_physics=aggregate,
+                                       ra_sw_physics=aggregate))
+        assert radiation_scheme_ids(cfg) == (aggregate, aggregate)
+        assert radiation_enabled(cfg)
+    off = validate_run_config(_cfg(ra_physics=0, ra_lw_physics=0,
+                                   ra_sw_physics=0))
+    assert radiation_scheme_ids(off) == (0, 0)
+    assert not radiation_enabled(off)
+
+
+def test_the_two_radiation_spellings_disagreeing_is_refused():
+    """A disagreement has no defined answer, so it is the refusal.
+
+    Each case below writes an aggregate that names one engine beside a
+    split pair that names another; the run would take the split pair
+    while the receipts echoed the aggregate.  The message says which two
+    values disagree and gives the way out: set one spelling.
+    """
+
+    for aggregate, lw, sw in ((4, 1, 1), (4, 4, 1), (4, 0, 4), (90, 4, 4)):
+        with pytest.raises(ValueError, match="contradict each other") as raised:
+            radiation_scheme_ids(_cfg(ra_physics=aggregate,
+                                      ra_lw_physics=lw, ra_sw_physics=sw))
+        message = str(raised.value)
+        assert f"ra_physics={aggregate}" in message
+        assert f"ra_lw_physics={lw}/ra_sw_physics={sw}" in message
+        assert "ra_physics=0" in message
 
 
 def test_rrtm_data_exact_record_inventory_and_known_coefficients():

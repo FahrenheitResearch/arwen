@@ -434,6 +434,44 @@ def test_p3_runtime_is_reported_runnable_and_not_denied_as_unimplemented(
     assert "QSNOW" not in names and "QGRAUP" not in names
 
 
+def test_milbrandt_runtime_is_reported_runnable_while_its_export_is_not(
+        tmp_path):
+    """The two verdicts are two questions, and mp=9 separates them.
+
+    Milbrandt-Yau has no packaged WRF Registry package contract, so the
+    stock-WRF export route cannot write a wrfinput for an unchanged WRF
+    and says so.  The gpuwm RUNTIME runs the scheme -- the loader accepts
+    it, the driver dispatches it, the checkpoint identity binds it.  This
+    report used to answer both questions with the export's answer: the
+    runtime check sat one line below a call that had already raised, so
+    it never ran, and the runtime verdict was FAIL with an EMPTY reason
+    list whenever any export issue existed (audit R-013).  A migrating
+    user with a runnable Milbrandt-Yau namelist was told, at the first
+    documented migration command, that the runtime could not run it and
+    would not say why.
+    """
+    report = analyze_namelists(*_write_pair(tmp_path, mp=9, ra_lw=0, ra_sw=1))
+    state = report["required_state"]
+    assert state["gpuwm_runtime"] == {"verdict": "PASS", "reasons": []}
+    assert state["stock_wrf_export"]["verdict"] == "FAIL"
+    export = [issue for issue in report["issues"]
+              if issue["code"] == "STOCK_WRF_EXPORT_INVENTORY_MISSING"]
+    # One per domain, and nothing else: the export gap is the ONLY thing
+    # wrong with this namelist, and it is reported per domain the way
+    # every other per-domain export issue is.
+    assert len(export) == len(report["issues"]) == report["max_dom"]
+    assert [issue["location"] for issue in export] == [
+        f"d{index + 1:02d} &physics/mp_physics"
+        for index in range(report["max_dom"])]
+    message = export[0]["message"]
+    assert "mp_physics=9" in message
+    assert "UNCHANGED WRF" in message
+    assert "NOTHING about running the scheme in ArWen" in message
+    assert "gpuwm import-namelist" in export[0]["action"]
+    # And the domain carries no stock row it could not write.
+    assert state["stock_wrf_export"]["domains"] == []
+
+
 def test_p3_rte_rrtmgp_pairing_is_admitted_since_the_coupling_landed(
         tmp_path):
     """The 4/4 RTE+RRTMGP pairing passes for mp=50, with no refusal row.
@@ -614,7 +652,12 @@ def test_unsupported_land_model_fails_precisely(tmp_path):
     assert report["verdict"] == "FAIL"
     assert any(
         item["code"] == "UNSUPPORTED_PHYSICS_STATE"
-        and "Noah=2/4 layers" in item["message"]
+        # The message names the EXPORT'S SCOPE, and Noah's layer count
+        # comes from Noah: the literal 4 that stood here was an
+        # independent copy of a number gpuwm.core.noah owns, written
+        # before RUC and Noah-MP were admitted anywhere.
+        and "inventories the Noah package only" in item["message"]
+        and "sf_surface_physics=2 at 4 soil layers" in item["message"]
         for item in report["issues"]
     )
 
@@ -724,3 +767,49 @@ def test_the_two_migration_doors_give_the_same_sentence(tmp_path, capsys):
     core = f"cannot read namelist.wps {missing}"
     assert core in importer
     assert core in reporter
+
+
+def test_milbrandt_yau_namelist_fails_the_export_and_passes_the_runtime(
+    tmp_path,
+):
+    """The migration report's two rows answer two different questions.
+
+    mp_physics=9 has no packaged WRF Registry package contract, so the
+    STOCK-WRF EXPORT cannot write a wrfinput for an unchanged WRF -- and
+    ArWen runs the scheme (config.MP_PHYSICS_ACCEPTED carries 9,
+    core/microphysics.py dispatches it, the registry publishes it as
+    implemented).  The report used to say FAIL on both rows, with an
+    EMPTY reasons list on the runtime one: the runtime verdict was
+    ``stock_pass and not gpuwm_reasons``, and the runtime microphysics
+    question itself sat after the inventory call that raises, so it was
+    never asked.  A migrating user was told, at the first documented
+    migration command, that ArWen could not run their namelist.
+    """
+
+    report = analyze_namelists(*_write_pair(tmp_path, mp=9))
+    export = report["required_state"]["stock_wrf_export"]
+    runtime = report["required_state"]["gpuwm_runtime"]
+    assert export["verdict"] == "FAIL"
+    assert runtime == {"verdict": "PASS", "reasons": []}
+    codes = {issue["code"] for issue in report["issues"]}
+    assert "STOCK_WRF_EXPORT_INVENTORY_MISSING" in codes
+    assert "UNSUPPORTED_MICROPHYSICS_INVENTORY" not in codes
+    missing = next(issue for issue in report["issues"]
+                   if issue["code"] == "STOCK_WRF_EXPORT_INVENTORY_MISSING")
+    assert "import-namelist" in missing["action"]
+
+
+def test_an_unported_microphysics_selector_fails_the_runtime_row(tmp_path):
+    """The runtime row still fails when the ENGINE is what is missing.
+
+    Decoupling the two verdicts must not make the runtime row unable to
+    fail: mp_physics=14 (WDM5) is ported nowhere, so it is the engine's
+    own answer, named, and it is asked for every domain rather than
+    abandoned at the first one.
+    """
+
+    report = analyze_namelists(*_write_pair(tmp_path, mp=14))
+    runtime = report["required_state"]["gpuwm_runtime"]
+    assert runtime["verdict"] == "FAIL"
+    assert len(runtime["reasons"]) == 6
+    assert all("mp_physics=14" in reason for reason in runtime["reasons"])

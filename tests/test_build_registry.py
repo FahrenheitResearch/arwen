@@ -45,9 +45,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from tools.build_registry import (  # noqa: E402
     OWNED,
+    _check_remedy_label_describes_its_edit,
     consuming_read_candidates,
     find_consuming_read,
     reads_knob,
+    registry_setting_names,
 )
 from gpuwm.physics_registry import physics_registry  # noqa: E402
 
@@ -114,6 +116,25 @@ def test_the_builder_reproduces_the_tracked_registry_byte_for_byte(
             f"generated...{actual[first:first + 120]!r}\n"
             "Whichever is right, land the builder change and the registry "
             "change together.")
+
+
+def test_the_builder_reproduces_the_consumer_export_byte_for_byte(
+    tmp_path: Path,
+) -> None:
+    """The JSON the Rust crates read is generated beside the registry."""
+
+    export_path = REPO_ROOT / "gpuwm" / "physics_consumer_export_v1.json"
+    before = _digest(export_path)
+    generated = tmp_path / "physics_registry_v2.json"
+    _run(str(BUILDER_PATH), "--out", str(generated))
+    assert _digest(export_path) == before, (
+        "the builder wrote the tracked consumer export even though --out "
+        "named another directory")
+    produced = tmp_path / "physics_consumer_export_v1.json"
+    assert produced.read_bytes() == export_path.read_bytes(), (
+        "tools/build_registry.py no longer reproduces "
+        "gpuwm/physics_consumer_export_v1.json; land the builder change and "
+        "the export together")
 
 
 def test_generated_map_projection_enum_matches_the_runtime_contract() -> None:
@@ -306,3 +327,67 @@ def test_ratified_kessler_template_is_declared_only_on_hrrr_routes() -> None:
                     "tools.hrrr_single_domain_benchmark",
                     "tools.prepared_domain_tree_forecast",
                 })
+
+
+def test_a_remedy_label_names_exactly_the_edit_its_remedy_settings_makes(
+) -> None:
+    """A repair's title and a repair's edit are the same repair.
+
+    ``remedy_label`` is printed as the title of an applicable repair --
+    gpuwm/companion_physics.py offers it above a button that applies
+    ``remedy_settings``, and the desktop physics panel renders that title
+    -- so a label naming a second way out the edit does not take says the
+    button does something it does not.  The shipped label named both
+    ra_rrtmg_variant and the Dudhia pair while the edit set only the
+    variant; the alternative moved into the rule's reason, where it is
+    read and not applied.
+
+    Held over the whole tracked registry, so a rule any later pass writes
+    is measured by the same property.
+    """
+
+    registry = physics_registry()
+    # The vocabulary is the registry's whole setting namespace, not its
+    # parameter table: ra_lw_physics is a component selector, and a check
+    # written over parameters alone could not see the label it was
+    # written for.
+    parameters = registry_setting_names(registry)
+    assert {"ra_lw_physics", "ra_rrtmg_variant"} <= parameters
+    checked = 0
+    for component in registry["components"].values():
+        for option_id, option in component["options"].items():
+            for rule in option.get("constraints", {}).get("refused_when", []):
+                label = rule.get("remedy_label")
+                settings = rule.get("remedy_settings")
+                if not label or not settings:
+                    continue
+                checked += 1
+                assert all(name in label for name in settings), (
+                    option_id, label)
+                named = {name for name in parameters if name in label}
+                assert named <= set(settings), (option_id, label)
+    # No tracked rule carries a remedy today: the one that did, Milbrandt-Yau
+    # against RTE+RRTMGP, retired with the defect it described.  The guard
+    # itself is measured, non-vacuously, by the test below.
+    assert checked == 0
+
+
+def test_the_builder_refuses_a_remedy_label_that_promises_a_second_edit(
+) -> None:
+    """The guard measures the defect, in both directions."""
+
+    registry = physics_registry()
+    rule = {
+        "reason": "the pairing has no coupling.",
+        "remedy_label": ("Set ra_rrtmg_variant='rrtmg_legacy', or select "
+                         "the Dudhia pair ra_lw_physics=0 / "
+                         "ra_sw_physics=1."),
+        "remedy_settings": {"ra_rrtmg_variant": "rrtmg_legacy"},
+    }
+    with pytest.raises(RuntimeError, match="ra_lw_physics"):
+        _check_remedy_label_describes_its_edit(rule, registry, "a-scheme")
+    silent = dict(rule, remedy_label="Choose another radiation arm.")
+    with pytest.raises(RuntimeError, match="ra_rrtmg_variant"):
+        _check_remedy_label_describes_its_edit(silent, registry, "a-scheme")
+    honest = dict(rule, remedy_label="Set ra_rrtmg_variant='rrtmg_legacy'.")
+    _check_remedy_label_describes_its_edit(honest, registry, "a-scheme")

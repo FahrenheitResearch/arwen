@@ -61,6 +61,14 @@ def _selection(nz: int, **overrides):
         ("Morrison microphysics", {"mp_physics": 10}, 256, 257),
         ("NSSL-2 microphysics", {"mp_physics": 18}, 3, 2),
         ("NSSL-2 microphysics", {"mp_physics": 18}, 256, 257),
+        # The four rows the if/elif dispatch never had (audit R-020): each
+        # scheme enforced its bound at the first call and nowhere earlier.
+        ("Milbrandt-Yau microphysics", {"mp_physics": 9}, 3, 2),
+        ("Milbrandt-Yau microphysics", {"mp_physics": 9}, 256, 257),
+        ("WDM6 microphysics", {"mp_physics": 16}, 2, 1),
+        ("WDM6 microphysics", {"mp_physics": 16}, 80, 81),
+        ("P3 microphysics", {"mp_physics": 50}, 1, 0),
+        ("New Tiedtke cumulus", {"cu_physics": 16}, 4, 3),
     ),
 )
 def test_component_owned_model_level_bound_inside_and_outside(

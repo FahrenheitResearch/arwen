@@ -10,10 +10,25 @@ four modules and fire at four different costs:
 gate                                          when it fires today
 ===========================================  ==============================
 ``gpuwm.config.validate_run_config``          config load
+``gpuwm.config.validate_run_preparation``     experiment dispatch, and
+                                              as a floor at real
+                                              initialization
 ``gpuwm.hrrr_route_inputs``                   wizard emission
 ``physics_compat`` single-domain profile      root preparation (after fetch)
 ``gpuwm.hrrr_hierarchy_direct``               tree assembly (after prepare)
 ===========================================  ==============================
+
+The second row is the reason this list grew.  Whether a dataset or a
+table set is INSTALLED is a question about the machine, not about the
+configuration, so ``validate_run_config`` -- which is also the namelist
+importer's battery, and that door translates a file and runs nothing --
+deliberately does not ask it.  The doors that commit to building a
+forecast do, before they fetch anything
+(``gpuwm.config.validate_experiment_preparation``, called by ``gpuwm
+go``'s stage composer and by the experiment run dispatch), and the real
+initializer keeps the per-domain raise as a floor.  This tool asks the
+same code object on the same side of the download, so a battery config
+gets the answer in a receipt rather than in a refusal.
 
 The expensive ones are the last two: a suite the root preparer refuses is
 refused AFTER 10-15 GB of HRRR has been fetched and decoded, and a suite
@@ -277,7 +292,7 @@ def evaluate(config_path: Path, *,
     """Every static answer the HRRR route has about this config."""
 
     from gpuwm import hrrr_route_inputs
-    from gpuwm.config import validate_run_config
+    from gpuwm.config import validate_run_config, validate_run_preparation
     from gpuwm.experiment import load_experiment
     from gpuwm.hrrr_hierarchy_direct import _supported_hierarchy_slice
 
@@ -293,6 +308,10 @@ def evaluate(config_path: Path, *,
             f"run_config.validate.d{domain.grid_id:02d}",
             "gpuwm.config.validate_run_config",
             lambda run=domain.run: validate_run_config(run) and None))
+        gates.append(_ask(
+            f"run_preparation.d{domain.grid_id:02d}",
+            "gpuwm.config.validate_run_preparation",
+            lambda run=domain.run: validate_run_preparation(run)))
     gates.append(_ask(
         "hrrr.coverage", "gpuwm.hrrr_route_inputs.coverage_refusal",
         lambda: hrrr_route_inputs.coverage_refusal(exp)))

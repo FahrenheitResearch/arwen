@@ -427,13 +427,18 @@ def _progress(root, job, simulation_state, committed, *, active=None, error=None
     return value
 
 
-def _work_job(workspace, job):
+def _work_job(workspace, job, *, completion=None):
     root = _root(workspace); directory = _directory(root, job)
     requests = _queue(root, job)
     if not requests:
         return False
     selected = requests[0]
-    record, state, bound, commits = legacy._job(workspace, job)
+    record, state, bound, commits = legacy._job(
+        workspace, job, **({"completion": True} if completion is not None else {}))
+    if completion is not None:
+        # Revalidate before the conversion, the entry publication and the
+        # queue mutation that follow, exactly as background preparation does.
+        completion.validate(record, state, bound, commits)
     if bound is None:
         raise ValueError("Selected viewer frame lost its native producer manifest")
     _expected_run({"expected_run_id": selected["run_id"]}, bound)
@@ -472,7 +477,14 @@ def _work_job(workspace, job):
                 if created.name not in before_objects:
                     _remove_owned_tree(created, objects)
         _finish(root, job, selected)
-    _record, state, _bound, commits = legacy._job(workspace, job)
+    try:
+        _record, state, _bound, commits = legacy._job(
+            workspace, job, **({"completion": True} if completion is not None else {}))
+    except (ra.ProducerCompletionPending, ra.ProducerCompletionUnprovable):
+        # The conversion straddled the runner exit. This frame is finished and
+        # its queue entry retired; the progress receipt keeps the state this
+        # pass already validated rather than discarding the completed work.
+        pass
     _progress(root, job, state["state"], len(commits), error=error)
     return bool(_queue(root, job))
 
@@ -488,7 +500,14 @@ def catalog(request, workspace, *, start=True):
         raise ValueError("Explicit loop prefetch must contain at most eight committed frame sequences")
     prefetch = list(dict.fromkeys(ra._sequence(value) for value in prefetch))
     selection = _selection(request.get("profile", PROFILE), request.get("products"))
-    record, state, bound, commits = legacy._job(workspace, job)
+    completing = False
+    try:
+        record, state, bound, commits = legacy._job_completing(workspace, job)
+    except ra.ProducerCompletionPending:
+        # The interactive door waits with the watcher for the seconds a
+        # settling wrapper owns, instead of refusing. Nothing is published and
+        # no frame authority is returned until that wrapper settles.
+        completing, record, state, bound, commits = True, None, {"state": "running"}, None, []
     _expected_run(request, bound)
     root = _root(workspace)
     selected = [(event, authority) for event, authority in commits
@@ -496,6 +515,8 @@ def catalog(request, workspace, *, start=True):
     value = {"schema": SCHEMA, "job_id": job, "domain": domain, "sequence": sequence,
              "waiting": True, "state": "waiting_for_output", "profile": selection["profile"],
              "selection_products": selection["products"], "products": [], "processing": index_metadata(workspace, job)}
+    if completing:
+        value["producer_completing"] = True
     if bound is None:
         return value
     _producer, manifest_path, manifest, manifest_bytes, _started, binding = bound
@@ -543,13 +564,14 @@ def catalog(request, workspace, *, start=True):
     return ra._bounded(value)
 
 
-def worker(workspace):
+def worker(workspace, *, cancel=None):
     root = _root(workspace)
     with Lease(root / "worker.lock", timeout=3) as lease:
         if lease.file is None:
             return 0
         if hasattr(os, "nice"):
             os.nice(10)
+        waits = {}
         while True:
             pending = False
             # Bound work per job, without letting historical directories hide
@@ -558,14 +580,48 @@ def worker(workspace):
             for directory in directories:
                 if not (directory / "queue.json").exists():
                     continue
+                job = directory.name
+                completion = waits.setdefault(job, ra.CompletionWait(workspace, job, cancel, time))
                 try:
-                    pending |= _work_job(workspace, directory.name)
+                    # Cancellation and the deadline are answered on every pass,
+                    # not only on the passes that revalidate.
+                    completion.check()
+                    if not completion.due():
+                        # A job awaiting its wrapper is revalidated on its own
+                        # interval; the rest of the workspace keeps its pace.
+                        pending = True
+                        continue
+                    completion.begin()
+                    try:
+                        pending |= _work_job(workspace, job, completion=completion)
+                    except ra.ProducerCompletionPending as event:
+                        # The runner exited and its wrapper has not settled. The
+                        # queue and its entries are left exactly as they are.
+                        completion.pending(event)
+                        pending = True
+                    except ra.ProducerCompletionUnprovable as unprovable:
+                        # This job's runner-exit window cannot be proved. A
+                        # terminal receipt here would empty the user's queued
+                        # frames for a job that is still running, so the queue
+                        # is left exactly as it is and the receipt says why
+                        # this job is still pending.
+                        completion.unprovable(unprovable)  # Raises if this wait held proof.
+                        legacy._write(directory / "status.json", {"schema": QUEUE_SCHEMA,
+                            "job_id": job, "state": "waiting_for_producer_completion",
+                            "done": False, "error": str(unprovable)[:2000]})
+                        pending = True
+                except ra.ProducerCompletionCancelled as cancelled:
+                    # Cancellation is not a failure: the receipt stays
+                    # non-terminal and the user's queued frames survive it.
+                    legacy._write(directory / "status.json", {"schema": QUEUE_SCHEMA, "job_id": job,
+                        "state": "cancelled", "done": False, "error": str(cancelled)[:2000]})
+                    return 2
                 except Exception as error:
-                    legacy._write(directory / "status.json", {"schema": QUEUE_SCHEMA, "job_id": directory.name,
+                    legacy._write(directory / "status.json", {"schema": QUEUE_SCHEMA, "job_id": job,
                         "state": "failed", "done": True, "error": str(error)[:2000]})
                     with Lease(root / "schedule.lock", timeout=3) as schedule:
                         if schedule.file is not None:
-                            _save_queue(root, directory.name, [])
+                            _save_queue(root, job, [])
             if not pending:
                 # Release worker ownership while enqueue is excluded: a request
                 # arriving at worker exit must start a successor, never strand.
@@ -582,7 +638,7 @@ def main(argv=None):
     parser.add_argument("--workspace", required=True)
     args = parser.parse_args(argv)
     from gpuwm.remote_worker import _workspace
-    return worker(_workspace({"workspace": args.workspace}))
+    return worker(_workspace({"workspace": args.workspace}), cancel=ra.cancel_on_shutdown())
 
 
 if __name__ == "__main__":

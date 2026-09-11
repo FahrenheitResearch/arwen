@@ -68,10 +68,11 @@ imposing one scheme's assumptions on another:
   no pure H_Z(x) to adapt over.  ``gpuwm.core.refl.compute_refl_10cm``
   carries no mp=50 branch for the same reason and must not gain one here.
 
-The 1/6/8/10 routes share the -35 dBZ floor, the 1e-9 kg/kg species
+The 1/6/8/10/16/28 routes share the -35 dBZ floor, the 1e-9 kg/kg species
 activity threshold, and the ``refl10cm_hm`` air-density diagnosis, so
 their outputs are interchangeable in one obs array.  NSSL (18) is native
-S-band with a 0 dBZ floor and is not floor-interchangeable with them.
+S-band with a 0 dBZ floor, and Milbrandt-Yau (9) is native with a -99 dBZ
+floor; neither is floor-interchangeable with that family.
 
 Documented simplifications
 ==========================
@@ -177,9 +178,11 @@ Q_ACTIVE_THRESHOLD = 1.0e-9
 #: It exists as a lookup because clear-air ("zero") assimilation needs the
 #: number as *data*: a clear-air observation is differenced against H(x),
 #: so the observation must carry the same floor the operator produces or
-#: two agreeing clear skies yield a 35 dB innovation.  Typing ``-35.0`` at
-#: a call site is the defect this table prevents -- it is right for four
-#: schemes and silently catastrophic for the fifth.
+#: two agreeing clear skies yield an innovation of 35 dB (-35 against
+#: NSSL's 0), 64 dB (-35 against Milbrandt-Yau's -99) or 99 dB (0 against
+#: -99).  Typing ``-35.0`` at a call site is the defect this table
+#: prevents -- it is right for six of the schemes in it and silently
+#: catastrophic for the other two.
 #:
 #: A scheme is in this table only if ONE number is the whole answer for it.
 #: The schemes for which it is not are refused by name in
@@ -189,9 +192,31 @@ CLEAR_AIR_FLOOR_DBZ: dict[int, float] = {
     1: -35.0,
     6: -35.0,
     8: -35.0,
+    # WDM6 shares the refl10cm family's floor and always did: its operator
+    # arm is gpuwm.core.refl.launch_refl10cm_wdm6, and
+    # gpuwm/core/kernels/wdm6_refl.cu:357 writes
+    # ``fmaxf(-35.0f, 10*log10(zsum*1e18))`` in EVERY cell of every column,
+    # so a hydrometeor-free cell reads exactly -35.0.  16 was the only
+    # selector compute_refl_10cm dispatches that this table lacked; the
+    # absence was drift, not a decision (audit R-015).
+    16: -35.0,
     10: -35.0,
     18: 0.0,
     28: -35.0,
+    # Milbrandt-Yau reports ONE clear-air number and it is not -35.  Its Z
+    # block (module_mp_milbrandt2mom.F:3400-3466, transcribed at
+    # gpuwm/core/kernels/milbrandt2_zet.cu) sums five species terms, takes
+    # the zero-sum branch to ``MY2_minZET`` and stores
+    # ``fmaxf(zet, MY2_minZET)`` with ``MY2_minZET = -99.0``
+    # (kernels/milbrandt2.cu:308).  The launch covers every cell on every
+    # call, so there is no hydrometeor-free skip and no initialisation
+    # value left standing -- which is exactly what separates mp=9 from
+    # mp=50 in CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER below, where P3 reports
+    # two different clear-air values.  A -99 dBZ floor is NOT
+    # interchangeable with the -35 family in one obs array: give
+    # reflectivity observations a matching floor or mask the clear-air
+    # cells, exactly as for NSSL's 0 dBZ.
+    9: -99.0,
 }
 
 #: Schemes whose H(x) has NO single clear-air value, and the paragraph that
@@ -252,6 +277,13 @@ def clear_air_floor_dbz(mp_physics: int) -> float:
     ITS OWN reason rather than the generic one, because "this scheme's
     floor has not been read" and "this scheme has no single floor to read"
     ask the reader to do different things.
+
+    BOTH refusals name the same two ways out (state the value, or turn the
+    clear-air arm off).  The unrecorded-floor branch named neither, so a
+    caller reached a dead end at the one door that raises this at
+    configuration time -- ``RadarAssimilationConfig``, which re-raises this
+    message as its own error and asks the H(x) route question first, so
+    "state the value" cannot land on a scheme that has no operator at all.
     """
 
     key = int(mp_physics)
@@ -269,9 +301,15 @@ def clear_air_floor_dbz(mp_physics: int) -> float:
             f"no clear-air reflectivity floor is recorded for mp_physics="
             f"{key}; known schemes are "
             f"{sorted(CLEAR_AIR_FLOOR_DBZ)}. The floor is not guessable -- "
-            "it is -35 dBZ for the refl10cm family and 0 dBZ for NSSL, and "
-            "assimilating clear air against the wrong one manufactures a "
-            "35 dB innovation wherever the sky is genuinely clear")
+            "it is -35 dBZ for the refl10cm family, 0 dBZ for NSSL and "
+            "-99 dBZ for Milbrandt-Yau, and assimilating clear air against "
+            "the wrong one manufactures a 35, 64 or 99 dB innovation -- "
+            "whichever pair of those three was crossed -- wherever the sky "
+            "is genuinely clear. Two ways out, the same two the "
+            "no-single-floor refusal offers: state clear_air_value_dbz, "
+            "which is honoured verbatim and recorded as this run's stated "
+            "floor, or run this scheme's cycles with clear_air=False, which "
+            "leaves radial velocity and echo exactly as configured")
     return CLEAR_AIR_FLOOR_DBZ[key]
 
 #: Sun and Crook fall speed ``vt = 5.40*a*(rho*qr)**0.125`` with
@@ -773,11 +811,29 @@ def _host_reflectivity(state, cfg, temperature, pressure):
             "moments, and porting it is a scheme mirror rather than an "
             "adapter -- so NSSL H(x) is available on the CUDA path only, "
             "through the product's own gpuwm.core.nssl2_diagnostics")
+    elif mp == 9:
+        raise NotImplementedError(
+            "the host reflectivity fallback covers mp_physics 1, 6 and 10; "
+            "mp_physics=9 (Milbrandt-Yau) has no float64 column mirror in "
+            "gpuwm.verify.npref -- it reads six categories and their six "
+            "number moments through the scheme's own Zet block -- so "
+            "Milbrandt-Yau H(x) is available on the CUDA path only, "
+            "through gpuwm.core.milbrandt2.reflectivity.  This says "
+            "nothing about the scheme: mp=9 has a floor "
+            "(CLEAR_AIR_FLOOR_DBZ) and a device operator, and a CuPy state "
+            "is answered")
+    elif mp == 16:
+        raise NotImplementedError(
+            "the host reflectivity fallback covers mp_physics 1, 6 and 10; "
+            "mp_physics=16 (WDM6) has no float64 column mirror in "
+            "gpuwm.verify.npref, so it is only available on the CUDA path, "
+            "through gpuwm.core.refl.launch_refl10cm_wdm6")
     else:
         raise NotImplementedError(
             f"mp_physics={mp} has no reflectivity formulation here; the "
             "supported set is 1 (Kessler fallback), 6 (WSM6), 8 (classic "
-            "Thompson, CUDA only), 10 (Morrison) and 18 (NSSL, CUDA only)")
+            "Thompson, CUDA only), 9 (Milbrandt-Yau, CUDA only), "
+            "10 (Morrison), 16 (WDM6, CUDA only) and 18 (NSSL, CUDA only)")
     return out
 
 
@@ -855,9 +911,9 @@ _P3_NO_PURE_OPERATOR = (
 #: Shipped ``mp_physics`` selectors whose reflectivity is NATIVE to the
 #: scheme and is NOT separable from the scheme's own state update, with the
 #: reason each one is refused.  Recorded in the pattern
-#: ``gpuwm.core.microphysics_transition.UNVALIDATED_MIXED_EDGE_SELECTORS``
-#: uses for nest edges: an exclusion that SPEAKS, so the next reader finds
-#: a decision instead of an omission.
+#: ``gpuwm.core.microphysics_transition``'s named-refusal tables use for
+#: nest edges: an exclusion that SPEAKS, so the next reader finds a
+#: decision instead of an omission.
 #:
 #: mp=18 is deliberately NOT here.  NSSL's ``radardd02`` is a separate,
 #: pure Fortran diagnostic, so it earns the real arm above; the criterion
@@ -870,9 +926,53 @@ _P3_NO_PURE_OPERATOR = (
 #: fallback answered it with the same sentence it gives mp_physics=99, a
 #: selector that does not exist.  A shipped scheme and a typo read
 #: identically, which is the reachability defect, not the missing Z.
+#:
+#: mp=9 is deliberately NOT here either, though it was for a while: at
+#: audit R-050 Milbrandt-Yau's Z was written by the same kernel that
+#: clips ``Q >= 0`` and converts the six number moments back to #/kg, so
+#: running it as H(x) would have moved the background.  The Z block has
+#: since been lifted into its own kernel
+#: (gpuwm/core/kernels/milbrandt2_zet.cu), which updates nothing, and
+#: ``gpuwm.core.milbrandt2.reflectivity`` is its scheme-diagnostic H(x).
 NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP: dict[int, str] = {
     50: _P3_NO_PURE_OPERATOR,
 }
+
+
+def _refuse_unrouted_reflectivity(mp_physics: int) -> None:
+    """Name a shipped scheme whose H(x) route nobody has written.
+
+    Audit R-050.  ``NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP`` covers the
+    schemes whose native Z is entangled with their own state update.  A
+    scheme can also be shipped, produce REFL_10CM, and simply have no
+    route here yet -- mp=9 was exactly that -- and until this existed it
+    fell through to ``_host_reflectivity``'s final ``else``, which answers
+    a shipped scheme with the sentence it gives ``mp_physics=99``: "has no
+    reflectivity formulation here".  A shipped scheme and a typo read
+    identically, which is the reachability defect the tables above exist
+    to stop, so the registry's own ``radar_da.reflectivity_route`` row is
+    read here, before the host/device split, and its recorded reason is
+    the refusal.
+
+    Silent for every routed scheme and for a selector the registry does
+    not implement: the first is not a refusal and the second is already
+    answered, correctly, by the dispatch below.
+    """
+
+    from gpuwm.physics_registry import consumer_row_for_selector
+
+    row = consumer_row_for_selector("microphysics", "radar_da", mp_physics)
+    if not isinstance(row, dict) or row.get("reflectivity_route") != "unrouted":
+        return
+    reason = row.get("reflectivity_route_reason") or (
+        "gpuwm/physics_registry_v2.json records no route for it")
+    raise NotImplementedError(
+        f"mp_physics={mp_physics} produces REFL_10CM, and this operator "
+        f"has no H(x) route to it: {reason}.  The scheme's own field is "
+        "on the state -- its adapter stashes it into the DomainState "
+        "'refl_10cm' scratch slot on every output-due microphysics step, "
+        "and gpuwm.da.hotstart accepts it through simulated_dbz=.  Use "
+        "that field, or assimilate velocity only for this scheme.")
 
 
 def simulated_reflectivity(state, cfg, *, temperature=None, pressure=None,
@@ -923,6 +1023,7 @@ def simulated_reflectivity(state, cfg, *, temperature=None, pressure=None,
     refusal = NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP.get(int(cfg.mp_physics))
     if refusal is not None:
         raise NotImplementedError(refusal)
+    _refuse_unrouted_reflectivity(int(cfg.mp_physics))
 
     xp = _array_module(state.p)
     if xp is np:
@@ -935,6 +1036,17 @@ def simulated_reflectivity(state, cfg, *, temperature=None, pressure=None,
                 "and reads pressure off the state; it does not take the "
                 "t1d/p1d microphysics-time pair the 1/6/8/10 routes do")
         return _nssl_reflectivity(state, temperature, pressure)
+
+    if int(cfg.mp_physics) == 9:
+        # Milbrandt-Yau owns REFL_10CM natively and its Z block updates
+        # nothing, so it is dispatched to the scheme's own operator exactly
+        # as mp=18 is -- not mapped onto Morrison and not routed into
+        # compute_refl_10cm, which carries no mp=9 branch because the
+        # scheme needs none.
+        from gpuwm.core.milbrandt2 import reflectivity as my2_reflectivity
+
+        return my2_reflectivity(
+            state, temperature=temperature, pressure=pressure)
 
     from gpuwm.core.refl import compute_refl_10cm
 
@@ -1237,3 +1349,52 @@ def _resolve_fall_speed(state, cfg, reflectivity_dbz, fall_speed, shape, xp,
             f"fall_speed array {vt_shape} must match the mass-point "
             f"shape {shape}")
     return vt.astype(out_dtype, copy=False)
+
+
+# ---------------------------------------------------------------------------
+# AGREEMENT WITH THE REGISTRY, AT IMPORT.  The three tables above are the
+# source of every option's ``consumers.radar_da`` row
+# (tools/build_registry.py); this holds them to the generated copy, so a
+# scheme that gains a floor here without a rebuilt registry, or a registry
+# claiming a floor this module does not carry, fails this import rather
+# than the first analysis.  A selector in none of the three tables is the
+# registry's "unread" status, and that is a decision the registry states
+# (audit R-015 for mp=16), not an omission.  mp=9 carries an unread FLOOR
+# (R-015, still open) and a recorded ROUTE (R-050, closed), which is why
+# it appears here with a route and no number.
+def _require_agreement_with_the_registry() -> None:
+    from gpuwm.physics_registry import require_consumer_rows_agreement
+
+    observed: dict[int, dict] = {}
+    for mp, floor in CLEAR_AIR_FLOOR_DBZ.items():
+        observed[mp] = {"status": "one-number", "floor": float(floor)}
+    for mp in CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER:
+        observed[mp] = {"status": "not-one-number", "floor": None}
+    for mp in NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP:
+        observed.setdefault(mp, {"status": "unread", "floor": None})
+        observed[mp]["route"] = "native-not-separable"
+
+    def project(row):
+        status = row["clear_air_floor_status"]
+        if status in ("unread", "no-microphysics") \
+                and row["reflectivity_route"] != "native-not-separable":
+            # Neither table names the scheme: the module's silence IS the
+            # registry's "unread", and there is nothing to compare.
+            return None
+        projected = {"status": status,
+                     "floor": (None if row["clear_air_floor_dbz"] is None
+                               else float(row["clear_air_floor_dbz"]))}
+        if row["reflectivity_route"] == "native-not-separable":
+            projected["route"] = "native-not-separable"
+        return projected
+
+    require_consumer_rows_agreement(
+        "gpuwm.da.obsop (CLEAR_AIR_FLOOR_DBZ, CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER, "
+        "NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP)",
+        "microphysics", "radar_da", observed, project=project,
+        cited_absences={
+            0: "no microphysics, no reflectivity operator",
+        })
+
+
+_require_agreement_with_the_registry()

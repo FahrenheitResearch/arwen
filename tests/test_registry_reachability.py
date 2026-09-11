@@ -37,7 +37,8 @@ from pathlib import Path
 
 import pytest
 
-from gpuwm.physics_registry import physics_registry
+from gpuwm.physics_registry import (expert_template_ids_for_source,
+                                    physics_registry)
 
 #: Easiest first.  An option reachable more than one way is declared by its
 #: easiest path, because that is the one a user will find.
@@ -118,7 +119,7 @@ def _computed_states(registry: dict) -> dict[tuple[str, str], str]:
         for source_id in route.get("source_ids", []) or []:
             if declares:
                 normal_ids = list(normal.get(source_id, []) or [])
-                expert_ids = list(expert.get(source_id, []) or [])
+                expert_ids = expert_template_ids_for_source(route, source_id)
             else:
                 # No declaration at all: every registered template is legal.
                 normal_ids, expert_ids = list(templates), []

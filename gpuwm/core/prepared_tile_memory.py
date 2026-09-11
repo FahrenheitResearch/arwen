@@ -20,11 +20,59 @@ measured 23 % low against this itemization at 980,000 cells with two
 buffers (9.304 GiB itemized against 7.580 GiB fused, ENG-013).  The
 fingerprint survives only as :func:`measured_anchor`, the configuration the
 itemization was MEASURED against, for reports and tests -- never as a gate.
+
+THE BUFFER IS PRICED AT THE WINDOW'S OWN SHAPE, NOT AT ``N x 1``.  Until
+2.7.3 every buffer was itemized as an ``N x 1`` domain, ``N`` its column
+count, on the argument that a one-row rectangle maximizes every horizontal
+face and edge product and so bounds any rectangle of the same area.  It
+does -- and for the terms that scale with the PERIMETER rather than the
+area it bounds them by the perimeter of a rectangle no tiling can produce.
+REPRODUCED on a user's 572x524x49 icon-eu forecast (Thompson, RTE+RRTMGP,
+MYNN, Noah, six retained forcing intervals) with a pinned 250x250 tiling:
+the 286x286 compute window is 81,796 columns, so the sizing rectangle was
+81,796 x 1 with a perimeter 143x the window's, and its eager
+``lbc_forcing_tables`` came to 9.03 GiB PER BUFFER against 0.06 GiB for the
+window itself.  Two buffers of that, under the allocator headroom, put
+20.8 GiB of forcing tables that no buffer allocates into the streamed
+envelope, which read 38.96 GiB against a 17.43 GiB resident run -- a
+streamed forecast priced at 2.2x the resident one, refused before fetch.
+
+So a caller that knows the window (the pinned road, and the planner once
+it has chosen a tile) passes ``shape=(window_nx, window_ny)`` and the
+buffer is itemized at exactly that rectangle.  A caller that has only a
+cell count (the planner's binary search over window sizes) gets
+:meth:`PreparedTileMemory.sizing_shape`: the most elongated rectangle of
+that area a tiling can LEGALLY produce -- no side narrower than the
+smallest compute window, ``2 * halo + 1``, and none longer than the domain
+plus its halo -- which still bounds every legal rectangle of that area on
+every term, and does so by a perimeter a tiling can actually have.
+
+MEASURED against the fix, 2026-09-10, node-1 (RTX 5070 Ti, 15.51 GiB,
+cupy 14.2.0 / CUDA 13), the same 572x524x49 icon-eu forecast on real
+2026-09-10T12 data, per-process device memory read by nvidia-smi
+(``compute-apps used_memory``: the process's whole device allocation,
+CUDA context included) at 0.2 s:
+
+* 250x250 tiles, nbuffers = 1: this model 8.89 GiB; measured peak 6.18 GiB
+  (6,326 MiB, at the radiation call), steady 5.97 GiB, over 40 steps and
+  four radiation calls.
+* 250x250 tiles, nbuffers = 2 (the user's tiling): this model 15.54 GiB;
+  measured peak 11.11 GiB (11,374 MiB, recurring at each radiation call),
+  steady 7.83 GiB between calls, over 122 steps, no allocation failure.
+
+So the corrected envelope brackets the run on both roads with 28-31 %
+to spare, and the per-buffer radiation storage it carries is a real
+transient (about 1.6 GiB per buffer measured against the 2.01 GiB priced
+per 3,125-column chunk here).  The run the user asked for does reach
+11.1 GiB on a card of this class, above the 10.69 GiB they had free; one
+buffer of the same tile measured 6.2 GiB and is the remedy.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 import math
+
+GIB = 1024 ** 3
 
 
 def supported(exp, cfg, options) -> bool:
@@ -174,42 +222,160 @@ class PreparedTileMemory:
             }
         return self._cache["fixed"]
 
-    def buffer_terms(self, window_cells):
-        from gpuwm.core import preflight as pf
+    def _columns(self, window_cells):
         columns, rem = divmod(int(window_cells), self.nz)
         if rem or columns < 1:
             raise ValueError("a prepared tile must contain whole vertical columns")
-        if columns not in self._cache:
+        return columns
+
+    @property
+    def halo(self) -> int:
+        """The domain's own per-step dependency radius, in mass cells."""
+        if "halo" not in self._cache:
+            from tilestream.harness import halo_radius
+            self._cache["halo"] = int(halo_radius(self.experiment.root.run))
+        return self._cache["halo"]
+
+    def sizing_shape(self, columns) -> tuple[int, int]:
+        """The rectangle a buffer of ``columns`` is priced at when its shape
+        is not known: the most elongated one a tiling can LEGALLY produce.
+
+        Every compute window is a tile plus a halo on both sides of both
+        axes, so no side is narrower than ``2 * halo + 1``; and a window is
+        clamped inside a non-periodic domain or wraps a periodic one, so no
+        side is longer than the domain's longer axis plus two halos.  Among
+        rectangles of area ``N`` inside those limits the one with the
+        longest perimeter -- the one that bounds every perimeter-scaled
+        term for all of them -- puts one side at the lower limit, or, when
+        that would make the other side too long, one side at the upper.
+        Its area is at least ``N``, never less, so the per-cell terms are
+        bounded too.  Monotone in ``N`` on every side, which is what the
+        planner's binary inversion needs.
+
+        A one-row ``N x 1`` rectangle was the sizing shape before this: see
+        the module docstring for what its 143x perimeter did to a real
+        user's envelope.
+        """
+        columns = int(columns)
+        run = self.experiment.root.run
+        lo = 2 * self.halo + 1
+        hi = max(int(run.nx), int(run.ny)) + 2 * self.halo
+        a = max(1, min(lo, math.isqrt(columns)))
+        b = -(-columns // a)
+        if b > hi:
+            b = hi
+            a = -(-columns // hi)
+        return a, b
+
+    def _shape_for(self, window_cells, shape):
+        columns = self._columns(window_cells)
+        if shape is None:
+            return self.sizing_shape(columns)
+        nx, ny = int(shape[0]), int(shape[1])
+        if nx < 1 or ny < 1 or nx * ny != columns:
+            raise ValueError(
+                f"window shape {nx}x{ny} does not hold {columns} columns")
+        return nx, ny
+
+    def buffer_terms(self, window_cells, shape=None):
+        """Itemized bytes of ONE tile buffer holding ``window_cells``.
+
+        ``shape`` is the compute window ``(window_nx, window_ny)`` when the
+        caller knows it, and the buffer is itemized at exactly that
+        rectangle; without it the buffer is itemized at
+        :meth:`sizing_shape`, which bounds every legal rectangle of that
+        area.  Either way this is a sizing shape only, never an emitted or
+        executed grid.
+        """
+        from gpuwm.core import preflight as pf
+        key = self._shape_for(window_cells, shape)
+        if key not in self._cache:
             exp = self.experiment
-            # At fixed area N, N x 1 maximizes every horizontal face/edge
-            # product in this selected inventory: nx+ny <= N+1. This is a
-            # sizing shape only, never an emitted or executed grid. It makes
-            # the existing cell-count planner safe for rectangular windows.
-            itemized = self._domain(columns, 1)
-            run = replace(exp.root.run, nx=columns, ny=1)
+            nx, ny = key
+            itemized = self._domain(nx, ny)
+            run = replace(exp.root.run, nx=nx, ny=ny)
             work_exp = replace(exp, domains=(replace(exp.root, run=run),))
             radiation = standalone_rte_storage_bytes(
-                self.nz, columns, exp.column_chunk, exp.vertical.p_top)
-            self._cache[columns] = {
+                self.nz, nx * ny, exp.column_chunk, exp.vertical.p_top)
+            self._cache[key] = {
                 "resident_bytes": itemized.resident_bytes,
                 "step_transient_bytes": itemized.transient_bytes,
                 "radiation_named_storage_bytes": sum(radiation.values()),
                 "column_workspace_bytes": pf.column_workspace_bytes(work_exp, profile=self.profile),
             }
-        return self._cache[columns]
+        return self._cache[key]
 
-    def buffer_bytes(self, window_cells):
-        return sum(self.buffer_terms(window_cells).values())
+    def buffer_bytes(self, window_cells, shape=None):
+        return sum(self.buffer_terms(window_cells, shape).values())
 
-    def vram_bytes(self, window_cells, nbuffers):
+    def vram_bytes(self, window_cells, nbuffers, shape=None):
         from gpuwm.core import preflight as pf
         fixed = self.fixed_terms()
-        pool = (int(nbuffers) * self.buffer_bytes(window_cells)
+        pool = (int(nbuffers) * self.buffer_bytes(window_cells, shape)
                 + fixed["template_resident_bytes"] + fixed["k_tables_bytes"])
         pool = max(pool, fixed["loader_pool_peak_bytes"] + fixed["k_tables_bytes"])
         return (math.ceil(pf.ALLOCATOR_HEADROOM * pool)
                 + fixed["cuda_context_bytes"] + fixed["local_memory_bytes"]
                 + fixed["unmodelled_bytes"])
+
+    def terms(self, window_cells, nbuffers, shape=None):
+        """Every term of :meth:`vram_bytes`, named, in the order they add up.
+
+        The arithmetic a refusal prints: a reader holding a screenshot of
+        it can check the total with a calculator and see which term the
+        tile can move (the buffers) and which it cannot (the floors).
+        Byte-valued entries end in ``_bytes``; the rest are labels.
+        """
+        from gpuwm.core import preflight as pf
+        nx, ny = self._shape_for(window_cells, shape)
+        columns = nx * ny
+        exp = self.experiment
+        run = exp.root.run
+        fixed = self.fixed_terms()
+        buffer = self.buffer_terms(window_cells, shape)
+        per_buffer = sum(buffer.values())
+        nbuffers = int(nbuffers)
+        buffers = nbuffers * per_buffer
+        pool = buffers + fixed["template_resident_bytes"] + fixed["k_tables_bytes"]
+        loader_peak = fixed["loader_pool_peak_bytes"] + fixed["k_tables_bytes"]
+        pool_priced = max(pool, loader_peak)
+        pool_with_headroom = math.ceil(pf.ALLOCATOR_HEADROOM * pool_priced)
+        itemized = self._domain(nx, ny)
+        return {
+            "domain": f"{int(run.nx)}x{int(run.ny)}x{int(run.nz)}",
+            "window": (f"{nx}x{ny}x{int(run.nz)} = {columns:,} columns"
+                       + ("" if shape is not None else
+                          " (sizing rectangle; the window's shape was not given)")),
+            "buffer/state_bytes": itemized.category_bytes("state"),
+            "buffer/physics_bytes": itemized.category_bytes("physics"),
+            "buffer/scratch_bytes": itemized.category_bytes("scratch"),
+            "buffer/lbc_bytes": (itemized.category_bytes("lbc")
+                                 + itemized.category_bytes("nest")),
+            "buffer/diagnostic_bytes": itemized.category_bytes("diagnostic"),
+            "buffer/step_transient_bytes": buffer["step_transient_bytes"],
+            "buffer/radiation_named_storage_bytes": buffer["radiation_named_storage_bytes"],
+            "buffer/column_workspace_bytes": buffer["column_workspace_bytes"],
+            "buffer/total_bytes": per_buffer,
+            "buffer/per_column_bytes": per_buffer // columns,
+            "buffers": f"{nbuffers} x {per_buffer / GIB:.3f} GiB",
+            "buffers_bytes": buffers,
+            "fixed/template_resident_bytes": fixed["template_resident_bytes"],
+            "fixed/k_tables_bytes": fixed["k_tables_bytes"],
+            "fixed/loader_pool_peak_bytes": fixed["loader_pool_peak_bytes"],
+            "pool_bytes": pool_priced,
+            "pool_basis": ("the buffers plus the retained template and the k-tables"
+                           if pool >= loader_peak else
+                           f"the {fixed['loader_rows']}-row loader's initialization "
+                           "peak, which is larger than the buffers"),
+            "pool_headroom": f"x {pf.ALLOCATOR_HEADROOM:.2f}",
+            "pool_with_headroom_bytes": pool_with_headroom,
+            "fixed/cuda_context_bytes": fixed["cuda_context_bytes"],
+            "fixed/local_memory_bytes": fixed["local_memory_bytes"],
+            "fixed/unmodelled_bytes": fixed["unmodelled_bytes"],
+            "radiation_chunk_columns": min(columns, int(exp.column_chunk)),
+            "radiation_transient_bytes": 0,
+            "vram_bytes": int(self.vram_bytes(window_cells, nbuffers, shape)),
+        }
 
     @property
     def process_overhead_bytes(self):
@@ -221,8 +387,10 @@ class PreparedTileMemory:
                 + f["unmodelled_bytes"])
 
     def max_window_cells(self, nbuffers, budget):
-        # Binary search calls the exact same monotone function as the final
-        # candidate/envelope. No stale linear inversion can bypass its peak.
+        # Binary search over the shape-free BOUND (sizing_shape), which is
+        # monotone in the column count; the planner then prices the tile it
+        # chose at that tile's own window, and the exact rectangle never
+        # costs more than the bound that admitted it.
         lo, hi = 0, 1
         while self.vram_bytes(hi * self.nz, nbuffers) <= budget:
             lo, hi = hi, hi * 2

@@ -23,7 +23,7 @@ mod workflows;
 
 use crossterm::{
     event::{
-        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        self, EnableBracketedPaste, EnableMouseCapture,
         Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
         MouseEventKind,
     },
@@ -215,11 +215,18 @@ struct App {
     case_cache: Option<cases::Form>,
     plot_catalog: plotsettings::Catalog,
     cds: cds_credentials::Client,
+    // Declared before the controller so that fields drop in this order: every
+    // run viewer removes its own session directory first and the controller's
+    // exit sweep then sees only what a viewer could not remove. Nothing about
+    // a live viewer depends on this order -- the sweep never takes an
+    // unfinished session whose process is still running, this process
+    // included -- it only spares the sweep work it would otherwise repeat at
+    // the next start.
+    run_views: run_view::Manager,
     companion: companion::Controller,
     companion_remote: Option<CompanionRemoteRequest>,
     companion_waiting: Option<QueuedCompanionRequest>,
     focus_logs_pending: Option<(companion::Request, Instant, String)>,
-    run_views: run_view::Manager,
     companion_artifacts: Option<serde_json::Value>,
     tui_map_review: Option<companion::Request>,
     tui_map_waiting: Option<companion::Request>,
@@ -373,6 +380,29 @@ mod desktop_console {
     }
 }
 
+/// One frame of the hidden desktop console: draw it, leave it hidden, hide it
+/// on a Quit, or end the controller.
+// The hidden console is a Windows desktop launcher's; the decision below is
+// held to its tests on every platform.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesktopFrame { End, Hide, Draw, Wait }
+
+/// The desktop controller's lifetime, decided once per frame. It serves the
+/// visual workspace window it spawned and the job it owns; a terminal window
+/// the desktop revealed is a view of that service, never a reason for it. A
+/// revealed window used to be one, so a controller whose workspace had closed
+/// and whose job had ended stayed for hours, kept heartbeating, and the next
+/// ArWen start reattached to it and to the runtime it had resolved instead of
+/// starting fresh.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn desktop_frame(serving: bool, quit_asked: bool, visible: bool) -> DesktopFrame {
+    if !serving { DesktopFrame::End }
+    else if quit_asked { DesktopFrame::Hide }
+    else if visible { DesktopFrame::Draw }
+    else { DesktopFrame::Wait }
+}
+
 fn passive_node_operation(operation: &remote::Operation) -> bool {
     matches!(operation, remote::Operation::Probe | remote::Operation::Logs { .. }
         | remote::Operation::Status { .. } | remote::Operation::ArtifactIndex { .. }
@@ -461,8 +491,66 @@ fn draw_log(frame: &mut Frame, area: Rect, text: &str, offset: usize, title: &st
 }
 
 fn local_forecast_action(action: &str, command: &[String]) -> bool {
-    matches!(action, "run-plan" | "go" | "sim" | "run" | "resume")
+    matches!(action, "run-plan" | "go" | "sim" | "run" | "resume" | "downscale")
         && !command.iter().any(|arg| matches!(arg.as_str(), "--dry-run" | "--physics-profiles" | "--help"))
+}
+
+/// The Downscale guide, answered from a companion request.
+///
+/// There is no second argument builder. `Guide::request` is the one place
+/// downscale settings become `gpuwm downscale` tokens -- the mutual
+/// exclusions, the `--out DIR` pair, the `--dry-run` that plan mode means --
+/// so a request and the terminal's own guided setup cannot produce different
+/// commands for the same answers.
+fn downscale_guide(body: &companion::DownscaleRequest, cwd: &Path, output: &Path) -> Guide {
+    let mut guide = Guide::new(Kind::Downscale, cwd, output);
+    let number = |value: f64| format!("{value}");
+    let blank = String::new();
+    guide.questions[0].value = body.parent_run_dir.clone();
+    guide.questions[1].value = body.point.map(|(lat, lon)| format!("{lat},{lon}")).unwrap_or_else(|| blank.clone());
+    guide.questions[2].value = body.child_config.clone().unwrap_or_else(|| blank.clone());
+    // No named checkpoint means the parent's own newest complete set: the
+    // engine discovers it in the parent's run directory, which is the only
+    // thing a caller listing finished runs actually holds.
+    guide.questions[3].value = body.parent_restart.clone().unwrap_or_else(|| "latest".into());
+    guide.questions[5].value = body.parent_domain.map(|value| value.to_string()).unwrap_or_else(|| blank.clone());
+    guide.questions[6].value = body.ratio.to_string();
+    guide.questions[7].value = body.child_size.map(|(nx, ny)| format!("{nx},{ny}")).unwrap_or_else(|| blank.clone());
+    guide.questions[11].value = body.max_boundary_interval_seconds.map(number).unwrap_or_else(|| blank.clone());
+    guide.questions[12].value = if body.accept_parent_cadence { "true".into() } else { blank.clone() };
+    guide.questions[13].value = body.hours.map(number).unwrap_or_else(|| blank.clone());
+    guide.questions[14].value = body.output_interval_seconds.map(number).unwrap_or_else(|| blank.clone());
+    guide.questions[16].value = body.vram_gib.map(number).unwrap_or_else(|| blank.clone());
+    guide.questions[17].value = body.tiles.clone().unwrap_or(blank);
+    guide.questions[18].value = body.out_dir.clone();
+    guide.questions[19].value = if body.plan { "plan".into() } else { "run".into() };
+    guide.questions[21].value = if body.auto_vram { "true".into() } else { "false".into() };
+    guide.sync_choices();
+    guide
+}
+
+/// Where this downscale will publish the two documents a caller reads back:
+/// the child configuration and the derived plan. A plan writes both BESIDE
+/// `--out`, because a real run refuses a directory that already exists and a
+/// plan that filled it would poison the run that follows.
+fn downscale_receipt(body: &companion::DownscaleRequest) -> serde_json::Value {
+    let out = PathBuf::from(&body.out_dir);
+    let sibling = |suffix: &str| {
+        let name = format!("{}{suffix}", out.file_name().unwrap_or_default().to_string_lossy());
+        out.parent().map_or_else(|| PathBuf::from(&name), |parent| parent.join(&name))
+    };
+    let (config, plan) = if body.plan {
+        (sibling(".child.toml"), sibling(".downscale-plan.json"))
+    } else {
+        (out.join("child.toml"), out.join("downscale-plan.json"))
+    };
+    serde_json::json!({
+        "mode": if body.plan { "plan" } else { "run" },
+        // A supplied child configuration is not derived and not rewritten:
+        // the file the run uses is the file the caller named.
+        "child_config_path": body.child_config.clone().map_or(config, PathBuf::from),
+        "downscale_plan_path": plan,
+    })
 }
 
 fn draw_forecast_progress(frame: &mut Frame, area: Rect, status: &serde_json::Value) {
@@ -1342,7 +1430,7 @@ impl App {
             self.poll();
             // Keep releasing/polling an owned worker even if its GUI closes.
             // The only operation that stops that worker is an explicit request.
-            if self.workspace_open() || self.busy() {
+            if self.serving_desktop() {
                 std::thread::sleep(Duration::from_millis(150));
                 continue;
             }
@@ -1358,9 +1446,17 @@ impl App {
     }
     /// True while the visual workspace process this controller spawned is alive.
     fn workspace_open(&mut self) -> bool { self.companion.child_status().is_ok_and(|status| status.is_none()) }
+    /// What this controller still serves: the visual workspace window it
+    /// spawned, and the job it owns while that job runs. Nothing else extends
+    /// its life, and a controller serving neither ends.
+    fn serving_desktop(&mut self) -> bool { self.workspace_open() || self.busy() }
     /// The controller's exit once its workspace has closed and no owned job
     /// remains: the workspace's own outcome, with its diagnostic log on failure.
     fn workspace_outcome(&mut self) -> Result<(), String> {
+        // The final status, so the desktop and the next launcher read this
+        // controller's last job state rather than one up to a heartbeat old;
+        // the session then publishes `closed` as it drops.
+        self.publish_companion_status(true);
         remote::remove_poll_records(&self.output);
         match self.companion.child_status() {
             Ok(Some(status)) if status.success() => Ok(()),
@@ -1398,31 +1494,30 @@ impl App {
     /// The full terminal UI inside the hidden desktop console. Frames are drawn
     /// only while the window is visible, the first one after a reveal on a
     /// cleared screen. Quit hides the window while the workspace is open or a
-    /// job runs. The controller ends once the workspace has closed, no job is
-    /// busy and the window is hidden, or when Quit is asked in that state.
+    /// job runs. The controller ends once the workspace has closed and no job
+    /// is busy, taking its terminal window with it whether that window was
+    /// revealed or hidden, and on Quit in that state.
     #[cfg(windows)]
     fn drive_desktop_console(&mut self, console: desktop_console::Console) -> Result<(), String> {
         self.desktop_console = true;
-        // The terminal's panic hook restores the console; the launcher reads
-        // this log for the reason, since stderr is the hidden console itself.
-        let previous = std::panic::take_hook();
-        let output = self.output.clone();
-        std::panic::set_hook(Box::new(move |info| { companion::controller_log(&output, &format!("The ArWen terminal stopped unexpectedly: {info}")); previous(info); }));
+        // `interactive_session` installs the panic hook that restores this
+        // console and writes the reason to controller.log, which is where the
+        // launcher reads it: stderr here is the hidden console itself.
         self.open_companion();
         if self.companion.child_status().is_err() { return Err(self.status.clone()); }
         let mut was_visible = false;
         let session = interactive_session(self, |app, terminal| {
-            let serving = app.workspace_open() || app.busy();
-            if app.exit {
-                if !serving { return Ok(None); }
-                app.exit = false;
-                console.hide();
+            let quit_asked = std::mem::take(&mut app.exit);
+            match desktop_frame(app.serving_desktop(), quit_asked, console.visible()) {
+                DesktopFrame::End => { console.hide(); Ok(None) }
+                DesktopFrame::Hide => { console.hide(); was_visible = false; Ok(Some(false)) }
+                DesktopFrame::Draw => {
+                    if !was_visible { terminal.clear()?; }
+                    was_visible = true;
+                    Ok(Some(true))
+                }
+                DesktopFrame::Wait => { was_visible = false; Ok(Some(false)) }
             }
-            let visible = console.visible();
-            if !visible && !serving { return Ok(None); }
-            if visible && !was_visible { terminal.clear()?; }
-            was_visible = visible;
-            Ok(Some(visible))
         });
         if let Err(error) = session {
             remote::remove_poll_records(&self.output);
@@ -1534,6 +1629,9 @@ impl App {
                 self.publish_companion_status(true);continue;
             }
             let mut job = None;
+            // Set by the downscale arm alone: mode plus the two documents
+            // the caller reads back once the job finishes.
+            let mut downscale = serde_json::Value::Null;
             let result = match &request.action {
                 companion::Action::BrowseRuns|companion::Action::OpenRun(_)|companion::Action::CloseRun(_)=>Err("Close a saved run through its own read-only viewer.".into()),
                 companion::Action::ReviewPlan(_) => Err("Choose and connect an SSH node before remote review.".into()),
@@ -1559,6 +1657,31 @@ impl App {
                             }
                             Ok(_) => Err("Unsupported run-plan schema.".into()),
                             Err(error) => Err(error),
+                        }
+                    }
+                }
+                companion::Action::LaunchDownscale(body) => {
+                    if self.busy() { Err("A local job is already running.".into()) }
+                    else if self.nodes.store.selected().is_some() { Err("Select Local computer before downscaling a saved forecast.".into()) }
+                    else if self.checked_companion_target(request.target.as_ref()).is_err() { Err("The execution target changed. Review again.".into()) }
+                    else {
+                        let cwd = self.cwd.clone();
+                        let built = downscale_guide(body, &cwd, &self.output).request(&cwd);
+                        match built {
+                            // The guide's own refusals travel verbatim: an
+                            // output directory that already exists, both or
+                            // neither of point and child configuration, a
+                            // cadence chosen twice.
+                            Err(error) => Err(error),
+                            Ok(built) => {
+                                let previous = self.job.as_ref().map(|job| job.dir.clone());
+                                self.start_command("downscale", &built.args, None);
+                                job = self.job.as_ref().filter(|job| Some(&job.dir) != previous.as_ref()).map(|job| job.dir.clone());
+                                if job.is_some() {
+                                    downscale = downscale_receipt(body);
+                                    Ok(if body.plan { "Downscale plan started." } else { "Downscale started." }.to_owned())
+                                } else { Err(self.status.clone()) }
+                            }
                         }
                     }
                 }
@@ -1612,7 +1735,12 @@ impl App {
             if result.is_err() { job = None; }
             if let Some(session) = &self.companion.session {
                 let response=if matches!(request.action,companion::Action::SelectTarget){session.respond_with(&request.id,&request.name,result,
-                    serde_json::json!({"target":request.target.as_ref().map(companion::Target::value)}))}else{session.respond(&request.id, &request.name, result, job.as_deref())};
+                    serde_json::json!({"target":request.target.as_ref().map(companion::Target::value)}))}
+                else if let Some(fields)=downscale.as_object(){
+                    let mut details=serde_json::json!({"job_id":job.as_deref(),"job_dir":job.as_deref()});
+                    for (key,value) in fields {details[key]=value.clone();}
+                    session.respond_with(&request.id,&request.name,result,details)}
+                else{session.respond(&request.id, &request.name, result, job.as_deref())};
                 if let Err(error) = response {
                     self.status = format!("Visual workspace response: {error}");
                 }
@@ -2082,7 +2210,7 @@ impl App {
                 self.pending_config = created;
                 self.active_config = if matches!(
                     command,
-                    "doctor" | "domain" | "research" | "run-plan" | "sources" | "case-catalog"
+                    "doctor" | "domain" | "downscale" | "research" | "run-plan" | "sources" | "case-catalog"
                 ) {
                     None
                 } else {
@@ -5615,12 +5743,114 @@ fn snapshot(app: &mut App, path: &Path, width: u16, height: u16, screen: &str) -
 pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
     concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
 
+/// Everything an interactive session turns on, written as the bytes that turn
+/// it off again. A panic hook and a signal handler both have to undo the
+/// terminal without crossterm's `Result` plumbing, and the signal handler needs
+/// it as one buffer it can hand to `write(2)` -- the only writing call POSIX
+/// lets it make. `terminal_restore_is_crossterms_own_spelling` holds this equal
+/// to crossterm's commands so an upgrade cannot change one and not the other.
+const TERMINAL_RESTORE: &[u8] =
+    b"\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?2004l\x1b[?1049l\x1b[?25h";
+
+fn write_terminal_restore(sink: &mut impl io::Write) {
+    let _ = sink.write_all(TERMINAL_RESTORE);
+    let _ = sink.flush();
+}
+
+/// Leave the terminal the way it was found: mouse capture and bracketed paste
+/// off, out of the alternate screen, cursor shown, raw mode off. Ratatui's own
+/// panic hook restores only the alternate screen and raw mode, so before this
+/// existed a panic handed the shell a terminal that still reported mouse
+/// motion, and the user's next mouse move became a stream of `ESC[<35;..M`
+/// "command not found" lines in their shell.
+fn restore_terminal() {
+    write_terminal_restore(&mut io::stdout());
+    let _ = crossterm::terminal::disable_raw_mode();
+}
+
+/// The two halves of a crash record that a test can watch without a terminal:
+/// the restore bytes, and the reason in `<output>/.arwen-tui/controller.log`.
+/// The log matters because the terminal a panic leaves behind is exactly the
+/// one the user cannot read, and the desktop console has no visible stderr.
+fn terminal_panic_report(output: &Path, sink: &mut impl io::Write, reason: &str) {
+    write_terminal_restore(sink);
+    companion::controller_log(output, reason);
+}
+
+/// Installed before the terminal is entered, so it also covers `ratatui::init`
+/// itself. Restore first -- the message is unreadable otherwise -- then record,
+/// then let the default hook print it on a fresh line of its own.
+fn install_terminal_panic_hook(output: &Path) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    let output = output.to_path_buf();
+    ONCE.call_once(move || {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let reason = format!("The ArWen terminal stopped unexpectedly: {info}");
+            terminal_panic_report(&output, &mut io::stdout(), &reason);
+            let _ = crossterm::terminal::disable_raw_mode();
+            eprintln!();
+            previous(info);
+            eprintln!("ArWen recorded this in {}", display_path(&output.join(".arwen-tui").join("controller.log")));
+        }));
+    });
+}
+
+/// SIGINT, SIGTERM and SIGHUP reach this process from outside the terminal --
+/// raw mode has already taken Ctrl+C away from the tty -- and Rust runs no
+/// destructor and no panic hook for them. The handler therefore restores the
+/// terminal with the two calls POSIX allows it, `write` and `tcsetattr`, and
+/// re-raises with the default disposition so the exit status stays the signal.
+#[cfg(unix)]
+mod terminal_signals {
+    use super::TERMINAL_RESTORE;
+    use std::cell::UnsafeCell;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Saved(UnsafeCell<libc::termios>);
+    // Written once by `arm`, before any handler can run; read only afterwards.
+    unsafe impl Sync for Saved {}
+    static SAVED: Saved = Saved(UnsafeCell::new(unsafe { std::mem::zeroed() }));
+    static VALID: AtomicBool = AtomicBool::new(false);
+
+    unsafe extern "C" fn restore(signal: libc::c_int) {
+        libc::write(
+            libc::STDOUT_FILENO,
+            TERMINAL_RESTORE.as_ptr().cast(),
+            TERMINAL_RESTORE.len(),
+        );
+        if VALID.load(Ordering::Relaxed) {
+            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, SAVED.0.get());
+        }
+        libc::signal(signal, libc::SIG_DFL);
+        libc::raise(signal);
+    }
+
+    /// Arm once per process: the saved terminal mode has to be the one from
+    /// before raw mode, never a raw mode re-saved by a second session.
+    pub(super) fn arm() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| unsafe {
+            if libc::tcgetattr(libc::STDIN_FILENO, SAVED.0.get()) == 0 {
+                VALID.store(true, Ordering::Relaxed);
+            }
+            for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+                libc::signal(signal, restore as *const () as libc::sighandler_t);
+            }
+        });
+    }
+}
+
 /// The interactive terminal session shared by the plain terminal and the
 /// desktop console: raw mode, bracketed paste and mouse capture around one
 /// frame loop. `tick` runs once per pass after `poll()`: `None` ends the
 /// session, `Some(drawn)` says whether this pass paints a frame (a hidden
 /// console is polled, not drawn). Events are handled the same way either way.
+/// Every way out of it -- return, error, panic, signal -- restores the terminal.
 fn interactive_session(app: &mut App, mut tick: impl FnMut(&mut App, &mut ratatui::DefaultTerminal) -> io::Result<Option<bool>>) -> io::Result<()> {
+    install_terminal_panic_hook(&app.output);
+    #[cfg(unix)]
+    terminal_signals::arm();
     let mut terminal = ratatui::init();
     let result = (|| -> io::Result<()> {
         execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
@@ -5628,6 +5858,13 @@ fn interactive_session(app: &mut App, mut tick: impl FnMut(&mut App, &mut ratatu
             app.poll();
             let Some(drawn) = tick(app, &mut terminal)? else { return Ok(()); };
             if drawn { terminal.draw(|f| draw(f, app))?; }
+            // The terminal-restore test's crash probe: a debug build only, and
+            // only once a frame is on screen, so the panic happens with the
+            // alternate screen, raw mode, mouse capture and bracketed paste on.
+            #[cfg(debug_assertions)]
+            if drawn && env::var_os("GPUWM_TUI_PANIC_PROBE").is_some() {
+                panic!("GPUWM_TUI_PANIC_PROBE: forced crash with the terminal fully entered");
+            }
             if event::poll(Duration::from_millis(150))? {
                 let pending = file_drop_input::read(event::read()?, &app.cwd)?;
                 for (index, input) in pending.into_iter().enumerate() {
@@ -5660,8 +5897,11 @@ fn interactive_session(app: &mut App, mut tick: impl FnMut(&mut App, &mut ratatu
             }
         }
     })();
-    let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
-    ratatui::restore();
+    // Not `ratatui::restore()`: that leaves mouse capture and bracketed paste
+    // on, which is the whole defect. This is the same restore the panic hook
+    // and the signal handler perform, so all four exits agree.
+    restore_terminal();
+    drop(terminal);
     result
 }
 
@@ -5824,6 +6064,114 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use crate::theme::SKY;
+
+    fn ansi(command: impl crossterm::Command) -> String {
+        let mut text = String::new();
+        command.write_ansi(&mut text).unwrap();
+        text
+    }
+
+    /// The constant the panic hook and the signal handler write is crossterm's
+    /// own spelling of the four modes an interactive session turns on, in the
+    /// reverse order. Compare against crossterm rather than a literal so a
+    /// pinned-version bump that changes a sequence fails here instead of in a
+    /// user's shell.
+    #[test]
+    fn terminal_restore_is_crossterms_own_spelling_of_every_mode_a_session_enables() {
+        let enabled = format!(
+            "{}{}{}",
+            ansi(crossterm::terminal::EnterAlternateScreen),
+            ansi(EnableBracketedPaste),
+            ansi(EnableMouseCapture)
+        );
+        let expected = format!(
+            "{}{}{}{}",
+            ansi(crossterm::event::DisableMouseCapture),
+            ansi(crossterm::event::DisableBracketedPaste),
+            ansi(crossterm::terminal::LeaveAlternateScreen),
+            ansi(crossterm::cursor::Show)
+        );
+        assert_eq!(std::str::from_utf8(TERMINAL_RESTORE).unwrap(), expected);
+        for mode in ["?1049", "?2004", "?1006", "?1015", "?1003", "?1002", "?1000"] {
+            assert!(enabled.contains(&format!("{mode}h")), "session never enables {mode}");
+            assert!(
+                expected.contains(&format!("{mode}l")),
+                "restore leaves {mode} on: this is the mouse-report defect"
+            );
+        }
+    }
+
+    /// The crash record, with the terminal mocked by a byte sink: the restore
+    /// reaches the terminal, and the reason reaches controller.log, which is
+    /// the only readable copy when the terminal itself is the casualty.
+    #[test]
+    fn a_terminal_panic_restores_the_terminal_and_records_its_reason_for_the_user() {
+        let output = std::env::temp_dir().join(format!(
+            "arwen-tui-panic-report-{}-{}",
+            std::process::id(),
+            remote::stamp()
+        ));
+        let mut sink = Vec::new();
+        terminal_panic_report(
+            &output,
+            &mut sink,
+            "The ArWen terminal stopped unexpectedly: probe reason",
+        );
+        assert_eq!(sink, TERMINAL_RESTORE);
+        let log = fs::read_to_string(output.join(".arwen-tui").join("controller.log")).unwrap();
+        assert!(log.contains("The ArWen terminal stopped unexpectedly: probe reason"), "{log}");
+        assert!(log.ends_with('\n'), "{log}");
+        fs::remove_dir_all(&output).unwrap();
+    }
+
+    /// The screen a user actually watches while ArWen downloads its weather
+    /// inputs, replayed from a recorded icon-eu fetch: 320 real
+    /// fetch_started/fetch_progress/fetch_completed events, whose acquisition
+    /// counts the local route derives itself because icon-eu publishes no
+    /// acquisition block. Every prefix is rendered, because the panel is drawn
+    /// afresh several times a second while that stream grows, and every
+    /// supported terminal size, because a crash was reported on this screen and
+    /// a panic anywhere in this path takes the whole terminal with it.
+    #[test]
+    fn a_recorded_icon_eu_fetch_renders_its_progress_panel_at_every_prefix_and_size() {
+        let text = include_str!("../tests/fixtures/icon-eu-fetch-events.jsonl");
+        let events = text
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let started = events[0]["emitted_unix_ms"].as_i64().unwrap();
+        let ended = events.last().unwrap()["emitted_unix_ms"].as_i64().unwrap();
+        let mut rendered = String::new();
+        for prefix in (1..=events.len()).step_by(7).chain([events.len()]) {
+            let pipeline =
+                companion::local_progress::pipeline_progress(&events[..prefix], &serde_json::json!({"stage":"fetch","phase":"fetch"}), started, Some(ended));
+            let status = serde_json::json!({
+                "state": "running", "stage": "fetch", "phase": "fetch",
+                "progress": {"schema":"arwen.forecast-progress.v1","model_seconds":serde_json::Value::Null,"run_seconds":21600.0},
+                "pipeline_progress": pipeline,
+            });
+            for compact in [false, true] {
+                rendered = node_ui::job_progress_text(&status, compact);
+            }
+            for (width, height) in [(40, 8), (60, 14), (80, 24), (90, 14), (120, 40), (200, 50)] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|frame| draw_forecast_progress(frame, frame.area(), &status))
+                    .unwrap();
+            }
+        }
+        // The four lines the reporting user photographed, in their order.
+        let lines = rendered.lines().collect::<Vec<_>>();
+        assert_eq!(lines[0], "RUNNING · Acquiring weather inputs", "{rendered}");
+        assert_eq!(lines[1], "fetch", "{rendered}");
+        assert!(lines[2].starts_with("Stage elapsed: "), "{rendered}");
+        assert!(lines[3].starts_with("Received ") && lines[3].ends_with(" MiB"), "{rendered}");
+        assert!(
+            rendered.contains("Simulation steps and speed appear when integration starts."),
+            "{rendered}"
+        );
+    }
 
     #[test]
     fn guide_pins_current_label_and_unicode_input_tail_in_supported_viewports() {
@@ -8187,6 +8535,54 @@ mod tests {
         assert!(!companion_launch_available(false,false,Some(&node),Some(&unrecorded),None,None));
     }
     #[test]
+    fn a_downscale_request_builds_exactly_the_guided_command(){
+        let root=std::env::temp_dir().join(format!("arwen-downscale-argv-{}-{}",std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&root).unwrap();
+        let root=root.canonicalize().unwrap();
+        let parent=root.join("parent-run");fs::create_dir(&parent).unwrap();
+        let out=root.join("child-run");
+        let body=companion::DownscaleRequest{
+            parent_run_dir:parent.to_string_lossy().into_owned(),
+            point:Some((39.5,-84.0)),ratio:3,auto_vram:true,accept_parent_cadence:true,
+            output_interval_seconds:Some(900.0),tiles:Some("auto".into()),
+            out_dir:out.to_string_lossy().into_owned(),plan:true,
+            ..companion::DownscaleRequest::default()};
+        let request=downscale_guide(&body,&root,&root.join("runs")).request(&root).unwrap();
+        assert_eq!(request.command,"downscale");
+        // Exactly what the terminal's own Downscale guide builds for the
+        // same answers, because it IS that guide: the positional parent,
+        // `--flag=value` settings, `--out DIR` as two tokens, and the
+        // `--dry-run` that plan mode means.
+        assert_eq!(request.args,vec![parent.to_string_lossy().into_owned(),
+            "--point=39.5,-84".to_owned(),"--parent-restart=latest".into(),"--ratio=3".into(),
+            "--accept-parent-cadence".into(),"--output-interval-seconds=900".into(),
+            "--tiles=auto".into(),"--out".into(),out.to_string_lossy().into_owned(),
+            "--dry-run".into(),"--auto-vram".into()]);
+        let receipt=downscale_receipt(&body);
+        assert_eq!(receipt["mode"],"plan");
+        assert_eq!(receipt["child_config_path"],serde_json::json!(root.join("child-run.child.toml")));
+        assert_eq!(receipt["downscale_plan_path"],serde_json::json!(root.join("child-run.downscale-plan.json")));
+
+        // The same answers as a run: no --dry-run, and both documents move
+        // inside the directory the run owns.
+        let mut running=body.clone();running.plan=false;
+        let request=downscale_guide(&running,&root,&root.join("runs")).request(&root).unwrap();
+        assert!(!request.args.iter().any(|argument|argument=="--dry-run"));
+        let receipt=downscale_receipt(&running);
+        assert_eq!(receipt["mode"],"run");
+        assert_eq!(receipt["child_config_path"],serde_json::json!(out.join("child.toml")));
+        assert_eq!(receipt["downscale_plan_path"],serde_json::json!(out.join("downscale-plan.json")));
+
+        // An output directory that already exists is the guide's own
+        // refusal, and it reaches the caller verbatim.
+        fs::create_dir(&out).unwrap();
+        let refusal=match downscale_guide(&body,&root,&root.join("runs")).request(&root){
+            Err(error)=>error,Ok(_)=>panic!("an existing output directory must be refused")};
+        assert!(refusal.contains("already exists"),"{refusal}");
+        fs::remove_dir_all(root).ok();
+    }
+    #[test]
     fn companion_launch_available_status_keeps_queue_and_tui_review_exclusive(){
         let(mut app,request,control)=companion_queue_fixture();
         app.nodes.store.nodes[0].last_job=Some("job-1".into());
@@ -8618,6 +9014,53 @@ mod tests {
     }
 
     #[test]
+    fn a_revealed_desktop_terminal_does_not_outlive_the_closed_workspace_and_the_ended_job() {
+        // The controller's life is the workspace window it spawned and the job
+        // it owns. A revealed terminal window used to be a third reason to
+        // live: a controller whose desktop had closed and whose job had failed
+        // kept heartbeating for hours, and the next ArWen start reattached to
+        // it and to the runtime it had already resolved.
+        let mut app = loaded_app("a=1\n");
+        assert!(!app.serving_desktop(), "no workspace process and no job is not serving the desktop");
+        for visible in [true, false] {
+            assert_eq!(desktop_frame(app.serving_desktop(), false, visible), DesktopFrame::End,
+                "the controller ends once its workspace has closed and no job runs (window visible: {visible})");
+            assert_eq!(desktop_frame(app.serving_desktop(), true, visible), DesktopFrame::End,
+                "Quit in that state ends it as well (window visible: {visible})");
+        }
+        // While it serves, Quit only hides the window and drawing follows it.
+        assert_eq!(desktop_frame(true, true, true), DesktopFrame::Hide);
+        assert_eq!(desktop_frame(true, true, false), DesktopFrame::Hide);
+        assert_eq!(desktop_frame(true, false, true), DesktopFrame::Draw);
+        assert_eq!(desktop_frame(true, false, false), DesktopFrame::Wait);
+    }
+
+    #[test]
+    fn an_owned_job_keeps_the_desktop_controller_alive_until_it_ends_and_no_longer() {
+        let Some(python) = env::var_os("GPUWM_TUI_TEST_PYTHON").map(PathBuf::from) else { return };
+        let mut app = loaded_app("a=1\n");
+        let root = app.output.parent().unwrap().join("desktop-lifetime-fixture");
+        let package = root.join("gpuwm");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("__init__.py"), "").unwrap();
+        fs::write(package.join("tui_worker.py"), include_str!("../../../gpuwm/tui_worker.py")).unwrap();
+        // A brief benign failure: the reported controller had a job that ended
+        // with exit 1 and stayed alive anyway.
+        fs::write(package.join("cli.py"), "import time\ndef main(argv=None):\n time.sleep(2)\n return 1\n").unwrap();
+        app.job = Some(Job::start_with_module_path(&python, "benign-lifetime-fixture", &[], &root.join("job"), &root, Some(&root)).unwrap());
+        assert!(app.serving_desktop(), "a running owned job keeps the controller alive");
+        assert_eq!(desktop_frame(app.serving_desktop(), false, false), DesktopFrame::Wait);
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while app.job.as_mut().unwrap().poll().unwrap().is_none() {
+            assert!(std::time::Instant::now() < deadline, "the fixture job never ended");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(app.job.as_ref().unwrap().outcome, Some(1));
+        assert!(!app.serving_desktop(), "a job that has ended keeps nothing alive");
+        assert_eq!(desktop_frame(app.serving_desktop(), false, true), DesktopFrame::End);
+    }
+
+    #[test]
     fn global_help_and_quit_restore_guide_and_retained_workflow_answers() {
         let mut app = loaded_app("a=1\n");
         let mode = workflows::MODES.iter().position(|m| m.id == "convective").unwrap_or(0);
@@ -8835,7 +9278,7 @@ mod tests {
     }
     #[test]
     fn local_forecast_progress_keeps_native_timing_and_nonforecast_output_readable() {
-        for action in ["run-plan", "go", "sim", "run", "resume"] {
+        for action in ["run-plan", "go", "sim", "run", "resume", "downscale"] {
             assert!(local_forecast_action(action, &[]));
         }
         for action in ["check", "doctor", "sources", "domain", "case-catalog"] {

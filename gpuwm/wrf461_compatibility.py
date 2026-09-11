@@ -61,7 +61,20 @@ class WRFCompatibilityCell:
     silent_reconfiguration: str | None = None
 
 
-MP_OPTIONS = (1, 6, 8, 10, 18, 28)
+# The microphysics axis carries every selector the registry publishes as
+# implemented, because this matrix's verdict does not depend on it: a cell's
+# verdict comes from the PBL/surface-layer pair, the radiation label and
+# sf_surface_physics (compatibility_cell below), and mp_physics contributes
+# only its Registry citation.  Carrying six of the ten therefore refused
+# mp_physics 0, 9, 16 and 50 with "tuple axis is outside the represented WRF
+# v4.6.1 matrix" -- a message that reads as an incompatibility for four
+# schemes WRF v4.6.1 itself declares and this tree runs (audit R-012).  Each
+# added row is an enumerated admission with WRF's own package line, exactly
+# as the Shin-Hong and Grell-Freitas rows below are; adding them scales every
+# verdict count by 10/6 and the pinned counts in
+# tests/test_wrf461_compatibility.py were re-measured off the enlarged
+# matrix rather than projected.
+MP_OPTIONS = (0, 1, 6, 8, 9, 10, 16, 18, 28, 50)
 # 11 (Shin-Hong) joined the PBL axis with the Shin-Hong port: an implemented
 # scheme with a certified oracle (max ULP 0 CPU authority against the
 # byte-frozen WRF v4.6.1 module_bl_shinhong.F,
@@ -88,7 +101,53 @@ RADIATION_OPTIONS = (
 # the cumulus choice -- so admitting 3 scales every verdict count by 3/2,
 # and the pinned counts in tests/test_wrf461_compatibility.py were
 # re-measured off the enlarged matrix rather than projected.
-CUMULUS_OPTIONS = (0, 1, 3)
+#
+# 16 (New Tiedtke) joined on the same terms with the New Tiedtke port.
+# It was the axis's own drift: this module's header says only the ported
+# schemes are represented, gpuwm.config.CU_SCHEMES has admitted 16 since
+# the port landed, and the registry this module generates already
+# published cu_physics=16 as an implemented option while the matrix
+# dimension it also publishes said (0, 1, 3) -- one artifact
+# contradicting itself.  Nothing on a run path reads the cumulus axis, so
+# the drift was latent rather than a live refusal; it is closed here, and
+# test_authority_agreement now holds every axis of this transcription
+# equal to the selectable set so the next one cannot be latent either.
+CUMULUS_OPTIONS = (0, 1, 3, 16)
+
+#: Values ``gpuwm.config`` lets a user select that this transcription does
+#: NOT represent, each with the reason it is absent.  The table exists
+#: because the cumulus axis drifted silently: cu_physics=16 was ported,
+#: selectable and published by the registry this module generates while the
+#: matrix dimension said (0, 1, 3), and nothing compared the two.  An
+#: axis's represented set plus its rows here must equal the selectable set
+#: exactly (``tests/test_authority_agreement.py``), so a newly ported
+#: scheme has to do one of two things -- join the axis with its citation,
+#: or say here why it cannot -- and neither can be forgotten.
+#:
+#: A blank reason is not a row.  These are not refusals (nothing on a run
+#: path consults this module for any of these values); they state what the
+#: transcription's silence means, which is what stops the next reader from
+#: mistaking absence for illegality.
+AXIS_EXCLUSIONS = MappingProxyType({
+    ("bl_pbl_physics", 2): (
+        "MYJ's WRF law is stronger than a matrix cell and is implemented "
+        "directly: phys/module_physics_init.F:3770-3772 fatals the MYJ "
+        "PBL with any surface layer but the Eta one, and "
+        "gpuwm.config.validate_myj_pairing raises exactly that, in both "
+        "directions, before this module is consulted. A row here would be "
+        "a second authority over a question that already has one."),
+    ("bl_pbl_physics", 900): (
+        "SASE is an ArWen closure with no WRF counterpart: WRF v4.6.1 "
+        "registers no package at bl_pbl_physics=900, so there is no "
+        "verdict to transcribe and a row would be an invention. Its "
+        "admission is stated on its own registry option and in "
+        "gpuwm.config.validate_sase_config."),
+    ("sf_sfclay_physics", 2): (
+        "the Eta surface layer is the other half of the MYJ pairing above "
+        "and is refused or admitted by the same implemented law; see the "
+        "bl_pbl_physics=2 row."),
+})
+
 
 MATRIX_CELL_COUNT = (
     len(MP_OPTIONS)
@@ -101,6 +160,9 @@ MATRIX_CELL_COUNT = (
 
 
 _MP_CITATION = MappingProxyType({
+    0: WRFCitation(
+        "Registry/Registry.EM_COMMON", "3014",
+        "the passiveqv package binds mp_physics=0 and allocates qv alone"),
     1: WRFCitation(
         "Registry/Registry.EM_COMMON", "3015",
         "the Kessler package binds mp_physics=1 and allocates qv/qc/qr"),
@@ -110,15 +172,24 @@ _MP_CITATION = MappingProxyType({
     8: WRFCitation(
         "Registry/Registry.EM_COMMON", "3024",
         "the Thompson package binds mp_physics=8"),
+    9: WRFCitation(
+        "Registry/Registry.EM_COMMON", "3025",
+        "the milbrandt2mom package binds mp_physics=9"),
     10: WRFCitation(
         "Registry/Registry.EM_COMMON", "3026",
         "the Morrison two-moment package binds mp_physics=10"),
+    16: WRFCitation(
+        "Registry/Registry.EM_COMMON", "3031",
+        "the wdm6scheme package binds mp_physics=16"),
     18: WRFCitation(
         "Registry/Registry.EM_COMMON", "3033",
         "the NSSL two-moment package binds mp_physics=18"),
     28: WRFCitation(
         "Registry/Registry.EM_COMMON", "3036",
         "the aerosol-aware Thompson package binds mp_physics=28"),
+    50: WRFCitation(
+        "Registry/Registry.EM_COMMON", "3038",
+        "the P3_1CATEGORY package binds mp_physics=50"),
 })
 
 _LAND_SURFACE_CITATION = MappingProxyType({
@@ -146,6 +217,9 @@ _CUMULUS_CITATION = MappingProxyType({
     3: WRFCitation(
         "Registry/Registry.EM_COMMON", "3192",
         "the gfscheme package binds cu_physics=3"),
+    16: WRFCitation(
+        "Registry/Registry.EM_COMMON", "3201",
+        "the ntiedtkescheme package binds cu_physics=16"),
 })
 
 _RADIATION_CITATION = MappingProxyType({
@@ -322,9 +396,12 @@ def compatibility_cell(
 
 
 def iter_compatibility_matrix() -> Iterator[WRFCompatibilityCell]:
-    """Yield the complete represented cross-product (:data:`MATRIX_CELL_COUNT`
-    cells; 2,880 once mp_physics=28 joined the microphysics axis, 3,840 once
-    bl_pbl_physics=11 joined the PBL axis)."""
+    """Yield the complete represented cross-product: :data:`MATRIX_CELL_COUNT`
+    cells, which is the product of the six transcribed axes and is COMPUTED
+    from them, never typed here.  Widening an axis (mp_physics=28, then
+    bl_pbl_physics=11, then cu_physics=3 and 16) moves the count on its own;
+    a hand-written total in this docstring went stale on two of those
+    widenings before it was deleted."""
 
     for mp, pbl, sfclay, lsm, radiation, cumulus in product(
         MP_OPTIONS,

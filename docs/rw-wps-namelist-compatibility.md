@@ -47,6 +47,16 @@ The following microphysics package inventories come directly from WRF v4.6.1
 | 6 | WSM6 | `QVAPOR QCLOUD QRAIN QICE QSNOW QGRAUP` |
 | 8 | Thompson | WSM6 mass species plus `QNICE QNRAIN` |
 | 10 | Morrison two-moment | WSM6 mass species plus `QNICE QNSNOW QNRAIN QNGRAUPEL` |
+| 18 | NSSL two-moment | WSM6 mass species plus `QHAIL QNDROP QNRAIN QNICE QNSNOW QNGRAUPEL QNHAIL QNCCN QVGRAUPEL QVHAIL` |
+| 28 | Thompson aerosol-aware | Thompson's members plus `QNCLOUD QNWFA QNIFA QNBCA QNWFA2D QNIFA2D` |
+| 50 | P3 one-category two-moment ice | `QVAPOR QCLOUD QRAIN QICE QNICE QNRAIN QIR QIB` |
+
+This table is the whole of `gpuwm/wrf_physics_inventory.py`'s
+`_INVENTORIES`, which is what the export refusal names when a scheme has no
+row. A selector absent from it is an EXPORT limit and says nothing about
+what ArWen runs: the native door (`gpuwm import-namelist` then `gpuwm run`)
+runs every scheme ArWen implements, and the report's `gpuwm_runtime` verdict
+is computed from the engine's own implemented set, never from this table.
 
 All are WRF `real` fields: NetCDF float32 on
 `Time,bottom_top,south_north,west_east`. Water vapor comes from the source;

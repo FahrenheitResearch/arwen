@@ -131,6 +131,43 @@ _NSSL_WRF_TO_STATE = MappingProxyType({
     "QNSNOW": "qns", "QNGRAUPEL": "qng", "QNHAIL": "qnh",
     "QNCCN": "qnn", "QVGRAUPEL": "qvolg", "QVHAIL": "qvolh",
 })
+#: mp_physics=9 (Milbrandt-Yau).  A THIRD scheme-qualified map, for the
+#: same reason the NSSL one above is a second: QHAIL and QNHAIL are
+#: declared by both milbrandt2mom (Registry.EM_COMMON:3025,
+#: ``scalar:qh,qnc,qnr,qni,qns,qng,qnh``) and nssl_2mom, and the two
+#: schemes bind them to DIFFERENT state fields -- MY2's hail number is
+#: ``nh``, NSSL's is ``qnh`` -- so one shared map could only be wrong for
+#: one of them.  gpuwm/ingest/wrfinput.py already carries exactly these
+#: rows for the same reason; this is the offline lane learning what the
+#: root door knew (audit R-017).  The six number moments and the five
+#: shared masses reuse the names Morrison and Thompson declared first.
+_MY2_WRF_TO_STATE = MappingProxyType({
+    "QVAPOR": "qv", "QCLOUD": "qc", "QRAIN": "qr",
+    "QICE": "qi", "QSNOW": "qs", "QGRAUP": "qg", "QHAIL": "qh",
+    "QNCLOUD": "nc", "QNRAIN": "nr", "QNICE": "ni",
+    "QNSNOW": "ns", "QNGRAUPEL": "ng", "QNHAIL": "nh",
+})
+
+
+
+def _scheme_wrf_to_state(source_mp_physics: int) -> Mapping[str, str]:
+    """The wrfout-name -> state-field map for one parent scheme.
+
+    Three schemes need their own: QHAIL/QNHAIL/QNCCN are declared by more
+    than one WRF package and bind to different state fields in each, so a
+    single shared map could only be right for one of them.  Everything
+    else reads the generic map, whose rows are the names Morrison,
+    Thompson and P3 declared.  Dispatching here rather than at each call
+    site is what kept mp=9 out of the lane after the NSSL map landed
+    (audit R-017).
+    """
+
+    source_mp = int(source_mp_physics)
+    if source_mp == 18:
+        return _NSSL_WRF_TO_STATE
+    if source_mp == 9:
+        return _MY2_WRF_TO_STATE
+    return _WRF_TO_STATE
 
 
 #: Parent microphysics schemes this offline-child route can carry.
@@ -174,7 +211,36 @@ _NSSL_WRF_TO_STATE = MappingProxyType({
 #: microphysics_init hook exists to prevent.  Admitting it means giving the
 #: field map a scheme-qualified QNCCN row and measuring the closure, not
 #: adding 16 to this set.
-OFFLINE_CHILD_MP_PHYSICS = frozenset({6, 8, 10, 18, 28, 50})
+#: DERIVED from the physics registry's per-option ``consumers.offline_child``
+#: rows (``same_scheme``), which carry the reasons above and the two this
+#: module never named: mp=0 and mp=1 (admitted by this module's own
+#: transported-field helper while this set refused them) and mp=9 (no
+#: scheme-qualified QHAIL/QNHAIL row in the field map).  Each refused row
+#: cites its defect, so admitting a scheme is one row in
+#: tools/build_registry.py and never a literal here.
+def _offline_child_mp_physics() -> frozenset[int]:
+    from gpuwm.physics_registry import consumer_rows_by_selector
+
+    return frozenset(
+        int(mp) for mp, row in
+        consumer_rows_by_selector("microphysics", "offline_child").items()
+        if row.get("same_scheme") is True)
+
+
+def offline_child_refusal(mp_physics: int) -> str | None:
+    """Why a same-scheme parent of ``mp_physics`` is refused, or ``None``."""
+
+    from gpuwm.physics_registry import consumer_rows_by_selector
+
+    row = consumer_rows_by_selector("microphysics", "offline_child").get(
+        int(mp_physics))
+    if row is None:
+        return (f"mp_physics={mp_physics} is not an implemented microphysics "
+                "option in gpuwm/physics_registry_v2.json")
+    return None if row.get("same_scheme") is True else row.get("refusal")
+
+
+OFFLINE_CHILD_MP_PHYSICS = _offline_child_mp_physics()
 
 #: Schemes that may not participate in an offline CROSS-physics conversion.
 #: DERIVED from ``gpuwm.core.microphysics_transition.
@@ -219,6 +285,38 @@ _CROSS_SCHEME_REFUSED_MP_PHYSICS = frozenset(
 #: landing it retires this constant (gate law / guard-retirement law).
 _P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS = frozenset({50})
 
+#: The same statement for the three parents that joined the SAME-scheme
+#: admission set with audit R-017.  Admitting a parent to be read is not
+#: admitting it to be CONVERTED: :func:`map_microphysics_to_nssl18` is the
+#: only converting site, and for each of these it would produce a wrong
+#: child rather than refuse, so each gets its own named reason and none is
+#: shared.  Building the leg retires its row (guard-retirement law); the
+#: same-scheme 0->0, 1->1 and 9->9 downscales this lane now supports are
+#: unaffected, because a same-scheme edge never reaches this gate.
+_OFFLINE_CROSS_LEG_UNBUILT_REASONS = {
+    0: ("an mp=0 parent transports vapour and the warm-rain pair and no "
+        "frozen species at all, and the NSSL conversion consumes a "
+        "six-species qv/qc/qr/qi/qs/qg inventory; diagnosing ice, snow and "
+        "graupel from a parent that carries none is a cross-scheme "
+        "question with no measured closure at this site, and padding zeros "
+        "would hand the child a frozen inventory the parent never had"),
+    1: ("an mp=1 (Kessler) parent transports qv/qc/qr and no frozen "
+        "species, and the NSSL conversion consumes a six-species "
+        "inventory -- the same missing closure mp=0 has, for the same "
+        "reason"),
+    9: ("this site zeroes the target's hail mass before the per-scheme "
+        "arms run (``result['qh'] = zeros``, the Morrison arm being the "
+        "only one that fills it), so an mp=9 parent's SEVENTH transported "
+        "species would be silently dropped on the way to NSSL, which "
+        "carries hail itself.  The online nest lane closes this edge "
+        "properly -- mp=9 and mp=18 are both dual-rimed, so qg->qg and "
+        "qh->qh map straight across "
+        "(gpuwm/core/microphysics_transition._DUAL_RIMED_SELECTORS) -- and "
+        "nothing here runs that mapping"),
+}
+_OFFLINE_CROSS_LEG_UNBUILT_MP_PHYSICS = frozenset(
+    _OFFLINE_CROSS_LEG_UNBUILT_REASONS)
+
 
 def _cross_scheme_refusal_clause(mp: int) -> str:
     """Name the scheme and the moments its missing closure would need.
@@ -247,6 +345,18 @@ def _refuse_unbuilt_p3_offline_edge(source_mp: int, target_mp: int) -> None:
     source_mp, target_mp = int(source_mp), int(target_mp)
     if source_mp == target_mp:
         return
+    unbuilt = sorted({source_mp, target_mp}
+                     & _OFFLINE_CROSS_LEG_UNBUILT_MP_PHYSICS)
+    if unbuilt:
+        mp = unbuilt[0]
+        raise OfflineChildContractError(
+            f"offline cross-physics conversion across the mp_physics="
+            f"{source_mp} -> {target_mp} edge is REFUSED: "
+            f"{_OFFLINE_CROSS_LEG_UNBUILT_REASONS[mp]}.  Same-scheme "
+            f"{mp} -> {mp} downscaling IS supported (that is what this "
+            "lane admits mp_physics=" + str(mp) + " for); to change "
+            "microphysics between the parent and the child, run the child "
+            "as an ONLINE nest, where the edge closure is ported.")
     if not ({source_mp, target_mp}
             & _P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS):
         return
@@ -269,7 +379,8 @@ def _refuse_unbuilt_p3_offline_edge(source_mp: int, target_mp: int) -> None:
 #: cannot drift from the same-scheme sites above.
 PARENT_SCHEME_CONTRACT = (
     OFFLINE_CHILD_MP_PHYSICS - _CROSS_SCHEME_REFUSED_MP_PHYSICS
-    - _P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS)
+    - _P3_OFFLINE_EDGE_UNBUILT_MP_PHYSICS
+    - _OFFLINE_CROSS_LEG_UNBUILT_MP_PHYSICS)
 
 
 class OfflineChildContractError(ValueError):
@@ -329,6 +440,32 @@ def reserve_output_root(path, *, flag: str = "--out") -> Path:
     return path.resolve()
 
 
+def _unsupported_parent_clause(mp_physics: int, *, what: str) -> str:
+    """The refusal text for a parent scheme this lane cannot read.
+
+    Names the scheme, the breakage that keeps it out and the way out, from
+    the registry's own ``consumers.offline_child`` row -- so the message a
+    user reads is the row an editor would change, and a bare
+    "unsupported ... mp_physics=N" can never come back (audit R-017).
+    """
+
+    admitted = ", ".join(str(value) for value in sorted(
+        OFFLINE_CHILD_MP_PHYSICS))
+    reason = offline_child_refusal(int(mp_physics))
+    if reason is None:
+        reason = ("no reason is recorded for it in the physics registry's "
+                  "consumers.offline_child row")
+    return (
+        f"the offline downscale lane cannot read a {what} parent of "
+        f"mp_physics={mp_physics}: {reason}. Parent schemes this lane "
+        f"carries same-scheme: {admitted}. The admission is one row in "
+        "tools/build_registry.py "
+        "(components.microphysics.options.<option>.consumers.offline_child), "
+        "not a literal here; run the parent's own scheme as the child, or "
+        "prepare the child from a parent archive written by an admitted "
+        "scheme.")
+
+
 @dataclass(frozen=True)
 class ParentPhysicsBinding:
     """Authoritative parent-scheme identity from a companion setup record."""
@@ -343,7 +480,7 @@ class ParentPhysicsBinding:
     def __post_init__(self) -> None:
         if int(self.mp_physics) not in OFFLINE_CHILD_MP_PHYSICS:
             raise OfflineChildContractError(
-                f"unsupported bound parent mp_physics={self.mp_physics}")
+                _unsupported_parent_clause(self.mp_physics, what="bound"))
         if int(self.domain_id) < 1:
             raise OfflineChildContractError("bound parent domain_id must be >= 1")
         if int(self.mp_physics) == 10 and self.morr_rimed_ice not in {0, 1}:
@@ -486,13 +623,50 @@ def _hash_array(digest, label: str, value) -> None:
     digest.update(array.tobytes())
 
 
-def _infer_mp_physics(inventory: frozenset[str]) -> int | None:
-    # mp=28 is tested FIRST because its inventory is a strict superset of
-    # mp=8's: it carries QNRAIN/QNICE too, so the classic-Thompson arm below
-    # would claim an aerosol-aware stream.  This whole function is advisory
-    # (the companion setup/namelist binding is authoritative), but an
-    # advisory value that reports 8 for a 28 stream would be actively
-    # misleading in a receipt.
+def _infer_mp_physics(
+        inventory: frozenset[str], *, source_kind: str) -> int | None:
+    """Advisory scheme id from the WRF names one history frame carries.
+
+    The ladder is ordered MOST DISCRIMINATING FIRST, because several
+    packages' inventories are strict supersets of others'.  Every arm
+    below is a name declared by exactly one WRF package, or a pair whose
+    presence-and-absence only one package satisfies; an arm that merely
+    matched a subset reported the wrong scheme with no way for a reader to
+    tell, which is what this function was doing for mp 9, 16 and 18 -- all
+    three were reported as somebody else's scheme in receipts and in the
+    cross-frame agreement check (audit R-018).
+
+    ``source_kind`` is the producer, ``"wrf"`` or ``"gpuwm"``, because the
+    warm-rain packages are separated by the WRITER and not by the scheme:
+    stock WRF's passiveqv (mp=0) transports qv alone, but gpuwm's own mp=0
+    allocates and advects the warm-rain pair beside it
+    (:func:`_transported_source_fields`) and gpuwm/io/wrfout.py writes all
+    three whenever the state is moist.  A gpuwm frame carrying exactly
+    QVAPOR/QCLOUD/QRAIN is therefore mp=0 OR mp=1 with nothing in the
+    inventory to separate them, and this function says so by returning
+    ``None`` rather than naming the one that happens to be second.
+    """
+    if source_kind not in ("wrf", "gpuwm"):
+        raise ValueError(
+            f"parent history producer must be 'wrf' or 'gpuwm', got "
+            f"{source_kind!r}")
+    # NSSL is first: its volume moments are declared by no other package
+    # (Registry.EM_COMMON:3033), so QVGRAUPEL/QVHAIL identify it outright.
+    # Without this arm an NSSL stream matched the Morrison arm below on
+    # {QNSNOW, QNGRAUPEL} -- and NSSL is an ADMITTED offline parent, so
+    # the mislabel reached a receipt for a supported configuration.
+    if {"QVGRAUPEL", "QVHAIL"} <= inventory:
+        return 18
+    # Milbrandt-Yau (Registry.EM_COMMON:3025) is the other package that
+    # declares QHAIL and QNHAIL; NSSL is already claimed above, so the
+    # pair without the volume moments is MY2's discriminant.  It must
+    # precede the Morrison arm for the same superset reason: MY2 carries
+    # QNSNOW and QNGRAUPEL too.
+    if {"QHAIL", "QNHAIL"} <= inventory:
+        return 9
+    # mp=28 before mp=8 because its inventory is a strict superset of
+    # mp=8's: it carries QNRAIN/QNICE too, so the classic-Thompson arm
+    # below would claim an aerosol-aware stream.
     if {"QNWFA", "QNIFA"} <= inventory:
         return 28
     # mp=50 next, and before mp=8, for the same superset reason: a P3
@@ -502,12 +676,43 @@ def _infer_mp_physics(inventory: frozenset[str]) -> int | None:
     # discriminant.
     if {"QIR", "QIB"} <= inventory:
         return 50
+    # WDM6 (Registry.EM_COMMON:3031, ``scalar:qnn,qnc,qnr``) before the
+    # single-moment WSM6 arm it would otherwise fall into: it carries the
+    # same six masses as WSM6 and adds a warm-rain number pair plus the
+    # CCN reservoir, and it declares NO ice number, which is what
+    # separates it from Morrison and Thompson.  QNCCN alone is not the
+    # discriminant -- NSSL publishes ``qnn`` under the same name -- but
+    # NSSL is claimed two arms above.
+    if ({"QNCCN", "QNCLOUD", "QNRAIN"} <= inventory
+            and "QNICE" not in inventory):
+        return 16
     if {"QNSNOW", "QNGRAUPEL"} <= inventory:
         return 10
     if {"QNRAIN", "QNICE"} <= inventory:
         return 8
     if {"QICE", "QSNOW", "QGRAUP"} <= inventory:
         return 6
+    # Kessler (Registry.EM_COMMON:3015) declares moist:qv,qc,qr and no
+    # frozen species; passiveqv (:3014) declares qv alone.  Both were
+    # reported as "unknown" -- a receipt row that reads as "this stream is
+    # unreadable" for two packages this lane now carries.  Both arms are
+    # ABSENCE tests as well as presence tests, because every remaining
+    # package is a superset of Kessler's and Kessler's is a superset of
+    # passiveqv's: a frame carrying any frozen species or any number
+    # moment is not one of these two, and stays unknown rather than being
+    # labelled with the smallest package that fits.
+    _frozen = {"QICE", "QSNOW", "QGRAUP", "QHAIL"}
+    _moments = {"QNCLOUD", "QNRAIN", "QNICE", "QNSNOW", "QNGRAUPEL",
+                "QNHAIL", "QNCCN", "QNDROP", "QNWFA", "QNIFA",
+                "QVGRAUPEL", "QVHAIL", "QIR", "QIB"}
+    if not (inventory & (_frozen | _moments)):
+        if {"QVAPOR", "QCLOUD", "QRAIN"} <= inventory:
+            # Ambiguous on a gpuwm tape and only there: see the docstring.
+            # Claiming Kessler would be the same class of mislabel this
+            # ladder was rewritten to end, one package later.
+            return None if source_kind == "gpuwm" else 1
+        if inventory & {"QVAPOR"} and not (inventory & {"QCLOUD", "QRAIN"}):
+            return 0
     return None
 
 
@@ -576,13 +781,33 @@ def inspect_parent_history_frame(
                     f"{path} is missing WRF geometry dimension {name!r}")
             dimensions[name] = len(dataset.dimensions[name])
 
-        inferred_mp = _infer_mp_physics(variables)
+        title = str(getattr(dataset, "TITLE", ""))
+        source_kind = "gpuwm" if (
+            "gpuwm" in title.lower() or "GPUWM_WRITE_COMPLETE" in dataset.ncattrs()
+        ) else "wrf"
+        inferred_mp = _infer_mp_physics(variables, source_kind=source_kind)
         bound_mp = None
+        if source_mp_physics is None and inferred_mp is not None and (
+                inferred_mp not in OFFLINE_CHILD_MP_PHYSICS):
+            # Nothing was declared, so this inference is the only scheme
+            # evidence there is -- and the arms are single-package
+            # discriminants, not subset matches, so a positive one is not a
+            # guess.  Without this the reader fell through to the blind
+            # six-species contract, which a WDM6 archive SATISFIES: the run
+            # would have been prepared with the parent's warm-rain numbers
+            # and its CCN reservoir silently dropped, which is the exact
+            # cross-scheme entry-closure breakage the mixed nest edge
+            # refuses by name (audit R-018).
+            raise OfflineChildContractError(
+                f"{path} carries the transported inventory of "
+                f"mp_physics={inferred_mp} and no parent scheme was "
+                "declared, so that inventory is the only evidence: "
+                + _unsupported_parent_clause(inferred_mp, what="inferred"))
         if source_mp_physics is not None:
             requested = int(source_mp_physics)
             if requested not in OFFLINE_CHILD_MP_PHYSICS:
                 raise OfflineChildContractError(
-                    f"unsupported declared parent mp_physics={requested}")
+                    _unsupported_parent_clause(requested, what="declared"))
             # Inventory-only inference is advisory. WRF streams may retain
             # dormant number variables, and unified NSSL can expose an
             # inventory that looks like another multi-moment scheme. The
@@ -609,10 +834,6 @@ def inspect_parent_history_frame(
                 value = value[0]
             _hash_array(digest, name, value)
 
-        title = str(getattr(dataset, "TITLE", ""))
-        source_kind = "gpuwm" if (
-            "gpuwm" in title.lower() or "GPUWM_WRITE_COMPLETE" in dataset.ncattrs()
-        ) else "wrf"
     return ParentHistoryFrame(
         path=path.resolve(), valid_time=valid_time, source_kind=source_kind,
         source_mp_physics=bound_mp, inferred_mp_physics=inferred_mp,
@@ -708,9 +929,8 @@ def read_parent_microphysics(
         source_mp = int(source_mp_physics)
         if source_mp not in OFFLINE_CHILD_MP_PHYSICS:
             raise OfflineChildContractError(
-                f"unsupported declared parent mp_physics={source_mp}")
-        if source_mp == 18:
-            wrf_mapping = _NSSL_WRF_TO_STATE
+                _unsupported_parent_clause(source_mp, what="declared"))
+        wrf_mapping = _scheme_wrf_to_state(source_mp)
         required = set(_transported_source_fields(source_mp))
         label = f"mp_physics={source_mp} transported parent fields"
     # Decoded by the Rust bridge: transported moisture is meteorological
@@ -774,7 +994,14 @@ def map_microphysics_to_nssl18(
     _refuse_unbuilt_p3_offline_edge(source_mp, 18)
     if source_mp not in PARENT_SCHEME_CONTRACT:
         raise OfflineChildContractError(
-            f"NSSL conversion currently accepts source mp 6/8/10/18, got {source_mp}")
+            "offline cross-physics conversion to NSSL mp18 has no conversion "
+            f"leg for source mp_physics={source_mp}; the parents it "
+            "converts are "
+            + ", ".join(str(value) for value in sorted(PARENT_SCHEME_CONTRACT))
+            + ".  Same-scheme downscaling is a different question and is "
+            "supported for "
+            + ", ".join(str(value)
+                        for value in sorted(OFFLINE_CHILD_MP_PHYSICS)))
     normalized = {name: np.asarray(value, dtype=np.float32)
                   for name, value in fields.items()}
     if source_mp == 18:
@@ -1416,6 +1643,12 @@ def _to_host(value) -> np.ndarray:
 
 def _transported_source_fields(source_mp_physics: int) -> tuple[str, ...]:
     source_mp = int(source_mp_physics)
+    # mp=0 (WRF's passiveqv package, Registry.EM_COMMON:3014) transports
+    # qv alone in STOCK WRF, but gpuwm's own mp=0 moist state allocates and
+    # advects the warm-rain pair beside it and the ONLINE forcing table
+    # (gpuwm/core/preflight.py::nest_field_kinds) forces all three -- so the
+    # offline mirror reads all three too.  The contract test pins the two
+    # lanes equal, and the lanes are what has to agree here.
     names = ["qv", "qc", "qr"]
     if source_mp in {6, 8, 10, 28}:
         names += ["qi", "qs", "qg"]
@@ -1444,13 +1677,31 @@ def _transported_source_fields(source_mp_physics: int) -> tuple[str, ...]:
         names += ["qi", "ni", "nr", "qir", "qib"]
     elif source_mp == 18:
         names = list(_NSSL_FIELDS)
-    elif source_mp not in {0, 6}:
-        # mp=6 (WSM6) is single-moment: the shared mixing-ratio branch above
-        # is its whole transported set, and it must NOT fall into this
-        # refusal -- every member of OFFLINE_CHILD_MP_PHYSICS has to exit
-        # this chain with a mapping, which the contract test now pins.
+    elif source_mp == 9:
+        # Milbrandt-Yau (Registry.EM_COMMON:3025): the six-species mass set
+        # plus hail mass, and a number moment for every one of the six
+        # hydrometeors.  Imported from gpuwm.core.milbrandt2_constants
+        # rather than re-spelled, so the offline lane and the online forcing
+        # table (gpuwm.core.moist re-exports the same tuple) read one tuple.
+        # That module is pure numpy: gpuwm.core.moist imports cupy when it
+        # is imported, this function answers for `gpuwm --probe`, the
+        # sizing wizard and the offline-child inventory on boxes with no
+        # working CuPy, and reading the tuple through moist made every one
+        # of them die in an import (tests/test_runplan.py::
+        # test_probe_works_on_a_box_whose_cupy_will_not_load,
+        # tests/test_offline_child.py on a CPU node).
+        from gpuwm.core.milbrandt2_constants import MY2_SPECIES
+
+        names += list(MY2_SPECIES)
+    elif source_mp not in {0, 1, 6}:
+        # mp=0 (passiveqv), mp=1 (Kessler, Registry.EM_COMMON:3015) and
+        # mp=6 (WSM6) exit on the branches above: the first two ARE the
+        # qv/qc/qr prefix gpuwm advects for them, and WSM6 is that prefix
+        # plus the three frozen masses.  None may fall into this refusal --
+        # every member of OFFLINE_CHILD_MP_PHYSICS has to exit this chain
+        # with a mapping, which the contract test pins.
         raise OfflineChildContractError(
-            f"unsupported parent mp_physics={source_mp}")
+            _unsupported_parent_clause(source_mp, what="resolved"))
     return tuple(names)
 
 
@@ -1478,7 +1729,7 @@ def _resolve_source_physics(
     source_mp_physics = int(source_mp_physics)
     if source_mp_physics not in OFFLINE_CHILD_MP_PHYSICS:
         raise OfflineChildContractError(
-            f"unsupported parent mp_physics={source_mp_physics}")
+            _unsupported_parent_clause(source_mp_physics, what="resolved"))
     return source_mp_physics, morr_rimed_ice
 
 
@@ -1491,8 +1742,7 @@ def _raw_parent_state(dataset, source_mp_physics: int):
         )
     }
     moisture = {}
-    wrf_mapping = (_NSSL_WRF_TO_STATE if int(source_mp_physics) == 18
-                   else _WRF_TO_STATE)
+    wrf_mapping = _scheme_wrf_to_state(int(source_mp_physics))
     inverse = {state_name: wrf_name for wrf_name, state_name in wrf_mapping.items()}
     missing = []
     for name in _transported_source_fields(source_mp_physics):

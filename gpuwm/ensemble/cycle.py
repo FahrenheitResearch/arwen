@@ -170,10 +170,14 @@ def run_cycles(cfg: EnsembleConfig, ens_root: str | Path, *,
     module that writes an analysis.  The defaults refuse an update that
     moves a multi-moment species' mass while leaving the moment the
     background carries, and repair any broken pair the analysis produces
-    anyway through the scheme's own limiter.  ``mp_physics`` is optional
-    because the moment structure is detectable from the background's own
-    field spellings -- a guard that could be disabled by not passing a
-    config is a guard that will be.
+    anyway through the scheme's own limiter.  ``mp_physics`` stays
+    optional -- a guard that could be disabled by not passing a config is
+    a guard that will be -- but leaving it unset no longer picks a
+    limiter: the detected spellings identify a scheme only when exactly
+    one registered scheme carries them, and an ambiguous structure is now
+    refused by name rather than repaired through Morrison's (audit
+    R-016).  Passing it also moves the moment-row resolution to plan
+    review, before the first leg integrates.
     """
     root = Path(ens_root)
     if n_cycles < 1:
@@ -181,6 +185,17 @@ def run_cycles(cfg: EnsembleConfig, ens_root: str | Path, *,
     if not (cycle_seconds > 0.0):
         raise ValueError(
             f"cycle_seconds must be positive, got {cycle_seconds!r}")
+
+    if assimilate is not None and mp_physics is not None:
+        # PLAN REVIEW FOR THE CYCLE DOOR.  The analysis reads the scheme's
+        # moment structure, and it reads it for the first time AFTER the
+        # first forecast leg has integrated (gpuwm/ensemble/increments.py).
+        # A scheme with no row therefore cost a whole leg before saying so,
+        # which is the same shape as the 59-minute checkpoint loss this
+        # audit started from (R-016).  Resolving it here costs a launch.
+        from gpuwm.da.moments import scheme_moments
+
+        scheme_moments(int(mp_physics))
 
     binding = cycle_binding(cfg, cycle_seconds=cycle_seconds,
                             n_cycles=n_cycles, positivity=positivity,

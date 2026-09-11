@@ -19,9 +19,10 @@ from gpuwm.remote_artifact_cache import Lease
 
 SCHEMA = "arwen.native-store-preparation.v1"
 POLL_SECONDS = 2.0
+COMPLETION_SECONDS = ra.COMPLETION_SECONDS
 
 
-def prepare(workspace, job, *, start=True):
+def prepare(workspace, job, *, start=True, _completion=None):
     """Append missing committed frames without displacing interactive work.
 
 An existing receipt, even one evicted by the cache budget or documenting a
@@ -31,7 +32,12 @@ request an evicted frame through the normal viewer contract.
     """
     from gpuwm.remote_worker import TERMINAL
 
-    _record, state, bound, commits = legacy._job(workspace, job)
+    _record, state, bound, commits = legacy._job(
+        workspace, job, **({"completion": True} if _completion is not None else {}))
+    if _completion is not None:
+        # Revalidate before any queue or publication mutation, including the
+        # first pass that observes the wrapper's terminal result.
+        _completion.validate(_record, state, bound, commits)
     root = viewer._root(workspace)
     directory = viewer._directory(root, job)
     counts = {"committed": len(commits), "ready": 0, "evicted": 0,
@@ -108,25 +114,50 @@ def ensure(workspace, job):
                              stdout=log, stderr=log, start_new_session=True, close_fds=True)
 
 
-def worker(workspace, job):
+def _receipt(directory, job, state, error, *, done):
+    legacy._write(directory / "preparation.json", {
+        "schema": SCHEMA, "job_id": job, "state": state, "done": done,
+        "error": str(error)[:2000], "updated_unix_ms": int(time.time() * 1000)})
+
+
+def worker(workspace, job, *, cancel=None):
     directory = viewer._directory(viewer._root(workspace), job)
     with Lease(directory / "preparation.lock", timeout=3) as lease:
         if lease.file is None:
             return 0
         if hasattr(os, "nice"):
             os.nice(5)
+        completion = ra.CompletionWait(workspace, job, cancel, time)
         while True:
             try:
-                if prepare(workspace, job)["done"]:
-                    return 0
+                completion.check()
+                completion.begin()
+                try:
+                    if prepare(workspace, job, _completion=completion)["done"]:
+                        return 0
+                except ra.ProducerCompletionPending as pending:
+                    completion.pending(pending)
+                except ra.ProducerCompletionUnprovable as unprovable:
+                    # The runner-exit window cannot be proved for this job, so
+                    # nothing is prepared inside it. That is not a failure of
+                    # the job: a terminal receipt here would stop ensure() from
+                    # ever relaunching this preparation, closing the very way
+                    # out the refusal names, so the job stays pending until it
+                    # reports a terminal state and the ordinary path resumes.
+                    completion.unprovable(unprovable)  # Raises if this wait held proof.
+                    _receipt(directory, job, "waiting_for_producer_completion",
+                             unprovable, done=False)
+                completion.wait(POLL_SECONDS)
+            except ra.ProducerCompletionCancelled as cancelled:
+                # A cancelled wait is not a failed one. ensure() refuses to
+                # relaunch on any done receipt, so cancellation stays open.
+                _receipt(directory, job, "cancelled", cancelled, done=False)
+                return 2
             except Exception as error:
                 # Never affect the integrator or loop indefinitely on malformed
                 # authority. The exact failure remains visible beside the queue.
-                legacy._write(directory / "preparation.json", {
-                    "schema": SCHEMA, "job_id": job, "state": "failed", "done": True,
-                    "error": str(error)[:2000], "updated_unix_ms": int(time.time() * 1000)})
+                _receipt(directory, job, "failed", error, done=True)
                 return 2
-            time.sleep(POLL_SECONDS)
 
 
 def main(argv=None):
@@ -135,7 +166,8 @@ def main(argv=None):
     parser.add_argument("--job", required=True)
     args = parser.parse_args(argv)
     from gpuwm.remote_worker import _workspace
-    return worker(_workspace({"workspace": args.workspace}), args.job)
+    return worker(_workspace({"workspace": args.workspace}), args.job,
+                  cancel=ra.cancel_on_shutdown())
 
 
 if __name__ == "__main__":

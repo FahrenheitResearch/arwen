@@ -95,6 +95,22 @@ from pathlib import Path
 import numpy as np
 
 from gpuwm import perf_timing
+from gpuwm.checkpoint_identity import (
+    CUMULUS_ALGORITHM_IDENTITIES,
+    LAND_SURFACE_ALGORITHM_IDENTITIES,
+    LAND_SURFACE_PARAMETER_SOURCES,
+    LONGWAVE_ABOVE_ATMOSPHERE_POLICIES,
+    LONGWAVE_ALGORITHM_IDENTITIES,
+    MICROPHYSICS_ALGORITHM_IDENTITIES,
+    PBL_ALGORITHM_IDENTITIES,
+    RADIATION_ABOVE_ATMOSPHERE_POLICIES,
+    RADIATION_ALGORITHM_IDENTITIES,
+    SHORTWAVE_ABOVE_ATMOSPHERE_POLICIES,
+    SHORTWAVE_ALGORITHM_IDENTITIES,
+    SURFACE_LAYER_ALGORITHM_IDENTITIES,
+    require_identifiable_checkpoint_schemes,
+    unidentifiable_checkpoint_schemes,
+)
 from gpuwm.config import (MIX_ISOTROPIC_RESTART_BREAK_NOTICE,
                           radiation_scheme_ids)
 from gpuwm.supervisor import _fsync_directory, fsync_file, unique_temp_path
@@ -116,6 +132,17 @@ from gpuwm.core.nssl2_contract import (
     pinned_zero_fields as nssl2_pinned_zero_fields,
     resolve_nssl2_mode_for_config,
 )
+#: The dycore's exported advective forcing pair (WRF RTHFTEN/RQVFTEN),
+#: named so the reader's key-set refusal can say WHICH change moved the
+#: layout and what to do about it instead of printing two sorted lists.
+#: Present only on a state whose cu_physics is in
+#: ``gpuwm.config.CUMULUS_ADVECTIVE_FORCING_SCHEMES``; every other
+#: configuration's checkpoint inventory is untouched by this pair.
+#:
+#: DEFINED in :mod:`gpuwm.state_serialization_contract` and imported
+#: above -- the prepared-cache side of the same tolerance needs it, and
+#: that side ships in a wheel that stages no restart reader.  Re-exported
+#: here under the name every reader in the tree spells.
 from gpuwm.state_serialization_contract import (
     ADVECTIVE_FORCING_STATE,
     CHECKPOINT_ONLY_STATE,
@@ -262,73 +289,17 @@ ROOT_EXTERNAL_LBC_CLOCK_LEGACY = "legacy-elapsed-v0"
 #: of inferred from scheme numbers: a trajectory-changing implementation or
 #: policy change must advance its tag, causing an incompatible restart to fail
 #: before restore.  Asset bytes and resolved per-run values are bound below.
+#: The per-scheme identity TABLES moved to :mod:`gpuwm.checkpoint_identity`
+#: and are re-exported below.
 PHYSICS_SETUP_SCHEMA_VERSION = 2
 PHYSICS_DRIVER_ALGORITHM_IDENTITY = \
     "gpuwm-physics-driver-v3-kf-phase-energy-pre-mp-expiry"
-MICROPHYSICS_ALGORITHM_IDENTITIES = {
-    0: "disabled",
-    1: "kessler-warm-rain-v1",
-    6: "wsm6-single-moment-six-class-wrf-v4.6.1-v1",
-    8: ("classic-thompson-wrf-v4.6.1-experimental-v3-cloud-fallout-"
-        "refl10cm-ng-shadow-snow-rime-mass-number-velocity"),
-    10: "morrison-two-moment-v2-kf-number-seeding",
-    # WDM6 (WRF v4.6.1 WDM6SCHEME, Registry/Registry.EM_COMMON:3031).  Named
-    # at the mp=8/28 granularity -- the trajectory-defining pieces, not the
-    # scheme name.  "prognostic-nc-nr-ccn" is the change everything else
-    # follows from (module_mp_wdm6.F carries qnn/qnc/qnr as scalars);
-    # "gamma-mu1-rain" names the rain PSD whose intercept is diagnosed from
-    # nr rather than fixed (:2251-2261); "ccn-activation" names the
-    # supersaturation activation that moves mass and number out of the
-    # reservoir (:1951-1969); "xland-autoconversion" names the per-column
-    # maritime/continental threshold (:607-614), which makes the LAND MASK
-    # part of this scheme's trajectory identity in a way no other gpuwm
-    # microphysics has been; "ccn-conc-init" records that the CCN reservoir
-    # starts from the namelist constant fill (:220-227) rather than an
-    # ingested aerosol field, so a future ingest must advance this tag
-    # instead of silently resuming onto it.
-    16: ("wdm6-double-moment-warm-rain-wrf-v4.6.1-v1-prognostic-nc-nr-ccn-"
-         "gamma-mu1-rain-ccn-activation-xland-autoconversion-ccn-conc-init"),
-    18: "nssl-two-moment-state-transport-v1-process-boundary-fail-loud",
-    # Thompson AEROSOL-AWARE (WRF v4.6.1 THOMPSONAERO,
-    # Registry/Registry.EM_COMMON:3036).  Named at the granularity the mp=8
-    # row uses -- the trajectory-defining pieces, not the scheme name --
-    # because that is what makes an incompatible resume fail BEFORE restore.
-    # "prognostic-nc" is the change everything else follows from
-    # (module_mp_thompson.F:1795-1812 freezes nc1d at entry and :3972-4021
-    # applies the single terminal ncten/nwfaten/nifaten clamp); "nwfa-nifa"
-    # names the two transported aerosol tracers; "ccn-activate-table" names
-    # the tnccn_act asset the activation reads
-    # (:5102-5108); "demott-koop" names the ice-nucleation pair that replaces
-    # classic Cooper (iceDeMott called at :2574/:2623, iceKoop at :2637;
-    # the functions themselves at :5447 and :5521); "scavenging" names the
-    # six aerosol wet-removal rates; "surface-emission" names the unclamped
-    # nwfa2d/nifa2d injection mp_gt_driver applies AFTER the terminal clamp
-    # (:1310-1327), which is a real ordering choice a reimplementation could
-    # get wrong while leaving every bound intact.  "synthetic-aerosol-init"
-    # records that this build's aerosol profile comes from thompson_init's
-    # fill (:493-551) and not from a WIF metgrid stream: a future
-    # wif_input_opt ingest is a DIFFERENT initial condition and must advance
-    # this tag rather than silently resume onto it.
-    28: ("thompson-aerosol-aware-wrf-v4.6.1-v1-prognostic-nc-nwfa-nifa-"
-         "ccn-activate-table-demott-koop-scavenging-surface-emission-"
-         "synthetic-aerosol-init"),
-    # P3 (WRF v4.6.1 P3_1CATEGORY, Registry.EM_COMMON:3038).  Named at the
-    # granularity the mp=8/28 rows use -- the trajectory-defining
-    # configuration, not the scheme name -- because that is what makes an
-    # incompatible resume fail BEFORE restore.  "1cat" and "2mom-ice" name
-    # the nCat=1 / log_3momentIce=.false. build (module_mp_p3.F:1043-1050);
-    # "specified-nc" names log_predictNc=.false., which is the difference
-    # between this row and the unported mp=51; "diagnosed-ssat" names
-    # log_predictSsat=.false., the branch that makes th_old/qv_old the
-    # cross-step carriers this restart serializes (:2325-2337); "rime-mass-
-    # volume-transported" records that qir/qib advect with qi
-    # (gpuwm/core/moist.py::P3_SPECIES) -- a build that stopped
-    # transporting them would integrate a DIFFERENT trajectory while
-    # staying finite, which is exactly the silent resume this string is
-    # here to refuse.
-    50: ("p3-one-category-wrf-v4.6.1-v1-2mom-ice-specified-nc-"
-         "diagnosed-ssat-rime-mass-volume-transported"),
-}
+#: The scheme identity tables and the plan-review gate that reads them are
+#: DEFINED in :mod:`gpuwm.checkpoint_identity` and imported above -- the
+#: gate is called from ``gpuwm.config.validate_run_config``, which ships in
+#: distributions that stage no ``gpuwm/io`` at all, so the tables cannot
+#: live behind this module's import.  Re-exported here under the names
+#: every reader in the tree spells; these ARE those objects, not copies.
 
 #: The mp_physics=28 state a restart may NEVER drop.  Every name here is
 #: already in ``STATE_SERIALIZED_ATTRS`` and therefore already written by the
@@ -348,132 +319,39 @@ MICROPHYSICS_ALGORITHM_IDENTITIES = {
 THOMPSON_AEROSOL_RESTART_STATE = ("nc", "nwfa", "nifa")
 THOMPSON_AEROSOL_RESTART_SURFACE_STATE = ("nwfa2d", "nifa2d")
 
-#: The dycore's exported advective forcing pair (WRF RTHFTEN/RQVFTEN),
-#: named so the reader's key-set refusal can say WHICH change moved the
-#: layout and what to do about it instead of printing two sorted lists.
-#: Present only on a state whose cu_physics is in
-#: ``gpuwm.config.CUMULUS_ADVECTIVE_FORCING_SCHEMES``; every other
-#: configuration's checkpoint inventory is untouched by this pair.
-#:
-#: DEFINED in :mod:`gpuwm.state_serialization_contract` and imported
-#: above -- the prepared-cache side of the same tolerance needs it, and
-#: that side ships in a wheel that stages no restart reader.  Re-exported
-#: here under the name every reader in the tree spells.
-SURFACE_LAYER_ALGORITHM_IDENTITIES = {
-    0: "disabled",
-    1: "revised-mm5-surface-layer-v1",
-    # The Eta similarity surface layer.  The identity binds the WRF version
-    # whose byte-frozen module_sf_myjsfc.F the port transcribes AND the
-    # similarity tables it interpolates: MYJSFCINIT builds PSIM/PSIH by
-    # accumulating ZETA in float32, so a different table construction is a
-    # different scheme even at the same WRF version, and a checkpoint may
-    # not resume across one.
-    2: "eta-similarity-surface-layer-wrf-v4.6.1-v1-myjsfcinit-tables",
-    5: "mynn-surface-layer-wrf-v4.6.1-v1",
-    91: "classic-mm5-surface-layer-v1",
-}
-LAND_SURFACE_ALGORITHM_IDENTITIES = {
-    0: "disabled",
-    2: "noah-lsm-v2-post-sflx-chs2-source-water-lake-skin",
-    3: "ruc-lsm-wrf-v4.6.1-v1",
-    4: "noahmp-lsm-wrf-v4.6.1-v1",
-}
-PBL_ALGORITHM_IDENTITIES = {
-    0: "disabled",
-    1: "ysu-v1",
-    5: "mynn-edmf-pbl-wrf-v4.6.1-v1",
-    # Adding a scheme means adding its row, not relaxing the check.  The
-    # identity binds the WRF version whose byte-frozen module_bl_shinhong.F
-    # the certified CPU authority transcribes (max ULP 0, both arms); a
-    # future re-transcription against a different WRF advances the suffix
-    # rather than silently resuming onto this one.
-    # MYJ carries genuinely prognostic state -- TKE_MYJ is read as 2*TKE at
-    # the top of every call and rewritten at the bottom, and the Eta surface
-    # layer's PBLH scan reads it too -- so a resume that dropped it would
-    # continue a different boundary layer while staying finite.  The
-    # identity binds the WRF version the port transcribes; a
-    # re-transcription against another WRF advances the suffix rather than
-    # silently resuming onto this one.
-    2: "myj-pbl-wrf-v4.6.1-v1-mellor-yamada-2.5-janjic",
-    11: "shinhong-pbl-wrf-v4.6.1-v1",
-    # SASE carries no WRF version in its identity because there is no WRF
-    # scheme it transcribes.  What the identity DOES have to bind is the
-    # closure's constant registry: sase_config_id() is a SHA-256 over
-    # every registered coefficient, so a checkpoint written under one set
-    # of constants cannot be resumed under another -- which is the whole
-    # job of this table.
-    900: "sase-experimental-v1",
-}
-#: sf_surface_physics -> the ``PhysicsDriver`` attribute holding that
-#: scheme's packed parameter bundle, and the packaged-asset roles whose
-#: bytes it was built from.  A land-surface scheme with no row here cannot
-#: be restart-identified: a checkpoint that omitted its parameters would
-#: resume against a silently different table set.  Adding a scheme means
-#: adding its row, not relaxing the check.
-LAND_SURFACE_PARAMETER_SOURCES = {
-    2: ("noah_params", ("noah_vegparm", "noah_soilparm",
-                        "noah_genparm", "noah_landuse")),
-    # RUC reads the RUC SECTIONS of the same three files Noah reads --
-    # VEGPARM's MODI-RUC/USGS-RUC blocks and SOILPARM's STAS-RUC block -- so
-    # the asset roles are shared while the bundle object is not.  LANDUSE.TBL
-    # is absent: gpuwm.core.ruc never opens it, because RUC's roughness,
-    # albedo and emissivity come from its own VEGPARM rows.
-    3: ("ruc_params", ("noah_vegparm", "noah_soilparm", "noah_genparm")),
-    4: ("noahmp_params", ("noahmp_mptable", "noahmp_soilparm",
-                          "noahmp_genparm")),
-}
-LONGWAVE_ALGORITHM_IDENTITIES = {
-    0: "disabled",
-    1: "wrf-v4.6.1-rrtm-longwave-v1",
-    4: "rte-rrtmgp-v1",
-    90: "analytic-clear-sky-v1",
-}
-SHORTWAVE_ALGORITHM_IDENTITIES = {
-    0: "disabled",
-    1: "wrf-v4.6.1-dudhia-shortwave-v1",
-    4: "rte-rrtmgp-v1",
-    90: "analytic-clear-sky-v1",
-}
-#: Above-model optical-column policy is separate from the gas/RTE algorithm
-#: identity because changing the cap changes model-top fluxes while retaining
-#: the same packaged coefficient tables and solver.
-LONGWAVE_ABOVE_ATMOSPHERE_POLICIES = {
-    0: "not-applicable-radiation-disabled",
-    1: "wrf-v4.6.1-rrtm-deltap-4mb-buffer-layers",
-    4: "wrf-v4.6.1-lw-4hpa-sw-half-ptop-clear-cap-to-rte-floor-v1",
-    90: "not-applicable-analytic-surface-flux-proxy",
-}
-SHORTWAVE_ABOVE_ATMOSPHERE_POLICIES = {
-    0: "not-applicable-radiation-disabled",
-    1: "not-applicable-dudhia-model-column-only",
-    4: "wrf-v4.6.1-lw-4hpa-sw-half-ptop-clear-cap-to-rte-floor-v1",
-    90: "not-applicable-analytic-surface-flux-proxy",
-}
-# Backward-compatible names for the historical coupled selections.  New
-# identity code records each component independently; these aliases keep
-# readers/tests that inspect a 4/4 or 90/90 setup source-compatible.
-RADIATION_ALGORITHM_IDENTITIES = {
-    key: LONGWAVE_ALGORITHM_IDENTITIES[key] for key in (0, 4, 90)}
-RADIATION_ABOVE_ATMOSPHERE_POLICIES = {
-    key: LONGWAVE_ABOVE_ATMOSPHERE_POLICIES[key] for key in (0, 4, 90)}
-CUMULUS_ALGORITHM_IDENTITIES = {
-    0: "disabled",
-    1: "kain-fritsch-v3-wrf-phase-energy-feedback",
-    # The corrected-k22 identity IS the shipped algorithm (owner ruling);
-    # a restart written under it must never resume under a WRF-faithful
-    # build, which would be a different identity string.
-    3: "grell-freitas-wrf461-gfdrv-corrected-k22-v1",
-    # New Tiedtke, cu_ntiedtke/cumastrn as shipped in WRF v4.6.1.
-    #
-    # BUMP THE -v1 IF THE DRIVER SEAM MOVES, not only if the kernels do.
-    # This port computes PRATEC at max_ulp == 0 and deliberately does not
-    # hand it to the driver (docs/ntiedtke/PORT-RECORD.md section 38), so every
-    # checkpoint written under this identity carries cu_pratec == 0 by
-    # construction.  An implementation that delivered it would give the
-    # same slot a different meaning, and that is exactly the kind of
-    # cross-resume this string exists to refuse.
-    16: "new-tiedtke-wrf461-cumastrn-v1",
-}
+#: The mp_physics=9 state a restart may NEVER drop: Milbrandt-Yau's six
+#: hydrometeor masses and their six number moments, minus the qc/qr pair
+#: every moist configuration already carries.  Each name is in
+#: ``STATE_SERIALIZED_ATTRS`` and is therefore already written by the
+#: generic loop; this tuple exists so the ABSENCE of one is a refusal
+#: rather than a silent, finite, wrong resume.  That failure mode is
+#: specific and real for a two-moment scheme: mass and number enter the
+#: size distribution as a ratio, and the scheme rebuilds its mean-mass
+#: diameter and slope from whatever pair it is handed, holding both inside
+#: the port's own bounds (gpuwm/core/milbrandt2.py's geometry pass).  A
+#: checkpoint that lost (say) ``nh`` would therefore restore, run, stay
+#: bounded, produce no NaN and no health trip -- and integrate hail on a
+#: number concentration the run it claims to continue never had.  WRF
+#: agrees these belong in the restart stream: the six numbers are the
+#: ``scalar`` package the MILBRANDT2MOM driver arm binds as
+#: qnc/qnr/qni/qns/qng/qnh (module_microphysics_driver.F:1857-1862),
+#: which solve_em advects and the restart stream carries.
+MILBRANDT2_RESTART_STATE = ("qi", "qs", "qg", "qh",
+                            "nc", "nr", "ni", "ns", "ng", "nh")
+
+#: The nine precipitation accumulators the mp=9 driver arm binds
+#: (module_microphysics_driver.F:1868-1876), spelled as the canonical
+#: scratch slots gpuwm keeps them in.  Hail is the pair that makes this
+#: list longer than a WSM6-family one, and it is the pair a scheme-blind
+#: seven-slot assumption would drop: HAILNC/HAILNCV accumulate for the
+#: whole run, so resuming without them restarts hail accumulation at zero
+#: while rain and snow continue -- a silently wrong storm-total field.
+MILBRANDT2_RESTART_PRECIPITATION_SLOTS = (
+    "mp_rainnc", "mp_rainncv", "mp_snownc", "mp_snowncv",
+    "mp_graupelnc", "mp_graupelncv", "mp_hailnc", "mp_hailncv",
+    "mp_sr",
+)
+
 RRTMGP_TRACE_GAS_POLICY_IDENTITY = \
     "rfmip-experiment-zero-plus-date-policy-and-overrides-v1"
 #: Distinct restart identity for the exact port of WRF v4.6.1's bundled
@@ -1396,6 +1274,113 @@ def _validate_thompson_aerosol_stored_restart_state(
         _check_array(stored[key], target, key)
 
 
+def _validate_milbrandt2_live_restart_state(state, cfg) -> None:
+    """Fail an mp=9 WRITE that would omit any Milbrandt-Yau moment.
+
+    The generic writer loop picks these up through
+    ``STATE_SERIALIZED_ATTRS`` when they exist; this refuses the write when
+    they DO NOT, for the reason the mp=28 sibling gives: the reader's
+    inventory check compares the file against the RESUMING state, so two
+    equally moment-less endpoints agree with each other and the resumed run
+    integrates a two-moment scheme on a moment it never had.  The
+    precipitation slots are checked in the same pass because hail is the
+    pair a seven-slot (WSM6-family) assumption drops, and a dropped hail
+    accumulator restarts storm-total hail at zero while rain and snow
+    continue.
+    """
+    if int(cfg.mp_physics) != 9:
+        return
+
+    volume_shape = tuple(state.p.shape)
+    for name in MILBRANDT2_RESTART_STATE:
+        value = getattr(state, name, None)
+        if value is None or not _is_array_like(value):
+            raise RestartManifestError(
+                f"mp_physics=9 restart requires array 'state/{name}' "
+                "(Milbrandt-Yau carries six hydrometeor masses and a "
+                "number moment for each); refusing to write a checkpoint "
+                "that would resume with a reconstituted moment")
+        if tuple(value.shape) != volume_shape:
+            raise RestartManifestError(
+                f"mp_physics=9 restart 'state/{name}' has shape "
+                f"{tuple(value.shape)}, expected {volume_shape}")
+        if np.dtype(value.dtype) != np.dtype(np.float32):
+            raise RestartManifestError(
+                f"mp_physics=9 restart 'state/{name}' has dtype "
+                f"{value.dtype}, expected float32")
+    scratch = getattr(state, "_scratch", {}) or {}
+    missing = [slot for slot in MILBRANDT2_RESTART_PRECIPITATION_SLOTS
+               if scratch.get(slot) is None]
+    if missing and len(missing) != len(
+            MILBRANDT2_RESTART_PRECIPITATION_SLOTS):
+        # ALL-ABSENT is the pre-first-call state and is written as such;
+        # a PARTIAL set is the defect this refuses -- it means something
+        # allocated the WSM6-family seven and left hail behind.
+        raise RestartManifestError(
+            f"mp_physics=9 restart is missing precipitation accumulators "
+            f"{sorted(missing)} while carrying the rest; the mp=9 driver "
+            "arm binds all nine (rain, snow, graupel, hail and SR), so a "
+            "checkpoint with only some of them resumes with a storm total "
+            "that restarts at zero")
+
+
+def _validate_milbrandt2_stored_restart_state(
+        stored: dict[str, np.ndarray], state, cfg, path) -> None:
+    """Reject an mp=9 restart FILE that omits a moment or half the totals.
+
+    Symmetric with :func:`_validate_milbrandt2_live_restart_state`, and
+    deliberately so on BOTH halves.  The moment half is obvious.  The
+    accumulator half exists because the generic reader's answer to a
+    ``scratch/`` slot a file does not carry is to restore it
+    zero-initialized with a note -- correct for a slot ADDED after the
+    file was written (``up_heli_max``), and silently wrong for a file that
+    dropped hail out of a nine-slot row: storm-total hail would resume at
+    zero while rain and snow continued from their real totals, which is
+    the exact breakage the write-side refusal names.  No gpuwm-written
+    file can take that shape; a hand-edited or truncated one can, and this
+    is where it is caught.  ALL-absent stays readable, matching the write
+    side: that is the pre-first-call state, not a dropped slot.
+    """
+    if int(cfg.mp_physics) != 9:
+        return
+
+    slots = {f"scratch/{slot}"
+             for slot in MILBRANDT2_RESTART_PRECIPITATION_SLOTS}
+    present = slots & set(stored)
+    if present and present != slots:
+        raise RestartMismatchError(
+            f"restart file {path} carries mp_physics=9 precipitation "
+            f"accumulators {sorted(present)} but omits "
+            f"{sorted(slots - present)}; the mp=9 driver arm binds all "
+            "nine, and the missing ones would be restored zero-initialized"
+            " -- resuming with storm-total hail back at zero while rain "
+            "and snow continue from the totals this file does carry")
+
+    required = {f"state/{name}" for name in MILBRANDT2_RESTART_STATE}
+    stored_state = {key for key in stored if key.startswith("state/")}
+    missing = sorted(required - stored_state)
+    if missing:
+        raise RestartMismatchError(
+            f"restart file {path} omits canonical mp_physics=9 state "
+            f"{missing}; resuming would integrate Milbrandt-Yau with a "
+            "moment rebuilt from its bounds instead of the one the run "
+            "that wrote this file carried, and nothing downstream would "
+            "notice because the reconstituted value is finite and in "
+            "range")
+    for key in sorted(required):
+        name = key[len("state/"):]
+        target = getattr(state, name, None)
+        if target is None:
+            # The RESUMING model has no slot for a field the file carries.
+            # A DomainState built from an mp=9 RunConfig always allocates
+            # all ten (gpuwm/core/state.py's mp==9 arm), so reaching this
+            # means the two ends disagree about what mp=9 is.
+            raise RestartMismatchError(
+                f"restart file {path} carries {key} but this build's "
+                f"mp_physics=9 DomainState has no {name!r}")
+        _check_array(stored[key], target, key)
+
+
 def _validate_nssl2_live_restart_state(state, cfg) -> None:
     """Fail a write unless every persistent MP18 value is canonical."""
     if int(cfg.mp_physics) != 18:
@@ -1840,6 +1825,34 @@ def _callable_class_name(value) -> str:
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
+def _stock_callable_class(component_id: str, selectors: dict, *,
+                          label: str, variant: str | None = None,
+                          missing_is_custom: bool = False) -> str | None:
+    """The stock adapter class the registry names for a selection.
+
+    ``missing_is_custom`` returns ``None`` for a selection that matches no
+    registered option (a composed radiation pair), which sends the caller
+    down the custom-callable path exactly as the literal dict's ``.get``
+    did; without it an unknown selection is a checkpoint refusal that says
+    "no stock-class row" rather than "declare a restart_identity".
+    """
+
+    from gpuwm.physics_registry import stock_callable_class
+
+    try:
+        return stock_callable_class(component_id, selectors, variant=variant)
+    except KeyError as exc:
+        if missing_is_custom and "no registered" in str(exc):
+            return None
+        raise RestartManifestError(
+            f"active {label} selection {selectors} has no stock-class row "
+            "in gpuwm/physics_registry_v2.json "
+            f"(components.{component_id}.options.<option>.consumers."
+            f"stock_callable_class): {exc}.  A checkpoint cannot name the "
+            "adapter it serialised; give the option its row in "
+            "tools/build_registry.py and regenerate the registry") from exc
+
+
 def _callable_setup_identity(scheme, *, label: str,
                              expected_class: str | None) -> dict:
     """Identify a stock callable, or require a custom declaration.
@@ -1952,17 +1965,18 @@ def _radiation_setup_identity(driver, cfg) -> dict:
             "active radiation cannot be restart-identified without an "
             "attached PhysicsDriver")
     scheme = driver.radiation_callable
-    expected = {
-        (1, 1): "gpuwm.core.rrtm_lw.RRTMDudhiaRadiation",
-        (4, 4): "gpuwm.core.rrtmgp.RRTMGPRadiation",
-        (90, 90): "gpuwm.core.analytic_radiation.AnalyticClearSkyRadiation",
-        (0, 1): "gpuwm.core.dudhia.DudhiaShortwaveRadiation",
-    }.get((lw_id, sw_id))
-    if legacy_rrtmg:
-        # The stock legacy adapter landed with the integration wave; any
-        # OTHER callable claiming to serve this selection must still
-        # declare its own restart_identity.
-        expected = "gpuwm.core.rrtmg_legacy.RRTMGLegacyRadiation"
+    # The stock class for this selection comes from the REGISTRY's row
+    # (``consumers.stock_callable_class``), not from a literal dict here:
+    # a selection the registry knows and this dict did not was routed down
+    # the custom-callable path and refused for lacking a restart_identity
+    # the stock adapter never had.  A composed lw != sw pair has no registry
+    # option and no stock class -- ComposedRadiation declares its own
+    # identity -- so the lookup's None is the custom path, as before.  A
+    # 4/4 selection names two adapters and ra_rrtmg_variant picks one.
+    expected = _stock_callable_class(
+        "radiation", {"ra_lw_physics": lw_id, "ra_sw_physics": sw_id},
+        variant=("rrtmg_legacy" if legacy_rrtmg else "rte-rrtmgp"),
+        label="radiation", missing_is_custom=True)
     callable_identity = _callable_setup_identity(
         scheme, label="radiation", expected_class=expected)
     identity["callable"] = callable_identity
@@ -2515,17 +2529,16 @@ def physics_setup_identity(state, cfg) -> dict:
             raise RestartManifestError(
                 "active cumulus cannot be restart-identified without an "
                 "attached PhysicsDriver")
-        # A SECOND SCHEME-KEYED TABLE, and it fails closed rather than
-        # silently: an unlisted scheme leaves expected_class None, which
-        # sends _callable_setup_identity down the custom-adapter path and
-        # demands a restart_identity attribute the stock class does not
-        # have.  So a missing row here refuses the checkpoint -- correctly,
-        # but with a message about custom callables that would send the
-        # reader looking in the wrong place.
-        expected = {1: "gpuwm.core.kf.KainFritsch",
-                    3: "gpuwm.core.gf.GrellFreitas",
-                    16: "gpuwm.core.ntiedtke.NewTiedtke"}.get(
-            int(cfg.cu_physics))
+        # The stock class comes from the REGISTRY's row for the scheme
+        # (``consumers.stock_callable_class``), and a scheme with no row is
+        # refused HERE by name -- "no stock-class row" -- instead of being
+        # sent down the custom-adapter path and refused for lacking a
+        # restart_identity the stock class never had, which is the message
+        # that would send a reader looking in the wrong place.  Plan
+        # review (gpuwm.physics_registry.consumer_row_gaps) asks the same
+        # question before step 0, so this is the backstop.
+        expected = _stock_callable_class(
+            "cumulus", {"cu_physics": int(cfg.cu_physics)}, label="cumulus")
         callable_identity = _callable_setup_identity(
             driver.cumulus_callable, label="cumulus",
             expected_class=expected)
@@ -2599,6 +2612,49 @@ def physics_setup_identity(state, cfg) -> dict:
 def physics_setup_fingerprint(state, cfg) -> str:
     """SHA-256 of :func:`physics_setup_identity`."""
     return _json_sha256(physics_setup_identity(state, cfg))
+
+
+def ask_checkpoint_physics_identity(state, cfg) -> None:
+    """Resolve one domain's checkpoint physics identity, and discard it.
+
+    THE PLACEMENT IS THE POINT (audit R-046).  A run that will write
+    checkpoints must be able to NAME its physics setup, and until R-046 the
+    first thing that asked was the writer, at the first restart interval,
+    with the forecast to that point already spent.  Plan review answers the
+    config half (``gpuwm.physics_registry.require_consumer_rows``, from
+    ``validate_run_config``); the DRIVER half -- a physics callable whose
+    class no stock-class row can bind, a land-surface parameter bundle that
+    cannot be digested -- needs the constructed driver, so the earliest it
+    can be asked is once a domain has one.  The identity value is thrown
+    away: what is bought is the refusal's placement.
+
+    ASKED OF A :class:`~gpuwm.core.physics.PhysicsDriver`, and of nothing
+    else.  There is exactly one production attach site --
+    ``gpuwm/core/physics.py``'s ``state.physics = driver`` -- so a state
+    carrying some other object is a route this identity is not defined
+    over: it reads a driver's resolved scheme ids and resolved cadence, and
+    an object of another class fails on an ATTRIBUTE, naming this gate
+    instead of the route that attached the object.  Such an object meets
+    the restart writer at its own door, unchanged by this gate.  A domain
+    with NO driver is still asked: an active cumulus scheme without an
+    attached driver is exactly one of the setups a checkpoint cannot name.
+
+    Both forecast doors call THIS function rather than each writing the
+    rule out: ``gpuwm.core.model.execute_experiment`` (once per domain,
+    parent-first, before step 0 -- and at activation for a domain that
+    joins the tree after the run started) and
+    ``gpuwm.runtime.integrate_prepared_case``.  They had diverged -- the
+    single-domain door asked unconditionally, so the foreign object the
+    tree door deliberately skips raised there on an attribute -- which is
+    the sort of difference that only shows up in whichever door the user
+    happens to run.
+    """
+    from gpuwm.core.physics import PhysicsDriver
+
+    driver = getattr(state, "physics", None)
+    if driver is not None and not isinstance(driver, PhysicsDriver):
+        return
+    physics_setup_identity(state, cfg)
 
 
 def _callable_state_check(scheme, allowed_arrays: frozenset,
@@ -2991,6 +3047,7 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
     path = Path(path)
     _validate_nssl2_live_restart_state(state, cfg)
     _validate_thompson_aerosol_live_restart_state(state, cfg)
+    _validate_milbrandt2_live_restart_state(state, cfg)
     if sealed_forcing_extension:
         _require_sealable_forcing_prefix(
             state, cfg, path=path,
@@ -3386,6 +3443,64 @@ def _require_physics_setup_match(header: dict, state, cfg, path) -> None:
             "the identical physics preparation before restoring")
 
 
+def _require_rrtmg_variant_match(header: dict, cfg, path) -> None:
+    """Name a resume that swaps the 4/4 radiation IMPLEMENTATION.
+
+    Scheme id 4 is worn by two different codes: the WRF v4.6.1 RRTMG port
+    (``ra_rrtmg_variant='rrtmg_legacy'``) and the RTE+RRTMGP substitution
+    that stands in for it by default.  They are refused across a resume,
+    correctly and by two separate gates already -- the configuration walk
+    reports ``ra_rrtmg_variant`` as a changed field, and the physics
+    identity reports "radiation, algorithms" as differing components --
+    and neither says WHAT breaks.
+
+    Audit R-048: the refusal is right and its text was not.  A crossed
+    resume splices two transcribed algorithms with different
+    above-atmosphere treatments (the legacy port's WRF 4 mb buffer layers
+    against RRTMGP's) and different pinned coefficient tables and trace-gas
+    policy, and it presents the discontinuity in the heating-rate
+    trajectory as a continuation.  This is the same refusal, said with the
+    breakage and the two ways out, and it is asked FIRST so that it is the
+    sentence the user reads rather than a field name in a list.
+
+    Nothing new is refused: every crossed resume this names was already
+    refused, and a same-variant resume -- including one from a header
+    written before the field existed, which ``_require_config_match``
+    restores as the RTE+RRTMGP substitution -- is untouched.
+    """
+    lw_id, sw_id = radiation_scheme_ids(cfg)
+    if 4 not in (lw_id, sw_id):
+        return
+    stored_config = header.get("config")
+    if not isinstance(stored_config, Mapping):
+        return
+    # A header written before the field existed could only have run the
+    # substitution; the same migration rule _require_config_match applies,
+    # and for the same reason -- never infer legacy, never widen.
+    stored_variant = stored_config.get("ra_rrtmg_variant",
+                                       RRTMG_VARIANT_RTE_RRTMGP)
+    live_variant = rrtmg_variant(cfg)
+    if stored_variant == live_variant:
+        return
+    names = {RRTMG_VARIANT_LEGACY: "the WRF v4.6.1 RRTMG port",
+             RRTMG_VARIANT_RTE_RRTMGP: "the RTE+RRTMGP substitution"}
+    raise RestartMismatchError(
+        f"restart file {path} was integrated by "
+        f"{names.get(stored_variant, repr(stored_variant))} "
+        f"(ra_rrtmg_variant={stored_variant!r}) and this run selects "
+        f"{names.get(live_variant, repr(live_variant))} "
+        f"(ra_rrtmg_variant={live_variant!r}).  Radiation scheme id 4 is "
+        "worn by both, and they are different codes: different transcribed "
+        "algorithms, different above-atmosphere treatments (the legacy "
+        "port carries WRF's 4 mb buffer layers, RRTMGP does not), and "
+        "different pinned coefficient tables and trace-gas policy.  "
+        "Resuming across them would splice two heating-rate trajectories "
+        "and present the seam as a continuation.  Set "
+        f"ra_rrtmg_variant={stored_variant!r} to continue THIS forecast, "
+        "or start a new run from t = 0 under "
+        f"ra_rrtmg_variant={live_variant!r}.")
+
+
 def _require_nssl2_restart_contract(header: dict, cfg, path) -> None:
     """Reject an absent, stale, or extended MP18 nested schema."""
     if int(cfg.mp_physics) != 18:
@@ -3533,9 +3648,10 @@ def _validate_nssl2_stored_restart_state(
     # the FILE rather than the live pool, so a checkpoint written under
     # nwp_diagnostics = 1 and resumed under 0 reaches the generic
     # drop-with-a-note instead of refusing here on an inventory count.
+    from gpuwm.core.streaming import REFL_STORE_KEY
     optional_scratch = {key for key in stored_scratch
                         if (_is_tracker_window_slot(key[len("scratch/"):])
-                            or key == "scratch/refl_10cm")}
+                            or key == REFL_STORE_KEY)}
     missing_scratch = sorted(expected_scratch - stored_scratch)
     extra_scratch = sorted(stored_scratch - expected_scratch - optional_scratch)
     if missing_scratch or extra_scratch:
@@ -3883,7 +3999,15 @@ def _require_held_lifecycle_reflectivity(model, nodes, headers, validated,
     streamed destination's allocation is transport capacity, never evidence
     that the old checkpoint carried a producer value. Before the first due
     history, no held value exists yet and normal production creates it.
+
+    The slot and its store key are read from ``gpuwm.core.streaming``,
+    which owns the ``refl_10cm`` handoff for every streamed route; audit
+    R-052's single-spelling rule is only true if the modules outside that
+    package stop typing the string, and this reader was one of the two
+    that still did.
     """
+    from gpuwm.core.streaming import REFL_SCRATCH_SLOT, REFL_STORE_KEY
+
     parents = set()
     for gid, runner in lifecycle_followers(model).items():
         follow = getattr(runner.config, "follow", None)
@@ -3906,12 +4030,12 @@ def _require_held_lifecycle_reflectivity(model, nodes, headers, validated,
         first_due = int(spec.start_ticks) + int(history_ticks)
         if int(headers[gid]["elapsed_ticks"]) < first_due:
             continue
-        if ("refl_10cm" not in stored_slots.get(str(gid), ())
-                or "scratch/refl_10cm" not in validated[gid].stored):
+        if (REFL_SCRATCH_SLOT not in stored_slots.get(str(gid), ())
+                or REFL_STORE_KEY not in validated[gid].stored):
             raise RestartMismatchError(
                 f"checkpoint predates held lifecycle reflectivity on d{gid:02d}: "
                 "the configured consumer needs the actual microphysics-time "
-                "scratch/refl_10cm volume, which this file did not persist; "
+                f"{REFL_STORE_KEY} volume, which this file did not persist; "
                 "a primed zero or recomputed field is not a continuation. "
                 "Restart from the prepared state; no domain was restored")
 
@@ -5373,6 +5497,10 @@ def _validate_restart(path, state, cfg, *,
             f"restart file {path} header is missing {missing_header}")
     format_version = header.get("format_version")
     require_readable_format_version(format_version, path)
+    # BEFORE the configuration walk, so the crossed 4/4 radiation
+    # resume is answered by the gate that says what breaks rather
+    # than by a field name in a list of differences (audit R-048).
+    _require_rrtmg_variant_match(header, cfg, path)
     _require_config_match(header["config"], cfg, path)
     live_lbc_clock = root_external_lbc_clock_identity(state, cfg)
     if live_lbc_clock is not None:
@@ -5457,6 +5585,7 @@ def _validate_restart(path, state, cfg, *,
     _validate_nssl2_stored_restart_state(
         header, stored, state, cfg, path, elapsed)
     _validate_thompson_aerosol_stored_restart_state(stored, state, cfg, path)
+    _validate_milbrandt2_stored_restart_state(stored, state, cfg, path)
     stored_state = {key[len("state/"):]: value
                     for key, value in stored.items()
                     if key.startswith("state/")}
@@ -5892,7 +6021,12 @@ __all__ = [
     "STATE_SERIALIZED_ATTRS", "STATE_SETUP_ARRAYS", "STATE_SETUP_SCALARS",
     "THOMPSON_AEROSOL_RESTART_STATE",
     "THOMPSON_AEROSOL_RESTART_SURFACE_STATE",
+    "MILBRANDT2_RESTART_STATE",
+    "MILBRANDT2_RESTART_PRECIPITATION_SLOTS",
+    "require_identifiable_checkpoint_schemes",
+    "unidentifiable_checkpoint_schemes",
     "TENDENCY_COMPONENTS", "classify_scratch_slot", "classify_state_attr",
+    "ask_checkpoint_physics_identity",
     "physics_setup_fingerprint", "physics_setup_identity",
     "root_external_lbc_clock_identity",
     "NEST_LIFECYCLE_BLOCK_KEYS", "NEST_LIFECYCLE_CONTRACT",

@@ -34,7 +34,7 @@ Takes no options of its own.
 | `--allow-shared-gpu` | UNSUPPORTED: permit another substantial CUDA compute context; device verification and the GPUWM UUID lock remain enforced |
 | `--directory-input-hash {inventory,content}` | how declared directory inputs (the static geography tree) are bound to this run's identity: 'inventory' (default) uses relative path, size, and mtime; 'content' reads every file and uses its SHA-256. Use 'content' when two runs being compared for byte identity stage their geography separately, and when an mtime-preserving change to that tree must not go unnoticed (docs/public/DETERMINISM.md). Also settable as GPUWM_DIRECTORY_INPUT_HASH. |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
-| `--from CKPT|latest` | explicit gpuwmrst_*.npz checkpoint to branch from, or 'latest' (default) for the newest valid set in --from-run |
+| `--from CKPT\|latest` | explicit gpuwmrst_*.npz checkpoint to branch from, or 'latest' (default) for the newest valid set in --from-run |
 | `--from-run RUNDIR` | the source run's output directory -- where its gpuwmrst_*.npz checkpoints are. Optional only when --from names a checkpoint file explicitly |
 | `--gpu-uuid GPU-UUID` | physical GPU UUID to lock (required on multi-GPU hosts) |
 | `--health-debug` | enable debug phase health attribution hooks |
@@ -241,6 +241,7 @@ Takes no options of its own.
 
 | option | what it does |
 |---|---|
+| `--availability` | report why each installed physics option is open or closed to a draft |
 | `--capabilities` | _(the parser declares no help text for this option)_ |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--repairs` | check compatible physics replacements without writing a candidate |
@@ -264,6 +265,34 @@ Takes no options of its own.
 | option | what it does |
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+
+## `gpuwm companion-setups`
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+
+## `gpuwm companion-setups save`
+
+| option | what it does |
+|---|---|
+| `--config CONFIG` | forecast configuration TOML to save as a setup |
+| `--library DIR` | setups library directory the setup folder is created in |
+| `--name NAME` | name to save this setup under; 1 to 80 characters |
+
+## `gpuwm companion-setups start`
+
+| argument | what it does |
+|---|---|
+| `SETUP` | saved setup.toml to start a forecast from |
+
+| option | what it does |
+|---|---|
+| `--cycle CYCLE` | source cycle as YYYY-MM-DDTHH (UTC), or latest |
+| `--forecast-start-hour N` | forecast lead in hours after the cycle the run starts at |
+| `--hours H` | forecast duration in hours |
+| `--name NAME` | name of the new forecast |
+| `--out TOML` | path of the new configuration TOML to write |
 
 ## `gpuwm cycle`
 
@@ -308,7 +337,8 @@ Takes no options of its own.
 
 | option | what it does |
 |---|---|
-| `--card {12gb,16gb,24gb,32gb}` | _(the parser declares no help text for this option)_ |
+| `--accept-fit FIT_ID` | save only the exact reviewed proposal identified by fitting.fit_id |
+| `--card` | a tier (12gb/16gb/24gb/32gb), a size ('10gb') or a model with a recorded size ('RTX 3080') |
 | `--cycle` | _(the parser declares no help text for this option)_ |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--hardware-json` | _(the parser declares no help text for this option)_ |
@@ -337,9 +367,9 @@ Takes no options of its own.
 |---|---|
 | `--ack ID` | declare a governed experiment, written verbatim into the emitted [experiment].acknowledgements. Repeatable. This door used to write the nocturnal declaration for you, which silenced the load guard at check/run/go/run-plan and both prepared runners for the life of the file; it no longer does, and refuses instead. The id it accepts is asymmetric-radiation-nocturnal-window-v1: a longwave-OFF suite over a window that includes local night, which you are running deliberately as a daytime validation experiment |
 | `--buffer-km KM[,KM...]` | with --polygon, nonnegative geometry buffer in kilometres; one value applies to every domain, or supply exactly one outer-to-inner value per level. With --ladder auto, a multi-value list selects the preset of that depth (default: zero) |
-| `--card {12gb,16gb,24gb,32gb}` | GPU tier; sets the VRAM budget with no local probe. With no --card, --vram-gib or --hardware-json the wizard MEASURES the local card's capacity (short-lived probe, suppressed by GPUWM_NO_LOCAL_GPU) and refuses, naming both flags, when there is nothing to measure |
+| `--card` | GPU to size for: a tier (12gb/16gb/24gb/32gb), a size ('10gb'), or a model with a recorded size ('RTX 3080', '5070 Ti'); sets the VRAM budget with no local probe. With no --card, --vram-gib or --hardware-json the wizard MEASURES the local card's capacity (short-lived probe, suppressed by GPUWM_NO_LOCAL_GPU) and refuses, naming both flags, when there is nothing to measure |
 | `--chain R1,R2,...` | custom nest refinement ratios, integers in [2, 8] (e.g. --root-dx 3 --chain 4 for 3 km -> 750 m); omit for a single domain at --root-dx. Sized by the same estimator fit loop as the presets |
-| `--cycle YYYY-MM-DDTHH|latest` | the forcing CYCLE (UTC), which is the run's start time unless --forecast-start-hour moves it; 'latest' probes the public mirrors for the newest complete gfs/hrrr cycle covering the whole window and prints what it picked (needs network; era5 must name an explicit time) |
+| `--cycle YYYY-MM-DDTHH\|latest` | the forcing CYCLE (UTC), which is the run's start time unless --forecast-start-hour moves it; 'latest' probes the public mirrors for the newest complete gfs/hrrr cycle covering the whole window and prints what it picked (needs network; era5 must name an explicit time) |
 | `--data-dir DIR` | explicit forcing directory; automatic go launches otherwise manage request-specific downloads. Manual acquisition and ERA5 paths default to data/<name> |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--forcing GRIB` | era5: explicit forcing GRIB path(s) already on disk (default <data-dir>/era5-combined.grib) |
@@ -354,7 +384,7 @@ Takes no options of its own.
 | `--nz N` | vertical mass levels (default: 49); resamples the default eta ladder while preserving its stretching |
 | `--out TOML` | emitted experiment TOML path |
 | `--physics-profile {morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1,nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1,nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1,thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1,thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1,p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1,wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1,wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1,thompson-mp8-ysu-mm5-noah-validation-v1,wsm6-ysu-mm5-noah-no-radiation-v1,wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1,wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1,wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1}` | shipped physics suite to emit; taken verbatim from the registry the prepared-forecast runner validates against, so the emitted config passes its guard as written. Read the names: the *-no-radiation-* and *-validation-* profiles run reduced physics with longwave OFF and are NOT nocturnally valid -- selecting one for a window that includes local night is REFUSED unless you declare it yourself with --ack. (--source era5, the default source, binds morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1; every source has its own computed default and its own admissible set -- `gpuwm run-plan --physics-profiles` prints the whole table) |
-| `--point LAT,LON` | domain center in decimal degrees. \|lat\| 90 is refused, and so is any center whose FITTED domain reaches the pole -- a domain containing one is unsupported -- so the usable limit is set by the domain's size, not by the center, and lands well short of 90 (near \|lat\| 72 on the default card and ladder, further equatorward as either grows). The refusal names the fitted size when it fires; the projection is auto-selected from \|lat\| (<25 Mercator, 25-60 Lambert conformal, >60 polar stereographic) unless --projection is set. Negative (southern/western) values work in both forms: --point -33.87,151.21 and --point=-33.87,151.21 |
+| `--point LAT,LON` | domain center in decimal degrees. \|lat\| 90 is refused. A point carries no extent, so the fit chooses one: the largest layout the budget affords, capped at 6000 km per axis and kept clear of the projection pole, where lat-lon source interpolation and static-tile windowing do not work. Both caps SHRINK the domain rather than refuse it, and the plan summary states which one bound; the pole refusal is left for a center so close to one that even the smallest layout contains it. Draw a --polygon to ask for more ground than the cap. The projection is auto-selected from \|lat\| (<25 Mercator, 25-60 Lambert conformal, >60 polar stereographic) unless --projection is set. Negative (southern/western) values work in both forms: --point -33.87,151.21 and --point=-33.87,151.21 |
 | `--polygon GEOJSON` | local GeoJSON Polygon, MultiPolygon, Feature, or FeatureCollection; the minimum antimeridian-aware bounds supply the center and every emitted level is fitted around the geometry |
 | `--projection {auto,lambert,mercator,polar}` | map projection override (default: auto by center latitude; all three are oracle-gated against WRF v4.6.1 module_llxy) |
 | `--root-dx KM` | custom root grid spacing in km [0.05, 200]; use with --chain instead of --ladder |
@@ -373,7 +403,7 @@ Takes no options of its own.
 | option | what it does |
 |---|---|
 | `--buffer-km` | one polygon buffer, or one per domain in the template's parent-before-child order |
-| `--card` | existing named GPU tier |
+| `--card` | GPU to size for: a tier (12gb/16gb/24gb/32gb), a size ('10gb') or a model with a recorded size ('RTX 3080') |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--hardware-json` | selected node hardware snapshot with measured capacity, available memory and device profile |
 | `--hours` | explicit new duration; otherwise preserve template |
@@ -411,7 +441,7 @@ Takes no options of its own.
 |---|---|
 | `--accept-parent-cadence` | accept the archive's own cadence as the ceiling (prints the 15-min guidance when coarser); mutually exclusive with --max-boundary-interval-seconds |
 | `--auto-vram` | measure local total AND free GPU memory for --point sizing; exclusive with --card, --vram-gib and --child-size |
-| `--card {12gb,16gb,24gb,32gb}` | VRAM tier for --point sizing (default 24gb; the same tiers `gpuwm domain` accepts) |
+| `--card` | card for --point sizing (default 24gb): a tier (12gb/16gb/24gb/32gb), a size ('10gb') or a model with a recorded size ('RTX 3080'), the same spellings `gpuwm domain` accepts |
 | `--child-config` | legacy RunConfig TOML for the child (specified=true, nested=false) |
 | `--child-levels N[,STRETCH]` | give the child its own vertical ladder of N levels instead of inheriting the parent's, clustered toward the ground by STRETCH (the LES case: a 100 m child wants the levels, not just the columns). p_top, hybrid_opt and etac stay shared with the parent |
 | `--child-size NX[,NY]` | explicit child extent for --point |
@@ -428,7 +458,7 @@ Takes no options of its own.
 | `--parent-domain` | parent domain id when the directory carries several (e.g. 3 for the innermost archived parent) |
 | `--parent-namelist` | stock-WRF namelist.input of the parent run |
 | `--parent-namelist-domain` | domain column of --parent-namelist (default 1) |
-| `--parent-restart` | gpuwm restart of the parent run (authoritative physics evidence) |
+| `--parent-restart PATH\|latest` | gpuwm restart of the parent run (authoritative physics evidence); 'latest' discovers the newest complete checkpoint set in the parent's own run directory |
 | `--point LAT,LON` | derive the child around this point instead of --child-config (gpuwm parents only) |
 | `--preprocess-backend {cuda,cpu}` | where the parent-to-child interpolation runs (default cuda; cpu reproduces it off-GPU for verification) |
 | `--ratio` | refinement ratio (child-config placement: required; --point default 3) |
@@ -467,7 +497,7 @@ Takes no options of its own.
 | `--products LIST` | comma-separated products: mean, spread, prob, paintball, pmm, or 'all' (default) |
 | `--source-label TEXT` | model/provenance label stamped on every plot (default ArWen) |
 | `--threshold LIST` | comma-separated exceedance thresholds in the field's own units; default is the field's own (refl 40 dBZ, uh 75 m2 s-2). Every threshold gets its own probability and paintball plot |
-| `--timeidx N|all` | index into the valid times every member shares, or 'all' (default) |
+| `--timeidx N\|all` | index into the valid times every member shares, or 'all' (default) |
 
 ## `gpuwm fetch`
 
@@ -480,7 +510,7 @@ Takes no options of its own.
 | `--bridge EXE` | built gfs_grib2_bridge executable; omit it and the same resolver `gpuwm go` uses finds the one this install has (checkout build, libexec, then ~/.gpuwm/bridges -- see gpuwm doctor) |
 | `--cache-dir DIR` | --engine rust only (hrrr, gfs/gdas --mode full-file): wx-core disk cache root, keyed by URL and byte range, so a re-run or an overlapping window re-reads bytes instead of re-downloading them |
 | `--cadence {1,3,6}` | forecast-hour cadence: gfs 1 or 3 (default 3); gdas 1, 3, or 6 (default 3, and it does not apply to --hours 0, which is the analysis alone); era5 1, 3, or 6 (default 6); hrrr is hourly. On a table route the accepted cadences and the default are the row's own -- a cadence off the publisher's ladder refuses and names the ladder |
-| `--cycle YYYY-MM-DDTHH|latest` | model cycle (UTC); 'latest' resolves the newest cycle this source can serve, from the initialization grid and publication lag its registry row or route declares -- probed against the mirrors where the source publishes objects to probe, and taken from the declared lag where it does not (a reanalysis published on a delay has a latest, and it is that delay). A source that declares neither is refused by name |
+| `--cycle YYYY-MM-DDTHH\|latest` | model cycle (UTC); 'latest' resolves the newest cycle this source can serve, from the initialization grid and publication lag its registry row or route declares -- probed against the mirrors where the source publishes objects to probe, and taken from the declared lag where it does not (a reanalysis published on a delay has a latest, and it is that delay). A source that declares neither is refused by name |
 | `--engine {auto,rust,python}` | hrrr, and gfs/gdas --mode full-file: which downloader moves the bytes. 'rust' is the vendored rw_fetch backbone (16 MiB parallel range GETs, .idx coalescing, the cross-process NOMADS rate governor, a disk cache); 'python' is the stdlib transport and always works; 'auto' (default) uses the backbone when it is built |
 | `--era5-product {reanalysis,ensemble_members}` | ERA5 product: reanalysis (default), or ten-member EDA with explicit --member 0..9 --cadence 3 --retrieve |
 | `--era5-provider {cds,arco}` | ERA5 provider: cds uses Copernicus credentials; arco downloads Google's public hourly ERA5 Zarr archive without a key |
@@ -523,7 +553,7 @@ Takes no options of its own.
 |---|---|
 | `--allow-upstream-drift` | accept an NCAR archive whose bytes no longer match the packaged pin (recorded as unpinned; refused outside a sanity size band); never applies to the mirror |
 | `--bundle` | fetch NCAR's single geog_high_res_mandatory.tar.gz (2.6 GiB) instead of the per-dataset tarballs and extract the requested datasets from it (fallback; NCAR only) |
-| `--datasets all|CONSUMER|NAME,NAME` | which datasets to stage (default 'all', every pin -- the 10 above). A consumer name stands for one door's whole set: 'wrf' is the 9 the WRF static builder opens, 'mesh' is what gpuwm mesh needs for the static half of its pair. Use '--datasets wrf' to skip the ~12 GiB Noah-MP soil archive that only gpuwm mesh reads |
+| `--datasets all\|CONSUMER\|NAME,NAME` | which datasets to stage (default 'all', every pin -- the 10 above). A consumer name stands for one door's whole set: 'wrf' is the 9 the WRF static builder opens, 'mesh' is what gpuwm mesh needs for the static half of its pair. Use '--datasets wrf' to skip the ~12 GiB Noah-MP soil archive that only gpuwm mesh reads |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--keep-archives` | keep the verified tarballs under <root>/.fetch-geog after extraction (default: remove each one after its datasets validate) |
 | `--list` | print the dataset/size/source table and per-dataset staged state, then exit without touching the network |
@@ -1077,15 +1107,15 @@ Takes no options of its own.
 | `--pair-title TITLE` | pair-sheet title (default 'Paired comparison') |
 | `--products LIST` | comma-separated products: refl, t2, wind10, precip, olr, or 'all' (default); with the rust engine, raw catalog slugs (sbcape, srh_0_1km, ...) also work and 'all' renders its full catalog |
 | `--run-stamp {on,off}` | put this run's PNGs in its own timestamped folder under --out (default on): --out/run-<YYYYMMDD>-<HHMMSS>Z_i<YYYYMMDD><HHMM>Z/ (launch instant UTC, then the model initialisation time; the _i part is omitted when the run's init time cannot be read). Successive runs of one configuration then never overwrite or interleave each other. 'off' writes straight into --out, which is what releases up to 2.4.1 did; it is kept only for a consumer still written against that and is a workaround, not a supported alternative |
-| `--section lat,lon,lat,lon|FILE.json` | rust engine: the line the vertical-section products (xsec:<fill>[/<overlay>...] in --products, any 3-D wrfout field on a height axis) are cut along; a JSON file gives {start, end} or a {points, extend_km} polyline |
+| `--section lat,lon,lat,lon\|FILE.json` | rust engine: the line the vertical-section products (xsec:<fill>[/<overlay>...] in --products, any 3-D wrfout field on a height axis) are cut along; a JSON file gives {start, end} or a {points, extend_km} polyline |
 | `--section-across KM` | rust engine: also draw each section product across the line, this many km long, through the fill's maximum column |
 | `--section-size WxH` | the size a cross-section is drawn at; absent, a section is landscape 2:1 at the map's width, because a vertical cut handed the map's own size comes out portrait |
 | `--series` | render compatible files from each run/domain/episode as one timeline, including multi-hour products |
 | `--size WxH` | output pixels, rust engine (default 1200x900) |
 | `--source-label TEXT` | model/provenance label stamped on every plot (default 'ArWen <the executing version>'); set it when rendering wrfout files this model did not produce, so the sheet does not claim them |
 | `--streamlines` | rust engine: draw the wind as STREAMLINES instead of barbs on every product that carries a wind layer. Without either flag the engine keeps its automatic choice (streamlines on curvilinear and projected grids, barbs on plain lat/lon), and the RUSTWX_WIND_STREAMLINES environment variable still works; this flag and --barbs outrank it |
-| `--theme NAME|FILE.json` | rust engine: the render theme -- a built-in name (default, dark) or a JSON theme file naming the surface, the inks, the basemap linework, the colorbar chrome, the fonts and the colormap overrides (schema in tools/rustwx/crates/rustwx-render/src/theme.rs; RUSTWX_THEME is the environment spelling). Omitted, the engine draws its own look and the PNGs are byte-identical |
-| `--timeidx N|all` | frame index within each file (within each timeline with --series), or 'all' (default) |
+| `--theme NAME\|FILE.json` | rust engine: the render theme -- a built-in name (default, dark) or a JSON theme file naming the surface, the inks, the basemap linework, the colorbar chrome, the fonts and the colormap overrides (schema in tools/rustwx/crates/rustwx-render/src/theme.rs; RUSTWX_THEME is the environment spelling). Omitted, the engine draws its own look and the PNGs are byte-identical |
+| `--timeidx N\|all` | frame index within each file (within each timeline with --series), or 'all' (default) |
 
 ## `gpuwm report`
 
@@ -1165,7 +1195,7 @@ Takes no options of its own.
 | `--allow-shared-gpu` | UNSUPPORTED: permit another substantial CUDA compute context; device verification and the GPUWM UUID lock remain enforced |
 | `--directory-input-hash {inventory,content}` | how declared directory inputs (the static geography tree) are bound to this run's identity: 'inventory' (default) uses relative path, size, and mtime; 'content' reads every file and uses its SHA-256. Use 'content' when two runs being compared for byte identity stage their geography separately, and when an mtime-preserving change to that tree must not go unnoticed (docs/public/DETERMINISM.md). Also settable as GPUWM_DIRECTORY_INPUT_HASH. |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
-| `--from CKPT|latest` | explicit gpuwmrst_*.npz checkpoint, or 'latest' (default) to take the newest set in --outdir whose members validate |
+| `--from CKPT\|latest` | explicit gpuwmrst_*.npz checkpoint, or 'latest' (default) to take the newest set in --outdir whose members validate |
 | `--gpu-uuid GPU-UUID` | physical GPU UUID to lock (required on multi-GPU hosts) |
 | `--health-debug` | enable debug phase health attribution hooks |
 | `--no-supervise` | run the experiment in this process (escape hatch; disables fresh-process recovery and exclusive-GPU supervision) |

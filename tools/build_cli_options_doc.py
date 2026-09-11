@@ -294,6 +294,21 @@ def doors() -> dict[str, argparse.ArgumentParser]:
     return out
 
 
+def _cell(text: str) -> str:
+    """One table cell's text, with the pipes GFM would read as borders.
+
+    A pipe is escaped in BOTH columns, not just the help one.  The option
+    column carries argparse ``metavar`` strings verbatim and a metavar may
+    spell its own alternatives with a pipe (``--parent-restart
+    PATH|latest``); unescaped, that pipe ends the cell and the row renders
+    with its help text in the wrong column and a stray third column after
+    it.  GFM reads ``\\|`` as a literal pipe even inside a code span, so
+    the escape is invisible in the rendered page.
+    """
+
+    return text.replace("|", "\\|")
+
+
 def render() -> str:
     lines = [
         "# Every option, every door",
@@ -338,8 +353,7 @@ def render() -> str:
             lines.append("| argument | what it does |")
             lines.append("|---|---|")
             for spelling, text in arguments:
-                safe = text.replace("|", "\\|")
-                lines.append(f"| `{spelling}` | {safe} |")
+                lines.append(f"| `{_cell(spelling)}` | {_cell(text)} |")
             lines.append("")
         if not rows:
             lines.append("Takes no options of its own.")
@@ -348,8 +362,7 @@ def render() -> str:
         lines.append("| option | what it does |")
         lines.append("|---|---|")
         for spelling, text in rows:
-            safe = text.replace("|", "\\|")
-            lines.append(f"| `{spelling}` | {safe} |")
+            lines.append(f"| `{_cell(spelling)}` | {_cell(text)} |")
         lines.append("")
     for alias, target in sorted(ALIASES.items()):
         lines.append(f"## `{alias}`")

@@ -1002,7 +1002,7 @@ for item in records:
         assert not args.out.exists()
     elif command=='downscale':
         assert args.dry_run and args.vram_gib==8 and not args.auto_vram
-        assert args.parent_restart.is_file() and all(pathlib.Path(path).is_dir() for path in args.parent)
+        assert pathlib.Path(args.parent_restart).is_file() and all(pathlib.Path(path).is_dir() for path in args.parent)
         assert args.ratio==row['geometry']['nest_ratios'][0]
         assert args.hours==row['geometry']['forecast_hours']
         assert args.output_interval_seconds==row['geometry']['history_interval_s']

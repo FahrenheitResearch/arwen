@@ -54,8 +54,11 @@ def test_user_geometries_stream_with_the_same_candidate_and_admission(shape, fre
     assert decision.stream
     env = st.streamed_envelope(exp.root.run, exp.tiles, decision=decision,
                               machine=machine, resident_estimate=estimate)
+    # At the window's OWN shape, on both sides: the planner priced the tile
+    # it chose at that tile's window and the envelope prices the same.
     assert env.peak_vram_bytes == fp.vram_bytes(
-        env.window_nx * env.window_ny * exp.root.run.nz, env.nbuffers)
+        env.window_nx * env.window_ny * exp.root.run.nz, env.nbuffers,
+        (env.window_nx, env.window_ny))
     assert env.peak_vram_bytes == decision.resident_bytes
     assert env.peak_vram_bytes <= decision.budget_bytes
     assert env.peak_vram_bytes <= machine.vram_bytes - pf.EXTERNAL_MARGIN_BYTES
@@ -201,6 +204,9 @@ def test_cell_only_bound_covers_rectangular_window_inventories():
         upper = memory.buffer_terms(nx * ny * 49)
         assert exact.resident_bytes <= upper["resident_bytes"]
         assert exact.transient_bytes <= upper["step_transient_bytes"]
+        # ...and the exact window, when its shape is given, is priced as
+        # itself: the bound is for callers that have only a cell count.
+        assert memory.buffer_terms(nx * ny * 49, (nx, ny))["resident_bytes"] == exact.resident_bytes
 
 
 def test_monotone_cost_and_binary_inversion_keep_the_first_rejected_column():

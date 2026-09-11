@@ -14,10 +14,13 @@ import netCDF4
 import numpy as np
 import pytest
 
+from gpuwm import netcdf_bridge
 from gpuwm.cli import main as cli_main
 from gpuwm.config import load_config
 from gpuwm.downscale import (
     DERIVED_CHILD_CONFIG_NAME,
+    DOWNSCALE_PLAN_SCHEMA,
+    _budget_bytes,
     _centered_placement,
     _derive_child_run_config,
     _discover_parent_series,
@@ -26,6 +29,7 @@ from gpuwm.downscale import (
     _parse_point,
     _render_child_toml,
     derived_child_config_path,
+    downscale_plan_path,
 )
 from gpuwm.offline_child import (
     OfflineChildContractError,
@@ -33,6 +37,17 @@ from gpuwm.offline_child import (
 )
 from gpuwm.offline_child_run import _child_boundary_clock
 from test_offline_child import _history
+
+
+#: The three tests marked with this hand the door a real wrfout or restart
+#: set and let it READ the file, which gpuwm decodes through the Rust
+#: rw_netcdf binary and nothing else (gpuwm.netcdf_bridge.NetcdfBridgeMissing
+#: otherwise).  The rest of this deck writes its fixtures with netCDF4 and
+#: never asks gpuwm to decode one, so the gate is per test rather than a
+#: module-level pytestmark that would retire the whole deck.
+needs_netcdf_bridge = pytest.mark.skipif(
+    netcdf_bridge.find_netcdf_bin() is None,
+    reason="rw_netcdf is not built; build tools/rustwx to run this")
 
 
 #: A parent RunConfig dict in restart-evidence shape (physics inherited
@@ -109,9 +124,13 @@ def test_derive_child_config_inherits_physics_and_rescales(tmp_path):
 def test_fit_child_size_returns_units_that_fit():
     parent = {"nx": 501, "ny": 501, "dx": 1000.0, "dy": 1000.0}
     config = dict(_PARENT_CONFIG, nx=501, ny=501, nz=49)
-    size = _fit_child_size(
+    size, estimate = _fit_child_size(
         parent, config, j0=250, i0=250, ratio=2, run_seconds=3600.0,
         output_interval_s=3600.0, vram_gib=24.0)
+    # The winning size comes back WITH the estimator's own answer for it,
+    # so the plan document quotes the number the fit was decided on.
+    assert estimate is not None
+    assert estimate.peak_envelope_bytes <= _budget_bytes(24.0)[1]
     assert size % 4 == 0 and size >= 8
     _centered_placement(parent, j0=250, i0=250, ratio=2,
                         child_nx=size, child_ny=size)
@@ -153,7 +172,7 @@ def test_the_fit_admits_the_child_the_card_measuredly_ran():
     """
 
     parent = {"nx": 386, "ny": 308, "dx": 12000.0, "dy": 12000.0}
-    size = _fit_child_size(
+    size, _ = _fit_child_size(
         parent, dict(_MEASURED_PARENT_CONFIG), j0=154, i0=193, ratio=3,
         run_seconds=7200.0, output_interval_s=900.0, vram_gib=10.0)
     assert size >= 342, (
@@ -917,3 +936,206 @@ def test_the_runner_door_refuses_a_used_outdir_in_words(tmp_path):
         _create_output_root(outdir)
     message = str(caught.value)
     assert "report.json" in message and "--outdir" in message
+
+
+# ---------------------------------------------------------------------
+# The door a controller drives: a parent named by its run directory
+# alone, and one machine-readable plan carrying the grid, the price and
+# the cadence.
+# ---------------------------------------------------------------------
+
+def _named_checkpoint(tmp_path, config):
+    """A restart under the name discovery actually looks for."""
+    return _restart_evidence(
+        tmp_path / "gpuwmrst_d01_1974-04-03_12_00_00.npz", config)
+
+
+def _controller_point_args(tmp_path, *, restart, extra):
+    start = datetime(1974, 4, 3, 12)
+    for index in range(3):
+        frame = tmp_path / f"wrfout_d01_1974-04-03_{12 + index:02d}_00_00"
+        _history(frame, start + timedelta(hours=index), ny=18, nx=20)
+        _give_the_parent_a_real_projection(frame, ny=18, nx=20)
+    return [
+        "downscale", str(tmp_path),
+        "--parent-restart", restart,
+        "--point", "39.5,-84.0",
+        "--ratio", "1",
+        "--child-levels", "4,2.5",
+        "--hours", "0.25", "--output-interval-seconds", "900",
+        *extra,
+        "--out", str(tmp_path / "child-run"), "--dry-run"]
+
+
+def _plan_document(tmp_path):
+    import json as json_module
+
+    path = downscale_plan_path(tmp_path / "child-run", dry_run=True)
+    return json_module.loads(path.read_text(encoding="utf-8"))
+
+
+@needs_netcdf_bridge
+def test_parent_restart_latest_resolves_the_parents_own_newest_set(
+        tmp_path, capsys):
+    """A caller holding only the parent's run directory can name it.
+
+    Every front door that lists finished runs holds the run directory and
+    nothing else; demanding an exact checkpoint path made the door
+    unreachable from there.
+    """
+    _named_checkpoint(
+        tmp_path,
+        dict(_SURFACE_PARENT_CONFIG, nx=20, ny=18, nz=2, grid_id=1,
+             dt=3.0, run_seconds=7200.0, nested=False, specified=False))
+    assert cli_main(_controller_point_args(
+        tmp_path, restart="latest",
+        extra=["--child-size", "12,10"])) == 0
+    capsys.readouterr()
+    plan = _plan_document(tmp_path)
+    assert plan["parent"]["restart"] == str(
+        tmp_path / "gpuwmrst_d01_1974-04-03_12_00_00.npz")
+    assert plan["parent"]["run_dir"] == str(tmp_path)
+    assert plan["parent"]["frames"] == 3
+    assert plan["parent"]["domain"] == 1
+
+
+@needs_netcdf_bridge
+def test_parent_restart_latest_looks_above_a_wrfout_folder(tmp_path, capsys):
+    """The prepared routes' own layout: frames under ``wrfout/``, sets above.
+
+    Every ``gpuwm run-plan`` and ``gpuwm go`` forecast writes
+    ``<run>/wrfout/wrfout_d01_*`` and ``<run>/gpuwmrst_d01_*``, so a door
+    handed the frames folder found no checkpoint beside them and refused
+    the one parent every desktop forecast produces.
+    """
+    _named_checkpoint(
+        tmp_path,
+        dict(_SURFACE_PARENT_CONFIG, nx=20, ny=18, nz=2, grid_id=1,
+             dt=3.0, run_seconds=7200.0, nested=False, specified=False))
+    frames = tmp_path / "wrfout"
+    frames.mkdir()
+    assert cli_main(_controller_point_args(
+        frames, restart="latest", extra=["--child-size", "12,10"])) == 0
+    capsys.readouterr()
+    plan = _plan_document(frames)
+    assert plan["parent"]["restart"] == str(
+        tmp_path / "gpuwmrst_d01_1974-04-03_12_00_00.npz")
+    assert plan["parent"]["run_dir"] == str(frames)
+
+    # With no set in either place the refusal names both directories.
+    bare = tmp_path / "bare"
+    (bare / "wrfout").mkdir(parents=True)
+    assert cli_main(_controller_point_args(
+        bare / "wrfout", restart="latest",
+        extra=["--child-size", "12,10"])) != 0
+    message = capsys.readouterr().err
+    assert str(bare / "wrfout") in message and f" or {bare};" in message
+    assert "restart_interval_s" in message
+
+
+def test_parent_restart_latest_names_the_setting_that_makes_one(
+        tmp_path, capsys):
+    """A parent with no checkpoint is refused with its remedy, at the door.
+
+    The remedy is the PARENT's own setting: this parent has to be re-run
+    to be downscalable, and a caller who learns that after paying for a
+    forecast has learned it too late.
+    """
+    assert cli_main(_controller_point_args(
+        tmp_path, restart="latest", extra=["--child-size", "12,10"])) != 0
+    message = capsys.readouterr().err
+    assert "no complete gpuwmrst checkpoint set" in message
+    assert "restart_interval_s" in message
+    # Not resume's sentence about --outdir: this caller is not resuming.
+    assert "--outdir" not in message
+    assert not (tmp_path / "child-run").exists()
+
+
+def test_the_explicit_extent_price_is_taken_on_the_card_the_door_holds(
+        monkeypatch):
+    """The explicit-size route prices on the same profile the fit does.
+
+    The Noah-MP lane retired a refusal on the fitted route by handing the
+    estimator the profile the sizing probe read.  An explicit
+    ``--child-size`` is priced once, by ``_price_child_config``, and a
+    route that dropped the profile there would send a Noah-MP child on a
+    measured card back into "a declared card that is not in this
+    machine".  The door refuses ``--auto-vram`` beside ``--child-size``
+    today, so the profile it holds on that route is ``None``; the
+    contract held here is that whatever it holds reaches the estimator
+    unchanged, on both spellings of the call.
+    """
+    from gpuwm.config import RunConfig
+    from gpuwm.core import preflight as pf
+    from gpuwm.downscale import _price_child_config
+
+    seen = []
+
+    def estimate(exp, **kwargs):
+        seen.append(kwargs)
+        return "priced"
+
+    monkeypatch.setattr(pf, "estimate_experiment", estimate)
+    cfg = RunConfig(**{key: value for key, value in _SURFACE_PARENT_CONFIG.items()
+                       if key != "not_a_runconfig_key"})
+    measured = object()
+    assert _price_child_config(cfg, 24.0, profile=measured) == "priced"
+    assert _price_child_config(cfg, 16.0) == "priced"
+    assert seen == [{"vram_gib": 24.0, "profile": measured},
+                    {"vram_gib": 16.0, "profile": None}]
+
+
+@needs_netcdf_bridge
+def test_plan_document_prices_the_child_on_both_sizing_routes(
+        tmp_path, capsys):
+    """One document, both routes, and the memory number is the engine's.
+
+    An explicit extent used to be the one route that produced no price at
+    all, so a caller offering "explicit size" had nothing to show and no
+    way to warn before the allocation refused.
+    """
+    given = tmp_path / "given"
+    given.mkdir()
+    _named_checkpoint(
+        given,
+        dict(_SURFACE_PARENT_CONFIG, nx=20, ny=18, nz=2, grid_id=1,
+             dt=3.0, run_seconds=7200.0, nested=False, specified=False))
+    assert cli_main(_controller_point_args(
+        given, restart="latest",
+        extra=["--child-size", "12,10", "--vram-gib", "24"])) == 0
+    capsys.readouterr()
+    plan = _plan_document(given)
+    assert plan["schema"] == DOWNSCALE_PLAN_SCHEMA
+    assert plan["child_grid"]["nx"] == 12 and plan["child_grid"]["ny"] == 10
+    assert plan["child_grid"]["ratio"] == 1
+    assert plan["child_grid"]["run_seconds"] == 900.0
+    assert plan["child_grid"]["output_interval_s"] == 900.0
+    memory = plan["memory"]
+    assert memory["basis"] == "explicit-size"
+    assert memory["vram_gib"] == 24.0
+    assert memory["peak_envelope_bytes"] > 0
+    assert memory["budget_bytes"] < memory["free_bytes"]
+    assert memory["fits"] is (
+        memory["peak_envelope_bytes"] <= memory["budget_bytes"])
+    assert plan["cadence"]["seconds"] == 3600.0
+    assert plan["cadence"]["accepted_parent_cadence"] is True
+    assert plan["cadence"]["max_boundary_interval_seconds"] == 3600.0
+    # 3600 s is coarser than the 900 s guidance, so the sentence is here
+    # rather than only on a stderr line a GUI never sees.
+    assert "coarser than" in plan["cadence"]["warning"]
+    assert any("coarser than" in record["action"]
+               for record in plan["warnings"])
+
+    fitted = tmp_path / "fitted"
+    fitted.mkdir()
+    _named_checkpoint(
+        fitted,
+        dict(_SURFACE_PARENT_CONFIG, nx=20, ny=18, nz=2, grid_id=1,
+             dt=3.0, run_seconds=7200.0, nested=False, specified=False))
+    assert cli_main(_controller_point_args(
+        fitted, restart="latest", extra=["--vram-gib", "24"])) == 0
+    capsys.readouterr()
+    memory = _plan_document(fitted)["memory"]
+    assert memory["basis"] == "capacity"
+    assert memory["fits"] is True
+    assert memory["peak_envelope_bytes"] <= memory["budget_bytes"]

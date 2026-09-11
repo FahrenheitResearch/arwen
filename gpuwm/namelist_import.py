@@ -74,7 +74,7 @@ from __future__ import annotations
 import math
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dataclass_replace
 from datetime import datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
@@ -2069,6 +2069,10 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             "mp_physics=28 with wif_input_opt=0 "
             "(dyn_em/module_initialize_real.F:2735-2736) and has no "
             "consumer for the reverse, so the pair has to move together")
+    # The index of the mp=28 synthetic-fallback receipt row, if one is
+    # written below, so the run-door clause can be appended to it once
+    # &bdy_control has been parsed (the clause is about ``specified``).
+    _mp28_fallback_row: int | None = None
     if mp_physics == 28 and (_aero_icbc or _wif_selected):
         if not (_aero_icbc and _wif_selected):
             raise _err(
@@ -2097,17 +2101,20 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                 "constants_name route real.exe reads.  The 215 MiB "
                 "dataset is not redistributed: stage it with `gpuwm "
                 "fetch-tables --wif`, or point wif_climatology_path / "
-                "GPUWM_WIF_CLIMATOLOGY at a copy.  A missing dataset is a "
-                "named refusal at initialization, never a silent fall "
-                "back to the synthetic profile")))
+                "GPUWM_WIF_CLIMATOLOGY at a copy.  On a domain with "
+                "external lateral boundaries a missing dataset is a named "
+                "refusal at the run door -- before any fetch and before "
+                "step 0 -- never a silent fall back to the synthetic "
+                "profile; set mp28_aerosol_source='synthetic' in the "
+                "emitted configuration to take that profile deliberately")))
     elif mp_physics == 28:
         # The never-silent last mile.  A user who imports an mp=28 namelist
         # gets a printed line saying exactly which aerosol initial state
         # their run will use and which WRF line refuses the same
         # configuration -- rather than discovering months later that their
         # ArWen and WRF runs were never comparable.
-        from gpuwm.config import (
-            MP28_AEROSOL_SOURCE_DEFAULT, MP28_AEROSOL_SYNTHETIC_FALLBACK)
+        from gpuwm.config import (MP28_AEROSOL_SOURCE_DEFAULT,
+                                  MP28_AEROSOL_SYNTHETIC_FALLBACK)
         from gpuwm.ingest.wif_climatology import resolve_wif_climatology
         # The printed line now reports a RESOLUTION, not a deviation.  It is
         # still printed unconditionally, for the same reason it always was:
@@ -2131,6 +2138,20 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             reason = MP28_AEROSOL_SYNTHETIC_FALLBACK
             if _wif is not None and _wif.fallback_reason:
                 reason = reason + " " + str(_wif.fallback_reason)
+            # AND WHAT THE RUN DOOR WILL DO WITH IT -- but only when it
+            # will.  This import writes a TOML and runs nothing, so it
+            # does not refuse; if these namelists describe a domain with
+            # external lateral boundaries the run door does, and the
+            # reader is told here, where the file they would edit is
+            # about to be written, which is the only door at which the
+            # second way out can be taken.  ``specified`` is parsed from
+            # &bdy_control further down this same translation, so the
+            # sentence is APPENDED THERE, to the record remembered here;
+            # an idealized namelist set gets the resolution and no
+            # run-door clause, because that door will not refuse it.  The
+            # sentence itself is the run door's own, imported rather than
+            # restated.
+            _mp28_fallback_row = len(defaults_applied)
             defaults_applied.append(AppliedDefault(
                 key="mp28 aerosol initial state",
                 value="SYNTHETIC FALLBACK -- thompson_init CCN/IN profile",
@@ -2221,9 +2242,16 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                                          for value in raw_icloud):
             raise _err(
                 "physics", "icloud", raw_icloud,
-                f"gpuwm's {adapter_label} adapter currently has "
-                "cloud-radiation coupling always on; icloud=0 cannot be "
-                "silently ignored.")
+                f"gpuwm's {adapter_label} adapter pins cloud-radiation "
+                "coupling on: it computes CLDFRA unconditionally and the "
+                "switch never reaches the solve, so an icloud=0 namelist "
+                "would run the cloudy configuration under a clear-sky "
+                "label rather than be ignored. This is an evidence gap on "
+                "the 4/4 pair, not a missing capability -- WRF's clear-sky "
+                "arms are transcribed in the legacy preparation and every "
+                "recorded oracle case is an icloud=1 case. Import this "
+                "namelist with ra_lw_physics=1 and ra_sw_physics=1, the "
+                "pair that honours icloud=0 end to end, or set icloud=1.")
         if raw_icloud is not None:
             icloud = int(_uniform("physics", "icloud", raw_icloud))
             if icloud not in (0, 1):
@@ -3007,6 +3035,19 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     specified = _require_bools("bdy_control", "specified", specified_col) \
         if specified_col is not None \
         else [True] + [False] * (max_dom - 1)
+    if _mp28_fallback_row is not None and any(specified):
+        # The clause the mp=28 receipt above deferred until this line
+        # parsed the boundary condition it is conditional on.  Appended
+        # to the row that is already there rather than added as a second
+        # one, so the reader sees one statement about their aerosol
+        # initial state.
+        from gpuwm.config import MP28_AEROSOL_LATERAL_FORCING_PRECONDITION
+
+        _row = defaults_applied[_mp28_fallback_row]
+        defaults_applied[_mp28_fallback_row] = _dataclass_replace(
+            _row,
+            reason=_row.reason + " "
+            + MP28_AEROSOL_LATERAL_FORCING_PRECONDITION)
     nested_col = bdy.col("nested", max_dom)
     nested = _require_bools("bdy_control", "nested", nested_col) \
         if nested_col is not None \

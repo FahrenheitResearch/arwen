@@ -262,7 +262,7 @@ gpuwm check CONFIG.toml --alloc
 
 This allocates the persistent device state and takes zero forecast steps. It requires a GPU and can use substantial memory; run it when that GPU is available. It is not a stability or forecast-skill test.
 
-Named `--card` tiers are `12gb`, `16gb`, `24gb`, and `32gb`. Use `--vram-gib 8` for an 8 GiB target; `--card 8gb` is not a tier. Research's separate `--hardware-class 8` is a profile, not a declaration of capacity.
+`--card` takes any spelling that carries a capacity: a tier (`12gb`, `16gb`, `24gb`, `32gb`), a size written into the name (`8gb`, `"RTX 3080 10GB"`), or a model with a recorded size (`"RTX 3080"`, `rtx3080`, `"5070 Ti"`); `--vram-gib 8` beside a card is the capacity and the card is a label. Only a name with no capacity in it is refused. Research's separate `--hardware-class 8` is a profile, not a declaration of capacity.
 
 ### Fit an editable starter
 

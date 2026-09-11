@@ -102,6 +102,7 @@ EXTERNAL: dict[str, str] = {
     # pins its v4.6.1 digest.  The cited :566 is cumastrn's deep-to-shallow
     # demotion (ktype 1 -> 2 where the cloud is thinner than zdnoprc).
     "cu_ntiedtke.F90": _WRF,
+    "dyn_em/module_bc_em.F": _WRF,
     "dyn_em/module_diffusion_em.F": _WRF,
     "dyn_em/module_em.F": _WRF,
     "dyn_em/module_first_rk_step_part2.F": _WRF,

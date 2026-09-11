@@ -354,6 +354,17 @@ def stage_forecast(args) -> None:
         cfg, None, geography=geo_store,
         geography_fn=harness.neutral_geography)
     kwargs["scalars"] = scalars
+    # AND THE REFLECTIVITY SLOT (audit R-052).  The manifest put
+    # ``scratch/refl_10cm`` in the store, so every sweep has to WRITE it:
+    # these keywords prime it on each tile buffer, name it in the inventory
+    # the transport gathers and scatters by, ask every tile step for it, and
+    # clear each tile's one-frame stash.  Without them the slot is scattered
+    # unwritten and this lane's composite would be zeros wherever the
+    # scheme -- mp=9, 18, 50 -- publishes its dBZ through no operator.
+    kwargs = driver.reflectivity_run_kwargs(kwargs, store)
+    # The store's slot is empty until a sweep fills it; the f000 dump below
+    # therefore recomputes, and every later dump reads what the model wrote.
+    refl_stash = ["primed"]
 
     steps_per_dump = max(1, int(round(args.every * 60.0 / cfg.dt)))
     ndumps = max(1, int(round(args.minutes / args.every)))
@@ -362,7 +373,8 @@ def stage_forecast(args) -> None:
         t = time.perf_counter()
         snap = bigdomain.snapshot(store, geo_store, cfg,
                                   elapsed_s=scalars["elapsed_seconds"],
-                                  slab_rows=args.refl_slab)
+                                  slab_rows=args.refl_slab,
+                                  refl_stash=refl_stash[0])
         path = out_dir / f"bigdom_{args.n}_{tag}.npz"
         np.savez_compressed(path, **snap)
         if args.wrfout:
@@ -398,6 +410,9 @@ def stage_forecast(args) -> None:
                              nsteps=steps_per_dump, nbuffers=args.nbuffers,
                              write_mode="ring", report=report, **kwargs)
         cp.cuda.runtime.deviceSynchronize()
+        # Every step of that sweep carried refl_10cm_due, so the slot now
+        # holds what the scheme's own microphysics call wrote.
+        refl_stash[0] = "computed"
         dt_wall = time.perf_counter() - t
         moved = report.get("gathered_bytes", 0) + report.get(
             "scattered_bytes", 0)

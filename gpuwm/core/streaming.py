@@ -140,7 +140,7 @@ StreamingMode = Literal["off", "on", "auto"]
 #: for a mode it is not in.
 STREAMING_KEYS = frozenset({
     "mode", "tile_nx", "tile_ny", "nbuffers", "halo", "store", "write_mode",
-    "pipeline", "vram_budget_bytes", "host_budget_bytes",
+    "pipeline", "vram_budget_bytes", "host_budget_bytes", "max_redundancy",
 })
 
 
@@ -250,6 +250,12 @@ class StreamingOptions:
     pipeline: str = "prefetch"
     vram_budget_bytes: int | None = None
     host_budget_bytes: int | None = None
+    #: The planner's halo-work limit: the multiple of the necessary work a
+    #: tiling may do on halo cells before it is refused.  ``None`` keeps the
+    #: planner's own limit (4.0x), a number replaces it, and ``false`` lifts
+    #: it so a geometry-capped domain streams anyway.  The refusal that
+    #: names this key used to name a keyword no front door reached.
+    max_redundancy: float | bool | None = None
     radiation_context: RadiationMemoryContext | None = field(default=None, repr=False, compare=False)
     follower_context: FollowerWindowMemoryContext | None = field(default=None, repr=False, compare=False)
     acoustic_map_factor: float | None = field(default=None, repr=False, compare=False)
@@ -260,6 +266,15 @@ class StreamingOptions:
             raise ValueError(
                 f"[tiles] mode = {self.mode!r} is not one of "
                 f"{list(STREAMING_MODES)}")
+        limit = self.max_redundancy
+        if limit is not None and limit is not False:
+            if (limit is True or isinstance(limit, str)
+                    or not float(limit) >= 1.0):
+                raise ValueError(
+                    f"[tiles] max_redundancy = {limit!r} is not a limit: give "
+                    "a number of at least 1.0 (the multiple of the necessary "
+                    "work a tiling may do on halo cells), or false to lift "
+                    "the limit")
         if self.store not in ("host", "device"):
             raise ValueError(
                 f"[tiles] store = {self.store!r} must be 'host' (the "
@@ -485,6 +500,14 @@ def cold_planning_machine(exp):
     return Machine.detect(host_bytes=options.host_budget_bytes)
 
 
+def _redundancy_limit_kwargs(options) -> dict:
+    """The planner keyword ``[tiles] max_redundancy`` selects, if any."""
+    limit = getattr(options, "max_redundancy", None)
+    if limit is None:
+        return {}
+    return {"max_redundancy": None if limit is False else float(limit)}
+
+
 def _plan_with_efficiency_advice(cfg, machine, *, mode, **kwargs):
     """Try preferred tiles first; a throughput preference cannot forbid auto."""
     from dataclasses import replace
@@ -496,6 +519,7 @@ def _plan_with_efficiency_advice(cfg, machine, *, mode, **kwargs):
         # memory and geometry checks but exceeded the halo-work preference.
         if mode != "auto" or "redundancy" not in error.detail:
             raise
+        kwargs.pop("max_redundancy", None)
         plan = autoplan.plan(cfg, machine, max_redundancy=None, **kwargs)
         return replace(plan, warnings=(*plan.warnings,
             f"the fitting tile performs {plan.redundancy:.2f}x the necessary work "
@@ -673,7 +697,8 @@ def decide(cfg, options: StreamingOptions | None = None, *, machine=None,
                                  machine=machine),
                              minimum_halo=need,
                              prefer_resident=prefer_resident,
-                             write_mode=options.write_mode)
+                             write_mode=options.write_mode,
+                             **_redundancy_limit_kwargs(options))
     except autoplan.CannotPlan as exc:
         if exc.resource == "vram" and measured_free_bytes is not None:
             raise autoplan.CannotPlan(
@@ -758,6 +783,18 @@ class StreamedEnvelope:
     holds the first and not the second admits the run, downloads the
     forcing, prepares the domain and meets the transient at the first
     radiation call, which is ``itimestep == 1``.
+
+    PRICED AT THE WINDOW'S OWN SHAPE (2.7.3).  ``vram_bytes`` is what
+    ``nbuffers`` buffers of exactly ``window_nx x window_ny`` cost, on both
+    roads: the pinned tiling's window is known from ``[tiles]`` and the
+    planner's from the tile it chose.  It used to be priced through a
+    cell-count-only bound whose sizing rectangle was ``N x 1`` -- see
+    :mod:`gpuwm.core.prepared_tile_memory` for the user's 572x524 icon-eu
+    forecast that this priced at 38.96 GiB streamed against 17.43 GiB
+    resident, 20.8 GiB of it forcing tables for a one-row rectangle no
+    buffer ever holds.  ``terms`` carries the arithmetic behind
+    ``vram_bytes``, named, so :meth:`terms_lines` can put it under a
+    refusal and a screenshot of that refusal can be checked.
     """
 
     vram_bytes: int
@@ -776,6 +813,33 @@ class StreamedEnvelope:
     #: Defaulted so a caller that builds an envelope by hand still gets a
     #: peak equal to the hold, which is the pre-existing meaning.
     radiation_transient_bytes: int = 0
+    #: The named terms ``vram_bytes`` and ``host_bytes`` add up from
+    #: (:meth:`tilestream.autoplan.Footprint.terms` plus the store and
+    #: arena), as ``(name, value)`` pairs in the order they add up.  Empty
+    #: for an envelope built by hand.
+    terms: tuple = ()
+
+    def terms_lines(self) -> tuple:
+        """The arithmetic behind the figures, one term per line.
+
+        What a refusal prints under its one-sentence verdict so the reader
+        can see WHICH term is over -- the buffers a smaller tile shrinks,
+        or the floors no tile moves -- and check the total by hand.  Byte
+        terms print in GiB with their exact byte count beside them.
+        """
+        lines = []
+        for name, value in self.terms:
+            if not name.endswith("_bytes"):
+                lines.append(f"{name:44s} {value}")
+            elif int(value) < 1024 ** 2:
+                # A per-column rate or an absent term: GiB to three places
+                # would print 0.000 and hide the number.
+                lines.append(f"{name:44s} {int(value) / 1024:9.1f} KiB"
+                             f"  ({int(value):,} B)")
+            else:
+                lines.append(f"{name:44s} {int(value) / (1024 ** 3):9.3f} GiB"
+                             f"  ({int(value):,} B)")
+        return tuple(lines)
 
     @property
     def peak_vram_bytes(self) -> int:
@@ -909,11 +973,23 @@ def streamed_envelope(cfg, options: "StreamingOptions | None" = None, *,
     # axes, and it is the window -- never the tile -- that a buffer holds.
     window_nx = tile_nx + 2 * halo
     window_ny = tile_ny + 2 * halo
-    vram = fp.vram_bytes(window_nx * window_ny * nz, nbuffers)
+    # AT THE WINDOW'S OWN SHAPE.  Both roads know it here -- the pinned
+    # tiling from [tiles], the planner's from the tile it chose -- and the
+    # itemized prepared model prices the rectangle it is given rather than
+    # a cell-count bound whose sizing rectangle was N x 1 (see
+    # prepared_tile_memory: 20.8 GiB of one-row forcing tables on a real
+    # user's 286x286 window).
+    window_shape = (window_nx, window_ny)
+    window_cells = window_nx * window_ny * nz
+    vram = fp.vram_bytes(window_cells, nbuffers, window_shape)
     # The store and its arena through the shared helper, so the
     # single-domain envelope and the tree walk's host ledger cannot drift
     # apart -- and unrounded, so every figure below is the one it was.
     store, arena = _store_and_arena_bytes(cfg, decision)
+    terms = dict(fp.terms(window_cells, nbuffers, window_shape))
+    terms["host/store_bytes"] = int(store)
+    terms["host/arena_bytes"] = int(arena)
+    terms["host/pinned_bytes"] = int(store + arena)
     # A caller pricing another forecast host supplies that host's measured
     # Machine. Keep this budget report on the same host as the tile decision.
     host_total = machine.host_bytes if machine is not None else _host_total_bytes()
@@ -929,7 +1005,8 @@ def streamed_envelope(cfg, options: "StreamingOptions | None" = None, *,
         # already had these bytes reserved out of the budget it chose a
         # tile against; a PINNED tiling consults no planner and no card,
         # so nothing on its path had the number at all until here.
-        radiation_transient_bytes=int(fp.radiation_transient_bytes))
+        radiation_transient_bytes=int(fp.radiation_transient_bytes),
+        terms=tuple(terms.items()))
 
 
 def _host_total_bytes() -> int | None:
@@ -4503,9 +4580,10 @@ def _decision_claim_bytes(node, decision, options=None) -> int:
     nz = int(cfg.nz)
     if decision.stream and decision.tile_nx:
         halo = int(decision.halo or 0)
-        window = ((int(decision.tile_nx) + 2 * halo)
-                  * (int(decision.tile_ny) + 2 * halo) * nz)
-        return int(fp.marginal_bytes(window, int(decision.nbuffers or 1)))
+        shape = (int(decision.tile_nx) + 2 * halo,
+                 int(decision.tile_ny) + 2 * halo)
+        window = shape[0] * shape[1] * nz
+        return int(fp.marginal_bytes(window, int(decision.nbuffers or 1), shape))
     return int(fp.marginal_resident_bytes(int(cfg.nx) * int(cfg.ny) * nz))
 
 
@@ -5314,6 +5392,10 @@ class TreeRoadPlan:
     #: two through one attribute and hard-refused a runnable tree on the
     #: report's own exception (ENG-014).
     report_error: str | None = None
+    #: Diagnostic lower bound for STREAMED roads, from the same shared
+    #: process/radiation terms as decide_tree. It is not a resident bound:
+    #: a smaller auto configuration may still fit entirely resident.
+    streaming_fixed_floor_bytes: int | None = None
 
     @property
     def peak_vram_bytes(self) -> int:
@@ -5525,13 +5607,23 @@ def tree_road_plan(exp, *, machine=None, resident_estimate=None) -> TreeRoadPlan
         except Exception:            # a report never dies on its estimate
             root_envelope = None
     if outcome is None:
+        streaming_floor = None
+        if refusal_resource in {"vram", "host", "memory"}:
+            try:
+                streaming_floor = (_tree_process_overhead_bytes(nodes)
+                                   + _tree_radiation_transient_bytes(nodes))
+            except Exception:
+                # Missing diagnostic data is not evidence of a fixed floor.
+                # Keep the original admission refusal, never invent a bound.
+                pass
         return TreeRoadPlan(
             rows=rows, refusal=refusal, priced=False, streams_any=any(
                 row["road"] == "streamed" for row in rows),
             vram_hold_bytes=0, radiation_transient_bytes=0, host_bytes=0,
             total_budget_bytes=0, process_overhead_bytes=0,
             host_budget_bytes=None, root_envelope=root_envelope,
-            refusal_resource=refusal_resource, report_error=report_error)
+            refusal_resource=refusal_resource, report_error=report_error,
+            streaming_fixed_floor_bytes=streaming_floor)
     return TreeRoadPlan(
         rows=rows, refusal=refusal, priced=outcome.priced,
         streams_any=any(row["road"] == "streamed" for row in rows),

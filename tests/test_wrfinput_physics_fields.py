@@ -37,7 +37,7 @@ def _values(cfg, qke_name='qke'):
 
 def _input(path, cfg, values, *, dimensions_override=None):
     _small_wrfinput(path, nz=cfg.nz, ny=cfg.ny, nx=cfg.nx,
-                    moisture_names=tuple(wi._active_moisture_map(cfg)))
+                    moisture_names=tuple(wi.active_moisture_map(cfg)))
     with netCDF4.Dataset(path, 'a') as ds:
         ds.createDimension('soil_layers_stag', soil_layer_count(cfg))
         ds.setncatts(dict(MP_PHYSICS=cfg.mp_physics,

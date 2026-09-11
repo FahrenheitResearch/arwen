@@ -477,6 +477,14 @@ def restart_identity_payload(exp) -> dict:
     # experiment and must refuse.
     if experiment.get("spectral_numerics") is None:
         experiment.pop("spectral_numerics", None)
+    # Same convention for the declared constant downward longwave: ABSENT
+    # stays absent, so every experiment written before the field existed
+    # keeps its exact fingerprint and its checkpoints keep resuming.  A
+    # DECLARED number binds, because it is the flux the land surface
+    # integrates for the whole forecast -- resuming a 300 W m-2
+    # trajectory under 410 is a different run.
+    if experiment.get("constant_glw_wm2") is None:
+        experiment.pop("constant_glw_wm2", None)
     # The mixing-length provenance label leaves the identity
     # UNCONDITIONALLY, on the [tiles] convention: it records WHO chose
     # each domain's mix_isotropic, while the chosen value itself sits on
@@ -949,6 +957,20 @@ def _trim_default_pool() -> None:
         return
 
 
+def _ask_the_checkpoints_question(node) -> None:
+    """Ask this domain's checkpoint physics identity before its first step.
+
+    The rule, the reason and the ``PhysicsDriver``-only restriction live in
+    :func:`gpuwm.io.restart.ask_checkpoint_physics_identity`, which the
+    other forecast door (``gpuwm.runtime.integrate_prepared_case``) calls
+    too -- one function, so the two doors cannot answer the same question
+    differently (audit R-046).
+    """
+    from gpuwm.io.restart import ask_checkpoint_physics_identity
+
+    ask_checkpoint_physics_identity(node.state, node.cfg.run)
+
+
 def execute_experiment(
         model: ExperimentState, *, history_handler=None,
         restart_handler=None, progress_callback=None,
@@ -1068,6 +1090,34 @@ def execute_experiment(
     # that joins the tree later falls back to the dycore's own step rather
     # than to whatever the last domain happened to bind.
     steppers = dict(steppers or {})
+    #: Grid ids the checkpoint's question has already been asked of, so a
+    #: domain is asked once and no later than it can be.
+    asked_the_checkpoints_question: set[int] = set()
+    if restart_handler is not None:
+        # THE CHECKPOINT'S QUESTION, ASKED BEFORE STEP 0, for every domain
+        # of the tree.  ``restart_handler is not None`` is exactly "this
+        # run will write checkpoints", and until audit R-046 the first
+        # thing that asked whether a checkpoint could NAME this physics
+        # setup was the writer, at the first restart interval, with the
+        # forecast to that point already spent.  Plan review answers the
+        # config half (gpuwm.physics_registry.require_consumer_rows, from
+        # validate_run_config); the driver half -- a physics callable
+        # whose class a stock-class row cannot bind, a land-surface
+        # parameter bundle that cannot be digested -- needs the
+        # constructed driver, which exists here and nowhere earlier.  The
+        # identity is discarded: what this buys is the refusal's
+        # placement, not the value.
+        #
+        # EVERY CONFIGURED DOMAIN IS IN THIS WALK, delayed-start children
+        # included: build_experiment gives each configured child a state
+        # and a prepared driver and only withholds ``_started``, and
+        # walk_parent_first yields the whole tree.  So this is where a
+        # delayed child's refusal happens too -- at t=0 rather than hours
+        # later at its activation, which is the earlier of the two and
+        # the one worth having.
+        for node in model.walk_parent_first():
+            _ask_the_checkpoints_question(node)
+            asked_the_checkpoints_question.add(int(node.cfg.grid_id))
     # THE LEVEL-2 SPECTRAL SEAM (gpuwm.spectral_seam).  ``None`` -- every
     # experiment without an active [spectral_numerics] -- costs the STEP
     # op one ``is not None`` test and nothing else.  Active, it refuses a
@@ -1254,6 +1304,15 @@ def execute_experiment(
         refresh_model_time(node.state, clock)
         node.state._nest_restart_classification = "REBUILT"
         node._started = True
+        # No checkpoint question here.  The pre-step-0 walk above asked it
+        # of every configured domain, delayed-start children included, and
+        # this function is reached only from the clock's delayed-start
+        # boundary (gpuwm/core/clock.py) for exactly those children; a node
+        # constructed anywhere else (a restart restore, a relocation
+        # rebuild) is marked started by its own constructor and returns at
+        # the top of this function.  A guarded second ask stood here for a
+        # domain "joining the tree after the start", and no path delivers
+        # one: the guard was never false and the ask never ran.
         model._prepared_by_grid_id[grid_id] = prepared
         if exp.feedback == 1:
             initial = FeedbackScratch()

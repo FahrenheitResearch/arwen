@@ -43,13 +43,27 @@ def _root(workspace):
     return _owned_directory(Path(workspace) / ".arwen-processed")
 
 
-def _job(workspace, job):
+def _job_completing(workspace, job):
+    """An interactive door waits with the watcher for a settling wrapper only.
+
+    Every other refusal stays exactly the one the door has always raised: the
+    completion transition may add a wait, never reword an ownership failure.
+    """
+    try:
+        return _job(workspace, job, completion=True)
+    except ra.ProducerCompletionPending:
+        raise
+    except ValueError:
+        return _job(workspace, job)
+
+
+def _job(workspace, job, *, completion=False):
     from gpuwm import remote_worker as rw
     directory = rw._directory(workspace, job)
     record, state = rw._record(directory), rw._status(directory)
     if record.get("action") != "start-plan" or not record.get("snapshot_plan"):
         raise ValueError("Native stores require this job's saved run-plan manifest")
-    bound = ra.bound_manifest(record, state)
+    bound = ra.bound_manifest(record, state, **({"job_directory": directory} if completion else {}))
     commits = []
     if bound is not None:
         root, _path, manifest, _bytes, started, _binding = bound

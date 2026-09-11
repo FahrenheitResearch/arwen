@@ -796,6 +796,15 @@ def declared_constant_glw(exp: ExperimentConfig) -> float | None:
     :func:`~gpuwm.core.physics.initialize_physics`, because that function
     refuses to invent one.
 
+    The number is the experiment's own when it declared one --
+    ``[experiment] constant_glw_wm2`` -- and the shipped
+    :data:`~gpuwm.core.physics.DECLARED_CONSTANT_GLW_WM2` otherwise.  The
+    acknowledgement names the CLAIM (this run fabricates its downward
+    longwave); the field names the NUMBER, and until it existed an
+    experiment whose case radiates near 410 W m-2 had to run at 300 and
+    call the difference declared.  ``initialize_physics`` accepts any
+    float and the run receipt prints the value, so nothing else changes.
+
     ``None`` for every other experiment, which is the normal answer: a
     run with a longwave scheme has its GLW written by that scheme, and
     passing a value would only pre-fill a buffer the scheme overwrites.
@@ -805,7 +814,9 @@ def declared_constant_glw(exp: ExperimentConfig) -> float | None:
 
     if CONSTANT_DOWNWARD_LONGWAVE_ACK in tuple(exp.acknowledgements or ()):
         from gpuwm.core.physics import DECLARED_CONSTANT_GLW_WM2
-        return DECLARED_CONSTANT_GLW_WM2
+        declared = getattr(exp, "constant_glw_wm2", None)
+        return (DECLARED_CONSTANT_GLW_WM2 if declared is None
+                else float(declared))
     return None
 
 
@@ -4039,6 +4050,29 @@ def integrate_prepared_case(
     # configured WRF STEPRA calendar on those internal steps.  A positive
     # configured bldt keeps the driver's WRF STEPBL calendar (see helper).
     apply_single_domain_pbl_cadence(state.physics, integration_cfg)
+    if restart_write_steps is not None:
+        # THE CHECKPOINT'S QUESTION, ASKED BEFORE STEP 0.  A run that will
+        # write checkpoints must be able to NAME its physics setup, and
+        # until audit R-046 the first time anything asked was the writer
+        # itself -- so a physics callable a class name cannot bind, or a
+        # scheme with no stock-class row, was discovered at the first
+        # restart interval with a whole hour of forecast already spent.
+        # The config half of that question is answered at plan review
+        # (gpuwm.physics_registry.require_consumer_rows, from
+        # validate_run_config); the DRIVER half needs the constructed
+        # driver, which exists here and nowhere earlier, and this is still
+        # before the first step.  The identity itself is discarded: what is
+        # bought is the refusal's placement, not the value.
+        #
+        # THE SAME FUNCTION THE TREE DOOR CALLS.  This site asked
+        # physics_setup_identity directly and so did not carry the tree
+        # door's rule that the question is defined over a PhysicsDriver and
+        # over nothing else: a state carrying some other physics object was
+        # skipped by execute_experiment and raised on an attribute here.
+        # Both doors now go through the one function that owns the rule.
+        from gpuwm.io.restart import ask_checkpoint_physics_identity
+
+        ask_checkpoint_physics_identity(state, integration_cfg)
     outputs = []
     nan_free = True
     w_max = 0.0

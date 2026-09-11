@@ -1343,7 +1343,7 @@ def _namelist_pair(tmp_path, *, mp=28, physics_extra="", domains_extra=""):
     return wps, inp
 
 
-def test_a_plain_mp28_namelist_imports_and_stays_28(tmp_path):
+def test_a_plain_mp28_namelist_imports_and_stays_28(tmp_path, monkeypatch):
     """Pre-WP-11a: ``&physics mp_physics = 28: no ratified gpuwm mapping
     (implemented: [0, 1, 6, 8, 10, 18, 55])``.
 
@@ -1351,8 +1351,27 @@ def test_a_plain_mp28_namelist_imports_and_stays_28(tmp_path):
     would hand the user classic Thompson -- constant Nt_c, Cooper
     nucleation, no aerosol at all -- under a file they believe selects the
     aerosol-aware scheme.
+
+    AND IT IMPORTS ON A MACHINE WITHOUT THE 225 MB DATASET, which is
+    what this arm now measures: every rung of the resolver is pointed
+    somewhere empty.  Translating a namelist runs no forecast, so the
+    dataset precondition is not this door's question -- it is raised by
+    gpuwm.config.validate_experiment_preparation at the doors that build
+    a forecast, before either of them fetches a byte, and reported here
+    in the receipt,
+    where the file the reader would edit is about to be written.  A door
+    that refused instead offered a way out (mp28_aerosol_source) that
+    lives only in the TOML it declined to emit.
     """
+    from gpuwm.ingest import wif_climatology
     from gpuwm.namelist_import import import_namelists
+
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_PATH_ENV,
+                       raising=False)
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_ROOT_ENV,
+                       raising=False)
+    monkeypatch.setenv("GPUWM_WIF_DATA_ROOT", str(tmp_path / "no-staged-wif"))
+    monkeypatch.chdir(tmp_path)
 
     wps, inp = _namelist_pair(tmp_path)
     toml_text, report = import_namelists(wps, inp, name="mp28-plain",
@@ -1392,19 +1411,31 @@ def test_the_import_receipt_names_the_aerosol_source_where_a_user_sees_it(
     monkeypatch.setenv("GPUWM_WIF_DATA_ROOT", str(tmp_path / "no-staged-wif"))
     monkeypatch.chdir(tmp_path)
     wps, inp = _namelist_pair(tmp_path)
-    _toml, report = import_namelists(wps, inp, name="mp28-receipt",
-        acknowledgements=_CONSTANT_GLW_ACK)
-    rendered = report.format()
-    assert "thompson_init" in rendered
-    assert "FALLBACK IN USE" in rendered
-    assert "phys/module_mp_thompson.F:493-551" in rendered
-    entries = [a for a in report.defaults_applied if "aerosol" in a.key]
-    assert len(entries) == 1, [a.key for a in report.defaults_applied]
+    # THIS ARM MOVED TWICE and this is where it rests.  These namelists
+    # describe a SPECIFIED-BC domain, and on one of those the synthetic
+    # profile is not a degraded default -- it is the state in which
+    # nwfa/nifa take zero-inflow boundaries and the domain walks to WRF's
+    # aerosol floor.  So the receipt says so, in the run door's own words,
+    # and the import still emits the TOML: this door translates a
+    # namelist, runs no forecast, and has no parameter for
+    # mp28_aerosol_source, so refusing here named a breakage this path
+    # cannot have and offered a way out that could not be taken at it.
+    # The requirement is unchanged and is what is asserted: never silent,
+    # and both ways out named where the reader can take them.
+    _toml1, report1 = import_namelists(wps, inp, name="mp28-receipt",
+                                       acknowledgements=_CONSTANT_GLW_ACK)
+    said = report1.format()
+    assert "QNWFA_QNIFA_SIGMA_MONTHLY.dat" in said
+    assert "aerosol floor" in said
+    assert "$GPUWM_WIF_CLIMATOLOGY" in said
+    assert "mp28_aerosol_source='synthetic'" in said
+    assert "FALLBACK IN USE" in said
 
     # (b) DATASET PRESENT -> the default, named, with the path.  A user must
     # be able to tell the two runs apart from the receipt alone.
     dataset = tmp_path / wif_climatology.WIF_CLIMATOLOGY_FILE
-    dataset.write_bytes(b"")
+    from wif_intermediate_stub import write_minimal_wif_intermediate
+    write_minimal_wif_intermediate(dataset)
     monkeypatch.setenv(wif_climatology.WIF_CLIMATOLOGY_PATH_ENV, str(dataset))
     _toml2, report2 = import_namelists(wps, inp, name="mp28-receipt-data",
         acknowledgements=_CONSTANT_GLW_ACK)
@@ -1621,6 +1652,11 @@ restart_interval_s = 0.0
 [shared]
 nz = 30
 ztop = 15000.0
+# Audit R-044: this is a specified-BC root domain, so it has to say which
+# aerosol source it wants when no WIF climatology is staged.  Naming the
+# synthetic profile here IS the way out the refusal offers, exercised
+# through the front door rather than described.
+mp28_aerosol_source = "synthetic"
 
 [[domain]]
 grid_id = 1
@@ -1656,6 +1692,7 @@ def test_an_experiment_toml_can_select_mp28():
     run = experiment.domains[0].run
     assert run.mp_physics == 28
     assert run.aer_init_opt == 0 and run.wif_input_opt == 0
+    assert run.mp28_aerosol_source == "synthetic"
 
 
 @pytest.mark.parametrize("key", ["aer_init_opt", "wif_input_opt"])
@@ -1707,7 +1744,8 @@ def test_the_legacy_config_path_gives_the_named_refusal(tmp_path):
     assert cfg.mp_physics == 28
 
 
-def test_the_wif_key_triple_imports_instead_of_dead_ending(tmp_path):
+def test_the_wif_key_triple_imports_instead_of_dead_ending(tmp_path,
+                                                          monkeypatch):
     """A real WRF namelist that selects the climatology IMPORTS.
 
     The triple is &physics ``use_aero_icbc = .true.`` with &domains
@@ -1717,8 +1755,24 @@ def test_the_wif_key_triple_imports_instead_of_dead_ending(tmp_path):
     read.  This pins the whole round trip: the keys are consumed, the
     emitted config carries aer_init_opt=1 / wif_input_opt=1, and the
     never-silent line says which dataset the run will read.
+
+    The dataset is staged, and that is not test scaffolding: this
+    namelist describes a specified-BC domain and its keys ASK for the
+    climatology, so the receipt this asserts -- "WIF monthly climatology"
+    rather than the fallback -- is the receipt of a machine that has the
+    file.  The IMPORT itself does not depend on it: the namelist spelling
+    of the request takes exactly the run-door battery the ArWen spelling
+    takes, and neither is asked at this door.
     """
+    from gpuwm.ingest import wif_climatology
     from gpuwm.namelist_import import import_namelists
+    from wif_intermediate_stub import write_minimal_wif_intermediate
+
+    write_minimal_wif_intermediate(
+        tmp_path / wif_climatology.WIF_CLIMATOLOGY_FILE)
+    monkeypatch.setenv(
+        wif_climatology.WIF_CLIMATOLOGY_PATH_ENV,
+        str(tmp_path / wif_climatology.WIF_CLIMATOLOGY_FILE))
 
     wps, inp = _namelist_pair(
         tmp_path, mp=28,
@@ -2271,3 +2325,135 @@ def test_the_reflectivity_residual_is_the_declared_rain_residual_in_db():
         "be restored")
     assert abs(predicted[level]) <= 1.0e-5, predicted[level]
     assert unexplained > 0.0
+
+
+def test_the_go_chain_refuses_an_unpreparable_mp28_run_before_it_fetches(
+        tmp_path, monkeypatch):
+    """The machine precondition is answered on the NEAR side of the download.
+
+    THE DEFECT THIS PREVENTS, measured.  ``initialize_real`` raises the
+    dataset precondition, and on ``gpuwm go`` that call sits in the
+    PREPARE stage: after the authority stage, after a whole GFS cycle has
+    been downloaded, after the input manifest of those bytes has been
+    verified.  So an mp=28 specified-BC config on a machine without
+    QNWFA_QNIFA_SIGMA_MONTHLY.dat paid for 10-15 GB of transfer and was
+    then refused -- the "wizard says PASS, fetch, then refuse" shape the
+    route table this precondition replaced was written against.  The
+    stage composer asks it instead, and the composer runs before the run
+    root is claimed and before any stage is spawned.
+
+    Both halves are asserted: the refusal fires, and the way out it names
+    is taken at the same door.
+    """
+
+    import inspect
+
+    from gpuwm import go_cli
+    from gpuwm.cli import main as cli_main
+    from gpuwm.ingest import wif_climatology
+
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_PATH_ENV, raising=False)
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_ROOT_ENV, raising=False)
+    monkeypatch.setenv("GPUWM_WIF_DATA_ROOT", str(tmp_path / "no-staged-wif"))
+    monkeypatch.chdir(tmp_path)
+
+    emitted = tmp_path / "go-mp28.toml"
+    assert cli_main([
+        "domain", "--point=35.3,-97.5", "--card", "24gb", "--ladder", "12",
+        "--source", "gfs", "--cycle", "2026-07-29T18", "--hours", "6",
+        "--out", str(emitted)]) == 0
+    written = emitted.read_text(encoding="utf-8")
+    # The wizard's own emission for a real-data root: external lateral
+    # boundaries, which is the condition the precondition is about.
+    assert "\nspecified = true\n" in written, written
+    mp28 = written.replace("\nmp_physics = 10\n", "\nmp_physics = 28\n")
+    assert mp28 != written
+    refused = tmp_path / "go-mp28-refused.toml"
+    refused.write_text(mp28, encoding="utf-8", newline="\n")
+
+    with pytest.raises(go_cli.GoRefusal) as refusal:
+        go_cli.plan_from_config(refused, outdir=tmp_path / "out")
+    said = str(refusal.value)
+    assert said.startswith("d01: "), said
+    assert "QNWFA_QNIFA_SIGMA_MONTHLY.dat" in said
+    assert "$GPUWM_WIF_CLIMATOLOGY" in said
+    assert "mp28_aerosol_source='synthetic'" in said
+
+    # THE ORDER, structurally: the composer this refusal came out of is
+    # called before the fetch stage is spawned, so nothing was downloaded
+    # to earn it.  Read off the chain runner rather than asserted in prose.
+    body = inspect.getsource(go_cli._go_prepared_main)
+    assert body.index("plan_from_config(") < body.index('_run_stage("fetch"')
+    assert not (tmp_path / "out").exists(), "the run root was claimed anyway"
+
+    # And the named way out is reachable AT THIS DOOR: it is a field of
+    # the TOML the chain is handed, which is the difference between this
+    # door and the namelist importer (which has no parameter for it and
+    # therefore does not ask).
+    opened = tmp_path / "go-mp28-synthetic.toml"
+    opened.write_text(
+        mp28.replace("\nmp_physics = 28\n",
+                     "\nmp_physics = 28\nmp28_aerosol_source = \"synthetic\"\n"),
+        encoding="utf-8", newline="\n")
+    plan = go_cli.plan_from_config(opened, outdir=tmp_path / "out-ok")
+    assert plan["domains"] == 1
+
+
+@pytest.mark.parametrize("via,origin", [
+    ("env", "$GPUWM_WIF_CLIMATOLOGY"),
+    ("shared", "[shared] wif_climatology_path"),
+])
+def test_the_go_chain_refuses_a_named_dataset_that_is_not_one(
+        tmp_path, monkeypatch, via, origin):
+    """A truncated download is a sentence at this door, not a stack.
+
+    The absent-dataset case above is refused in one sentence.  A dataset
+    NAMED through either human-chosen rung and not a dataset -- four
+    bytes is what a download that died in its first packet leaves --
+    left the resolver as ``MissingWifClimatologyDataset``, which is a
+    ``FileNotFoundError`` and not the ``ValueError`` this door converts,
+    so the chain exited 1 with a raw traceback.  The stage composer now
+    answers with the resolver's own sentence.
+    """
+
+    from gpuwm import go_cli
+    from gpuwm.cli import main as cli_main
+    from gpuwm.ingest import wif_climatology
+
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_PATH_ENV, raising=False)
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_ROOT_ENV, raising=False)
+    monkeypatch.setenv("GPUWM_WIF_DATA_ROOT", str(tmp_path / "no-staged-wif"))
+    monkeypatch.chdir(tmp_path)
+
+    stub = tmp_path / "truncated-QNWFA_QNIFA_SIGMA_MONTHLY.dat"
+    stub.write_bytes(bytes(4))
+
+    emitted = tmp_path / "go-mp28.toml"
+    assert cli_main([
+        "domain", "--point=35.3,-97.5", "--card", "24gb", "--ladder", "12",
+        "--source", "gfs", "--cycle", "2026-07-29T18", "--hours", "6",
+        "--out", str(emitted)]) == 0
+    written = emitted.read_text(encoding="utf-8")
+    assert "\nspecified = true\n" in written, written
+    mp28 = written.replace("\nmp_physics = 10\n", "\nmp_physics = 28\n")
+    assert mp28 != written
+    if via == "env":
+        monkeypatch.setenv(wif_climatology.WIF_CLIMATOLOGY_PATH_ENV, str(stub))
+    else:
+        mp28 = mp28.replace(
+            "\nmp_physics = 28\n",
+            '\nmp_physics = 28\nwif_climatology_path = "'
+            + stub.as_posix() + '"\n')
+    named = tmp_path / "go-mp28-named-stub.toml"
+    named.write_text(mp28, encoding="utf-8", newline="\n")
+
+    with pytest.raises(go_cli.GoRefusal) as refusal:
+        go_cli.plan_from_config(named, outdir=tmp_path / "out")
+    said = str(refusal.value)
+    assert said.startswith("d01: "), said
+    assert origin in said, said
+    assert str(stub) in said, said
+    assert "WPS intermediate" in said, said
+    assert "gpuwm fetch-tables --wif" in said, said
+    assert "MissingWifClimatologyDataset" not in said, said
+    assert not (tmp_path / "out").exists(), "the run root was claimed anyway"

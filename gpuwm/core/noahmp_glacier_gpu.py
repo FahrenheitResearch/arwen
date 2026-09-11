@@ -26,6 +26,7 @@ from functools import lru_cache
 
 import numpy as np
 
+from gpuwm.core.noahmp_kernel_sources import DEFAULT_OPTIONS, compile_runtime_unit
 from gpuwm.core.noahmp_glacier import GlacierBalanceError, noahmp_glacier
 
 __all__ = [
@@ -146,20 +147,12 @@ def _module(options: tuple[str, ...]):
     followed by noahmp_glacier.cu, exactly as
     gpuwm/core/noahmp_kernel_sources.py declares it.  ``get_kernel``
     loads single files and must not be handed a fragment."""
-    import cupy as cp
-
-    from gpuwm.certify.kernel_manifest import record_module
-    from gpuwm.core.noahmp_kernel_sources import translation_unit_source
-
-    source = translation_unit_source("noahmp_glacier")
-    module = cp.RawModule(code=source, options=options)
-    module.compile()
-    record_module("gpuwm.core.noahmp_glacier_gpu:glacier",
-                  source=source, options=options, module=module)
-    return module
+    return compile_runtime_unit(
+        "noahmp_glacier", module_key="gpuwm.core.noahmp_glacier_gpu:glacier",
+        options=options)
 
 
-def glacier_module(options: tuple[str, ...] = ("-std=c++17",)):
+def glacier_module(options: tuple[str, ...] = DEFAULT_OPTIONS):
     """The compiled composed glacier unit (cached per option set)."""
     return _module(tuple(options))
 

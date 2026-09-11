@@ -39,6 +39,7 @@ import numpy as np
 
 from gpuwm.config import (CUMULUS_ADVECTIVE_FORCING_SCHEMES,
                           CU_SCHEMES, MYJ_PBL_SCHEME, MYJ_SFCLAY_SCHEME,
+                          MYNN_SFCLAY_SCHEME,
                           NOAHMP_OPTION_IDENTITY, RUC_OPTION_IDENTITY,
                           SASE_PBL_SCHEME, RunConfig,
                           radiation_enabled, radiation_scheme_ids,
@@ -1772,14 +1773,14 @@ class PhysicsDriver:
             MynnSurfaceResult(**{
                 name: fields[name] for name in MYNN_SURFACE_OUTPUTS
             })
-            if cfg.sf_sfclay_physics == 5 else None
+            if cfg.sf_sfclay_physics == MYNN_SFCLAY_SCHEME else None
         )
         self.mynn_sfclay_sea_result = (
             MynnSurfaceResult(**{
                 name: fields[f"{name}_sea"]
                 for name in MYNN_SURFACE_OUTPUTS
             })
-            if (cfg.sf_sfclay_physics == 5
+            if (cfg.sf_sfclay_physics == MYNN_SFCLAY_SCHEME
                 and cfg.sf_surface_physics == 3) else None
         )
         self.noah_params = noah_params
@@ -4951,8 +4952,48 @@ def initialize_physics(
     if cfg.bl_pbl_physics and not cfg.sf_sfclay_physics:
         raise ValueError(
             "a PBL scheme requires sf_sfclay_physics surface coupling")
-    if cfg.bl_pbl_physics and state.qv is None:
-        raise ValueError("PBL physics requires a moist DomainState")
+    if cfg.cu_physics == 3 and not cfg.bl_pbl_physics:
+        # GRELL-FREITAS WITHOUT A PBL SCHEME REACHES A KERNEL THAT INDEXES
+        # AN UNINITIALISED SLOT.  ``validate_run_config`` refuses this pair
+        # at every config door, and this is the same refusal for the caller
+        # that never goes through one -- a hand-built RunConfig handed
+        # straight to ``initialize_physics``, which is how the offline
+        # child, the DA drivers and the test harnesses build a driver.
+        # Without it the pair is admitted here and fails at step 1 by
+        # reading garbage rather than by raising: ``fields["kpbl"]`` is
+        # allocated as zeros and only a PBL scheme writes it, gf.cu treats
+        # kpbl as a ONE-BASED column index, and ``zo[kpbl]``/``t[kpbl]``/
+        # ``rho[kpbl]`` (with t[kpbl] a divisor) then read slot 0 of an
+        # uninitialised workspace, in both the deep and the shallow arm.
+        # New Tiedtke carries no such check because it reads no KPBL at
+        # all; this refusal is Grell-Freitas's alone.
+        raise ValueError(
+            "cu_physics=3 (Grell-Freitas) requires a PBL scheme: the "
+            "trigger's temperature and moisture excesses and the shallow "
+            "arm index the column at KPBL, which gpuwm allocates as zeros "
+            "and only a PBL scheme writes, and the kernel reads that index "
+            "one-based -- so with bl_pbl_physics=0 it would divide by "
+            "t[kpbl] out of an uninitialised workspace instead of failing. "
+            "Select a PBL scheme, e.g. bl_pbl_physics=1 (YSU), or "
+            "cu_physics=16 (New Tiedtke), which reads no KPBL and runs "
+            "with the PBL slot off. This is validate_run_config's own "
+            "rule, re-checked here for a directly constructed driver.")
+    # A DRY PBL RUN REACHES THE DRIVER.  The blanket refusal that stood
+    # here ("PBL physics requires a moist DomainState") fired for every
+    # scheme in the slot, after the config door had already admitted the
+    # run, and named neither a breakage nor a way out -- it made a dry
+    # PBL configuration selectable and not runnable.  A dry state is not
+    # an absent state: _atmosphere_for_physics hands every seam the
+    # persistent zero physics_dry_qv/physics_dry_qc planes, the moisture
+    # rows solve against zero surface boundary values so their tendencies
+    # are exactly zero, and nothing consumes them with no moist scalar
+    # advance to run.  Measured on this tree over the whole ported slot
+    # (YSU, MYJ, MYNN, Shin-Hong), 20 steps each on a dry column: every
+    # scheme initialises, stays finite, and mixes -- exch_h and the PBL
+    # top both grow from the cold state.  The property is asserted by
+    # tests/test_myj_port.py::test_a_dry_pbl_run_reaches_the_driver_and_mixes.
+    # SASE's dry case is refused at plan review for its own stated reason
+    # (the saturated Brunt-Vaisala stability it forms), re-checked below.
     if cfg.cu_physics and state.qv is None:
         raise ValueError("cumulus physics requires a moist DomainState")
     if cfg.bl_pbl_physics == 11 and not hasattr(state, "e_sgs"):
@@ -4970,6 +5011,15 @@ def initialize_physics(
             raise ValueError(
                 "SASE requires a DomainState allocated with "
                 f"bl_pbl_physics={SASE_PBL_SCHEME} (prognostic e_sgs)")
+        if state.qv is None:
+            raise ValueError(
+                f"bl_pbl_physics={SASE_PBL_SCHEME} (SASE) requires a moist "
+                "DomainState: the closure mixes water vapour, cloud water "
+                "and cloud ice alongside potential temperature and forms "
+                "its stability from the saturated Brunt-Vaisala frequency, "
+                "which a dry state cannot supply. Set moist=true (this is "
+                "validate_run_config's own rule, re-checked here), or "
+                "select bl_pbl_physics=1, 2, 5 or 11, which run dry.")
         if cfg.km_opt != 0:
             raise ValueError(
                 "SASE supplies the mixing the km_opt operator would "
@@ -5091,7 +5141,7 @@ def initialize_physics(
     # its selected scheme's additional persistent/inout diagnostics; carrying
     # these fields in every MM5/Noah run silently changes restart inventory
     # and resident-memory accounting for unrelated configurations.
-    if cfg.sf_sfclay_physics == 5:
+    if cfg.sf_sfclay_physics == MYNN_SFCLAY_SCHEME:
         for name in MYNN_SURFACE_OUTPUTS:
             if name not in f:
                 f[name] = cp.zeros(shape, dtype=DTYPE)

@@ -161,9 +161,9 @@ RESTART_AND_IMPORT: dict[str, tuple[str, ...]] = {
         "from the original configuration and inputs; checkpoint migration "
         "is not included in this release.",
 
-        "A prepared cache written by 2.6.5 for a native-HRRR or other "
-        "condensate-carrying source no longer reproduces this release's "
-        "initial state; preparation rebuilds it and the superseded output "
+        "Preparation rebuilds a prepared cache written by 2.6.5 for a "
+        "native-HRRR or other condensate-carrying source, because this "
+        "release prepares those sources differently; the superseded output "
         "is preserved.",
 
         "A namelist that omits input_from_file, or gives it a short "

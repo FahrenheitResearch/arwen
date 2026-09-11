@@ -407,15 +407,132 @@ float p3_edge_field(
     return 0.0f;
 }
 
+// Milbrandt-Yau (mp_physics=9) edge closure.  The target moments are
+// diagnosed with MY2's OWN mass-to-number closure -- the consistency block
+// mp_milbrandt2mom_main runs on entry, module_mp_milbrandt2mom.F:1459-1528,
+// transcribed in gpuwm/core/kernels/milbrandt2.cu:547-600 -- so an MY2
+// child entered across a scheme boundary holds exactly the moments the
+// scheme itself would have built from those masses at its first call, and
+// the block then finds nothing left to fix.  That is the same criterion
+// mp=18's arm meets with NSSL's calcnfromq and mp=8's and mp=10's meet with
+// their own PSD closures; nothing here is a new intercept.
+//
+// The closure needs the scheme's own de = pres/(Rd*T) (:3400) and, for ice
+// and snow, temperature -- Cooper's N(T) and Thompson's Nos(T) -- which is
+// why microphysics_edge_field carries a temperature and a pressure plane
+// and the constant vector ck.  Every ck index below is the one
+// milbrandt2.cu names, read from the same host-built vector
+// (gpuwm.core.milbrandt2_constants.ck_vector), so the two translation
+// units cannot disagree about a constant.
+#define MY2E_icmr  ck[16]
+#define MY2E_icmg  ck[20]
+#define MY2E_icmh  ck[22]
+#define MY2E_dms   ck[25]
+#define MY2E_icms  ck[26]
+#define MY2E_N_c_SM ck[50]
+#define MY2E_GR31  ck[54]
+#define MY2E_iGR34 ck[59]
+#define MY2E_icexs2 ck[93]
+#define MY2E_GS31  ck[98]
+#define MY2E_iGS40 ck[107]
+#define MY2E_GG31  ck[118]
+#define MY2E_iGG34 ck[123]
+#define MY2E_GH31  ck[136]
+#define MY2E_iGH34 ck[140]
+
+#define MY2E_epsQ      1.0e-14f
+#define MY2E_epsN      1.0e-3f
+#define MY2E_TRPL      0.27316e+3f
+#define MY2E_RGASD     0.28705e+3f
+#define MY2E_alpha_r   0.0f
+#define MY2E_alpha_s   0.0f
+#define MY2E_alpha_g   0.0f
+#define MY2E_alpha_h   0.0f
+#define MY2E_No_r_SM   1.0e+7f
+#define MY2E_No_g_SM   4.0e+6f
+#define MY2E_No_h_SM   1.0e+5f
+
+// :3513-3518 and :3520-3525, IEEE expf as in milbrandt2.cu.
+static __device__ __forceinline__ float my2_edge_N_Cooper(float T)
+{
+    return 5.0f * expf(0.304f * (MY2E_TRPL - fmaxf(233.0f, T)));
+}
+
+static __device__ __forceinline__ float my2_edge_Nos_Thompson(float T)
+{
+    return fminf(2.0e+8f,
+                 2.0e+6f * expf(-0.12f * fminf(-0.001f, T - MY2E_TRPL)));
+}
+
 static __device__ __forceinline__
-float edge_plain_or_moment_field(
-    int field, int target_mp, float rho, float morr_rhog,
+float my2_edge_field(
+    int field, float t, float pr, const float* __restrict__ ck,
     float qv, float qc, float qr, float qi, float qs, float qg, float qh)
 {
-    // Stable host field codes:
+    if (field == 0) return qv;
+    if (field == 1) return qc;
+    if (field == 2) return qr;
+    if (field == 3) return qi;
+    if (field == 4) return qs;
+    if (field == 5) return qg;
+    if (field == 10) return qh;
+
+    // de and the #/m3 <-> #/kg conversion are the scheme's own (:1224-1233,
+    // :3400): the closure below produces a per-VOLUME number and the state
+    // carries per-MASS, so every branch divides by de at the end.
+    const float de = pr / (MY2E_RGASD * t);
+    float number = 0.0f;
+    if (field == 22) {                      // nc, MY2's droplet number
+        // :1459-1461.  N_c_SM is the CCNtype=2 continental value the WRF
+        // wrapper pins (:3615), read from the same constant vector.
+        if (qc > MY2E_epsQ) number = MY2E_N_c_SM;
+    } else if (field == 6) {                // nr
+        if (qr > MY2E_epsQ) {               // :1470-1473
+            number = powf(MY2E_No_r_SM * MY2E_GR31,
+                          3.0f / (4.0f + MY2E_alpha_r))
+                     * powf(MY2E_GR31 * MY2E_iGR34 * de * qr * MY2E_icmr,
+                            (1.0f + MY2E_alpha_r) / (4.0f + MY2E_alpha_r));
+        }
+    } else if (field == 7) {                // ni
+        if (qi > MY2E_epsQ) {               // :1482-1484
+            number = fmaxf(2.0f * MY2E_epsN, my2_edge_N_Cooper(t));
+        }
+    } else if (field == 8) {                // ns
+        if (qs > MY2E_epsQ) {               // :1494-1498
+            const float No_s = my2_edge_Nos_Thompson(t);
+            number = powf(No_s * MY2E_GS31, MY2E_dms * MY2E_icexs2)
+                     * powf(MY2E_GS31 * MY2E_iGS40 * MY2E_icms * de * qs,
+                            (1.0f + MY2E_alpha_s) * MY2E_icexs2);
+        }
+    } else if (field == 9) {                // ng
+        if (qg > MY2E_epsQ) {               // :1507-1510
+            number = powf(MY2E_No_g_SM * MY2E_GG31,
+                          3.0f / (4.0f + MY2E_alpha_g))
+                     * powf(MY2E_GG31 * MY2E_iGG34 * de * qg * MY2E_icmg,
+                            (1.0f + MY2E_alpha_g) / (4.0f + MY2E_alpha_g));
+        }
+    } else if (field == 23) {               // nh
+        if (qh > MY2E_epsQ) {               // :1519-1522
+            number = powf(MY2E_No_h_SM * MY2E_GH31,
+                          3.0f / (4.0f + MY2E_alpha_h))
+                     * powf(MY2E_GH31 * MY2E_iGH34 * de * qh * MY2E_icmh,
+                            (1.0f + MY2E_alpha_h) / (4.0f + MY2E_alpha_h));
+        }
+    }
+    return number / de;
+}
+
+static __device__ __forceinline__
+float edge_plain_or_moment_field(
+    int field, int target_mp, float rho, float morr_rhog, float wdm6_ccn,
+    float qv, float qc, float qr, float qi, float qs, float qg, float qh)
+{
+    // Stable host field codes (decoded in full beside _EDGE_FIELD_CODES in
+    // gpuwm/core/microphysics_transition.py -- the two must agree):
     // qv/qc/qr/qi/qs/qg=0..5, nr/ni/ns/ng=6..9, qh=10,
     // qndrop/qnr/qni/qns/qng/qnh/qnn/qvolg/qvolh=11..19,
-    // qir/qib=20/21 (mp_physics=50).
+    // qir/qib=20/21 (mp_physics=50), nc=22, nh=23 (mp_physics=9),
+    // nn=24 (mp_physics=16), nwfa=25, nifa=26 (mp_physics=28).
     if (field == 0) return qv;
     if (field == 1) return qc;
     if (field == 2) return qr;
@@ -433,6 +550,32 @@ float edge_plain_or_moment_field(
         if (field == 8) return morrison_edge_number(qs, 2, morr_rhog);
         return morrison_edge_number(qg, 3, morr_rhog);
     }
+    if (target_mp == 16) {
+        // WDM6 entry: the reservoir takes the CHILD domain's ccn_conc --
+        // the value WRF's flow_dep_bdy_qnn pushes through an inflow face
+        // and the value ingest/microphysics_cold_start.py writes for a
+        // fresh WDM6 domain -- and the two warm-rain numbers enter at
+        // zero, which is where WRF's own allocator leaves them.  No mass
+        // is consulted: a number diagnosed from mass here would be an
+        // ArWen invention, while these three values are ported.
+        if (field == 24) return wdm6_ccn;
+        return 0.0f;                       // nc (22) and nr (6)
+    }
+    if (target_mp == 28) {
+        // Thompson aerosol-aware entry.  nr/ni run the SAME two closures
+        // the ratified mp=8 edge runs, on the same codes.  The three
+        // species classic Thompson does not carry take WRF's own
+        // non-aerosol-aware fallbacks, module_mp_thompson.F:1248-1255 --
+        // the ELSE branch mp_gt_driver takes when is_aerosol_aware is
+        // FALSE.  Each constant is per m3 and the state is per kg, so
+        // each divides by rho exactly as WRF writes it.
+        if (field == 6) return thompson_edge_rain_number(qr);
+        if (field == 7) return thompson_edge_ice_number(qi, rho);
+        if (field == 22) return __fdiv_rn(100.0e6f, rho);   // Nt_c, :88
+        if (field == 25) return __fdiv_rn(11.1e6f, rho);    // :1805
+        if (field == 26) return __fdiv_rn(5.0e3f, rho);     // :1806
+        return 0.0f;
+    }
     return 0.0f;
 }
 
@@ -448,6 +591,23 @@ void microphysics_edge_field(
     const float* __restrict__ source_qh,
     const float* __restrict__ source_qir,
     const float* __restrict__ source_qib,
+    // Milbrandt-Yau's entry closure only: the base and perturbation
+    // potential temperature it forms absolute temperature from, the
+    // pressure that forms both the Exner factor and the scheme's own
+    // density, and the scheme's constant vector.  Every other target reads
+    // none of the four and the host passes a placeholder plane, exactly as
+    // it does for source_qir/source_qib outside a P3 edge.
+    //
+    // The temperature is formed HERE, not on the host, because the host has
+    // no array to form it into on every route this kernel is launched from:
+    // a tile-streamed nest hands the launcher the bounded donor namespace
+    // transition_parent_window builds, which owns no scratch arena and whose
+    // planes are window-shaped copies.  Reading thb/thp/p through the same
+    // index the masses use is the one form that works from both.
+    const float* __restrict__ target_thb,
+    const float* __restrict__ target_thp,
+    const float* __restrict__ target_pres,
+    const float* __restrict__ my2_ck,
     const float* __restrict__ mub2d,
     const float* __restrict__ mup,
     const float* __restrict__ c1h,
@@ -456,6 +616,15 @@ void microphysics_edge_field(
     int qv_source, int qc_source, int qr_source, int qi_source,
     int qs_source, int qg_source, int qh_source,
     int field, int source_mp, int target_mp, float morr_rhog,
+    // MY2 only: the reference pressure and R/cp the Exner factor above is
+    // built from, passed rather than spelled here so the edge and
+    // gpuwm.core.constants can never disagree by a rounding, and whether
+    // target_thb is the (nz,) base profile or a full mass-shaped field.
+    float my2_p0, float my2_rcp, int thb_columnar,
+    // WDM6 entry only: the CHILD domain's ccn_conc, so the reservoir the
+    // edge seeds is the domain's own value and not a constant restated
+    // here.  Every other target ignores it.
+    float wdm6_ccn,
     int coupled, int nz, int ny, int nx)
 {
     const int idx = blockDim.x * blockIdx.x + threadIdx.x;
@@ -526,9 +695,19 @@ void microphysics_edge_field(
     } else if (target_mp == 50) {
         value = p3_edge_field(
             field, alt[idx], qv, qc, qr, qi, qs, qg, qh);
+    } else if (target_mp == 9) {
+        // T = (thb + thp) * (p/p0)^(R/cp), the state's own Exner form.
+        const float pr = target_pres[idx];
+        const float thb = target_thb[thb_columnar != 0 ? k : idx];
+        const float t = __fmul_rn(
+            __fadd_rn(thb, target_thp[idx]),
+            powf(__fdiv_rn(pr, my2_p0), my2_rcp));
+        value = my2_edge_field(
+            field, t, pr, my2_ck, qv, qc, qr, qi, qs, qg, qh);
     } else {
         value = edge_plain_or_moment_field(
-            field, target_mp, rho, morr_rhog, qv, qc, qr, qi, qs, qg, qh);
+            field, target_mp, rho, morr_rhog, wdm6_ccn,
+            qv, qc, qr, qi, qs, qg, qh);
     }
     if (coupled != 0) {
         const size_t q = (size_t)j * nx + i;

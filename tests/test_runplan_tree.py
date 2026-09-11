@@ -221,24 +221,72 @@ def test_resolve_and_estimate_work_on_a_tree_plan(tmp_path, capsys):
 
 
 def test_the_tree_is_priced_as_a_tree_not_as_d01(tmp_path, capsys):
-    """A d01-only answer would not move with the nest count."""
+    """The tree costs more than the SAME d01 alone, by the nest.
+
+    The comparison is against an explicit single-domain plan whose root
+    is the same domain, cell for cell -- so a d01-only answer for the
+    tree would not merely be low, it would be IDENTICAL, and every
+    inequality below is the nest being priced.
+
+    It reads that way because it stopped being able to read the earlier
+    way.  The original cell compared the two plans' peak-to-allocation
+    RATIOS at ``--vram-gib 24``, which worked only while both fits ran up
+    against the same budget: two budget-saturated layouts have the same
+    peak, so the one carrying a nest necessarily allocates less
+    underneath it and its ratio is the larger.  The point-fit extent cap
+    (``gpuwm.domain_wizard.POINT_FIT_MAX_EXTENT_KM``) ended that.  A
+    point carries no extent, so the fit chooses one, and since 2.7.3 it
+    stops at 6,000 km per axis rather than at the card: on 24 GiB the
+    single-domain fit now stands at the cap with 11.70 GiB of a 24 GiB
+    card priced, while the tree still fills the budget, and the ratio
+    inverts with nothing wrong.  The ratio was never the property anyway
+    -- it is arithmetic that happens to follow from one -- and it is not
+    stable in the direction of a smaller card either (measured
+    2026-09-10 on this fixture: it holds at ``--vram-gib 12`` and
+    inverts again at 8).
+
+    A budget above the cap is what makes both fits land on the same
+    root, and it is the same 500 x 400 at 12 km from 48 GiB up
+    (measured 2026-09-10 at 48, 64, 96 and 128 GiB: every figure below
+    is identical across all four).  The cell asserts that equality and
+    the cap behind it rather than assuming them, so a moved cap fails
+    here saying so instead of quietly comparing two different domains
+    again.
+    """
 
     from gpuwm.cli import build_parser
+    from gpuwm.domain_wizard import POINT_FIT_MAX_EXTENT_KM
 
     def priced(ladder):
         directory = tmp_path / ladder
         directory.mkdir()
-        path = _tree_plan(directory, directory / "run", ladder=ladder)
+        path = _tree_plan(directory, directory / "run", ladder=ladder,
+                          vram_gib=64)
         assert run_plan_main(build_parser().parse_args(
             ["run-plan", "--estimate", str(path)])) == 0
-        return json.loads(capsys.readouterr().out)["vram"]
+        vram = json.loads(capsys.readouterr().out)["vram"]
+        assert run_plan_main(build_parser().parse_args(
+            ["run-plan", "--resolve", str(path)])) == 0
+        root = json.loads(capsys.readouterr().out)[
+            "configuration"]["experiment"]["domains"][0]["run"]
+        return vram, (root["nx"], root["ny"], root["dx"])
 
-    one, two = priced("12"), priced("12-3")
+    (one, one_root), (two, two_root) = priced("12"), priced("12-3")
     assert one["domains"] == 1 and two["domains"] == 2
-    # The envelope carries a per-nest term (machine_peak_envelope_bytes:
-    # nests = domains - 1), so the tree costs more per allocated byte.
-    assert (two["peak_envelope_bytes"] / two["estimate_bytes"]) > \
-        (one["peak_envelope_bytes"] / one["estimate_bytes"])
+    # Same d01 in both plans, and the extent cap is why: above it the
+    # budget is no longer the lever, so the nest cannot shrink the root
+    # it hangs under.  Without this the rest compares two domains.
+    assert one_root == two_root
+    assert one_root[0] * one_root[2] / 1000.0 == POINT_FIT_MAX_EXTENT_KM
+    # A d01-only answer would therefore be the SAME NUMBER, twice.
+    assert two["estimate_bytes"] > one["estimate_bytes"]
+    assert two["peak_envelope_bytes"] > one["peak_envelope_bytes"]
+    # And the envelope's own per-nest term is in the answer, not just a
+    # second domain's allocation: machine_peak_envelope_bytes carries a
+    # charge for nests = domains - 1, so the headroom the envelope holds
+    # over the allocation grows with the nest, which no per-domain sum
+    # would produce on its own.
+    assert (two["peak_envelope_bytes"] - two["estimate_bytes"]) >         (one["peak_envelope_bytes"] - one["estimate_bytes"])
 
 
 # ---------------------------------------------------------------------------

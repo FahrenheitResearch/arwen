@@ -793,7 +793,8 @@ def _tendency_flag_identity_cuda(
     # W4 mixscalars GPU admission (this wave; CPU twin admitted the same
     # combo): with bl_mynn_mixscalars=1 the five qn-family flags are
     # REQUIRED true — the anchored fixture family pins exactly that combo,
-    # and a partial-flag run would be an unmeasured combination.
+    # and a false flag names a column the solve would read and the
+    # state does not allocate.
     qn_flags = (
         ("FLAG_QNC", flag_qnc), ("FLAG_QNI", flag_qni),
         ("FLAG_QNWFA", flag_qnwfa), ("FLAG_QNIFA", flag_qnifa),
@@ -803,9 +804,10 @@ def _tendency_flag_identity_cuda(
         for name, flag in qn_flags:
             if flag is not True:
                 raise ValueError(
-                    f"MYNN mixscalars lane requires {name} true (the "
-                    "anchored stock fixture combo; partial qn flag sets "
-                    "are unmeasured)"
+                    f"MYNN bl_mynn_mixscalars=1 mixes all five qn "
+                    f"columns and {name} says its column is absent. "
+                    "Select mp_physics=28, which carries the family, or "
+                    "bl_mynn_mixscalars=0."
                 )
     else:
         for name, flag in qn_flags:
@@ -946,12 +948,16 @@ def mynn_tendencies_nomf_cuda(
         raise ValueError("MYNN tendency lane requires bl_mynn_edmf=0")
     if bl_mynn_edmf_mom != 0 or type(bl_mynn_edmf_mom) is not int:
         raise ValueError("MYNN tendency lane requires bl_mynn_edmf_mom=0")
-    # W4 mixscalars GPU wave: this refusal deliberately STANDS — the CPU
-    # twin mynn_tendencies_nomf keeps bl_mynn_mixscalars=0 too (the
-    # fixture family pins mixscalars=1 only with the mass flux live;
-    # mixscalars under a zeroed mass flux is an unmeasured combination).
+    # This refusal STANDS, and not for a missing measurement: the
+    # no-mass-flux lane never binds the five qn columns or their s_awqn*
+    # interfaces, so there is nothing for the mixscalars arms to solve
+    # here.  The CPU twin mynn_tendencies_nomf says the same.
     if bl_mynn_mixscalars != 0 or type(bl_mynn_mixscalars) is not int:
-        raise ValueError("MYNN tendency lane requires bl_mynn_mixscalars=0")
+        raise ValueError(
+            "MYNN no-mass-flux tendency lane carries no qn columns, so "
+            "bl_mynn_mixscalars=1 has nothing to mix here. Run the "
+            "mass-flux lane (bl_mynn_edmf=1) or set "
+            "bl_mynn_mixscalars=0.")
     _tendency_flag_identity_cuda(
         flag_qc, flag_qi, flag_qs, flag_qnc, flag_qni,
         flag_qnwfa, flag_qnifa, flag_qnbca, flag_ozone,
@@ -1018,7 +1024,7 @@ def mynn_tendencies_default_cuda(
     # reference by tools/mynn_pbl_wrf461_oracle/probe_mynn_scalar_mix_gpu):
     # bl_mynn_mixscalars=1 routes the five stock qn solves through the
     # kernels/mynn_scalar_mix.cu unit after the main launch.  Any other
-    # nonzero value stays refused — unmeasured combination.
+    # other value has no meaning: WRF defines the key at 0 or 1.
     if bl_mynn_mixscalars not in (0, 1) or \
             type(bl_mynn_mixscalars) is not int:
         raise ValueError(

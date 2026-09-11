@@ -284,7 +284,7 @@ def test_exact_four_domain_thompson_nssl_plan_is_advertised_not_whitelisted(
     assert two_way_plan["launch_allowed"] is True
 
 
-def test_mixed_plan_still_rejects_a_missing_real_translation_policy(
+def test_mixed_plan_resolves_an_unnamed_policy_to_the_edges_closure(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("GPUWM_EXPERIMENTAL_THOMPSON_MP8", "1")
@@ -298,8 +298,17 @@ def test_mixed_plan_still_rejects_a_missing_real_translation_policy(
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="requires explicit"):
-        load_experiment(path)
+    from gpuwm.core.microphysics_transition import (
+        resolve_microphysics_transition)
+
+    exp = load_experiment(path)
+    # d01 and d02 run Thompson; d03 is the NSSL-2 child, so the mixed edge
+    # this fixture carries is d02 -> d03.
+    assert (exp.domain(2).run.mp_physics, exp.domain(3).run.mp_physics) == (8, 18)
+    contract = resolve_microphysics_transition(
+        exp.domain(2).run, exp.domain(3).run)
+    assert contract.mixed
+    assert contract.policy_id == MP8_TO_MP18_POLICY
 
 
 def test_output_claim_is_create_only_and_cannot_overlap_inputs(tmp_path):

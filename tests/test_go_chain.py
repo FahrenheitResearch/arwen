@@ -83,6 +83,24 @@ def _startup_notices(command: str) -> tuple:
             "warning: SIGINT is set to ignore in this process, so Ctrl-C "
             f"cannot stop `gpuwm {command}`; send SIGTERM to stop it")
         notices.append(lambda line: line == interrupt_notice)
+
+    # A THIRD, conditional on the machine rather than on the door: two of
+    # classic Thompson's four tables are excluded from the wheel, so a
+    # FRESH INSTALL has not staged them and the preflight says so once,
+    # as a warning, for any mp=8 configuration.  That notice is the
+    # product working -- the fix is one command and nothing has been
+    # downloaded yet -- but the tests below read stderr as an exact set,
+    # so on a machine in that state they were failing for a correct
+    # sentence.  Taken FROM the producer rather than transcribed, so it
+    # matches only while the tables really are absent and any other line
+    # still fails the test that calls this.
+    try:
+        from gpuwm.table_assets import require_thompson_tables
+
+        require_thompson_tables()
+    except Exception as unstaged:  # noqa: BLE001 - the state, not a failure
+        table_notice = "warning: " + " ".join(str(unstaged).split())
+        notices.append(lambda line: line == table_notice)
     return tuple(notices)
 
 

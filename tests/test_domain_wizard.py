@@ -14,6 +14,7 @@ wrap-aware (W > E) fetch boxes instead of refusals.
 from __future__ import annotations
 
 from fractions import Fraction
+import json
 import os
 import re
 
@@ -480,11 +481,26 @@ def test_margined_span_over_180_is_never_emitted_as_a_flipped_box():
 
 def test_a_card_filling_gfs_layout_uses_existing_full_longitude_coverage(
         tmp_path, capsys):
-    """A GFS forcing band may widen without resizing the forecast to fit it."""
+    """A GFS forcing band may widen without resizing the forecast to fit it.
+
+    Driven from a DRAWN area since 2.7.3.  The layout this needs is one
+    whose forcing box, once the GFS margin is added, has outgrown a
+    servable crop -- and a `--point` can no longer produce one, because
+    a centre carries no extent and the fit now bounds the extent it
+    chooses (`POINT_FIT_MAX_EXTENT_KM`).  A drawn area carries its own
+    extent and is still sized to the drawing, so the property lives
+    where the layout still comes from.
+    """
+    polygon = tmp_path / "wide.geojson"
+    polygon.write_text(json.dumps({
+        "type": "Polygon",
+        "coordinates": [[[-70.0, 20.0], [70.0, 20.0], [70.0, 48.0],
+                         [-70.0, 48.0], [-70.0, 20.0]]]}), encoding="utf-8")
     out = tmp_path / "area.toml"
     rc = cli_main([
-        "domain", "--point=34,0", "--vram-gib", "64", "--ladder", "12",
-        "--source", "gfs", "--cycle", "2026-07-28T06", "--out", str(out)])
+        "domain", f"--polygon={polygon}", "--vram-gib", "64",
+        "--ladder", "12", "--source", "gfs", "--cycle", "2026-07-28T06",
+        "--out", str(out)])
     assert rc == 0, capsys.readouterr().out
     area = tomllib.loads(out.read_text(encoding="utf-8"))["fetch"]["area"]
     south, west, north, east = (float(v) for v in area.split(","))
@@ -2765,9 +2781,18 @@ def test_the_advisory_reaches_the_terminal_on_a_large_card(tmp_path,
     """Emitted for real, at the size that provoked it.
 
     The sentence no longer opens "sized to fill your card": on this very
-    invocation the fit stops on the servable-crop bound rather than on
-    memory, and the wizard says so on stderr, so an advisory naming the
-    card as the cause would contradict the line above it.
+    invocation the fit stops on a bound that is not memory, and the
+    wizard says so, so an advisory naming the card as the cause would
+    contradict the line above it.
+
+    Since 2.7.3 the bound that stops this particular fit is the extent
+    a point request is sized to, and the assertions below are the whole
+    agreement: the plan summary's plain fact and the advisory name one
+    bound and one flag between them, on stdout, with nothing added to
+    stderr -- the cap is the ordinary sizing of an ordinary request and
+    a warning would say otherwise.  The card-shaped remedy is tested
+    where it still applies, in
+    ``test_domain_wizard_point_extent_cap.py``.
     """
 
     out = tmp_path / "wide.toml"
@@ -2780,7 +2805,22 @@ def test_the_advisory_reaches_the_terminal_on_a_large_card(tmp_path,
     printed = captured.out
     assert "advisory: this domain is much wider than the documented" \
         in printed
-    assert "--vram-gib N" in printed
+    advisory = [line for line in printed.splitlines()
+                if line.startswith("advisory: this domain is much wider")]
+    assert len(advisory) == 1
+    assert "stopped on the REQUESTED EXTENT, not on the card" in advisory[0]
+    assert "--polygon" in advisory[0]
+    # The flag the fit made inert is not the one the line under it names.
+    assert "--vram-gib" not in advisory[0]
+    # The bound is stated once, as fact, on stdout -- and nowhere on
+    # stderr, which this door's default emission is held to keep empty.
+    fact = [line for line in printed.splitlines()
+            if line.startswith("domain: point request:")]
+    assert len(fact) == 1
+    assert "extent capped at 6000 km" in fact[0]
+    assert "memory allows more" in fact[0] and "--polygon" in fact[0]
+    assert "not the card" not in captured.err
+    assert "point request:" not in captured.err
     assert "gpuwm domain: FAIL" not in printed
     assert "sized to fill your card" not in printed + captured.err
 

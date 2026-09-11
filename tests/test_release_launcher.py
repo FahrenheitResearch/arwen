@@ -17,6 +17,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
+import sys
 
 import pytest
 
@@ -92,3 +94,75 @@ def test_the_launcher_parses_the_packaging_flags(launcher):
         assert f"'{flag}'" in source, flag
     assert "'cds_credentials_configured'" in source
     assert "'cache_directory'" in source
+
+
+def test_the_restore_bytes_are_the_controllers_own_sequence(launcher):
+    """SGR/urxvt/any-event/button/normal mouse off, paste off, main screen, cursor."""
+
+    assert launcher.TERMINAL_RESTORE == (
+        "\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l"
+        "\x1b[?2004l\x1b[?1049l\x1b[?25h")
+    # Once the controller lane carrying TERMINAL_RESTORE is in, the two
+    # sequences have to stay the same one: a launcher that disabled a
+    # different set would leave exactly the modes it missed turned on.
+    controller = REPO_ROOT / "tools" / "arwen-tui" / "src" / "main.rs"
+    source = controller.read_text(encoding="utf-8") if controller.is_file() else ""
+    match = re.search(r"const TERMINAL_RESTORE: &\[u8\] =\s*b\"([^\"]*)\";", source)
+    if match is None:
+        pytest.skip("this tree's controller does not define TERMINAL_RESTORE yet")
+    assert match.group(1).replace("\\x1b", "\x1b") == launcher.TERMINAL_RESTORE
+
+
+def test_a_redirected_launcher_leaves_the_stream_alone(launcher, tmp_path, monkeypatch):
+    """THE BREAKAGE THIS PREVENTS: escape bytes in a log file or a pipeline."""
+
+    sink = tmp_path / "captured.txt"
+    with sink.open("w", encoding="utf-8") as stream:
+        monkeypatch.setattr(sys, "stdout", stream)
+        assert launcher.terminal_mode() is None
+        launcher.restore_terminal(None)
+    assert sink.read_text(encoding="utf-8") == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the restore is POSIX-only by design")
+def test_a_killed_controller_hands_back_a_usable_terminal(launcher, monkeypatch):
+    import termios
+    import tty
+
+    controller, terminal = os.openpty()
+    try:
+        with os.fdopen(terminal, "w", closefd=False) as stream:
+            monkeypatch.setattr(sys, "stdout", stream)
+            before = termios.tcgetattr(terminal)
+            saved = launcher.terminal_mode()
+            assert saved is not None
+            # What the controller does, and what a SIGKILL leaves behind.
+            tty.setraw(terminal)
+            stream.write("\x1b[?1049h\x1b[?1003h\x1b[?1006h\x1b[?25l")
+            stream.flush()
+            os.read(controller, 65536)
+            launcher.restore_terminal(saved)
+        assert os.read(controller, 65536).decode() == launcher.TERMINAL_RESTORE
+        assert termios.tcgetattr(terminal) == before
+    finally:
+        os.close(controller)
+        os.close(terminal)
+
+
+def test_the_signal_line_names_the_signal_and_the_controller_log(launcher, tmp_path):
+    state = tmp_path / "state"
+    runs = state / "runs"
+    command = ["/opt/arwen/arwen-tui", "--python", "/venv/bin/python", "--output", str(runs)]
+    line = launcher.signal_report(-9, command, state)
+    assert "\n" not in line
+    assert "arwen-tui" in line
+    # The line is only ever printed on the platform that has the signal.
+    if os.name != "nt":
+        assert "SIGKILL" in line
+    assert str(runs / ".arwen-tui" / "controller.log") in line
+    # A forwarded --output moves the log with it; an unknown signal still reports.
+    chosen = tmp_path / "elsewhere"
+    command[-1] = str(chosen)
+    assert str(chosen / ".arwen-tui" / "controller.log") in launcher.signal_report(-9, command, state)
+    assert "signal 99" in launcher.signal_report(-99, command, state)
+    assert launcher.controller_log(["/opt/arwen/arwen-tui"], state) == runs / ".arwen-tui" / "controller.log"

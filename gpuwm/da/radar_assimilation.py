@@ -13,7 +13,7 @@ while a real ``gpuwmrst`` checkpoint carries ARW-staggered winds -- and
 the one real-data LETKF cycle run to date had to be assembled by hand on
 the node because of exactly that gap.  This module is the missing brain.
 
-Three decisions here are load-bearing:
+Three decisions here shape the module:
 
 **The filter analyses mass-point, grid-relative winds; the checkpoint
 receives face-point increments.**  The LETKF requires every analysis
@@ -78,7 +78,8 @@ from gpuwm.da.obs_goes import goes_grid_to_gridded_obs
 from gpuwm.da.obs_radar import (Z_SOURCES, beam_unit_vectors,
                                 letkf_grid_geometry, radar_grid_to_gridded_obs,
                                 read_document, simulated_radial_velocity)
-from gpuwm.da.obsop import (clear_air_floor_dbz, destagger_u, destagger_v,
+from gpuwm.da.obsop import (CLEAR_AIR_FLOOR_DBZ, clear_air_floor_dbz,
+                            destagger_u, destagger_v,
                             destagger_w, earth_relative_winds,
                             precipitating_activity_mask,
                             reflectivity_fall_speed)
@@ -231,8 +232,10 @@ class RadarAssimilationConfig:
     #: The dBZ value a clear-air observation carries.  None derives it
     #: from ``mp_physics`` via
     #: :func:`gpuwm.da.obsop.clear_air_floor_dbz`, which is the sanctioned
-    #: route; an explicit number is honoured and recorded, and is refused
-    #: unless it is finite.
+    #: route.  An explicit number is honoured and recorded, and is refused
+    #: unless it is finite AND equal to the active scheme's floor when
+    #: that floor has been read: the two disagreeing is the silent
+    #: innovation this pair exists to prevent, not a setting.
     clear_air_value_dbz: float | None = None
     #: Multiplies the file's velocity error standard deviations.  The
     #: defensible setting is diagnosed from the innovation statistics this
@@ -282,7 +285,12 @@ class RadarAssimilationConfig:
     moment_policy: str = DEFAULT_MOMENT_POLICY
     #: The scheme whose moment structure the field set is checked against.
     #: ``None`` detects the pairs from the checkpoint's own spellings,
-    #: which is weaker but never wrong about a state it can see.
+    #: which is weaker but never wrong about a state it can see, and stays
+    #: accepted for every arm: a cycle that STATES its scheme additionally
+    #: has that scheme's radar_da route checked here (an unrouted or
+    #: native-Z scheme is refused at configuration instead of per member
+    #: inside the first analysis), and a cycle that does not is answered by
+    #: the caller's own reflectivity provider, as it always was.
     mp_physics: int | None = None
     #: Where the batched LETKF runs.  "host" solves on numpy; "cuda"
     #: moves the prior and the observation batches to CuPy for the batched
@@ -385,6 +393,60 @@ class RadarAssimilationConfig:
             raise RadarAssimilationError(
                 f"positivity_policy must be one of {POLICIES} or None, got "
                 f"{self.positivity_policy!r}")
+        # PLAN REVIEW FOR THE DA DOOR, for ALL THREE arms that evaluate a
+        # reflectivity operator.  A RunConfig carries no DA fields, so
+        # validate_run_config cannot ask whether the active scheme has an
+        # H(x); this configuration is where the cycle is decided, so the
+        # registry's radar_da row is read here rather than by
+        # simulated_reflectivity inside the first analysis, per member
+        # (audit R-051).
+        #
+        # WHERE THAT IS EARLY ENOUGH IS THE CALLER'S HALF, and this class
+        # cannot buy it alone: a driver that builds this configuration at
+        # its first analysis seam has already spent an ensemble
+        # integration whatever this __post_init__ does.  So the cycling
+        # driver plans the configuration where the cycle is planned --
+        # tools/da_cycle_prepared.py's plan_radar_assimilation, called
+        # above the leg loop, before a member takes a step -- and builds
+        # the leg's real one through the same function.  A driver that
+        # skips that call gets its refusal at its first analysis, which is
+        # the defect R-051 named, so the call is pinned by
+        # tests/test_da_cycle_prepared.py rather than by this sentence.
+        #
+        # fall_speed="reflectivity" is the third arm and was not gated at
+        # all: it calls the same operator (gpuwm.da.obsop
+        # .reflectivity_fall_speed reads the simulated dBZ) whether or not
+        # reflectivity observations are assimilated.
+        #
+        # ASKED ONLY OF A CYCLE THAT STATES ITS SCHEME.  A first pass at
+        # this gate also refused mp_physics=None, and that was a refusal of
+        # configurations that run: nothing in this module derives the
+        # operator from this field.  The provider is the CALLER's
+        # (assimilate_radar_grid takes reflectivity_provider, built by
+        # scheme_reflectivity_provider off the RUN config, which dispatches
+        # on run_cfg.mp_physics), and cfg.mp_physics is read only by the
+        # moment policy -- which documents None as "detect the pairs from
+        # the checkpoint's own spellings" -- by the clear-air floor, which
+        # is separately guarded below, and by a provenance label.  Refusing
+        # None also contradicted the unimplemented-selector sentence below,
+        # which offers None as its way out; the two were reachable from one
+        # configuration and instructed opposite actions.  What is left is
+        # the half that is sound: a STATED scheme with no route is refused
+        # at configuration, which the cycling driver reaches before leg 0.
+        #
+        # ASKED BEFORE THE CLEAR-AIR FLOOR, and the order matters.
+        # The floor's own refusal offers "state clear_air_value_dbz", and
+        # for a scheme with no H(x) at all that sentence reaches a sibling
+        # refusal rather than a running configuration.  With the route
+        # asked first, a scheme the operator cannot simulate is refused by
+        # the arm-composed way out, and the floor refusal is reached only
+        # by a scheme that HAS an operator -- where stating the value is a
+        # real way out.
+        needs_reflectivity_operator = bool(
+            self.reflectivity or self.clear_air
+            or self.fall_speed == "reflectivity")
+        if needs_reflectivity_operator and self.mp_physics is not None:
+            self._require_reflectivity_route(int(self.mp_physics))
         if self.clear_air:
             if self.clear_air_value_dbz is not None:
                 floor = float(self.clear_air_value_dbz)
@@ -393,21 +455,63 @@ class RadarAssimilationConfig:
                         f"clear_air_value_dbz is "
                         f"{self.clear_air_value_dbz!r}; it must be a finite "
                         "dBZ value or None to derive it from mp_physics")
+                # STATED AND DERIVED MUST AGREE.  Honouring the explicit
+                # number while the scheme's own H(x) floors somewhere else
+                # is the defect the table was built to prevent, arrived at
+                # from the other side: the operator writes the scheme's
+                # floor in every clear cell, the observation carries this
+                # one, and the difference is an innovation in air both
+                # sides agree is empty.  mp=9 against -35.0 is 64 dB of it.
+                # Only a scheme whose floor has been READ is compared --
+                # one with no single floor (P3) has nothing to compare
+                # against and keeps the documented "explicit value is
+                # honoured" route.
+                if self.mp_physics is not None:
+                    scheme = int(self.mp_physics)
+                    recorded = CLEAR_AIR_FLOOR_DBZ.get(scheme)
+                    if recorded is not None and floor != recorded:
+                        raise RadarAssimilationError(
+                            f"clear_air_value_dbz={floor} dBZ disagrees "
+                            f"with mp_physics={scheme}, whose H(x) floors "
+                            f"at {recorded} dBZ "
+                            "(gpuwm.da.obsop.CLEAR_AIR_FLOOR_DBZ). Every "
+                            "clear-air observation would then be "
+                            f"differenced against a background "
+                            f"{abs(floor - recorded):g} dB away from it and "
+                            "the analysis would build or erase condensate "
+                            "in air both sides call empty. Drop "
+                            "clear_air_value_dbz to derive the floor from "
+                            f"the scheme, or state {recorded}; if the "
+                            "file's zeroes genuinely mean something else, "
+                            "they are not this operator's clear air and "
+                            "belong out of the batch (clear_air=False)")
             elif self.mp_physics is None:
                 raise RadarAssimilationError(
                     "clear_air is enabled with neither clear_air_value_dbz "
                     "nor mp_physics. A clear-air observation is differenced "
                     "against H(x), so it must carry the ACTIVE scheme's "
-                    "clear-air floor -- -35 dBZ for the refl10cm family, "
-                    "0 dBZ for NSSL mp18. With neither the scheme nor the "
+                    "clear-air floor -- -35 dBZ for the refl10cm family "
+                    "(mp 1/6/8/10/16/28), 0 dBZ for NSSL mp18, -99 dBZ for "
+                    "Milbrandt-Yau mp9. With neither the scheme nor the "
                     "value stated there is nothing to derive it from, and "
                     "the wrong floor is silent: two agreeing clear skies "
-                    "produce a 35 dB innovation and the analysis removes "
-                    "condensate to chase it")
+                    "produce a 35, 64 or 99 dB innovation -- whichever "
+                    "pair of those three floors was crossed -- and the "
+                    "analysis removes condensate to chase it")
             else:
                 # Raises for a scheme whose floor nobody has read, here at
-                # config time rather than mid-cycle.
-                clear_air_floor_dbz(int(self.mp_physics))
+                # config time rather than mid-cycle.  Re-raised as this
+                # module's own error: everything else __post_init__ refuses
+                # is a RadarAssimilationError, and a caller that catches
+                # the configuration's error type must not miss this one.
+                # The message carries its own two ways out (state
+                # clear_air_value_dbz, or clear_air=False) and both are
+                # reachable from here, because the route question above
+                # has already refused a scheme with no operator at all.
+                try:
+                    clear_air_floor_dbz(int(self.mp_physics))
+                except ValueError as exc:
+                    raise RadarAssimilationError(str(exc)) from exc
         if (self.clear_air or self.reflectivity) and not any(
                 name in NON_NEGATIVE_FIELDS or name == "thp"
                 for name in self.analysis_fields):
@@ -442,6 +546,73 @@ class RadarAssimilationConfig:
         if self.radars is not None:
             object.__setattr__(self, "radars",
                                tuple(str(r) for r in self.radars))
+
+    def _reflectivity_arms_way_out(self) -> str:
+        """How THIS cycle stops evaluating a reflectivity operator.
+
+        Composed from the arms actually enabled.  A static sentence named
+        the two arms the gate was written for and told a cycle whose only
+        reflectivity-evaluating arm is ``fall_speed="reflectivity"`` to set
+        two flags it had already set -- following it verbatim left the run
+        refused, and the reachable way out (``fall_speed="none"``) was
+        never named.  A refusal whose way out does not reach a running
+        configuration is not a refusal.
+        """
+        arms = []
+        if self.reflectivity:
+            arms.append("reflectivity=False")
+        if self.clear_air:
+            arms.append("clear_air=False")
+        if self.fall_speed == "reflectivity":
+            arms.append("fall_speed='none' (radial velocity then projects "
+                        "plain w instead of w - vt)")
+        return ("Turn off the arm(s) this scheme has no operator for -- "
+                + ", ".join(arms) + " -- which leaves the rest of the "
+                "cycle, velocity included, exactly as configured.")
+
+    def _require_reflectivity_route(self, mp_physics: int) -> None:
+        """Refuse, at configuration, a scheme the operator cannot simulate.
+
+        Reads ``consumers.radar_da.reflectivity_route`` off the physics
+        registry for the active scheme.  ``operator`` and
+        ``scheme-diagnostic`` have an H(x); ``native-not-separable`` and
+        ``unrouted`` do not, and each is refused with the recorded reason
+        and the way out.  A selector no implemented option carries is
+        refused too: the operator has no H(x) for a scheme the model
+        does not run.
+        """
+
+        from gpuwm.da.obsop import NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP
+        from gpuwm.physics_registry import (
+            consumer_row_for_selector, consumer_rows_by_selector)
+
+        rows = consumer_rows_by_selector("microphysics", "radar_da")
+        routed = sorted(
+            mp for mp, row in rows.items()
+            if isinstance(row, dict)
+            and row.get("reflectivity_route") in ("operator", "scheme-diagnostic"))
+        way_out = (self._reflectivity_arms_way_out()
+                   + f" Or run a scheme with a routed H(x): {routed}.")
+        row = consumer_row_for_selector("microphysics", "radar_da", mp_physics)
+        if not isinstance(row, dict):
+            raise RadarAssimilationError(
+                f"mp_physics={mp_physics} is not an implemented microphysics "
+                "option in gpuwm/physics_registry_v2.json (implemented: "
+                f"{sorted(rows)}), so the radar operator has no H(x) for it; "
+                "state the ACTIVE scheme's mp_physics, or leave it None to "
+                "detect the moment structure from the checkpoint. " + way_out)
+        route = row.get("reflectivity_route")
+        if route == "native-not-separable":
+            raise RadarAssimilationError(
+                f"{NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP[mp_physics]} " + way_out)
+        if route == "unrouted":
+            raise RadarAssimilationError(
+                f"mp_physics={mp_physics} produces its reflectivity natively "
+                "and gpuwm/da/obsop.py names no H(x) route for it "
+                f"(registry radar_da.reflectivity_route={route!r}: "
+                f"{row.get('reflectivity_route_reason')}), so no "
+                "reflectivity or clear-air observation can be simulated for "
+                "any member. " + way_out)
 
 
 # ---------------------------------------------------------------------------

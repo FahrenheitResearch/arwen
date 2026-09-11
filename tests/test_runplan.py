@@ -3175,3 +3175,76 @@ def test_an_intent_resolves_latest_for_a_reanalysis_through_the_real_door(
     assert "declared publication delay" in resolved[0]["note"]
     # And the plan the wizard wrote starts AT that cycle.
     assert cycle.strftime("%Y-%m-%dT%H") in document["generated_config"]
+
+
+def _mp28_experiment_with_no_dataset_anywhere(tmp_path, monkeypatch) -> Path:
+    """An mp=28 config on a machine with no WIF climatology at all.
+
+    Every rung of the resolver's ladder is pointed at a directory that
+    does not exist, including the working-directory rung, which is WRF's
+    own ``constants_name`` rule.
+    """
+
+    from test_case_data import _EXPERIMENT_TOML
+
+    from gpuwm.ingest import wif_climatology
+
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_PATH_ENV, raising=False)
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_ROOT_ENV, raising=False)
+    monkeypatch.setenv("GPUWM_WIF_DATA_ROOT", str(tmp_path / "no-staged-wif"))
+    monkeypatch.setenv("HOME", str(tmp_path / "no-staged-wif"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "no-staged-wif"))
+
+    case = tmp_path / "case"
+    case.mkdir()
+    monkeypatch.chdir(case)
+    return make_case_toml(
+        case, experiment=_EXPERIMENT_TOML + "moist = true\nmp_physics = 28\n")
+
+
+def test_a_sealed_bundle_is_not_refused_for_a_dataset_it_never_opens(
+        tmp_path, monkeypatch):
+    """THE DEFECT: prepared:existing was asked what only a preparation needs.
+
+    The WIF climatology is read while a forecast is PREPARED.  A sealed
+    bundle is already prepared: ``_existing_prepared_forecast`` hands it
+    to the runner, which verifies the payload and opens no dataset.  Plan
+    review asked the preparation preconditions of every chain anyway, so
+    an mp=28 bundle prepared on a machine that had the 225 MB file and
+    carried to one that does not -- which is the entire point of a sealed
+    bundle -- was refused for an input its run never opens.
+
+    Both arms are driven, because "it was admitted" alone is also what a
+    machine that HAS the dataset would say: the same config with no
+    bundle is still refused in the same environment, which is the
+    positive evidence that the dataset really is absent here.
+    """
+
+    from test_stage_seams import _tree_bundle
+
+    config = _mp28_experiment_with_no_dataset_anywhere(tmp_path, monkeypatch)
+    prepared = _tree_bundle(tmp_path / "prepared", domains=1)
+
+    def _plan(**options):
+        return build_plan({
+            "schema": PLAN_SCHEMA, "name": "sealed bundle, no dataset",
+            "route": "prepared" if options else "experiment",
+            "config": {"path": str(config)},
+            "output_root": str(tmp_path / ("run" + str(len(options)))),
+            "run_options": {"render_products": "none", **options},
+        }, source="test plan", base_dir=config.parent, sha256="a" * 64)
+
+    # 1. THE CHAIN THAT PREPARES is still refused, in one sentence.
+    with pytest.raises(PlanError) as refusal:
+        resolve_plan(_plan(), require_inputs=False)
+    assert "QNWFA_QNIFA_SIGMA_MONTHLY.dat" in str(refusal.value)
+
+    # 2. THE CHAIN THAT CONSUMES A SEALED BUNDLE is admitted.
+    resolution, exp, _data = resolve_plan(
+        _plan(prepared_root=str(prepared)), require_inputs=False)
+    assert exp.root.run.mp_physics == 28
+    assert exp.root.run.specified is True
+    assert not (tmp_path / "run1").exists()
+    assert ("execution", "prepared_root") in {
+        (entry["scope"], entry["key"])
+        for entry in resolution["automatic_resolutions"]}

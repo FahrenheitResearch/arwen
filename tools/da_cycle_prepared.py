@@ -154,6 +154,86 @@ def to_host(value) -> np.ndarray:
 
 
 
+def plan_radar_assimilation(args, mp_physics, *, analysis_fields,
+                            cwp: bool):
+    """The analysis configuration this cycle will run, built once.
+
+    ONE CONSTRUCTION FOR TWO CALLS, and that is the whole point.  The
+    filter's own refusals -- a microphysics scheme the radar operator has
+    no H(x) for, a clear-air arm whose floor nobody has read, a
+    non-negative field analysed with no positivity policy -- are stated in
+    ``gpuwm.da.radar_assimilation.RadarAssimilationConfig.__post_init__``,
+    so they fire wherever this configuration is first BUILT.  Until audit
+    R-051's follow-up that was inside the leg loop, at the first analysis
+    seam, with leg 0's whole ensemble integration already spent; a refusal
+    that arrives there is the defect the item named, one seam later rather
+    than one member later.
+
+    ``main`` therefore calls this above the leg loop with the field set the
+    cycle CAN analyse, and again inside the leg with the set ensemble
+    spread left it.  The leg-time set is the plan-time set narrowed (see
+    ``analysis_field_selection`` in the report), so the probe never refuses
+    a cycle the legs would have run: every refusal it can raise is one the
+    leg would have raised, hours later.
+
+    ``mp_physics`` comes from the prepared authority's RunConfig, which is
+    the scheme the members actually integrate -- never from a flag, which
+    could disagree with the run and would then check the wrong row.
+    """
+
+    from gpuwm.da.letkf import Localization
+    from gpuwm.da.radar_assimilation import RadarAssimilationConfig
+
+    cwp_localization = None
+    if cwp:
+        cwp_localization = Localization(
+            horizontal_m=(args.cwp_horizontal_loc_m
+                          if args.cwp_horizontal_loc_m is not None
+                          else args.horizontal_loc_m),
+            vertical_m=args.cwp_vertical_loc_m)
+    return RadarAssimilationConfig(
+        localization=Localization(
+            horizontal_m=args.horizontal_loc_m,
+            vertical_m=args.vertical_loc_m),
+        rtps_alpha=args.rtps_alpha, relaxation=args.relaxation,
+        analysis_fields=tuple(analysis_fields),
+        velocity=True,
+        reflectivity=bool(args.reflectivity_analysis),
+        fall_speed="none",
+        velocity_thinning_cells=args.thin_cells,
+        velocity_error_inflation=args.err_inflation,
+        reflectivity_thinning_cells=args.z_thin_cells,
+        reflectivity_error_inflation=args.z_err_inflation,
+        clear_air=bool(args.clear_air_analysis),
+        clear_air_thinning_cells=args.z0_thin_cells,
+        clear_air_error_inflation=args.z0_err_inflation,
+        cwp=bool(cwp),
+        cwp_localization=cwp_localization,
+        cwp_thinning_cells=args.cwp_thin_cells,
+        cwp_error_inflation=args.cwp_err_inflation,
+        positivity_policy=args.positivity_policy,
+        mp_physics=int(mp_physics),
+        solve_device=args.solve_device,
+        memory_budget_mib=args.memory_budget_mib)
+
+
+def planned_analysis_fields(args, mp_physics) -> tuple:
+    """The fields the plan-time probe checks, before any spread is known.
+
+    ``--hydrometeors`` analyses the scheme's own moment set (the leg then
+    drops whole species the ensemble is constant in); without it the
+    analysis is the wind pair.  Derived from ``gpuwm.da.moments`` rather
+    than typed, so a scheme whose moment set changes cannot leave the
+    probe checking a stale list.
+    """
+
+    from gpuwm.da import moments
+
+    if not args.hydrometeors:
+        return ("u", "v")
+    return tuple(moments.analysis_fields(int(mp_physics)))
+
+
 def _write_composite_wrfout(npz_path, refl_colmax, grid, cfg,
                             elapsed_seconds: float, exp, *, label: str):
     """A real wrfout beside a composite ``.npz``; the path, or ``None``.
@@ -630,8 +710,11 @@ def main() -> int:
     from gpuwm.da.obs_surface import (SurfaceObsConfig,
                                       surface_to_gridded_obs)
     from gpuwm.da.obsop_cwp import CwpComposition, checkpoint_cwp_provider
-    from gpuwm.da.radar_assimilation import (RadarAssimilationConfig,
-                                             assimilate_radar_grid,
+    # RadarAssimilationConfig is NOT imported here: every construction in
+    # this driver goes through plan_radar_assimilation, which is what
+    # holds the plan-time review and the leg's configuration to one
+    # object (audit R-051).
+    from gpuwm.da.radar_assimilation import (assimilate_radar_grid,
                                              grid_rotation,
                                              member_earth_winds)
     from gpuwm.da import treatment
@@ -743,6 +826,23 @@ def main() -> int:
         return final_leg_seconds if index == legs - 1 else leg_seconds
     print(f"preflight OK: {cfg.nx}x{cfg.ny}x{cfg.nz} dt={dt} "
           f"mp={cfg.mp_physics} hyps={cfg.hypsometric_opt}", flush=True)
+
+    # ---- plan review for the DA door ------------------------------------
+    # The analysis configuration is BUILT here, before an ensemble member
+    # is perturbed and long before leg 0 integrates anything, and every
+    # refusal the filter states is therefore raised here: the active
+    # scheme's radar H(x) route, the clear-air floor, the positivity
+    # policy, the localisation and inflation knobs.  Audit
+    # R-051 moved those refusals out of the first analysis and into the
+    # configuration; this call is what makes the configuration exist at
+    # plan time rather than at the first analysis seam, where a whole
+    # ensemble integration has already been spent.  The object is
+    # deliberately discarded -- the leg builds its own through the same
+    # function, with the fields ensemble spread leaves it.
+    plan_radar_assimilation(
+        args, cfg.mp_physics,
+        analysis_fields=planned_analysis_fields(args, cfg.mp_physics),
+        cwp=bool(args.goes_cwp))
 
     perturb_fields = [
         {"name": "u", "amplitude": args.wind_sigma_ms,
@@ -1478,7 +1578,6 @@ def main() -> int:
                         authority in the same cycle."""
                         return _t[int(index)]
             cwp_provider = None
-            cwp_localization = None
             if goes_path is not None:
                 if setup_arrays is None:
                     raise RuntimeError(
@@ -1494,35 +1593,13 @@ def main() -> int:
                                 if name.strip()))
                 cwp_provider = checkpoint_cwp_provider(
                     cfg, composition=composition, **setup_arrays)
-                cwp_localization = Localization(
-                    horizontal_m=(args.cwp_horizontal_loc_m
-                                  if args.cwp_horizontal_loc_m is not None
-                                  else args.horizontal_loc_m),
-                    vertical_m=args.cwp_vertical_loc_m)
-            cfg_da = RadarAssimilationConfig(
-                localization=Localization(
-                    horizontal_m=args.horizontal_loc_m,
-                    vertical_m=args.vertical_loc_m),
-                rtps_alpha=args.rtps_alpha, relaxation=args.relaxation,
-                analysis_fields=analysis_fields,
-                velocity=True,
-                reflectivity=bool(args.reflectivity_analysis),
-                fall_speed="none",
-                velocity_thinning_cells=args.thin_cells,
-                velocity_error_inflation=args.err_inflation,
-                reflectivity_thinning_cells=args.z_thin_cells,
-                reflectivity_error_inflation=args.z_err_inflation,
-                clear_air=bool(args.clear_air_analysis),
-                clear_air_thinning_cells=args.z0_thin_cells,
-                clear_air_error_inflation=args.z0_err_inflation,
-                cwp=goes_path is not None,
-                cwp_localization=cwp_localization,
-                cwp_thinning_cells=args.cwp_thin_cells,
-                cwp_error_inflation=args.cwp_err_inflation,
-                positivity_policy=args.positivity_policy,
-                mp_physics=int(cfg.mp_physics),
-                solve_device=args.solve_device,
-                memory_budget_mib=args.memory_budget_mib)
+            # The SAME function the plan-time probe above the leg loop
+            # called, with this leg's measured field set: one construction,
+            # so the configuration that was reviewed before leg 0 and the
+            # configuration that runs cannot differ by a knob.
+            cfg_da = plan_radar_assimilation(
+                args, cfg.mp_physics, analysis_fields=analysis_fields,
+                cwp=goes_path is not None)
             # -- the replayable copy of this leg's analysis inputs -------
             # Written BEFORE the solve, from the same objects the solve is
             # about to consume, so a bundle can never describe a different

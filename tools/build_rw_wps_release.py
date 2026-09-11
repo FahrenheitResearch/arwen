@@ -175,6 +175,16 @@ _TOP_LEVEL_EXCLUDES = {
     # recovery is consumed by those excluded run/catalog doors. None belongs
     # to source_cli's standalone preprocessing argument surface.
     "companion_query.py", "companion_domains.py", "companion_forcing.py",
+    # The saved-setups door (`gpuwm companion-setup save|start`) is the same
+    # surface one step on: a library of FORECAST configurations a person
+    # copies and re-times.  Its only importer is gpuwm/cli.py:374, and its
+    # own work is done through gpuwm.companion_domains (the native editor
+    # excluded directly above), gpuwm.starter_template and gpuwm.fetch_routes
+    # -- so staging it put a module in the wheel reaching for a deliberately
+    # absent one and this builder's own unresolved-import scan refused the
+    # staging outright.  A preprocessing wheel prepares inputs for a forecast
+    # it does not run; it has no forecast setups to save or start from.
+    "companion_setups.py",
     "configuration_recovery.py", "remote_artifacts.py",
     "remote_input_transfer.py", "remote_plan.py", "remote_processed.py",
     # Companion forecast configuration and remote rendering/preparation
@@ -197,6 +207,17 @@ _CORE_MODULES = {
     "grid.py",
     "landuse.py",
     "microphysics_transition.py",
+    # The Milbrandt-Yau constant table, reached by microphysics_transition
+    # above when a mixed nest edge enters mp=9 and the kernel needs the
+    # scheme's own ck vector.  Pure numpy, no kernels and no scheme: the
+    # forecast module gpuwm/core/milbrandt2.py stays out of this wheel and
+    # reads its device cache from here.
+    "milbrandt2_constants.py",
+    # The three mp=28 scalars the same mixed-edge module seeds a
+    # Thompson-aerosol child from (NT_C and the two aerosol floors).
+    # Import-free constants: the table contract that re-exports them
+    # (thompson_aerosol_contract.py) stays out, as recorded below.
+    "thompson_aerosol_constants.py",
     # The sea-level pressure reduction and its nine-point smoother,
     # reached by storm_tracking.py below when a follow block tracks
     # `field = 'pressure'`.  Same shape as sase_limits.py further down:
@@ -477,6 +498,11 @@ _OPTIONAL_STAGED_IMPORTS = {
         "certification kernel-manifest recording, reached only after the "
         "CuPy import inside the loader; RW-WPS stages no forecast executor "
         "and compiles no CUDA module",
+    ("gpuwm/core/kernels/__init__.py", "gpuwm.core.noahmp_kernel_sources"):
+        "the one Noah-MP compile site, reached only after the CuPy import "
+        "inside the loader and only for a module whose name starts with "
+        "noahmp_; RW-WPS stages no forecast executor and compiles no CUDA "
+        "module, so the loader never takes that branch here",
     ("gpuwm/core/nest_interp.py", "gpuwm.certify.kernel_manifest"):
         "certification kernel-manifest recording, reached only after the "
         "CuPy import inside the loader; RW-WPS stages no forecast executor "

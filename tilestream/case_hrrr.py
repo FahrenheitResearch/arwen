@@ -508,29 +508,16 @@ class FrameForcing:
                 dst[..., sj, si] = src
 
 
-#: Where simulated reflectivity lives once a step has computed it.
-#:
-#: ``refl_10cm`` is NOT a restart member, so ``physics_inventory
-#: .carrier_manifest`` -- which is the restart manifest -- does not name it
-#: and a streamed run therefore carries no reflectivity at all.  That is
-#: correct for a checkpoint (the field is a pure diagnostic and is
-#: recomputable) and wrong for this lane, whose entire output product is
-#: simulated reflectivity.  :func:`carrier_inventory_with_refl` adds it, and
-#: it needs nothing else: it is a plain ``(nz, ny, nx)`` mass field, so the
-#: gather, the scatter and the ring geometry classify it like any other.
-REFL_KEY = "scratch/refl_10cm"
-
-
-def carrier_inventory_with_refl(obj, names=None) -> dict:
-    """:func:`physics_inventory.carrier_inventory` plus ``refl_10cm``."""
-    from tilestream import physics_inventory as physinv
-
-    out = dict(physinv.carrier_inventory(obj, names))
-    scratch = getattr(obj, "_scratch", None)
-    if isinstance(scratch, dict) and scratch.get("refl_10cm") is not None:
-        if names is None or REFL_KEY in names:
-            out[REFL_KEY] = scratch["refl_10cm"]
-    return {k: out[k] for k in sorted(out)}
+# The reflectivity-carrying inventory moved to
+# :mod:`tilestream.physics_inventory`, beside the restart manifest it
+# extends, and the RULE it applies is
+# :func:`gpuwm.core.streaming.refl_inventory` -- the same one the model's own
+# streamed route builds its store with.  Audit R-052 found the streamed
+# real-case store building from the bare manifest and throwing a scheme's own
+# dBZ away, and one lane's module is not where a generic answer belongs.
+# Re-exported here so this lane's call sites read unchanged.
+from tilestream.physics_inventory import (          # noqa: E402
+    REFL_KEY, carrier_inventory_with_refl)
 
 
 def _is_device(array) -> bool:

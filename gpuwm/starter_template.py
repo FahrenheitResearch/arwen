@@ -703,7 +703,8 @@ def register_cli(subparsers):
     target.add_argument("--polygon", type=Path, help="GeoJSON area; preserve its entire footprint")
     parser.add_argument("--buffer-km", help="one polygon buffer, or one per domain in the template's parent-before-child order")
     device = parser.add_mutually_exclusive_group()
-    device.add_argument("--card", help="existing named GPU tier")
+    device.add_argument("--card", help="GPU to size for: a tier (12gb/16gb/24gb/"
+                        "32gb), a size ('10gb') or a model with a recorded size ('RTX 3080')")
     device.add_argument("--vram-gib", type=float, help="target total VRAM capacity in GiB; "
                        "omit device flags to detect this machine\'s GPU")
     device.add_argument("--hardware-json", type=Path, help="selected node hardware snapshot with measured capacity, available memory and device profile")

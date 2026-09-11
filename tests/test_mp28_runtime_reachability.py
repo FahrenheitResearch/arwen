@@ -85,6 +85,7 @@ in the same change.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import os
 import pathlib
@@ -97,6 +98,17 @@ import numpy as np
 import pytest
 
 from conftest import requires_gpu
+
+#: The three driven-door tests below type `gpuwm run` and `gpuwm run-plan`
+#: and read the mp=28 dataset precondition off the door's own sentence.
+#: On an install with no cupy those doors refuse the install first, at plan
+#: acceptance, before any configuration is read, so the sentence they pin
+#: is never reached there: declared skipped with the reason, never a green
+#: that compared the wrong refusal.
+needs_cupy_install = pytest.mark.skipif(
+    importlib.util.find_spec("cupy") is None,
+    reason=("cupy is not installed; gpuwm run / run-plan refuse the install "
+            "at plan acceptance before the mp=28 precondition is asked"))
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 PACKAGE = REPO / "gpuwm"
@@ -128,28 +140,34 @@ STALE_REFL_ADMISSION = frozenset({1, 6, 8, 10, 18})
 #: admission.
 REFL_ADMISSION = frozenset({1, 6, 8, 9, 10, 16, 18, 28, 50})
 
-#: The deliberate exceptions -- NONE remain.  ``PORTED_MP_PHYSICS`` names
-#: the selectors with a ported MIXED nest edge, and mp=28 has none: every
-#: one of its mixed pairs is refused by name through
-#: ``UNVALIDATED_MIXED_EDGE_SELECTORS`` because no cross-scheme entry
-#: closure for nc/nwfa/nifa has been measured.  Listing 28 there and then
-#: refusing all its pairs would be a self-contradiction.  Pinned by
-#: ``tests/test_preflight.py`` (``assert 28 not in mt.PORTED_MP_PHYSICS``).
-#: The tuple itself stopped being a census hit when mp=50's rime-pair
-#: closure was ratified and APPENDED 50 to it, so its row here retired
-#: with the mp=50 refusal.  The last surviving entry was the HRRR route's
-#: ``SUPPORTED_MICROPHYSICS``, and it retired when that door stopped
-#: being a literal at all: it is now DERIVED
-#: (``frozenset(PORTED_MP_PHYSICS) -
-#: AEROSOL_LATERAL_BC_BLOCKED_MP_PHYSICS``), so the census walk cannot
-#: see it -- and does not need to, because 28's route exclusion moved
-#: from this ledger into executable form.  The route-specific reason
-#: lives with the subtraction constant in gpuwm/hrrr_route_inputs.py (no
-#: aerosol lateral boundary condition; unbounded interior depletion on a
-#: laterally-forced multi-hour route; revisit when a QNWFA/QNIFA ingest
-#: lane exists), and
-#: ``test_the_hrrr_route_admission_is_derived_not_respelled`` below pins
-#: the derivation and the exclusion so neither can silently drift.
+#: The deliberate exceptions -- NONE remain.  This ledger is the census of
+#: sites that are stale ON PURPOSE, so it is the last place that may itself
+#: go stale; it had, and every clause below is what replaced what it said.
+#:
+#: It said mp=28 had no ported MIXED nest edge and that every one of its
+#: mixed pairs was refused through ``UNVALIDATED_MIXED_EDGE_SELECTORS``.
+#: Both edges are ratified: that tuple is now EMPTY
+#: (``gpuwm/core/microphysics_transition.py``) and 28 is a member of
+#: ``PORTED_MP_PHYSICS`` beside it.  It cited
+#: ``tests/test_preflight.py`` pinning ``28 not in mt.PORTED_MP_PHYSICS``;
+#: that assertion is now ``28 in mt.PORTED_MP_PHYSICS``.  It derived the
+#: HRRR route's admission as ``frozenset(PORTED_MP_PHYSICS) -
+#: AEROSOL_LATERAL_BC_BLOCKED_MP_PHYSICS``; that subtraction constant is
+#: deleted and ``SUPPORTED_MICROPHYSICS`` is ``frozenset(
+#: PORTED_MP_PHYSICS)`` with nothing taken out.  And it restated the
+#: retired route premise (no aerosol lateral boundary condition, revisit
+#: when a QNWFA/QNIFA ingest lane exists) as though it were live: that
+#: ingest lane exists (``gpuwm/ingest/wif_climatology.py``), nwfa/nifa are
+#: coupled scalars, and what survives is a DATASET precondition asked of
+#: every source -- measured by
+#: ``gpuwm.config.mp28_aerosol_lateral_forcing_precondition``, raised
+#: BEFORE THE FETCH by ``validate_experiment_preparation`` at the doors
+#: that commit to building a forecast, kept as a floor at real
+#: initialization, and reported at plan review from the registry's own
+#: row.
+#:
+#: Nothing takes their place: the set is empty and every site the census
+#: walks is expected to be current.
 DELIBERATE_STALE_SITES: set[tuple[str, str]] = set()
 
 #: Every ``mp_physics`` value ``gpuwm/config.py`` accepts
@@ -339,23 +357,26 @@ def test_no_new_scheme_keyed_dict_omits_28():
         + "\nJudge it: either add 28, or record the reason in "
         "KNOWN_SCHEME_KEYED_DICTS_WITHOUT_28 with the measurement.")
 
-    # The deliberate one must still be deliberate.
+    # The named-refusal machinery must stay CONSISTENT, whatever it holds.
     from gpuwm.core import microphysics_transition as mt
 
-    # One row per refused selector, and EVERY refused selector has one:
-    # 16 joined the selector tuple with the WDM6 port and its moments row
-    # was missing, which turned the named refusal into a bare KeyError(16).
-    # 50 (P3) LEFT both tables when its rime-pair closure was ratified into
-    # PORTED_MP_PHYSICS -- the retired refusal died with its defect, per
-    # the guard-retirement law.
+    # One row per refused selector, and EVERY refused selector has one.
+    # Both tables are EMPTY: 50, then 16 and 28, left them as each entry
+    # closure was ratified into PORTED_MP_PHYSICS -- the retired refusals
+    # died with their defect, per the guard-retirement law.
     assert (set(mt.UNVALIDATED_MIXED_EDGE_MOMENTS)
-            == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS) == {16, 28})
-    assert set(mt.UNVALIDATED_MIXED_EDGE_MOMENTS[28]) == {
-        "nr", "ni", "nc", "nwfa", "nifa"}
+            == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS)
+            == set(mt._UNVALIDATED_MIXED_EDGE_REASONS) == set())
     # WDM6 is double-moment in cloud AND rain and carries a CCN reservoir:
     # ncr(:,:,1)=nn, ncr(:,:,2)=nc, ncr(:,:,3)=nr (module_mp_wdm6.F:238-240),
     # all three prognostic scalars in the WRF Registry.  It has no ni/ns/ng.
-    assert set(mt.UNVALIDATED_MIXED_EDGE_MOMENTS[16]) == {"nr", "nc", "nn"}
+    # They are REAL moment rows now, with real field codes.
+    assert set(mt._MOMENT_FIELDS[16]) == {"nr", "nc", "nn"}
+    assert set(mt._MOMENT_FIELDS[28]) == {"nr", "ni", "nc", "nwfa", "nifa"}
+    # Real host field codes: nc is mp=9's 22, shared; nn, nwfa and nifa
+    # were appended after mp=9's nh at 23, moving nothing below them.
+    assert {mt._EDGE_FIELD_CODES[name] for name in ("nc", "nn")} == {22, 24}
+    assert {mt._EDGE_FIELD_CODES[name] for name in ("nwfa", "nifa")} == {25, 26}
 
 
 def test_no_stale_pre_28_scheme_admission_tuple_survives():
@@ -387,38 +408,372 @@ def test_no_stale_pre_28_scheme_admission_tuple_survives():
 def test_the_hrrr_route_admission_is_derived_not_respelled():
     """The door DELIBERATE_STALE_SITES used to carry, in executable form.
 
-    The route's admission is frozenset(PORTED_MP_PHYSICS) minus the named
-    aerosol-lateral-BC block, so a future port widens it without a table
-    edit -- and ratifying mp=28's closures can never silently open the
-    laterally-forced route to the unbounded-depletion deviation this
-    package records.  The census walk is blind to derived sets (by
-    design, it reads literals), so this pin is the census row's
-    replacement, not a duplicate of it.
+    The route's admission is frozenset(PORTED_MP_PHYSICS) and nothing
+    else, so a future port widens it without a table edit.  The
+    aerosol-lateral-BC subtraction that used to sit beside it is GONE
+    (audit R-044): it named a breakage the WIF climatology ingest and the
+    coupled nwfa/nifa boundary had already fixed, it refused correct hrrr
+    runs, and it left every other specified-BC route unchecked.  What is
+    actually conditional -- the 225 MB dataset -- is measured for every
+    route by gpuwm.config.mp28_aerosol_lateral_forcing_precondition and
+    raised before the fetch by validate_experiment_preparation, asserted
+    below and walked door by door in the test that follows.
+    The census walk is blind to derived sets (by design, it reads
+    literals), so this pin is the census row's replacement.
     """
     from gpuwm.core import microphysics_transition as mt
-    from gpuwm.hrrr_route_inputs import (
-        AEROSOL_LATERAL_BC_BLOCKED_MP_PHYSICS, SUPPORTED_MICROPHYSICS)
+    from gpuwm.hrrr_route_inputs import SUPPORTED_MICROPHYSICS
 
-    assert AEROSOL_LATERAL_BC_BLOCKED_MP_PHYSICS == frozenset({28})
-    assert SUPPORTED_MICROPHYSICS == (
-        frozenset(mt.PORTED_MP_PHYSICS)
-        - AEROSOL_LATERAL_BC_BLOCKED_MP_PHYSICS)
-    assert 50 in SUPPORTED_MICROPHYSICS
-    assert 28 not in SUPPORTED_MICROPHYSICS
-    assert 16 not in SUPPORTED_MICROPHYSICS
+    assert SUPPORTED_MICROPHYSICS == frozenset(mt.PORTED_MP_PHYSICS)
+    assert {16, 28, 50} <= SUPPORTED_MICROPHYSICS
 
-    # And the deliberate exception must still BE the exception it claims.
+    # The route table admits 28 with no subtraction; what decides an mp=28
+    # run is the dataset, and it is source-independent by construction --
+    # the precondition never sees a route or a source id.
+    from gpuwm.config import RUN_PREPARATION_PRECONDITIONS
+    from gpuwm.config import mp28_aerosol_lateral_forcing_precondition
+
+    assert mp28_aerosol_lateral_forcing_precondition in (
+        RUN_PREPARATION_PRECONDITIONS)
+
     # PORTED_MP_PHYSICS no longer equals the stale tuple: mp=50 was
-    # APPENDED when its rime-pair closure was ratified, so the census above
-    # cannot match it and its DELIBERATE_STALE_SITES row retired with the
-    # refusal.  28 is still deliberately absent.
+    # APPENDED when its rime-pair closure was ratified, and 16 and 28 with
+    # theirs (audit R-004), so the census above cannot match it and its
+    # DELIBERATE_STALE_SITES row retired with the refusal.
     from gpuwm.core import microphysics_transition as mt
 
-    assert set(mt.PORTED_MP_PHYSICS) == STALE_REFL_ADMISSION | {50}
-    assert 28 in mt.UNVALIDATED_MIXED_EDGE_SELECTORS, (
-        "mp=28 left PORTED_MP_PHYSICS without joining the NAMED mixed-edge "
-        "refusal, so its nest edges now fall through to the generic "
-        "'not a ported selector' message")
+    # mp=9 was APPENDED with mp=50, when its own entry closure (the
+    # scheme's consistency block) was read into the edge kernel -- audit
+    # R-003 -- so the ported set is the stale admission plus 50 and 9.
+    # 16 and 28 were APPENDED next, with their own entry closures, so the
+    # ported set is the stale admission plus 50, 9, 16 and 28.
+    assert set(mt.PORTED_MP_PHYSICS) == STALE_REFL_ADMISSION | {50, 9, 16, 28}
+    assert not mt.UNVALIDATED_MIXED_EDGE_SELECTORS, (
+        "a selector is refused for a missing closure again; every mixed "
+        "edge in this release runs with its mapping named")
+
+
+def _unpreparable_mp28_config(tmp_path, monkeypatch):
+    """A loadable mp=28 experiment on a machine with no WIF dataset.
+
+    The fixture pair every front-door test in this tree loads through
+    (``tests/test_case_data.py``), with one switch changed: the root
+    domain runs mp=28.  A root domain is ``specified`` by construction
+    (``gpuwm/experiment.py`` defaults it to ``is_root``), which is the
+    condition the precondition is about, and the WIF search is pointed at
+    a directory that does not exist -- including the working-directory
+    rung, which is WRF's own ``constants_name`` rule.
+    """
+
+    from test_case_data import _EXPERIMENT_TOML, make_case_toml
+
+    from gpuwm.ingest import wif_climatology
+
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_PATH_ENV, raising=False)
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_ROOT_ENV, raising=False)
+    monkeypatch.setenv("GPUWM_WIF_DATA_ROOT", str(tmp_path / "no-staged-wif"))
+    monkeypatch.setenv("HOME", str(tmp_path / "no-staged-wif"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "no-staged-wif"))
+
+    case = tmp_path / "case"
+    case.mkdir()
+    monkeypatch.chdir(case)
+    return make_case_toml(
+        case,
+        experiment=_EXPERIMENT_TOML + "moist = true\nmp_physics = 28\n")
+
+
+def _says_the_precondition(said: str) -> None:
+    """The one sentence, with both of its ways out."""
+
+    assert "QNWFA_QNIFA_SIGMA_MONTHLY.dat" in said, said
+    assert "$GPUWM_WIF_CLIMATOLOGY" in said, said
+    assert "mp28_aerosol_source=" in said, said
+    assert "synthetic" in said, said
+
+
+@needs_cupy_install
+def test_the_run_dispatch_refuses_before_it_spawns_a_supervisor(
+        tmp_path, monkeypatch, capsys):
+    """``gpuwm run``, driven rather than read.
+
+    THE PREVIOUS VERSION OF THIS ASSERTED SOURCE TEXT -- that
+    ``cli._dispatch`` contains the call.  That is satisfied by a call
+    guarded out of every reachable branch, and it cannot see a door it
+    was not told to grep.  So the door is DRIVEN: the refusal is the
+    process's own exit code and printed sentence, and the supervisor is
+    replaced by a seam that fails the test if the dispatch ever reaches
+    it -- the supervisor being exactly what used to be spawned before the
+    floor inside the time loop refused.
+    """
+
+    from gpuwm import supervisor
+    from gpuwm.cli import main as cli_main
+
+    config = _unpreparable_mp28_config(tmp_path, monkeypatch)
+
+    def _never(args):                      # pragma: no cover - the point
+        raise AssertionError(
+            "the run dispatch spawned a supervisor for a config this "
+            "machine cannot prepare")
+
+    monkeypatch.setattr(supervisor, "supervise_from_cli", _never)
+
+    outdir = tmp_path / "out"
+    assert cli_main(["run", str(config), "--outdir", str(outdir)]) == 2
+    said = capsys.readouterr().err
+    assert "d01: " in said, said
+    _says_the_precondition(said)
+    assert not outdir.exists(), "the run root was claimed anyway"
+
+
+@needs_cupy_install
+def test_the_run_plan_door_refuses_before_it_fetches(tmp_path, monkeypatch,
+                                                     capsys):
+    """``gpuwm run-plan``, which is what the desktop launches through.
+
+    THE DEFECT THIS PREVENTS, measured.  ``gpuwm run-plan`` loads the
+    experiment and then runs its own fetch stage; the floor that raises
+    this sentence is downstream of it, in preparation.  So the shape the
+    other two doors were fixed for -- review says PASS, 10-15 GB is
+    downloaded, then the run refuses -- survived on the front door a
+    desktop forecast actually takes.  Both halves are driven here: plan
+    review (``--resolve``) answers with the sentence, and a full
+    execution never reaches the fetch stage, with ``_run_fetch`` replaced
+    by a seam that fails the test if it is called.
+    """
+
+    import json
+
+    from gpuwm import runplan
+    from gpuwm.cli import main as cli_main
+
+    config = _unpreparable_mp28_config(tmp_path, monkeypatch)
+    run_root = tmp_path / "runs"
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps({
+        "schema": runplan.PLAN_SCHEMA,
+        "name": "mp28-unpreparable",
+        "route": "experiment",
+        "config": {"path": str(config)},
+        "output_root": str(run_root),
+        "fetch": {"args": ["--source", "gfs", "--cycle", "2026-07-29T18",
+                           "--hours", "6"]},
+    }), encoding="utf-8")
+
+    # 1. PLAN REVIEW.  This is the call the desktop makes before it
+    #    offers a Launch button: run-plan --resolve, then --estimate,
+    #    then the run itself.
+    assert cli_main(["run-plan", str(plan_path), "--resolve"]) == 2
+    _says_the_precondition(capsys.readouterr().err)
+    assert not run_root.exists(), "plan review claimed a run root"
+
+    # 2. THE RUN, with the fetch stage armed to fail the test.
+    def _never(*args, **kwargs):           # pragma: no cover - the point
+        raise AssertionError(
+            "run-plan reached its fetch stage for a config this machine "
+            "cannot prepare")
+
+    monkeypatch.setattr(runplan, "_run_fetch", _never)
+    assert cli_main(["run-plan", str(plan_path)]) == 1
+    stream = next(run_root.glob("**/" + runplan.EVENTS_FILENAME))
+    events = [json.loads(line)
+              for line in stream.read_text(encoding="utf-8").splitlines()
+              if line.strip()]
+    assert not [event for event in events
+                if event.get("stage") == "fetch"], events
+    # Nothing under the run root but the front door's own two records:
+    # the event stream and the manifest that names it.  No fetch
+    # directory, no prepared root, no forecast output.
+    assert sorted(path.name for path in run_root.rglob("*")
+                  if path.is_file()) == sorted(
+                      [runplan.EVENTS_FILENAME, runplan.MANIFEST_FILENAME]), (
+                          sorted(str(path) for path in run_root.rglob("*")))
+    failed = [event for event in events if event.get("event") == "failed"]
+    assert len(failed) == 1, events
+    _says_the_precondition(failed[0]["message"])
+
+
+def _named_stub_mp28_config(tmp_path, monkeypatch, *, via):
+    """An mp=28 experiment whose dataset is NAMED and is not a dataset.
+
+    Four bytes is what a download that died in its first packet leaves on
+    disk, and the 225 MB file it was meant to be is the single most
+    likely thing to arrive truncated.  ``via`` names which of the two
+    human-chosen rungs points at it -- ``$GPUWM_WIF_CLIMATOLOGY`` or
+    ``[shared] wif_climatology_path`` -- because the resolver refuses on
+    both and, before this lane's fix, neither door converted the refusal.
+    """
+
+    from test_case_data import _EXPERIMENT_TOML, make_case_toml
+
+    from gpuwm.ingest import wif_climatology
+
+    stub = tmp_path / "QNWFA_QNIFA_SIGMA_MONTHLY.dat"
+    stub.write_bytes(bytes(4))
+
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_PATH_ENV, raising=False)
+    monkeypatch.delenv(wif_climatology.WIF_CLIMATOLOGY_ROOT_ENV, raising=False)
+    monkeypatch.setenv("GPUWM_WIF_DATA_ROOT", str(tmp_path / "no-staged-wif"))
+    monkeypatch.setenv("HOME", str(tmp_path / "no-staged-wif"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "no-staged-wif"))
+
+    experiment = _EXPERIMENT_TOML
+    if via == "env":
+        monkeypatch.setenv(wif_climatology.WIF_CLIMATOLOGY_PATH_ENV, str(stub))
+    else:
+        # In ``[shared]``: ``wif_climatology_path`` is not a per-domain
+        # key, and ``gpuwm/experiment.py`` refuses it on a ``[[domain]]``
+        # table rather than dropping it.
+        named = 'wif_climatology_path = "' + stub.as_posix() + '"'
+        experiment = experiment.replace("[shared]\n", "[shared]\n" + named + "\n")
+
+    case = tmp_path / "case"
+    case.mkdir()
+    monkeypatch.chdir(case)
+    return stub, make_case_toml(
+        case, experiment=experiment + "moist = true\nmp_physics = 28\n")
+
+
+def _says_the_named_file_is_not_the_dataset(said: str, stub, *, origin) -> None:
+    """One sentence naming the file, the breakage and the way out."""
+
+    assert origin in said, said
+    assert str(stub) in said, said
+    assert "WPS intermediate" in said, said
+    assert "gpuwm fetch-tables --wif" in said, said
+    # A config-shaped refusal is a sentence, not a stack.
+    assert "Traceback" not in said, said
+    assert "MissingWifClimatologyDataset" not in said, said
+
+
+@needs_cupy_install
+@pytest.mark.parametrize("via,origin", [
+    ("env", "$GPUWM_WIF_CLIMATOLOGY"),
+    ("shared", "[shared] wif_climatology_path"),
+])
+def test_a_named_dataset_that_is_not_one_refuses_in_a_sentence(
+        tmp_path, monkeypatch, capsys, via, origin):
+    """THE DEFECT: a NAMED but invalid dataset tracebacked at every door.
+
+    The resolver raises rather than degrading when a human chose the path
+    -- an override that is silently ignored is how a run takes an initial
+    condition nobody chose -- and the three doors convert only
+    ``ValueError``.  So ``$GPUWM_WIF_CLIMATOLOGY`` pointed at a truncated
+    copy exited 1 from ``gpuwm run``, ``gpuwm run-plan --resolve`` and
+    ``gpuwm go`` with a raw
+    ``gpuwm.ingest.wif_dataset.MissingWifClimatologyDataset`` stack, while
+    the absent-dataset case one line away answered in one sentence with
+    exit 2.  Both committing doors in this file are driven here; ``gpuwm
+    go`` is driven by ``tests/test_mp28_runnable.py::
+    test_the_go_chain_refuses_a_named_dataset_that_is_not_one``.
+    """
+
+    import json
+
+    from gpuwm import runplan, supervisor
+    from gpuwm.cli import main as cli_main
+
+    stub, config = _named_stub_mp28_config(tmp_path, monkeypatch, via=via)
+
+    def _never(*args, **kwargs):           # pragma: no cover - the point
+        raise AssertionError(
+            "a door committed to a forecast whose named dataset is a "
+            "4-byte stub")
+
+    monkeypatch.setattr(supervisor, "supervise_from_cli", _never)
+
+    outdir = tmp_path / "out"
+    assert cli_main(["run", str(config), "--outdir", str(outdir)]) == 2
+    said = capsys.readouterr().err
+    assert "d01: " in said, said
+    _says_the_named_file_is_not_the_dataset(said, stub, origin=origin)
+    assert not outdir.exists(), "the run root was claimed anyway"
+
+    run_root = tmp_path / "runs"
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps({
+        "schema": runplan.PLAN_SCHEMA,
+        "name": "mp28-stub-dataset",
+        "route": "experiment",
+        "config": {"path": str(config)},
+        "output_root": str(run_root),
+        "fetch": {"args": ["--source", "gfs", "--cycle", "2026-07-29T18",
+                           "--hours", "6"]},
+    }), encoding="utf-8")
+    monkeypatch.setattr(runplan, "_run_fetch", _never)
+    assert cli_main(["run-plan", str(plan_path), "--resolve"]) == 2
+    _says_the_named_file_is_not_the_dataset(
+        capsys.readouterr().err, stub, origin=origin)
+    assert not run_root.exists(), "plan review claimed a run root"
+
+
+def test_every_door_that_commits_to_a_forecast_asks_the_precondition():
+    """The census the previous tests' sentence rests on.
+
+    A precondition raised only by ``initialize_real`` is raised AFTER the
+    fetch on every route a user types: on ``gpuwm go`` that call is in the
+    prepare stage, downstream of the authority stage and of the whole
+    downloaded cycle; on ``gpuwm run`` it is inside the time loop; on
+    ``gpuwm run-plan`` the route's own fetch stage runs first.  So the
+    doors that COMMIT to building a forecast ask the inventory themselves,
+    before they spend anything.
+
+    THE THREE DOORS ARE DRIVEN, NOT GREPPED: ``gpuwm go`` by
+    ``tests/test_mp28_runnable.py::
+    test_the_go_chain_refuses_an_unpreparable_mp28_run_before_it_fetches``,
+    ``gpuwm run`` and ``gpuwm run-plan`` by the two tests above.  What is
+    left here is the part a behavioural test cannot state: that the three
+    read ONE inventory rather than three copies of a sentence, and that
+    the two reporting surfaces report instead of deciding.
+    """
+
+    import inspect
+
+    from gpuwm import cli, go_cli, runplan
+    from gpuwm.config import (RUN_PREPARATION_PRECONDITIONS,
+                              experiment_preparation_refusals,
+                              run_preparation_preconditions,
+                              validate_experiment_preparation,
+                              validate_run_preparation)
+    from gpuwm.core import preflight
+    from gpuwm.ingest import real
+
+    # One inventory, four readers, no second list.
+    assert RUN_PREPARATION_PRECONDITIONS
+    for reader in (run_preparation_preconditions,
+                   validate_run_preparation,
+                   experiment_preparation_refusals,
+                   validate_experiment_preparation):
+        assert callable(reader)
+
+    # Every door reaches the inventory through one of those readers
+    # rather than spelling the question again.  A door that grew its own
+    # copy of the sentence is what this catches; that each one FIRES is
+    # measured behaviourally, above and in test_mp28_runnable.py.
+    for door in (go_cli.plan_from_config, cli._dispatch, runplan.resolve_plan):
+        source = inspect.getsource(door)
+        assert ("experiment_preparation_refusals" in source
+                or "validate_experiment_preparation" in source), door
+        assert "MP28_AEROSOL_LATERAL_FORCING_PRECONDITION" not in (
+            source), door
+
+    # ... and on `gpuwm go` it is asked BEFORE the fetch stage is
+    # composed.  The other two orders are measured behaviourally above.
+    chain = inspect.getsource(go_cli._go_prepared_main)
+    assert chain.index("plan_from_config(") < chain.index(
+        '_run_stage("fetch"')
+
+    # `gpuwm check` reports it without changing a verdict: it can be asked
+    # about a machine that is not this one, where "the dataset is not
+    # here" says nothing about whether the run fits there.
+    assert "_warn_unmet_run_preparation" in inspect.getsource(
+        preflight.check_main)
+
+    # And the floor stays where it was, so a RunConfig that reached
+    # initialization without passing any door is still refused.
+    assert "validate_run_preparation" in inspect.getsource(
+        real.initialize_real)
 
 
 def test_every_refl_10cm_admission_constant_admits_28():
@@ -462,8 +817,15 @@ def test_every_refl_10cm_admission_constant_admits_28():
     # set minus producer set == the native-reflectivity schemes -- is
     # asserted as arithmetic below rather than left implicit in two
     # hand-spelled tuples.
-    assert "cfg.mp_physics not in (1, 6, 8, 10, 16, 28)" in refl_source
-    assert REFL_ADMISSION - frozenset({1, 6, 8, 10, 16, 28}) == {9, 18, 50}
+    # The producer gate reads the PUBLISHED input-species table (the same
+    # row the physics registry carries per scheme) instead of a literal
+    # tuple, so the pin is on the table's keys and on the source reading
+    # the table; the asymmetry arithmetic below is unchanged.
+    from gpuwm.core.refl import REFL_10CM_INPUT_SPECIES
+    producer = frozenset(REFL_10CM_INPUT_SPECIES)
+    assert producer == frozenset({1, 6, 8, 10, 16, 28})
+    assert "cfg.mp_physics not in REFL_10CM_INPUT_SPECIES" in refl_source
+    assert REFL_ADMISSION - producer == {9, 18, 50}
     assert "elif cfg.mp_physics in (8, 28):" in refl_source, (
         "mp=28 no longer shares mp=8's calc_refl10cm branch; WRF has ONE "
         "such routine with no aerosol-aware arm (module_mp_thompson.F:"
@@ -737,13 +1099,25 @@ def test_the_restart_identity_names_the_scheme_and_its_provenance():
     # assertion: 50 is the only new key, and the two properties this case
     # exists for are re-asserted for it below on the same terms as 16's.
     #
-    # mp=9 (Milbrandt-Yau) is deliberately ABSENT and that is not an
-    # oversight: the mp=9 port registered no restart identity, so a
-    # Milbrandt-Yau run cannot be checkpointed.  Stated here rather than
-    # left to be rediscovered, because a silent absence in this table is
-    # indistinguishable from a forgotten one.
+    # RE-DERIVED 2026-09-10: 9 (Milbrandt-Yau) is here now, and the note
+    # this replaces was wrong in the way a pin's prose can be wrong -- it
+    # recorded the absence as deliberate ("a Milbrandt-Yau run cannot be
+    # checkpointed") when the absence was the defect: mp=9 was accepted by
+    # the loader and integrated by gpuwm/core/milbrandt2.py, so a run of it
+    # reached its first restart interval and died there with
+    # "cannot identify unsupported microphysics scheme 9", losing the
+    # forecast.  The row (and a plan-review gate that asks the question
+    # before the run starts) is the fix.  9 is the only new key, its
+    # identity is its own string rather than a re-use, and every
+    # pre-existing row is byte-unchanged -- the same two properties 16 and
+    # 50 are held to below.
     assert set(restart.MICROPHYSICS_ALGORITHM_IDENTITIES) == {
-        0, 1, 6, 8, 10, 16, 18, 28, 50}
+        0, 1, 6, 8, 9, 10, 16, 18, 28, 50}
+    milbrandt_identity = restart.MICROPHYSICS_ALGORITHM_IDENTITIES[9]
+    assert milbrandt_identity.startswith("milbrandt-yau-wrf-v4.6.1-")
+    assert milbrandt_identity not in {
+        value for key, value in restart.MICROPHYSICS_ALGORITHM_IDENTITIES.items()
+        if key != 9}
     p3_identity = restart.MICROPHYSICS_ALGORITHM_IDENTITIES[50]
     assert p3_identity.startswith("p3-one-category-wrf-v4.6.1-")
     assert p3_identity not in {
@@ -1369,7 +1743,7 @@ def test_the_ccn_activation_blob_is_present_in_the_built_package_data():
         "inclusion against an absent file")
 
 
-def test_the_offline_child_lane_decision_is_recorded_not_undecided():
+def test_the_offline_child_lane_refuses_the_edges_it_has_no_leg_for():
     """mp=28 is IN the lane for same-scheme, OUT for every mixed edge.
 
     Recorded here as one assertion rather than left implicit, because the
@@ -1382,16 +1756,15 @@ def test_the_offline_child_lane_decision_is_recorded_not_undecided():
     from gpuwm.core import microphysics_transition as mt
 
     assert 28 in OFFLINE_CHILD_MP_PHYSICS
-    assert _CAPABILITIES["same_scheme_mp_physics"] == [6, 8, 10, 18, 28, 50]
+    # Re-measured with audit R-017: 0, 1 and 9 joined the same-scheme
+    # admission set when the lane learned their transported inventories.
+    assert _CAPABILITIES["same_scheme_mp_physics"] == [
+        0, 1, 6, 8, 9, 10, 18, 28, 50]
     assert _CAPABILITIES["cross_scheme_transitions"] == []
-    # The offline refusal set must MIRROR the online one, or a downscale
-    # could perform a closure the nest lane refuses.  It is now DERIVED from
-    # the online tuple rather than re-spelled: the WDM6 port added 16 online
-    # and not here, and the earlier OFFLINE_CHILD_MP_PHYSICS gate that
-    # happened to cover the hole is a different guarantee ("unreadable"), so
-    # it would have stopped covering it the day the QNCCN row landed.
+    # The offline refusal set MIRRORS the online one by DERIVATION, so
+    # ratifying mp=16's and mp=28's entry closures emptied it here too.
     assert (set(_CROSS_SCHEME_REFUSED_MP_PHYSICS)
-            == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS) == {16, 28})
+            == set(mt.UNVALIDATED_MIXED_EDGE_SELECTORS) == set())
     assert 16 not in OFFLINE_CHILD_MP_PHYSICS
     # mp=50 no longer mirrors mp=16's shape on either count: the offline
     # reader learned P3's transported set (same-scheme readable like 28),

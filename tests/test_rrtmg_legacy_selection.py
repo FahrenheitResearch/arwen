@@ -172,23 +172,16 @@ def test_selecting_legacy_constructs_the_adapter_at_physics_setup(
     assert adapter._C is not None and adapter._sw_tables is not None
 
 
-def test_readiness_helper_passes_here_and_receipts_when_broken(
-        monkeypatch):
-    """require_rrtmg_legacy_ready: silent on a complete installation,
-    one complete receipt when anything is missing."""
-    import gpuwm.physics_compat as compat
-
-    require_rrtmg_legacy_ready()          # complete install: no raise
-    assert require_rrtmg_legacy_executable is require_rrtmg_legacy_ready
-    monkeypatch.setattr(
-        compat, "_RRTMG_LEGACY_ASSETS",
-        compat._RRTMG_LEGACY_ASSETS + ("data/wrf_radiation/NOT_A_FILE",),
-        raising=True)
-    with pytest.raises(NotImplementedError) as excinfo:
-        compat.require_rrtmg_legacy_ready()
-    message = str(excinfo.value)
-    assert "NOT_A_FILE" in message
-    assert "no silent fallback" in message
+# THE CALLER PIN FOR R-030 IS NOT IN THIS MODULE, deliberately.
+# tests/conftest.py marks every test in a module that imports cupy
+# anywhere ``gpu`` and skips the lot under GPUWM_NO_LOCAL_GPU=1, and this
+# module imports cupy in a helper, so a CPU-only cell placed here is a
+# cell that never runs on a CPU-only runner: with the
+# require_rrtmg_legacy_ready() call deleted from validate_run_config the
+# module still reported green (18 skipped).  The pin therefore lives in
+# tests/test_rrtmg_legacy_plan_review.py, which imports no device at all.
+# The readiness helper's own receipts cell moved there with it, for the
+# same reason: it opens no device either, and it was skipping too.
 
 
 def test_every_runtime_radiation_construction_uses_the_shared_variant_factory():

@@ -336,8 +336,25 @@ def test_nothing_shipped_imports_the_excluded_campaign_harness():
         if any(snap.matches("/".join(parts[:i]), rules)
                for i in range(1, len(parts) + 1)):
             continue
-        if needle in (REPO / rel).read_text(encoding="utf-8",
-                                            errors="replace"):
+        try:
+            text = (REPO / rel).read_text(encoding="utf-8",
+                                          errors="replace")
+        except OSError:
+            # The same skip the machine-path scan above already takes,
+            # and for a reason this module can name: off-checkout the
+            # listing is a WALK, and under `pytest -n` a sibling test may
+            # delete a path between the walk and this read.
+            # tests/test_fastfix_selector.py's deletion probe does
+            # exactly that, deliberately -- it writes
+            # tests/test_fastfix_deletion_probe_importer.py and
+            # gpuwm/_fastfix_deletion_probe.py into the real tree,
+            # because the defect it covers was a disagreement between an
+            # on-disk walk and an index lookup and a fake tree cannot
+            # reproduce that -- and unlinks them in its own finally. A
+            # path that is gone by the time this test reads it ships
+            # nothing and imports nothing.
+            continue
+        if needle in text:
             importers.append(rel)
     assert importers == [], (
         f"these ship but import the excluded harness: {importers}")

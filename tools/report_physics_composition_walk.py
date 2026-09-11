@@ -414,6 +414,17 @@ REMEDIES = (
                "boundary MYJ solves against",
      "before": _suite(bl_pbl_physics=2, sf_sfclay_physics=1),
      "after": _suite(bl_pbl_physics=2, sf_sfclay_physics=2)},
+    # The PBL-OFF cell of that same reverse rule, which refuses for its
+    # own reason: nothing reads fm/fh with the slot off, but the Eta
+    # layer's own PBLH scan reads the carried TKE_MYJ column, and that
+    # column is allocated for the MYJ PBL selector alone.
+    {"id": "eta-surface-layer-with-the-pbl-slot-off",
+     "remedy": "'Select bl_pbl_physics=2 to run the Eta layer, or "
+               "sf_sfclay_physics=1 (revised MM5) or 91 (classic MM5), "
+               "which carry no TKE column' -- followed the first way, "
+               "which keeps the Eta surface layer the config asked for",
+     "before": _suite(bl_pbl_physics=0, sf_sfclay_physics=2),
+     "after": _suite(bl_pbl_physics=2, sf_sfclay_physics=2)},
     {"id": "eta-surface-layer-is-admitted-with-myj-only",
      "remedy": "'Select sf_sfclay_physics=1 (revised MM5) or 91 (classic "
                "MM5) for those schemes, or bl_pbl_physics=2 for this one' "
@@ -421,17 +432,14 @@ REMEDIES = (
                "layer the config asked for",
      "before": _suite(bl_pbl_physics=1, sf_sfclay_physics=2),
      "after": _suite(bl_pbl_physics=2, sf_sfclay_physics=2)},
-    # The MP9 cloud-optics refusal offers two remedies.  The pair follows
-    # the SECOND, "select ra_lw_physics=0/ra_sw_physics=1 (Dudhia)",
-    # because it moves only axes this walk already sweeps; the first,
-    # ra_rrtmg_variant='rrtmg_legacy', is a non-axis knob and pinned in
-    # the MP9 lane's own suite.
-    {"id": "milbrandt-yau-has-no-rrtmgp-cloud-optics",
-     "remedy": "'select ra_lw_physics=0/ra_sw_physics=1 (Dudhia)' -- the "
-               "scheme publishes no effective radii for RRTMGP to consume, "
-               "so the remedy leaves the RTE+RRTMGP variant",
-     "before": _suite(mp_physics=9, ra_lw_physics=4, ra_sw_physics=4),
-     "after": _suite(mp_physics=9, ra_lw_physics=0, ra_sw_physics=1)},
+    # milbrandt-yau-has-no-rrtmgp-cloud-optics is deliberately ABSENT, and
+    # its absence is the record of a fix.  The pair walked the refusal's
+    # Dudhia remedy while gpuwm.core.rrtmgp had no row for mp=9; the row
+    # now exists (``9: "milbrandt2"``, the scheme's own radii from the
+    # block WRF ships commented out at module_mp_milbrandt2mom.F:3351-3378,
+    # evaluated over the transported number moments), so the pairing is
+    # ACCEPTED and a pair for it would fail this file's own "the before arm
+    # must be REFUSED" check -- exactly as P3's did before it.
     # p3-has-no-rrtmgp-cloud-optics is deliberately ABSENT, and its absence
     # is the record of a fix.  mp=50 was ADMITTED against RTE+RRTMGP at 1.9
     # and died at the first radiation call; validate_p3_radiation then
@@ -468,17 +476,22 @@ REMEDIES = (
      "before": _suite(km_opt=3),
      "after": _suite(km_opt=4)},
     {"id": "prognostic-tke-is-pbl-off-only",
-     "remedy": "'select bl_pbl_physics=0 for an LES domain, or km_opt=4' -- "
-               "and this walk is why the message reads that way.  It used to "
-               "end 'select the LES topology or km_opt 3/4', and following "
-               "it to km_opt=3 with a PBL scheme on lands on the rule "
-               "directly above, which is PBL-off-gated for the same reason",
+     "remedy": "'Select bl_pbl_physics=0 for an LES domain ..., or "
+               "km_opt=4 (2-D Smagorinsky)' -- and this walk is why the "
+               "message reads that way.  It used to end 'select the LES "
+               "topology or km_opt 3/4', and following it to km_opt=3 with "
+               "a PBL scheme on lands on the rule directly above, which is "
+               "PBL-off-gated for the same reason",
      "before": _suite(km_opt=2),
      "after": _suite(km_opt=4)},
-    {"id": "sase-refuses-the-mynn-surface-layer",
-     "remedy": "'Select sf_sfclay_physics=1 (revised MM5) or 91'",
-     "before": _suite(**_SASE) | {"sf_sfclay_physics": 5},
-     "after": _suite(**_SASE)},
+    # RETIRED with the rule (audit R-036): SASE with the MYNN surface
+    # layer is admitted.  The exclusion was an intersection of two tables
+    # -- MYNN's row transcribes WRF's isfc matrix, which has no cell for
+    # bl_pbl_physics=900 at all -- while the field contract says the
+    # opposite: MYNN publishes every one of ust/hfx/qfx/wspd that the
+    # closure reads.  A remedy row whose "before" case is accepted
+    # measures nothing, so it is deleted rather than left to read as a
+    # broken remedy.
     {"id": "sase-needs-a-surface-layer",
      "remedy": "'requires a surface-layer scheme (sf_sfclay_physics != 0)'",
      "before": _suite(**_SASE) | {"sf_sfclay_physics": 0},
@@ -490,23 +503,13 @@ REMEDIES = (
                       sf_surface_physics=0, ra_lw_physics=0,
                       ra_sw_physics=0, km_opt=3),
      "after": _suite(cu_physics=3)},
-    # New Tiedtke's own PBL requirement, which arrived as a NEW refusal rule
-    # the moment 16 entered CU_SCHEMES -- and this gate caught that it had
-    # no remedy pair before anyone had shown its advice reaches an accepted
-    # run.  The message names TWO edits ("set both in one edit"), and only
-    # one of them is exercised here: cudt_minutes is held at 0.0 by the
-    # walk's own template for every suite it builds, so the `after` below
-    # satisfies that half by construction rather than by following the
-    # message.  The cudt half is proved separately, with its own negative
-    # control, in tests/test_ntiedtke_phase2_gates.py.
-    {"id": "new-tiedtke-needs-a-pbl",
-     "remedy": "'requires a PBL scheme' -- and as with Grell-Freitas, YSU "
-               "requires its own surface-layer class, so the remedy moves "
-               "both",
-     "before": _suite(cu_physics=16, bl_pbl_physics=0, sf_sfclay_physics=0,
-                      sf_surface_physics=0, ra_lw_physics=0,
-                      ra_sw_physics=0, km_opt=3),
-     "after": _suite(cu_physics=16)},
+    # RETIRED with the rule (audit R-006): New Tiedtke runs with the PBL
+    # slot off.  Its requirement was cloned from Grell-Freitas above,
+    # whose reason is GF's own one-based read of fields["kpbl"]; New
+    # Tiedtke reads no kpbl, takes hfx/qfx from the surface stack, and
+    # folds zero advective-forcing lanes the way WRF's cumulus driver
+    # does.  The cudt_minutes=0 half of that message is a separate rule
+    # and keeps its own control in tests/test_ntiedtke_phase2_gates.py.
     {"id": "km-opt-zero-needs-the-acknowledgement",
      "remedy": "'write the acknowledgement out in full: "
                "km_opt_zero_acknowledgement = ...'",

@@ -311,7 +311,8 @@ def test_rrtmg_compatibility_token_is_explicit_and_pair_bound():
         native, wrf_rrtmg_compatibility=WRF_RRTMG_TO_RTE_RRTMGP))
     assert imported.wrf_rrtmg_compatibility == WRF_RRTMG_TO_RTE_RRTMGP
 
-    with pytest.raises(ValueError, match="requires the resolved 4/4"):
+    with pytest.raises(ValueError,
+                       match="the token is the receipt of the RRTMG 4/4"):
         validate_run_config(_cfg(
             wrf_rrtmg_compatibility=WRF_RRTMG_TO_RTE_RRTMGP))
     with pytest.raises(ValueError, match="wrf_rrtmg_compatibility must"):
@@ -319,10 +320,64 @@ def test_rrtmg_compatibility_token_is_explicit_and_pair_bound():
 
 
 def test_rrtmg_adapter_rejects_cloud_coupling_off():
-    with pytest.raises(ValueError, match="always on"):
+    """The refusal stands, and it names an EVIDENCE gap, not a physics one.
+
+    The old assertion matched "always on", the phrase that made this an
+    option-envelope policy: icloud is WRF's clear-sky switch, gpuwm
+    honours it on the 1/1 pair, and the legacy preparation carries both
+    of its arms.  What the 4/4 pair lacks is a recorded oracle case at
+    icloud=0, so the message has to say which kind of gap it is and where
+    the switch does work -- otherwise the next reader reads "not
+    implemented" and deletes a refusal that is protecting a receipt.
+    """
+
+    with pytest.raises(ValueError) as caught:
         validate_run_config(_cfg(ra_physics=4, icloud=0))
+    message = str(caught.value)
+    assert "evidence gap" in message
+    assert "oracle case at icloud=0" in message
+    assert "ra_lw_physics=1" in message and "ra_sw_physics=1" in message
 
 
 def test_current_noah_contract_rejects_non_four_layer_state():
     with pytest.raises(ValueError, match="must be 4"):
         validate_run_config(_cfg(sf_surface_physics=2, num_soil_layers=9))
+
+
+def test_a_half_named_component_is_told_which_keys_it_left_out():
+    """The message stops printing a value nobody wrote.
+
+    A component is selected by its whole selector tuple, and a mapping
+    that names SOME of a component's keys used to be refused with
+    ``{'ra_lw_physics': 4, 'ra_sw_physics': None}`` -- the None is this
+    resolver's own filler, read back to the user as if they had typed it.
+    Selector keys carry no registry default on purpose (filling one in
+    would substitute a scheme nobody asked for), so the fix is a distinct
+    message naming the keys that carry no value, not a substitution.
+    """
+
+    from gpuwm.physics_compat import _resolve_physics_component_options
+
+    with pytest.raises(PhysicsCapabilityError) as caught:
+        _resolve_physics_component_options({"ra_lw_physics": 4})
+    message = str(caught.value)
+    assert "'ra_sw_physics'" in message
+    assert "TOGETHER" in message
+    assert "None" not in message
+
+
+def test_an_unimplemented_selector_value_is_told_what_is_implemented():
+    """A refusal that lists the values that DO resolve.
+
+    The tuple is refused because no implemented option carries it; the
+    reader's next question is what does, and the registry knows.
+    """
+
+    from gpuwm.physics_compat import _resolve_physics_component_options
+
+    with pytest.raises(PhysicsCapabilityError) as caught:
+        _resolve_physics_component_options(
+            {"ra_lw_physics": 7, "ra_sw_physics": 7})
+    message = str(caught.value)
+    assert "Implemented selector tuples for this component" in message
+    assert "'ra_lw_physics': 4" in message

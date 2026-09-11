@@ -94,6 +94,22 @@ def module_source(name: str) -> str:
 @lru_cache(maxsize=None)
 def load_module(name: str):
     import cupy as cp
+    if name.startswith("noahmp_"):
+        from gpuwm.core.noahmp_kernel_sources import (
+            NOAHMP_TRANSLATION_UNITS, compile_runtime_unit)
+        # A standalone Noah-MP unit compiles through the one Noah-MP
+        # RawModule site, so the source string a forecast hands NVRTC is
+        # the one its frame recording was read from.  Fragments (which
+        # fail alone, and must keep failing alone) and the generic C++17
+        # VEGE_FLUX census stay on the plain route below: the runtime
+        # VEGE_FLUX unit is C++14 without the preamble and has its own
+        # factory.  tests/test_kernel_loader_inert.py asserts the two
+        # routes assemble byte-identical source for every unit this
+        # branch takes.
+        if (name in NOAHMP_TRANSLATION_UNITS
+                and len(NOAHMP_TRANSLATION_UNITS[name]) == 1
+                and name != "noahmp_vegeflux"):
+            return compile_runtime_unit(name, module_key=f"{MODULE_KEY_ROOT}:{name}")
     src = module_source(name)
     mod = cp.RawModule(code=src, options=("-std=c++17",), name_expressions=None)
     mod.compile()

@@ -2071,7 +2071,8 @@ def _tendency_flag_identity(
     # W4 mixscalars admission (this wave): with bl_mynn_mixscalars=1 the
     # five qn-family flags are REQUIRED true — the anchored fixture family
     # (w4-oracle-fixtures) pins exactly that combo, and a
-    # partial-flag run would be an unmeasured combination.  With
+    # false flag names a column the solve would read and the
+    # state does not allocate.  With
     # mixscalars=0 the pre-admission refusal stands unchanged.
     qn_flags = (
         ("FLAG_QNC", flag_qnc), ("FLAG_QNI", flag_qni),
@@ -2082,9 +2083,10 @@ def _tendency_flag_identity(
         for name, flag in qn_flags:
             if flag is not True:
                 raise ValueError(
-                    f"MYNN mixscalars lane requires {name} true (the "
-                    "anchored stock fixture combo; partial qn flag sets "
-                    "are unmeasured)"
+                    f"MYNN bl_mynn_mixscalars=1 mixes all five qn "
+                    f"columns and {name} says its column is absent. "
+                    "Select mp_physics=28, which carries the family, or "
+                    "bl_mynn_mixscalars=0."
                 )
     else:
         for name, flag in qn_flags:
@@ -2539,8 +2541,15 @@ def mynn_tendencies_nomf(
         raise ValueError("MYNN tendency lane requires bl_mynn_edmf=0")
     if bl_mynn_edmf_mom != 0 or type(bl_mynn_edmf_mom) is not int:
         raise ValueError("MYNN tendency lane requires bl_mynn_edmf_mom=0")
+    # Not a missing measurement: the no-mass-flux lane never binds the
+    # five qn columns or their s_awqn* interfaces, so there is nothing
+    # for the mixscalars arms to solve here.
     if bl_mynn_mixscalars != 0 or type(bl_mynn_mixscalars) is not int:
-        raise ValueError("MYNN tendency lane requires bl_mynn_mixscalars=0")
+        raise ValueError(
+            "MYNN no-mass-flux tendency lane carries no qn columns, so "
+            "bl_mynn_mixscalars=1 has nothing to mix here. Run the "
+            "mass-flux lane (bl_mynn_edmf=1) or set "
+            "bl_mynn_mixscalars=0.")
     _tendency_flag_identity(
         flag_qc, flag_qi, flag_qs, flag_qnc, flag_qni,
         flag_qnwfa, flag_qnifa, flag_qnbca, flag_ozone,
@@ -2625,7 +2634,7 @@ def mynn_tendencies_default(
     # W4 mixscalars admission (this wave; anchored fixtures
     # w4-oracle-fixtures): bl_mynn_mixscalars=1 routes the
     # five stock qn solves through gpuwm.core.mynn_scalar_mix.  Any other
-    # nonzero value stays refused — unmeasured combination.
+    # other value has no meaning: WRF defines the key at 0 or 1.
     if bl_mynn_mixscalars not in (0, 1) or \
             type(bl_mynn_mixscalars) is not int:
         raise ValueError(
@@ -3616,7 +3625,7 @@ def mynn_bl_driver(
     # into DMP_mf's scalar_opt>0 accumulation and the five s_awqn*
     # interfaces into the tendency solve (module_bl_mynn.F binds them at
     # the same call sites as the admitted s_aw* set).  Any value outside
-    # {0,1} stays refused: unmeasured combination.
+    # {0,1} has no meaning: WRF defines the key at 0 or 1.
     if bl_mynn_mixscalars not in (0, 1) or \
             type(bl_mynn_mixscalars) is not int:
         raise ValueError(

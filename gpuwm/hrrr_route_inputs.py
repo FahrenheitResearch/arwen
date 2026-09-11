@@ -45,38 +45,33 @@ FORCING_INTERVAL_SECONDS = 3600
 NUM_METGRID_LEVELS = 51
 NUM_METGRID_SOIL_LEVELS = 9
 
-#: Selectors this route refuses even WITH a ported nest edge, each naming
-#: the concrete breakage (gate law).  28 (aerosol Thompson): the scheme
-#: has no aerosol lateral boundary condition -- the registered mp=28
-#: boundary deviation (gpuwm/core/moist.py) depletes domain-interior
-#: nwfa/nifa without bound with run length, and this route is precisely a
-#: nested, laterally-forced, multi-hour route run by strangers from a
-#: public config, the worst place in the tree for that deviation.
-#: Recorded since 1.4.1 (census row in
-#: tests/test_mp28_runtime_reachability.py); revisit when a QNWFA/QNIFA
-#: ingest lane exists, not before.
-AEROSOL_LATERAL_BC_BLOCKED_MP_PHYSICS = frozenset({28})
-
 #: Microphysics the route admits: DERIVED from the nest-transition
 #: resolver's ported set rather than re-spelled, so this door can never
-#: again sit behind a ratified port.  It did exactly that once -- the set
+#: again sit behind a ratified port.  It did exactly that twice -- the set
 #: stayed at the pre-P3 five after mp=50's rime-pair closure was ratified
 #: into ``microphysics_transition.PORTED_MP_PHYSICS``, refusing a scheme
 #: whose ingest (``HRRR_ANALYZED_HYDROMETEOR_MOIST_PACKAGE[50]``), nest
 #: edges (both directions, all ported partners) and history inventory
 #: (presence-guarded QIR/QIB rows in ``gpuwm/io/wrfout.py``; a P3 run
 #: omits QSNOW/QGRAUP exactly as stock WRF's Registry does) were all
-#: already defined -- and the old "receipted-run decision" prose here was
-#: the only thing left refusing it.
+#: already defined -- and, until R-004/R-044, it subtracted mp=28 a second
+#: time on this route's own feet.
 #:
-#: 16 and 28 stay out through the derivation (their mixed edges are
-#: refused by name, ``UNVALIDATED_MIXED_EDGE_SELECTORS``), and 28 is
-#: ADDITIONALLY subtracted on this route's own feet below: if aerosol
-#: Thompson's closures are ever ratified, ``PORTED_MP_PHYSICS`` gaining
-#: 28 must not silently open the one public, laterally-forced, multi-hour
-#: route to the scheme's recorded unbounded-depletion deviation.
-SUPPORTED_MICROPHYSICS = (
-    frozenset(PORTED_MP_PHYSICS) - AEROSOL_LATERAL_BC_BLOCKED_MP_PHYSICS)
+#: That subtraction is GONE (R-044).  It claimed the route had no aerosol
+#: lateral boundary condition; the route has had one since the WIF
+#: climatology ingest landed (``gpuwm/ingest/wif_climatology.py``, default
+#: through ``mp28_aerosol_source='auto'``) and nwfa/nifa are carried in
+#: ``lateral_bc.COUPLED_SCALAR_STATE_FIELDS`` on every route, this one
+#: included.  What is actually conditional is the DATASET, not the source
+#: name, and the dataset precondition is measured once for every route by
+#: :func:`gpuwm.config.mp28_aerosol_lateral_forcing_precondition` -- raised
+#: before the fetch by ``validate_experiment_preparation`` at every door
+#: that commits to building a forecast, kept as a floor at real
+#: initialization and reported at plan review from the registry's row --
+#: which also closes the hole
+#: this table left open, where every specified-BC route that is not spelled
+#: "hrrr" ran into the same depletion with no refusal at all.
+SUPPORTED_MICROPHYSICS = frozenset(PORTED_MP_PHYSICS)
 
 #: The existing recommended default. It does not restrict other valid suites.
 ROUTE_DEFAULT_PHYSICS_PROFILE = "thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1"
@@ -142,13 +137,21 @@ def route_physics_problems(switches, *, label: str = "") -> list[str]:
     readings can never drift.
     """
 
-    problems = []
+    problems: list[str] = []
     # Actual analyzed-input initialization requirements remain authoritative.
     # Surface, turbulence, cumulus and radiation use the common RunConfig
     # validators; membership in a measured preset is not a capability.
-    if int(switches["mp_physics"]) == 28:
-        problems.append(label + "mp_physics=28 requires aerosol boundary species "
-                        "absent from this native analyzed-input stream")
+    #
+    # This list is EMPTY today and that is the correct state, not a stub.
+    # Its one row (mp_physics=28) was retired with R-044: the breakage it
+    # named -- no aerosol lateral boundary condition -- was fixed by the
+    # WIF climatology ingest and the coupled nwfa/nifa boundary, and the
+    # residue that IS real (the dataset may be missing) is source
+    # independent: every door that commits to a forecast refuses it
+    # before it fetches anything, and plan review reports it. The function
+    # stays because it is THE spelling of this route's physics slice,
+    # shared by the emission gate and the wizard's pairing predicate; a
+    # future route-specific objection is a row here and nowhere else.
     return problems
 
 

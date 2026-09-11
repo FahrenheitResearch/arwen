@@ -468,7 +468,8 @@ def _scatter_rows(dst: np.ndarray, src, j0: int) -> None:
     dst[..., j0:j0 + rows, :] = src
 
 
-def carrier_manifest_for(cfg, *, probe_nx: int = 48, probe_ny: int = 40):
+def carrier_manifest_for(cfg, *, probe_nx: int = 48, probe_ny: int = 40,
+                         reflectivity: bool = True):
     """The shape rules for ALL the carriers, from a probe that has stepped.
 
     ``manifest_from_arrays`` read off a freshly built state is one name
@@ -485,6 +486,20 @@ def carrier_manifest_for(cfg, *, probe_nx: int = 48, probe_ny: int = 40):
     slabs fill what they can.  ``probe_ny != probe_nx`` because
     ``manifest_from_arrays`` refuses a square probe -- on a square domain a
     y/x transposition in the shape rules would pass unnoticed.
+
+    ``reflectivity=True`` (the default, audit R-052) puts ``refl_10cm`` in
+    the manifest, and therefore in the store, and therefore in the gather
+    and the scatter.  It is a REBUILT diagnostic that no restart manifest
+    names, so without this the field each tile computes has nowhere to land
+    and the domain never holds a copy -- and for mp=9, 18 and 50, whose dBZ
+    is produced inside the scheme call and published through no operator, it
+    is the only route to reflectivity there is.  The slot is PRIMED here
+    rather than stepped into existence: :func:`gpuwm.core.streaming
+    .prime_refl_10cm` allocates it and integrates nothing, which is the
+    published way to make a manifest name it.  The store it sizes starts
+    empty and is filled by the first sweep that carries ``refl_10cm_due``
+    (:func:`tilestream.driver.reflectivity_run_kwargs`), which is why
+    :func:`snapshot` has to be told whether that sweep has happened.
     """
     import cupy as cp
 
@@ -497,8 +512,12 @@ def carrier_manifest_for(cfg, *, probe_nx: int = 48, probe_ny: int = 40):
                                                    int(probe_nx)),
                                   0, bubbles=None, dx=float(cfg.dx))
     harness.run_steps(state, probe, 1)
+    if reflectivity:
+        from gpuwm.core.streaming import prime_refl_10cm
+        prime_refl_10cm(state, probe)
     manifest = hoststore.manifest_from_arrays(
-        physinv.carrier_inventory(state), int(cfg.nz), int(probe_ny),
+        physinv.carrier_inventory_with_refl(state) if reflectivity
+        else physinv.carrier_inventory(state), int(cfg.nz), int(probe_ny),
         int(probe_nx))
     del state, drv
     cp.get_default_memory_pool().free_all_blocks()
@@ -654,7 +673,8 @@ SURFACE_CARRIERS: dict = {
 }
 
 
-def composite_reflectivity(store, geo_store, cfg, *, slab_rows: int = 64):
+def composite_reflectivity(store, geo_store, cfg, *, slab_rows: int = 64,
+                           refl_stash: str = "absent"):
     """Column-maximum REFL_10CM (dBZ), computed out of core, ArWen's own way.
 
     ``gpuwm.core.refl.compute_refl_10cm`` is the model's diagnostic and this
@@ -676,22 +696,67 @@ def composite_reflectivity(store, geo_store, cfg, *, slab_rows: int = 64):
 
     The column max is the standard composite: ``gpuwm/render.py`` takes
     exactly ``REFL_10CM.max(axis=vertical)`` for its composite product.
+
+    THE SCHEME'S OWN FIELD WINS, exactly as it does for the streamed real
+    case -- and ``refl_stash`` is what says there is one to win with.  This
+    lane's store carries ``scratch/refl_10cm`` from the manifest onwards
+    (:func:`carrier_manifest_for`), but it starts EMPTY: no slab computes
+    reflectivity while the store is being built, and the slot holds a field
+    only once a sweep carrying ``refl_10cm_due`` has written every tile's
+    window into it.  So the caller says which it has:
+
+    ``"computed"``
+        a sweep configured by :func:`tilestream.driver
+        .reflectivity_run_kwargs` has run, and that array IS the model's
+        reflectivity -- the only route for mp=9, 18 and 50, whose dBZ is
+        produced inside the scheme call and published through no operator,
+        and the only correct route for mp=8 and 28, whose operator branch
+        needs a graupel-number shadow that is rebuilt and never serialised.
+    ``"absent"`` (the default) or ``"primed"``
+        the slab recompute below, because zeros rendered as dBZ are a
+        domain-wide 0 dBZ field that reads like weak echo rather than like
+        a field nothing has written.
+
+    The species the recompute reads come from
+    ``gpuwm.core.refl.REFL_10CM_INPUT_SPECIES`` -- audit R-052: the tuple
+    that used to be typed here was Morrison's six-moment set, duplicated
+    from the real-case lane, so every other scheme was refused for lacking
+    a moment its reflectivity formulation never reads.
     """
     import cupy as cp
 
-    from gpuwm.core.refl import compute_refl_10cm
+    from gpuwm.core.refl import (NativeReflectivityScheme,
+                                 compute_refl_10cm, refl_10cm_input_species)
     from gpuwm.core.state import init_at_rest
     from gpuwm.core.grid import make_base_state, make_vertical_coord
     from gpuwm.verify.cases.wk82 import wk82_sounding
+    from tilestream.physics_inventory import REFL_KEY
 
     nz, ny, nx = int(cfg.nz), int(cfg.ny), int(cfg.nx)
     if ny % int(slab_rows):
         raise ValueError(f"slab_rows={slab_rows} must divide ny={ny}")
+    if refl_stash == "computed":
+        stashed = store.get(REFL_KEY)
+        if stashed is None:
+            raise KeyError(
+                f"this store is said to carry a computed reflectivity and "
+                f"has no {REFL_KEY!r}; carrier_manifest_for(reflectivity="
+                "True) is what puts the slot in the manifest")
+        return np.asarray(stashed, dtype=np.float32).max(axis=0)
     out = np.empty((ny, nx), dtype=np.float32)
 
     coord = make_vertical_coord(nz, hybrid_opt=cfg.hybrid_opt, etac=cfg.etac)
     cfg_slab = _replace_ny(cfg, int(slab_rows))
-    species = ("qv", "qr", "nr", "qs", "ns", "qg", "ng", "p", "thp")
+    try:
+        species = tuple(refl_10cm_input_species(int(cfg.mp_physics))
+                        + ("p", "thp"))
+    except NativeReflectivityScheme as exc:
+        raise KeyError(
+            f"{exc}  This store's {REFL_KEY!r} is {refl_stash!r}: sweep it "
+            "with the keywords of tilestream.driver.reflectivity_run_kwargs "
+            "-- which make every tile write the slot -- and pass "
+            "refl_stash='computed' here, or render a scheme whose "
+            "reflectivity the operator computes.") from exc
 
     for j0 in range(0, ny, int(slab_rows)):
         sl = slice(j0, j0 + int(slab_rows))
@@ -720,7 +785,7 @@ def composite_reflectivity(store, geo_store, cfg, *, slab_rows: int = 64):
 
 
 def snapshot(store, geo_store, cfg, *, elapsed_s: float, refl: bool = True,
-             slab_rows: int = 64) -> dict:
+             slab_rows: int = 64, refl_stash: str = "absent") -> dict:
     """Everything one figure needs, as plain host arrays.
 
     Column-max ``w`` is in here because it is the single most honest test of
@@ -747,7 +812,8 @@ def snapshot(store, geo_store, cfg, *, elapsed_s: float, refl: bool = True,
                 geo_store[name], dtype=np.float32).copy()
     if refl:
         out["REFL_COMPOSITE"] = composite_reflectivity(
-            store, geo_store, cfg, slab_rows=slab_rows)
+            store, geo_store, cfg, slab_rows=slab_rows,
+            refl_stash=refl_stash)
         out["REFL_COMPOSITE_units"] = "dBZ"
     return out
 

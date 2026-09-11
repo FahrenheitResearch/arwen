@@ -447,14 +447,22 @@ def test_the_mynn_matrix_is_the_same_in_every_land_surface_column(
 #: module_ra_rrtmg_sw.F:10851-10863) transcribed into hydrometeor_paths --
 #: so the pairing resolves instead of refusing, and
 #: gpuwm.config.validate_p3_radiation is retired with it.
-MYNN_MICROPHYSICS_ACCEPTED = [0, 1, 6, 8, 10, 16, 18, 28, 50]
+#: mp_physics=9 (Milbrandt-Yau) followed P3 out of the excluded set for
+#: the same shape of reason.  It was excluded because the RTE+RRTMGP
+#: adapter had no cloud-optics row for it and refused the pairing; the row
+#: now exists -- ``9: "milbrandt2"``, the scheme's own radii from the
+#: block WRF ships commented out (module_mp_milbrandt2mom.F:3351-3378),
+#: evaluated over the transported number moments -- so the pairing
+#: resolves, and gpuwm.config.validate_milbrandt2_options no longer
+#: carries the refusal.
+MYNN_MICROPHYSICS_ACCEPTED = [0, 1, 6, 8, 9, 10, 16, 18, 28, 50]
 
-#: The admitted microphysics values the MYNN slice does not reach, and
-#: why.  Stated as the pair it is refused against, because it is refused
-#: against THAT radiation variant and not in general.  50 was here from
-#: the 1.9 gate until the P3 cloud-optics row landed; see
-#: MYNN_MICROPHYSICS_ACCEPTED.
-MYNN_MICROPHYSICS_EXCLUDED = (9,)
+#: The admitted microphysics values the MYNN slice does not reach.  EMPTY:
+#: every admitted scheme composes with MYNN under RTE+RRTMGP.  50 was here
+#: from the 1.9 gate until the P3 cloud-optics row landed, and 9 until
+#: the Milbrandt-Yau one did; see MYNN_MICROPHYSICS_ACCEPTED.  The tuple
+#: stays so the test below keeps asserting the partition is exact.
+MYNN_MICROPHYSICS_EXCLUDED = ()
 
 
 def test_mynn_composes_with_every_microphysics_and_cumulus_scheme(
@@ -481,21 +489,22 @@ def test_mynn_composes_with_every_microphysics_and_cumulus_scheme(
     excluded = sorted(set(walk.AXIS_VALUES["mp_physics"]) - set(accepted))
     assert excluded == sorted(MYNN_MICROPHYSICS_EXCLUDED)
 
-    # Non-vacuous, and the reason is each microphysics lane's own rule
-    # rather than anything about MYNN: the same scheme runs under MYNN on
-    # the Dudhia pair, and the refusal names the coupling it cannot make.
+    # The exclusion set is empty, and that emptiness is measured rather
+    # than assumed: the two schemes that used to sit in it (50, then 9)
+    # were each refused for a missing RTE+RRTMGP cloud-optics row, and
+    # each row now exists, so both ACCEPT under the MYNN + RTE+RRTMGP
+    # anchor on the DEFAULT variant -- fixed means default.  Their Dudhia
+    # pairing, the former remedy, still accepts too.
     anchor = dict(walk.ANCHORS["mynn-rrtmgp-noah"], **walk.TIER_A_HELD)
-    for mp_physics in MYNN_MICROPHYSICS_EXCLUDED:
-        refused = walk.attempt(dict(anchor, mp_physics=mp_physics))
-        assert refused.verdict == "REFUSED", mp_physics
-        assert "has no cloud-optics coupling" in refused.message
-        assert "ra_rrtmg_variant='rrtmg_legacy'" in refused.message
-        accepted_on_dudhia = walk.attempt(dict(
+    for mp_physics in (9, 50):
+        assert mp_physics in accepted
+        on_rrtmgp = walk.attempt(dict(anchor, mp_physics=mp_physics))
+        assert on_rrtmgp.verdict == "ACCEPTED", (
+            mp_physics, on_rrtmgp.message)
+        on_dudhia = walk.attempt(dict(
             anchor, mp_physics=mp_physics,
             ra_lw_physics=0, ra_sw_physics=1))
-        assert accepted_on_dudhia.verdict == "ACCEPTED", (
-            f"the mp={mp_physics} refusal is about RRTMGP cloud optics, so "
-            f"its remedy has to run under MYNN: {accepted_on_dudhia.message}")
+        assert on_dudhia.verdict == "ACCEPTED", (mp_physics, on_dudhia.message)
 
 
 def _radiation_bearing(switches) -> bool:

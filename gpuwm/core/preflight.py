@@ -87,7 +87,7 @@ hookup is a controller handoff commit at merge.
 """
 
 from __future__ import annotations
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 
 import json
@@ -104,6 +104,7 @@ from gpuwm.config import (CUMULUS_ADVECTIVE_FORCING_SCHEMES,
                           radiation_enabled, radiation_scheme_ids,
                           soil_layer_count)
 from gpuwm.core import kernel_frame_recordings as _kernel_frame_recordings
+from gpuwm.core.noahmp_kernel_sources import NOAHMP_PRICING_MODULES
 from gpuwm.experiment import DomainConfig, ExperimentConfig
 
 # ---------------------------------------------------------------------------
@@ -1206,6 +1207,24 @@ class DeviceLocalMemoryProfile:
     #: priced from
     #: :data:`MODELLED_BARE_CONTEXT_BYTES_PER_RESIDENT_THREAD`.
     bare_context_bytes: int | None = None
+    #: The compile platform of THIS card as
+    #: :func:`gpuwm.certify.compile_platform.compile_platform_fingerprint`
+    #: read it -- ``(device_compute_capability, nvrtc_build)`` -- when the
+    #: profile was measured off a present card, and ``None`` for a card
+    #: that is not in the machine or whose toolchain could not be
+    #: resolved.  The per-thread frames of the Noah-MP composed units are
+    #: readings of exactly this pair
+    #: (:data:`gpuwm.core.kernel_frame_recordings.NOAHMP_COMPOSED_FRAME_RECORDINGS`):
+    #: a profile that carries a recorded pair prices ``sf_surface_physics
+    #: = 4`` from that platform's own row, and a profile without one --
+    #: or on a pair nobody has read -- prices it from the ceiling over the
+    #: recorded rows with the basis stated
+    #: (:func:`gpuwm.core.noahmp_frame_provenance.frame_basis_for_profile`).
+    compile_platform: tuple[str, str] | None = None
+
+    @property
+    def platform_is_read(self) -> bool:
+        return self.compile_platform is not None
 
     @property
     def resident_thread_capacity(self) -> int:
@@ -1249,15 +1268,59 @@ class DeviceLocalMemoryProfile:
         return 0 if over <= 0 else over * self.resident_thread_capacity
 
 
-def non_pool_basis(profile: "DeviceLocalMemoryProfile") -> str:
+def non_pool_basis(profile: "DeviceLocalMemoryProfile",
+                   exp: "ExperimentConfig | None" = None) -> str:
     """One sentence naming the card row a non-pool charge came from.
 
     Printed beside the number.  A grid-independent term large enough to
     refuse a card on its own has to be traceable to the reading that
     made it, or the reader has no way to tell a measurement from an
     assumption -- which is the whole history of this module.
-    """
 
+    With ``exp`` given and selecting Noah-MP, the sentence also says
+    where the Noah-MP frames came from: this card's own recorded platform
+    ("measured on this card's compile platform sm_86/12.9.86 ..."), or
+    the ceiling over the recorded platforms with the reason this card had
+    no row of its own -- so a user reading a "fits" verdict can see
+    whether the Noah-MP term was measured on the card in front of them
+    (:func:`gpuwm.core.noahmp_frame_provenance.noahmp_frame_basis`).
+    """
+    sentence = _non_pool_profile_basis(profile)
+    if exp is not None and selects_noahmp(exp):
+        from gpuwm.core.noahmp_frame_provenance import noahmp_frame_basis
+
+        basis = noahmp_frame_basis(physics_kernel_modules(exp), profile)
+        if basis is not None:
+            sentence = f"{sentence}; {basis.sentence()}"
+    if exp is not None:
+        # A module with no reading anywhere is priced, not refused, and
+        # the number it is priced at is an assumption -- so the sentence
+        # beside it says so and names the modules it covers.
+        assumed = sorted(assumed_bound_modules(physics_kernel_modules(exp)))
+        if assumed:
+            bound = _kernel_frame_recordings.assumed_frame_bound()
+            sentence = (
+                f"{sentence}; {', '.join(assumed)} priced at the assumed "
+                f"bound {bound} B per thread "
+                f"({_kernel_frame_recordings.ASSUMED_BOUND_PHRASE}; the "
+                "widest frame any module in this tree has been recorded at)")
+    return sentence
+
+
+def _non_pool_profile_basis(profile: "DeviceLocalMemoryProfile") -> str:
+    """The profile half of :func:`non_pool_basis`: the card, its context
+    and the compile platform its standalone frames were read at."""
+
+    # The frames half of the backing store is a reading of the card's
+    # compile platform (kernel_frame_recordings.py keys every row on the
+    # target architecture and the NVRTC build), so a profile that carries
+    # one names it: the reader can then tell a frame priced from THIS
+    # platform's row from one priced off the cross-platform ceiling.
+    platform = ""
+    if profile.compile_platform is not None:
+        capability, build = profile.compile_platform
+        platform = (f", frames read at its compile platform sm_{capability} / "
+                    f"NVRTC {build}")
     if profile.context_is_measured:
         return (
             f"measured on this card ({profile.name}, "
@@ -1266,7 +1329,21 @@ def non_pool_basis(profile: "DeviceLocalMemoryProfile") -> str:
             f"context {profile.cuda_context_bytes / GIB:.2f} GiB "
             f"(bare {profile.bare_context_bytes / GIB:.2f} + "
             f"{CONTEXT_RUNTIME_GROWTH_BYTES / GIB:.2f} module-load growth) "
-            f"plus the local-memory backing store of its kernel set")
+            f"plus the local-memory backing store of its kernel set{platform}")
+    if profile.compile_platform is not None:
+        # A present card whose bare context could not be read (the CUDA
+        # context already existed when this process looked): the context
+        # is modelled, the card is not absent, and the sentence says
+        # which half is which.
+        return (
+            f"read on this card ({profile.name}, "
+            f"{profile.multiprocessor_count} SMs x "
+            f"{profile.max_threads_per_multiprocessor} threads): CUDA context "
+            f"{profile.cuda_context_bytes / GIB:.2f} GiB modelled from the "
+            f"measured {MODELLED_BARE_CONTEXT_BYTES_PER_RESIDENT_THREAD} B per "
+            f"resident thread because a context already existed when it was "
+            f"read, plus the local-memory backing store of its kernel "
+            f"set{platform}")
     return (
         f"modelled for an absent card ({profile.name}, "
         f"{profile.multiprocessor_count} SMs x "
@@ -1405,7 +1482,33 @@ def local_memory_profile_from_device(cp) -> DeviceLocalMemoryProfile:
         default_stack_limit_bytes=stack_limit,
         bare_context_bytes=measured_bare_context_bytes(
             before, after, stack_store_bytes=stack_limit * capacity),
+        compile_platform=read_compile_platform(),
     )
+
+
+def read_compile_platform() -> tuple[str, str] | None:
+    """``(device_compute_capability, nvrtc_build)`` of THIS process's card
+    and compiler, or ``None`` when either could not be resolved.
+
+    The two :func:`gpuwm.certify.compile_platform.compile_platform_fingerprint`
+    keys that decide code generation, in the shape
+    :mod:`gpuwm.core.kernel_frame_recordings` keys its rows on.  An
+    unresolved half is ``None`` for the pair: "unavailable" must never
+    match a recording.  Device contact -- only called from readers that
+    are already touching the card.
+    """
+    try:
+        from gpuwm.certify.compile_platform import (
+            UNRESOLVED, compile_platform_fingerprint)
+
+        fingerprint = compile_platform_fingerprint()
+    except Exception:  # noqa: BLE001
+        return None
+    pair = (fingerprint.get("device_compute_capability"),
+            fingerprint.get("nvrtc_build"))
+    if any(not isinstance(v, str) or not v or v == UNRESOLVED for v in pair):
+        return None
+    return (str(pair[0]), str(pair[1]))
 
 
 #: Per-module MAXIMUM static local frame per thread, in bytes, as the CUDA
@@ -1543,6 +1646,16 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # above the row, because milbrandt2's VERTICAL_LEVEL_BOUNDS = (3, 256)
     # refuses anything deeper than the 256 tier this 2,048 B measures.
     "milbrandt2": 2048,
+    # The pure Z block lifted out of milbrandt2.cu so the radar
+    # observation operator can launch it without the scheme's state
+    # update (gpuwm/core/kernels/milbrandt2_zet.cu).  It reads one cell
+    # and holds no column, so it reserves nothing -- MEASURED 0 B on the
+    # RTX 3080 at NVRTC 13.0.48, the one recording that carries a row for
+    # this module (kernel_frame_recordings.SM86_NVRTC_13_0_48).  This
+    # table is the element-wise maximum over the recordings and is checked
+    # for exact equality against them at import, so the 0 here IS that
+    # reading rather than a second statement of it.
+    "milbrandt2_zet": 0,
     "morrison": 5120,
     "microphysics_validation": 0,
     # MYJ.  MEASURED on an RTX 5090 by the driver sweep this table is
@@ -1987,16 +2100,20 @@ WDM6_TIER_FRAME = TieredKernelFrame("wdm6", "WDM6_KMAX", 64, 152)
 #: ceiling on that band, which is the safe direction.)
 WSM6_TIER_FRAME = TieredKernelFrame("wsm6", "WSM6_KMAX", 64, 112)
 
-#: Kernel modules whose local frame CANNOT be measured at this checkout
-#: because they do not compile alone: ``noahmp_driver.cu``,
-#: ``noahmp_energy.cu``, ``noahmp_thermal.cu`` and ``noahmp_libm_slab.cu``
-#: all fail NVRTC with ``identifier "r_pow" is undefined``, and
-#: ``noahmp_glacier.cu`` with ``identifier "MU" is undefined`` -- they are
-#: fragments that borrow ``noahmp_leaves.cu``'s single audited libm
-#: transcription and compile only through
-#: ``noahmp_kernel_sources.translation_unit_source``.  A configuration that
-#: selects one as a standalone module is REFUSED rather than priced from a
-#: guess -- see :func:`kernel_local_memory_bytes`.
+#: Kernel source files that have no standalone local frame because they
+#: never compile alone: ``noahmp_driver.cu``, ``noahmp_energy.cu``,
+#: ``noahmp_thermal.cu``, ``noahmp_libm_slab.cu`` and ``noahmp_glacier.cu``
+#: are FRAGMENTS that borrow ``noahmp_leaves.cu``'s single audited libm
+#: transcription (and the glacier its macros), and NVRTC refuses each one
+#: handed over by itself.  The units the model launches are the
+#: compositions :mod:`gpuwm.core.noahmp_kernel_sources` builds from them,
+#: and THOSE are priced -- from a reading of the composed unit on the
+#: card's own compile platform
+#: (:data:`gpuwm.core.kernel_frame_recordings.NOAHMP_COMPOSED_FRAME_RECORDINGS`,
+#: keys ``noahmp_*_composed``; :func:`kernel_local_frame_bytes`).  No
+#: selector row names a fragment; a row that did would be a table defect,
+#: and :func:`kernel_local_frame_bytes` prices it at the assumed bound
+#: (:func:`assumed_bound_modules`) and says so, rather than refusing.
 #: The legacy-RRTMG members are the same shape of thing: ``rrtmg_sw.cu``,
 #: ``rrtmg_lw_chain.cu`` and the ``rrtmg_lw_taugb*.cu`` band fragments
 #: compile only through their own chained translation unit
@@ -2038,8 +2155,8 @@ class ChainedTranslationUnitFrame:
     (gpuwm/core/rrtmg_lw.py section 10), and the SW composition compiles
     ``rrtmg_sw.cu`` through its own unit (gpuwm/core/rrtmg_sw.py).  The
     fragments therefore stay in :data:`UNMEASURED_KERNEL_MODULES` --
-    selecting one standalone still refuses -- while the unit that DOES
-    launch carries the frame the driver measured for it.
+    selecting one standalone prices it at the assumed bound -- while the
+    unit that DOES launch carries the frame the driver measured for it.
 
     ``covers`` names the unmeasured fragments this measurement subsumes;
     the import-time checks below keep the two tables consistent.
@@ -2201,9 +2318,13 @@ _MICROPHYSICS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
 #: 28 is included: mp=28 routes REFL_10CM through the SAME Thompson
 #: reflectivity kernel as mp=8 (calc_refl10cm takes no droplet number and
 #: never re-reads rc), so the ``refl`` module is loaded on exactly the same
-#: cadence.  Pricing it here before ``gpuwm/core/refl.py`` admits 28 is the
-#: safe direction -- an over-priced rail refuses a run that would have fit,
-#: an under-priced one lets a run breach the budget.
+#: cadence -- which is not a judgement made here any more.  This set and
+#: :data:`_SELF_REFLECTIVITY_MICROPHYSICS` are held equal to the operator's
+#: own two tables at import by
+#: :func:`_hold_reflectivity_rail_equal_to_the_operator`, so 28 is here
+#: because ``gpuwm/core/refl.py`` dispatches it, and a rail that stopped
+#: agreeing with the operator -- in either direction, over-priced or under
+#: -- is refused rather than reasoned about.
 #:
 #: WHAT THIS SET DECIDES, which is narrower than its name: not "has a
 #: reflectivity diagnostic" but "reserves the SHARED reflectivity
@@ -2213,16 +2334,34 @@ _MICROPHYSICS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
 #: :data:`_SELF_REFLECTIVITY_MICROPHYSICS` instead.  Every accepted moist
 #: selector must appear in exactly one of the two, and
 #: :func:`domain_kernel_modules` refuses one that appears in neither.
-_REFLECTIVITY_MICROPHYSICS = frozenset({1, 6, 8, 10, 16, 18, 28})
+#: 18 IS NOT HERE, and was, until audit R-052.  NSSL two-moment carries its
+#: own S-band diagnostic, radardd02, ported at gpuwm.core.nssl2_diagnostics
+#: and already priced by this module's own microphysics row for mp=18; it
+#: reaches ``compute_and_stash_refl_10cm`` never -- gpuwm/core/microphysics
+#: .py routes 9, 18 and 50 to their adapters and only 1, 6, 8, 10, 16 and
+#: 28 to the shared operator -- so an NSSL domain reserved refl.cu's
+#: per-thread frame for a translation unit the run cannot launch, and a
+#: reservation that is too large refuses a run that would have fit.
+_REFLECTIVITY_MICROPHYSICS = frozenset({1, 6, 8, 10, 16, 28})
 
 #: The DELIBERATE absences from :data:`_REFLECTIVITY_MICROPHYSICS`, each
 #: with the reason it is a decision and not an omission.  The pattern is
-#: ``microphysics_transition``'s ``UNVALIDATED_MIXED_EDGE_SELECTORS``: a
-#: scheme that is out of an admission set says so by name, so the next
-#: reader finds a ruling rather than a gap.  Adding a moist selector to
+#: ``microphysics_transition``'s named-refusal tables: a scheme that is out
+#: of an admission set says so by name, so the next reader finds a ruling
+#: rather than a gap.  Adding a moist selector to
 #: :data:`_MICROPHYSICS_KERNEL_MODULES` without landing it in one set or
 #: the other now fails closed at ``gpuwm check``.
 _SELF_REFLECTIVITY_MICROPHYSICS: dict[int, str] = {
+    18: (
+        "NSSL two-moment fills the REFL_10CM slot from its own radardd02 "
+        "diagnostic (gpuwm.core.nssl2_diagnostics, priced by this module's "
+        "mp=18 kernel row as nssl2_diagnostics) and hands the finished "
+        "array to stash_refl_10cm, so no refl kernel is loaded.  The cost "
+        "of pricing refl.cu anyway is the one measured for mp=50 in the "
+        "row below -- refl compiles to 3,600 B per thread at nz=50, the "
+        "widest frame either scheme has -- charged to a domain that never "
+        "launches it."
+    ),
     9: (
         "Milbrandt-Yau fills the REFL_10CM slot inside its own "
         "milbrandt2 diagnostics kernel and hands the finished array to "
@@ -2251,6 +2390,49 @@ _SELF_REFLECTIVITY_MICROPHYSICS: dict[int, str] = {
         "runs that fit, for a kernel the run never launches."
     ),
 }
+
+
+def _hold_reflectivity_rail_equal_to_the_operator() -> None:
+    """HELD EQUAL, AT IMPORT, to the reflectivity operator's own tables.
+
+    These two sets answer one question -- "does this scheme reach
+    ``gpuwm.core.refl``'s shared translation unit?" -- and
+    ``gpuwm/core/refl.py`` answers exactly the same question in
+    ``REFL_10CM_INPUT_SPECIES`` (the schemes it dispatches) and
+    ``SCHEME_NATIVE_REFL_10CM`` (the schemes that compute their own dBZ,
+    with the reason each is out).  Two hand-kept copies of one decision is
+    how mp=18 came to be priced for a kernel it cannot launch, so the copy
+    that prices is refused at import if it stops agreeing with the copy
+    that dispatches.  The REASONS stay separate on purpose: the operator
+    says why a scheme has no generic call, this module says what pricing
+    it anyway costs, and neither sentence is the other's.
+    """
+
+    from gpuwm.core.refl import (REFL_10CM_INPUT_SPECIES,
+                                 SCHEME_NATIVE_REFL_10CM)
+
+    problems: list[str] = []
+    if set(REFL_10CM_INPUT_SPECIES) != set(_REFLECTIVITY_MICROPHYSICS):
+        problems.append(
+            "the schemes gpuwm.core.refl.compute_refl_10cm dispatches "
+            f"({sorted(REFL_10CM_INPUT_SPECIES)}) are not the schemes this "
+            "module prices refl.cu for "
+            f"({sorted(_REFLECTIVITY_MICROPHYSICS)})")
+    if set(SCHEME_NATIVE_REFL_10CM) != set(_SELF_REFLECTIVITY_MICROPHYSICS):
+        problems.append(
+            "the schemes gpuwm.core.refl names as computing their own "
+            f"REFL_10CM ({sorted(SCHEME_NATIVE_REFL_10CM)}) are not the "
+            "schemes this module excuses from the refl rail "
+            f"({sorted(_SELF_REFLECTIVITY_MICROPHYSICS)})")
+    if problems:
+        raise RuntimeError(
+            "gpuwm/core/preflight.py's reflectivity-rail sets disagree with "
+            "gpuwm/core/refl.py: " + "; ".join(problems)
+            + ".  A scheme belongs to exactly one of them, and the operator "
+            "is the authority for which.")
+
+
+_hold_reflectivity_rail_equal_to_the_operator()
 
 _CUMULUS_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     0: (), 1: ("kf", "kf_validation"),
@@ -2317,10 +2499,7 @@ _LAND_SURFACE_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     0: (),
     2: ("noah",),
     3: ("ruc",),
-    4: ("noahmp_bareflux", "noahmp_driver", "noahmp_energy",
-        "noahmp_fluxprep", "noahmp_leaves", "noahmp_radiation",
-        "noahmp_sflx", "noahmp_snow", "noahmp_soilwater", "noahmp_thermal",
-        "noahmp_vegeflux", "noahmp_vegprecip", "noahmp_water"),
+    4: NOAHMP_PRICING_MODULES,
 }
 #: ``ra_physics = 4`` is two implementations behind one selector value;
 #: the row here is the modern RTE+RRTMGP set and
@@ -2441,50 +2620,58 @@ def physics_kernel_modules(exp: ExperimentConfig) -> frozenset[str]:
     return frozenset(modules)
 
 
-def kernel_local_frame_bytes(exp: ExperimentConfig) -> dict[str, int]:
+def assumed_bound_modules(modules: Iterable[str]) -> frozenset[str]:
+    """The launched modules no recording in this tree covers.
+
+    Two shapes reach here: a fragment that never compiles alone
+    (:data:`UNMEASURED_KERNEL_MODULES`, reached when a selector row names
+    the fragment instead of the composed unit that launches it), and a
+    module with no row in any frame table at all.  Neither is refused.
+    Each is priced at
+    :func:`gpuwm.core.kernel_frame_recordings.assumed_frame_bound` -- the
+    widest frame any module has been recorded at, so the reservation is
+    never short -- and :func:`non_pool_basis` says the number is an
+    assumed bound and names the modules it covers.
+    """
+    modules = set(modules)
+    return frozenset(
+        (modules & UNMEASURED_KERNEL_MODULES)
+        | (modules - set(KERNEL_MAX_LOCAL_SIZE_BYTES)
+           - set(CHAINED_TRANSLATION_UNIT_FRAMES)
+           - set(NOAHMP_PRICING_MODULES)))
+
+
+def kernel_local_frame_bytes(
+        exp: ExperimentConfig, *,
+        profile: DeviceLocalMemoryProfile | None = None) -> dict[str, int]:
     """Widest per-thread local frame each launched module compiles to.
 
     A module launched by several domains is priced at the deepest of them:
     the specialized frame is monotone in the level count, and the driver's
     reservation is a maximum over everything the process ever launches.
+
+    Every module that compiles alone is priced from the cross-platform
+    ceiling and needs no ``profile``.  The Noah-MP composed units are
+    priced from the reading taken on the card's own compile platform when
+    the profile carries a recorded one (``None`` reads this machine's
+    card when no card was declared), and from the ceiling over the
+    recorded Noah-MP platforms otherwise, with the basis stated beside
+    the number by :func:`non_pool_basis` -- see
+    :mod:`gpuwm.core.noahmp_frame_provenance`.  A module with no reading
+    anywhere is priced at the assumed bound
+    (:func:`assumed_bound_modules`), never refused.
     """
     modules = physics_kernel_modules(exp)
-    unmeasured = sorted(modules & UNMEASURED_KERNEL_MODULES)
-    if unmeasured:
-        # THE WAY THROUGH, named (1.8.8 refusal sweep).  This message
-        # ended at "Refusing to guess", which is honest and is a dead
-        # end: there is no flag that skips the local-memory pricing --
-        # `gpuwm check` prices it on every run, and --alloc only ADDS a
-        # device measurement on top.  The one exit that exists is a
-        # land-surface scheme whose modules ARE measured, so it is
-        # named, along with what taking it costs.  The underlying gap is
-        # a missing CHAINED_TRANSLATION_UNIT_FRAMES row for the Noah-MP
-        # translation unit, not broken code: these fragments compile
-        # only through noahmp_kernel_sources.translation_unit_source,
-        # exactly as the legacy-RRTMG fragments do, and those have a
-        # driver-measured composite row while Noah-MP does not.
-        raise ValueError(
-            "cannot price the local-memory reservation: "
-            f"{', '.join(unmeasured)} do not compile at this checkout "
-            "(NVRTC: identifier \"r_pow\" is undefined), so their per-thread "
-            "local frame has never been measured.  Refusing to guess.  "
-            "No flag skips this pricing -- the memory preflight is what "
-            "the estimate is made of.  If Noah-MP is not the point of "
-            "this run, select sf_surface_physics = 2 (Noah), whose "
-            "kernels are measured and price normally; if it IS the "
-            "point, this configuration needs a measured composite frame "
-            "for the Noah-MP translation unit "
-            "(gpuwm/core/preflight.py CHAINED_TRANSLATION_UNIT_FRAMES, "
-            "the same treatment the legacy-RRTMG chain already has).")
-    missing = sorted(modules - set(KERNEL_MAX_LOCAL_SIZE_BYTES)
-                     - set(CHAINED_TRANSLATION_UNIT_FRAMES))
-    if missing:
-        raise ValueError(
-            "no measured local frame for kernel module(s) "
-            f"{', '.join(missing)}; regenerate KERNEL_MAX_LOCAL_SIZE_BYTES.")
+    assumed = assumed_bound_modules(modules)
+    assumed_bound = _kernel_frame_recordings.assumed_frame_bound()
 
+    from gpuwm.core.noahmp_frame_provenance import noahmp_frames as _noahmp
+
+    noahmp_frames = _noahmp(modules, _noahmp_pricing_profile(exp, profile))
     prices_refl = refl_diagnostic_reachable(exp)
     frames = {module: (
+                  assumed_bound if module in assumed else
+                  noahmp_frames[module] if module in noahmp_frames else
                   CHAINED_TRANSLATION_UNIT_FRAMES[module].max_local_size_bytes
                   if module in CHAINED_TRANSLATION_UNIT_FRAMES
                   else KERNEL_MAX_LOCAL_SIZE_BYTES[module])
@@ -2545,6 +2732,49 @@ def kernel_local_frame_bytes(exp: ExperimentConfig) -> dict[str, int]:
     return frames
 
 
+def selects_noahmp(exp: ExperimentConfig) -> bool:
+    """Does any domain launch the Noah-MP land surface (scheme 4)?"""
+    return any(int(dc.run.sf_surface_physics) == 4 for dc in exp.domains)
+
+
+def _noahmp_pricing_profile(
+        exp: ExperimentConfig,
+        profile: DeviceLocalMemoryProfile | None, *,
+        declared_card: bool = False) -> DeviceLocalMemoryProfile | None:
+    """The profile a Noah-MP configuration is priced on, or the caller's
+    own ``profile`` untouched for every other configuration.
+
+    The Noah-MP composed frames are readings of one compile platform, and
+    the card's own reading is preferred whenever there is one to prefer:
+
+    * ``profile`` given: it is used as given.  Its own row prices the
+      frames when its platform has one; otherwise the ceiling over the
+      recorded platforms does, and the basis says so.  The requested card
+      is never swapped for a recorded one -- that is the retired
+      CARD_CLASS_MULTIPROCESSORS defect in a new coat.
+    * ``profile`` is ``None`` and the caller declared a card
+      (``--vram-gib``): the estimate is for a machine that is elsewhere,
+      so this machine's card is NOT read on its behalf; ``None`` is
+      returned and the caller prices the reference profile, whose
+      platform is nobody's, from the ceiling.
+    * ``profile`` is ``None`` and no card was declared: the question is
+      about this machine, so this machine's card is read
+      (:func:`live_device_local_memory_profile`) and priced from its own
+      row when it has one.  Nothing to read -- ``GPUWM_NO_LOCAL_GPU``
+      set, no runtime, no device -- returns ``None`` and the caller
+      prices the reference profile from the ceiling, the basis naming
+      that the card was not read.
+
+    Non-Noah-MP configurations return ``profile`` unchanged, ``None``
+    included, so every existing default (the reference profile in the
+    byte formulas, ``card_local_memory_profile`` in the estimate) is
+    applied by the caller exactly as before.
+    """
+    if not selects_noahmp(exp) or profile is not None or declared_card:
+        return profile
+    return live_device_local_memory_profile()
+
+
 def kernel_local_memory_bytes(
         exp: ExperimentConfig, *,
         profile: DeviceLocalMemoryProfile | None = None) -> int:
@@ -2556,8 +2786,10 @@ def kernel_local_memory_bytes(
     level count, because the two widest frames in the tree (``kf`` and
     ``refl``) compile their column arrays to ``nz``.
     """
+    profile = _noahmp_pricing_profile(exp, profile)
     profile = MEASURED_LOCAL_MEMORY_PROFILE if profile is None else profile
-    widest = max(kernel_local_frame_bytes(exp).values(), default=0)
+    widest = max(kernel_local_frame_bytes(exp, profile=profile).values(),
+                 default=0)
     return profile.reservation_bytes(widest)
 
 
@@ -2573,6 +2805,7 @@ def non_pool_device_bytes(
     to every card on every platform, which measured 48 MiB high on a
     5070 Ti and 215 MiB LOW on a Linux 5090 (task 206).
     """
+    profile = _noahmp_pricing_profile(exp, profile)
     profile = MEASURED_LOCAL_MEMORY_PROFILE if profile is None else profile
     return (profile.cuda_context_bytes
             + kernel_local_memory_bytes(exp, profile=profile)
@@ -3965,7 +4198,14 @@ def scratch_slot_registry(cfg: RunConfig, *,
                      mp_rainnc=s2, mp_rainncv=s2, mp_snownc=s2,
                      mp_snowncv=s2, mp_graupelnc=s2, mp_graupelncv=s2,
                      mp_hailnc=s2, mp_hailncv=s2,
-                     mp_sr=s2, refl_10cm=m)
+                     mp_sr=s2, refl_10cm=m,
+                     # gpuwm/core/milbrandt2.py::reflectivity H_Z(x): the
+                     # temperature the lifted Z block reads when the caller
+                     # has no microphysics-time pair to hand it.  Priced
+                     # with the scheme, exactly as mp=18 prices da_nssl_t
+                     # for the same operator's NSSL arm -- a mass-shaped
+                     # float32 the arena estimator otherwise never saw.
+                     my2_zet_t=m)
     if cfg.mp_physics == 10:
         # morrison.py:153-172 (prep + accumulators) + refl.py:324-325.
         slots.update(morr_theta=m, morr_rho=m, morr_pii=m, morr_dz=m,
@@ -4769,6 +5009,15 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "the observation operator fills dry-air density and temperature "
         "before the shared NSSL diagnostic reads them; both are dead when "
         "the call returns"),
+    # The Milbrandt-Yau arm of the same operator: milbrandt2.reflectivity
+    # diagnoses T from theta and Exner when its caller has no
+    # microphysics-time pair, and the lifted Z kernel reads it in the same
+    # call.
+    ScratchSlotLifetime(
+        ("my2_zet_t",), "write_before_read",
+        "gpuwm/core/milbrandt2.py:reflectivity",
+        "the reflectivity operator fills absolute temperature before the "
+        "lifted Z block reads it; it is dead when the call returns"),
     # EXCLUDED (carrying): UP_HELI_MAX is a restart-serialized elementwise
     # running max, read-modify-written every step and consumed by history
     # frames; per-domain identity must be preserved.
@@ -4947,13 +5196,23 @@ def scratch_slot_uses_arena(slot: str) -> bool:
 
 
 def shared_scratch_arena_shapes(
-        domains: tuple[DomainConfig, ...]
+        domains: tuple[DomainConfig, ...],
+        tree: tuple[DomainConfig, ...] | None = None,
         ) -> dict[str, tuple[int, ...]]:
     """Max request shape per admitted slot for the sequential-domain arena.
 
     Max is by element count because :class:`ScratchArena` returns contiguous
     reshaped prefix views. Ties retain the first (parent-first) request. The
     runtime builder and the estimator both call this exact function.
+
+    ``domains`` are the domains that SHARE the arena (the resident ones);
+    ``tree`` is the whole configured tree they belong to, consulted only to
+    find a resident child's parent when that parent is not itself resident.
+    A root that streams while its child stays resident is a legal road
+    (the plan report prices it), and the child's force slots are sized
+    from the parent's own field capacity either way; looking the parent up
+    among the resident domains alone raised ``KeyError`` on exactly that
+    road.  With ``tree`` omitted every parent is expected among ``domains``.
     """
     shapes: dict[str, tuple[int, ...]] = {}
     for dc in domains:
@@ -4966,10 +5225,17 @@ def shared_scratch_arena_shapes(
                 shapes[slot] = shape
     if all(hasattr(dc, "grid_id") and hasattr(dc, "parent_id")
            for dc in domains):
-        by_id = {dc.grid_id: dc for dc in domains}
+        by_id = {dc.grid_id: dc for dc in (tree if tree is not None else ())}
+        by_id.update({dc.grid_id: dc for dc in domains})
         for dc in domains:
             if dc.parent_id == 0:
                 continue
+            if dc.parent_id not in by_id:
+                raise KeyError(
+                    f"domain {dc.grid_id} names parent {dc.parent_id}, which "
+                    "is neither among the arena's domains nor in the tree "
+                    "handed to shared_scratch_arena_shapes; pass the whole "
+                    "configured tree as `tree`")
             force_shapes = {
                 "nest_parent_field": _full_field_capacity(
                     by_id[dc.parent_id].run),
@@ -5073,8 +5339,9 @@ def shared_scratch_arena_aliases(
 
 
 def shared_scratch_arena_bytes(
-        domains: tuple[DomainConfig, ...]) -> int:
-    shapes = shared_scratch_arena_shapes(domains)
+        domains: tuple[DomainConfig, ...],
+        tree: tuple[DomainConfig, ...] | None = None) -> int:
+    shapes = shared_scratch_arena_shapes(domains, tree)
     aliases = shared_scratch_arena_aliases(domains)
     return sum(4 * math.prod(shape) for slot, shape in shapes.items()
                if slot not in aliases)
@@ -5730,6 +5997,26 @@ class ExperimentMemoryEstimate:
     # inventory. It is internal pricing context, never an extra GPU query.
     local_memory_profile: DeviceLocalMemoryProfile | None = None
     retained_forcing_intervals: int = 0
+    # Included in non_pool_device_bytes, but bounded by grid column counts.
+    # Keep it separate for fixed-floor diagnostics, not a second admission.
+    column_workspace_bytes: int = 0
+
+    @property
+    def fixed_envelope_bytes(self) -> int:
+        """A grid-independent LOWER BOUND evaluated by the same envelope.
+
+        The historical intercept also contains grid-sized column workspaces;
+        it cannot prove that resizing is futile. Exclude those, and retain
+        the context/kernel floor plus shared RRTMGP tables/chunk workspace.
+        Pure-legacy call workspaces can scale with columns and are excluded.
+        No forecast or admission number changes when this diagnostic is read.
+        """
+        fixed_pool = self.k_tables_bytes + (self.workspace_bytes if self.k_tables_bytes else 0)
+        return machine_peak_envelope_bytes(
+            alloc_estimate_bytes=math.ceil(self.headroom * fixed_pool),
+            non_pool_bytes=self.non_pool_device_bytes - self.column_workspace_bytes,
+            domains=len(self.domains), family=self.envelope_family,
+            legacy_radiation=self.uses_legacy_radiation)
 
     @property
     def resident_bytes(self) -> int:
@@ -6864,6 +7151,18 @@ def estimate_experiment(
     arena_shapes = (shared_scratch_arena_shapes(exp.domains)
                     if uses_arena else {})
     nz = exp.domains[0].run.nz
+    # The device the non-pool terms are priced against: the caller's
+    # profile, else the reference profile for the (absent or undeclared)
+    # card.  A Noah-MP configuration adds one step to that default: its
+    # frames are readings of a compile platform, so with no profile and
+    # no declared card it reads this machine's card first, to price from
+    # that card's own row when it has one (_noahmp_pricing_profile).  It
+    # never prices the requested card on another card's geometry; a card
+    # with no row is priced from the Noah-MP ceiling, and the basis says so.
+    device_profile = _noahmp_pricing_profile(
+        exp, profile, declared_card=vram_gib is not None)
+    if device_profile is None:
+        device_profile = card_local_memory_profile(vram_gib)
     return ExperimentMemoryEstimate(
         domains=domains,
         k_tables_bytes=k_distribution_bytes() if uses_rrtmgp else 0,
@@ -6883,15 +7182,15 @@ def estimate_experiment(
             if uses_rrtmgp else 0),
         device_overhead_bytes=platform_projection_constants(
             vram_gib=vram_gib)[1],
-        non_pool_device_bytes=non_pool_device_bytes(
-            exp, profile=(card_local_memory_profile(vram_gib)
-                          if profile is None else profile)),
+        non_pool_device_bytes=non_pool_device_bytes(exp, profile=device_profile),
         envelope_family=envelope_platform(vram_gib=vram_gib),
         uses_legacy_radiation=uses_legacy,
         legacy_call_peak_by_domain=legacy_calls if uses_rrtmgp else (),
-        local_memory_profile=(card_local_memory_profile(vram_gib)
-                              if profile is None else profile),
+        local_memory_profile=device_profile,
         retained_forcing_intervals=n_int,
+        column_workspace_bytes=column_workspace_bytes(
+            exp, profile=(card_local_memory_profile(vram_gib)
+                          if profile is None else profile)),
     )
 
 
@@ -7841,6 +8140,12 @@ _EXIT_ENVELOPE_OVER_BUDGET = 4
 #: card moves this number.  Softer than 1/2/3, which are about the gates
 #: themselves.
 _EXIT_HOST_MEMORY_OVER_BUDGET = 5
+#: `gpuwm check` exit when the run door's own [tiles] walk refuses the
+#: configured execution plan.  The report still prices the resident road
+#: (the only one left to quote), but a plan the run refuses is not a
+#: preflight pass: `gpuwm go` on the same file stops at that refusal, and
+#: this command exited 0 beside the sentence that said so.
+_EXIT_EXECUTION_PLAN_REFUSED = 6
 
 
 def _format_bytes(n: int | None) -> str:
@@ -7920,8 +8225,64 @@ def _warn_unstaged_physics_tables(exp) -> None:
         return
 
 
+#: The one live read of this machine's card, kept for the process.  A
+#: profile is device constants plus the bare-context reading that only
+#: the FIRST CUDA contact in a process can take (a context that already
+#: exists reads as unmeasured, see :func:`measured_bare_context_bytes`),
+#: so the first read is the best one and a second read is a worse one
+#: that also costs two ``nvidia-smi`` processes and an NVRTC probe.  A
+#: Noah-MP configuration reads the card on every estimate call that is
+#: handed no profile -- ``recommend_column_chunk``'s loop, the
+#: composition walk's rows -- which is what made the repeat cost visible.
+#: Filled only by a successful read; ``GPUWM_NO_LOCAL_GPU`` is consulted
+#: on every call so the switch keeps its meaning after a read.
+_LIVE_DEVICE_PROFILE: list[DeviceLocalMemoryProfile] = []
+
+
+def forget_live_device_local_memory_profile() -> None:
+    """Drop the process's cached live read (a test that swaps the runtime
+    under the module, or a caller that knows the device changed)."""
+    _LIVE_DEVICE_PROFILE.clear()
+def _warn_unmet_run_preparation(exp) -> None:
+    """One line per machine precondition this install does not meet.
+
+    THE SAME POSTURE as the table warning above, for the same reason, and
+    it is here because this command is the one a person runs to hear
+    "PASS" before spending anything.  A precondition in
+    ``gpuwm.config.RUN_PREPARATION_PRECONDITIONS`` is a question about the
+    INSTALL, and ``gpuwm check`` is also the portable sizing door -- a
+    declared ``--budget-gib`` sizes for a machine that is not this one,
+    where "the dataset is not here" says nothing about whether the run
+    fits there.  So it reports and does not change an exit code; the doors
+    that COMMIT to building a forecast (``gpuwm go``'s stage composer and
+    the experiment run dispatch) raise the identical sentence from the
+    identical inventory.
+    """
+
+    try:
+        from gpuwm.config import experiment_preparation_refusals
+
+        unmet = experiment_preparation_refusals(exp)
+    except Exception:  # pragma: no cover - never let an advisory throw
+        return
+    if not unmet:
+        return
+    from gpuwm.explain import warn
+
+    for label, sentence in unmet:
+        warn(f"{label}: {sentence}",
+             why="This preflight sizes memory and can size for a machine "
+                 "that is not this one, which is why it reports the gap "
+                 "and continues.  `gpuwm go` and `gpuwm run` refuse it "
+                 "before they fetch anything.")
+
+
 def live_device_local_memory_profile() -> DeviceLocalMemoryProfile | None:
     """This machine's own local-memory profile, or ``None``.
+
+    Read off the device once per process and kept
+    (:data:`_LIVE_DEVICE_PROFILE`); the switch below is honoured on
+    every call.
 
     The local-memory backing store is ``(frame - default stack) x SM
     count x threads per SM``, so it is a property of the DEVICE, and the
@@ -7945,12 +8306,16 @@ def live_device_local_memory_profile() -> DeviceLocalMemoryProfile | None:
         # cannot measure prices against the reference profile, which
         # over-prices rather than under-prices.
         return None
+    if _LIVE_DEVICE_PROFILE:
+        return _LIVE_DEVICE_PROFILE[0]
     try:
         import cupy as cp
 
-        return local_memory_profile_from_device(cp)
+        profile = local_memory_profile_from_device(cp)
     except Exception:
         return None
+    _LIVE_DEVICE_PROFILE.append(profile)
+    return profile
 
 
 #: What :func:`device_memory_probe_subprocess` runs in its short-lived
@@ -8038,6 +8403,30 @@ try:
     # taking it out of free as well would bill it twice.
     _nvml_free = None if _before is None else max(0, int(total) - _before)
     _free = int(free) if _nvml_free is None else min(int(free), _nvml_free)
+    # The compile platform, read the way gpuwm.certify.compile_platform
+    # reads it (NVRTC's own PTX banner names its four-part build; the
+    # device names its architecture).  Both halves or neither: a half
+    # that could not be read is left out, and the parent prices Noah-MP
+    # on this card as unread rather than on a guessed platform.
+    _platform = None
+    try:
+        import re as _re
+        from cupy_backends.cuda.libs import nvrtc as _nvrtc
+        _program = _nvrtc.createProgram("", "compile_platform_probe.cu", [], [])
+        try:
+            _nvrtc.compileProgram(_program, [])
+            _ptx = _nvrtc.getPTX(_program)
+        finally:
+            _nvrtc.destroyProgram(_program)
+        if isinstance(_ptx, bytes):
+            _ptx = _ptx.decode("ascii", "replace")
+        _build = _re.search(
+            r"Cuda compilation tools, release [\\d.]+, V(?P<build>[\\d.]+)", _ptx)
+        _capability = str(cp.cuda.Device(0).compute_capability)
+        if _build is not None and _capability:
+            _platform = [_capability, _build.group("build")]
+    except Exception:
+        _platform = None
     payload = {
         "free_bytes": _free,
         "free_bytes_memgetinfo": int(free),
@@ -8051,6 +8440,7 @@ try:
                 props["maxThreadsPerMultiProcessor"]),
             "default_stack_limit_bytes": _stack,
             "bare_context_bytes": _bare,
+            "compile_platform": _platform,
         },
     }
 except Exception:
@@ -8174,6 +8564,16 @@ def profile_from_device_probe(payload) -> DeviceLocalMemoryProfile | None:
         # from an older build simply does not carry the field, and a
         # zero-byte CUDA context is not a thing this could mean.
         bare = None
+    platform = profile.get("compile_platform")
+    # Both halves as non-empty strings, or the platform is unread: an
+    # older probe does not carry the field, and "unavailable" is not a
+    # platform anyone measured.
+    if (not isinstance(platform, (list, tuple)) or len(platform) != 2
+            or any(not isinstance(v, str) or not v or v == "unavailable"
+                   for v in platform)):
+        platform = None
+    else:
+        platform = (str(platform[0]), str(platform[1]))
     try:
         return DeviceLocalMemoryProfile(
             name=str(profile["name"]),
@@ -8183,6 +8583,7 @@ def profile_from_device_probe(payload) -> DeviceLocalMemoryProfile | None:
             default_stack_limit_bytes=int(
                 profile["default_stack_limit_bytes"]),
             bare_context_bytes=bare,
+            compile_platform=platform,
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -8220,11 +8621,21 @@ def declares_the_local_card(card_total_gib: float | None) -> bool:
     return abs(declared - total) <= LOCAL_CARD_MATCH_TOLERANCE * total
 
 
-def _required_memory_without_device(exp, args) -> dict:
+def _required_memory_without_device(exp, args, *,
+                                    card_unread: str | None = None) -> dict:
     """Keep CPU metadata estimates when local GPU readiness is unjudged.
 
     No budget, device probe, allocation, or automatic tiling decision is made.
     The resident alternative uses the conservative reference overhead profile.
+
+    ``card_unread`` says why this route, and not a read of the card, is
+    answering: the readiness verdict that sent ``check_main`` here.  A
+    Noah-MP configuration on this route is priced like every other
+    configuration on it -- on the reference profile, its Noah-MP frames
+    from the ceiling over the recorded platforms -- and the ``basis`` of
+    the answer says that the frames were not measured on this card and
+    why (:func:`non_pool_basis`), so the reader can tell the estimate
+    from a reading of the card they are sitting at.
     """
     configured_interval, forcing_intervals = config_forcing_schedule(
         args.config, exp, input_catalog=getattr(args, "input_catalog", None))
@@ -8238,10 +8649,25 @@ def _required_memory_without_device(exp, args) -> dict:
                 DEFAULT_FORCING_INTERVAL_SECONDS)
     if not math.isfinite(interval) or interval <= 0:
         raise ValueError("--forcing-interval-s must be finite and positive")
-    profile = card_local_memory_profile(getattr(args, "vram_gib", None))
+    vram_gib = getattr(args, "vram_gib", None)
+    profile = card_local_memory_profile(vram_gib)
+    basis = ("CPU-only metadata; resident alternative with conservative "
+             "reference GPU overhead")
+    if selects_noahmp(exp):
+        # Say what kept this card unread beside the ceiling basis: the
+        # route prices from metadata, and a user who asked about the
+        # card in front of them should read that it was not the one
+        # measured.
+        from gpuwm.core.noahmp_frame_provenance import noahmp_frame_basis
+
+        unread = (card_unread or
+                  "this route prices from configuration metadata and reads "
+                  "no card")
+        frames = noahmp_frame_basis(physics_kernel_modules(exp), profile)
+        basis = f"{basis} ({unread}); {frames.sentence()}"
     estimate = estimate_experiment(
         exp, column_chunk=args.column_chunk, forcing_intervals=forcing_intervals,
-        forcing_interval_seconds=interval, vram_gib=getattr(args, "vram_gib", None),
+        forcing_interval_seconds=interval, vram_gib=vram_gib,
         profile=profile)
     source = config_forcing_source(args.config, priced_only=True)
     ingest = (estimate_ingest(
@@ -8250,7 +8676,7 @@ def _required_memory_without_device(exp, args) -> dict:
         vram_gib=getattr(args, "vram_gib", None), profile=profile)
         if source in SOURCE_ANALYSIS_LEVELS else None)
     return {
-        "status": "estimated", "basis": "CPU-only metadata; resident alternative with conservative reference GPU overhead",
+        "status": "estimated", "basis": basis,
         "column_chunk": estimate.column_chunk,
         "domains": {f"d{domain.grid_id:02d}": {
             "resident_bytes": domain.resident_bytes,
@@ -8334,6 +8760,7 @@ def check_main(args) -> int:
 
     companion_root()
     _warn_unstaged_physics_tables(exp)
+    _warn_unmet_run_preparation(exp)
     # Declared-budget sizing is deliberately portable and needs no GPU.
     # A check of this machine must prove kernels can run before allocating
     # a forecast or claiming its measured memory budget is usable.
@@ -8352,8 +8779,16 @@ def check_main(args) -> int:
             planning = {"command": command,
                         "inputs": "Replace FREE_GIB and CAPACITY_GIB with the target GPU's declared free memory and capacity in GiB.",
                         "scope": "CPU-only estimate; does not verify local GPU readiness"}
+            # No UnqualifiedNoahMP arm here any more: a tree with no
+            # usable Noah-MP reading prices the units at the assumed
+            # bound and says so in the basis, so this route always has a
+            # number and a portable planning command.
             try:
-                required = _required_memory_without_device(exp, args)
+                required = _required_memory_without_device(
+                    exp, args, card_unread=(
+                        f"this machine's GPU readiness is {checked.status} "
+                        f"({checked.brief or checked.detail}), so its card "
+                        "was not read on this route"))
             except (OSError, ValueError, RuntimeError, TypeError, AttributeError) as error:
                 required = {"status": "unavailable", "reason": str(error),
                             "budget_bytes": None, "memory_verdict": "unavailable"}
@@ -8371,11 +8806,19 @@ def check_main(args) -> int:
                           f"{required['alloc_estimate_bytes'] / GIB:.2f} GiB allocations; "
                           f"{required['resident_forecast_peak_envelope_bytes'] / GIB:.2f} GiB forecast envelope.")
                     print("  Budget and fit judgment: unavailable. No GPU allocation or streaming decision was attempted.")
+                    if selects_noahmp(exp):
+                        # The Noah-MP frames on this route come from the
+                        # ceiling, not from the card in the machine; say
+                        # so where the number is.
+                        print(f"  Basis: {required['basis']}")
                 else:
                     print(f"  CPU required-memory estimate unavailable: {required['reason']}")
-                import shlex
-                print("  CPU-only planning: " + shlex.join(command))
-                print("    " + planning["inputs"])
+                if planning["command"] is None:
+                    print("  CPU-only planning: none.  " + planning["inputs"])
+                else:
+                    import shlex
+                    print("  CPU-only planning: " + shlex.join(planning["command"]))
+                    print("    " + planning["inputs"])
                 if getattr(args, "explain", False):
                     print(checked.detail)
                     if checked.remedy:
@@ -8441,6 +8884,10 @@ def check_main(args) -> int:
         # have is supposed to get.
         profile = live_device_local_memory_profile()
     if profile is None:
+        # The reference profile's compile platform is nobody's; a
+        # Noah-MP configuration on it prices its frames from the ceiling
+        # over the recorded platforms and the NON-POOL BASIS line says
+        # so, naming that the card was not read (non_pool_basis).
         profile = card_local_memory_profile(card_total_gib)
     # The retention term is a fraction OF the estimate, so the estimate is
     # formed first.  It is pure arithmetic and the runners re-derive it from
@@ -8850,6 +9297,12 @@ def check_main(args) -> int:
             "kernel_local_memory_bytes": kernel_local_memory_bytes(
                 exp, profile=profile),
             "kernel_modules": sorted(physics_kernel_modules(exp)),
+            # THE BASIS IN WORDS, the same sentence the text report prints
+            # as NON-POOL BASIS: which card the grid-independent terms
+            # were priced on and, for a Noah-MP configuration, whether its
+            # frames were measured on this card's compile platform or
+            # taken from the ceiling over the recorded platforms.
+            "non_pool_basis": non_pool_basis(profile, exp),
             "measured_free_bytes": free,
             "physical_total_bytes": physical_total_bytes,
             "declared_capacity_bytes": (None if card_total_gib is None else int(card_total_gib * GIB)),
@@ -8906,6 +9359,9 @@ def check_main(args) -> int:
                 "resident_forecast_envelope_bytes":
                     phases.resident_forecast_envelope_bytes,
                 "host_bytes": int(env.host_bytes),
+                # The named terms the figures above add up from, so a
+                # report carries the arithmetic and not only its total.
+                "terms": {str(k): v for k, v in getattr(env, "terms", ())},
                 # The pair the alloc leg above compared, named, so a
                 # script never has to guess which budget it was.
                 "alloc_gate_basis": (
@@ -9140,7 +9596,7 @@ def check_main(args) -> int:
               f"; RE-MEASURED device-footprint projection "
               f"{_format_bytes(remeasured_bytes)}"
               " (the TIER 3 line above is the retired zero-step probe model)")
-        print(f"  NON-POOL BASIS: {non_pool_basis(profile)}")
+        print(f"  NON-POOL BASIS: {non_pool_basis(profile, exp)}")
         family = envelope_platform(vram_gib=card_total_gib)
         if family == "windows":
             provenance = (
@@ -9337,7 +9793,7 @@ def check_main(args) -> int:
                       f"not move with what else is on the card right now; "
                       f"the card itself is this machine's and its "
                       f"grid-independent terms are "
-                      f"{non_pool_basis(profile)}.")
+                      f"{non_pool_basis(profile, exp)}.")
             else:
                 print(f"  ESTIMATE FOR HARDWARE NOT PRESENT: the free "
                       f"figure above is declared, not measured -- this "
@@ -9518,6 +9974,13 @@ def check_main(args) -> int:
                       f"{_format_bytes(int(env.peak_vram_bytes))} against "
                       f"the {_format_bytes(envelope_budget)} envelope "
                       f"budget.")
+                # THE ARITHMETIC, under the verdict.  A refusal that names
+                # one total sends the reader to guess which term to trim;
+                # one that itemizes it shows the buffers a smaller tile
+                # shrinks beside the floors no tile moves, and a
+                # screenshot of it can be checked with a calculator.
+                for line in getattr(env, "terms_lines", tuple)():
+                    print(f"    {line}")
                 print("  remedy: a smaller [tiles] tile_nx/tile_ny, or "
                       "nbuffers = 1 to trade overlap for room, or free "
                       "VRAM and re-run")
@@ -9586,6 +10049,16 @@ def check_main(args) -> int:
             print(f"GPU fit estimate: fits with {(envelope_budget - envelope) / GIB:.2f} GiB headroom")
         else:
             print("GPU fit estimate: unavailable without a measured or declared budget")
+        if selects_noahmp(exp):
+            # THE BASIS BESIDE THE VERDICT.  A Noah-MP price is either a
+            # reading of this card's compile platform or the ceiling over
+            # the recorded platforms, and the user is owed the word
+            # without asking for --explain.
+            from gpuwm.core.noahmp_frame_provenance import noahmp_frame_basis
+
+            frames = noahmp_frame_basis(physics_kernel_modules(exp), profile)
+            if frames is not None:
+                print(f"Noah-MP frame basis: {frames.sentence()}")
         if not ingest_priced:
             print("Forcing preparation GPU memory: not priced for this source")
         if host_forcing_bytes is None:
@@ -9698,6 +10171,15 @@ def check_main(args) -> int:
         return 2  # nothing verifiable: fail closed at the command boundary
     if not all(evaluable):
         return 1
+    if phases.tree_road is not None and phases.tree_road.refusal:
+        # The run door refuses this [tiles] plan; the figures above price
+        # the resident road the run will not take, so this is a refusal,
+        # not a pass, and the sentence is the run door's own.
+        print(f"gpuwm check: REFUSED (exit {_EXIT_EXECUTION_PLAN_REFUSED}): "
+              f"the run door refuses this [tiles] plan, so the figures above "
+              f"price a road the run will not take. {phases.tree_road.refusal}",
+              file=sys.stderr)
+        return _EXIT_EXECUTION_PLAN_REFUSED
     # Gates passed.  The report may still have said, in its own words,
     # that the machine peak lands above the budget -- that sentence and
     # exit 0 cannot both be true, and the sentence is the accurate one.

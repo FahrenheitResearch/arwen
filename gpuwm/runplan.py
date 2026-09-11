@@ -2357,6 +2357,41 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
             "note": "Use the existing bundle without fetch or preparation; "
                     "the simulation runner verifies its payload and setup."})
 
+    # WHAT THIS MACHINE CANNOT PREPARE, asked here rather than found
+    # later.  This is the route the desktop launches every forecast
+    # through, and the experiment is in hand the moment it loads -- while
+    # `_execute_prepared_route` and the experiment route both reach their
+    # own fetch stage first, and `initialize_real`'s per-domain floor is
+    # downstream of the whole downloaded cycle.  So an mp=28 config with
+    # external lateral boundaries on a machine without
+    # QNWFA_QNIFA_SIGMA_MONTHLY.dat used to pass review, pay for 10-15 GB
+    # of transfer and be refused afterwards.  It is refused HERE, on the
+    # near side of the fetch and of the run root: `--resolve` is plan
+    # review and answers with the sentence and both ways out, and a run
+    # never reaches its fetch stage.  Raised as PlanError for the same
+    # reason StreamingRefused is converted above -- gpuwm.cli prints one
+    # sentence and exits 2, and a config-shaped refusal must not be a
+    # traceback.  The sentence and the inventory are gpuwm.config's; this
+    # door writes no version of its own.
+    # ... AND ONLY OF A CHAIN THAT PREPARES.  A sealed bundle is already
+    # prepared: `_existing_prepared_forecast` hands it to the runner,
+    # which verifies the payload and reads no WIF dataset
+    # (`gpuwm/prepared_single_domain_forecast.py`).  Asking this of a
+    # prepared:existing chain refused an mp=28 bundle prepared on a
+    # machine that HAD the dataset and consumed on one that does not --
+    # a refusal for an input the run never opens, which is the half of
+    # the gate law that says a gate must name the breakage it prevents.
+    # `gpuwm go --prepared-root` reaches the same chain through this
+    # function, so the guard covers that door too; `gpuwm run` has no
+    # existing-bundle route and always prepares.
+    from gpuwm.config import validate_experiment_preparation
+
+    if existing_bundle is None:
+        try:
+            validate_experiment_preparation(exp)
+        except ValueError as refusal:
+            raise PlanError(str(refusal)) from None
+
     # A moving nest, decided and REPORTED before anything is fetched.
     # The chain is read off the config's own [fetch] table, which is
     # what `_execute_prepared_route` dispatches on, so the chain judged

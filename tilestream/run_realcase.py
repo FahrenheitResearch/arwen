@@ -485,6 +485,11 @@ def stage_pair(args) -> None:
                                                verbose=print)
         kwargs = _run_kwargs(cfg, exp, case.geo_store, binder.per_tile[0])
         kwargs["scalars"] = arm_scalars
+        # The store carries the REFL_10CM slot, so this arm writes it too --
+        # both arms identically, which is the point of an A/B on the
+        # transport: a carrier one arm computes and the other does not would
+        # differ for a reason that is not the overlap mode.
+        kwargs = realcase.reflectivity_run_kwargs(kwargs, case)
         t0 = time.perf_counter()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
@@ -494,6 +499,7 @@ def stage_pair(args) -> None:
                              write_mode="ring", overlap=mode,
                              tile_hook=binder, **kwargs)
         cp.cuda.runtime.deviceSynchronize()
+        case.reflectivity_swept()
         digests[mode] = physinv.field_digests(case.store)
         whole[mode] = _digest(case.store)
         scalars_by[mode] = arm_scalars
@@ -573,6 +579,14 @@ def stage_forecast(args) -> None:
     kwargs = _run_kwargs(cfg, exp, case.geo_store, binder.per_tile[0])
     kwargs["scalars"] = case.scalars
     kwargs["tile_hook"] = binder
+    # AND THE REFLECTIVITY SLOT (audit R-052).  ``build_stores`` put
+    # ``scratch/refl_10cm`` in the store, so every sweep has to WRITE it:
+    # these keywords prime it on each buffer, name it in the inventory the
+    # transport gathers and scatters by, ask every tile step for it, and
+    # clear each tile's one-frame stash.  Without them the slot is scattered
+    # unwritten over the domain field and the composite this lane's whole
+    # product is would be zeros for the schemes that compute their own dBZ.
+    kwargs = realcase.reflectivity_run_kwargs(kwargs, case)
 
     steps_per_dump = max(1, int(round(args.every * 60.0 / cfg.dt)))
     ndumps = max(1, int(round(args.hours * 3600.0 / (args.every * 60.0))))
@@ -621,6 +635,11 @@ def stage_forecast(args) -> None:
                              nbuffers=args.nbuffers, periodic=False,
                              write_mode="ring", report=report, **kwargs)
         cp.cuda.runtime.deviceSynchronize()
+        # The sweep carried refl_10cm_due on every step, so the store's
+        # REFL_10CM is now the field this window's last microphysics call
+        # wrote, and the dump below may read it instead of recomputing one
+        # scheme's formulation from another scheme's species.
+        case.reflectivity_swept()
         peak_vram = max(peak_vram,
                         int(cp.get_default_memory_pool().total_bytes()))
         dt_wall = time.perf_counter() - t

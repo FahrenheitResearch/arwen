@@ -1590,6 +1590,7 @@ tests/test_cds_acquisition_readiness.py
 tests/test_companion_domains.py
 tests/test_companion_forcing.py
 tests/test_companion_schedule.py
+tests/test_companion_setups.py
 tests/test_configuration_recovery.py
 tests/test_lake_acquisition.py
 tests/test_lake_temperature.py

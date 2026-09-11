@@ -130,14 +130,182 @@ def native_domain_outlines(exp):
     return result
 
 
+# RFC 7946 3.1.9: an exported ring may not carry an edge that crosses the
+# antimeridian, and a Cartesian consumer reads such an edge as the 340-degree
+# complement of a 20-degree domain. These helpers cut the ring at the seam.
+# They shift a longitude only by whole turns and only when a step wraps, so a
+# domain that stays inside one -180..180 strip exports the ring it always did.
+
+
+def _seam_lift(points):
+    """Ordered [lon, lat] pairs carried onto one continuous longitude branch.
+
+    Each step follows the native short edge, which is what the perimeter
+    sampler produced; the result is the domain's real extent instead of its
+    complement. Longitudes are only ever shifted by an exact multiple of 360,
+    and only after a step wraps, so an ordinary domain's values are unchanged.
+    """
+    lifted = []
+    turns = 0
+    for index, (lon, lat) in enumerate(points):
+        value = lon if turns == 0 else lon + 360. * turns
+        if index == 0:
+            while value >= 180.:
+                value -= 360.
+                turns -= 1
+            while value < -180.:
+                value += 360.
+                turns += 1
+        else:
+            previous = lifted[-1][0]
+            while value - previous > 180.:
+                value -= 360.
+                turns -= 1
+            while value - previous < -180.:
+                value += 360.
+                turns += 1
+            if abs(value - previous) == 180.:
+                raise ValueError(
+                    "A perimeter step of exactly 180 degrees of longitude has two equally "
+                    "short arcs, so the exported domain would have no defined interior; "
+                    "move the domain off that antipodal edge or resize it so its sampled "
+                    "edges are shorter than half a turn")
+        lifted.append([value, lat])
+    return lifted
+
+
+def _seam_undoubled(points):
+    """Drop steps of zero length, which is how +180 and -180 for one point meet."""
+    result = []
+    for point in points:
+        if not result or result[-1] != point:
+            result.append(point)
+    return result
+
+
+def _seam_turn(points):
+    """Whole turns of longitude the closed cycle of a lifted ring makes.
+
+    Zero for a ring that stays on one side of the world, and exactly one turn
+    for a ring that encircles a pole: every step is a short arc, so the total
+    around a closed cycle can only be a multiple of 360.
+    """
+    if len(points) < 2:
+        return 0.
+    closing = (points[0][0] - points[-1][0] + 180.) % 360. - 180.
+    return points[-1][0] + closing - points[0][0]
+
+
+def _seam_strips(lifted):
+    """Indices k of the -180+360k..180+360k strips the lifted coordinates reach."""
+    lons = [lon for lon, _ in lifted]
+    low = math.floor((min(lons) + 180.) / 360.)
+    high = math.ceil((max(lons) - 180.) / 360.)
+    return range(int(low), int(high) + 1)
+
+
+def _seam_cross(first, second, boundary):
+    """The GeoJSON-linear point where an existing sampled edge meets a strip edge."""
+    share = (boundary - first[0]) / (second[0] - first[0])
+    return [boundary, first[1] + share * (second[1] - first[1])]
+
+
+def _seam_clip_ring(ring, low, high):
+    """The part of a lifted ring inside one strip, as a closed ring or nothing."""
+    for boundary, inside in ((low, lambda lon: lon >= low), (high, lambda lon: lon <= high)):
+        crossings = sum(1 for a, b in zip(ring, ring[1:] + ring[:1])
+                        if inside(a[0]) != inside(b[0]))
+        if crossings > 2:
+            raise ValueError(
+                "A domain perimeter that re-enters the antimeridian more than once cannot "
+                "be cut into canonical parts by this exporter; resize the domain so its "
+                "perimeter crosses the antimeridian at most once")
+        clipped = []
+        for a, b in zip(ring, ring[1:] + ring[:1]):
+            if inside(a[0]):
+                clipped.append(a)
+                if not inside(b[0]):
+                    clipped.append(_seam_cross(a, b, boundary))
+            elif inside(b[0]):
+                clipped.append(_seam_cross(a, b, boundary))
+        ring = _seam_undoubled(clipped)
+        if len(ring) > 1 and ring[0] == ring[-1]:
+            ring.pop()
+        if len(ring) < 3:
+            return None
+    return ring
+
+
+def _seam_polygons(perimeter):
+    """One closed ring per antimeridian-cut part, west to east, [lon, lat] order."""
+    points = _seam_undoubled(_seam_lift([[lon, lat] for lat, lon in perimeter]))
+    if len(points) > 1 and points[0] == points[-1]:
+        points.pop()
+    if len(points) < 3:
+        raise ValueError(
+            "A domain perimeter needs at least three distinct corners before it can be "
+            "exported as an area; pass the outlines native_domain_outlines returned for "
+            "this configuration rather than a hand-built domain record")
+    if abs(_seam_turn(points)) >= 180.:
+        raise ValueError(
+            "A domain perimeter that encircles a pole spans a full turn of longitude, so "
+            "it has no antimeridian crossing to cut: every part of such a cut keeps a "
+            "world-spanning edge unless the exporter invents an edge through the pole "
+            "itself, which would change the domain. This exporter is not the wall that "
+            "matters most for such a domain: lat-lon source interpolation and static-tile "
+            "windowing are not pole-capable, so a domain whose footprint encloses a pole "
+            "is not a domain this pipeline can run, on any projection. The way out is "
+            "that wall's: move the domain centre away from the pole, or shrink the "
+            "domain, until its footprint clears the pole")
+    parts = []
+    for turn in _seam_strips(points):
+        ring = _seam_clip_ring(points, -180. + 360. * turn, 180. + 360. * turn)
+        if ring is None:
+            continue
+        if turn:
+            ring = [[lon - 360. * turn, lat] for lon, lat in ring]
+        parts.append([ring + [ring[0]]])
+    return parts
+
+
+def _seam_lines(track):
+    """The lifted track split at every strip edge, in travel order."""
+    lifted = _seam_lift(track)
+    points = _seam_undoubled(lifted)
+    if len(points) < 2:
+        # A target that does not move between two scheduled times collapses to a
+        # single position, and a LineString of one position is malformed (RFC 7946
+        # 3.1.4), so the repeated position is carried through as it arrived.
+        return [[[lon, lat] for lon, lat in lifted]] if len(lifted) >= 2 else []
+    lines, turn = [], math.floor((points[0][0] + 180.) / 360.)
+    current = [points[0]]
+    for first, second in zip(points, points[1:]):
+        step = math.floor((second[0] + 180.) / 360.) - turn
+        for _ in range(abs(step)):
+            boundary = 180. + 360. * turn if step > 0 else -180. + 360. * turn
+            crossing = _seam_cross(first, second, boundary)
+            current.append(crossing)
+            lines.append(current if not turn else
+                         [[lon - 360. * turn, lat] for lon, lat in current])
+            turn += 1 if step > 0 else -1
+            current = [[crossing[0], crossing[1]]]
+        current.append(second)
+    lines.append(current if not turn else
+                 [[lon - 360. * turn, lat] for lon, lat in current])
+    return [line for line in lines if len(_seam_undoubled(line)) >= 2]
+
+
 def domain_geojson(domains, target_points=()):
-    """MapLibre-ready metadata; coordinates remain the native grid's values."""
+    """MapLibre-ready metadata; coordinates remain the native grid's values.
+
+    A domain that crosses the antimeridian is emitted as the two seam-cut parts
+    of one feature (RFC 7946 3.1.9), keeping its own identifier and properties.
+    A domain that does not cross it is emitted exactly as before.
+    """
     features = []
 
     def polygon(domain, *, target_time=None):
-        ring = [[lon, lat] for lat, lon in domain["perimeter_latlon"]]
-        if ring and ring[-1] != ring[0]:
-            ring.append(ring[0])
+        parts = _seam_polygons(domain["perimeter_latlon"])
         properties = {"kind": "domain" if target_time is None else "target_domain",
             "grid_id": domain["grid_id"], "parent_id": domain["parent_id"],
             "label": f"d{domain['grid_id']:02}", "dx_m": domain["dx_m"],
@@ -145,8 +313,10 @@ def domain_geojson(domains, target_points=()):
             "width_km": domain["width_km"], "height_km": domain["height_km"]}
         if target_time is not None:
             properties["target_time_utc"] = target_time
+        geometry = ({"type": "Polygon", "coordinates": parts[0]} if len(parts) == 1
+                    else {"type": "MultiPolygon", "coordinates": parts})
         features.append({"type": "Feature", "id": f"{properties['kind']}-{domain['grid_id']}-{target_time or 'initial'}",
-            "properties": properties, "geometry": {"type": "Polygon", "coordinates": [ring]}})
+            "properties": properties, "geometry": geometry})
 
     for domain in domains:
         polygon(domain)
@@ -162,9 +332,11 @@ def domain_geojson(domains, target_points=()):
                            "i_parent_start": point["i_parent_start"], "j_parent_start": point["j_parent_start"]},
             "geometry": {"type": "Point", "coordinates": [lon, lat]}})
     if len(track) >= 2:
+        lines = _seam_lines(track)
         features.append({"type": "Feature", "id": "scheduled-target-track",
             "properties": {"kind": "target_track", "grid_id": target_points[0]["outline"]["grid_id"]},
-            "geometry": {"type": "LineString", "coordinates": track}})
+            "geometry": ({"type": "LineString", "coordinates": lines[0]} if len(lines) == 1
+                         else {"type": "MultiLineString", "coordinates": lines})})
     return {"type": "FeatureCollection", "features": features}
 
 
@@ -487,8 +659,32 @@ def capabilities():
 
 
 def physics_components():
-    """Expose the installed engine's own choices and scalar settings."""
+    """Expose the installed engine's own choices, settings and couplings.
+
+    THE COUPLINGS ARE PART OF THE ANSWER.  The registry already carries
+    every pairing law as table data -- ``requires_components`` says which
+    sibling option an option needs (MYJ needs the Eta surface layer, and
+    the Eta layer needs MYJ), ``refused_when`` says which combination is
+    refused outright -- and two engine doors read it,
+    gpuwm.physics_registry.validate_physics_plan and
+    gpuwm.physics_compat.validate_physics_capabilities.  This payload
+    dropped both, so a panel built on it could show a scheme with no way
+    to say what it must be paired with; the reader met the pairing law
+    only as a refusal after choosing.  Forwarded verbatim, from the same
+    table those doors read, so a front end cannot invent a second
+    vocabulary for one law -- and a pairing added to the registry
+    reaches the panel with no code change here.
+
+    ``refused_when`` is filtered through
+    :func:`gpuwm.physics_registry._conditional_refusals`, the same filter
+    the validator applies, so a malformed rule is dropped in one place
+    rather than reaching a caller that would render it.  Couplings key
+    off ``registry_option_id``: the ``ra_rrtmg_variant`` fan-out gives one
+    registry option several ids here, and every one of them carries the
+    registry option's couplings.
+    """
     from gpuwm.case_catalog import _native_contract
+    from gpuwm.physics_registry import _conditional_refusals
     registry, shared, domains = _native_contract()
     allowed = shared | domains
     result = []
@@ -512,10 +708,13 @@ def physics_components():
                     selected_settings.update(ra_rrtmg_variant=variant, wrf_rrtmg_compatibility="none")
                     selectors["ra_rrtmg_variant"] = variant
                     label = "WRF RRTMG longwave and shortwave" if variant == "rrtmg_legacy" else label
+                constraints = option.get("constraints", {})
                 options.append({"id": key if variant is None else f"{key}:{variant}", "registry_option_id": key, "label": label,
                     "selectors": selectors, "settings": selected_settings,
                     "shared_settings": sorted(set(selected_settings) - domains),
-                    "maturity": option.get("maturity", ""), "warnings": option.get("warnings", [])})
+                    "maturity": option.get("maturity", ""), "warnings": option.get("warnings", []),
+                    "requires_components": constraints.get("requires_components", {}),
+                    "refused_when": _conditional_refusals(constraints)})
         result.append({"id": component, "label": component.replace("_", " ").title(), "options": options})
     return result
 
@@ -915,6 +1114,9 @@ def main(args):
                 if args.repairs:
                     from gpuwm.companion_physics import repairs
                     result = repairs(request)
+                elif args.availability:
+                    from gpuwm.companion_physics import availability
+                    result = availability(request)
                 else:
                     result = edit_configuration(request)
         print(_json(result), end="")
@@ -929,6 +1131,7 @@ def register_cli(subparsers):
     parser.add_argument("--request", type=Path)
     parser.add_argument("--capabilities", action="store_true")
     parser.add_argument("--repairs", action="store_true", help="check compatible physics replacements without writing a candidate")
+    parser.add_argument("--availability", action="store_true", help="report why each installed physics option is open or closed to a draft")
     parser.set_defaults(func=main)
 
 
@@ -937,4 +1140,5 @@ if __name__ == "__main__":
     parser.add_argument("--request", type=Path)
     parser.add_argument("--capabilities", action="store_true")
     parser.add_argument("--repairs", action="store_true")
+    parser.add_argument("--availability", action="store_true")
     raise SystemExit(main(parser.parse_args()))

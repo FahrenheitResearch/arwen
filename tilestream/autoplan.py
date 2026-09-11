@@ -370,21 +370,30 @@ class Footprint:
             raise ValueError("radiation window cells must contain whole vertical columns")
         return call_workspace_bytes(columns, nz, p_top, cap)
 
-    def buffer_bytes(self, window_cells: int) -> float:
-        """VRAM one tile buffer of ``window_cells`` costs."""
+    def buffer_bytes(self, window_cells: int, shape=None) -> float:
+        """VRAM one tile buffer of ``window_cells`` costs.
+
+        ``shape`` is the compute window ``(window_nx, window_ny)`` when the
+        caller knows it.  The measured rungs price by the cell alone and
+        ignore it; the itemized prepared model prices the rectangle it is
+        given, and without one prices a bound over every legal rectangle
+        of that area (:meth:`gpuwm.core.prepared_tile_memory.
+        PreparedTileMemory.sizing_shape`).
+        """
         if self.prepared_memory is not None:
-            return self.prepared_memory.buffer_bytes(window_cells)
+            return self.prepared_memory.buffer_bytes(window_cells, shape)
         return self.buffer_fixed_bytes + self.bytes_per_cell * window_cells
 
-    def vram_bytes(self, window_cells: int, nbuffers: int) -> float:
+    def vram_bytes(self, window_cells: int, nbuffers: int, shape=None) -> float:
         """VRAM a process holding ``nbuffers`` such buffers costs, with safety.
 
         ONE domain in ONE process.  A caller pricing a SECOND domain into a
         process that already holds one wants :meth:`marginal_bytes`, which
         is this number without the part the process already paid.
+        ``shape`` as in :meth:`buffer_bytes`.
         """
         if self.prepared_memory is not None:
-            return self.prepared_memory.vram_bytes(window_cells, nbuffers)
+            return self.prepared_memory.vram_bytes(window_cells, nbuffers, shape)
         raw = (CUDA_CONTEXT_BYTES + self.process_fixed_bytes + self.domain_fixed_bytes
                + nbuffers * self.buffer_bytes(window_cells))
         # The empirical rung already reserves a radiation call separately
@@ -409,10 +418,48 @@ class Footprint:
             return self.prepared_memory.process_overhead_bytes
         return (CUDA_CONTEXT_BYTES + self.process_fixed_bytes) * VRAM_SAFETY
 
-    def marginal_bytes(self, window_cells: int, nbuffers: int) -> float:
+    def marginal_bytes(self, window_cells: int, nbuffers: int, shape=None) -> float:
         """VRAM one MORE domain costs in a process that already runs one."""
-        return self.vram_bytes(window_cells, nbuffers) \
+        return self.vram_bytes(window_cells, nbuffers, shape) \
             - self.process_overhead_bytes
+
+    def terms(self, window_cells: int, nbuffers: int, shape=None) -> dict:
+        """Every term of :meth:`vram_bytes`, named, for a refusal to print.
+
+        Byte-valued entries end in ``_bytes``; the rest are labels.  The
+        itemized prepared model reports its own itemization; a measured rung
+        reports the affine fit it is: the CUDA context, the rung's fixed
+        costs, the per-cell rate times the window times the buffers, the
+        safety factor and the reserved radiation transient.
+        """
+        if self.prepared_memory is not None:
+            terms = dict(self.prepared_memory.terms(window_cells, nbuffers, shape))
+            terms["rung"] = self.rung
+            return terms
+        nbuffers = int(nbuffers)
+        window_cells = int(window_cells)
+        per_buffer = self.buffer_bytes(window_cells)
+        raw = (CUDA_CONTEXT_BYTES + self.process_fixed_bytes + self.domain_fixed_bytes
+               + nbuffers * per_buffer)
+        classic = self.classic_call_bytes(window_cells) * VRAM_SAFETY
+        excess = max(0, classic - self.radiation_transient_bytes)
+        return {
+            "rung": self.rung,
+            "window": (f"{int(shape[0])}x{int(shape[1])} = {int(shape[0]) * int(shape[1]):,} columns"
+                       if shape is not None else f"{window_cells:,} cells"),
+            "buffer/per_cell": f"{self.bytes_per_cell:.1f} B/cell x {window_cells:,} cells",
+            "buffer/fixed_bytes": int(self.buffer_fixed_bytes),
+            "buffer/total_bytes": int(per_buffer),
+            "buffers": f"{nbuffers} x {per_buffer / GIB:.3f} GiB",
+            "buffers_bytes": int(nbuffers * per_buffer),
+            "fixed/cuda_context_bytes": int(CUDA_CONTEXT_BYTES),
+            "fixed/process_bytes": int(self.process_fixed_bytes),
+            "fixed/domain_bytes": int(self.domain_fixed_bytes),
+            "safety": f"x {VRAM_SAFETY:.2f}",
+            "classic_lw_excess_bytes": int(excess),
+            "radiation_transient_bytes": int(self.radiation_transient_bytes),
+            "vram_bytes": int(self.vram_bytes(window_cells, nbuffers)),
+        }
 
     def resident_bytes(self, cells: int) -> float:
         """VRAM the whole domain costs with no tiling: one buffer, no halo."""
@@ -1097,7 +1144,7 @@ class Plan:
                 f" {self.nz} = {self.window_cells / 1e6:.1f} Mcell"
                 f"   -> redundancy {self.redundancy:.3f}x",
                 f"  buffers       {self.nbuffers}"
-                f"   ({g(self.footprint.buffer_bytes(self.window_cells))}"
+                f"   ({g(self.footprint.buffer_bytes(self.window_cells, (self.window_nx, self.window_ny)))}"
                 + (f" each above a {g(self.footprint.process_fixed_bytes)}"
                    " per-process fixed cost)" if prepared is None else
                    " of named pool storage each; separate compute streams)"),
@@ -1381,11 +1428,17 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
     # measured 1.32x is what two buffers buy, and nothing was measured for a
     # third beyond "it does not hurt".
     tile_nx, tile_ny = best["tile_nx"], best["tile_ny"]
+    window_shape = (best["window_nx"], best["window_ny"])
     window_cells = best["window_nx"] * best["window_ny"] * nz
     nbuffers = best["nbuffers"]
     ntiles = best["ntiles_x"] * best["ntiles_y"]
+    # AT THE TILE'S OWN WINDOW from here on.  The search above admitted this
+    # tile through a shape-free bound over every rectangle of its area; the
+    # plan's price, and the buffer count it can afford, are those of the
+    # rectangle it actually chose -- which never costs more than the bound
+    # that admitted it, so nothing admitted here was refused there.
     while (nbuffers < max_nbuffers and nbuffers < ntiles
-           and fp.vram_bytes(window_cells, nbuffers + 1) <= vram_budget):
+           and fp.vram_bytes(window_cells, nbuffers + 1, window_shape) <= vram_budget):
         nbuffers += 1
     if nbuffers > ntiles:
         nbuffers = max(1, ntiles)
@@ -1398,7 +1451,7 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
             "the measured cost of that on dry dynamics is 1.32x")
 
     # ------------------------------------------------------------- arithmetic
-    vram = fp.vram_bytes(window_cells, nbuffers)
+    vram = fp.vram_bytes(window_cells, nbuffers, window_shape)
     if write_mode == "ring":
         frac = ring_arena_fraction(nx, ny, tile_nx, tile_ny, halo)
         arena = store * frac * 1.05          # the model runs 0.1-0.6 pp low
@@ -1450,7 +1503,8 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
                 f"{best['redundancy']:.2f}x the necessary work (limit "
                 f"{max_redundancy:.2f}x) AT ANY BUDGET -- a bigger card "
                 f"changes nothing.{resident_note}  Pass max_redundancy=None "
-                f"to stream it anyway.",
+                f"([tiles] max_redundancy = false in a forecast "
+                f"configuration) to stream it anyway.",
                 "geometry", dict(redundancy=best["redundancy"],
                                  tile=(tile_nx, tile_ny), halo=halo))
         cost_basis = (
@@ -1466,7 +1520,8 @@ def plan(cfg, machine: Machine, *, footprint: Footprint | None = None,
             f"{best['redundancy']:.2f}x of the necessary work would be done "
             f"on halo cells (limit {max_redundancy:.2f}x).  This is a VRAM "
             f"problem: {cost_basis} Pass "
-            f"max_redundancy=None to run it anyway.",
+            f"max_redundancy=None ([tiles] max_redundancy = false in a "
+            f"forecast configuration) to run it anyway.",
             "vram", dict(redundancy=best["redundancy"],
                          tile=(tile_nx, tile_ny)))
 

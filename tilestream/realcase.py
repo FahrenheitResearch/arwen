@@ -421,6 +421,36 @@ class CaseStores:
     coord: Any
     store_bytes: int
     geo_bytes: int
+    #: Whether ``store[REFL_KEY]`` holds a field a microphysics call wrote.
+    #:
+    #: ``"absent"``    the store carries no reflectivity slot at all.
+    #: ``"primed"``   the slot exists, sized and zeroed, and NOTHING has
+    #:                written it yet -- the state it is in on a domain past
+    #:                the resident ceiling, which cannot take the settling
+    #:                step that would compute the analysis-time field.
+    #: ``"computed"`` a microphysics call has written it: the settling step
+    #:                did, or a sweep that carried ``refl_10cm_due`` has.
+    #:
+    #: :func:`composite_reflectivity` reads the slot only in the last state.
+    #: Zeros are the trap this field exists to close: a primed slot rendered
+    #: as dBZ is a domain-wide 0 dBZ field, which is a plausible weak-echo
+    #: product and not a failure anybody would notice.
+    refl_stash: str = "absent"
+
+    def reflectivity_swept(self) -> None:
+        """Record that a sweep carrying ``refl_10cm_due`` has just run.
+
+        One line at the call site instead of a spelling to remember, and the
+        only transition that exists: a primed slot becomes a computed one
+        the moment a sweep writes every tile's window into it, and it never
+        goes back -- :func:`reflectivity_run_kwargs` puts the keyword on
+        EVERY step of every sweep it configures, so there is no later sweep
+        that leaves the slot behind.  A case whose store has no slot stays
+        ``"absent"``: nothing to mark, and marking it would make
+        :func:`composite_reflectivity` claim a field that is not there.
+        """
+        if self.refl_stash != "absent":
+            self.refl_stash = "computed"
 
 
 def prepare_low_water(config_path: str, *, verbose=print):
@@ -1137,13 +1167,26 @@ def release_prepared(prep, *, verbose=print) -> None:
 
 
 def build_stores(prep, exp, *, verbose=print, on_state=None,
-                 settle: bool = True) -> CaseStores:
+                 settle: bool = True,
+                 reflectivity: bool = True) -> CaseStores:
     """Move the prepared domain off the device into pinned host stores.
 
     The carriers go into a pinned :mod:`tilestream.hoststore` block and the
     geography into a second one; between them they are everything
     ``run_tiled`` reads.  The device state is released before returning, so
     the forecast starts with the card empty apart from the tile buffers.
+
+    ``reflectivity=True`` (the default, audit R-052) puts the ``refl_10cm``
+    scratch slot in the store, which is the ONLY route by which a streamed
+    run can publish the dBZ a scheme computes for itself -- mp=9, 18 and 50
+    compute Z inside the scheme call and publish it through no operator, and
+    mp=8 and 28 need a graupel-number shadow the restart classifies as
+    rebuilt and never serialises.  A store that carries the slot must be
+    swept by a run that WRITES it, which is what
+    :func:`reflectivity_run_kwargs` arranges; a caller that sweeps such a
+    store without those keywords is refused by ``TiledRun``'s inventory
+    comparison, naming the key.  ``reflectivity=False`` is for a lane whose
+    product is the transport rather than the weather.
     """
     import time
 
@@ -1179,17 +1222,51 @@ def build_stores(prep, exp, *, verbose=print, on_state=None,
     # step -- so on this configuration skipping it changes nothing but the
     # peak.
     t0 = time.perf_counter()
+    refl_stash = "absent"
     if settle:
         from gpuwm.core.dycore import step as _step
-        _step(state, cfg)
+        from gpuwm.core.refl import consume_refl_10cm, refl_10cm_is_stashed
+        # AND THE ANALYSIS-TIME REFLECTIVITY, in the same step.  This is
+        # the one microphysics call this route makes on a DOMAIN-shaped
+        # state, so it is the only chance the store has to hold a computed
+        # ``refl_10cm`` before the first sweep -- and the f000 product is
+        # rendered from exactly that store.  Every scheme writes the slot
+        # here, including the three that compute Z inside the scheme call
+        # and hand the finished array to ``stash_refl_10cm``.  The stash is
+        # a one-frame handoff reference and is consumed immediately: the
+        # numbers stay in the state-owned slot, which is what the gather
+        # below copies, and leaving it parked would make the next
+        # output-due call on this state raise "not consumed before reuse".
+        _step(state, cfg, refl_10cm_due=bool(reflectivity))
+        if reflectivity and refl_10cm_is_stashed(state):
+            consume_refl_10cm(state)
+            refl_stash = "computed"
         cp.cuda.runtime.deviceSynchronize()
         if verbose:
             verbose(f"    one monolithic step to settle the lazy carriers "
-                    f"({time.perf_counter() - t0:.1f} s)")
-    elif verbose:
-        verbose("    settling step SKIPPED (settle=False): this domain is "
-                "past the resident ceiling, and run_tiled's inventory match "
-                "is the guard that a lazy carrier cannot slip through")
+                    f"({time.perf_counter() - t0:.1f} s)"
+                    + ("; REFL_10CM computed for f000" if reflectivity
+                       else ""))
+    else:
+        if reflectivity:
+            # PAST THE RESIDENT CEILING: no domain-shaped step is possible,
+            # so the slot is ALLOCATED and left empty for the sweep to fill.
+            # It has to exist before the store is sized -- a slot that
+            # appears later has nowhere to land and ``TiledRun`` refuses the
+            # sweep -- and it has to be MARKED, because an empty slot
+            # rendered as dBZ is a domain-wide 0 dBZ field that reads like
+            # weak echo rather than like a missing field.
+            from gpuwm.core.streaming import prime_refl_10cm
+            prime_refl_10cm(state, cfg)
+            refl_stash = "primed"
+        if verbose:
+            verbose("    settling step SKIPPED (settle=False): this domain "
+                    "is past the resident ceiling, and run_tiled's "
+                    "inventory match is the guard that a lazy carrier "
+                    "cannot slip through"
+                    + ("; the REFL_10CM slot is primed EMPTY and the first "
+                       "sweep carrying refl_10cm_due fills it"
+                       if reflectivity else ""))
 
     # The one place a DOMAIN-shaped resident state exists in a streamed run.
     # A wrfout frame plan and the DomainSetup a frame's statics come from can
@@ -1200,7 +1277,15 @@ def build_stores(prep, exp, *, verbose=print, on_state=None,
     if on_state is not None:
         on_state(state, cfg)
 
-    inv = physinv.carrier_inventory(state)
+    # WITH the reflectivity stash (audit R-052).  ``carrier_inventory`` is
+    # the RESTART manifest and deliberately omits ``refl_10cm``, a pure
+    # diagnostic; this store's whole product is that diagnostic, and for
+    # mp=9/18/50 -- which compute their own dBZ inside the scheme call and
+    # publish it through no operator -- the stash is the ONLY route to it.
+    # The slot is present here exactly when ``reflectivity`` asked for it:
+    # computed by the settling step above, or primed empty for the sweep.
+    inv = (physinv.carrier_inventory_with_refl(state) if reflectivity
+           else physinv.carrier_inventory(state))
     geo_inv = _driver.geography_inventory(state)
     scalars = physinv.carrier_scalars(state)
 
@@ -1260,7 +1345,23 @@ def build_stores(prep, exp, *, verbose=print, on_state=None,
         lat=np.asarray(lat, dtype=np.float32),
         lon=np.asarray(lon, dtype=np.float32),
         terrain=terrain, coord=coord,
-        store_bytes=store_bytes, geo_bytes=geo_bytes)
+        store_bytes=store_bytes, geo_bytes=geo_bytes,
+        refl_stash=refl_stash)
+
+
+def reflectivity_run_kwargs(kwargs: dict, case: CaseStores) -> dict:
+    """:func:`tilestream.driver.reflectivity_run_kwargs` for a case's store.
+
+    The rule is the transport's and lives there, with the four things that
+    have to be true at once for a streamed sweep to WRITE the REFL_10CM
+    slot; this is the case-shaped call site.  Mark the case with
+    :meth:`CaseStores.reflectivity_swept` after each sweep so
+    :func:`composite_reflectivity` knows the slot holds a field a
+    microphysics call wrote rather than the zeros it was primed with.
+    """
+    from tilestream import driver as _driver
+
+    return _driver.reflectivity_run_kwargs(kwargs, case.store)
 
 
 # --------------------------------------------------------------------------
@@ -1281,9 +1382,28 @@ SURFACE_CARRIERS: dict = {
     "TSK": ("fields/tsk", "K"),
 }
 
-#: What ``compute_refl_10cm`` reads out of a state, and therefore the only
-#: carriers a reflectivity slab has to be given.
-REFL_SPECIES = ("qv", "qr", "nr", "qs", "ns", "qg", "ng", "p", "thp")
+#: The two fields a reflectivity slab needs BESIDE the active scheme's own
+#: input species: the standalone-current-state path forms ``T`` from
+#: ``(thb + thp) * (p/p0)^(Rd/cp)``, so pressure and theta' are read for
+#: every scheme and are not in any scheme's row.
+_REFL_THERMODYNAMIC_CARRIERS = ("p", "thp")
+
+
+def _refl_slab_carriers(mp_physics: int) -> tuple[str, ...]:
+    """State carriers a reflectivity slab has to be given, for ONE scheme.
+
+    Derived from ``gpuwm.core.refl.REFL_10CM_INPUT_SPECIES`` -- the single
+    published table the operator itself dispatches on -- rather than
+    restated here.  Audit R-052: the tuple this replaces was Morrison's
+    six-moment set verbatim, so a WSM6, Thompson, WDM6 or aerosol-aware
+    Thompson store was refused for lacking ``nr``/``ns`` that its scheme
+    never allocates and its reflectivity formulation never reads, and the
+    refusal fired inside the product step rather than at plan review.
+    """
+    from gpuwm.core.refl import refl_10cm_input_species
+
+    return tuple(refl_10cm_input_species(int(mp_physics))
+                 + _REFL_THERMODYNAMIC_CARRIERS)
 
 
 def composite_reflectivity(case: CaseStores, *, slab_rows: int = 64,
@@ -1301,17 +1421,73 @@ def composite_reflectivity(case: CaseStores, *, slab_rows: int = 64,
     rebuilt: on a ``terrain_opt=1`` domain it is 3-D and terrain-following,
     and a slab that rebuilt it from its own rows would rebuild it for a
     different domain.
-    """
-    import cupy as cp
 
-    from gpuwm.core.refl import compute_refl_10cm
-    from gpuwm.core.state import DomainState
+    THE SCHEME'S OWN FIELD WINS, and ``case.refl_stash`` is what says it is
+    there to win with.  A store built by :func:`build_stores` with
+    ``reflectivity=True`` carries ``scratch/refl_10cm``; that slot holds a
+    field a microphysics call WROTE only once the settling step has computed
+    it or a sweep carrying ``refl_10cm_due`` has filled it -- see
+    :func:`reflectivity_run_kwargs`, and mark the case with
+    :meth:`CaseStores.reflectivity_swept` after such a sweep.  In that state
+    the array IS the model's reflectivity and is returned with no recompute
+    and no slab loop: the only route for mp=9, 18 and 50, whose dBZ is
+    produced inside the scheme call and published through no operator, and
+    the only correct route for mp=8 and 28, whose ``compute_refl_10cm``
+    branch needs the Thompson graupel-number shadow that the restart
+    classifies as rebuilt and never serialises.
+
+    A slot that is present but PRIMED -- a domain past the resident ceiling,
+    before its first sweep -- is not read: it is zeros, and zeros rendered
+    as dBZ are a domain-wide 0 dBZ field that reads like weak echo.  The
+    slab recompute below is what that store gets, for the schemes the
+    operator dispatches, and a named refusal for the schemes it does not.
+    """
+    from gpuwm.core.refl import NativeReflectivityScheme
+    from tilestream.physics_inventory import REFL_KEY
 
     cfg = case.cfg
     nz, ny, nx = int(cfg.nz), int(cfg.ny), int(cfg.nx)
     rows = int(slab_rows)
     if ny % rows:
         raise RealCaseError(f"slab_rows={rows} must divide ny={ny}")
+    if case.refl_stash == "computed":
+        stashed = case.store.get(REFL_KEY)
+        if stashed is None:
+            raise RealCaseError(
+                f"this case says its reflectivity is computed but carries "
+                f"no {REFL_KEY!r}; build_stores(reflectivity=True) is what "
+                "puts the slot in the store")
+        # COPIED, both ways.  ``store`` holds PINNED host arrays the sweep
+        # scatters into, so handing the caller the array itself hands it a
+        # view a later sweep overwrites underneath a product it has already
+        # been given.
+        field = np.array(stashed, dtype=np.float32)
+        return field.max(axis=0) if column_max else field
+
+    try:
+        carriers = _refl_slab_carriers(cfg.mp_physics)
+    except NativeReflectivityScheme as exc:
+        # The scheme HAS reflectivity and this store does not have a written
+        # copy of it, so say where it comes from rather than reporting a
+        # missing operator input for an operator this scheme does not use.
+        raise RealCaseError(
+            f"{exc}  This case's {REFL_KEY!r} is {case.refl_stash!r}: "
+            "build the store with build_stores(reflectivity=True) -- the "
+            "default, whose settling step computes the analysis-time field "
+            "-- and sweep it with the keywords of "
+            "tilestream.realcase.reflectivity_run_kwargs, which are what "
+            "make every tile write the slot; a domain past the resident "
+            "ceiling has no computed field until its first such sweep.  "
+            "Or render a scheme whose reflectivity the operator "
+            "computes.") from exc
+
+    # The device is needed only by the recompute, so both the stash route
+    # and the refusal above stay host-side and cost no context.
+    import cupy as cp
+
+    from gpuwm.core.refl import compute_refl_10cm
+    from gpuwm.core.state import DomainState
+
     out = (np.empty((ny, nx), dtype=np.float32) if column_max
            else np.empty((nz, ny, nx), dtype=np.float32))
     cfg_slab = replace(cfg, ny=rows)
@@ -1324,7 +1500,7 @@ def composite_reflectivity(case: CaseStores, *, slab_rows: int = 64,
                                     if case.geo_store["setup/thb"].ndim == 3
                                     else case.geo_store["setup/thb"],
                                     dtype=state.thb.dtype)
-        for name in REFL_SPECIES:
+        for name in carriers:
             arr = getattr(state, name, None)
             if arr is None:
                 raise RealCaseError(

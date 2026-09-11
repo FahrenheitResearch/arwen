@@ -422,18 +422,21 @@ def radar_grid_to_gridded_obs(
                 "returns the radar could not place")
 
         # 3. The value is the forward operator's clear-air floor and there
-        #    is no default.  -35 dBZ (mp 1/6/8/10) against an NSSL H(x)
-        #    that floors at 0 manufactures a 35 dB innovation out of two
-        #    skies that agree perfectly, everywhere the zeroes apply.
+        #    is no default.  -35 dBZ (the refl10cm family) against an NSSL
+        #    H(x) that floors at 0, or against a Milbrandt-Yau H(x) that
+        #    floors at -99, manufactures an innovation out of two skies
+        #    that agree perfectly, everywhere the zeroes apply.
         if clear_air_value_dbz is None:
             raise RadarObsAdapterError(
                 "clear_air_value_dbz is required when assimilating "
                 "clear-air zeroes: the value a zero differences against is "
                 "the active scheme's H(x) clear-air floor (-35 dBZ for "
-                "mp_physics 1/6/8/10, 0 dBZ for NSSL mp18). There is no "
+                "mp_physics 1/6/8/10/16/28, 0 dBZ for NSSL mp18, -99 dBZ "
+                "for Milbrandt-Yau mp9). There is no "
                 "default because the wrong one is silent -- two agreeing "
-                "clear skies produce a 35 dB innovation and the filter "
-                "removes condensate to chase it")
+                "clear skies produce a 35, 64 or 99 dB innovation, "
+                "whichever pair of those three floors was crossed, and the "
+                "filter removes condensate to chase it")
         value = float(clear_air_value_dbz)
         if not np.isfinite(value):
             raise RadarObsAdapterError(

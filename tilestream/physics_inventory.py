@@ -137,6 +137,8 @@ from typing import Mapping
 
 import numpy as np
 
+from gpuwm.core import streaming as _streaming
+
 
 __all__ = [
     "CarrierIncompleteError",
@@ -317,6 +319,48 @@ def carrier_inventory(obj, names=None) -> dict[str, object]:
         if value is not None:
             out[key] = value
     return out
+
+
+#: Where simulated reflectivity lives once a step has computed it.
+#:
+#: THE PUBLISHED KEY, NOT A SPELLING OF IT.  ``gpuwm.core.streaming`` owns
+#: the ``refl_10cm`` handoff for every streamed route in the tree -- the
+#: key, the priming that allocates the slot, the inventory rule that carries
+#: it and the post-step hook that clears each tile's one-frame stash -- and
+#: this package re-exports its name rather than typing the string again.
+#: Audit R-052 found the string typed out in two more modules of this
+#: package (``case_hrrr``, ``case_wrfout``) beside the one that owns it, and
+#: a store built by one of them while the sweep was configured by another is
+#: how a computed field came to be thrown away.
+REFL_KEY = _streaming.REFL_STORE_KEY
+
+
+def carrier_inventory_with_refl(obj, names=None) -> dict:
+    """:func:`carrier_inventory` plus the ``refl_10cm`` scratch slot.
+
+    ``refl_10cm`` is not a restart member, so :func:`carrier_manifest` --
+    which is the restart manifest -- does not name it, and a streamed run
+    built on the bare :func:`carrier_inventory` carries no reflectivity at
+    all.  That is correct for a checkpoint (a pure diagnostic, recomputable)
+    and wrong for every product whose output IS simulated reflectivity: each
+    tile computes its own window and the transport, having no home for it,
+    throws every one away.
+
+    The rule itself is :func:`gpuwm.core.streaming.refl_inventory`, applied
+    to this package's manifest, so the three kinds of object a sweep
+    inventories -- the domain state, the store mapping and each tile buffer
+    -- are each handled the way that route already handles them.  It reads
+    ``existing_scratch`` and never allocates: :func:`gpuwm.core.streaming
+    .prime_refl_10cm` is what creates the slot, and a slot that is genuinely
+    absent stays absent so the refusal can still fire.
+
+    The keys come back SORTED, which :func:`carrier_inventory`'s contract
+    requires of everything in this package and which
+    :func:`~gpuwm.core.streaming.refl_inventory`, appending to its base,
+    does not do on its own.
+    """
+    live = _streaming.refl_inventory(carrier_inventory)(obj, names)
+    return {key: live[key] for key in sorted(live)}
 
 
 def is_checkpointed(key: str) -> bool:

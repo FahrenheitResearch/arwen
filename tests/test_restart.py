@@ -247,10 +247,12 @@ def _identity_bound_physics_state(cfg, monkeypatch, *, trace_co2=3.30e-4,
     dict(moist=False),
     dict(moist=True, mp_physics=1),
     dict(moist=True, mp_physics=8),
+    dict(moist=True, mp_physics=9),
     dict(moist=True, mp_physics=10),
     dict(moist=True, mp_physics=18),
     dict(moist=True, mp_physics=50),
-], ids=["dry", "kessler", "thompson", "morrison", "nssl2", "p3"])
+], ids=["dry", "kessler", "thompson", "milbrandt2", "morrison", "nssl2",
+        "p3"])
 def test_every_domainstate_attribute_is_classified(monkeypatch, overrides):
     """A DomainState attribute outside the manifest raises; the serialized
     manifest names exactly the allocated cross-step arrays per config."""
@@ -278,6 +280,19 @@ def test_every_domainstate_attribute_is_classified(monkeypatch, overrides):
         # Registry.EM_COMMON:1389); effective radii feed the next
         # radiation call.
         assert {"state/h_diabatic", "state/effc", "state/ng"} <= set(manifest)
+    if overrides.get("mp_physics") == 9:
+        # Milbrandt-Yau carries hail mass beside graupel and a number
+        # moment for all six categories; every one is a transported
+        # prognostic (gpuwm/core/moist.py::MY2_SPECIES), so every one is
+        # in the serialized manifest.  The NSSL spellings are a DIFFERENT
+        # scheme's package and must not appear.
+        assert {f"state/{name}"
+                for name in restart.MILBRANDT2_RESTART_STATE} <= set(manifest)
+        assert not (set(manifest) & {
+            "state/qndrop", "state/qnr", "state/qni", "state/qns",
+            "state/qng", "state/qnh", "state/qnn", "state/qvolg",
+            "state/qvolh",
+        })
     if overrides.get("mp_physics") == 18:
         expected_nssl = {
             *(f"state/{name}" for name in restart.NSSL2_RESTART_PROGNOSTICS),
@@ -963,7 +978,8 @@ def test_wsm6_sr_exact_upper_roundtrips_restart_bits(monkeypatch, tmp_path):
         np.full(shape, upper, np.float32).view(np.uint32))
 
 
-@pytest.mark.parametrize("mp_physics", [10, 50], ids=["morrison", "p3"])
+@pytest.mark.parametrize("mp_physics", [9, 10, 50],
+                         ids=["milbrandt2", "morrison", "p3"])
 def test_synthetic_state_roundtrips_bit_exactly(monkeypatch, tmp_path,
                                                 mp_physics):
     cfg = _cfg(moist=True, mp_physics=mp_physics)
@@ -972,8 +988,18 @@ def test_synthetic_state_roundtrips_bit_exactly(monkeypatch, tmp_path,
     _fill_serialized(state, seed=20260716)
     state.elapsed_seconds = 1234.5
     rng = np.random.default_rng(7)
-    state.scratch((cfg.ny, cfg.nx), "mp_rainnc")[...] = \
-        rng.standard_normal((cfg.ny, cfg.nx)).astype(np.float32)
+    # EVERY canonical accumulator this scheme's driver arm binds, not
+    # just the rain one: a live driver allocates the whole row in one
+    # pass (gpuwm/core/physics.py's micro_slots comprehension), so a
+    # state carrying one and not the rest is a state no forecast
+    # produces -- and for mp=9 the row is the nine-slot one whose hail
+    # pair a WSM6-family assumption drops.
+    from gpuwm.core.physics_inventory import microphysics_scratch_slots
+    seeded_slots = [slot for _, slot
+                    in microphysics_scratch_slots(cfg.mp_physics)]
+    for slot in seeded_slots:
+        state.scratch((cfg.ny, cfg.nx), slot)[...] = \
+            rng.standard_normal((cfg.ny, cfg.nx)).astype(np.float32)
 
     path = restart.write_restart(
         tmp_path / "rst.npz", state, cfg,
@@ -994,8 +1020,18 @@ def test_synthetic_state_roundtrips_bit_exactly(monkeypatch, tmp_path,
         assert target.dtype == source.dtype, name
         # Byte-level identity: NaN payloads, signed zeros, denormals.
         assert target.tobytes() == source.tobytes(), name
-    assert (fresh._scratch["mp_rainnc"].tobytes()
-            == state._scratch["mp_rainnc"].tobytes())
+    for slot in seeded_slots:
+        assert (fresh._scratch[slot].tobytes()
+                == state._scratch[slot].tobytes()), slot
+    if mp_physics == 9:
+        # Named explicitly for the reason the P3 block below gives: the
+        # twelve Milbrandt-Yau moments are what a resumed mp=9 run
+        # integrates, and a manifest edit that dropped one would leave
+        # this equality trivially true.
+        for name in restart.MILBRANDT2_RESTART_STATE:
+            source = getattr(state, name)
+            assert source.any(), f"{name} was never filled"
+            assert getattr(fresh, name).tobytes() == source.tobytes(), name
     if mp_physics == 50:
         # Named explicitly so a later edit cannot restore the equality by
         # dropping P3's carriers from the serialized manifest: the rime
@@ -1013,6 +1049,128 @@ def test_synthetic_state_roundtrips_bit_exactly(monkeypatch, tmp_path,
     assert header["config"]["nx"] == cfg.nx
     assert set(header["array_manifest"]) >= {"state/u", "state/h_diabatic",
                                              "scratch/mp_rainnc"}
+
+
+@pytest.mark.parametrize("dropped", ["nh", "nc", "qh"])
+def test_a_milbrandt2_write_missing_a_moment_is_refused(monkeypatch, tmp_path,
+                                                       dropped):
+    """A build that stopped allocating one moment may not checkpoint.
+
+    The generic writer walks what the state HAS, so a state missing a
+    moment writes a file that is internally consistent and that a
+    resuming state missing the same moment accepts -- two equally wrong
+    endpoints agreeing with each other.  The refusal names the field.
+    """
+    cfg = _cfg(moist=True, mp_physics=9)
+    state = _shim_state(cfg, monkeypatch)
+    _fill_setup(state)
+    _fill_serialized(state, seed=99)
+    setattr(state, dropped, None)
+
+    with pytest.raises(restart.RestartManifestError,
+                       match=f"mp_physics=9 restart requires array "
+                             f"'state/{dropped}'"):
+        restart.write_restart(tmp_path / "rst.npz", state, cfg)
+
+
+def test_a_milbrandt2_restart_missing_a_moment_is_refused(monkeypatch,
+                                                          tmp_path):
+    """And the file is refused on the way back in, by name."""
+    cfg = _cfg(moist=True, mp_physics=9)
+    state = _shim_state(cfg, monkeypatch)
+    _fill_setup(state)
+    _fill_serialized(state, seed=101)
+    path = restart.write_restart(tmp_path / "rst.npz", state, cfg)
+
+    tampered = _rewrite_restart_archive(
+        path, tmp_path / "no-hail-number.npz",
+        lambda payload, header: payload.pop("state/nh"))
+
+    fresh = _shim_state(cfg, monkeypatch)
+    _fill_setup(fresh)
+    with pytest.raises(restart.RestartMismatchError,
+                       match="omits canonical mp_physics=9 state"):
+        restart.restore_restart(tampered, fresh, cfg)
+
+
+def test_a_milbrandt2_write_missing_the_hail_accumulators_is_refused(
+        monkeypatch, tmp_path):
+    """The seven-slot (WSM6-family) assumption is refused, not accepted.
+
+    A partial accumulator row is the shape the mistake takes: everything
+    a rain/snow/graupel scheme has, and no hail.  All-absent is the
+    pre-first-call state and stays writable, which this pins by writing
+    that state successfully first.
+    """
+    cfg = _cfg(moist=True, mp_physics=9)
+    state = _shim_state(cfg, monkeypatch)
+    _fill_setup(state)
+    _fill_serialized(state, seed=17)
+    restart.write_restart(tmp_path / "no-accumulators.npz", state, cfg)
+
+    for slot in restart.MILBRANDT2_RESTART_PRECIPITATION_SLOTS:
+        if slot in ("mp_hailnc", "mp_hailncv"):
+            continue
+        state.scratch((cfg.ny, cfg.nx), slot)[...] = np.float32(1.0)
+
+    with pytest.raises(restart.RestartManifestError,
+                       match="missing precipitation accumulators"):
+        restart.write_restart(tmp_path / "seven-of-nine.npz", state, cfg)
+
+
+def test_a_milbrandt2_restart_missing_the_hail_accumulators_is_refused(
+        monkeypatch, tmp_path):
+    """And a file with half a row is refused on the way back IN.
+
+    Measured before this refusal existed: a checkpoint tampered to drop
+    ``scratch/mp_hailnc`` restored successfully, because the generic
+    reader answers a missing serialized slot by zero-initializing it with
+    a note -- the right answer for a slot added after the file was
+    written, and silently wrong here.  The resumed run carried storm-total
+    hail of 0.0 beside a rain total of 3.0 and integrated on from there.
+    ALL-absent stays readable: that is the pre-first-call state, and the
+    write side accepts it for the same reason.
+    """
+    cfg = _cfg(moist=True, mp_physics=9)
+    state = _shim_state(cfg, monkeypatch)
+    _fill_setup(state)
+    _fill_serialized(state, seed=23)
+    for slot in restart.MILBRANDT2_RESTART_PRECIPITATION_SLOTS:
+        state.scratch((cfg.ny, cfg.nx), slot)[...] = np.float32(3.0)
+    path = restart.write_restart(tmp_path / "all-nine.npz", state, cfg)
+
+    tampered = _rewrite_restart_archive(
+        path, tmp_path / "no-hail-total.npz",
+        lambda payload, header: payload.pop("scratch/mp_hailnc"))
+
+    fresh = _shim_state(cfg, monkeypatch)
+    _fill_setup(fresh)
+    with pytest.raises(restart.RestartMismatchError,
+                       match="omits \\['scratch/mp_hailnc'\\]"):
+        restart.restore_restart(tampered, fresh, cfg)
+
+
+def test_a_milbrandt2_restart_with_no_accumulators_at_all_restores(
+        monkeypatch, tmp_path):
+    """The other half of the same rule, so the refusal is not a blanket.
+
+    A checkpoint written before the scheme's first call carries none of
+    the nine, and must still restore -- refusing it would turn a legal
+    early checkpoint into a lost run.
+    """
+    cfg = _cfg(moist=True, mp_physics=9)
+    state = _shim_state(cfg, monkeypatch)
+    _fill_setup(state)
+    _fill_serialized(state, seed=29)
+    path = restart.write_restart(tmp_path / "pre-first-call.npz", state, cfg)
+    with np.load(path, allow_pickle=False) as stored:
+        assert not [key for key in stored.files
+                    if key[len("scratch/"):]
+                    in restart.MILBRANDT2_RESTART_PRECIPITATION_SLOTS]
+
+    fresh = _shim_state(cfg, monkeypatch)
+    _fill_setup(fresh)
+    restart.restore_restart(path, fresh, cfg)
 
 
 def _grell_freitas_shim_state(cfg, monkeypatch):
@@ -4718,6 +4876,100 @@ def test_short_full_physics_restart_is_bit_identical(tmp_path):
     assert bool(cp.any(state_c.h_diabatic != 0.0))
     assert state_c.physics.call_counts["radiation"] == 7   # 1, 7, ..., 37
     assert state_c.physics.call_counts["cumulus"] == 7     # 1, 6, ..., 36
+
+
+def _milbrandt2_state(cp):
+    """Small mp=9 state in which Milbrandt-Yau actually carries moments.
+
+    ``_physics_state(cp, mp_physics=9)`` alone is not enough, and the
+    reason is the scheme rather than the harness: that state's cloud
+    layer carries mass with a droplet NUMBER of zero, and a two-moment
+    scheme handed a zero moment under nonzero mass evaporates the mass
+    within a few steps -- after 20 steps every one of the twelve moments
+    is exactly zero, and a bit comparison over an all-zero inventory
+    proves nothing.  So this seeds a mid-forecast state instead of an
+    initial one: a droplet-bearing warm layer under an ice layer, in a
+    14 km column deep enough for the cold categories to exist.  Both
+    numbers are ordinary continental values (1e8 droplets and 5e4 ice
+    crystals per kg).
+
+    ``cp`` is the caller's cupy module, a parameter for the reason
+    :func:`_grell_freitas_state` gives at length.
+    """
+    state, cfg, driver = _physics_state(cp, mp_physics=9, nz=24,
+                                        ztop=14000.0)
+    state.qc[4:12] = cp.float32(1.5e-3)
+    state.nc[4:12] = cp.float32(1.0e8)
+    state.qi[12:18] = cp.float32(4.0e-4)
+    state.ni[12:18] = cp.float32(5.0e4)
+    return state, cfg, driver
+
+
+@requires_gpu
+@pytest.mark.gpu
+def test_short_milbrandt2_restart_is_bit_identical(tmp_path):
+    """mp_physics=9, on the same terms: 20 + restart + 20 == 40 steps,
+    FP32-bit-exact on every serialized field.
+
+    THE GATE THE SCHEME SHIPPED WITHOUT.  Until this ran, no mp=9
+    checkpoint had ever been written: the identity lookup refused the
+    write, so the first forecast to reach a restart interval died there
+    (2026-09-10, single-domain ERA5, 59 minutes in).  Adding the identity
+    row alone would only prove the write no longer raises; this proves
+    the checkpoint is COMPLETE -- the masses and number moments the
+    scheme is carrying at the boundary, the precipitation accumulators,
+    and the held physics all cross it as bytes rather than being
+    recomputed by the resume.  A two-moment scheme is exactly where a
+    lost moment hides: mass and number enter the size distribution as a
+    ratio, and a moment rebuilt from the scheme's own bounds stays
+    finite, so nothing short of a bit comparison would notice.
+    """
+    import cupy as cp
+
+    from gpuwm.core.dycore import run_steps
+
+    state_a, cfg_a, _ = _milbrandt2_state(cp)
+    run_steps(state_a, cfg_a, 40)
+    reference = restart.write_restart(tmp_path / "reference.npz",
+                                      state_a, cfg_a)
+
+    state_b, cfg_b, _ = _milbrandt2_state(cp)
+    run_steps(state_b, cfg_b, 20)
+    # THE state this test is about: at the checkpoint the scheme is
+    # carrying condensate mass with the number moments that belong to it,
+    # in both phases, and has accumulated surface rain.  Asserted before
+    # the checkpoint is written, so a state that stopped being a real
+    # mixed-phase one fails here instead of passing an empty comparison.
+    for name in ("qs", "qr", "nr", "ni", "ns"):
+        assert bool(cp.any(getattr(state_b, name) != 0.0)), name
+    assert float(cp.abs(state_b._scratch["mp_rainnc"]).max()) > 0.0
+    mid = restart.write_restart(tmp_path / "mid.npz", state_b, cfg_b)
+
+    state_c, cfg_c, _ = _milbrandt2_state(cp)
+    info = restart.restore_restart(mid, state_c, cfg_c)
+    assert info.elapsed_seconds == 200.0
+    run_steps(state_c, cfg_c, 20)
+    resumed = restart.write_restart(tmp_path / "resumed.npz",
+                                    state_c, cfg_c)
+
+    _assert_restart_equal(resumed, reference)
+
+    # Non-triviality: the scheme ran on every step and left real numbers.
+    assert state_c.physics.microphysics_updates == 40
+    assert bool(cp.any(state_c.h_diabatic != 0.0))
+
+    # COMPLETENESS, by name: every Milbrandt-Yau moment and every one of
+    # the nine accumulators its driver arm binds is IN the file.  The
+    # equality above is only as strong as the inventory it compares.
+    keys = set(restart.read_restart_header(reference)["array_manifest"])
+    for name in restart.MILBRANDT2_RESTART_STATE:
+        assert f"state/{name}" in keys, name
+    for slot in restart.MILBRANDT2_RESTART_PRECIPITATION_SLOTS:
+        assert f"scratch/{slot}" in keys, slot
+    # NSSL spells its hail number qnh and mp=9 spells it nh; a checkpoint
+    # carrying the other scheme's package would mean the two ports had
+    # been crossed.
+    assert not (keys & {"state/qnh", "state/qndrop", "state/qvolh"})
 
 
 @requires_gpu

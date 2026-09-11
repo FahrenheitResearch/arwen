@@ -19,23 +19,20 @@ glibc 2.39's ``powf`` and ``expf`` on the device, and there must be exactly one
 transcription of those in the tree.  ``expm1f``/``tanhf`` are new here because
 ENERGY's ``FSNO`` is the only ``TANH`` in Noah-MP.
 
-This is a validation surface, not a runtime path: Noah-MP is not dispatchable
-and ``sf_surface_physics=4`` stays blocked.
+The stand-alone ENERGY assembly is also a validation surface; ENERGY's helpers
+are reachable in the runtime libm-slab composition. Both translation units are
+included conservatively in scheme-4 pricing. Admission requires target-bound
+frame evidence, independently of these kernels' numerical parity gates.
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
-from pathlib import Path
 
 import numpy as np
 
-from gpuwm.certify.kernel_manifest import record_module
-from gpuwm.core.kernels import _preamble
-
-_KDIR = Path(__file__).resolve().parent / "kernels"
-_LIBM_SOURCE = _KDIR / "noahmp_leaves.cu"
-_ENERGY_SOURCE = _KDIR / "noahmp_energy.cu"
+from gpuwm.core.noahmp_kernel_sources import (
+    DEFAULT_OPTIONS, compile_runtime_unit, runtime_unit)
 
 NSOIL = 4
 N_IN = 67
@@ -72,24 +69,17 @@ assert len(OUT_SLOTS) == N_OUT, (len(OUT_SLOTS), N_OUT)
 
 def energy_source() -> str:
     """The exact translation unit the ENERGY kernels are compiled from."""
-    return (_preamble()
-            + _LIBM_SOURCE.read_text(encoding="ascii")
-            + _ENERGY_SOURCE.read_text(encoding="ascii"))
+    return runtime_unit("noahmp_energy").source
 
 
 @lru_cache(maxsize=None)
 def _module(options: tuple[str, ...]):
-    import cupy as cp
-
-    source = energy_source()
-    module = cp.RawModule(code=source, options=options)
-    module.compile()
-    record_module("gpuwm.core.noahmp_energy_gpu:energy",
-                  source=source, options=options, module=module)
-    return module
+    return compile_runtime_unit(
+        "noahmp_energy", module_key="gpuwm.core.noahmp_energy_gpu:energy",
+        options=options)
 
 
-def energy_module(options: tuple[str, ...] = ("-std=c++17",)):
+def energy_module(options: tuple[str, ...] = DEFAULT_OPTIONS):
     """Compile (once per option set) the composed ENERGY translation unit."""
     return _module(tuple(options))
 

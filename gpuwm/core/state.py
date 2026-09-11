@@ -226,10 +226,15 @@ class ScratchArena:
         shape = tuple(shape) if isinstance(shape, (tuple, list)) else (shape,)
         shape = tuple(int(extent) for extent in shape)
         requested_dtype = np.dtype(DTYPE if dtype is None else dtype)
-        if requested_dtype != np.dtype(DTYPE):
+        if requested_dtype.itemsize != np.dtype(DTYPE).itemsize:
+            # The registry accounts slots by element count at one width;
+            # a wider or narrower element would make the prefix view a
+            # different number of values than the shape it was priced at.
             raise TypeError(
-                f"scratch arena slot {slot!r} is float32, requested "
-                f"{requested_dtype}")
+                f"scratch arena slot {slot!r} holds {np.dtype(DTYPE).itemsize}"
+                f"-byte elements, requested {requested_dtype} "
+                f"({requested_dtype.itemsize}-byte); request a dtype of the "
+                "same width, or keep the slot off the shared arena")
         try:
             backing = self._buffers[slot]
         except KeyError as exc:
@@ -241,7 +246,14 @@ class ScratchArena:
                 f"scratch slot {slot!r} arena capacity is {backing.size} "
                 f"values ({self._slot_shapes[slot]}), requested {requested} "
                 f"values ({shape})")
-        return backing.reshape(-1)[:requested].reshape(shape)
+        view = backing.reshape(-1)[:requested]
+        if requested_dtype != np.dtype(DTYPE):
+            # Same-width reinterpretation of the same bytes (the mp=28
+            # entry diagnosis asks for its two int32 slots this way):
+            # the zero fill reads as integer zero, and every arena slot is
+            # written before it is read.
+            view = view.view(requested_dtype)
+        return view.reshape(shape)
 
     @property
     def slot_shapes(self) -> dict[str, tuple[int, ...]]:
@@ -266,20 +278,28 @@ class ScratchArena:
             buf.fill(DTYPE(np.nan))
 
 
-def build_shared_scratch_arena(domains: Iterable[object]) -> ScratchArena:
+def build_shared_scratch_arena(domains: Iterable[object],
+                               tree: Iterable[object] | None = None
+                               ) -> ScratchArena:
     """Build the deterministic shared arena for a domain configuration set.
 
     This is the Task-14 handoff: ``build_experiment`` passes its parent-first
     ``DomainConfig`` sequence here, then injects the returned arena into every
     ``DomainState``. Shape selection and lifetime admission share the same
     registry used by preflight, and this function does not mutate the domains.
+
+    ``tree`` is the whole configured tree when ``domains`` is only its
+    resident part (a streamed root over a resident child), so a resident
+    child's force slots are sized from its parent even when that parent
+    holds no arena slot of its own.
     """
     from gpuwm.core.preflight import (shared_scratch_arena_aliases,
                                       shared_scratch_arena_shapes)
 
     domain_tuple = tuple(domains)
+    tree_tuple = None if tree is None else tuple(tree)
     return ScratchArena(
-        shared_scratch_arena_shapes(domain_tuple),
+        shared_scratch_arena_shapes(domain_tuple, tree_tuple),
         slot_aliases=shared_scratch_arena_aliases(domain_tuple))
 
 
@@ -611,9 +631,14 @@ class DomainState:
                     # itself has the reff block COMMENTED OUT
                     # (module_mp_milbrandt2mom.F:3362/:3364/:3372/:3374), so
                     # nothing writes these after allocation; they exist for
-                    # the state machinery and the spec-zone ring guard, and
+                    # the state machinery and the spec-zone ring guard.
+                    # NEITHER radiation arm reads them for mp=9:
                     # gpuwm/core/rrtmg_legacy.py's _MP_DECLARES_RADII[9] =
-                    # False is what keeps radiation from consuming them.
+                    # False keeps the legacy arm on its own WRF radii, and
+                    # the RTE+RRTMGP arm's "milbrandt2" row derives the
+                    # scheme's own radii from nc/ni/ns on every call and
+                    # refuses these fields by name (gpuwm/core/rrtmgp.py
+                    # hydrometeor_paths).
                 else:
                     # NSSL's native driver bounds are 2.51/10.01/25 um.
                     # State radii use gpuwm's radiation-facing micron

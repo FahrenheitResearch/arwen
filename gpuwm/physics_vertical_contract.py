@@ -13,6 +13,12 @@ import math
 
 import numpy as np
 
+# The one component bound that is OWNED elsewhere: WDM6's ceiling is the
+# deepest ``WDM6_KMAX`` tier its constants module compiles, and that module
+# is CuPy-free and staged wherever this one is, so the value is imported
+# rather than transcribed.  Re-exported under its own name below.
+from gpuwm.core.wdm6_constants import WDM6_VERTICAL_LEVEL_BOUNDS
+
 
 class PhysicsVerticalPreflightError(ValueError):
     """Resolved physics cannot execute on the requested vertical grid.
@@ -111,6 +117,28 @@ THOMPSON_VERTICAL_LEVEL_BOUNDS = (2, 256)
 THOMPSON_AEROSOL_VERTICAL_LEVEL_BOUNDS = (2, 256)
 MORRISON_VERTICAL_LEVEL_BOUNDS = (2, 256)
 NSSL2_VERTICAL_LEVEL_BOUNDS = (3, 256)
+#: Milbrandt-Yau two-moment (mp_physics=9).  The same pair
+#: ``gpuwm.core.milbrandt2.VERTICAL_LEVEL_BOUNDS`` enforces at the first
+#: call (``MY2_KMAX`` per-thread column bound, floor where the sedimentation
+#: walk still has an interior level).  Held here because that module imports
+#: CuPy at module scope and the preparation-time gate must price a
+#: configuration on a host with no device -- and because until this row
+#: existed the gate SKIPPED mp=9 silently, so a 300-level Milbrandt-Yau run
+#: passed ``gpuwm check`` and died on its first microphysics call.
+MILBRANDT2_VERTICAL_LEVEL_BOUNDS = (3, 256)
+#: WDM6 (mp_physics=16): the deepest compiled ``WDM6_KMAX`` tier, imported
+#: from the CuPy-free constants module at the top of this file rather than
+#: retyped as 80 (``WDM6_VERTICAL_LEVEL_BOUNDS``).
+#: P3 one-category (mp_physics=50).  No per-thread column ceiling: the port
+#: works on global ``(ncol, nk)`` workspaces (kbot=0, ktop=nk-1) and compiles
+#: no level tier, so like Grell-Freitas the row is a floor with no declared
+#: ceiling.  The floor is the dycore's own: one level is a column.
+P3_VERTICAL_LEVEL_BOUNDS = (1, None)
+#: New Tiedtke (cu_physics=16).  ``kernels/ntiedtke.cu`` skips ``k >= nz-2``
+#: and loops ``k = nz-2 .. 1`` (the transcription of ``jk = klevm1, 2, -1``),
+#: so a column needs four levels before the cloud-base search has one
+#: interior row; no fixed ceiling, the workspaces are ``(ncol, nz)``.
+NEW_TIEDTKE_VERTICAL_LEVEL_BOUNDS = (4, None)
 #: The dynamical core's own vertical bound, from the top ``WPHI_MAX_LEV``
 #: tier ``gpuwm.core.acoustic`` compiles the implicit w''-phi'' solve at.
 #: Bound to the launcher's ladder by

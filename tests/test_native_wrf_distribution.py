@@ -456,6 +456,7 @@ def test_standalone_python_project_excludes_forecast_executor(tmp_path):
                  "remote_cli", "remote_worker", "research_workspaces",
                  "starter_template", "tui_products", "case_catalog",
                  "case_catalog_import", "companion_query", "companion_domains",
+                 "companion_setups",
                  "companion_forcing", "configuration_recovery", "remote_artifacts",
                  "remote_input_transfer", "remote_plan", "remote_processed",
                  "render", "render_receipts"):
@@ -514,6 +515,7 @@ class RejectExternalModules(MetaPathFinder):
             "gpuwm.cli",
             "gpuwm.companion_query",
             "gpuwm.companion_domains",
+            "gpuwm.companion_setups",
             "gpuwm.companion_forcing",
             "gpuwm.configuration_recovery",
             "gpuwm.core.model",

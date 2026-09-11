@@ -20,7 +20,7 @@ fn await_file(path: &Path) {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
-fn send(handoff: &Value, id: &str, action: &str, fields: Value) -> Value {
+fn answer(handoff: &Value, id: &str, action: &str, fields: Value) -> Value {
     let control = Path::new(handoff["control_dir"].as_str().unwrap());
     let mut request = fields;
     request["schema"] = json!("arwen.companion-request.v1");
@@ -32,9 +32,31 @@ fn send(handoff: &Value, id: &str, action: &str, fields: Value) -> Value {
     fs::rename(temporary, control.join("requests").join(format!("{id}.json"))).unwrap();
     let response = control.join("responses").join(format!("{id}.json"));
     await_file(&response);
-    let value = document(&response);
+    document(&response)
+}
+fn send(handoff: &Value, id: &str, action: &str, fields: Value) -> Value {
+    let value = answer(handoff, id, action, fields);
     assert_eq!(value["ok"], true, "{value}");
     value
+}
+/// A refusal that reached the queue: not ok, and carrying the sentence that
+/// names what it prevents.
+fn refused(handoff: &Value, id: &str, action: &str, fields: Value, expected: &str) {
+    let value = answer(handoff, id, action, fields);
+    assert_eq!(value["ok"], false, "{value}");
+    assert!(value["message"].as_str().unwrap_or_default().contains(expected), "{value}");
+}
+/// A recorded parent run: history frames to force a child between, and one
+/// complete restart set for its physics. Only the receipts a downscale door
+/// reads are written; the fixture engine below never opens them.
+fn recorded_parent(root: &Path) -> PathBuf {
+    let parent = root.join("parent-run");
+    fs::create_dir_all(&parent).unwrap();
+    for name in ["wrfout_d01_2013-05-20_00_00_00", "wrfout_d01_2013-05-20_00_15_00"] {
+        fs::write(parent.join(name), b"history").unwrap();
+    }
+    fs::write(parent.join("gpuwmrst_d01_2013-05-20_00_15_00.npz"), b"checkpoint").unwrap();
+    parent
 }
 fn workspace_peer(path: &Path) {
     println!("Workspace startup diagnostic on stdout.");
@@ -54,6 +76,7 @@ fn workspace_peer(path: &Path) {
         "idle" | "slow-probe" => return,
         "failed" => std::process::exit(7),
         "worker" => {},
+        "downscale" => { downscale_peer(&handoff, &cwd); return; },
         other => panic!("unknown peer mode {other}"),
     }
     let config = cwd.join("forecast.toml");
@@ -65,6 +88,39 @@ fn workspace_peer(path: &Path) {
     let launched = send(&handoff, "launch-reviewed", "launch_plan", json!({"plan_path":plan,
         "plan_sha256":digest(&plan), "config_sha256":digest(&config), "target":{"kind":"local"}}));
     write_json(&cwd.join("launch-response.json"), launched);
+    await_file(&cwd.join("worker-started.json"));
+    fs::write(cwd.join("workspace-closing"), "").unwrap();
+}
+
+/// The downscale door, driven through the same request queue the desktop
+/// uses. Refusals first, while nothing is running, then the plan launch:
+/// a busy controller would answer every one of them with "a local job is
+/// already running" and prove nothing about the door.
+fn downscale_peer(handoff: &Value, cwd: &Path) {
+    let parent = recorded_parent(cwd);
+    let out = cwd.join("downscaled");
+    let request = |extra: Value| {
+        let mut value = json!({"target":{"kind":"local"},"parent_run_dir":parent,
+            "point":{"lat":39.5,"lon":-84.0},"out_dir":out,"mode":"plan"});
+        for (key, field) in extra.as_object().unwrap() { value[key] = field.clone(); }
+        value
+    };
+    refused(handoff, "downscale-remote", "launch_downscale",
+        request(json!({"target":{"kind":"ssh","node_id":"node-1","connection_sha256":"a".repeat(64)}})),
+        "this computer's disk");
+    refused(handoff, "downscale-both", "launch_downscale",
+        request(json!({"child_config":cwd.join("child.toml")})),
+        "either a child centre point");
+    let taken = cwd.join("already-there");
+    fs::create_dir_all(&taken).unwrap();
+    refused(handoff, "downscale-taken", "launch_downscale",
+        request(json!({"out_dir":taken})), "already exists");
+
+    let planned = send(handoff, "downscale-plan", "launch_downscale", request(json!({})));
+    assert_eq!(planned["mode"], "plan");
+    assert_eq!(planned["child_config_path"], json!(cwd.join("downscaled.child.toml")));
+    assert_eq!(planned["downscale_plan_path"], json!(cwd.join("downscaled.downscale-plan.json")));
+    write_json(&cwd.join("downscale-response.json"), planned);
     await_file(&cwd.join("worker-started.json"));
     fs::write(cwd.join("workspace-closing"), "").unwrap();
 }
@@ -156,7 +212,7 @@ fn main() {
     }
     let python = PathBuf::from(env::var_os("GPUWM_TUI_TEST_PYTHON").expect("set test Python path"));
     assert!(python.is_absolute() && python.is_file());
-    for mode in ["idle", "worker", "failed", "missing", "snapshot", "missing-python", "malformed-probe", "slow-probe", "hung-probe"] {
+    for mode in ["idle", "worker", "downscale", "failed", "missing", "snapshot", "missing-python", "malformed-probe", "slow-probe", "hung-probe"] {
         let root = scratch(mode);
         let mut launch = command(&root, &python, mode);
         if mode == "missing" { launch.arg("--companion").arg(root.join("unavailable-workspace.exe")); }
@@ -168,18 +224,30 @@ fn main() {
         }
         let began = Instant::now();
         let mut process = Process(launch.spawn().unwrap());
-        if mode == "worker" {
+        if matches!(mode, "worker" | "downscale") {
             await_file(&root.join("workspace-closing"));
             std::thread::sleep(Duration::from_millis(500));
             assert!(process.0.try_wait().unwrap().is_none(), "controller left its active worker");
             let worker = document(&root.join("worker-started.json"));
             assert_eq!(Path::new(worker["python"].as_str().unwrap()).canonicalize().unwrap(), python.canonicalize().unwrap());
-            assert_eq!(worker["argv"][0], "run-plan");
+            let argv: Vec<&str> = worker["argv"].as_array().unwrap().iter().map(|value| value.as_str().unwrap()).collect();
+            if mode == "worker" { assert_eq!(argv[0], "run-plan"); } else {
+                // The queue produced the guided command, token for token,
+                // including the plan's --dry-run and the two-token --out.
+                assert_eq!(argv[0], "downscale");
+                assert!(argv[1].ends_with("parent-run"), "{argv:?}");
+                assert!(Path::new(argv[1]).is_absolute() && Path::new(argv[7]).is_absolute(), "{argv:?}");
+                assert!(argv[7].ends_with("downscaled"), "{argv:?}");
+                assert_eq!([argv[2], argv[3], argv[4], argv[5], argv[6], argv[8], argv[9]],
+                    ["--point=39.5,-84", "--parent-restart=latest", "--ratio=3",
+                     "--accept-parent-cadence", "--out", "--dry-run", "--auto-vram"]);
+                assert_eq!(argv.len(), 10, "{argv:?}");
+            }
             fs::write(root.join("finish-worker"), "").unwrap();
         }
         let status = process.wait();
         let stderr = fs::read_to_string(root.join("controller.stderr.log")).unwrap();
-        assert_eq!(status.success(), matches!(mode, "idle" | "worker" | "slow-probe"), "{mode}: {stderr}");
+        assert_eq!(status.success(), matches!(mode, "idle" | "worker" | "downscale" | "slow-probe"), "{mode}: {stderr}");
         assert!(!stderr.contains("interactive terminal"), "headless mode reached terminal initialization");
         if mode == "missing" { assert!(stderr.contains("Visual workspace is not installed"), "{stderr}"); }
         if mode == "snapshot" { assert!(stderr.contains("read-only snapshot"), "{stderr}"); }
@@ -202,7 +270,7 @@ fn main() {
             }
             #[cfg(unix)] unsafe { assert_ne!(libc::kill(pid as i32, 0), 0, "timed-out version process was not reaped"); }
         }
-        if matches!(mode, "idle" | "worker" | "failed" | "slow-probe") {
+        if matches!(mode, "idle" | "worker" | "downscale" | "failed" | "slow-probe") {
             let handoff = document(&root.join("observed-handoff.json"));
             let status = document(Path::new(handoff["status_path"].as_str().unwrap()));
             assert_eq!(status["state"], "closed");
@@ -216,13 +284,18 @@ fn main() {
                 assert!(stderr.contains(escaped.trim_matches('"')), "{stderr}");
             }
         }
-        if mode == "worker" {
+        if matches!(mode, "worker" | "downscale") {
             assert!(root.join("worker-completed").is_file());
-            let response = document(&root.join("launch-response.json"));
+            let response = document(&root.join(if mode == "worker" { "launch-response.json" } else { "downscale-response.json" }));
             let job = PathBuf::from(response["job_dir"].as_str().unwrap());
             let result = document(&job.join("result.json"));
             assert_eq!(result["status"], "completed");
             assert_eq!(result["exit_code"], 0);
+            // The plan job keeps the ordinary receipts, and its launcher
+            // recorded the same downscale command the response described.
+            let launcher = document(&job.join("job.json"));
+            assert_eq!(launcher["action"], if mode == "worker" { "run-plan" } else { "downscale" });
+            assert!(job.join("process.json").is_file());
         }
         println!("PASS headless controller {mode}: {}", root.display());
     }

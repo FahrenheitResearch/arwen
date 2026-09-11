@@ -336,7 +336,11 @@ pub fn curated_style_for_store_variable(
         ("pw", "mm") => {
             canonical(FieldSelector::entire_atmosphere(CanonicalField::PrecipitableWater))
         }
-        ("graupelnc" | "snownc", "mm") => {
+        // hailnc joins the QPF fill with graupelnc and snownc: it is the
+        // same accumulated-surface-precipitation quantity, in the same
+        // units, and without the arm a hail-bearing run's plane wore the
+        // generic auto-ranged ramp (audit R-053).
+        ("graupelnc" | "snownc" | "hailnc", "mm") => {
             canonical(FieldSelector::surface(CanonicalField::TotalPrecipitation))
         }
         ("terrain", "m") => canonical(FieldSelector::surface(CanonicalField::GeopotentialHeight)),
