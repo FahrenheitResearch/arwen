@@ -457,6 +457,15 @@ _OPTIONAL_STAGED_IMPORTS = {
         "per-step physics cadence in an executing tile; no config path calls it",
     ("gpuwm/core/streaming.py", "gpuwm.core.streamed_state"):
         "running-state publication into a forecast tile store",
+    ("gpuwm/core/streaming.py", "gpuwm.core.nest_relocation"):
+        "the relocation host-snapshot term of the tree admission, priced "
+        "only when a forecast tree carries a moving nest; standalone "
+        "preparation decides no tree and moves no nest",
+    ("gpuwm/downscale_pricing.py", "gpuwm.core.preflight"):
+        "the downscaled child's memory admission (estimate_experiment) "
+        "inside price_child, reached only by the downscale door's plan "
+        "review and the offline child runner, both forecast routes; the "
+        "preparation wheel prices no child",
     ("gpuwm/core/streaming.py", "gpuwm.core.cam_ozone"):
         "live tile physics initialization; pure ozone config dependencies "
         "are staged separately in ozone_contract",
