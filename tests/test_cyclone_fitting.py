@@ -45,25 +45,33 @@ def hardware(monkeypatch):
 
 
 #: The one extra price a tiled request now pays: the UNREDUCED 200x160 /
-#: 160x160 domain, asked for as a resident allocation, so a reduced
-#: proposal or a refusal can name `--tiles off` as the way to keep the
-#: requested ground.  It never becomes the proposal, so every sequence
-#: assertion about the SEARCH separates it out by the only two things
-#: that identify it: resident mode, and the requested dimensions.
+#: 160x160 domain, priced in the mode this door would name as the way to
+#: keep that ground, so a reduced proposal or a refusal can name it.  It
+#: never becomes the proposal, so every sequence assertion about the
+#: SEARCH separates it out by the only two things that identify it: a
+#: mode that is not the requested one, and the requested dimensions.
 def is_resident_probe(exp, requested="auto") -> bool:
     """A price of the RESIDENT route asked on behalf of a tiled request.
 
     Two of them exist: the unreduced-coverage probe that lets a proposal
-    name `--tiles off`, and -- on a refusal only -- the bounded resident
-    ladder that measures what `--tiles off` actually authors, so the
-    refusal names a layout instead of a suggestion.  Neither can become
-    the proposal, so every assertion about the SEARCH separates them out.
-    A request that already asked for `off` has nothing to be told, and
-    its own prices look exactly like these.
+    name the mode that keeps the requested ground, and -- on a refusal
+    only -- the bounded resident ladder that measures what `--tiles off`
+    actually authors, so the refusal names a layout instead of a
+    suggestion.  The coverage probe is priced in the mode the sentence
+    NAMES -- `auto` under `--tiles on`, because auto weighs a tree
+    resident before it consults the planner, and `off` under `auto` --
+    since pricing one mode and recommending another is how this door came
+    to recommend `--tiles auto` on the strength of what `--tiles off`
+    costs.  Neither probe can become the proposal, so every assertion
+    about the SEARCH separates them out.  A request that already asked
+    for `off` has nothing to be told, and its own prices look exactly
+    like these.
     """
 
-    return (requested != "off"
-            and (exp.tiles.mode if exp.tiles else "off") == "off")
+    if requested == "off":
+        return False
+    mode = exp.tiles.mode if exp.tiles else "off"
+    return mode in {"off", tc._recommended_mode(requested)}
 
 
 def is_resident_coverage_probe(exp, requested="auto") -> bool:
@@ -141,7 +149,7 @@ def test_reduced_proposal_preserves_intent_and_uses_same_admission(monkeypatch, 
               if (exp.tiles.mode if exp.tiles else "off") != tiles]
     assert len(probes) == resident_probe
     for exp, _kw in probes:
-        assert (exp.tiles.mode if exp.tiles else "off") == "off"
+        assert (exp.tiles.mode if exp.tiles else "off")             == tc._recommended_mode(tiles)
         assert [[d.run.nx, d.run.ny] for d in exp.domains] == [[200, 160], [160, 160]]
     for exp, kw in calls:
         assert kw["machine"] is hardware["target_machine"]
@@ -583,7 +591,12 @@ def test_local_host_is_snapshotted_once_and_keeps_the_selected_device(monkeypatc
     monkeypatch.setattr(dw, "sizing_budget_bytes", lambda *a, **kw: 10 * GIB)
     calls = shrinking_price(monkeypatch)
     tc.plan_cyclone(**INTENT, sizing=sizing)
-    assert snapshots == [{"vram_bytes": sizing.free_bytes, "name": "gpuwm cyclone budget"}]
+    # The profile travels WITH the machine now, rather than being patched
+    # onto it a line later: the tree admission takes its device from the
+    # machine and from nowhere else.
+    assert snapshots == [{"vram_bytes": sizing.free_bytes,
+                          "name": "gpuwm cyclone budget",
+                          "device_profile": sizing.device_profile}]
     used = calls[0][1]["machine"]
     assert used.host_bytes == machine.host_bytes and used.vram_bytes == sizing.free_bytes
     assert used.device_profile is sizing.device_profile

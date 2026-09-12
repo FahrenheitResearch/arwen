@@ -161,9 +161,45 @@ def _fixed_floors(phases, budget, tiles):
                         "streaming_fixed_floor_bytes": streamed}
 
 
-#: What the REQUESTED, unreduced cyclone tree costs when it is asked for
-#: as one resident allocation (``--tiles off``), and whether the declared
-#: card admits it.
+def _recommended_mode(tiles: str) -> str:
+    """The mode this door would tell a ``tiles`` reader to re-run with.
+
+    ONE function, because the price and the sentence must not be able to
+    disagree: :func:`_unreduced_resident_admission` prices this mode and
+    :func:`_keeps_coverage_sentence` names it.  Under ``--tiles on`` that
+    is ``auto`` -- auto weighs a tree resident before it consults the
+    planner, so withdrawing the mode is a smaller change than turning
+    streaming off.  Under ``auto`` there is no mode to withdraw and
+    ``off`` is the answer.
+    """
+    return "auto" if tiles == "on" else "off"
+
+
+def _admits_resident(phases) -> bool:
+    """Did the tree admission keep EVERY domain resident on this road?
+
+    ``--tiles auto`` is not priced by the resident envelope alone: it goes
+    through ``streaming.decide_tree``, which withholds a moving nest's
+    rebuild from the admission budget.  In the band between the withheld
+    and unwithheld budgets the envelope is under the budget and auto still
+    refuses, so the envelope comparison alone is not the question auto
+    answers, and a door that recommended auto off that comparison
+    recommended a mode that then refused.
+    """
+    road = getattr(phases, "tree_road", None)
+    rows = () if road is None else tuple(getattr(road, "rows", ()) or ())
+    return bool(rows) and getattr(road, "refusal", None) is None \
+        and getattr(road, "report_error", None) is None \
+        and all(row["road"] == "resident" for row in rows)
+
+
+#: What the REQUESTED, unreduced cyclone tree costs in the mode this door
+#: would name as the way to keep it, and whether the declared card admits
+#: it THAT way.  The mode is :func:`_recommended_mode`'s, and it is the
+#: same call :func:`_keeps_coverage_sentence` prints: pricing one mode and
+#: recommending another is how the door came to recommend ``--tiles auto``
+#: on the strength of what ``--tiles off`` costs, in a band where auto
+#: refuses.
 #:
 #: The reduction this door performs is a SCIENCE reduction: a 2,400 x
 #: 1,920 km 12 km parent is there to carry the steering environment, and
@@ -187,21 +223,25 @@ def _fixed_floors(phases, budget, tiles):
 #: differently-measured machine.
 #: ``None`` means the unreduced request is not admitted that way either,
 #: and there is nothing to name.
-def _unreduced_resident_admission(intent, budget_of, price_off):
-    """Price the unreduced request with ``--tiles off``; None if refused."""
+def _unreduced_resident_admission(intent, budget_of, price_mode):
+    """Price the unreduced request in the mode the sentence will NAME."""
     if intent["tiles"] == "off":
         return None
+    mode = _recommended_mode(intent["tiles"])
     try:
-        _text, exp = configuration_text(**{**intent, "tiles": "off"})
-        phases = price_off(exp)
+        _text, exp = configuration_text(**{**intent, "tiles": mode})
+        phases = price_mode(exp)
         budget = budget_of(exp)
     except (ValueError, OSError):
-        # Not an admission answer -- the resident route could not even be
-        # priced.  Claim nothing; the caller's own refusal stands as it is.
+        # Not an admission answer -- the recommended route could not even
+        # be priced.  Claim nothing; the caller's own refusal stands as it
+        # is.
         return None
     if phases.peak_envelope_bytes > budget:
         return None
-    return {"tiles": "off", "dimensions": [list(ROOT_DIMS), list(CHILD_DIMS)],
+    if mode == "auto" and not _admits_resident(phases):
+        return None
+    return {"tiles": mode, "dimensions": [list(ROOT_DIMS), list(CHILD_DIMS)],
             "peak_envelope_bytes": phases.peak_envelope_bytes,
             "budget_bytes": budget}
 
@@ -333,19 +373,27 @@ def _keeps_coverage_sentence(admitted, tiles: str) -> str:
     at all, so auto is the remedy and ``off`` is a bigger change than the
     reader needs.  Under ``auto`` there is no mode to withdraw, and ``off``
     remains the sentence.
+
+    THE MODE NAMED IS THE MODE PRICED.  ``admitted`` carries the mode
+    :func:`_unreduced_resident_admission` measured it in, and this
+    sentence reads it from there rather than deciding a second time: the
+    door recommended ``--tiles auto`` on the strength of what ``--tiles
+    off`` costs, and in the band where auto withholds a moving nest's
+    rebuild the recommended mode then refused.
     """
 
     dims = admitted["dimensions"]
+    mode = admitted["tiles"]
     ground = (f"the requested {dims[0][0]}x{dims[0][1]} / "
               f"{dims[1][0]}x{dims[1][1]} domain on this computer as one "
               f"resident allocation ({admitted['peak_envelope_bytes']} bytes "
               f"against a {admitted['budget_bytes']} byte budget)")
     if tiles == "on":
         return (f"--tiles on is what compels the tiled road here, not the "
-                f"computer: --tiles auto admits {ground}, so re-run with "
-                "--tiles auto to keep the requested coverage")
-    return (f"--tiles off admits {ground}; re-run with --tiles off to keep "
-            "the requested coverage")
+                f"computer: --tiles {mode} admits {ground}, so re-run with "
+                f"--tiles {mode} to keep the requested coverage")
+    return (f"--tiles {mode} admits {ground}; re-run with --tiles {mode} to "
+            "keep the requested coverage")
 
 
 #: HOW THE PROPOSED TREE RUNS, on the document that proposes it.
@@ -414,7 +462,8 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
     if tiles != "off" and target_machine is None:
         from gpuwm.core.streaming import planner_machine
         target_machine = planner_machine(vram_bytes=sizing.free_bytes,
-                                         name="gpuwm cyclone budget")
+                                         name="gpuwm cyclone budget",
+                                         device_profile=sizing.device_profile)
         if target_machine is None:
             # Same breakage and same way out the shared planner names ten
             # lines into dw._sizing_phases -- said once, in one wording,
@@ -425,7 +474,6 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
                 "shared planner; run the wizard on the forecast host or use "
                 "--tiles off",
                 resource="host")
-        from dataclasses import replace
         # The planner machine carries the card that was MEASURED, not the
         # reference card, so the four sites in gpuwm/core/streaming.py that
         # fall back to machine.device_profile cannot price one card's
@@ -455,8 +503,11 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
         # estimate.  It is kept because that fallback, if a future caller
         # reaches it, must price this card -- 1,181,036,544 B here against
         # the reference card's 2,322,194,432 B, 1,088.3 MiB apart on the
-        # one term shrinking the grid cannot move.
-        target_machine = replace(target_machine, device_profile=sizing.device_profile)
+        # one term shrinking the grid cannot move.  It is now set where the
+        # machine is BUILT rather than patched on afterwards, because
+        # preflight.admission_estimate takes the device from the machine
+        # and from nowhere else, so a machine built without it is a
+        # different envelope from the run door's on the same card.
     operands = dict(free_bytes=sizing.free_bytes, vram_gib=sizing.vram_gib,
                     profile=sizing.device_profile, forcing_interval_seconds=10800.)
     budget = dw.sizing_budget_bytes(experiment, **operands)

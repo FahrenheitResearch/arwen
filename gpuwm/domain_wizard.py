@@ -3747,7 +3747,8 @@ def _sizing_phases(exp, *, free_bytes: int, machine=None, **kwargs):
 
     if machine is None:
         machine = streaming.planner_machine(
-            vram_bytes=free_bytes, name="gpuwm domain budget")
+            vram_bytes=free_bytes, name="gpuwm domain budget",
+            device_profile=kwargs.get("profile"))
     if machine is None:
         raise DomainFitError(
             "--tiles needs host RAM available to the shared planner; "

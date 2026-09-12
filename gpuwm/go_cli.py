@@ -1961,7 +1961,7 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
     # probe already taken above rather than letting autoplan.Machine.detect
     # stand a CUDA context up in this process -- the same reason the probe
     # is a subprocess at all (0.486 GiB held for the whole run, MEASURED).
-    machine = _planner_machine(probe)
+    machine = _planner_machine(probe, profile)
     phases = estimate_phases(
         exp, source=source, vram_gib=vram_gib, profile=profile,
         machine=machine, forcing_intervals=forcing_intervals,
@@ -2041,19 +2041,26 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
     }
 
 
-def _planner_machine(probe):
+def _planner_machine(probe, profile=None):
     """A :class:`tilestream.autoplan.Machine` from this gate's own probe.
 
     The arithmetic lives in :func:`gpuwm.core.streaming.planner_machine`,
     beside the envelope it feeds, because ``gpuwm check`` needs the same
     Machine built from a DECLARED budget rather than a probe and two
     copies of this would be two answers about one card.
+
+    BOTH HALVES OF THE PROBE, not just its free VRAM.  The tree admission
+    prices its non-pool terms off ``machine.device_profile``, so a machine
+    built from the probe's byte count alone made this gate weigh a
+    different envelope from the run door, whose machine is
+    ``Machine.detect`` and always carries the card's profile.  The profile
+    is the one this gate already read out of the same probe payload.
     """
     from gpuwm.core.streaming import planner_machine
 
     return planner_machine(
         vram_bytes=None if probe is None else int(probe["free_bytes"]),
-        name="gpuwm go probe")
+        name="gpuwm go probe", device_profile=profile)
 
 
 def geography_refusal(geog_root: Path) -> str | None:

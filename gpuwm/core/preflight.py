@@ -7036,8 +7036,7 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
             # documents.  The report's resident term below is unchanged.
             tree_road = tree_road_plan(
                 exp, machine=machine,
-                resident_estimate=admission_estimate(exp, machine=machine,
-                                                     profile=profile))
+                resident_estimate=admission_estimate(exp, machine=machine))
         except Exception:            # a gate never dies on its estimate
             tree_road = None
         streamed = (tree_road if tree_road is not None and tree_road.usable
@@ -7202,8 +7201,7 @@ def estimate_experiment(
     )
 
 
-def admission_estimate(exp: ExperimentConfig, *, machine=None,
-                       profile: DeviceLocalMemoryProfile | None = None
+def admission_estimate(exp: ExperimentConfig, *, machine=None
                        ) -> ExperimentMemoryEstimate:
     """THE estimate a tree's ``[tiles]`` admission is judged from.
 
@@ -7230,14 +7228,26 @@ def admission_estimate(exp: ExperimentConfig, *, machine=None,
     cache's real interval count and belongs to a different question -- and
     the two are never compared against each other.
 
-    ``profile`` is the device the non-pool terms are priced against; it
-    defaults to the machine's own, so passing one machine to both sides
-    is enough to make both sides agree.
+    THE MACHINE IS THE ONLY DEVICE TERM, AND THERE IS NO SECOND WAY IN.
+    This used to take a ``profile`` as well, defaulting to the machine's,
+    and that optional second way in was a third estimate rather than a
+    convenience: the review passed its own profile while the door passed
+    none and took ``machine.device_profile``, so the very argument
+    asymmetry this function was written to close reopened one field
+    lower.  MEASURED on one card, the same tree and the same budget:
+    4,009,919,677 bytes on a detect-built profile, 4,271,801,533 on a
+    probe-built one carrying the measured bare context and compile
+    platform, 5,141,378,237 on none -- and for any budget between two of
+    those, one side admits what the other refuses.  So the device comes
+    from the machine, every caller passes the machine its own surface
+    already holds (:func:`gpuwm.core.streaming.planner_machine` now
+    carries the profile for the review surfaces, and
+    :meth:`tilestream.autoplan.Machine.detect` has always carried it for
+    the door), and the same card gives the same envelope on both sides.
     """
     return estimate_experiment(
         exp, column_chunk=exp.column_chunk,
-        profile=(getattr(machine, "device_profile", None)
-                 if profile is None else profile))
+        profile=getattr(machine, "device_profile", None))
 
 
 # ---------------------------------------------------------------------------
@@ -9133,8 +9143,16 @@ def check_main(args) -> int:
         # reader asked about, and neither costs this process a CUDA
         # context.  ``gpuwm go``'s gate builds the same Machine from its
         # out-of-process probe, through the same function.
+        # ...CARRYING THIS REPORT'S OWN DEVICE PROFILE.  The admission
+        # estimate prices its non-pool terms off the machine, so a review
+        # machine with no profile priced a different envelope from the run
+        # door's ``Machine.detect``, which always has one.  ``profile``
+        # here is this card's when the card was read and the reference
+        # profile when a declared budget names another box; either way it
+        # is the one every other number on this page was priced against.
         machine=(target_machine if target_hardware else
-                 planner_machine(vram_bytes=free, name="gpuwm check budget")))
+                 planner_machine(vram_bytes=free, name="gpuwm check budget",
+                                 device_profile=profile)))
     #: AN UNPRICED INGEST LANE COSTS THE INGEST SECTION, NOT THE PHASE
     #: ESTIMATE.  This used to be ``phases = None``, which threw away the
     #: streamed forecast term along with the ingest one -- and the streamed

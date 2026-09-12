@@ -4468,12 +4468,16 @@ def _receipts(run_dir: Path) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _estimate_planner_machine(exp, probe):
+def _estimate_planner_machine(exp, probe, profile=None):
     """Use the estimate's device observation when ``[tiles]`` needs it.
 
     ``mode = "auto"`` with no pinned tiling is the planner's decision and
     the planner needs a machine. The same observation also prices resident
     plans' device-dependent non-pool terms and radiation workspace widths.
+
+    ``profile`` is that same observation's device half, carried onto the
+    machine because the tree admission takes its device from the machine
+    and from nowhere else.
     """
     options = getattr(exp, "tiles", None)
     if options is None or getattr(options, "mode", "off") == "off":
@@ -4484,7 +4488,7 @@ def _estimate_planner_machine(exp, probe):
 
     return planner_machine(
         vram_bytes=None if probe is None else int(probe["free_bytes"]),
-        name="run-plan estimate probe")
+        name="run-plan estimate probe", device_profile=profile)
 
 
 #: The resident itemizer's basis, unchanged: the sentence a plan that
@@ -4700,7 +4704,7 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
     total = None if probe is None else probe.get("total_bytes")
     capacity = (total / 1024 ** 3 if isinstance(total, int)
                 and not isinstance(total, bool) and total > 0 else None)
-    machine = _estimate_planner_machine(exp, probe)
+    machine = _estimate_planner_machine(exp, probe, profile)
     phases = estimate_phases(
         exp, source=None, machine=machine, profile=profile, vram_gib=capacity,
         forcing_interval_seconds=(forcing_interval if forcing_interval is not None else

@@ -555,7 +555,8 @@ def _tiles_memory_plan(path, experiment, *, original):
         raise ValueError(delivery["refusal"])
     sizing = dw.resolve_sizing_budget(None, None)
     machine = streaming.planner_machine(
-        vram_bytes=sizing.free_bytes, name="domain-tiles available memory")
+        vram_bytes=sizing.free_bytes, name="domain-tiles available memory",
+        device_profile=sizing.device_profile)
     available = preflight.host_available_bytes()
     if machine is None or available is None:
         raise ValueError("domain-tiles could not measure host RAM for the streamed "

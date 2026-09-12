@@ -442,11 +442,547 @@ def test_the_resident_admission_records_the_acoustic_envelope_of_an_adaptive_clo
 def test_the_tiles_on_door_names_the_mode_that_compels_the_tiled_road():
     # The neighbouring door told a `--tiles on` reader to re-run with
     # `--tiles off` and blamed the computer for a tree the computer holds.
-    admitted = {"tiles": "off", "dimensions": [[200, 160], [160, 160]],
-                "peak_envelope_bytes": 3_950_025_504, "budget_bytes": BUDGET}
-    on = tc._keeps_coverage_sentence(admitted, "on")
+    # THE PAYLOAD CARRIES THE MODE IT WAS PRICED IN, and the sentence names
+    # that mode: the on branch is priced through `auto`, which is what it
+    # recommends, and the auto branch through `off`.
+    dims = [[200, 160], [160, 160]]
+    on = tc._keeps_coverage_sentence(
+        {"tiles": "auto", "dimensions": dims,
+         "peak_envelope_bytes": 5_141_378_237, "budget_bytes": BUDGET}, "on")
     assert "--tiles on is what compels the tiled road here, not the computer" in on
     assert "re-run with --tiles auto" in on
     assert "--tiles off" not in on
-    auto = tc._keeps_coverage_sentence(admitted, "auto")
+    auto = tc._keeps_coverage_sentence(
+        {"tiles": "off", "dimensions": dims,
+         "peak_envelope_bytes": 5_149_977_376, "budget_bytes": BUDGET}, "auto")
     assert "re-run with --tiles off" in auto
+    assert tc._recommended_mode("on") == "auto"
+    assert tc._recommended_mode("auto") == "off"
+
+
+# ---------------------------------------------------------------------------
+# ONE ADMISSION PER RUN, ONE ENVELOPE PER CARD, AND REFUSALS THAT DESCRIBE
+# THE REFUSAL THEY CAME FROM.  Six defects found on re-review, each of them
+# a second answer to a question the surrounding code had already answered
+# once: a second admission at build time, a second way to pass the device
+# profile, a floor quoted as a cause where the floor was under the budget,
+# a budget printed net of a withholding nobody named, a door pricing one
+# tile mode and recommending another, and a refusal classified by a flag an
+# earlier attempt set rather than by what actually refused.
+# ---------------------------------------------------------------------------
+
+
+class _Model:
+    """The live tree as :func:`steppers_for_tree` reads it: nodes and states.
+
+    Deliberately NOT the nodes the door decided on -- the door decides on
+    planning nodes before a GPU state exists -- so that a build pass which
+    carried decisions by identity rather than by grid id fails here.
+    """
+
+    def __init__(self, exp):
+        self._nodes = st._config_tree_nodes(exp.domains)
+        for node in self._nodes:
+            node.state = object()
+        self._declared_experiment = exp
+
+    def walk_parent_first(self):
+        return list(self._nodes)
+
+
+def _band_machine(exp):
+    """A card in the band the two admissions used to disagree across."""
+    machine = _machine()
+    lean = pf.admission_estimate(exp, machine=machine).peak_envelope_bytes
+    rich = pf.estimate_experiment(exp, forcing_intervals=24).peak_envelope_bytes
+    assert rich > lean, "the retained-interval term must still move the envelope"
+    nodes = st._config_tree_nodes(exp.domains)
+    mark_reconstruction_nodes(nodes, exp)
+    withheld = st._relocation_rebuild_bytes(
+        nodes, pf.admission_estimate(exp, machine=machine))
+    assert withheld > 0, "this tree must move a nest for the band to exist"
+    budget = (lean + rich) // 2
+    return _machine(budget + pf.EXTERNAL_MARGIN_BYTES + withheld), lean, withheld
+
+
+def test_the_build_pass_consumes_the_doors_admission_and_takes_no_second_one(
+        monkeypatch):
+    # BL-1.  The door admitted from preflight.admission_estimate against the
+    # cold planning machine; the build pass then ran decide_tree AGAIN with
+    # the run's own richer ledger estimate, after authority, fetch, manifest
+    # and prepare.  Two admissions, two envelopes, two budgets -- and the
+    # second one's relocation marking came off the model rather than off the
+    # declared experiment, so its budget could carry no withholding where
+    # the first withheld one.
+    exp = _cyclone()
+    machine, lean, withheld = _band_machine(exp)
+
+    door_rows = {}
+    door = pdtf.cold_tree_streaming_decision(
+        exp, st._config_tree_nodes(exp.domains), machine=machine,
+        decisions=door_rows)
+    assert door is not None
+    assert door.total_budget_bytes == (machine.vram_bytes
+                                       - pf.EXTERNAL_MARGIN_BYTES - withheld)
+    assert not any(row.stream for row in door_rows.values())
+
+    def _second_admission(*args, **kwargs):
+        raise AssertionError("a second admission was taken at build time")
+
+    monkeypatch.setattr(st, "decide_tree", _second_admission)
+    monkeypatch.setattr(pf, "admission_estimate", _second_admission)
+    built = []
+    monkeypatch.setattr(st, "make_stepper",
+                        lambda state, cfg, options, **kw:
+                        built.append((cfg, kw["decision"])) or object())
+
+    seen = {}
+    out = st.steppers_for_tree(_Model(exp), exp.tiles, decisions=seen,
+                               machine=machine, tree_decision=door)
+    # Nothing streams on a tree this card holds, so no stepper is returned...
+    assert out == {}
+    # ...but every domain was BUILT from the door's own decision object.
+    assert ([decision for _cfg, decision in built]
+            == [entry[4] for entry in door.decided])
+    assert all(built[i][1] is door.decided[i][4] for i in range(len(built)))
+    # And the receipt the run publishes is the door's verdict, unchanged.
+    assert ({gid: row.reason for gid, row in seen.items()}
+            == {gid: row.reason for gid, row in door_rows.items()})
+    assert {row.detail["resident_admission"]["envelope_bytes"]
+            for row in seen.values()} == {lean}
+    assert {row.detail["resident_admission"]["withheld_bytes"]
+            for row in seen.values()} == {withheld}
+
+
+def test_a_grid_the_admission_never_saw_is_refused_rather_than_decided_late():
+    # The other half of consuming a decision: a build pass handed a decision
+    # that does not cover the tree must not quietly plan the remainder.
+    exp = _cyclone()
+    machine = _machine()
+    door = pdtf.cold_tree_streaming_decision(
+        exp, st._config_tree_nodes(exp.domains), machine=machine)
+    partial = st.TreeDecision(
+        door.decided[:1], door.priced, door.process_overhead_bytes,
+        door.radiation_transient_bytes, door.total_budget_bytes,
+        door.vram_spent_bytes, door.host_spent_bytes, door.host_budget_bytes)
+    with pytest.raises(st.StreamingRefused) as caught:
+        st.steppers_for_tree(_Model(exp), exp.tiles, machine=machine,
+                             tree_decision=partial)
+    text = str(caught.value)
+    assert "d02 is in this run's domain tree but not in the admission" in text
+    assert "Decide the whole tree at the door" in text
+
+
+def test_the_review_machine_and_the_run_doors_machine_price_one_envelope(
+        monkeypatch):
+    # BL-2.  admission_estimate took a `profile` that defaulted to the
+    # machine's, so the review passed its own and the door passed none and
+    # took machine.device_profile -- one function, two device terms, and a
+    # band of budgets where the review admits what the door refuses.
+    import inspect
+
+    assert "profile" not in inspect.signature(pf.admission_estimate).parameters
+
+    exp = _cyclone()
+    card = pf.DeviceLocalMemoryProfile("fixture card", 68, 1536, 1024)
+    monkeypatch.setattr(st, "_host_total_bytes", lambda: 256 * GIB)
+    monkeypatch.setattr(ap.Machine, "detect", classmethod(
+        lambda cls, **kw: cls(FREE, 256 * GIB, name="fixture card",
+                              device_profile=card)))
+
+    # The RUN DOOR's machine, built the way the door builds it.
+    door = st.cold_planning_machine(exp)
+    # The REVIEW's machine, built the way `gpuwm check` and `gpuwm go`
+    # build it: from a figure already read, carrying the profile already
+    # read beside it.
+    review = st.planner_machine(vram_bytes=FREE, name="gpuwm check budget",
+                                device_profile=card)
+    assert door.device_profile is card and review.device_profile is card
+    assert (pf.admission_estimate(exp, machine=review).peak_envelope_bytes
+            == pf.admission_estimate(exp, machine=door).peak_envelope_bytes)
+
+    # NOT A VACUOUS EQUALITY: the field the two sides used to differ on is
+    # the field that moves the envelope, so an arm that dropped it could
+    # not have come back equal.
+    bare = st.planner_machine(vram_bytes=FREE, name="gpuwm check budget")
+    assert bare.device_profile is None
+    assert (pf.admission_estimate(exp, machine=bare).peak_envelope_bytes
+            != pf.admission_estimate(exp, machine=review).peak_envelope_bytes)
+
+
+def test_the_go_gate_builds_its_planner_machine_from_both_halves_of_its_probe(
+        monkeypatch):
+    # The review caller that actually holds a probe: its device half must
+    # reach the machine, because that is where the admission reads it.
+    from gpuwm import go_cli
+
+    monkeypatch.setattr(st, "_host_total_bytes", lambda: 256 * GIB)
+    probe = {"free_bytes": FREE,
+             "profile": {"name": "fixture card", "multiprocessor_count": 68,
+                         "max_threads_per_multiprocessor": 1536,
+                         "default_stack_limit_bytes": 1024}}
+    profile = pf.profile_from_device_probe(probe)
+    assert profile is not None
+    machine = go_cli._planner_machine(probe, profile)
+    assert machine.vram_bytes == FREE and machine.device_profile is profile
+
+
+def _compelled(tiles_on_nest=True):
+    """A tree driven onto the tiled road, by the nest's table or the tree's.
+
+    The tree-wide arm keeps ONE auto domain, because a tree with no auto
+    domain at all never reaches the resident question: the compelled road
+    is the only road there is, and the refusal under test is the one a
+    reader gets when a fitting tree is compelled past a resident answer.
+    """
+    from dataclasses import replace
+    exp = _cyclone()
+    if tiles_on_nest:
+        nest = replace(exp.domains[1], tiles=st.StreamingOptions(mode="on"))
+        return replace(exp, domains=(exp.domains[0], nest))
+    nest = replace(exp.domains[1], tiles=replace(exp.tiles, mode="auto"))
+    return replace(exp, tiles=replace(exp.tiles, mode="on"),
+                   domains=(exp.domains[0], nest))
+
+
+def test_a_compelled_fitting_tree_refused_on_vram_never_quotes_a_floor_it_cleared(
+        monkeypatch):
+    # BL-3.  With the nest on "on", a card whose fixed floor is UNDER the
+    # budget, and the walk refusing on vram, the refusal read "no streamed
+    # road fits either, the tile planner's floor alone being F bytes,
+    # against a B byte admission budget" and then, one sentence later,
+    # "The configured tree fits resident at N bytes against that budget".
+    # It quoted a floor it had already cleared as the reason, and refuted
+    # its own first half in its second.
+    exp = _compelled()
+    nodes = st._config_tree_nodes(exp.domains)
+    estimate = pf.estimate_experiment(exp)
+    assert estimate.peak_envelope_bytes <= BUDGET
+    monkeypatch.setattr(st, "_tree_process_overhead_bytes", lambda nodes: 1)
+    monkeypatch.setattr(st, "_tree_radiation_transient_bytes", lambda nodes: 1)
+    _refuse_walk(monkeypatch, st.StreamingRefused(
+        "no tile of d02 fits in 0.25 GiB of VRAM", resource="vram"))
+
+    with pytest.raises(st.StreamingRefused) as caught:
+        st.decide_tree(nodes, exp.tiles, machine=_machine(),
+                       resident_estimate=estimate)
+    text = str(caught.value)
+    assert caught.value.resource == "memory"
+    assert len(_sentences(text)) <= 2, text
+    # The cause is the road the table compelled...
+    assert "d02 sets [tiles] mode = 'on', which compels the tiled road" in text
+    assert "no tiling of that road fits" in text
+    assert "no tile of d02 fits in 0.25 GiB of VRAM" in text
+    # ...and the floor, which this card clears, is not quoted as anything.
+    assert "floor" not in text
+    assert "no streamed road fits either" not in text
+    # The way out stays the table, and the tree's own figure stands.
+    assert (f"The configured tree fits resident at "
+            f"{estimate.peak_envelope_bytes} bytes against that budget") in text
+    assert "delete the [tiles] table on d02" in text
+    assert "Free VRAM on this card" not in text
+
+
+def test_a_tree_wide_tiles_table_is_named_where_it_lives_not_on_a_domain():
+    # ADVISORY.  `mode = "on"` written once on the tree reaches every
+    # domain, and the refusal told the reader to "delete the [tiles] table
+    # on d01" -- a table that does not exist on d01 at all.
+    exp = _compelled(tiles_on_nest=False)
+    nodes = st._config_tree_nodes(exp.domains)
+    estimate = pf.estimate_experiment(exp)
+    floor = (st._tree_process_overhead_bytes(nodes)
+             + st._tree_radiation_transient_bytes(nodes))
+    assert estimate.peak_envelope_bytes <= BUDGET < floor
+
+    with pytest.raises(st.StreamingRefused) as caught:
+        st.decide_tree(nodes, exp.tiles, machine=_machine(),
+                       resident_estimate=estimate)
+    text = str(caught.value)
+    assert len(_sentences(text)) <= 2, text
+    assert "the tree-wide [tiles] table sets mode = 'on' for d01" in text
+    assert ("delete the tree-wide [tiles] table that d01 takes that mode "
+            "from or set its mode to 'auto'") in text
+    assert "[tiles] table on d01" not in text
+
+
+def _withholding_machine(exp):
+    """A card whose UNWITHHELD budget holds the tree and whose net one does not."""
+    machine = _machine()
+    estimate = pf.admission_estimate(exp, machine=machine)
+    nodes = st._config_tree_nodes(exp.domains)
+    mark_reconstruction_nodes(nodes, exp)
+    withheld = st._relocation_rebuild_bytes(nodes, estimate)
+    envelope = int(estimate.peak_envelope_bytes)
+    # budget = free - margin - withheld, so free - margin == envelope puts
+    # the tree exactly one byte the wrong side of the net budget.
+    return (_machine(envelope + pf.EXTERNAL_MARGIN_BYTES), nodes, envelope,
+            withheld)
+
+
+def test_a_refusal_whose_budget_withholds_a_move_names_the_move_and_the_way_out():
+    # BL-4.  The budget is already net of a moving nest's rebuild, and the
+    # refusal printed the net figure as "the N byte admission budget" with
+    # nothing saying why free VRAM minus the external margin did not equal
+    # N -- then sent the reader to free VRAM or shrink the tree, when the
+    # tree fits and the MOVE is what does not.
+    exp = _cyclone()
+    machine, nodes, envelope, withheld = _withholding_machine(exp)
+    budget = machine.vram_bytes - pf.EXTERNAL_MARGIN_BYTES - withheld
+    assert budget < envelope <= budget + withheld
+
+    with pytest.raises(st.StreamingRefused) as caught:
+        st.decide_tree(nodes, exp.tiles, machine=machine,
+                       resident_estimate=pf.admission_estimate(
+                           exp, machine=machine))
+    text = str(caught.value)
+    assert len(_sentences(text)) <= 2, text
+    assert (f"the {budget} byte admission budget, which withholds "
+            f"{withheld} bytes for d02's rebuild") in text
+    assert (f"The configured tree fits resident at {envelope} bytes before "
+            "the withholding") in text
+    assert "what this card cannot hold is d02's move, not the tree" in text
+    assert "hold it still" in text
+    assert "Free VRAM on this card" not in text
+
+
+def test_a_refusal_on_a_budget_that_withholds_nothing_keeps_its_plain_wording():
+    # The control: a still tree's refusal must not grow a withholding
+    # clause, so the clause above is evidence of a move and not decoration.
+    exp = _cyclone()
+    nodes = st._config_tree_nodes(exp.domains)
+    budget = 1 * GIB
+    with pytest.raises(st.StreamingRefused) as caught:
+        st.decide_tree(nodes, exp.tiles,
+                       machine=_machine(budget + pf.EXTERNAL_MARGIN_BYTES),
+                       resident_estimate=pf.estimate_experiment(exp))
+    text = str(caught.value)
+    assert f"both above the {budget} byte admission budget." in text
+    assert "withholds" not in text
+
+
+def test_the_resident_road_weighs_its_pinned_host_copy_against_the_allowance():
+    # ADVISORY.  Only the tiled road weighed host bytes.  A moving nest
+    # stages its outgoing state through a PINNED host copy on either road,
+    # and a page-locked allocation past the allowance does not degrade --
+    # it fails, at the first move, in a run this walk had admitted.
+    exp = _cyclone()
+    nodes = st._config_tree_nodes(exp.domains)
+    mark_reconstruction_nodes(nodes, exp)
+    estimate = pf.estimate_experiment(exp)
+    snapshot = st._relocation_host_snapshot_bytes(nodes, estimate)
+    assert snapshot > 0
+    # A host whose page-lockable share is one byte under the snapshot.
+    from tilestream.autoplan import PINNED_FRACTION
+    machine = ap.Machine(FREE, int((snapshot - 1) / PINNED_FRACTION))
+    assert machine.host_budget_bytes < snapshot
+
+    with pytest.raises(st.StreamingRefused) as caught:
+        st.decide_tree(nodes, exp.tiles, machine=machine,
+                       resident_estimate=estimate)
+    text = str(caught.value)
+    assert caught.value.resource == "host"
+    assert (f"the pinned host copy its outgoing state is staged through "
+            f"needs {snapshot} bytes") in text
+    assert f"{machine.host_budget_bytes} byte page-lockable host allowance" in text
+    assert "hold the nest still" in text
+    # And a host with room admits, so the refusal is the allowance's doing.
+    assert st.decide_tree(nodes, exp.tiles, machine=_machine(),
+                          resident_estimate=estimate).host_spent_bytes == snapshot
+
+
+def test_the_final_refusal_is_classified_by_what_refused_last_not_by_a_flag(
+        monkeypatch):
+    # BL-6.  `non_memory_refusal` was set on any non-memory refusal and
+    # never cleared, so a geometry refusal on attempt 1 made a later VRAM
+    # refusal read as a tiling one with resource None -- sending the reader
+    # after cell counts for a card that was out of memory.
+    exp = _cyclone()
+    nodes = st._config_tree_nodes(exp.domains)
+    estimate = pf.estimate_experiment(exp)
+    monkeypatch.setattr(st, "_tree_process_overhead_bytes", lambda nodes: 1)
+    monkeypatch.setattr(st, "_tree_radiation_transient_bytes", lambda nodes: 1)
+    raised = []
+
+    def raiser(nodes, options=None, *, machine=None, decisions=None,
+               forced_stream=frozenset()):
+        raised.append(len(raised))
+        if len(raised) == 1:
+            raise ap.CannotPlan("no tiling divides 160x160 with halo 5",
+                                "geometry", {})
+        raise st.StreamingRefused("no tile of d02 fits in 0.25 GiB of VRAM",
+                                  resource="vram")
+
+    monkeypatch.setattr(st, "_decide_tree", raiser)
+    budget = 1 * GIB
+    with pytest.raises(st.StreamingRefused) as caught:
+        st.decide_tree(nodes, exp.tiles,
+                       machine=_machine(budget + pf.EXTERNAL_MARGIN_BYTES),
+                       resident_estimate=estimate)
+    assert len(raised) > 1, "the later attempts must have run"
+    text = str(caught.value)
+    assert caught.value.resource == "memory"
+    assert "no tile of d02 fits in 0.25 GiB of VRAM" in text
+    assert "refused on its tiling rather than on memory" not in text
+    assert "tiling geometry, not the card" not in text
+    assert "Free VRAM on this card" in text
+
+
+def test_a_search_that_ends_on_its_own_arithmetic_is_a_memory_refusal_after_a_geometry_attempt(
+        monkeypatch):
+    # The other half of the classification: after a geometry refusal on
+    # attempt 1, later attempts that PLAN but come back over budget are
+    # rejected by this function's own arithmetic, not by the planner, and
+    # the final refusal must say memory, not tiling.
+    exp = _cyclone()
+    nodes = st._config_tree_nodes(exp.domains)
+    estimate = pf.estimate_experiment(exp)
+    monkeypatch.setattr(st, "_tree_process_overhead_bytes", lambda nodes: 1)
+    monkeypatch.setattr(st, "_tree_radiation_transient_bytes", lambda nodes: 1)
+    calls = []
+
+    def walk(nodes, options=None, *, machine=None, decisions=None,
+             forced_stream=frozenset()):
+        calls.append(len(calls))
+        if len(calls) == 1:
+            raise ap.CannotPlan("no tiling divides 160x160 with halo 5",
+                                "geometry", {})
+        decided = []
+        for node in nodes:
+            row = st.StreamingDecision(
+                True, "stub", 32, 32, 2, 5, "host", "ring",
+                detail={"claim_bytes": 0, "corridor_claim_bytes": 0})
+            decisions[int(node.cfg.grid_id)] = row
+            decided.append((node, node.cfg, None, machine, row))
+        return st.TreeDecision(decided, True, 1, 1, int(machine.vram_bytes),
+                               10 ** 12, 0, None)
+
+    monkeypatch.setattr(st, "_decide_tree", walk)
+    budget = 1 * GIB
+    with pytest.raises(st.StreamingRefused) as caught:
+        st.decide_tree(nodes, exp.tiles,
+                       machine=_machine(budget + pf.EXTERNAL_MARGIN_BYTES),
+                       resident_estimate=estimate)
+    assert len(calls) > 1, "the later attempts must have planned"
+    text = str(caught.value)
+    assert caught.value.resource == "memory"
+    assert "refused on its tiling rather than on memory" not in text
+    assert "tiling geometry, not the card" not in text
+    assert "no tiling divides 160x160" not in text
+
+
+def test_a_compelled_table_beside_a_withholding_gets_both_ways_out_and_no_resident_promise(
+        monkeypatch):
+    # A remedy that said "hold the nest still, and the tree runs resident"
+    # while d02's own table said mode = 'on' promised a road that table
+    # forbids.  Both facts have to be named, and nothing promised.
+    exp = _compelled()
+    machine, nodes, envelope, withheld = _withholding_machine(exp)
+    assert withheld > 0
+    monkeypatch.setattr(st, "_tree_process_overhead_bytes", lambda nodes: 10 ** 12)
+    monkeypatch.setattr(st, "_tree_radiation_transient_bytes", lambda nodes: 1)
+    _refuse_walk(monkeypatch, st.StreamingRefused(
+        "no tile of d02 fits in 0.25 GiB of VRAM", resource="vram"))
+    with pytest.raises(st.StreamingRefused) as caught:
+        st.decide_tree(nodes, exp.tiles, machine=machine,
+                       resident_estimate=pf.admission_estimate(exp, machine=machine))
+    text = str(caught.value)
+    assert "and the tree runs resident" not in text
+    assert "compels the tiled road" in text
+    assert "give that nest a smaller grid or hold it still" in text
+    assert "set its mode to 'auto'" in text
+    assert len(_sentences(text)) <= 2, text
+
+
+def test_the_tile_search_plans_on_the_budget_the_withholding_already_reduced(
+        monkeypatch):
+    # ADVISORY.  _resident_admission said the withholding came off the
+    # budget so that "every comparison downstream, the tile search
+    # included" spent the reduced allowance.  The first search attempt
+    # planned on the machine's full VRAM instead.
+    exp = _cyclone()
+    machine, nodes, envelope, withheld = _withholding_machine(exp)
+    budget = machine.vram_bytes - pf.EXTERNAL_MARGIN_BYTES - withheld
+    monkeypatch.setattr(st, "_tree_process_overhead_bytes", lambda nodes: 1)
+    monkeypatch.setattr(st, "_tree_radiation_transient_bytes", lambda nodes: 1)
+    seen = []
+
+    def raiser(nodes, options=None, *, machine=None, decisions=None,
+               forced_stream=frozenset()):
+        seen.append(int(machine.vram_bytes))
+        raise st.StreamingRefused("no tile fits", resource="vram")
+
+    monkeypatch.setattr(st, "_decide_tree", raiser)
+    with pytest.raises(st.StreamingRefused):
+        st.decide_tree(nodes, exp.tiles, machine=machine,
+                       resident_estimate=pf.admission_estimate(
+                           exp, machine=machine))
+    assert seen, "the tile search must have run"
+    assert set(seen) == {budget}
+    assert machine.vram_bytes not in seen
+
+
+def test_the_tiles_on_door_prices_the_mode_it_recommends():
+    # BL-5.  The `--tiles on` door recommends `--tiles auto`, and priced
+    # that recommendation through the `--tiles off` route, which never
+    # withholds a moving nest's rebuild.  In the band between the withheld
+    # and unwithheld budgets the door recommended auto and auto refused.
+    intent = dict(cycle=CYCLE, point=POINT, hours=6,
+                  name="GFS cyclone 12 km to 3 km", tiles="on",
+                  source="cyclone-setup.toml")
+
+    def admission(free_bytes):
+        sizing = dw.SizingBudget(free_bytes / GIB, free_bytes, None,
+                                 "fixture", measured=True)
+        operands = dict(free_bytes=sizing.free_bytes, vram_gib=sizing.vram_gib,
+                        profile=sizing.device_profile,
+                        forcing_interval_seconds=10800.)
+        machine = _machine(free_bytes)
+        return tc._unreduced_resident_admission(
+            intent,
+            lambda exp: dw.sizing_budget_bytes(exp, **operands),
+            lambda exp: dw._sizing_phases(exp, source="gfs", machine=machine,
+                                          **operands))
+
+    # IN THE BAND: `--tiles off` admits this tree and `--tiles auto` does
+    # not, so there is no recommendation to make and the door makes none.
+    inside = int(5.4 * GIB)
+    _text, off_exp = tc.configuration_text(**{**intent, "tiles": "off"})
+    off_operands = dict(free_bytes=inside, vram_gib=inside / GIB, profile=None,
+                        forcing_interval_seconds=10800.)
+    off = dw._sizing_phases(off_exp, source="gfs", machine=_machine(inside),
+                            **off_operands)
+    assert off.peak_envelope_bytes <= dw.sizing_budget_bytes(
+        off_exp, **off_operands), "the band needs --tiles off to admit here"
+    assert admission(inside) is None
+
+    # ABOVE THE BAND: auto admits the whole tree resident, and the door
+    # says so in the mode it priced.
+    above = int(6.5 * GIB)
+    admitted = admission(above)
+    assert admitted is not None and admitted["tiles"] == "auto"
+    sentence = tc._keeps_coverage_sentence(admitted, "on")
+    assert "--tiles auto admits" in sentence
+    assert "re-run with --tiles auto" in sentence
+    assert "--tiles off" not in sentence
+
+
+def test_the_tiles_auto_door_still_prices_and_names_tiles_off():
+    # The other branch is unchanged: under `auto` there is no mode to
+    # withdraw, `off` is the way to keep the ground, and `off` is what is
+    # priced.
+    intent = dict(cycle=CYCLE, point=POINT, hours=6,
+                  name="GFS cyclone 12 km to 3 km", tiles="auto",
+                  source="cyclone-setup.toml")
+    free = int(6.5 * GIB)
+    sizing = dw.SizingBudget(free / GIB, free, None, "fixture", measured=True)
+    operands = dict(free_bytes=sizing.free_bytes, vram_gib=sizing.vram_gib,
+                    profile=sizing.device_profile,
+                    forcing_interval_seconds=10800.)
+    admitted = tc._unreduced_resident_admission(
+        intent,
+        lambda exp: dw.sizing_budget_bytes(exp, **operands),
+        lambda exp: dw._sizing_phases(exp, source="gfs",
+                                      machine=_machine(free), **operands))
+    assert admitted is not None and admitted["tiles"] == "off"
+    assert "re-run with --tiles off" in tc._keeps_coverage_sentence(
+        admitted, "auto")

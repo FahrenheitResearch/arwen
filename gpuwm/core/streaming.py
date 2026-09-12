@@ -538,9 +538,13 @@ def _resident_admission(options, machine, estimate=None, *,
     ``withheld_bytes`` is a transient this process pays that the configured
     envelope does not model -- today only a moving nest's rebuild, priced
     by :func:`_relocation_rebuild_bytes`.  It comes off the BUDGET rather
-    than onto the envelope so that every comparison downstream, the tile
-    search included, spends the same reduced allowance without a second
-    number to keep in step.  It is taken off a DECLARED budget too: a
+    than onto the envelope so that every comparison downstream spends the
+    same reduced allowance without a second number to keep in step.  WHERE
+    IT BINDS: ``budget_bytes`` here is the number every admission
+    comparison in :func:`decide_tree` is made against, and it is also the
+    ``vram_bytes`` of the machine the tile search itself plans on, so the
+    planner cannot propose a tiling the withholding has already spent.
+    It is taken off a DECLARED budget too: a
     declared number says what this process may spend, and the rebuild
     spends it.  ``withheld_basis`` says in words what was withheld and
     why, and rides the decision so a receipt can be read without this
@@ -1065,7 +1069,7 @@ def _host_total_bytes() -> int | None:
     return limit if total is None else total
 
 
-def planner_machine(*, vram_bytes: int | None, name: str):
+def planner_machine(*, vram_bytes: int | None, name: str, device_profile=None):
     """A :class:`tilestream.autoplan.Machine` from numbers ALREADY READ.
 
     ``mode = "auto"`` with no pinned tiling is the planner's decision, and
@@ -1082,6 +1086,22 @@ def planner_machine(*, vram_bytes: int | None, name: str):
     keeps the answer about the right card: a report sizing a 6 GiB target
     must print the tiling of the 6 GiB target, not of the box printing it.
 
+    ``device_profile`` IS NOT DECORATION EITHER.  The admission estimate
+    prices its non-pool terms against the machine's device profile
+    (:func:`gpuwm.core.preflight.admission_estimate`), and the RUN DOOR's
+    machine is :meth:`autoplan.Machine.detect`, which always carries one.
+    A review that left this ``None`` therefore priced the SAME tree on the
+    SAME card at a different envelope from the door -- MEASURED on one
+    card: 4,009,919,677 bytes with the card's own profile, 5,141,378,237
+    with none -- and for any budget between those two the review admitted
+    a tree the door then refused.  So every review caller passes the
+    profile it already holds: ``gpuwm check`` its sampled or live one,
+    ``gpuwm go`` the one read out of its own subprocess probe, the
+    cyclone door its sizing snapshot's.  A DECLARED card -- ``--vram-gib``
+    naming a box that is not this one -- has no measured profile to pass
+    and gets the reference one, whose basis the report states as
+    ``non_pool_basis`` rather than passing it off as a reading.
+
     ``None`` -- meaning "leave ``auto`` unpriced and the resident estimate
     standing" -- when there is no card to plan against, or when the host
     RAM the pinned store has to fit in cannot be read.
@@ -1094,7 +1114,8 @@ def planner_machine(*, vram_bytes: int | None, name: str):
     if host is None:
         return None
     return autoplan.Machine(vram_bytes=int(vram_bytes), host_bytes=int(host),
-                            name=name, host_source="probe")
+                            name=name, host_source="probe",
+                            device_profile=device_profile)
 
 
 class StreamedDomain:
@@ -4714,9 +4735,40 @@ def _tree_reservations(nodes, claim_budget: int, per_domain=None, *, forced_stre
     return out
 
 
+def _decided_for_live_nodes(nodes, tree_decision):
+    """One already-taken decision per LIVE node, matched by grid id.
+
+    The door decides on PLANNING nodes -- config and staged statics, no
+    GPU state, because the point of deciding there is that it happens
+    before anything is downloaded.  The build pass needs the live node,
+    whose ``state`` is the thing a stepper wraps.  So the decision, the
+    per-domain options it was taken under and the machine it was priced
+    against travel by grid id, and the node is the only term replaced.
+
+    Refuses rather than silently re-deciding a grid the decision does not
+    cover: a build pass that quietly planned a domain the admission never
+    saw is the failure this parameter exists to remove.
+    """
+    by_id = {int(entry[0].cfg.grid_id): entry for entry in tree_decision.decided}
+    decided = []
+    for node in nodes:
+        gid = int(node.cfg.grid_id)
+        entry = by_id.get(gid)
+        if entry is None:
+            raise StreamingRefused(
+                f"d{gid:02d} is in this run's domain tree but not in the "
+                f"admission this run was given, so its road was never "
+                f"decided and building a stepper for it would spend card "
+                f"the admission did not price. Decide the whole tree at "
+                f"the door, or pass no decision and let this pass decide "
+                f"it.", resource=None)
+        decided.append((node, node.cfg.run, entry[2], entry[3], entry[4]))
+    return decided
+
+
 def steppers_for_tree(model, options: StreamingOptions | None = None, *,
                       builders=None, machine=None, decisions=None,
-                      resident_estimate=None) -> dict:
+                      resident_estimate=None, tree_decision=None) -> dict:
     """``{grid_id: stepper}`` for a whole domain tree.
 
     The route-facing entry point, and the reason the mode is configurable at
@@ -4767,6 +4819,22 @@ def steppers_for_tree(model, options: StreamingOptions | None = None, *,
     ``tilestream/test_route.py::control_auto_records_that_it_declined``
     fails if a route stops recording.
 
+    ``tree_decision`` IS THE RUN'S ONE ADMISSION, ALREADY TAKEN
+    ----------------------------------------------------------
+    A route whose door already asked :func:`decide_tree` -- the prepared
+    domain-tree forecast does, before authority, fetch, manifest and
+    prepare, so that a refusal costs the user nothing -- passes THAT
+    :class:`TreeDecision` here and this function decides nothing.  Asking
+    twice is not a redundant check, it is a second admission: the door
+    prices from :func:`gpuwm.core.preflight.admission_estimate` and marks
+    the moving subtree off the declared experiment, while a build-time
+    walk priced from the run's own richer ledger estimate and marked off
+    whatever the model carried, so the two passes could weigh different
+    envelopes against different budgets and the run would then execute a
+    road the user was never shown.  The decision reaches the LIVE nodes by
+    grid id (:func:`_decided_for_live_nodes`); the states, and only the
+    states, come from the model.
+
     ``decisions`` is filled with ``{grid_id: StreamingDecision}`` for EVERY
     grid, streamed or not, and it is the receipt's source.  It has to be an
     out-parameter rather than a second call to :func:`decide`, because under
@@ -4784,11 +4852,18 @@ def steppers_for_tree(model, options: StreamingOptions | None = None, *,
     builders = dict(builders or {})
     out = {}
     nodes = list(model.walk_parent_first())
-    from gpuwm.core.streamed_relocation import mark_reconstruction_nodes
-    mark_reconstruction_nodes(nodes, getattr(model, "_declared_experiment", None))
-    decided = decide_tree(nodes, options,
-                          machine=machine, decisions=decisions,
-                          resident_estimate=resident_estimate).decided
+    if tree_decision is None:
+        from gpuwm.core.streamed_relocation import mark_reconstruction_nodes
+        mark_reconstruction_nodes(
+            nodes, getattr(model, "_declared_experiment", None))
+        decided = decide_tree(nodes, options,
+                              machine=machine, decisions=decisions,
+                              resident_estimate=resident_estimate).decided
+    else:
+        decided = _decided_for_live_nodes(nodes, tree_decision)
+        if decisions is not None:
+            decisions.update({int(entry[0].cfg.grid_id): entry[-1]
+                              for entry in decided})
     for node, cfg, node_options, node_machine, decision in decided:
         gid = int(node.cfg.grid_id)
         reserve_bytes = decision.detail.get("reconstruction_default_allocator_bytes")
@@ -4956,7 +5031,7 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
     # floor refused the tree.  MEASURED on the 12/3 km moving-nest cyclone
     # tree (200x160 at 12 km, 160x160 at 3 km, 49 levels): a 6,978,986,310
     # byte floor against a 6,855,065,600 byte admission budget, refusing a
-    # configured tree that wants 5,149,977,376 bytes and runs.  The planner
+    # configured tree that wants 5,141,378,237 bytes and runs.  The planner
     # is consulted only where the resident answer is no.
     #
     # A domain that was TOLD to stream is not covered by this: mode "on"
@@ -4969,12 +5044,70 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
     compelled_ids = tuple(int(node.cfg.grid_id)
                           for node, choice in zip(nodes, per_domain)
                           if choice.enabled and choice.mode == "on")
+    # WHOSE TABLE IS IT.  ``options_for_domain`` resolves a domain's own
+    # ``tiles = {...}`` table, and falls back to the TREE-WIDE ``[tiles]``
+    # for every domain that carries none.  Naming the domain either way
+    # sent a reader to delete a per-domain table that does not exist --
+    # "delete the [tiles] table on d01" where the mode is the tree's --
+    # so a mode inherited from the tree is named as the tree's.
+    own_table_ids = tuple(int(node.cfg.grid_id)
+                          for node, choice in zip(nodes, per_domain)
+                          if choice.enabled and choice.mode == "on"
+                          and getattr(node.cfg, "tiles", None) is not None)
+    inherited_ids = tuple(gid for gid in compelled_ids
+                          if gid not in own_table_ids)
     compelled_names = ", ".join(f"d{gid:02d}" for gid in compelled_ids)
+
+    def _compelled_tables() -> str:
+        """The table(s) to change, each named where it actually lives."""
+        parts = []
+        if own_table_ids:
+            names = ", ".join(f"d{gid:02d}" for gid in own_table_ids)
+            parts.append(f"the [tiles] table on {names}")
+        if inherited_ids:
+            names = ", ".join(f"d{gid:02d}" for gid in inherited_ids)
+            parts.append(f"the tree-wide [tiles] table that {names} takes "
+                         f"that mode from")
+        return " and ".join(parts)
+
+    def _compelled_clause() -> str:
+        """Who set ``mode = 'on'``, in the words of where they set it."""
+        parts = []
+        if own_table_ids:
+            names = ", ".join(f"d{gid:02d}" for gid in own_table_ids)
+            parts.append(f"{names} sets [tiles] mode = 'on'")
+        if inherited_ids:
+            names = ", ".join(f"d{gid:02d}" for gid in inherited_ids)
+            parts.append(f"the tree-wide [tiles] table sets mode = 'on' "
+                         f"for {names}")
+        return " and ".join(parts) + ", which"
     # A TREE THAT FITS, DRIVEN ONTO THE TILED ROAD BY ITS OWN TABLE.  Both
     # refusals below read this, because "both above the budget" is false
     # here and the way out is a table, not a card.
     compelled_on_a_fitting_tree = bool(compelled_ids) and envelope <= budget
     if not compelled_ids and envelope <= budget:
+        # THE RESIDENT ROAD SPENDS HOST BYTES TOO, and only the tiled road
+        # was weighing them.  A moving nest stages its outgoing state
+        # through a PINNED host copy on either road, and a page-locked
+        # allocation past the host allowance does not degrade -- it fails,
+        # at the first move, hours into a run this walk had already
+        # admitted.  Weighed here against the same ceiling the tiled road
+        # uses (:attr:`TreeDecision.host_budget_bytes`).
+        resident_host_budget = (None if machine is None
+                                else int(machine.host_budget_bytes))
+        if (resident_host_budget is not None
+                and int(relocation_host_bytes) > resident_host_budget):
+            raise StreamingRefused(
+                f"{moving_names} moves, and the pinned host copy its "
+                f"outgoing state is staged through needs "
+                f"{int(relocation_host_bytes)} bytes against a "
+                f"{resident_host_budget} byte page-lockable host "
+                f"allowance, so the move would fail at the first "
+                f"transplant rather than here. Free host RAM, raise "
+                f"[tiles] host_budget_bytes if this machine can page-lock "
+                f"more, or reduce {moving_names}: a smaller grid or fewer "
+                "vertical levels, or hold the nest still.",
+                resource="host")
         # PER DOMAIN, WHAT THAT DOMAIN COSTS.  Writing the whole-tree
         # envelope onto every row made two domains sum to twice the tree,
         # and left each row claiming 0.00 GiB beside it.  The estimator
@@ -5023,13 +5156,22 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
     walk_options = replace(options, vram_budget_bytes=None)
     if options.vram_budget_bytes is not None:
         machine = replace(machine, vram_bytes=budget, vram_headroom=0.0)
+    # THE TILE SEARCH PLANS ON THE ADMISSION BUDGET, first attempt
+    # included.  It used to plan the first attempt on the machine's full
+    # VRAM and only later attempts on the budget, which meant a moving
+    # nest's withholding -- and the external margin with it -- was money
+    # the planner was allowed to spend on its opening proposal.  Every
+    # such proposal was rejected one comparison later by ``peak > budget``,
+    # so the outcome was unchanged and the attempt was wasted; the one
+    # thing it did change was ``_resident_admission``'s account of where
+    # the withholding binds, which is now true of every attempt.
+    tile_machine = replace(machine, vram_bytes=budget)
     attempts = 0
     last_error = None
-    non_memory_refusal = False
     last_rows = {}
 
     def attempt(working_machine, forced, permitted_streams=None):
-        nonlocal attempts, last_error, last_rows, non_memory_refusal
+        nonlocal attempts, last_error, last_rows
         attempts += 1
         rows = {}
         try:
@@ -5037,8 +5179,6 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
                                   decisions=rows, forced_stream=frozenset(forced))
         except (StreamingRefused, _CannotPlan()) as exc:
             last_error = exc
-            if getattr(exc, "resource", None) not in {"vram", "host", "memory"}:
-                non_memory_refusal = True
             last_rows = rows
             return None
         last_rows = rows
@@ -5048,6 +5188,9 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
         if not selected_auto <= permitted_streams:
             # Try the other one-domain alternatives before accepting a road
             # that silently changed two preferences during tile reduction.
+            # This rejection is the search's own, not the planner's: an
+            # earlier planner refusal must not be read as its cause.
+            last_error = None
             return None
         streams = any(entry[-1].stream for entry in result.decided)
         resident_ids = {int(entry[0].cfg.grid_id) for entry in result.decided
@@ -5082,6 +5225,10 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
                     and 0 < reduced_allowance < int(working_machine.vram_bytes)):
                 return attempt(replace(working_machine, vram_bytes=reduced_allowance),
                                forced, permitted_streams)
+            # Refused on this function's own arithmetic (memory or host),
+            # so whatever the planner said on an EARLIER attempt is not
+            # what ended the search: the final refusal is a memory one.
+            last_error = None
             return None
         for gid in auto_ids:
             rows[gid].detail["resident_admission"] = dict(
@@ -5099,36 +5246,66 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
 
     # No allocation or second device observation occurs in these arithmetic
     # attempts. The first admitted result keeps all existing preferences.
-    candidate = attempt(machine, ())
+    candidate = attempt(tile_machine, ())
     if candidate is not None:
         return publish(candidate)
     # These immutable per-process costs are paid on every candidate. A card
     # below this floor cannot be rescued by enumerating 2**N road preferences.
     fixed_floor = (_tree_process_overhead_bytes(nodes)
                    + _tree_radiation_transient_bytes(nodes))
+    # A BUDGET THAT WITHHOLDS SAYS SO.  ``budget`` here is already net of
+    # the moving nest's rebuild, and a refusal printing the net number as
+    # "the N byte admission budget" was quoting an arithmetic the reader
+    # had no way to reach: free VRAM minus the external margin does not
+    # equal N, and nothing on the page said why.  Every refusal below
+    # names the withholding wherever the budget carries one.
+    withheld = int(relocation_bytes)
+
+    def _budget_phrase() -> str:
+        if not withheld:
+            return f"{budget} byte admission budget"
+        return (f"{budget} byte admission budget, which withholds "
+                f"{withheld} bytes for {moving_names}'s rebuild")
+
     # THE WAY OUT IS WHATEVER PUT THE TREE ON THIS ROAD.  Where a domain's
     # own table compelled the tiled road and the tree fits resident, the
     # remedy is that table -- naming the card instead sent the reader after
-    # a bigger one while the one they have holds the tree.
+    # a bigger one while the one they have holds the tree.  Where the tree
+    # fits the UNWITHHELD budget and not the net one, what does not fit is
+    # the MOVE, and a reader told to free VRAM or shrink the tree was told
+    # to change the one thing that was never the bound.
     def _remedy() -> str:
         if compelled_on_a_fitting_tree:
             return (f"The configured tree fits resident at {envelope} bytes "
-                    f"against that budget, so delete the [tiles] table on "
-                    f"{compelled_names} or set its mode to 'auto', and the "
-                    "whole tree runs resident.")
+                    f"against that budget, so delete {_compelled_tables()} "
+                    "or set its mode to 'auto', and the whole tree runs "
+                    "resident.")
+        if withheld and envelope <= budget + withheld:
+            if compelled_ids:
+                # A compelled table forbids the resident road whatever the
+                # nest does, so the way out has two parts and no promise.
+                return (f"The tree's {envelope} bytes fit before the "
+                        f"withholding for {moving_names}'s move, and "
+                        f"{_compelled_tables()} compels the tiled road: give "
+                        "that nest a smaller grid or hold it still, and delete "
+                        "that table or set its mode to 'auto'.")
+            return (f"The configured tree fits resident at {envelope} bytes "
+                    f"before the withholding, so what this card cannot hold "
+                    f"is {moving_names}'s move, not the tree: give that nest "
+                    "a smaller grid or fewer vertical levels, or hold it "
+                    "still, and the tree runs resident.")
         return ("Free VRAM on this card, or reduce the tree: smaller "
                 "domains, fewer vertical levels, or a shorter nest.")
 
     if fixed_floor > budget:
         raise StreamingRefused(
-            ((f"{compelled_names} sets [tiles] mode = 'on', which compels the "
-              f"tiled road, and that road's shared process/radiation floor is "
-              f"{fixed_floor} bytes, above the {budget} byte admission budget."
+            ((f"{_compelled_clause()} compels the tiled road, and that "
+              f"road's shared process/radiation floor is {fixed_floor} "
+              f"bytes, above the {_budget_phrase()}."
               if compelled_on_a_fitting_tree else
               f"the configured tree needs {envelope} bytes resident and the "
               f"shared process/radiation floor of the streamed road is "
-              f"{fixed_floor} bytes, both above the {budget} byte admission "
-              "budget.")
+              f"{fixed_floor} bytes, both above the {_budget_phrase()}.")
              + " " + _remedy()),
             resource="vram")
     # A domain whose full store already exceeds the whole host allowance
@@ -5163,13 +5340,7 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
                 f"{int(minimum)} bytes of streamed host storage against a "
                 f"{int(host_budget)} byte host allowance, and their required "
                 f"resident envelope {int(required_envelope)} bytes is above "
-                f"the {budget} byte admission budget. Free VRAM on this card, "
-                "or reduce the tree: smaller domains, fewer vertical levels, "
-                "or a shorter nest.", resource="host")
-    tile_machine = replace(machine, vram_bytes=budget)
-    candidate = attempt(tile_machine, ())
-    if candidate is not None:
-        return publish(candidate)
+                f"the {_budget_phrase()}. " + _remedy(), resource="host")
     # A fitting automatic road is enough: do not enumerate 2**N subsets to
     # prove a minimum streamed-domain count. Try single changes first, then
     # cumulative changes from the last domain back toward the root. This
@@ -5211,7 +5382,19 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
     where = (f"d{undecided[0]:02d}" if undecided else
              ", ".join(f"d{int(node.cfg.grid_id):02d}" for node in nodes))
     planner = "" if last_error is None else f": {last_error}"
-    if non_memory_refusal:
+    # WHAT REFUSED IS THE LAST REFUSAL'S OWN RESOURCE, never a flag that
+    # some earlier attempt set.  A sticky flag turned one geometry refusal
+    # on attempt 1 into a permanent verdict: a later attempt refused on
+    # VRAM was then reported as a tiling refusal with ``resource`` None,
+    # sending the reader after cell counts for a card that was out of
+    # memory.  ``last_error`` is the refusal that actually ended the
+    # search, and its resource is the only thing that classifies it.  No
+    # refusal at all means every attempt was rejected by this function's
+    # own ``peak > budget``, which is memory.
+    tiling_refusal = (last_error is not None
+                      and getattr(last_error, "resource", None)
+                      not in {"vram", "host", "memory"})
+    if tiling_refusal:
         cause = (f"the configured tree needs {envelope} bytes resident and "
                  f"the tiled road was refused on its tiling rather than on "
                  f"memory{planner}.")
@@ -5220,14 +5403,24 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
                   "that domain cell counts a legal tile divides, relax "
                   "[tiles] max_redundancy, or set its mode to 'off' to keep "
                   "it resident.")
+    elif compelled_on_a_fitting_tree:
+        # THE FLOOR IS NOT THE REASON HERE, AND THE TREE IS NOT EITHER.
+        # Reaching this line means the floor is UNDER the budget -- a
+        # floor above it raised above -- and that the tree fits resident.
+        # Quoting either number as the cause produced a sentence that
+        # refuted itself in its own second half.  What refused is the
+        # road the table compelled.
+        cause = (f"{_compelled_clause()} compels the tiled road, and no "
+                 f"tiling of that road fits the {_budget_phrase()}"
+                 f"{planner}.")
+        remedy = _remedy()
     else:
         cause = (f"the configured tree needs {envelope} bytes resident and no "
-                 f"streamed road fits either, the tile planner's floor alone "
-                 f"being {fixed_floor} bytes, against a {budget} byte "
-                 f"admission budget{planner}.")
+                 f"streamed road fits either against the {_budget_phrase()}"
+                 f"{planner}.")
         remedy = _remedy()
     raise StreamingRefused(f"{cause} {remedy}",
-                           resource=None if non_memory_refusal else "memory")
+                           resource=None if tiling_refusal else "memory")
 
 
 def _decide_tree(nodes, options=None, *, machine=None,

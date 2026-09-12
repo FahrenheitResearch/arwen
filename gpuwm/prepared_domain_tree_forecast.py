@@ -2010,8 +2010,11 @@ def run_prepared_tree(
     )
     cold_decisions = {}
     cold_nodes = _prepared_planning_nodes(inputs)
-    cold_tree_streaming_decision(exp, cold_nodes, machine=planning_machine,
-                                 decisions=cold_decisions)
+    # THE RUN'S ONE ADMISSION.  Kept, not discarded: the build pass below
+    # consumes this decision rather than asking again from the ledger
+    # estimate, which is a different question against a different budget.
+    cold_tree = cold_tree_streaming_decision(
+        exp, cold_nodes, machine=planning_machine, decisions=cold_decisions)
     store_ids = ({gid for gid, decision in cold_decisions.items() if decision.stream}
                  if initialization is None else set())
     resident_domains = tuple(dc for dc in exp.domains if dc.grid_id not in store_ids)
@@ -2780,13 +2783,23 @@ def run_prepared_tree(
     # nest resident, so "some grids are missing" is the NORMAL case and
     # cannot be read as an anomaly.  Only a per-grid verdict distinguishes
     # that from a run where auto declined on every grid.
+    #
+    # ONE ADMISSION PER RUN.  The decision handed in here is the one the
+    # door took above, from preflight.admission_estimate against the cold
+    # planning machine, with the moving subtree marked off the declared
+    # experiment.  Deciding again here -- which is what passing the run's
+    # own ledger estimate did -- asked a SECOND admission from a richer
+    # envelope (retained boundary intervals, real lateral boundaries)
+    # against a budget that could carry no withholding where the cold
+    # pass withheld a moving nest's rebuild, so a user could be shown one
+    # road and given another after the download was already paid for.
     streaming_decisions = cold_decisions
     steppers = early_steppers
     if initialization is not None:
         steppers = streaming.steppers_for_tree(
             model, exp.tiles, builders=streaming.builders_for_tree(model, exp.tiles),
             decisions=streaming_decisions, machine=planning_machine,
-            resident_estimate=estimate)
+            tree_decision=cold_tree)
     streaming_report = streaming.streaming_receipt(
         exp.tiles, streaming_decisions)
     if streaming_report:
