@@ -23,6 +23,9 @@ REMOTE = "/tmp/precut-control"
 DOCTOR = "tests/test_doctor.py"
 NATIVE = "tests/test_native_wrf_distribution.py"
 NAME = "test_the_provenance_check_reports_the_path_a_run_will_take"
+needs_xdist = pytest.mark.skipif(
+    importlib.util.find_spec("xdist") is None,
+    reason="starts a real pytest under -n, which needs pytest-xdist from the dev extra")
 
 
 def report(*, failure=None, error=False, missing=False, count_delta=0, skipped=False):
@@ -185,6 +188,7 @@ def test_failed_evidence_storage_does_not_print_a_pass(tmp_path, monkeypatch, ca
     ("assert True", 0), ("assert False", 1),
     ("raise KeyboardInterrupt", 2), ("raise RuntimeError('ordinary failure')", 1),
 ])
+@needs_xdist
 def test_real_pytest_reports_agree_with_the_process_outcome(tmp_path, statement, expected):
     spec = importlib.util.spec_from_file_location("precut_real_control", SOURCE)
     gate = importlib.util.module_from_spec(spec)
@@ -207,6 +211,7 @@ def test_real_pytest_reports_agree_with_the_process_outcome(tmp_path, statement,
         assert bool(checked["failures"]) == (expected == 1)
 
 
+@needs_xdist
 def test_the_real_shadow_assertion_is_the_narrow_environmental_exception(tmp_path):
     spec = importlib.util.spec_from_file_location("precut_shadow_control", SOURCE)
     gate = importlib.util.module_from_spec(spec)
@@ -241,6 +246,7 @@ def test_remote_pytest_records_subtest_identities(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("outcome", ["pass", "fail", "multiple-fail", "skip"])
+@needs_xdist
 def test_real_unittest_subtests_preserve_outcomes_and_complete_xml(tmp_path, outcome):
     spec = importlib.util.spec_from_file_location("precut_subtest_control", SOURCE)
     gate = importlib.util.module_from_spec(spec)
@@ -290,6 +296,7 @@ def test_real_unittest_subtests_preserve_outcomes_and_complete_xml(tmp_path, out
 
 
 @pytest.mark.skipif(pytest.version_tuple < (9,), reason="builtin subtests fixture requires pytest9")
+@needs_xdist
 def test_real_expected_subtest_failure_is_recorded_as_skipped(tmp_path):
     spec = importlib.util.spec_from_file_location("precut_xfail_control", SOURCE)
     gate = importlib.util.module_from_spec(spec)

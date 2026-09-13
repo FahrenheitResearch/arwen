@@ -56,7 +56,7 @@ def disagreements(root: Path) -> list[str]:
 
 
 def _rewrite(path: Path, pattern: re.Pattern, to: str) -> None:
-    text = path.read_text(encoding="utf-8", newline="")
+    text = path.read_bytes().decode("utf-8")
 
     def sub(match: re.Match) -> str:
         whole = match.group(0)
@@ -64,13 +64,13 @@ def _rewrite(path: Path, pattern: re.Pattern, to: str) -> None:
         end = match.end(1) - match.start(0)
         return whole[:start] + to + whole[end:]
 
-    path.write_text(pattern.sub(sub, text), encoding="utf-8", newline="")
+    path.write_bytes(pattern.sub(sub, text).encode("utf-8"))
 
 
 def open_changelog(root: Path, to: str) -> bool:
     """Insert ``## <to> (unreleased)`` at the head unless a section for it exists."""
     path = root / CHANGELOG
-    text = path.read_text(encoding="utf-8", newline="")
+    text = path.read_bytes().decode("utf-8")
     if re.search(rf"^## {re.escape(to)}\b", text, re.M):
         return False
     newline = "\r\n" if "\r\n" in text else "\n"
@@ -78,7 +78,7 @@ def open_changelog(root: Path, to: str) -> bool:
     head = re.match(r"# Changelog\r?\n\r?\n", text)
     if not head:
         raise SystemExit("bump_version: CHANGELOG.md does not start with '# Changelog'")
-    path.write_text(text[: head.end()] + section + text[head.end():], encoding="utf-8", newline="")
+    path.write_bytes((text[: head.end()] + section + text[head.end():]).encode("utf-8"))
     return True
 
 
