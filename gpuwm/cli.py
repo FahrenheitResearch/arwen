@@ -459,6 +459,8 @@ def build_parser() -> argparse.ArgumentParser:
                           "wrfbdy_d01 and producing namelist.input (instead of CONFIG)")
     run.add_argument("--met-em", type=Path, metavar="DIR",
                      help="WPS metgrid directory with met_em.d0*.nc and producing namelist.input; native ArWen initialization")
+    run.add_argument("--soil-source", type=Path, default=None, metavar="DIR",
+                     help="WRF inputs: original met_em and Vtable directory for automatic soil-water recovery; defaults to the input directory")
     run.add_argument("--rrtmg-variant", choices=("rrtmg_legacy", "rte-rrtmgp"), default=None,
                      help="WRF inputs: preserve legacy RRTMG by default; choose rte-rrtmgp to change radiation")
     run.add_argument("--vertical-grid", default=None,
@@ -616,6 +618,8 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
     if args.command == "run":
         if sum(value is not None for value in (args.config, args.wrfinput, args.met_em)) != 1:
             parser.error("run requires exactly one of CONFIG, --wrfinput DIR or --met-em DIR")
+        if args.soil_source is not None and args.wrfinput is None:
+            parser.error("--soil-source supplies original soil layers for --wrfinput DIR")
         if args.run_seconds is not None and args.config is not None:
             parser.error("--run-seconds is for --wrfinput or --met-em; set run_seconds in CONFIG")
         if args.rrtmg_variant is not None and args.config is not None:
@@ -1014,7 +1018,8 @@ def _dispatch(args) -> int:
                                allow_shared_gpu=args.allow_shared_gpu,
                                **({"vertical_grid":args.vertical_grid,
                                    "vertical_levels":args.vertical_levels}
-                                  if args.met_em is not None else {}))
+                                  if args.met_em is not None else
+                                  ({} if args.soil_source is None else {"soil_source": args.soil_source})))
 
     # [[domain]]/[experiment] tables route to the experiment path; the
     # legacy [grid]/[dynamics]/[run] shape stays on the frozen case path.

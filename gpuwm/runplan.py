@@ -3430,6 +3430,11 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
                         "network_used": False, "input_sha256": snapshot["sha256"],
                         "file_count": len(snapshot["files"])}
     else:
+        # Acquisition publishes complete extended paths on Windows. Keep the
+        # same directory spelling when reading its handoff and writing the
+        # verified member list, including cache roots beyond MAX_PATH.
+        from gpuwm.filesystem_paths import io_path
+        data_dir = io_path(data_dir)
         fetch_report = _run_fetch(
             _fetch_arguments_from_hints(hints, out=data_dir), run_dir,
             events=getattr(observer, "events", None))

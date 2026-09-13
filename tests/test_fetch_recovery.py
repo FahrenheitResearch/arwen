@@ -177,6 +177,34 @@ def test_out_of_order_success_is_preserved_even_after_an_earlier_failure(tmp_pat
     assert payload["files"][1]["reused"]
 
 
+def test_recovery_receipt_beyond_windows_legacy_path_limit_is_reused(tmp_path):
+    plan = _plan(2)
+    # Keep the data filename below the legacy limit while the complete
+    # receipt identity and its atomic temporary name cross it.
+    out = tmp_path / ("cache-" + "x" * max(1, 194 - len(str(tmp_path)) - 7))
+    def interrupted(url, dest, **kwargs):
+        if dest.name == plan.objects[1].name:
+            raise HTTPError(url, 404, "not available", {}, None)
+        return _good(url, dest, **kwargs)
+
+    with pytest.raises(ValueError):
+        _run(plan, out, interrupted)
+    assert not (out / fetch_routes.MANIFEST_NAME).exists()
+    receipt = fetch_routes._recovery_path(out, plan.objects[0])
+    assert len(str(receipt)) > 260
+    first = receipt.read_bytes()
+    fetched = []
+
+    def remaining(url, dest, **kwargs):
+        fetched.append(dest.name)
+        return _good(url, dest, **kwargs)
+
+    payload = _run(plan, out, remaining)
+    assert fetched == [plan.objects[1].name]
+    assert payload["files"][0]["reused"]
+    assert receipt.read_bytes() == first
+
+
 def test_equal_size_corrupt_cache_is_retrieved_again(tmp_path):
     plan = _plan()
     _run(plan, tmp_path)

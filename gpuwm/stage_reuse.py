@@ -705,9 +705,10 @@ def _checkpoint_inside(resume, outdir: Path) -> bool:
     was written into.
     """
 
+    from gpuwm.filesystem_paths import canonical_path
     try:
-        checkpoint = Path(resume).resolve()
-        root = Path(outdir).resolve()
+        checkpoint = canonical_path(resume)
+        root = canonical_path(outdir)
     except OSError:
         return False
     return root == checkpoint or root in checkpoint.parents
@@ -721,47 +722,66 @@ def _next_segment(root: Path) -> Path:
     the same create-exclusive mkdir every other claim in this tree uses.
     """
 
+    from gpuwm.filesystem_paths import io_path
     ordinal = 1
     while True:
         candidate = Path(root) / f"{SEGMENT_PREFIX}{ordinal:03d}"
-        if not candidate.exists() and not candidate.is_symlink():
+        if not io_path(candidate).exists() and not io_path(candidate).is_symlink():
             return candidate
         ordinal += 1
 
 
 def claim_run_output(outdir, *, flag: str = "--outdir", protected_roots=(),
-                     resume=None) -> Path:
-    """Claim output, preserving every prior attempt during checkpoint replay.
+                     resume=None, owner_token=None):
+    """Reserve output until the returned claim's context is closed.
 
-    An empty output remains usable. A checkpoint inside an existing run
-    creates a new, exclusive child generation, because valid-time names
-    alone cannot distinguish a replayed frame from a prior committed one.
-    Both the supervisor and its worker use the returned directory; the
-    worker re-entry sees that fresh empty generation and does not fork
-    it again. Checkpoint paths continue to name the retained parent.
+    Empty user-created directories remain usable. An unrelated live launch
+    gets its own sibling attempt; checkpoint replay gets a child generation.
+    Only the supervisor's exact token lets its worker join the same claim.
+    Both processes hold an OS lease, so either one surviving the other still
+    protects its output. When both exit, empty output is recoverable.
     """
 
-    from gpuwm.prepared_single_domain_forecast import claim_output_directory
+    from gpuwm.output_claim import acquire_output, OutputInUse
+    from gpuwm.filesystem_paths import io_path
+    from gpuwm.prepared_single_domain_forecast import (
+        claim_output_directory, validate_output_directory)
 
-    path = Path(outdir)
-    if resume is None or not _checkpoint_inside(resume, path):
-        return claim_output_directory(
-            path, protected_roots=protected_roots, flag=flag)
-    # The shared claim still checks every protected input tree before
-    # any child directory is created, even when no prior evidence exists.
+    path = validate_output_directory(
+        Path(outdir), protected_roots=protected_roots, flag=flag)
+
+    def reserve(candidate, token=None):
+        candidate = validate_output_directory(
+            candidate, protected_roots=protected_roots, flag=flag)
+        return acquire_output(candidate, token=token, prepare=lambda: claim_output_directory(
+            candidate, protected_roots=protected_roots, flag=flag))
+
+    if owner_token is not None:
+        return reserve(path, owner_token)
+    resumed = resume is not None and _checkpoint_inside(resume, path)
     try:
-        return claim_output_directory(
-            path, protected_roots=protected_roots, flag=flag)
+        return reserve(path)
+    except OutputInUse:
+        pass
     except FileExistsError:
-        path = path.resolve()
+        if not resumed:
+            raise
+    ordinal = 1
     while True:
-        segment = _next_segment(path)
+        segment = (_next_segment(path) if resumed else
+                   path.with_name(f"{path.name}-attempt-{ordinal:03d}"))
+        ordinal += 1
+        if io_path(segment).exists() or io_path(segment).is_symlink():
+            continue
         try:
-            segment.mkdir()
+            claim = reserve(segment)
         except FileExistsError:
             continue
-        print(f"Resuming into {segment}; previous output remains in {path}.", flush=True)
-        return segment
+        if resumed:
+            print(f"Resuming into {claim.path}; previous output remains in {path}.", flush=True)
+        else:
+            print(f"Another forecast owns {path}; this run will write to {claim.path}.", flush=True)
+        return claim
 
 
 def prepared_inputs_reusable(directory, *, receipt: str,

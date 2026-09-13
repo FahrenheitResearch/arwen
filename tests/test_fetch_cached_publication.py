@@ -8,7 +8,7 @@ from urllib.error import HTTPError
 import pytest
 
 from gpuwm import fetch, fetch_routes, fetch_endpoints
-from tests.test_fetch_routes import _fake_downloader
+from test_fetch_routes import _fake_downloader
 
 
 def _cached(tmp_path, *, source='rap', member=None):

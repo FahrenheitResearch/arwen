@@ -588,7 +588,8 @@ def run_metem_forecast(directory, outdir, *, run_seconds=None, restart=None,
                        io_mode='history', health_debug=False, gpu_uuid=None,
                        exclusive_gpu=True, rrtmg_variant=None, vertical_grid=None,
                        render_products=None, render_dir=None, progress_options=None,
-                       relaunched=False, vertical_levels=None, allow_shared_gpu=False):
+                       relaunched=False, vertical_levels=None, allow_shared_gpu=False,
+                       output_owner=None):
     import os
     import subprocess
     import sys
@@ -619,58 +620,68 @@ def run_metem_forecast(directory, outdir, *, run_seconds=None, restart=None,
     # an errno raised inside the worker child, minutes after this
     # process had reserved a GPU for it.
     try:
-        outdir = claim_run_output(outdir, flag='--outdir',
-                                  protected_roots=(Path(directory),), resume=restart)
+        output_claim = claim_run_output(outdir, flag='--outdir',
+                                  protected_roots=(Path(directory),), resume=restart,
+                                  owner_token=output_owner)
     except (ValueError, FileExistsError) as error:
         print(f'{DOOR}: --outdir refused: {error}', file=sys.stderr)
         return 2
-    # The supervised child re-enters this door after the parent below
-    # has already printed the pair at plan review.
-    missing = announce_render_readiness(DOOR, announce=not relaunched)
-    if exclusive_gpu:
-        from gpuwm.supervisor import select_gpu, preflight_exclusive_gpu, GPUFileLock
-        gpu = select_gpu(gpu_uuid)
-        command = [sys.executable,'-m','gpuwm.metem_forecast','--met-em',str(Path(directory).resolve()),
-                   '--outdir',str(outdir),'--io-mode',io_mode,'--_worker']
-        if rrtmg_variant is not None: command += ['--rrtmg-variant',rrtmg_variant]
-        if vertical_grid is not None: command += ['--vertical-grid',vertical_grid]
-        if vertical_levels is not None: command += ['--vertical-levels',str(int(vertical_levels))]
-        if run_seconds is not None: command += ['--run-seconds',str(run_seconds)]
-        if restart is not None: command += ['--restart',str(Path(restart).resolve())]
-        if health_debug: command += ['--health-debug']
-        # Carried to the child, which is where the run actually happens:
-        # a product or progress flag dropped here is a flag that did
-        # nothing on the supervised path people use by default.
-        if render_products is not None: command += ['--products',str(render_products)]
-        if render_dir is not None: command += ['--render-dir',str(Path(render_dir).resolve())]
-        command += ProgressOptions.worker_flags(progress_options)
-        with GPUFileLock(gpu.uuid, run_id=f'metgrid-{os.getpid()}'):
-            preflight_exclusive_gpu(gpu.uuid, approved_pids={os.getpid()},
-                                    allow_shared_gpu=allow_shared_gpu)
-            return worker_exit_status(subprocess.run(command,
-                env=dict(os.environ,CUDA_VISIBLE_DEVICES=gpu.uuid),check=False).returncode)
-    if gpu_uuid is not None:
-        raise ValueError('--gpu-uuid requires the default fresh worker; remove --no-supervise')
-    from gpuwm.go_cli import GoStageFailed
-    from gpuwm.prepared_domain_tree_forecast import run_prepared_tree
-    print('met_em: preparing native initial states and lateral boundaries.', flush=True)
-    inputs = prepare_metem_run(run,outdir/'input',run_seconds=run_seconds,
-                               vertical_grid=vertical_grid,vertical_levels=vertical_levels)
-    announce_wrf_substitutions(run, inputs.prepared_root/'metgrid-import.json')
-    plan = door_render_plan(outdir, render_products=render_products, render_dir=render_dir,
-                            init=inputs.experiment.start_time, can_draw=missing is None)
-    first_products = arm_door_first_products(plan, outdir=outdir, started=started)
-    run_prepared_tree(inputs,output_directory=outdir,io_mode=io_mode,restart=restart,
-        health_debug=health_debug,progress_options=progress_options,
-        initialization=MetemInitialization(inputs),
-        **({} if first_products is None else {'first_products': first_products}))
+    outdir = output_claim.path
     try:
-        draw_door_products(plan, first_products=first_products, door=DOOR)
-    except GoStageFailed as failure:
-        print(f'{DOOR}: the forecast finished and its output is in {outdir}; '
-              f'the render stage exited {failure.code}.', file=sys.stderr)
-        return failure.code
-    return 0
+        # The supervised child re-enters this door after the parent below
+        # has already printed the pair at plan review.
+        missing = announce_render_readiness(DOOR, announce=not relaunched)
+        if exclusive_gpu:
+            from gpuwm.supervisor import select_gpu, preflight_exclusive_gpu, GPUFileLock
+            gpu = select_gpu(gpu_uuid)
+            command = [sys.executable,'-m','gpuwm.metem_forecast','--met-em',str(Path(directory).resolve()),
+                       '--outdir',str(outdir),'--io-mode',io_mode,'--_worker',
+                       '--_output-owner',output_claim.token]
+            if rrtmg_variant is not None: command += ['--rrtmg-variant',rrtmg_variant]
+            if vertical_grid is not None: command += ['--vertical-grid',vertical_grid]
+            if vertical_levels is not None: command += ['--vertical-levels',str(int(vertical_levels))]
+            if run_seconds is not None: command += ['--run-seconds',str(run_seconds)]
+            if restart is not None: command += ['--restart',str(Path(restart).resolve())]
+            if health_debug: command += ['--health-debug']
+            # Carried to the child, which is where the run actually happens:
+            # a product or progress flag dropped here is a flag that did
+            # nothing on the supervised path people use by default.
+            if render_products is not None: command += ['--products',str(render_products)]
+            if render_dir is not None: command += ['--render-dir',str(Path(render_dir).resolve())]
+            command += ProgressOptions.worker_flags(progress_options)
+            with GPUFileLock(gpu.uuid, run_id=f'metgrid-{os.getpid()}'):
+                preflight_exclusive_gpu(gpu.uuid, approved_pids={os.getpid()},
+                                        allow_shared_gpu=allow_shared_gpu)
+                return worker_exit_status(subprocess.run(command,
+                    env=dict(os.environ,CUDA_VISIBLE_DEVICES=gpu.uuid),check=False).returncode)
+        if gpu_uuid is not None:
+            raise ValueError('--gpu-uuid requires the default fresh worker; remove --no-supervise')
+        from gpuwm.go_cli import GoStageFailed
+        from gpuwm.prepared_domain_tree_forecast import run_prepared_tree
+        from gpuwm.filesystem_paths import io_path
+        worker_output = io_path(outdir)
+        print('met_em: preparing native initial states and lateral boundaries.', flush=True)
+        inputs = prepare_metem_run(run,worker_output/'input',run_seconds=run_seconds,
+                                   vertical_grid=vertical_grid,vertical_levels=vertical_levels)
+        announce_wrf_substitutions(run, inputs.prepared_root/'metgrid-import.json')
+        plan = door_render_plan(worker_output, render_products=render_products,
+                                render_dir=None if render_dir is None else io_path(render_dir),
+                                init=inputs.experiment.start_time, can_draw=missing is None)
+        first_products = arm_door_first_products(plan, outdir=worker_output, started=started)
+        run_prepared_tree(inputs,output_directory=worker_output,io_mode=io_mode,
+            restart=None if restart is None else io_path(restart),
+            health_debug=health_debug,progress_options=progress_options,
+            initialization=MetemInitialization(inputs),
+            **({} if first_products is None else {'first_products': first_products}))
+        try:
+            draw_door_products(plan, first_products=first_products, door=DOOR)
+        except GoStageFailed as failure:
+            print(f'{DOOR}: the forecast finished and its output is in {outdir}; '
+                  f'the render stage exited {failure.code}.', file=sys.stderr)
+            return failure.code
+        return 0
+    finally:
+        output_claim.close()
 
 
 def build_parser():
@@ -709,6 +720,7 @@ def build_parser():
     parser.add_argument('--allow-shared-gpu',action='store_true',
         help='proceed when another CUDA compute process holds the selected GPU. The requested configuration is retained')
     parser.add_argument('--_worker',action='store_true',help=argparse.SUPPRESS)
+    parser.add_argument('--_output-owner',help=argparse.SUPPRESS)
     return parser
 
 
@@ -723,7 +735,8 @@ def main(argv=None):
             exclusive_gpu=not args._worker,rrtmg_variant=args.rrtmg_variant,vertical_grid=args.vertical_grid,
             render_products=args.render_products,render_dir=args.render_dir,
             progress_options=ProgressOptions.from_args(args),relaunched=args._worker,
-            vertical_levels=args.vertical_levels,allow_shared_gpu=args.allow_shared_gpu)
+            vertical_levels=args.vertical_levels,allow_shared_gpu=args.allow_shared_gpu,
+            output_owner=args._output_owner)
     except (ValueError,OSError) as error:
         print(f'{DOOR}: {error}',file=sys.stderr)
         return 2

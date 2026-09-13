@@ -1259,7 +1259,7 @@ fn source_preparation_domain(model: ModelId) -> Option<DomainSpec> {
         ModelId::Hrrr
         | ModelId::Rap
         | ModelId::RrfsA
-        | ModelId::RrfsPublic
+        | ModelId::Rrfs | ModelId::RrfsPublic
         | ModelId::RrfsFireWx
         | ModelId::Nam
         | ModelId::Hiresw

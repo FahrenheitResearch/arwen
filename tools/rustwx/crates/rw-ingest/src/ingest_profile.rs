@@ -82,6 +82,8 @@ impl VolumeChoice {
 pub enum FieldSet {
     All,
     Named(Vec<String>),
+    /// Exact native planes, including their statistical product.
+    Selectors(Vec<FieldSelector>),
 }
 
 /// One ingest profile: what to fetch/extract/compute/store per hour.
@@ -111,6 +113,11 @@ pub const SOUNDING_SURFACE_FIELDS: [&str; 7] = [
 ];
 
 impl IngestProfile {
+    pub fn selected(selectors: Vec<FieldSelector>) -> Self {
+        Self { volumes: Vec::new(), level_step_hpa: 25,
+            surface_fields: FieldSet::Selectors(selectors), derived: false, heavy: false }
+    }
+
     /// Today's default ingest, unchanged: everything, both compute stages.
     pub fn full() -> Self {
         Self {
@@ -151,14 +158,22 @@ impl IngestProfile {
         }
     }
 
+    /// Direct surface fields without pressure volumes or computed diagnostics.
+    pub fn surface() -> Self {
+        Self { volumes: Vec::new(), level_step_hpa: 25,
+            surface_fields: FieldSet::Named(surface_plan().iter().map(|(name, _)| name.to_string()).collect()),
+            derived: false, heavy: false }
+    }
+
     /// Preset lookup by CLI name.
     pub fn preset(name: &str) -> Result<Self, String> {
         match name {
             "full" => Ok(Self::full()),
             "sounding" => Ok(Self::sounding()),
             "view" => Ok(Self::view()),
+            "surface" => Ok(Self::surface()),
             other => Err(format!(
-                "--profile: unknown preset '{other}' (expected full, sounding, or view)"
+                "--profile: unknown preset '{other}' (expected full, sounding, view, or surface)"
             )),
         }
     }
@@ -183,6 +198,7 @@ impl IngestProfile {
         match &self.surface_fields {
             FieldSet::All => true,
             FieldSet::Named(names) => names.iter().any(|have| have == name),
+            FieldSet::Selectors(selectors) => selectors.iter().any(|selector| selector.key() == name),
         }
     }
 
@@ -208,6 +224,19 @@ impl IngestProfile {
     ///    named-subset profile excludes those inputs.
     /// 5. The heavy stage builds on the derived stage.
     pub fn validate(&self) -> Result<(), String> {
+        if let FieldSet::Selectors(selectors) = &self.surface_fields {
+            if selectors.is_empty() {
+                return Err("profile: the selected field set is empty".into());
+            }
+            if !self.volumes.is_empty() || self.derived || self.heavy {
+                return Err("profile: exact selected planes cannot imply volumes or calculated diagnostics".into());
+            }
+            for (index, selector) in selectors.iter().enumerate() {
+                if selectors[..index].contains(selector) {
+                    return Err(format!("profile: duplicate selected field '{}'", selector.key()));
+                }
+            }
+        }
         if !LEVEL_STEPS_HPA.contains(&self.level_step_hpa) {
             return Err(format!(
                 "profile: level step {} hPa is not supported (expected 25 or 50)",
@@ -276,6 +305,7 @@ impl IngestProfile {
         let surface = match &self.surface_fields {
             FieldSet::All => "all 2D fields".to_string(),
             FieldSet::Named(names) => format!("{} named surface field(s)", names.len()),
+            FieldSet::Selectors(selectors) => format!("{} selected native plane(s)", selectors.len()),
         };
         format!(
             "{volumes}, {surface}, derived {}, heavy {}",

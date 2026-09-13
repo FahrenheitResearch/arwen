@@ -31,6 +31,8 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use serde::Serialize;
+mod water_layer;
+mod soil_recovery;
 
 /// The contract marker. Printed by `--abi`, and -- because it is a
 /// literal in the binary -- readable straight out of the bytes by the
@@ -38,7 +40,7 @@ use serde::Serialize;
 const ABI: &str = concat!(
     "gpuwm-rw-netcdf-inventory-v1\tformat\tdimensions\tglobal_attributes\tvariables",
     "\tgpuwm-rw-netcdf-dump-v1\tvariables\tfilename\tshape\ttimes",
-    "\tdtype\t<f8\t|S1",
+    "\tdtype\t<f8\t|S1\twater_layer_conversion\tsource_soil_recovery",
 );
 
 const INVENTORY_SCHEMA: &str = "gpuwm-rw-netcdf-inventory-v1";
@@ -54,13 +56,15 @@ pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
 
 const USAGE: &str = "\
 usage: rw_netcdf inventory FILE
-       rw_netcdf dump [--raw|--no-mask] [--unit-scale=N] [--unit-offset=N] FILE OUTPUT_DIR VARIABLE [VARIABLE...]
+       rw_netcdf dump [--raw|--no-mask] [--unit-scale=N] [--unit-offset=N] [--water-layer-thickness=VARIABLE] FILE OUTPUT_DIR VARIABLE [VARIABLE...]
+       rw_netcdf recover-wrf-soil WRFINPUT MET_EM AUTHORITY_JSON OUTPUT_DIR
        rw_netcdf --abi | --help
 
   inventory  print a JSON description of FILE (no values are read)
   dump       decode VARIABLEs into OUTPUT_DIR as flat little-endian f64
              files plus metadata.json
   --unit-scale=N / --unit-offset=N  explicit quantity conversion after CF unpacking
+  --water-layer-thickness=VARIABLE  convert declared layer water mass/depth to volume fraction
   --raw      skip CF decoding: no _FillValue/missing_value masking and no
              scale_factor/add_offset, so stored sentinels survive.  This
              is what netCDF4's set_auto_mask(False) asks for, and some
@@ -143,6 +147,8 @@ struct DumpRecord {
     cf: CfApplied,
     #[serde(skip_serializing_if = "Option::is_none")]
     unit_transform: Option<[f64; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    water_layer_conversion: Option<water_layer::Conversion>,
 }
 
 #[derive(Serialize, Default)]
@@ -172,6 +178,10 @@ fn main() {
         std::process::exit(2);
     }
     match args[0].as_str() {
+        "recover-wrf-soil" => {
+            if args.len() != 5 { fail("recover-wrf-soil takes WRFINPUT MET_EM AUTHORITY_JSON OUTPUT_DIR"); }
+            if let Err(error) = soil_recovery::recover(Path::new(&args[1]),Path::new(&args[2]),Path::new(&args[3]),Path::new(&args[4])) { fail(&error); }
+        }
         "--abi" => {
             println!("{ABI}");
         }
@@ -196,6 +206,10 @@ fn main() {
             let raw = args.iter().any(|a| a == "--raw");
             let no_mask = raw || args.iter().any(|a| a == "--no-mask");
             let apply_scale = !raw;
+            let water_layer = args.iter().find_map(|a| a.strip_prefix("--water-layer-thickness="));
+            if water_layer.is_some() && (raw || no_mask) {
+                fail("layer water conversion requires CF masking and unpacking");
+            }
             let mut unit_transform = [1.0_f64, 0.0_f64];
             for argument in &args[1..] {
                 for (index, prefix) in [(0, "--unit-scale="), (1, "--unit-offset=")] {
@@ -211,20 +225,22 @@ fn main() {
             let positional: Vec<&String> = args[1..]
                 .iter()
                 .filter(|a| a.as_str() != "--raw" && a.as_str() != "--no-mask"
-                    && !a.starts_with("--unit-scale=") && !a.starts_with("--unit-offset="))
+                    && !a.starts_with("--unit-scale=") && !a.starts_with("--unit-offset=")
+                    && !a.starts_with("--water-layer-thickness="))
                 .collect();
             if positional.len() < 3 {
                 fail("dump takes FILE, OUTPUT_DIR and at least one VARIABLE");
             }
             let names: Vec<String> =
                 positional[2..].iter().map(|s| (*s).clone()).collect();
-            if let Err(error) = dump_transformed(
+            if let Err(error) = dump_with_water_layer(
                 Path::new(positional[0]),
                 Path::new(positional[1]),
                 &names,
                 !no_mask,
                 apply_scale,
                 unit_transform,
+                water_layer,
             ) {
                 fail(&error);
             }
@@ -582,6 +598,11 @@ fn dump(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
 
 fn dump_transformed(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
                     apply_scale: bool, unit_transform: [f64; 2]) -> Result<(), String> {
+    dump_with_water_layer(path, out_dir, names, apply_mask, apply_scale, unit_transform, None)
+}
+
+fn dump_with_water_layer(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
+                    apply_scale: bool, unit_transform: [f64; 2], water_layer: Option<&str>) -> Result<(), String> {
     let transformed = unit_transform != [1.0, 0.0];
     if !unit_transform.iter().all(|v| v.is_finite()) || unit_transform[0] == 0.0 {
         return Err("unit transform must have a finite nonzero scale and finite offset".into());
@@ -601,7 +622,7 @@ fn dump_transformed(path: &Path, out_dir: &Path, names: &[String], apply_mask: b
         let variable = file.variable(name);
         if let Some(variable) = variable.as_ref() {
             if matches!(variable.dtype(), netcrust::DataType::Char | netcrust::DataType::String) {
-                if transformed {
+                if transformed || water_layer.is_some() {
                     return Err(format!("{name}: unit conversion requires a numeric variable"));
                 }
                 let shape = variable.shape();
@@ -614,6 +635,7 @@ fn dump_transformed(path: &Path, out_dir: &Path, names: &[String], apply_mask: b
                     dimensions: variable.dimensions().iter().map(|d| d.name().to_string()).collect(),
                     dtype: "|S1", units: None, times: None, cf: CfApplied::default(),
                     unit_transform: None,
+                    water_layer_conversion: None,
                 });
                 continue;
             }
@@ -693,6 +715,12 @@ fn dump_transformed(path: &Path, out_dir: &Path, names: &[String], apply_mask: b
                 }
             }
         }
+        let water_layer_conversion = match water_layer {
+            Some(thickness) => Some(water_layer::normalize(&file,
+                variable.as_ref().ok_or_else(|| format!("{name}: layer water needs complete variable metadata"))?,
+                &mut values, thickness)?),
+            None => None,
+        };
         let cf = CfApplied {
             missing_count,
             ..cf
@@ -745,6 +773,7 @@ fn dump_transformed(path: &Path, out_dir: &Path, names: &[String], apply_mask: b
             times,
             cf,
             unit_transform: transformed.then_some(unit_transform),
+            water_layer_conversion,
         });
     }
 

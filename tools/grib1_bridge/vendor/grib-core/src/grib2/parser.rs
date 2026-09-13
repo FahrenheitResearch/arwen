@@ -821,10 +821,12 @@ fn parse_grid_template_30(sec: &[u8], grid: &mut GridDefinition) -> Result<(), S
     grid.lat1 = read_signed_u32(sec, 38)? as f64 / 1_000_000.0;
     grid.lon1 = read_signed_u32(sec, 42)? as f64 / 1_000_000.0;
     grid.resolution_flags = read_u8(sec, 46)?;
+    grid.lad = read_signed_u32(sec, 47)? as f64 / 1_000_000.0;
     grid.lov = read_signed_u32(sec, 51)? as f64 / 1_000_000.0;
     // Dx and Dy are stored in millimetres in GRIB2 template 3.30
     grid.dx = read_u32(sec, 55)? as f64 / 1000.0;
     grid.dy = read_u32(sec, 59)? as f64 / 1000.0;
+    grid.projection_center_flag = read_u8(sec, 63)?;
     grid.scan_mode = read_u8(sec, 64)?;
     grid.latin1 = read_signed_u32(sec, 65)? as f64 / 1_000_000.0;
     grid.latin2 = read_signed_u32(sec, 69)? as f64 / 1_000_000.0;

@@ -80,11 +80,12 @@ pub fn parse_idx(text: &str) -> Vec<IdxEntry> {
         for i in 6..parts.len() {
             let extra = parts[i].trim().trim_end_matches(':');
             if let Some(ens_str) = extra.strip_prefix("ENS=") {
-                // ENS=+5 or ENS=-3 or ENS=5
-                let num_str = ens_str.trim_start_matches('+').trim_start_matches('-');
-                if let Ok(n) = num_str.parse::<u32>() {
-                    ensemble_member = Some(n);
-                }
+                // wgrib2 names the two control forecast types explicitly.
+                // Member sign is meaningful: a negative token is never +N.
+                ensemble_member = match ens_str {
+                    "low-res ctl" | "hi-res ctl" => Some(0),
+                    value => value.strip_prefix('+').unwrap_or(value).parse::<u32>().ok(),
+                };
             }
         }
 
@@ -483,6 +484,16 @@ fn build_idx_url(model: &str, date: &str, hour: u32, product: &str, fhour: u32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_control_labels_and_signed_member_tokens_are_exact() {
+        for (token, expected) in [("low-res ctl",Some(0)), ("hi-res ctl",Some(0)),
+            ("+1",Some(1)), ("-1",None), ("ctl",None)] {
+            let text = format!("1:0:d=2026081700:TMP:2 m above ground:anl:ENS={token}:");
+            assert_eq!(parse_idx(&text)[0].ensemble_member, expected, "{token}");
+        }
+    }
+
 
     const SAMPLE_IDX: &str = "\
 1:0:d=2026031012:TMP:2 m above ground:anl:

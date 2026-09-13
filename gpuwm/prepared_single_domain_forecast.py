@@ -2639,22 +2639,10 @@ def _sibling_outdir(protected: Path) -> Path:
     return protected.parent / f"{protected.name}-forecast"
 
 
-def claim_output_directory(
+def validate_output_directory(
         path: Path, *, protected_roots=(), flag: str = "--outdir",
 ) -> Path:
-    """Create one owned output directory without merging prior state.
-
-    Refusing to reuse a directory is deliberate -- a run that merged
-    into a previous run's output would publish a receipt describing two
-    runs -- but ``mkdir(exist_ok=False)``'s own ``FileExistsError``
-    reaches the reader as a traceback whose last line is a Windows
-    error number.  A person who has just re-run a command with the same
-    ``--output-directory`` gets one sentence naming the directory and
-    the two ways out instead; ``FLAG`` is the flag they actually typed,
-    because "pass --outdir" is unhelpful advice to someone who typed
-    ``--output-directory``.
-    """
-
+    """Resolve and protect a requested output before writing lock sidecars."""
     path = Path(path)
     # resolve() walks symlinks and raises OSError on a loop (Errno 40 /
     # "Symlink loop from ...").  This function's whole subject is turning
@@ -2670,6 +2658,21 @@ def claim_output_directory(
                 f"{protected}; the forecast may not write into its own "
                 f"inputs.  Pass an {flag} beside them instead, for "
                 f"example {_sibling_outdir(protected)}")
+    return resolved
+
+
+def claim_output_directory(
+        path: Path, *, protected_roots=(), flag: str = "--outdir",
+) -> Path:
+    """Create an output directory without merging prior run contents.
+
+    This filesystem admission also accepts a precreated empty directory.
+    Concurrent WRF launches additionally hold ``output_claim`` leases for
+    their whole supervisor/worker lifetime.
+    """
+    from gpuwm.filesystem_paths import io_path
+    path = io_path(path)
+    resolved = validate_output_directory(path, protected_roots=protected_roots, flag=flag)
     try:
         path.mkdir(parents=True, exist_ok=False)
     except FileExistsError as error:
@@ -2733,8 +2736,9 @@ def _resolve_or_refuse(path: Path, flag: str) -> Path:
     correct.  The catch is narrow enough to stay honest: it wraps one
     call whose only failure mode is "this path does not resolve".
     """
+    from gpuwm.filesystem_paths import canonical_path
     try:
-        return path.resolve()
+        return canonical_path(path)
     except (OSError, RuntimeError) as error:
         detail = getattr(error, "strerror", None) or str(error)
         errno = getattr(error, "errno", None)

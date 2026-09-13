@@ -77,9 +77,82 @@ pub mod ingest_profile;
 #[path = "size_estimate.rs"]
 pub mod size_estimate;
 use crate::events::{IngestError, IngestEvent, IngestStage, other};
-use crate::{fetch_plan, profile_scope};
+use crate::{fetch_plan, profile_scope, validate_ingest_profile_for_model};
 use ingest_compute::DerivedGrid2D;
-use ingest_profile::{IngestProfile, VolumeChoice, surface_plan};
+use ingest_profile::{FieldSet, IngestProfile, VolumeChoice, surface_plan};
+
+fn ingest_selector(model: ModelId, selector: FieldSelector) -> FieldSelector {
+    if model == ModelId::Hgefs && selector.product.is_default() {
+        selector.with_product(rustwx_core::FieldProduct::EnsembleMean)
+    } else { selector }
+}
+
+fn selector_store_metadata(
+    model: ModelId,
+    selector: FieldSelector,
+    member: Option<u8>,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let mut metadata = serde_json::to_value(selector)?;
+    if let Some(member) = selector.product.is_default().then(|| rustwx_models::declared_member(model, member.unwrap_or(0)).expect("validated member")).flatten() {
+        metadata
+            .as_object_mut()
+            .expect("FieldSelector serializes as an object")
+            .insert(
+                "ensemble_member".to_string(),
+                serde_json::Value::from(member.ordinal),
+            );
+    }
+    Ok(metadata)
+}
+
+fn volume_store_metadata(model: ModelId, field: CanonicalField, member: Option<u8>) -> serde_json::Value {
+    let selector = ingest_selector(model, FieldSelector::isobaric(field, 500));
+    let mut metadata = serde_json::json!({
+        "field": field.as_str(),
+        "vertical": "isobaric",
+    });
+    let object = metadata
+        .as_object_mut()
+        .expect("volume selector metadata is an object");
+    if !selector.product.is_default() {
+        object.insert(
+            "product".to_string(),
+            serde_json::to_value(selector.product).expect("FieldProduct is serializable"),
+        );
+    }
+    if let Some(member) = selector.product.is_default().then(|| rustwx_models::declared_member(model, member.unwrap_or(0)).expect("validated member")).flatten() {
+        object.insert(
+            "ensemble_member".to_string(),
+            serde_json::Value::from(member.ordinal),
+        );
+    }
+    metadata
+}
+
+// Store schema v1 keeps source identity within each selector object. No URL
+// is persisted here: only the public source enum and canonical product tokens.
+fn add_source_metadata(metadata: &mut serde_json::Value, config: &IngestConfig<'_>,
+    hour: u16, source: SourceId, selector: Option<FieldSelector>, pressure: bool) -> Result<(), IngestError> {
+    let products: Vec<String> = if let Some(selector) = selector.filter(|_| matches!(config.profile.surface_fields, FieldSet::Selectors(_))) {
+        let plan = rustwx_models::selector_fetch_plan(config.model, selector).map_err(other)?;
+        vec![if selector.product.is_default() {
+            rustwx_models::selected_member_product(config.model, plan.product, config.member.unwrap_or(0)).map_err(other)?
+        } else { plan.product.to_string() }]
+    } else {
+        fetch_plan(config.model)?.iter().filter(|product| if pressure { product.pressure_source } else { product.surface_source })
+            .map(|product| rustwx_models::selected_member_product(config.model, product.product, config.member.unwrap_or(0)).map_err(other))
+            .collect::<Result<_, _>>()?
+    };
+    let object = metadata.as_object_mut().expect("selector object");
+    object.insert("source_provider".into(), serde_json::to_value(source).map_err(other)?);
+    object.insert("source_products".into(), serde_json::to_value(products).map_err(other)?);
+    // Only member/selected boundaries above verified the received GRIB clock.
+    if matches!(config.model, ModelId::Gefs | ModelId::Aigefs) || matches!(config.profile.surface_fields, FieldSet::Selectors(_)) {
+        object.insert("source_cycle".into(), serde_json::json!(format!("{}{:02}", config.cycle.date_yyyymmdd, config.cycle.hour_utc)));
+    }
+    object.insert("source_forecast_hour".into(), serde_json::json!(hour));
+    Ok(())
+}
 
 /// The volume plan under one profile: `(field, store name)` pairs in the
 /// stable full-ingest order. Dewpoint falls back to RelativeHumidity
@@ -257,6 +330,8 @@ fn direct_isobaric_plane_selectors(model: ModelId) -> Vec<FieldSelector> {
 /// Everything one ingest pass needs to know, independent of any bin's CLI.
 pub struct IngestConfig<'a> {
     pub model: ModelId,
+    /// Individual member ordinal; None selects the model's declared default.
+    pub member: Option<u8>,
     pub cycle: &'a CycleSpec,
     /// `Some` pins one source; `None` tries every configured source in
     /// catalog order — which also lets a warm raw-byte cache hit no matter
@@ -518,8 +593,9 @@ fn fetch_product(
     idx_patterns: &[&str],
     stage: IngestStage,
 ) -> Result<(CachedFetchResult, u128), IngestError> {
+    let product = rustwx_models::selected_member_product(config.model, product, config.member.unwrap_or(0)).map_err(other)?;
     let fetch = FetchRequest {
-        request: ModelRunRequest::new(config.model, config.cycle.clone(), hour, product)
+        request: ModelRunRequest::new(config.model, config.cycle.clone(), hour, &product)
             .map_err(other)?,
         source_override: config.source_override,
         variable_patterns: idx_patterns.iter().map(|p| p.to_string()).collect(),
@@ -528,6 +604,9 @@ fn fetch_product(
     let fetch_started = Instant::now();
     let fetched =
         fetch_bytes_with_cache(&fetch, config.cache_root, config.use_cache).map_err(other)?;
+    if let Some(member) = rustwx_models::product_member(config.model, &product) {
+        rustwx_io::verify_model_member_bytes(config.model, &fetched.result.bytes, &member, config.cycle).map_err(other)?;
+    }
     let fetch_ms = fetch_started.elapsed().as_millis();
     config.emit(IngestEvent::StageDone {
         hour,
@@ -552,15 +631,20 @@ fn fetch_product(
 /// HTTP fetch happens), so `process_fetched_hour` reads the same bytes for
 /// the surface and pressure passes.
 pub fn fetch_hour(config: &IngestConfig<'_>, hour: u16) -> Result<FetchedHour, IngestError> {
+    validate_ingest_profile_for_model(config.model, config.profile)?;
+    if matches!(config.profile.surface_fields, FieldSet::Selectors(_)) {
+        return fetch_selected_hour(config, hour);
+    }
     let plan = fetch_plan(config.model)?;
     let mut pressure: Option<(CachedFetchResult, u128)> = None;
     let mut surface: Option<(CachedFetchResult, u128)> = None;
     // First entry downloads under the FetchPrs stage, the second (HRRR's
     // sfc) under FetchSfc — preserving the historical two-stage sequence;
     // GFS has a single entry and only emits FetchPrs.
-    for (index, product) in plan.iter().enumerate() {
+    for product in &plan {
+        if product.pressure_source && !product.surface_source && !config.profile.needs_prs() { continue; }
         config.check_cancel()?;
-        let stage = if index == 0 {
+        let stage = if product.pressure_source {
             IngestStage::FetchPrs
         } else {
             IngestStage::FetchSfc
@@ -578,18 +662,14 @@ pub fn fetch_hour(config: &IngestConfig<'_>, hour: u16) -> Result<FetchedHour, I
             surface = Some((fetched, fetch_ms));
         }
     }
-    let (prs, prs_fetch_ms) = pressure.ok_or_else(|| {
-        other(format!(
-            "fetch plan for {} has no pressure-source product",
-            config.model
-        ))
-    })?;
     let (sfc, sfc_fetch_ms) = surface.ok_or_else(|| {
         other(format!(
             "fetch plan for {} has no surface-source product",
             config.model
         ))
     })?;
+    // The existing engine pair ABI retains an empty unused pressure slot.
+    let (prs, prs_fetch_ms) = pressure.unwrap_or_else(|| (empty_pressure_slot(&sfc), 0));
     Ok(FetchedHour {
         hour,
         prs,
@@ -597,6 +677,82 @@ pub fn fetch_hour(config: &IngestConfig<'_>, hour: u16) -> Result<FetchedHour, I
         prs_fetch_ms,
         sfc_fetch_ms,
     })
+}
+
+pub fn selected_field_fetch_requests(
+    config: &IngestConfig<'_>, hour: u16,
+) -> Result<Vec<FetchRequest>, IngestError> {
+    let FieldSet::Selectors(selectors) = &config.profile.surface_fields else {
+        return Err(other("exact field requests require a selected-plane profile"));
+    };
+    let mut requests: Vec<FetchRequest> = Vec::new();
+    for selector in selectors {
+        let plan = rustwx_models::selector_fetch_plan(config.model, *selector).map_err(other)?;
+        let product = if selector.product.is_default() {
+            rustwx_models::selected_member_product(config.model, plan.product, config.member.unwrap_or(0)).map_err(other)?
+        } else {
+            plan.product.to_string()
+        };
+        let patterns = plan.idx_patterns().into_iter().map(str::to_string).collect::<Vec<_>>();
+        if let Some(request) = requests.iter_mut().find(|request| request.request.product == product) {
+            // An empty list means structured whole-file extraction. Never turn
+            // that product into an incomplete subset when another field joins.
+            if request.variable_patterns.is_empty() || patterns.is_empty() {
+                request.variable_patterns.clear();
+            } else {
+                for pattern in patterns {
+                    if !request.variable_patterns.contains(&pattern) { request.variable_patterns.push(pattern); }
+                }
+            }
+        } else {
+            requests.push(FetchRequest {
+                request: ModelRunRequest::new(config.model, config.cycle.clone(), hour, product).map_err(other)?,
+                source_override: config.source_override, variable_patterns: patterns,
+            });
+        }
+    }
+    Ok(requests)
+}
+
+fn fetch_selected_hour(config: &IngestConfig<'_>, hour: u16) -> Result<FetchedHour, IngestError> {
+    config.check_cancel()?;
+    config.emit(IngestEvent::StageStarted { hour, stage: IngestStage::FetchSfc });
+    let started = Instant::now();
+    let mut combined: Option<CachedFetchResult> = None;
+    for request in selected_field_fetch_requests(config, hour)? {
+        config.check_cancel()?;
+        let fetched = fetch_bytes_with_cache(&request, config.cache_root, config.use_cache).map_err(other)?;
+        if let Some(member) = rustwx_models::product_member(config.model, &request.request.product) {
+            rustwx_io::verify_model_member_bytes(config.model, &fetched.result.bytes, &member, config.cycle).map_err(other)?;
+        }
+        if let Some(prior) = &mut combined {
+            if prior.result.source != fetched.result.source {
+                return Err(other("selected native fields resolved through different provider sources"));
+            }
+            prior.result.bytes.extend_from_slice(&fetched.result.bytes);
+            prior.result.url.push_str(" | ");
+            prior.result.url.push_str(&fetched.result.url);
+            prior.cache_hit &= fetched.cache_hit;
+            // Every component has its own immutable fetch cache entry. The
+            // combined stream is not the first component's cache payload.
+            prior.bytes_path = PathBuf::new();
+            prior.metadata_path = PathBuf::new();
+        } else {
+            combined = Some(fetched);
+        }
+    }
+    let sfc = combined.ok_or_else(|| other("selected native field plan is empty"))?;
+    let sfc_fetch_ms = started.elapsed().as_millis();
+    config.emit(IngestEvent::StageDone { hour, stage: IngestStage::FetchSfc, ms: sfc_fetch_ms });
+    let prs = empty_pressure_slot(&sfc);
+    Ok(FetchedHour { hour, prs, sfc, prs_fetch_ms: 0, sfc_fetch_ms })
+}
+
+fn empty_pressure_slot(surface: &CachedFetchResult) -> CachedFetchResult {
+    CachedFetchResult {
+        result: rustwx_io::FetchResult { source: surface.result.source, url: String::new(), bytes: Vec::new() },
+        cache_hit: surface.cache_hit, bytes_path: PathBuf::new(), metadata_path: PathBuf::new(),
+    }
 }
 
 /// One owned 3D variable assembled from extraction. The level planes are
@@ -644,6 +800,7 @@ pub fn process_fetched_hour(
         "process_fetched_hour called with an unvalidated profile: {:?}",
         config.profile.validate()
     );
+    validate_ingest_profile_for_model(config.model, config.profile)?;
     config.check_cancel()?;
     let process_started = Instant::now();
     let FetchedHour {
@@ -653,6 +810,15 @@ pub fn process_fetched_hour(
         prs_fetch_ms,
         sfc_fetch_ms,
     } = fetched;
+    let member = rustwx_models::declared_member(config.model, config.member.unwrap_or(0)).map_err(other)?;
+    if let FieldSet::Selectors(selectors) = &config.profile.surface_fields {
+        rustwx_io::verify_model_selected_bytes(config.model, &sfc.result.bytes, member.as_ref(), config.cycle, selectors, hour).map_err(other)?;
+    } else if let Some(member) = &member {
+        rustwx_io::verify_model_member_bytes(config.model, &sfc.result.bytes, member, config.cycle).map_err(other)?;
+        if !prs.result.bytes.is_empty() {
+            rustwx_io::verify_model_member_bytes(config.model, &prs.result.bytes, member, config.cycle).map_err(other)?;
+        }
+    }
     let prs_cache_hit = prs.cache_hit;
     let prs_mb = prs.result.bytes.len() as f64 / (1024.0 * 1024.0);
     let sfc_cache_hit = sfc.cache_hit;
@@ -662,7 +828,7 @@ pub fn process_fetched_hour(
     let single_file_model = fetch_plan(config.model)
         .map(|plan| plan.len() == 1)
         .unwrap_or(false);
-    let sfc_mb = if single_file_model {
+    let sfc_mb = if single_file_model && !prs.result.bytes.is_empty() {
         0.0
     } else {
         sfc.result.bytes.len() as f64 / (1024.0 * 1024.0)
@@ -676,7 +842,7 @@ pub fn process_fetched_hour(
     let volume_plan = volume_plan(profile);
     let include_full_2d = profile.includes_full_2d();
     let direct_planes = if include_full_2d {
-        direct_isobaric_plane_selectors(config.model)
+        direct_isobaric_plane_selectors(config.model).into_iter().map(|selector| ingest_selector(config.model, selector)).collect()
     } else {
         Vec::new()
     };
@@ -703,6 +869,7 @@ pub fn process_fetched_hour(
             prs_selectors.push(*selector);
         }
     }
+    let prs_selectors: Vec<_> = prs_selectors.into_iter().map(|selector| ingest_selector(config.model, selector)).collect();
     config.emit(IngestEvent::StageStarted {
         hour,
         stage: IngestStage::ExtractPrs,
@@ -820,7 +987,7 @@ pub fn process_fetched_hour(
         });
         let rh_selectors: Vec<FieldSelector> = levels
             .iter()
-            .map(|&level| FieldSelector::isobaric(CanonicalField::RelativeHumidity, level))
+            .map(|&level| ingest_selector(config.model, FieldSelector::isobaric(CanonicalField::RelativeHumidity, level)))
             .collect();
         let rh_started = Instant::now();
         let rh_extraction = extract_field_values_partial_from_model_bytes_at_forecast_hour(
@@ -863,10 +1030,12 @@ pub fn process_fetched_hour(
         hour,
         stage: IngestStage::ExtractSfc,
     });
-    let surface_plan: Vec<(&'static str, FieldSelector)> = surface_plan()
-        .into_iter()
-        .filter(|(name, _)| profile.includes_surface_field(name))
-        .collect();
+    let surface_plan: Vec<(String, FieldSelector)> = if let FieldSet::Selectors(selectors) = &profile.surface_fields {
+        selectors.iter().map(|selector| (selector.key(), *selector)).collect()
+    } else {
+        surface_plan().into_iter().filter(|(name, _)| profile.includes_surface_field(name))
+            .map(|(name, selector)| (name.to_string(), ingest_selector(config.model, selector))).collect()
+    };
     let sfc_selectors: Vec<FieldSelector> =
         surface_plan.iter().map(|(_, selector)| *selector).collect();
     let extract_started = Instant::now();
@@ -902,6 +1071,9 @@ pub fn process_fetched_hour(
                         grid_ref: (PASS_SFC, extracted.grid_index),
                     },
                 ));
+            }
+            None if matches!(profile.surface_fields, FieldSet::Selectors(_)) => {
+                return Err(other(format!("requested native field '{}' is absent at f{hour:03}", selector.key())));
             }
             None => config.emit(IngestEvent::Warning {
                 hour,
@@ -1140,8 +1312,10 @@ pub fn process_fetched_hour(
     {
         profile_scope!("ingest_encode_extracted");
         for (name, plane) in &mut fields_2d_owned {
-            let selector = serde_json::to_value(plane.selector)
+            let mut selector = selector_store_metadata(config.model, plane.selector, config.member)
                 .map_err(|err| other(format!("2D field '{name}': selector JSON: {err}")))?;
+            let fetched = if plane.grid_ref.0 == PASS_PRS { &prs } else { &sfc };
+            add_source_metadata(&mut selector, config, hour, fetched.result.source, Some(plane.selector), plane.grid_ref.0 == PASS_PRS)?;
             hour_writer
                 .add_field_2d(name, &plane.units, selector, &plane.values)
                 .map_err(other)?;
@@ -1170,10 +1344,11 @@ pub fn process_fetched_hour(
                 .add_volume(
                     volume.name,
                     volume.units,
-                    serde_json::json!({
-                        "field": volume.field.as_str(),
-                        "vertical": "isobaric",
-                    }),
+                    {
+                        let mut metadata = volume_store_metadata(config.model, volume.field, config.member);
+                        add_source_metadata(&mut metadata, config, hour, prs.result.source, None, true)?;
+                        metadata
+                    },
                     &levels,
                 )
                 .map_err(other)?;
@@ -1695,6 +1870,9 @@ pub struct PlannedStoreVariables {
 /// for HRRR's 25 hPa prs files) and the dewpoint volume keeps its planned
 /// `dewpoint_iso` name (the rh_iso fallback is a per-file degradation).
 pub fn planned_store_variables(profile: &IngestProfile, model: ModelId) -> PlannedStoreVariables {
+    if let FieldSet::Selectors(selectors) = &profile.surface_fields {
+        return PlannedStoreVariables { volumes: Vec::new(), fields_2d: selectors.iter().map(|selector| selector.key()).collect(), derived: Vec::new(), heavy: Vec::new() };
+    }
     let level_count = profile.candidate_levels().len();
     let volumes = volume_plan(profile)
         .iter()
@@ -1847,6 +2025,287 @@ fn forecast_hour_cadence_note(model: ModelId, cycle_hour_utc: u8, max: u16) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires retained public AIGEFS files; no network"]
+    fn retained_provider_individual_member_roundtrip_and_wrong_member_rejection() {
+        let fixtures = PathBuf::from(std::env::var_os("ARWEN_AIGEFS_FIXTURES").expect("fixtures"));
+        let output = PathBuf::from(std::env::var_os("ARWEN_AIGEFS_PROOF_DIR").expect("proof output")).join("normalized-individual");
+        let cycle = CycleSpec::new("20260817", 0).unwrap();
+        let selector = FieldSelector::height_agl(CanonicalField::Temperature, 2);
+        let profile = IngestProfile { volumes:Vec::new(),level_step_hpa:25,
+            surface_fields:FieldSet::Named(vec!["temperature_2m".into()]),derived:false,heavy:false };
+        let cache = output.join("cache"); let stores=output.join("stores");
+        let sink=|_event:IngestEvent|{}; let cancel=AtomicBool::new(false);
+        let mut values = Vec::new(); let mut cache_paths=Vec::new();
+        for member in [0u8,1] {
+            let run = format!("member-{member}");
+            let config = IngestConfig { model:ModelId::Aigefs,member:Some(member),cycle:&cycle,
+                source_override:Some(SourceId::Aws),cache_root:&cache,use_cache:true,store_root:&stores,
+                model_slug:"aigefs",run_slug:&run,profile:&profile,verify:true,progress:&sink,cancel:&cancel };
+            let product = rustwx_models::selected_member_product(ModelId::Aigefs,"sfc/mem000",member).unwrap();
+            let request=FetchRequest { request:ModelRunRequest::new(ModelId::Aigefs,cycle.clone(),0,&product).unwrap(),
+                source_override:Some(SourceId::Aws),variable_patterns:Vec::new() };
+            let bytes=std::fs::read(fixtures.join(format!("mem{member:03}.aigefs.t00z.sfc.f000.grib2"))).unwrap();
+            let expected=extract_field_values_partial_from_model_bytes_at_forecast_hour(ModelId::Aigefs,&bytes,None,&[selector],Some(0)).unwrap().extracted.remove(0).values;
+            let url=rustwx_models::resolve_urls(&request.request).unwrap().into_iter().find(|url|url.source==SourceId::Aws).unwrap().grib_url;
+            rustwx_io::store_cached_fetch(&cache,&request,&rustwx_io::FetchResult {source:SourceId::Aws,url,bytes}).unwrap();
+            cache_paths.push(rustwx_io::fetch_cache_paths(&cache,&request));
+            let fetched=fetch_hour(&config,0).unwrap();
+            assert!(fetched.prs.result.bytes.is_empty() && fetched.sfc.cache_hit);
+            let result=process_fetched_hour(&config,fetched).unwrap();
+            let reader=HourReader::open(&result.store_path).unwrap();
+            let grid=GridFile::open(&result.store_path.parent().unwrap().join("grid.rwg")).unwrap();
+            let actual=read_field_2d(&reader,&grid,"temperature_2m").unwrap();
+            assert_eq!(actual.values.iter().map(|v|v.to_bits()).collect::<Vec<_>>(), expected.iter().map(|v|v.to_bits()).collect::<Vec<_>>());
+            let metadata=&reader.variable("temperature_2m").unwrap().selector;
+            assert_eq!(metadata["ensemble_member"],member);
+            assert_eq!(metadata["source_products"],serde_json::json!([product]));
+            assert_eq!(metadata["source_cycle"],"2026081700");
+            values.push(expected);
+        }
+        assert_ne!(cache_paths[0],cache_paths[1]);
+        assert!(values[0].iter().zip(&values[1]).any(|(a,b)|a.is_finite()&&b.is_finite()&&a!=b));
+        let wrong_stores=output.join("wrong-member-stores");
+        let config=IngestConfig {model:ModelId::Aigefs,member:Some(0),cycle:&cycle,source_override:Some(SourceId::Aws),
+            cache_root:&cache,use_cache:true,store_root:&wrong_stores,model_slug:"aigefs",run_slug:"wrong-member",profile:&profile,verify:true,progress:&sink,cancel:&cancel};
+        let received=CachedFetchResult {result:rustwx_io::FetchResult {source:SourceId::Aws,url:"retained-wrong-member".into(),
+            bytes:std::fs::read(fixtures.join("mem001.aigefs.t00z.sfc.f000.grib2")).unwrap()},cache_hit:false,bytes_path:PathBuf::new(),metadata_path:PathBuf::new()};
+        let err=process_fetched_hour(&config,FetchedHour {hour:0,prs:empty_pressure_slot(&received),sfc:received,prs_fetch_ms:0,sfc_fetch_ms:0}).unwrap_err().to_string();
+        assert!(err.contains("member"),"{err}"); assert!(!wrong_stores.exists());
+        std::fs::write(output.join("receipt.json"),serde_json::to_vec_pretty(&serde_json::json!({"status":"PASS","members":[0,1],"fields_2d_bit_exact":true,
+            "cache_keys_distinct":true,"wrong_member":err,"rws_schema_preserved":true})).unwrap()).unwrap();
+    }
+
+
+    #[test]
+    fn selected_statistics_resolve_products_without_member_substitution() {
+        let temperature = FieldSelector::height_agl(CanonicalField::Temperature, 2);
+        let selectors = vec![temperature.with_ensemble_mean(), temperature.with_ensemble_standard_deviation()];
+        let profile = IngestProfile::selected(selectors.clone());
+        let cycle = CycleSpec::new("20260817", 0).unwrap();
+        let cancel = AtomicBool::new(false);
+        let sink = |_event: IngestEvent| {};
+        for (model, expected) in [(ModelId::Gefs, ["pgrb2ap5/geavg", "pgrb2ap5/gespr"]),
+            (ModelId::Aigefs, ["sfc/avg", "sfc/spr"]), (ModelId::Hgefs, ["sfc/avg", "sfc/spr"])] {
+            let (source, hour) = if model == ModelId::Gefs { (SourceId::Aws, 0) } else { (SourceId::Nomads, 6) };
+            let config = IngestConfig { member: Some(17), model, cycle: &cycle,
+                source_override: Some(source), cache_root: Path::new("unused-cache"), use_cache: true,
+                store_root: Path::new("unused-store"), model_slug: model.as_str(), run_slug: "test",
+                profile: &profile, verify: true, progress: &sink, cancel: &cancel };
+            validate_ingest_profile_for_model(model, &profile).unwrap();
+            let requests = selected_field_fetch_requests(&config, hour).unwrap();
+            assert_eq!(requests.iter().map(|request| request.request.product.as_str()).collect::<Vec<_>>(), expected);
+            assert!(requests.iter().all(|request| !request.variable_patterns.is_empty()));
+            assert!(requests.iter().all(|request| rustwx_models::resolve_urls(&request.request).unwrap()
+                .iter().any(|url| url.source == source && !url.grib_url.starts_with("unsupported:"))));
+            for selector in &selectors {
+                let metadata = selector_store_metadata(model, *selector, config.member).unwrap();
+                assert!(metadata.get("ensemble_member").is_none());
+                assert_eq!(metadata["product"], serde_json::to_value(selector.product).unwrap());
+            }
+            assert_eq!(planned_store_variables(&profile, model).fields_2d,
+                selectors.iter().map(|selector| selector.key()).collect::<Vec<_>>());
+        }
+        let pressure = IngestProfile::selected(vec![FieldSelector::isobaric(CanonicalField::Temperature, 500).with_ensemble_mean()]);
+        assert!(!pressure.needs_prs()); // Native 2-D plane; no broad volume fetch.
+        assert!(validate_ingest_profile_for_model(ModelId::Gefs, &pressure).is_ok());
+    }
+
+    #[test]
+    fn global_ensemble_store_metadata_identifies_statistics_and_individual_members() {
+        let base = FieldSelector::isobaric(CanonicalField::Temperature, 500);
+        for model in [ModelId::Hgefs] {
+            let selector = ingest_selector(model, base);
+            assert_eq!(selector.product, rustwx_core::FieldProduct::EnsembleMean);
+            let metadata = selector_store_metadata(model, selector, None).unwrap();
+            assert_eq!(metadata["product"], "ensemble_mean");
+            let volume = volume_store_metadata(model, CanonicalField::Temperature, None);
+            assert_eq!(volume["product"], "ensemble_mean");
+            assert!(volume.get("ensemble_member").is_none());
+        }
+
+        let selector = ingest_selector(ModelId::Gefs, base);
+        assert!(selector.product.is_default());
+        let metadata = selector_store_metadata(ModelId::Gefs, selector, None).unwrap();
+        assert_eq!(metadata["ensemble_member"], 0);
+        assert!(metadata.get("product").is_none());
+        let volume = volume_store_metadata(ModelId::Gefs, CanonicalField::Temperature, None);
+        assert_eq!(volume["ensemble_member"], 0);
+        assert!(volume.get("product").is_none());
+        let selected = selector_store_metadata(ModelId::Aigefs, base, Some(17)).unwrap();
+        assert_eq!(selected["ensemble_member"],17);
+        assert!(selected.get("product").is_none());
+
+        assert!(
+            ingest_selector(ModelId::Aigfs, base).product.is_default(),
+            "deterministic AIGFS must remain a default product"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires retained public provider fixtures; no network"]
+    fn retained_provider_rrfs_ingest_rotates_native_winds_before_storage() {
+        let fixtures = PathBuf::from(std::env::var_os("ARWEN_AIGEFS_FIXTURES").expect("fixtures"));
+        let output = PathBuf::from(std::env::var_os("ARWEN_AIGEFS_PROOF_DIR").expect("proof output")).join("normalized-rrfs");
+        std::fs::create_dir_all(&output).unwrap();
+        let bytes = std::fs::read(fixtures.join("rrfs-ops-f000-mslp-winds.grib2")).unwrap();
+        let selectors = [FieldSelector::mean_sea_level(CanonicalField::PressureReducedToMeanSeaLevel),
+            FieldSelector::height_agl(CanonicalField::UWind, 10), FieldSelector::height_agl(CanonicalField::VWind, 10)];
+        let mut direct = rustwx_io::extract_fields_partial_from_model_bytes_at_forecast_hour(
+            ModelId::Rrfs, &bytes, None, &selectors, Some(0)).unwrap().extracted;
+        assert_eq!(direct.len(), 3);
+        let original_u = direct.iter().find(|field| field.selector == selectors[1]).unwrap().values.clone();
+        let original_v = direct.iter().find(|field| field.selector == selectors[2]).unwrap().values.clone();
+        rustwx_io::rotate_normalized_grid_relative_wind_fields_to_earth(ModelId::Rrfs, &mut direct).unwrap();
+        let earth_u = &direct.iter().find(|field| field.selector == selectors[1]).unwrap().values;
+        let earth_v = &direct.iter().find(|field| field.selector == selectors[2]).unwrap().values;
+        assert!(original_u.iter().zip(earth_u).any(|(raw, earth)| raw.is_finite() && (raw-earth).abs() > 0.1));
+        for ((u,v),(east,north)) in original_u.iter().zip(&original_v).zip(earth_u.iter().zip(earth_v)) {
+            if [u,v,east,north].iter().all(|value|value.is_finite()) {
+                assert!((u.hypot(*v)-east.hypot(*north)).abs() < 1e-4);
+            }
+        }
+        let cycle = CycleSpec::new("20260817", 0).unwrap();
+        let profile = IngestProfile { volumes: Vec::new(), level_step_hpa: 25,
+            surface_fields: FieldSet::Named(vec!["mslp".into(), "u_10m".into(), "v_10m".into()]),
+            derived: false, heavy: false };
+        let cache = output.join("cache"); let stores = output.join("stores");
+        let cancel = AtomicBool::new(false); let sink = |_event: IngestEvent| {};
+        let config = IngestConfig { member: None, model: ModelId::Rrfs, cycle: &cycle,
+            source_override: Some(SourceId::Aws), cache_root: &cache, use_cache: true,
+            store_root: &stores, model_slug: "rrfs", run_slug: "operational-native",
+            profile: &profile, verify: true, progress: &sink, cancel: &cancel };
+        let plan = fetch_plan(ModelId::Rrfs).unwrap();
+        assert_eq!(plan.len(), 1); assert!(!plan[0].pressure_source);
+        let request = FetchRequest { request: ModelRunRequest::new(ModelId::Rrfs, cycle.clone(), 0, plan[0].product).unwrap(),
+            source_override: Some(SourceId::Aws), variable_patterns: plan[0].idx_patterns.iter().map(|pattern|pattern.to_string()).collect() };
+        let url = rustwx_models::resolve_urls(&request.request).unwrap().into_iter().find(|url|url.source == SourceId::Aws).unwrap().grib_url;
+        assert!(url.contains("noaa-rrfs-ops-pds"));
+        rustwx_io::store_cached_fetch(&cache,&request,&rustwx_io::FetchResult {source:SourceId::Aws,url,bytes}).unwrap();
+        let fetched = fetch_hour(&config, 0).unwrap(); assert!(fetched.prs.result.bytes.is_empty() && fetched.sfc.cache_hit);
+        let result = process_fetched_hour(&config, fetched).unwrap();
+        let reader = HourReader::open(&result.store_path).unwrap();
+        let grid = GridFile::open(&result.store_path.parent().unwrap().join("grid.rwg")).unwrap();
+        for (name, selector) in [("mslp",selectors[0]),("u_10m",selectors[1]),("v_10m",selectors[2])] {
+            let expected = direct.iter().find(|field|field.selector==selector).unwrap();
+            let actual = read_field_2d(&reader,&grid,name).unwrap();
+            assert_eq!(actual.values.iter().map(|value|value.to_bits()).collect::<Vec<_>>(),expected.values.iter().map(|value|value.to_bits()).collect::<Vec<_>>());
+        }
+        std::fs::write(output.join("receipt.json"),serde_json::to_vec_pretty(&serde_json::json!({"status":"PASS",
+            "store":result.store_path,"subset_fields":3,"member":null,"native_winds_rotated":true,
+            "wind_magnitude_preserved":true,"direct_map_parity_bit_exact":true})).unwrap()).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires retained public provider fixtures; no network"]
+    fn retained_provider_statistics_ingest_preserves_actual_mean_spread_and_rejects_wrong_product() {
+        let fixtures = PathBuf::from(std::env::var_os("ARWEN_AIGEFS_FIXTURES").expect("fixture directory"));
+        let output = PathBuf::from(std::env::var_os("ARWEN_AIGEFS_PROOF_DIR").expect("proof directory")).join("normalized-statistics");
+        std::fs::create_dir_all(&output).unwrap();
+        let temperature = FieldSelector::height_agl(CanonicalField::Temperature, 2);
+        let selectors = vec![temperature.with_ensemble_mean(), temperature.with_ensemble_standard_deviation()];
+        let profile = IngestProfile::selected(selectors.clone());
+        let cycle = CycleSpec::new("20260817", 0).unwrap();
+        let cancel = AtomicBool::new(false);
+        let sink = |_event: IngestEvent| {};
+        let cache = output.join("cache");
+        let stores = output.join("stores");
+        let config = IngestConfig { member: None, model: ModelId::Gefs, cycle: &cycle,
+            source_override: Some(SourceId::Aws), cache_root: &cache, use_cache: true,
+            store_root: &stores, model_slug: "gefs", run_slug: "mean-and-spread",
+            profile: &profile, verify: true, progress: &sink, cancel: &cancel };
+        let requests = selected_field_fetch_requests(&config, 0).unwrap();
+        let mut expected = Vec::new();
+        for (request, selector) in requests.iter().zip(&selectors) {
+            let token = request.request.product.split('/').next_back().unwrap();
+            let path = fixtures.join(format!("{token}.t00z.pgrb2a.0p50.f000"));
+            let bytes = std::fs::read(path).unwrap();
+            let extracted = rustwx_io::extract_field_values_partial_from_model_bytes_at_forecast_hour(ModelId::Gefs, &bytes, None, &[*selector], Some(0)).unwrap();
+            assert_eq!(extracted.extracted.len(), 1);
+            expected.push(extracted.extracted[0].values.clone());
+            let url = rustwx_models::resolve_urls(&request.request).unwrap().into_iter()
+                .find(|url| url.source == SourceId::Aws).unwrap().grib_url;
+            rustwx_io::store_cached_fetch(&cache, request, &rustwx_io::FetchResult { source: SourceId::Aws, url, bytes }).unwrap();
+        }
+        let fetched = fetch_hour(&config, 0).unwrap();
+        assert!(fetched.sfc.cache_hit && fetched.prs.result.bytes.is_empty());
+        // Combined bytes must not masquerade as either component cache file.
+        assert!(fetched.sfc.bytes_path.as_os_str().is_empty());
+        let result = process_fetched_hour(&config, fetched).unwrap();
+        let reader = HourReader::open(&result.store_path).unwrap();
+        let grid = GridFile::open(&result.store_path.parent().unwrap().join("grid.rwg")).unwrap();
+        assert_eq!(result.fields_2d, 2);
+        for (selector, values) in selectors.iter().zip(&expected) {
+            let stored = read_field_2d(&reader, &grid, &selector.key()).unwrap();
+            assert_eq!(stored.selector, *selector);
+            assert_eq!(stored.values.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), values.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+            assert!(reader.variable(&selector.key()).unwrap().selector.get("ensemble_member").is_none());
+        }
+        assert!(expected[0].iter().zip(&expected[1]).any(|(mean, spread)| mean.is_finite() && spread.is_finite() && mean != spread));
+        let products = reader.variable(&selectors[0].key()).unwrap().selector["source_products"].clone();
+        assert_eq!(products, serde_json::json!(["pgrb2ap5/geavg"]));
+        // Actual mean bytes under a requested spread contract must fail before
+        // writing a store, even though the meteorological variable exists.
+        let wrong_cache = output.join("wrong-cache");
+        let wrong_stores = output.join("wrong-stores");
+        let wrong_profile = IngestProfile::selected(vec![selectors[1]]);
+        let wrong = IngestConfig { profile: &wrong_profile, cache_root: &wrong_cache, store_root: &wrong_stores, ..config };
+        let request = selected_field_fetch_requests(&wrong, 0).unwrap().remove(0);
+        let bytes = std::fs::read(fixtures.join("geavg.t00z.pgrb2a.0p50.f000")).unwrap();
+        rustwx_io::store_cached_fetch(&wrong_cache, &request, &rustwx_io::FetchResult { source: SourceId::Aws, url: "retained-wrong-statistic-control".into(), bytes }).unwrap();
+        let err = process_fetched_hour(&wrong, fetch_hour(&wrong, 0).unwrap()).unwrap_err().to_string();
+        assert!(err.contains("absent") || err.contains("missing"), "{err}");
+        assert!(!wrong_stores.exists());
+        let later_cycle = CycleSpec::new("20260817", 6).unwrap();
+        let cycle_stores = output.join("wrong-cycle-stores");
+        let cycle_config = IngestConfig { cycle: &later_cycle, store_root: &cycle_stores, ..wrong };
+        let received = rustwx_io::load_cached_fetch(&cache, &requests[1]).unwrap().unwrap();
+        let cycle_error = process_fetched_hour(&cycle_config, FetchedHour {hour:0,prs:empty_pressure_slot(&received),sfc:received,
+            prs_fetch_ms:0,sfc_fetch_ms:0}).unwrap_err().to_string();
+        assert!(cycle_error.contains("cycle") || cycle_error.contains("reference"), "{cycle_error}");
+        assert!(!cycle_stores.exists());
+        let mixed_profile = IngestProfile::selected(vec![selectors[0], temperature]);
+        let mixed_stores = output.join("wrong-mixed-member-stores");
+        let mixed_config = IngestConfig { cycle: &cycle, member:Some(0), profile:&mixed_profile,
+            store_root:&mixed_stores, ..cycle_config };
+        let mut mixed_bytes = std::fs::read(fixtures.join("geavg.t00z.pgrb2a.0p50.f000")).unwrap();
+        mixed_bytes.extend(std::fs::read(fixtures.join("gep01.t00z.pgrb2a.0p50.f000")).unwrap());
+        let mixed_error = process_fetched_hour(&mixed_config,FetchedHour {hour:0,prs:empty_pressure_slot(&rustwx_io::load_cached_fetch(&cache, &requests[0]).unwrap().unwrap()),
+            sfc:CachedFetchResult {result:rustwx_io::FetchResult {source:SourceId::Aws,
+                url:"retained-mean-plus-wrong-member".into(),bytes:mixed_bytes},cache_hit:false,
+                bytes_path:PathBuf::new(),metadata_path:PathBuf::new()},prs_fetch_ms:0,sfc_fetch_ms:0}).unwrap_err().to_string();
+        assert!(mixed_error.contains("member"), "{mixed_error}");
+        assert!(!mixed_stores.exists());
+        std::fs::write(output.join("receipt.json"), serde_json::to_vec_pretty(&serde_json::json!({
+            "status":"PASS", "store":result.store_path, "selectors":selectors,
+            "source_products":products, "fields":2, "wrong_product":err,
+            "wrong_cycle":cycle_error,"wrong_mixed_member":mixed_error,
+            "values_bit_exact":true, "member":null
+        })).unwrap()).unwrap();
+    }
+
+
+    #[test]
+    fn individual_member_requests_and_cache_identity_remain_separate() {
+        let temperature = FieldSelector::height_agl(CanonicalField::Temperature, 2);
+        let profile = IngestProfile::selected(vec![temperature]);
+        let cycle = CycleSpec::new("20260817", 0).unwrap();
+        let sink = |_event: IngestEvent| {}; let cancel = AtomicBool::new(false);
+        for model in [ModelId::Gefs, ModelId::Aigefs] {
+            let config = IngestConfig { model, member:Some(0), cycle:&cycle, source_override:Some(SourceId::Aws),
+                cache_root:Path::new("unused-cache"), use_cache:true, store_root:Path::new("unused-store"),
+                model_slug:model.as_str(), run_slug:"test", profile:&profile, verify:false, progress:&sink,cancel:&cancel };
+            let a = selected_field_fetch_requests(&config, 0).unwrap().remove(0);
+            let b = selected_field_fetch_requests(&IngestConfig { member:Some(17), ..config }, 0).unwrap().remove(0);
+            assert_ne!(a.request.product, b.request.product);
+            assert_ne!(rustwx_io::fetch_cache_paths(config.cache_root, &a), rustwx_io::fetch_cache_paths(config.cache_root, &b));
+            assert_eq!(rustwx_models::product_member(model, &b.request.product).unwrap().ordinal, 17);
+            let metadata = volume_store_metadata(model, CanonicalField::Temperature, Some(17));
+            assert_eq!(metadata["ensemble_member"], 17);
+        }
+    }
+
 
     fn fetched_hour_fixture(
         dir: &Path,
@@ -2204,6 +2663,7 @@ mod tests {
         let sink = |event: IngestEvent| events.lock().unwrap().push(event);
         let config = IngestConfig {
             model: ModelId::Hrrr,
+            member: None,
             cycle: &cycle,
             source_override: None,
             cache_root: Path::new("nonexistent-cache"),

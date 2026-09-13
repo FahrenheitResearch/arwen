@@ -560,6 +560,10 @@ class RestoredDomain:
     auxiliary_variables: tuple[str, ...]
     surface_input_dispositions: Mapping[str, str] = field(
         default_factory=lambda: MappingProxyType({}))
+    soil_unit_conversions: Mapping[str, object] = field(
+        default_factory=lambda: MappingProxyType({}))
+    soil_recovery: Mapping[str, object] = field(
+        default_factory=lambda: MappingProxyType({}))
 
     def wrf_frame(self) -> dict[str, np.ndarray]:
         """CPU inverse of the restored atmospheric mapping."""
@@ -578,8 +582,8 @@ class RestoredDomain:
         }
 
 
-def _read_numeric(variable) -> np.ndarray:
-    value = np.ma.asarray(variable[...])
+def _read_numeric(variable, *, decoded=None) -> np.ndarray:
+    value = np.ma.asarray(variable[...] if decoded is None else decoded)
     if np.ma.isMaskedArray(value) and np.any(np.ma.getmaskarray(value)):
         raise ValueError(f"WRF input variable {variable.name} contains masked data")
     array = np.asarray(value)
@@ -739,7 +743,7 @@ def _validate_wrfinput_geometry(name: str, variable,
 
 def read_wrfinput(path: str | Path, *, require_complete: bool = True,
                   expected_dimensions: Mapping[str, int],
-                  cfg=None, check_schemes: bool = True,
+                  cfg=None, check_schemes: bool = True, soil_source=None,
                   ) -> RestoredDomain:
     """Read one wrfinput file without importing CuPy.
 
@@ -795,14 +799,31 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
             raise ValueError(
                 f"{path} has unmapped WRF variable(s): {unknown}.{claim}")
         raw = {}
+        soil_conversions = {}
         for name, variable in dataset.variables.items():
             if (name == "Times" or name in IGNORED_WRFINPUT
                     or name in surface_dispositions):
                 continue
-            value = _read_numeric(variable)
+            units = str(getattr(variable, "units", "")).strip().lower()
+            compact_units = "".join(character for character in units
+                                    if not character.isspace() and character not in "^*()")
+            if (name in ("SMOIS", "SH2O")
+                    and compact_units in ("kgm-2", "kg/m2", "mm", "m")):
+                decoded, conversion = variable.read_layer_water("DZS")
+                value = _read_numeric(variable, decoded=decoded)
+                soil_conversions[name] = conversion
+            else:
+                value = _read_numeric(variable)
             _validate_wrfinput_geometry(
                 name, variable, expected_extents, value)
             raw[name] = value
+    soil_recovery = {}
+    if "SMOIS" not in soil_conversions:
+        from gpuwm.ingest.wrf_soil_recovery import recover_supplied_soil
+        recovered, recovery = recover_supplied_soil(
+            path, raw, attrs, source_directory=soil_source)
+        raw.update(recovered)
+        soil_recovery = recovery or {}
     _validate_supplied_physics_fields(raw, cfg, attrs)
     if "QNBCA" in raw and int(getattr(cfg, "wif_input_opt", 0)) == 2:
         # The fact and the way out come from the table that owns this
@@ -845,7 +866,9 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
         global_attributes=MappingProxyType(attrs),
         mapped_variables=tuple(sorted(mapped)),
         auxiliary_variables=tuple(sorted(auxiliary)),
-        surface_input_dispositions=MappingProxyType(recorded_surface_dispositions))
+        surface_input_dispositions=MappingProxyType(recorded_surface_dispositions),
+        soil_unit_conversions=MappingProxyType(soil_conversions),
+        soil_recovery=MappingProxyType(soil_recovery))
 
 
 def _validate_supplied_physics_fields(raw, cfg, attributes):

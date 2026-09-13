@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import netCDF4
 import numpy as np
+import pytest
 
 from gpuwm import stage_reuse
 
@@ -27,7 +28,8 @@ def test_replayed_valid_time_preserves_the_original_frame_and_receipt(tmp_path, 
     original = old_path.read_bytes()
     receipt = root / "evidence" / "run-receipt.json"
     receipt.write_text(hashlib.sha256(original).hexdigest())
-    output = stage_reuse.claim_run_output(root, resume=checkpoint)
+    claim = stage_reuse.claim_run_output(root, resume=checkpoint)
+    output = claim.path
     assert output != root
     new_history = output / "wrfout"
     new_history.mkdir(exist_ok=True)
@@ -59,6 +61,7 @@ def test_replayed_valid_time_preserves_the_original_frame_and_receipt(tmp_path, 
     with netCDF4.Dataset(new_history / old_path.name) as dataset:
         np.testing.assert_array_equal(dataset["T"][:], 2.)
     assert checkpoint.read_bytes() == b"checkpoint content belongs to the restart reader"
+    claim.close()
 
 
 def test_supervised_resume_keeps_the_checkpoint_and_one_output_generation(tmp_path, monkeypatch):
@@ -68,6 +71,18 @@ def test_supervised_resume_keeps_the_checkpoint_and_one_output_generation(tmp_pa
 
     calls = {}
     _supervised(monkeypatch, calls)
+    import subprocess
+    original_run = subprocess.run
+
+    def joined_worker(command, **kwargs):
+        result = original_run(command, **kwargs)
+        claimed = Path(command[command.index('--outdir') + 1])
+        token = command[command.index('--_output-owner') + 1]
+        with stage_reuse.claim_run_output(claimed, owner_token=token) as worker:
+            assert worker.path == claimed
+        return result
+
+    monkeypatch.setattr(subprocess, 'run', joined_worker)
     root = tmp_path / "out"
     checkpoint = _resumable(root)
     assert run_wrf_forecast(tmp_path / "wrf", root, restart=checkpoint) == 0
@@ -76,13 +91,17 @@ def test_supervised_resume_keeps_the_checkpoint_and_one_output_generation(tmp_pa
     child_checkpoint = Path(arguments[arguments.index("--restart") + 1])
     assert child_checkpoint == checkpoint
     assert child_output == root / "segment-001"
-    assert stage_reuse.claim_run_output(child_output, resume=child_checkpoint) == child_output
     assert not (child_output / "segment-001").exists()
     assert (root / "evidence" / "run-receipt.json").exists()
 
 
 def test_a_broken_prior_generation_link_is_preserved_and_skipped(tmp_path):
     link = tmp_path / "segment-001"
-    link.symlink_to(tmp_path / "absent-target", target_is_directory=True)
+    try:
+        link.symlink_to(tmp_path / "absent-target", target_is_directory=True)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows account cannot create symbolic links; covered by the POSIX control")
+        raise
     assert stage_reuse._next_segment(tmp_path) == tmp_path / "segment-002"
     assert link.is_symlink()

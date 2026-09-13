@@ -16,8 +16,9 @@ from gpuwm.progress_log import ProgressOptions, add_progress_arguments
 
 
 def _sha(path: Path) -> str:
+    from gpuwm.filesystem_paths import io_path
     digest = hashlib.sha256()
-    with path.open('rb') as stream:
+    with io_path(path).open('rb') as stream:
         for block in iter(lambda: stream.read(8*1024*1024), b''):
             digest.update(block)
     return digest.hexdigest()
@@ -120,6 +121,13 @@ class WrfInitialization:
             raise RuntimeError(f'WRF input artifacts changed during execution: {changed}')
 
     def domain_content_sha256(self, bundle):
+        recovery = getattr(bundle.restored, 'soil_recovery', {})
+        if recovery:
+            from gpuwm.prepared_documents import json_bytes
+            return hashlib.sha256(json_bytes({
+                'wrfinput': bundle.authority_sha256['wrfinput'],
+                'recovered_soil_fields': recovery['recovered_fields'],
+            })).hexdigest()
         return bundle.authority_sha256['wrfinput']
 
     def domain_metadata(self, bundle):
@@ -134,7 +142,8 @@ def wrfinput_window_seconds(run, run_seconds):
         source='gpuwm run --wrfinput', last_valid_time=run.coverage.end)
 
 
-def prepare_wrf_run(run, directory: Path, *, run_seconds: float | None = None) -> WrfTreeInputs:
+def prepare_wrf_run(run, directory: Path, *, run_seconds: float | None = None,
+                    soil_source=None) -> WrfTreeInputs:
     """Validate the complete CPU handoff and bind the exact input bytes."""
     import re
     import tomllib
@@ -163,14 +172,12 @@ def prepare_wrf_run(run, directory: Path, *, run_seconds: float | None = None) -
     paths = {'adapter_code': Path(__file__).resolve(),
              'state_adapter_code': Path(__file__).with_name('ingest') / 'wrfinput.py',
              'surface_adapter_code': Path(__file__).with_name('ingest') / 'wrfinput_noahmp.py',
+             'soil_recovery_code': Path(__file__).with_name('ingest') / 'wrf_soil_recovery.py',
              'namelist_input': run.namelist_input, 'wrfbdy': run.wrfbdy_path,
              **{f'wrfinput_d{gid:02d}': path for gid, path in run.wrfinput_paths.items()}}
     original_hashes = {name: _sha(path) for name, path in paths.items()}
     from gpuwm.prepared_documents import preparation_directory, json_bytes, write_document
 
-    directory, reused = preparation_directory(
-        directory, receipt='wrf-import.json', source_files=original_hashes,
-        documents={'experiment.toml': config.encode('utf-8')})
     fractional_values = parse_namelist(run.namelist_input).get('physics', {}).get('fractional_seaice', [0])
     fractional_seaice = bool(fractional_values[0])
     bundles = []
@@ -180,7 +187,12 @@ def prepare_wrf_run(run, directory: Path, *, run_seconds: float | None = None) -
                       'south_north':cfg.ny,'south_north_stag':cfg.ny+1,
                       'bottom_top':cfg.nz,'bottom_top_stag':cfg.nz+1,
                       'soil_layers_stag':soil_layer_count(cfg)}
-        restored = read_wrfinput(run.wrfinput_paths[domain.grid_id], expected_dimensions=dimensions, cfg=cfg)
+        restored = read_wrfinput(run.wrfinput_paths[domain.grid_id], expected_dimensions=dimensions, cfg=cfg,
+                                **({} if soil_source is None else {'soil_source': soil_source}))
+        for role, source in getattr(restored, 'soil_recovery', {}).get('input_files', {}).items():
+            key = f'soil_recovery_d{domain.grid_id:02d}_{role}'
+            paths[key] = Path(source['path'])
+            original_hashes[key] = source['sha256']
         attrs = restored.global_attributes
         names = ('MMINLU', 'NUM_LAND_CAT', 'ISWATER', 'ISLAKE', 'ISICE', 'ISURBAN', 'ISOILWATER')
         missing = sorted(set(names) - set(attrs))
@@ -209,6 +221,9 @@ def prepare_wrf_run(run, directory: Path, *, run_seconds: float | None = None) -
     for name, path in paths.items():
         if _sha(path) != original_hashes[name]:
             raise ValueError(f'{path}: changed while its input fields were read')
+    directory, reused = preparation_directory(
+        directory, receipt='wrf-import.json', source_files=original_hashes,
+        documents={'experiment.toml': config.encode('utf-8')})
     directory.mkdir(parents=True, exist_ok=reused)
     config_path = directory/'experiment.toml'
     write_document(config_path, config.encode('utf-8'), reused=reused)
@@ -224,6 +239,12 @@ def prepare_wrf_run(run, directory: Path, *, run_seconds: float | None = None) -
                'surface_input_dispositions': {
                    f'd{bundle.grid_id:02d}': dict(bundle.restored.surface_input_dispositions)
                    for bundle in bundles},
+               'soil_unit_conversions': {
+                   f'd{bundle.grid_id:02d}': dict(bundle.restored.soil_unit_conversions)
+                   for bundle in bundles if bundle.restored.soil_unit_conversions},
+               'soil_source_recovery': {
+                   f'd{bundle.grid_id:02d}': dict(bundle.restored.soil_recovery)
+                   for bundle in bundles if getattr(bundle.restored, 'soil_recovery', {})},
                'namelist_translation':asdict(run.substitution_report),
                'namelist_translation_text':run.substitution_report.format()}
     write_document(receipt_path, json_bytes(receipt), reused=reused)
@@ -396,6 +417,8 @@ def draw_door_products(plan: dict, *, first_products=None, door: str) -> bool:
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--wrfinput', type=Path, required=True, help='real.exe directory with wrfinput, wrfbdy and namelist.input')
+    parser.add_argument('--soil-source', type=Path, default=None, metavar='DIR',
+                        help='original met_em and producing Vtable directory for automatic soil recovery; defaults to the WRF input directory')
     parser.add_argument('--rrtmg-variant', choices=('rrtmg_legacy','rte-rrtmgp'), default=None, help='preserve WRF RRTMG by default; choose rte-rrtmgp explicitly to change radiation')
     parser.add_argument('--outdir', type=Path, required=True)
     parser.add_argument('--run-seconds', type=float, help='shorten the run inside the supplied boundary coverage')
@@ -412,6 +435,7 @@ def build_parser():
     parser.add_argument('--allow-shared-gpu', action='store_true',
                         help='proceed when another CUDA compute process holds the selected GPU. The requested configuration is retained')
     parser.add_argument('--_worker', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--_output-owner', help=argparse.SUPPRESS)
     return parser
 
 
@@ -422,7 +446,8 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
                      io_mode="history", health_debug=False, gpu_uuid=None,
                      exclusive_gpu=True, rrtmg_variant=None,
                      render_products=None, render_dir=None,
-                     progress_options=None, relaunched=False, allow_shared_gpu=False):
+                     progress_options=None, relaunched=False, allow_shared_gpu=False,
+                     output_owner=None, soil_source=None):
     import os
     import subprocess
     import sys
@@ -440,73 +465,84 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
     # and preflight_exclusive_gpu had reserved a GPU for a run that was
     # never going to start.
     try:
-        outdir = claim_run_output(outdir, flag='--outdir',
+        output_claim = claim_run_output(outdir, flag='--outdir',
                                   protected_roots=(Path(directory),),
-                                  resume=restart)
+                                  resume=restart, owner_token=output_owner)
     except (ValueError, FileExistsError) as error:
         print(f'{DOOR}: --outdir refused: {error}', file=sys.stderr)
         return 2
-    # Identity review includes the cold versus stepped surface-state
-    # contract, before a supervised worker selects or reserves a card.
-    # `relaunched` is the supervised child of the branch below, which
-    # has already said this at plan review in the terminal both
-    # processes print to.
-    missing = announce_render_readiness(DOOR, announce=not relaunched)
-    if exclusive_gpu:
-        from gpuwm.supervisor import select_gpu, preflight_exclusive_gpu, GPUFileLock
-        gpu = select_gpu(gpu_uuid)
-        command = [sys.executable, '-m', 'gpuwm.wrfinput_forecast',
-                   '--wrfinput', str(Path(directory).resolve()),
-                   '--outdir', str(outdir), '--io-mode', io_mode, '--_worker']
-        if rrtmg_variant is not None:
-            command += ['--rrtmg-variant', rrtmg_variant]
-        if run_seconds is not None:
-            command += ['--run-seconds', str(run_seconds)]
-        if restart is not None:
-            command += ['--restart', str(Path(restart).resolve())]
-        if health_debug:
-            command += ['--health-debug']
-        # The worker is this door's real body, so a flag this door was
-        # given and did not pass on is a flag that did nothing.
-        if render_products is not None:
-            command += ['--products', str(render_products)]
-        if render_dir is not None:
-            command += ['--render-dir', str(Path(render_dir).resolve())]
-        command += ProgressOptions.worker_flags(progress_options)
-        with GPUFileLock(gpu.uuid, run_id=f'wrf-input-{os.getpid()}'):
-            preflight_exclusive_gpu(gpu.uuid, approved_pids={os.getpid()},
-                                    allow_shared_gpu=allow_shared_gpu)
-            return worker_exit_status(subprocess.run(
-                command, env=dict(os.environ, CUDA_VISIBLE_DEVICES=gpu.uuid),
-                check=False).returncode)
-    if gpu_uuid is not None:
-        raise ValueError('--gpu-uuid requires the default fresh worker; remove --no-supervise')
-    from gpuwm.go_cli import GoStageFailed
-    from gpuwm.prepared_domain_tree_forecast import run_prepared_tree
-    inputs = prepare_wrf_run(run, outdir/'input', run_seconds=run_seconds)
-    announce_wrf_substitutions(run, inputs.prepared_root/'wrf-import.json')
-    plan = door_render_plan(outdir, render_products=render_products,
-                            render_dir=render_dir,
-                            init=inputs.experiment.start_time,
-                            can_draw=missing is None)
-    first_products = arm_door_first_products(plan, outdir=outdir, started=started)
-    run_prepared_tree(inputs, output_directory=outdir, io_mode=io_mode,
-                      restart=restart, health_debug=health_debug,
-                      progress_options=progress_options,
-                      initialization=WrfInitialization(inputs),
-                      **({} if first_products is None
-                         else {'first_products': first_products}))
+    outdir = output_claim.path
     try:
-        draw_door_products(plan, first_products=first_products, door=DOOR)
-    except GoStageFailed as failure:
-        # The forecast is on disk and finished; the pictures are not.
-        # Saying so beats both alternatives: a silent 0 hides that the
-        # products this door now promises are missing, and a traceback
-        # hides the forecast.
-        print(f'{DOOR}: the forecast finished and its output is in {outdir}; '
-              f'the render stage exited {failure.code}.', file=sys.stderr)
-        return failure.code
-    return 0
+        # Identity review includes the cold versus stepped surface-state
+        # contract, before a supervised worker selects or reserves a card.
+        # `relaunched` is the supervised child of the branch below, which
+        # has already said this at plan review in the terminal both
+        # processes print to.
+        missing = announce_render_readiness(DOOR, announce=not relaunched)
+        if exclusive_gpu:
+            from gpuwm.supervisor import select_gpu, preflight_exclusive_gpu, GPUFileLock
+            gpu = select_gpu(gpu_uuid)
+            command = [sys.executable, '-m', 'gpuwm.wrfinput_forecast',
+                       '--wrfinput', str(Path(directory).resolve()),
+                       '--outdir', str(outdir), '--io-mode', io_mode, '--_worker',
+                       '--_output-owner', output_claim.token]
+            if rrtmg_variant is not None:
+                command += ['--rrtmg-variant', rrtmg_variant]
+            if soil_source is not None:
+                from gpuwm.filesystem_paths import canonical_path
+                command += ['--soil-source', str(canonical_path(soil_source))]
+            if run_seconds is not None:
+                command += ['--run-seconds', str(run_seconds)]
+            if restart is not None:
+                command += ['--restart', str(Path(restart).resolve())]
+            if health_debug:
+                command += ['--health-debug']
+            # The worker is this door's real body, so a flag this door was
+            # given and did not pass on is a flag that did nothing.
+            if render_products is not None:
+                command += ['--products', str(render_products)]
+            if render_dir is not None:
+                command += ['--render-dir', str(Path(render_dir).resolve())]
+            command += ProgressOptions.worker_flags(progress_options)
+            with GPUFileLock(gpu.uuid, run_id=f'wrf-input-{os.getpid()}'):
+                preflight_exclusive_gpu(gpu.uuid, approved_pids={os.getpid()},
+                                        allow_shared_gpu=allow_shared_gpu)
+                return worker_exit_status(subprocess.run(
+                    command, env=dict(os.environ, CUDA_VISIBLE_DEVICES=gpu.uuid),
+                    check=False).returncode)
+        if gpu_uuid is not None:
+            raise ValueError('--gpu-uuid requires the default fresh worker; remove --no-supervise')
+        from gpuwm.go_cli import GoStageFailed
+        from gpuwm.prepared_domain_tree_forecast import run_prepared_tree
+        from gpuwm.filesystem_paths import io_path
+        worker_output = io_path(outdir)
+        inputs = prepare_wrf_run(run, worker_output/'input', run_seconds=run_seconds,
+                                 **({} if soil_source is None else {'soil_source': soil_source}))
+        announce_wrf_substitutions(run, inputs.prepared_root/'wrf-import.json')
+        plan = door_render_plan(worker_output, render_products=render_products,
+                                render_dir=None if render_dir is None else io_path(render_dir),
+                                init=inputs.experiment.start_time,
+                                can_draw=missing is None)
+        first_products = arm_door_first_products(plan, outdir=worker_output, started=started)
+        run_prepared_tree(inputs, output_directory=worker_output, io_mode=io_mode,
+                          restart=None if restart is None else io_path(restart), health_debug=health_debug,
+                          progress_options=progress_options,
+                          initialization=WrfInitialization(inputs),
+                          **({} if first_products is None
+                             else {'first_products': first_products}))
+        try:
+            draw_door_products(plan, first_products=first_products, door=DOOR)
+        except GoStageFailed as failure:
+            # The forecast is on disk and finished; the pictures are not.
+            # Saying so beats both alternatives: a silent 0 hides that the
+            # products this door now promises are missing, and a traceback
+            # hides the forecast.
+            print(f'{DOOR}: the forecast finished and its output is in {outdir}; '
+                  f'the render stage exited {failure.code}.', file=sys.stderr)
+            return failure.code
+        return 0
+    finally:
+        output_claim.close()
 
 
 def main(argv=None):
@@ -522,7 +558,8 @@ def main(argv=None):
                                render_dir=args.render_dir,
                                progress_options=ProgressOptions.from_args(args),
                                relaunched=args._worker,
-                               allow_shared_gpu=args.allow_shared_gpu)
+                               allow_shared_gpu=args.allow_shared_gpu,
+                               output_owner=args._output_owner, soil_source=args.soil_source)
     except (ValueError, OSError) as error:
         import sys
         print(f'{DOOR}: {error}', file=sys.stderr)

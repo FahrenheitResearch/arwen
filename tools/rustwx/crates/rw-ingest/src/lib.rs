@@ -34,7 +34,7 @@ pub use events::{IngestError, IngestEvent, IngestStage, NEVER_CANCEL, print_even
 pub use ingest_hour::{
     FetchedHour, IngestConfig, IngestedHour, PlannedStoreVariables, SpilledFetchedHour,
     VolumeSummary, cache_state, fetch_hour, ingest_hour as ingest_hour_serial, parse_hours,
-    planned_store_variables, process_fetched_hour, validate_forecast_hours,
+    planned_store_variables, process_fetched_hour, selected_field_fetch_requests, validate_forecast_hours,
 };
 
 /// Short git SHA (plus `-dirty`) of the build that produced this crate, the
@@ -124,13 +124,13 @@ pub fn fetch_plan(model: rustwx_core::ModelId) -> Result<Vec<ProductFetch>, Inge
         ]),
         ModelId::Aigefs => Ok(vec![
             ProductFetch {
-                product: "pres/avg",
+                product: "pres/mem000",
                 surface_source: false,
                 pressure_source: true,
                 idx_patterns: &[],
             },
             ProductFetch {
-                product: "sfc/avg",
+                product: "sfc/mem000",
                 surface_source: true,
                 pressure_source: false,
                 idx_patterns: &[],
@@ -155,6 +155,10 @@ pub fn fetch_plan(model: rustwx_core::ModelId) -> Result<Vec<ProductFetch>, Inge
             surface_source: true,
             pressure_source: true,
             idx_patterns: &[],
+        }]),
+        ModelId::Rrfs => Ok(vec![ProductFetch {
+            product: "2dfld-conus", surface_source: true, pressure_source: false,
+            idx_patterns: RRFS_NAT_IDX_PATTERNS,
         }]),
         ModelId::Rap => Ok(vec![ProductFetch {
             product: "awp130pgrb",
@@ -298,6 +302,28 @@ pub fn model_crop_box(model: rustwx_core::ModelId) -> Option<(f64, f64, f64, f64
     }
 }
 
+/// Verify that requested roles exist in the model's public ingest product.
+pub fn validate_ingest_profile_for_model(model: rustwx_core::ModelId,
+    profile: &ingest_profile::IngestProfile) -> Result<(), IngestError> {
+    profile.validate().map_err(events::other)?;
+    if let ingest_profile::FieldSet::Selectors(selectors) = &profile.surface_fields {
+        for selector in selectors {
+            rustwx_models::selector_fetch_plan(model, *selector).map_err(events::other)?;
+        }
+        return Ok(());
+    }
+    let plan = fetch_plan(model)?;
+    if profile.needs_prs() && !plan.iter().any(|product| product.pressure_source) {
+        return Err(events::other(format!("model '{model}' publishes surface-only inputs; use --profile surface")));
+    }
+    if (profile.derived || profile.heavy) && matches!(model,
+        rustwx_core::ModelId::Hgefs | rustwx_core::ModelId::Gefs |
+        rustwx_core::ModelId::Aigfs | rustwx_core::ModelId::EcmwfOpenData | rustwx_core::ModelId::Aifs) {
+        return Err(events::other(format!("model '{model}' has no complete native diagnostic input contract (provider mean or missing surface orography); use --profile sounding or disable derived and heavy")));
+    }
+    Ok(())
+}
+
 /// Whether this crate can ingest `model` today. Backed by [`fetch_plan`]:
 /// a model is ingest-supported exactly when a per-model fetch plan exists
 /// for it (HRRR's `prs`/`sfc` pair, GFS's single `pgrb2.0p25`). UI pickers
@@ -326,6 +352,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn operational_rrfs_native_roles_match_the_published_product() {
+        use rustwx_core::ModelId;
+        let rrfs = fetch_plan(ModelId::Rrfs).unwrap();
+        assert_eq!(rrfs.len(), 1); assert_eq!(rrfs[0].product, "2dfld-conus");
+        assert!(rrfs[0].surface_source && !rrfs[0].pressure_source);
+        validate_ingest_profile_for_model(ModelId::Rrfs, &ingest_profile::IngestProfile::surface()).unwrap();
+        assert!(validate_ingest_profile_for_model(ModelId::Rrfs, &ingest_profile::IngestProfile::sounding()).is_err());
+        // The engine's older pressure decoder has no AIFS q-to-dewpoint
+        // synthesis. Do not widen native sounding admission with this port.
+        assert!(fetch_plan(ModelId::Aifs).is_err());
+    }
+
+
+    #[test]
     fn build_sha_is_stamped() {
         assert!(!build_sha().is_empty());
     }
@@ -346,6 +386,7 @@ mod tests {
             ModelId::EcmwfOpenData,
             ModelId::Nam,
             ModelId::RrfsA,
+            ModelId::Rrfs,
         ];
         for model in enabled {
             assert!(
@@ -546,7 +587,7 @@ mod tests {
             (ModelId::Hrrr, "prs", "sfc"),
             (ModelId::HrrrAk, "prs", "sfc"),
             (ModelId::Aigfs, "pres", "sfc"),
-            (ModelId::Aigefs, "pres/avg", "sfc/avg"),
+            (ModelId::Aigefs, "pres/mem000", "sfc/mem000"),
             (ModelId::Hgefs, "pres/avg", "sfc/avg"),
         ] {
             let plan = fetch_plan(model).expect("split pressure/surface plan");

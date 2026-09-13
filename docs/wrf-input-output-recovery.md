@@ -1,5 +1,43 @@
 # Input and output recovery
 
+WRF input soil moisture uses volume fractions. Some upstream WPS workflows
+send layer water amounts to `real.exe` before converting them. The resulting
+`SMOIS` may still be labelled as volume fraction even though its values are
+wrong. ArWen recovers this cold-initialization case from the original source
+layers, converts their amounts using their own thicknesses, and then repeats
+the vertical interpolation. Dividing the final four WRF layers by their
+thicknesses would give a different, incorrect answer.
+
+Keep the first matching `met_em.dNN.*.nc` and its producing `Vtable` beside
+`wrfinput_dNN`. An ordinary `gpuwm run --wrfinput DIR` then discovers the
+source inputs automatically when land `SMOIS` exceeds a volume fraction of
+one. If the original WPS files are elsewhere, supply their directory:
+
+```sh
+gpuwm run --wrfinput WRF_RUN --soil-source ORIGINAL_WPS --outdir FORECAST
+```
+
+The original files remain unchanged. Recovery checks the initialization time,
+domain coordinates, source depths, and a forward reconstruction of the bad
+values before using the corrected ones. Already physical input values remain
+unchanged. Existing liquid water is preserved only when it is consistent with
+the recovered total. A separately supplied liquid source needs its own quantity
+and layer authority; total water cannot identify the frozen/liquid partition.
+The import receipt records source hashes and the conversion, and these inputs
+participate in preparation and restart identity. A stepped WRF state cannot
+be replaced by this cold-initialization recovery.
+
+Custom source tables can provide `wrf-soil-authority.dNN.json` (or a common
+`wrf-soil-authority.json`) instead of a WPS `Vtable`. Its schema is
+`gpuwm-wrf-soil-authority-v1`; it declares `source_variable`,
+`source_depth_variable`, `source_quantity`, `source_units`,
+`source_layer_depths_m` and `source_layer_bounds_m`, ordered by ascending
+source depth. Supported quantities are `layer_water_mass`,
+`equivalent_water_depth` and `volume_fraction`. These declarations must come
+from the producing source. Without the original layer evidence an already
+interpolated file is underdetermined; use native model preparation or recover
+the original WPS inputs.
+
 A prepared forecast retry keeps the earlier forecast at its original address.
 The next attempt receives a separate generation containing its forecast and
 pictures. The same selected path reaches execution, early rendering, final

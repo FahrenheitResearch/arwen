@@ -1728,6 +1728,7 @@ pub enum ModelId {
     Rtma,
     Urma,
     Nbm,
+    Rrfs,
     RrfsA,
     RrfsPublic,
     Refs,
@@ -1756,6 +1757,7 @@ impl ModelId {
             Self::Rtma => "rtma",
             Self::Urma => "urma",
             Self::Nbm => "nbm",
+            Self::Rrfs => "rrfs",
             Self::RrfsA => "rrfs-a",
             Self::RrfsPublic => "rrfs-public",
             Self::Refs => "refs",
@@ -1776,7 +1778,7 @@ impl std::str::FromStr for ModelId {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "hrrr" => Ok(Self::Hrrr),
+            "hrrr" | "hrrr-prs" | "hrrr_prs" => Ok(Self::Hrrr),
             "hrrr-ak" | "hrrrak" | "hrrr_ak" | "hrrr-alaska" | "hrrr_alaska" => Ok(Self::HrrrAk),
             "gfs" | "gfs-0p25" | "gfs_0p25" | "gfs-0.25" | "gfs_0.25" => Ok(Self::Gfs),
             "gdas" | "gdas-0p25" | "gdas_0p25" | "gdas-0.25" | "gdas_0.25" => Ok(Self::Gdas),
@@ -1798,6 +1800,7 @@ impl std::str::FromStr for ModelId {
             "rtma" | "rtma2p5" | "rtma-2p5" | "rtma_2p5" => Ok(Self::Rtma),
             "urma" | "urma2p5" | "urma-2p5" | "urma_2p5" => Ok(Self::Urma),
             "nbm" | "blend" | "national-blend" | "national_blend" => Ok(Self::Nbm),
+            "rrfs" | "rrfs-ops" | "rrfs_ops" => Ok(Self::Rrfs),
             "rrfs-a" | "rrfsa" | "rrfs_a" => Ok(Self::RrfsA),
             "rrfs-public" | "rrfspublic" | "rrfs_public" | "rrfs-prototype" | "rrfs_prototype" => {
                 Ok(Self::RrfsPublic)

@@ -24,7 +24,7 @@ def test_release_staging_rejects_the_same_numeric_only_artifact(tmp_path):
 
 def test_current_reader_is_accepted_by_resolution_and_staging(tmp_path, monkeypatch):
     current = tmp_path / "rw_netcdf"
-    current.write_bytes(b"gpuwm-rw-netcdf-dump-v1\tdtype\t<f8\t|S1")
+    current.write_bytes(b"gpuwm-rw-netcdf-dump-v1\tdtype\t<f8\t|S1\twater_layer_conversion\tsource_soil_recovery")
     monkeypatch.setattr(netcdf_bridge, "netcdf_candidates", lambda: (current,))
     monkeypatch.setattr(netcdf_bridge, "accept_resolved", lambda path: path)
     assert netcdf_bridge.resolve_netcdf_bin() == current
@@ -34,7 +34,7 @@ def test_current_reader_is_accepted_by_resolution_and_staging(tmp_path, monkeypa
 def test_default_resolution_recovers_from_an_older_higher_priority_build(tmp_path, monkeypatch):
     old, current = tmp_path / "old", tmp_path / "current"
     old.write_bytes(b"gpuwm-rw-netcdf-dump-v1")
-    current.write_bytes(b"gpuwm-rw-netcdf-dump-v1\tdtype\t<f8\t|S1")
+    current.write_bytes(b"gpuwm-rw-netcdf-dump-v1\tdtype\t<f8\t|S1\twater_layer_conversion\tsource_soil_recovery")
     monkeypatch.delenv(netcdf_bridge.NETCDF_ENV, raising=False)
     monkeypatch.setattr(netcdf_bridge, "netcdf_candidates", lambda: (old, current))
     monkeypatch.setattr(netcdf_bridge, "accept_resolved", lambda path: path)
@@ -44,7 +44,7 @@ def test_default_resolution_recovers_from_an_older_higher_priority_build(tmp_pat
 def test_an_explicit_old_reader_does_not_silently_select_different_bytes(tmp_path, monkeypatch):
     old, current = tmp_path / "old", tmp_path / "current"
     old.write_bytes(b"gpuwm-rw-netcdf-dump-v1")
-    current.write_bytes(b"gpuwm-rw-netcdf-dump-v1\tdtype\t<f8\t|S1")
+    current.write_bytes(b"gpuwm-rw-netcdf-dump-v1\tdtype\t<f8\t|S1\twater_layer_conversion\tsource_soil_recovery")
     monkeypatch.setenv(netcdf_bridge.NETCDF_ENV, str(old))
     monkeypatch.setattr(netcdf_bridge, "netcdf_candidates", lambda: (old, current))
     monkeypatch.setattr(netcdf_bridge, "accept_resolved", lambda path: path)

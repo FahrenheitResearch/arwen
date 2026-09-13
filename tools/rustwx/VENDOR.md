@@ -1021,3 +1021,46 @@ fixture PNGs are byte-identical across the change.  A theme changes the
 surface, the inks, the basemap linework, the colorbar chrome, the label
 halo, the fonts, the title and label sizes and the generic-plane ramp; the
 operational weather ladders are untouched unless a theme names a product.
+
+
+## Shared ensemble acquisition and native field identity (2026-09-13)
+
+The shared member/provider and exact native-plane owners are semantically
+ported from ArWen Desktop `3be266fdbf83c6b175c18aec0358485cd9d6a7f8`.
+This is a scoped port, not a replacement of the engine's model catalog:
+
+- `rustwx-models`: individual GEFS/AIGEFS products resolve through exact
+  preparation grammars. The two member-table JSON files are byte-identical
+  to `gpuwm/authorities/rw-wps-{gefs,aigefs}-ensemble-grib2.members.json`.
+  Default AIGEFS means control member 0; explicit means/spreads retain their
+  statistical products. Unknown tokens and silent statistic-to-member
+  substitution are rejected. `selector_fetch_plan` uses the existing shared
+  field inventory and provider-product table.
+- `rustwx-io`: received GRIB records verify the complete reference clock,
+  member, ensemble size/type, PDT, and generating process before a member
+  store can be opened. Typed statistical selections verify their requested
+  product and fields. The canonical decoder remains
+  `tools/grib1_bridge/vendor/grib-core`; its Lambert parser now reads LaD and
+  projection-center flags already used by the shared physical validator.
+- `rw-ingest`: selected planes use the ordinary cache and writer, including
+  mean/spread products and pressure planes. The engine retains its existing
+  required pressure/surface pair ABI (an unused pressure role is empty), its
+  store schema, and public field names. Numeric member and safe public source
+  identity live in selector metadata; statistical fields never carry an
+  individual member tag. Desktop's newer top-level RWS provenance schema and
+  GUI request plumbing are not introduced here.
+- Operational RRFS uses its published `2dfld-conus` surface product. The
+  values-only IO path validates physical Lambert metadata and rotates paired
+  U/V to earth coordinates; the full-field path retains its existing explicit
+  rotation boundary, preventing double rotation. Native AIFS sounding ingest
+  remains outside this port because this older engine decoder does not yet
+  have Desktop's specific-humidity-to-dewpoint synthesis; the public AIFS
+  model/provider route is unchanged.
+- `vendor/wx-core/src/download/idx.rs` accepts the provider's exact
+  `ENS=low-res ctl` and `ENS=hi-res ctl` labels as member 0 and preserves
+  rejection of negative numeric member tokens.
+
+The scoped controls include retained, unmodified public GEFS/AIGEFS GRIB
+envelopes and actual cached member/statistical RWS round trips, wrong member,
+cycle and product rejection before writing, and operational RRFS wind parity
+against the existing direct normalization. No GPU forecast is required.

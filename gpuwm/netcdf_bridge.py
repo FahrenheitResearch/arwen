@@ -117,7 +117,7 @@ def find_netcdf_bin() -> Path | None:
     if incompatible:
         raise NetcdfDecodeError(
             f"The NetCDF reader at {incompatible[0]} cannot supply the numeric "
-            "and character records this input route requires, including "
+            "and character records, layer water conversion and source-layer soil recovery this input route requires, including "
             "WRF Times. Replace it with this release's reader.\n"
             + netcdf_remedy())
     return None
@@ -375,6 +375,20 @@ class Variable:
             return values[()]
         return values[item]
 
+    def read_layer_water(self, thickness_variable: str):
+        """Read declared layer water as volume fraction using native geometry.
+
+        The file supplies both quantity units and a named thickness variable.
+        This never changes the original variable or its cached values.
+        """
+        if not isinstance(thickness_variable, str) or not thickness_variable:
+            raise ValueError("layer water requires a named thickness variable")
+        receipt = {}
+        values, _ = self._dataset._decode(
+            self.name, water_layer_thickness=thickness_variable,
+            conversion_receipt=receipt)
+        return values, receipt
+
     def times(self) -> tuple[datetime, ...]:
         """Decoded CF instants, or a refusal.
 
@@ -498,7 +512,9 @@ class Dataset:
             ) from None
 
     def _decode(self, name: str, *, raw: bool = False, scale: bool = True,
-                unit_transform: tuple[float, float] | None = None) -> tuple[np.ndarray, tuple[datetime, ...]]:
+                unit_transform: tuple[float, float] | None = None,
+                water_layer_thickness: str | None = None,
+                conversion_receipt: dict | None = None) -> tuple[np.ndarray, tuple[datetime, ...]]:
         """Decode one variable through the bridge.
 
         ``raw`` turns masking off; ``scale`` says whether
@@ -515,6 +531,8 @@ class Dataset:
             if unit_transform is not None:
                 command.extend((f"--unit-scale={unit_transform[0]:.17g}",
                                 f"--unit-offset={unit_transform[1]:.17g}"))
+            if water_layer_thickness is not None:
+                command.append(f"--water-layer-thickness={water_layer_thickness}")
             command += [os.fspath(self.path), os.fspath(out), name]
             _run(command,
                  what=f"NetCDF decode failed for {name} in {self.path}")
@@ -529,6 +547,15 @@ class Dataset:
                     f"{NETCDF_NAME} dumped {len(records)} variables for "
                     f"{name}; expected exactly one")
             record = records[0]
+            if water_layer_thickness is not None:
+                conversion = record.get("water_layer_conversion")
+                if (not isinstance(conversion, dict)
+                        or conversion.get("thickness_variable") != water_layer_thickness
+                        or conversion.get("target_units") != "m3 m-3"):
+                    raise NetcdfDecodeError(
+                        f"{NETCDF_NAME} did not acknowledge layer water conversion; rebuild the reader")
+                if conversion_receipt is not None:
+                    conversion_receipt.update(conversion)
             if unit_transform is not None and record.get("unit_transform") != list(unit_transform):
                 raise NetcdfDecodeError(
                     f"{NETCDF_NAME} did not acknowledge the requested unit transform; rebuild the reader")
@@ -549,6 +576,56 @@ class Dataset:
                 _parse_instant(text, name) for text in (record.get("times") or ())
             )
         return values, times
+
+
+def recover_wrf_soil(wrfinput, met_em, authority) -> tuple[dict, dict]:
+    """Run the native source-layer recovery and load its declared output planes."""
+    import hashlib
+    from gpuwm.filesystem_paths import io_path
+
+    executable = resolve_netcdf_bin()
+    with tempfile.TemporaryDirectory(prefix="gpuwm-soil-") as temporary:
+        root = Path(temporary)
+        spec = root / "authority.json"
+        spec.write_text(json.dumps(authority, allow_nan=False), encoding="utf-8")
+        out = root / "recovered"
+        _run([os.fspath(executable), "recover-wrf-soil", os.fspath(io_path(wrfinput)),
+              os.fspath(io_path(met_em)), os.fspath(spec), os.fspath(out)],
+             what=f"Source-layer soil recovery failed for {wrfinput}")
+        document = json.loads((out / "metadata.json").read_text(encoding="utf-8"))
+        if (document.get("schema") != "gpuwm-wrf-soil-recovery-v1"
+                or not isinstance(document.get("receipt"), dict)):
+            raise NetcdfDecodeError("Native soil recovery returned an incompatible result")
+        values = {}
+        field_identities = {}
+        for record in document.get("variables", []):
+            name = record.get("name")
+            filename = record.get("filename")
+            if (name not in ("SMOIS", "SH2O") or name in values
+                    or filename != f"{name}.f64" or record.get("dtype") != "<f8"
+                    or record.get("units") != "m3 m-3"):
+                raise NetcdfDecodeError("Native soil recovery returned an invalid variable record")
+            shape = record.get("shape")
+            if (not isinstance(shape, list) or not shape
+                    or any(type(size) is not int or size <= 0 for size in shape)):
+                raise NetcdfDecodeError(f"Native soil recovery returned invalid {name} geometry")
+            array = np.fromfile(out / filename, dtype="<f8")
+            if array.size != int(np.prod(shape)) or not np.all(np.isfinite(array)):
+                raise NetcdfDecodeError(f"Native soil recovery returned incomplete or nonfinite {name}")
+            array = array.reshape(shape)
+            dimensions = record.get("dimensions", [])
+            if dimensions and dimensions[0] == "Time":
+                if shape[0] != 1:
+                    raise NetcdfDecodeError("Native soil recovery must return one initialization time")
+                array = array[0]
+            values[name] = array
+            with (out / filename).open("rb") as stream:
+                field_identities[name] = {
+                    "sha256": hashlib.file_digest(stream, "sha256").hexdigest(),
+                    "shape": shape, "dtype": "<f8", "units": "m3 m-3"}
+        if "SMOIS" not in values:
+            raise NetcdfDecodeError("Native soil recovery omitted total soil water")
+        return values, dict(document["receipt"], recovered_fields=field_identities)
 
 
 def _parse_instant(text: str, label: str) -> datetime:

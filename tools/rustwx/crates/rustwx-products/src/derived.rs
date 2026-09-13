@@ -266,7 +266,7 @@ pub fn supported_derived_recipe_slugs(model: ModelId) -> Vec<String> {
         | ModelId::Hiresw
         | ModelId::Sref
         | ModelId::RrfsA
-        | ModelId::RrfsPublic
+        | ModelId::Rrfs | ModelId::RrfsPublic
         | ModelId::RrfsFireWx
         | ModelId::WrfGdex => supported_derived_recipe_inventory()
             .iter()
@@ -347,7 +347,7 @@ fn maybe_load_rrfs_cropped_pair_for_derived(
 ) -> Result<Option<LoadedBundleSet>, Box<dyn std::error::Error>> {
     if !matches!(
         request.model,
-        ModelId::RrfsA | ModelId::RrfsPublic | ModelId::RrfsFireWx
+        ModelId::RrfsA | ModelId::Rrfs | ModelId::RrfsPublic | ModelId::RrfsFireWx
     ) || planned_routes.compute_recipes.is_empty()
         || !derived_compute_recipes_need_pressure(&planned_routes.compute_recipes)
         || !planned_routes.native_routes.is_empty()

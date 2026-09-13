@@ -57,6 +57,8 @@ from urllib.error import HTTPError, URLError
 
 from gpuwm import fetch_endpoints, fetch_pool, source_adapters
 from gpuwm.fetch_endpoints import Endpoint
+from gpuwm.filesystem_paths import io_path as _io_path
+from gpuwm.filesystem_paths import replace_file_with_retry
 # Imported as a NAME, not as the module: `run_plan` takes a parameter
 # called ``progress`` (the route's status-line sink), which would shadow
 # a module of that name inside exactly the function that needs it.
@@ -1039,6 +1041,7 @@ def _download_object(url: str, dest: Path, *, magic: str, opener=None,
 
     from urllib.request import Request  # local: keeps import cost off load
 
+    dest = _io_path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
     digest = hashlib.sha256()
@@ -1252,6 +1255,7 @@ def _probe_transfer_ladders(
 
 
 def _prior_entries(out: Path) -> dict[str, dict]:
+    out = _io_path(out)
     manifest = out / MANIFEST_NAME
     if not manifest.is_file():
         return {}
@@ -1266,11 +1270,12 @@ def _prior_entries(out: Path) -> dict[str, dict]:
 
 def _recovery_path(out: Path, obj: PlannedObject) -> Path:
     token = hashlib.sha256(obj.relpath.encode("utf-8")).hexdigest()
-    return out / _RECOVERY_DIRECTORY / f"{token}.json"
+    return _io_path(out / _RECOVERY_DIRECTORY / f"{token}.json")
 
 
 def has_recovery_request(out: Path) -> bool:
     """Whether an interrupted managed download recorded its input identity."""
+    out = _io_path(out)
     try:
         record = json.loads((out / _RECOVERY_REQUEST_NAME).read_text(encoding="utf-8"))
         return (record.get("schema") == _RECOVERY_SCHEMA
@@ -1296,6 +1301,7 @@ def _recovery_entry(out: Path, plan: FetchPlan, obj: PlannedObject) -> dict | No
 
 
 def _verified_reuse(dest: Path, entry: dict | None, *, magic: str) -> bool:
+    dest = _io_path(dest)
     if not entry or not dest.is_file() or dest.stat().st_size != entry.get("bytes"):
         return False
     try:
@@ -1341,6 +1347,7 @@ def check_prior_request(out: Path, plan: FetchPlan | None = None, *,
     The explicit identity form checks the same source/cycle/host/member
     contract without resolving transfer endpoints or building object lists.
     """
+    out = _io_path(out)
     if plan is not None:
         if any(value is not None for value in (source, cycle, host, member)):
             raise ValueError("Supply a fetch plan or request identity, not both")
@@ -1426,7 +1433,7 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
     objects this run has still to download.
     """
 
-    out = Path(out)
+    out = _io_path(Path(out))
     out.mkdir(parents=True, exist_ok=True)
     if force:
         _quarantine(out, progress)
@@ -1665,10 +1672,11 @@ def _run_compose(plan: FetchPlan, out: Path, *, progress=print) -> list[dict]:
 
 
 def _write_json(path: Path, payload: Mapping[str, object]) -> None:
+    path = _io_path(path)
     text = json.dumps(payload, indent=2, sort_keys=False) + "\n"
     temporary = path.with_name(path.name + ".partial")
     temporary.write_text(text, encoding="utf-8", newline="\n")
-    temporary.replace(path)
+    replace_file_with_retry(temporary, path)
 
 
 def _write_sha256sums(out: Path, entries: Sequence[Mapping[str, object]],
@@ -1697,7 +1705,7 @@ def write_handoff(plan: FetchPlan, out: Path, *,
     hundreds of inputs inside the 32 KB Windows command line.
     """
 
-    out = Path(out)
+    out = _io_path(Path(out))
     inputs = out / INPUT_LIST_NAME
     inputs.write_text(
         "".join(f"{(out / path).resolve()}\n" for path in plan.primary_files),
@@ -1814,7 +1822,7 @@ def write_prep_arguments(out: Path, *, source: str, prep_source: str,
         document["member_prep"] = dict(member_prep)
     if member_verification is not None:
         document["member_verification"] = dict(member_verification)
-    path = Path(out) / PREP_ARGUMENTS_NAME
+    path = _io_path(Path(out)) / PREP_ARGUMENTS_NAME
     _write_json(path, document)
     return path
 

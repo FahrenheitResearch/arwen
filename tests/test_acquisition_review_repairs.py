@@ -125,13 +125,13 @@ def test_legacy_preset_does_not_restore_retired_modern_coupling_refusal(surface)
     if surface == 'registry':
         assert not any('conditional refusal blocks the RTE+RRTMGP' in w for w in template['warnings'])
     else:
-        page=(Path(__file__).resolve().parents[1]/'docs/public/PHYSICS.md').read_text()
+        page=(Path(__file__).resolve().parents[1]/'docs/public/PHYSICS.md').read_text(encoding='utf-8')
         row=next(line for line in page.splitlines() if line.startswith('| Milbrandt-Yau 2-moment |'))
         assert 'refuses the RTE+RRTMGP pairing' not in row
 
 
 def test_current_soil_document_does_not_claim_an_estimate_based_refusal():
-    text=(Path(__file__).resolve().parents[1]/'docs/wrf_ruc_runtime_admission.md').read_text()
+    text=(Path(__file__).resolve().parents[1]/'docs/wrf_ruc_runtime_admission.md').read_text(encoding='utf-8')
     assert 'refused (`tests/test_ruc_admission.py`) because nothing has measured it' not in text
 @pytest.mark.parametrize('changed', ['input', 'owned_list'])
 def test_local_chain_stops_before_completion_binding_when_inputs_change(tmp_path, monkeypatch, changed):
@@ -159,7 +159,9 @@ def test_local_chain_stops_before_completion_binding_when_inputs_change(tmp_path
     monkeypatch.setattr(stage_cli, 'resolve_bundle', lambda *a:pytest.fail('changed inputs reached forecast binding'))
     plan = SimpleNamespace(run_options={'geog_root':str(tmp_path)}, config_intent=None)
     observer = SimpleNamespace(enter_stage=lambda *a,**k:None, finish_stage=lambda *a,**k:None)
+    from gpuwm.experiment import RelocationConfig
+    exp = SimpleNamespace(relocation=RelocationConfig(), domains=())
     with pytest.raises(ValueError, match='changed'):
-        runplan._staged_chain(plan, config_path=config, exp=None, observer=observer, run_dir=run_dir)
+        runplan._staged_chain(plan, config_path=config, exp=exp, observer=observer, run_dir=run_dir)
     assert completed == []
     assert previous.read_bytes() == b'prior completed state'

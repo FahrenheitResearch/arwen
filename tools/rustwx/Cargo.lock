@@ -1641,6 +1641,7 @@ dependencies = [
  "rustls-rustcrypto",
  "rustwx-core",
  "serde",
+ "serde_json",
  "thiserror",
  "ureq",
 ]

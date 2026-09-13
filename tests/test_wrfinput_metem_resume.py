@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from gpuwm.filesystem_paths import canonical_path
 
 
 class _Lock:
@@ -46,22 +47,25 @@ def _resumable(outdir: Path) -> Path:
     """A directory holding one finished attempt and its checkpoint."""
 
     (outdir / 'wrfout').mkdir(parents=True)
-    (outdir / 'wrfout' / 'wrfout_d01_2026-05-17_18:00:00').write_bytes(b'CDF')
+    (outdir / 'wrfout' / 'wrfout_d01_2026-05-17_18_00_00').write_bytes(b'CDF')
     (outdir / 'evidence').mkdir()
     (outdir / 'evidence' / 'run-receipt.json').write_text(
         json.dumps({'status': 'INTERRUPTED'}), encoding='utf-8')
-    checkpoint = outdir / 'restart_d01_2026-05-17_19:00:00.gpuwmrst'
+    checkpoint = outdir / 'restart_d01_2026-05-17_19_00_00.gpuwmrst'
     checkpoint.write_bytes(b'RST')
     return checkpoint
 
 
 def test_a_non_empty_outdir_is_refused_before_the_card(tmp_path, monkeypatch, capsys):
+    from gpuwm import wrfinput_door
     from gpuwm.wrfinput_forecast import run_wrf_forecast
 
     _no_gpu(monkeypatch)
+    monkeypatch.setattr(wrfinput_door, 'resolve_wrfinput_run',
+                        lambda *args, **kwargs: SimpleNamespace())
     outdir = tmp_path / 'out'
     (outdir / 'wrfout').mkdir(parents=True)
-    (outdir / 'wrfout' / 'wrfout_d01_2026-05-17_18:00:00').write_bytes(b'CDF')
+    (outdir / 'wrfout' / 'wrfout_d01_2026-05-17_18_00_00').write_bytes(b'CDF')
     assert run_wrf_forecast(tmp_path / 'wrf', outdir) == 2
     said = capsys.readouterr().err
     assert str(outdir.resolve()) in said
@@ -90,8 +94,9 @@ def _adoption_door(monkeypatch, recorded):
     monkeypatch.setattr(wrfinput_forecast, 'WrfInitialization', lambda inputs: object())
 
     def run_prepared_tree(inputs, *, output_directory, **kwargs):
-        recorded['outdir'] = Path(output_directory)
-        recorded['restart'] = kwargs.get('restart')
+        recorded['outdir'] = canonical_path(output_directory)
+        checkpoint = kwargs.get('restart')
+        recorded['restart'] = None if checkpoint is None else canonical_path(checkpoint)
         # The runner's own exclusive mkdir, which a resumed run has to
         # find free (prepared_domain_tree_forecast.py:1957).
         (Path(output_directory) / 'evidence').mkdir()
@@ -115,7 +120,7 @@ def test_a_resume_adopts_its_own_directory(tmp_path, monkeypatch):
     kept = outdir / 'evidence' / 'run-receipt.json'
     assert json.loads(kept.read_text(encoding='utf-8'))['status'] == 'INTERRUPTED'
     assert (outdir / 'segment-001' / 'evidence').is_dir()
-    assert (outdir / 'wrfout' / 'wrfout_d01_2026-05-17_18:00:00').exists()
+    assert (outdir / 'wrfout' / 'wrfout_d01_2026-05-17_18_00_00').exists()
 
 
 def test_a_precreated_empty_output_directory_keeps_unrelated_data(tmp_path, monkeypatch):
@@ -136,13 +141,15 @@ def test_a_precreated_empty_output_directory_keeps_unrelated_data(tmp_path, monk
 
 def test_a_metem_resume_adopts_its_own_directory(tmp_path, monkeypatch):
     from gpuwm import go_cli, metem_door, metem_forecast, prepared_domain_tree_forecast
+    from test_metem_forecast import _launcher_stub_run
 
     recorded = {}
+    run = _launcher_stub_run()
+    run.substitution_report = SimpleNamespace(substitutions=())
     monkeypatch.setattr(go_cli, 'render_extra_missing', lambda: None)
     monkeypatch.setattr(
         metem_door, 'resolve_metem_run',
-        lambda directory, **kwargs: SimpleNamespace(
-            substitution_report=SimpleNamespace(substitutions=())))
+        lambda directory, **kwargs: run)
     import datetime
 
     inputs = SimpleNamespace(experiment=SimpleNamespace(
@@ -155,7 +162,7 @@ def test_a_metem_resume_adopts_its_own_directory(tmp_path, monkeypatch):
     monkeypatch.setattr(metem_forecast, 'MetemInitialization', lambda inputs: object())
 
     def run_prepared_tree(inputs, *, output_directory, **kwargs):
-        recorded['outdir'] = Path(output_directory)
+        recorded['outdir'] = canonical_path(output_directory)
         (Path(output_directory) / 'evidence').mkdir()
         return {'status': 'ok'}
 
@@ -177,12 +184,13 @@ def test_a_second_resume_keeps_the_second_attempts_receipt_too(tmp_path, monkeyp
     outdir = tmp_path / 'out'
     checkpoint = _resumable(outdir)
     for expected in ('segment-001', 'segment-002'):
-        generation = claim_run_output(outdir, flag='--outdir', protected_roots=(),
-                                      resume=checkpoint)
-        assert generation == outdir.resolve() / expected
-        assert (outdir / 'evidence' / 'run-receipt.json').exists()
-        (generation / 'evidence').mkdir()
-        (generation / 'evidence' / 'run-receipt.json').write_text('{}', encoding='utf-8')
+        with claim_run_output(outdir, flag='--outdir', protected_roots=(),
+                              resume=checkpoint) as claim:
+            generation = claim.path
+            assert generation == outdir.resolve() / expected
+            assert (outdir / 'evidence' / 'run-receipt.json').exists()
+            (generation / 'evidence').mkdir()
+            (generation / 'evidence' / 'run-receipt.json').write_text('{}', encoding='utf-8')
 
 
 def test_receipt_number_width_does_not_limit_resume_count(tmp_path):
@@ -284,11 +292,11 @@ def test_a_resume_into_a_directory_that_is_gone_creates_it(tmp_path):
     from gpuwm.stage_reuse import claim_run_output
 
     outdir = tmp_path / 'out'
-    checkpoint = outdir / 'restart_d01_2026-05-17_19:00:00.gpuwmrst'
-    claimed = claim_run_output(outdir, flag='--outdir', protected_roots=(),
-                               resume=checkpoint)
-    assert claimed == outdir.resolve()
-    assert claimed.is_dir()
+    checkpoint = outdir / 'restart_d01_2026-05-17_19_00_00.gpuwmrst'
+    with claim_run_output(outdir, flag='--outdir', protected_roots=(),
+                          resume=checkpoint) as claim:
+        assert claim.path == outdir.resolve()
+        assert claim.path.is_dir()
 
 
 def test_the_met_em_inputs_are_digested_once_for_both_readers(tmp_path, monkeypatch):
@@ -314,7 +322,7 @@ def test_the_met_em_inputs_are_digested_once_for_both_readers(tmp_path, monkeypa
 
     text, _ = import_namelists(*_pair(tmp_path), metgrid_initialization=True)
     exp = build_experiment(tomllib.loads(text), source='digest count fixture')
-    met = tmp_path / 'met_em.d01.2026-05-17_18:00:00.nc'
+    met = tmp_path / 'met_em.d01.2026-05-17_18_00_00.nc'
     met.write_bytes(b'MET')
     run = SimpleNamespace(
         toml_text=text, experiment=exp,

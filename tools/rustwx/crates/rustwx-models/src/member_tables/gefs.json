@@ -1,0 +1,77 @@
+{
+  "schema": "rw-wps.members.v1",
+  "name": "gefs-atmos-half-degree-members",
+  "format": "grib2",
+  "layout": "file_per_member",
+  "declared_member_count": 31,
+  "cycle_hours": [0, 6, 12, 18],
+  "classes": {
+    "control": {
+      "ordinals": [0],
+      "member_id": "c00",
+      "token": "gec00",
+      "verification": {
+        "product_definition_templates": [1, 11],
+        "type_of_ensemble_forecast": 1,
+        "perturbation_number": "ordinal",
+        "ensemble_size": 30,
+        "type_of_generating_process": 4,
+        "forecast_generating_process_id": 107
+      },
+      "note": "GEFS flags its control low-resolution control (code 1), never high-resolution control (code 0): a selector written for type 0 finds no control in this ensemble."
+    },
+    "perturbed": {
+      "ordinals": {"first": 1, "last": 30},
+      "member_id": "p{ordinal:02d}",
+      "token": "gep{ordinal:02d}",
+      "verification": {
+        "product_definition_templates": [1, 11],
+        "type_of_ensemble_forecast": 3,
+        "perturbation_number": "ordinal",
+        "ensemble_size": 30,
+        "type_of_generating_process": 4,
+        "forecast_generating_process_id": 107
+      }
+    }
+  },
+  "statistics": {
+    "geavg": {
+      "statistic": "ensemble mean",
+      "token": "geavg",
+      "product_definition_templates": [2, 12],
+      "derived_forecast": 0
+    },
+    "gespr": {
+      "statistic": "ensemble standard deviation",
+      "token": "gespr",
+      "product_definition_templates": [2, 12],
+      "derived_forecast": 2
+    }
+  },
+  "products": {
+    "pgrb2a": {
+      "relative_path": "gefs.{yyyymmdd}/{hh}/atmos/pgrb2ap5/{token}.t{hh}z.pgrb2a.0p50.f{fff}",
+      "statistics_published": true
+    },
+    "pgrb2b": {
+      "relative_path": "gefs.{yyyymmdd}/{hh}/atmos/pgrb2bp5/{token}.t{hh}z.pgrb2b.0p50.f{fff}",
+      "statistics_published": false
+    },
+    "pgrb2s": {
+      "relative_path": "gefs.{yyyymmdd}/{hh}/atmos/pgrb2sp25/{token}.t{hh}z.pgrb2s.0p25.f{fff}",
+      "statistics_published": true
+    }
+  },
+  "front_doors": [
+    {"name": "aws-open-data", "base_url": "https://noaa-gefs-pds.s3.amazonaws.com/"},
+    {"name": "nomads", "base_url": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gens/prod/"}
+  ],
+  "notes": {
+    "counting": "31 forecasts exist (gec00 + gep01..gep30) but every message encodes numberOfForecastsInEnsemble = 30: the octet counts perturbed members only, control excluded. The declared member set above is the sizing authority; the encoded value is verified as identity evidence and never used to size anything.",
+    "namespace": "geavg and gespr sit in the same directories as the members, follow the same filename pattern, and decode cleanly as ordinary fields -- the spread file reads as a plausible 0-3 K temperature. Only PDT 2/12 with a derived-forecast code separates them from a member, hence the byte-level guard.",
+    "pgrb2b_statistics": "pgrb2bp5 publishes exactly the 31 member names and no geavg/gespr: no ensemble-mean full column exists anywhere in this product family.",
+    "split_products": "pgrb2a and pgrb2b isobaric level sets are exactly disjoint (zero overlap on every variable); a sim-capable column needs both files of the SAME member.",
+    "historical_layout": "documented-unverified: before 2020-09-23 the bucket used a flat gefs.YYYYMMDD/HH/ layout without atmos/ and without the .0p50 token; reading the 2017-2020 archive needs a second path template that this grammar does not declare because no bytes from it were verified.",
+    "live_cycle_race": "a cycle in flight publishes members at different wall-clock times, so a mid-cycle listing looks like a ragged ensemble; gate acquisition on the previous complete cycle or on per-member presence of the exact step wanted."
+  }
+}

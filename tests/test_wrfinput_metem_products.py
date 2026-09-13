@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from gpuwm.filesystem_paths import canonical_path
 
 
 class _Lock:
@@ -71,11 +72,12 @@ def test_the_supervised_wrfinput_worker_carries_the_product_flags(tmp_path, monk
 
 def test_the_supervised_metem_worker_carries_the_product_flags(tmp_path, monkeypatch):
     from gpuwm import metem_door, metem_forecast
+    from test_metem_forecast import _launcher_stub_run
 
     calls = {}
     _supervised(monkeypatch, calls)
     monkeypatch.setattr(metem_door, 'resolve_metem_run',
-                        lambda directory, **kwargs: SimpleNamespace())
+                        lambda directory, **kwargs: _launcher_stub_run())
     outdir = tmp_path / 'out'
     assert metem_forecast.run_metem_forecast(
         tmp_path / 'met', outdir, render_products='all',
@@ -130,11 +132,11 @@ def _worker_door(monkeypatch, tmp_path, *, frames=True):
 
     def run_prepared_tree(inputs, *, output_directory, **kwargs):
         recorded['kwargs'] = dict(kwargs)
-        recorded['outdir'] = Path(output_directory)
+        recorded['outdir'] = canonical_path(output_directory)
         if frames:
             wrfout = Path(output_directory) / 'wrfout'
             wrfout.mkdir(parents=True, exist_ok=True)
-            (wrfout / 'wrfout_d01_2026-05-17_18:00:00').write_bytes(b'CDF')
+            (wrfout / 'wrfout_d01_2026-05-17_18_00_00').write_bytes(b'CDF')
         return {'status': 'ok'}
 
     monkeypatch.setattr(prepared_domain_tree_forecast, 'run_prepared_tree',
@@ -156,7 +158,7 @@ def test_the_wrfinput_worker_arms_the_early_render_and_draws_the_run(tmp_path, m
     #     and draws into the ONE folder the early render was armed with
     argv = _FakePopen.calls[-1]
     assert _pair(argv, '--out') == ['--out', str(trigger.render_dir)]
-    assert any(token.endswith('wrfout_d01_2026-05-17_18:00:00') for token in argv)
+    assert any(token.endswith('wrfout_d01_2026-05-17_18_00_00') for token in argv)
     assert _pair(argv, '--products') == ['--products', 'refl']
     # (c) the pointer names the folder the pictures are in
     pointer = outdir / 'png' / 'latest-run.txt'

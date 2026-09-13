@@ -1,8 +1,61 @@
 use super::*;
 
 #[test]
+fn individual_members_keep_their_provider_paths_and_analysis_hour() {
+    let cycle = CycleSpec::new("20260913", 0).unwrap();
+    for ordinal in [0, 17, 30] {
+        let product = selected_member_product(ModelId::Aigefs, "sfc/mem000", ordinal).unwrap();
+        let request = ModelRunRequest::new(ModelId::Aigefs, cycle.clone(), 0, product).unwrap();
+        let aws = build_grib_url(SourceId::Aws, &request).unwrap();
+        let nomads = build_grib_url(SourceId::Nomads, &request).unwrap();
+        let relative = format!("aigefs.20260913/00/mem{ordinal:03}/model/atmos/grib2/aigefs.t00z.sfc.f000.grib2");
+        assert_eq!(aws, format!("https://noaa-nws-graphcastgfs-pds.s3.amazonaws.com/EAGLE_ensemble/{relative}"));
+        assert_eq!(nomads, format!("https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigefs/prod/{relative}"));
+    }
+    for family in ["sfc", "surface", "pres", "pressure"] {
+        let request = ModelRunRequest::new(ModelId::Aigefs, cycle.clone(), 0, family).unwrap();
+        assert!(build_grib_url(SourceId::Aws, &request).unwrap().contains("/mem000/"));
+    }
+    assert_eq!(plot_recipe_fetch_plan("2m_temperature", ModelId::Aigefs).unwrap().product, "sfc/mem000");
+}
+
+#[test]
+fn explicit_statistics_remain_statistics_and_do_not_acquire_member_identity() {
+    let cycle = CycleSpec::new("20260913", 0).unwrap();
+    for (model, product, expected) in [
+        (ModelId::Aigefs, "sfc/avg", "/ensstat/products/atmos/grib2/aigefs.t00z.sfc.avg.f024.grib2"),
+        (ModelId::Aigefs, "pres/spr", "/ensstat/products/atmos/grib2/aigefs.t00z.pres.spr.f024.grib2"),
+        (ModelId::Gefs, "pgrb2ap5/geavg", "/geavg.t00z.pgrb2a.0p50.f024"),
+        (ModelId::Gefs, "pgrb2ap5/gespr", "/gespr.t00z.pgrb2a.0p50.f024"),
+    ] {
+        let request = ModelRunRequest::new(model, cycle.clone(), 24, product).unwrap();
+        assert!(build_grib_url(SourceId::Nomads, &request).unwrap().ends_with(expected));
+        assert!(product_member(model, product).is_none());
+        assert!(selected_member_product(model, product, 0).is_err());
+    }
+    let surface_zero = ModelRunRequest::new(ModelId::Aigefs, cycle.clone(), 0, "sfc/avg").unwrap();
+    assert!(build_grib_url(SourceId::Nomads, &surface_zero).is_err());
+    let pressure_zero = ModelRunRequest::new(ModelId::Aigefs, cycle, 0, "pres/avg").unwrap();
+    assert!(build_grib_url(SourceId::Nomads, &pressure_zero).unwrap().contains("ensstat"));
+}
+
+#[test]
+fn unknown_member_products_cannot_silently_become_control_or_mean() {
+    let cycle = CycleSpec::new("20260913", 0).unwrap();
+    for (model, products) in [
+        (ModelId::Aigefs, &["", "foo", "sfc/foo", "pres/mem031", "sfc/mem001/extra", "pres/avg/extra"][..]),
+        (ModelId::Gefs, &["", "foo", "pgrb2ap5/foogep03", "pgrb2ap5/gep31", "pgrb2bp5/geavg"][..]),
+    ] {
+        for product in products {
+            let request = ModelRunRequest::new(model, cycle.clone(), 24, *product).unwrap();
+            assert!(build_grib_url(SourceId::Nomads, &request).is_err(), "{model}: {product}");
+        }
+    }
+}
+
+#[test]
 fn built_in_models_are_real() {
-    assert_eq!(built_in_models().len(), 23);
+    assert_eq!(built_in_models().len(), 24);
     assert_eq!(model_summary(ModelId::HrrrAk).default_product, "sfc");
     assert_eq!(model_summary(ModelId::Gdas).default_product, "pgrb2.0p25");
     assert_eq!(
@@ -10,10 +63,10 @@ fn built_in_models_are_real() {
         "pgrb2ap5/gec00"
     );
     assert_eq!(model_summary(ModelId::Aigfs).default_product, "sfc");
-    assert_eq!(model_summary(ModelId::Aigefs).default_product, "sfc/avg");
+    assert_eq!(model_summary(ModelId::Aigefs).default_product, "sfc/mem000");
     assert_eq!(model_summary(ModelId::Hgefs).default_product, "sfc/avg");
     assert_eq!(model_summary(ModelId::Hgefs).max_forecast_hour, 240);
-    assert_eq!(model_summary(ModelId::Aifs).max_forecast_hour, 43_848);
+    assert_eq!(model_summary(ModelId::Aifs).max_forecast_hour, 360);
     assert_eq!(
         model_summary(ModelId::Href).default_product,
         "ensprod/conus/sprd"
@@ -59,7 +112,9 @@ fn catalog_exposes_the_user_facing_supported_models() {
         ModelId::Aigefs,
         ModelId::Hgefs,
         ModelId::EcmwfOpenData,
+        ModelId::Aifs,
         ModelId::Nam,
+        ModelId::Rrfs,
         ModelId::RrfsA,
         ModelId::Refs,
         ModelId::Nbm,
@@ -558,7 +613,7 @@ fn temperature_700_recipe_tracks_model_support() {
                 | ModelId::Hiresw
                 | ModelId::Sref
                 | ModelId::RrfsA
-                | ModelId::RrfsPublic
+                | ModelId::Rrfs | ModelId::RrfsPublic
                 | ModelId::RrfsFireWx => {
                     assert!(reason.contains("idx subsetting can stage the GRIB messages"));
                 }
@@ -3312,4 +3367,37 @@ fn wrf_gdex_hist3d_rejects_off_cadence_valid_times() {
         err.to_string().contains("every 3 hours"),
         "unexpected error: {err}"
     );
+}
+
+
+#[test]
+fn operational_rrfs_contract_matches_current_forcing_provider() {
+    assert_eq!("hrrr-prs".parse::<ModelId>().unwrap(), ModelId::Hrrr);
+    assert_eq!("rrfs".parse::<ModelId>().unwrap(), ModelId::Rrfs);
+    assert!(supported_models().contains(&ModelId::Rrfs));
+    assert!(supported_models().contains(&ModelId::Aifs));
+    assert_eq!(supported_forecast_hours(ModelId::Rrfs, 0), (0..=84).collect::<Vec<u16>>());
+    assert!(supported_forecast_hours(ModelId::Rrfs, 3).is_empty());
+    let recipe = plot_recipe_fetch_plan("mslp_10m_winds", ModelId::Rrfs).unwrap();
+    assert_eq!(recipe.product, "2dfld-conus");
+    assert_eq!(recipe.fields.len(), 3);
+    let request = ModelRunRequest::new(ModelId::Rrfs, CycleSpec::new("20260817",0).unwrap(),0,recipe.product).unwrap();
+    let urls = resolve_urls(&request).unwrap();
+    let aws = urls.iter().find(|url|url.source==SourceId::Aws).unwrap();
+    assert_eq!(aws.grib_url,"https://noaa-rrfs-ops-pds.s3.amazonaws.com/rrfs.20260817/00/rrfs.t00z.2dfld.3km.f000.conus.grib2");
+    assert!(urls.iter().any(|url|url.source==SourceId::Nomads && url.grib_url.starts_with("https://nomads.ncep.noaa.gov/pub/data/nccf/com/rrfs/v1.0/")));
+    for legacy in [ModelId::RrfsA, ModelId::RrfsPublic] {
+        let prior = ModelRunRequest::new(legacy, CycleSpec::new("20260812",0).unwrap(),0,"prs-conus").unwrap();
+        assert!(resolve_urls(&prior).unwrap().iter().all(|url|url.grib_url.starts_with("https://noaa-rrfs-pds.s3.amazonaws.com/")));
+    }
+}
+
+#[test]
+fn aifs_public_schedule_does_not_advertise_local_archive_horizons() {
+    for cycle in [0,6,12,18] {
+        assert_eq!(supported_forecast_hours(ModelId::Aifs,cycle),(0..=360).step_by(6).collect::<Vec<u16>>());
+        assert!(!aifs_open_data_forecast_hour_supported(cycle,3));
+        assert!(!aifs_open_data_forecast_hour_supported(cycle,366));
+    }
+    assert!(supported_forecast_hours(ModelId::Aifs,3).is_empty());
 }

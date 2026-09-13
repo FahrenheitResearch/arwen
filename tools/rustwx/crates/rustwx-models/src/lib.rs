@@ -6,6 +6,8 @@ use rustwx_core::{
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
+mod members;
+pub use members::{DeclaredMember, declared_member, declared_members, selected_member_product, product_member, member_url};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProductFamily {
@@ -412,7 +414,7 @@ const GEFS_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 const AI_MODEL_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 const ECMWF_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 const AIFS_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
-const AIFS_LOCAL_MAX_FORECAST_HOUR: u16 = 43_848;
+const AIFS_OPEN_DATA_MAX_FORECAST_HOUR: u16 = 360;
 const RAP_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 ];
@@ -423,6 +425,7 @@ const SREF_CYCLE_HOURS: &[u8] = &[3, 9, 15, 21];
 const HOURLY_ANALYSIS_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 ];
+const RRFS_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
 const RRFS_A_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 ];
@@ -578,6 +581,20 @@ const AIFS_SOURCES: &[SourceDescriptor] = &[
     },
 ];
 
+// Same CONUS filename contract, separate operational and historical namespaces.
+const RRFS_CONUS_BASES: &[(ModelId, SourceId, &str)] = &[
+    (ModelId::Rrfs, SourceId::Aws, "https://noaa-rrfs-ops-pds.s3.amazonaws.com"),
+    (ModelId::Rrfs, SourceId::Nomads, "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rrfs/v1.0"),
+    (ModelId::RrfsPublic, SourceId::Aws, "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_public"),
+];
+
+const RRFS_SOURCES: &[SourceDescriptor] = &[
+    SourceDescriptor { id: SourceId::Aws, idx_available: true, priority: 1, max_age_hours: None,
+        notes: "NOAA operational RRFS archive (noaa-rrfs-ops-pds)" },
+    SourceDescriptor { id: SourceId::Nomads, idx_available: true, priority: 2, max_age_hours: Some(48),
+        notes: "NCEP operational RRFS prslev and 2dfld products" },
+];
+
 const RRFS_A_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
     id: SourceId::Aws,
     idx_available: true,
@@ -681,11 +698,11 @@ const MODELS: &[ModelSummary] = &[
     },
     ModelSummary {
         id: ModelId::Aigefs,
-        description: "NOAA AI-GEFS ensemble-stat global data-driven forecast",
-        default_product: "sfc/avg",
+        description: "NOAA AI-GEFS individual-member global data-driven forecast and published statistics",
+        default_product: "sfc/mem000",
         cycle_hours_utc: AI_MODEL_CYCLE_HOURS,
         max_forecast_hour: 384,
-        sources: NOMADS_ONLY_SOURCES,
+        sources: NOMADS_AWS_SOURCES,
         runtime_family: ModelRuntimeFamily::Grib2Forecast,
         ensemble_mode: EnsembleMode::MemberGribFiles,
     },
@@ -711,10 +728,10 @@ const MODELS: &[ModelSummary] = &[
     },
     ModelSummary {
         id: ModelId::Aifs,
-        description: "ECMWF AIFS Single v2 open-data and Earth2Archive forecast",
+        description: "ECMWF AIFS Single v2 open-data 0.25 degree forecast",
         default_product: "oper",
         cycle_hours_utc: AIFS_CYCLE_HOURS,
-        max_forecast_hour: AIFS_LOCAL_MAX_FORECAST_HOUR,
+        max_forecast_hour: AIFS_OPEN_DATA_MAX_FORECAST_HOUR,
         sources: AIFS_SOURCES,
         runtime_family: ModelRuntimeFamily::Grib2Forecast,
         ensemble_mode: EnsembleMode::Deterministic,
@@ -796,6 +813,16 @@ const MODELS: &[ModelSummary] = &[
         cycle_hours_utc: HOURLY_ANALYSIS_CYCLE_HOURS,
         max_forecast_hour: 264,
         sources: NOMADS_AWS_SOURCES,
+        runtime_family: ModelRuntimeFamily::Grib2Forecast,
+        ensemble_mode: EnsembleMode::Deterministic,
+    },
+    ModelSummary {
+        id: ModelId::Rrfs,
+        description: "Operational RRFS 3 km CONUS deterministic forecast",
+        default_product: "prs-conus",
+        cycle_hours_utc: RRFS_CYCLE_HOURS,
+        max_forecast_hour: 84,
+        sources: RRFS_SOURCES,
         runtime_family: ModelRuntimeFamily::Grib2Forecast,
         ensemble_mode: EnsembleMode::Deterministic,
     },
@@ -5815,7 +5842,7 @@ pub fn built_in_models() -> &'static [ModelSummary] {
 /// [`built_in_models`] remains linked (`ModelId` match arms thread through
 /// rustwx-products), but every user-facing enumeration must go through this
 /// list.
-pub fn supported_models() -> [ModelId; 14] {
+pub fn supported_models() -> [ModelId; 16] {
     [
         ModelId::Hrrr,
         ModelId::HrrrAk,
@@ -5827,7 +5854,9 @@ pub fn supported_models() -> [ModelId; 14] {
         ModelId::Aigefs,
         ModelId::Hgefs,
         ModelId::EcmwfOpenData,
+        ModelId::Aifs,
         ModelId::Nam,
+        ModelId::Rrfs,
         ModelId::RrfsA,
         ModelId::Refs,
         ModelId::Nbm,
@@ -5853,6 +5882,36 @@ pub fn plot_recipe_fetch_plan(
         slug: slug.to_string(),
     })?;
     plot_recipe_fetch_plan_for(recipe, model)
+}
+
+pub fn selector_fetch_plan(
+    model: ModelId,
+    selector: FieldSelector,
+) -> Result<PlotRecipeFetchPlan, ModelError> {
+    let field = PLOT_RECIPES.iter().flat_map(collect_recipe_fields)
+        .find(|field| field.selector == Some(selector))
+        .ok_or_else(|| ModelError::UnsupportedPlotRecipeModel {
+            recipe: "selected_native_fields", model,
+            reason: format!("no registered native field for selector '{selector}'"),
+        })?;
+    // A source-prefixed recipe key is not a canonical selector identity. The
+    // statistical selector carries its own product and is checked against the
+    // model's typed field contract; its name cannot redirect it to that recipe's
+    // original model. Default/native recipes retain their extra field guards.
+    let blocker = if selector.product.is_default() {
+        plot_recipe_field_blocker(field, model).map(|blocker| blocker.reason)
+    } else if !selector_supported_for_model(selector, model) {
+        Some(unsupported_selector_reason(selector, model))
+    } else { None };
+    if let Some(reason) = blocker {
+        return Err(ModelError::UnsupportedPlotRecipeModel {
+            recipe: "selected_native_fields", model, reason,
+        });
+    }
+    let fields = vec![field];
+    let (product, fetch_policy) = plot_recipe_fetch_defaults(model, &fields);
+    Ok(PlotRecipeFetchPlan { recipe_slug: "selected_native_fields", model,
+        product, fetch_policy, fetch_mode: fetch_policy.fetch_mode(), fields })
 }
 
 pub fn plot_recipe_fetch_blockers(
@@ -5919,7 +5978,7 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
             ) => {}
             (
                 ModelId::Aigefs | ModelId::Hgefs,
-                FieldProduct::EnsembleStandardDeviation | FieldProduct::EnsembleSpread,
+                FieldProduct::EnsembleMean | FieldProduct::EnsembleStandardDeviation | FieldProduct::EnsembleSpread,
             ) => {}
             (
                 ModelId::Href,
@@ -6021,7 +6080,7 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
                 | ModelId::Gfs
                 | ModelId::Gdas
                 | ModelId::RrfsA
-                | ModelId::RrfsPublic
+                | ModelId::Rrfs | ModelId::RrfsPublic
                 | ModelId::RrfsFireWx
         ),
         (CanonicalField::LandSeaMask, VerticalSelector::Surface) => {
@@ -6033,7 +6092,7 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
                 ModelId::Hrrr
                     | ModelId::HrrrAk
                     | ModelId::RrfsA
-                    | ModelId::RrfsPublic
+                    | ModelId::Rrfs | ModelId::RrfsPublic
                     | ModelId::Refs
                     | ModelId::RrfsFireWx
                     | ModelId::WrfGdex
@@ -6045,7 +6104,7 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
                 ModelId::Hrrr
                     | ModelId::HrrrAk
                     | ModelId::RrfsA
-                    | ModelId::RrfsPublic
+                    | ModelId::Rrfs | ModelId::RrfsPublic
                     | ModelId::Refs
                     | ModelId::RrfsFireWx
                     | ModelId::WrfGdex
@@ -6063,7 +6122,7 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
                 | ModelId::HrrrAk
                 | ModelId::Href
                 | ModelId::RrfsA
-                | ModelId::RrfsPublic
+                | ModelId::Rrfs | ModelId::RrfsPublic
                 | ModelId::Refs
                 | ModelId::RrfsFireWx
                 | ModelId::WrfGdex
@@ -6118,7 +6177,7 @@ pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> 
             _ => Vec::new(),
         },
         ModelId::Aifs => match cycle_hour_utc {
-            0 | 6 | 12 | 18 => (0..=AIFS_LOCAL_MAX_FORECAST_HOUR).step_by(6).collect(),
+            0 | 6 | 12 | 18 => (0..=AIFS_OPEN_DATA_MAX_FORECAST_HOUR).step_by(6).collect(),
             _ => Vec::new(),
         },
         ModelId::Rap => {
@@ -6139,6 +6198,7 @@ pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> 
         ModelId::Rtma | ModelId::Urma => vec![0],
         ModelId::Nbm => (1..=264).collect(),
         ModelId::RrfsA => (0..=60).collect(),
+        ModelId::Rrfs => if RRFS_CYCLE_HOURS.contains(&cycle_hour_utc) { (0..=84).collect() } else { Vec::new() },
         ModelId::RrfsPublic => (0..=60).collect(),
         ModelId::Refs => (1..=60).collect(),
         ModelId::RrfsFireWx => (0..=36).collect(),
@@ -6192,9 +6252,9 @@ fn default_canonical_bundle_product(
         (ModelId::Aigfs, CanonicalBundleDescriptor::SurfaceAnalysis) => "sfc",
         (ModelId::Aigfs, CanonicalBundleDescriptor::PressureAnalysis) => "pres",
         (ModelId::Aigfs, CanonicalBundleDescriptor::NativeAnalysis) => "sfc",
-        (ModelId::Aigefs, CanonicalBundleDescriptor::SurfaceAnalysis) => "sfc/avg",
-        (ModelId::Aigefs, CanonicalBundleDescriptor::PressureAnalysis) => "pres/avg",
-        (ModelId::Aigefs, CanonicalBundleDescriptor::NativeAnalysis) => "sfc/avg",
+        (ModelId::Aigefs, CanonicalBundleDescriptor::SurfaceAnalysis) => "sfc/mem000",
+        (ModelId::Aigefs, CanonicalBundleDescriptor::PressureAnalysis) => "pres/mem000",
+        (ModelId::Aigefs, CanonicalBundleDescriptor::NativeAnalysis) => "sfc/mem000",
         (ModelId::Hgefs, CanonicalBundleDescriptor::SurfaceAnalysis) => "sfc/avg",
         (ModelId::Hgefs, CanonicalBundleDescriptor::PressureAnalysis) => "pres/avg",
         (ModelId::Hgefs, CanonicalBundleDescriptor::NativeAnalysis) => "sfc/avg",
@@ -6216,9 +6276,9 @@ fn default_canonical_bundle_product(
         (ModelId::RrfsA, CanonicalBundleDescriptor::SurfaceAnalysis) => "nat-na",
         (ModelId::RrfsA, CanonicalBundleDescriptor::PressureAnalysis) => "prs-na",
         (ModelId::RrfsA, CanonicalBundleDescriptor::NativeAnalysis) => "nat-na",
-        (ModelId::RrfsPublic, CanonicalBundleDescriptor::SurfaceAnalysis) => "2dfld-conus",
-        (ModelId::RrfsPublic, CanonicalBundleDescriptor::PressureAnalysis) => "prs-conus",
-        (ModelId::RrfsPublic, CanonicalBundleDescriptor::NativeAnalysis) => "prs-conus",
+        (ModelId::Rrfs | ModelId::RrfsPublic, CanonicalBundleDescriptor::SurfaceAnalysis) => "2dfld-conus",
+        (ModelId::Rrfs | ModelId::RrfsPublic, CanonicalBundleDescriptor::PressureAnalysis) => "prs-conus",
+        (ModelId::Rrfs | ModelId::RrfsPublic, CanonicalBundleDescriptor::NativeAnalysis) => "prs-conus",
         (ModelId::Refs, _) => "mean-conus",
         (ModelId::RrfsFireWx, CanonicalBundleDescriptor::SurfaceAnalysis) => "2dfld-firewx",
         (ModelId::RrfsFireWx, CanonicalBundleDescriptor::PressureAnalysis) => "prs-firewx",
@@ -6624,7 +6684,7 @@ fn build_grib_url(source: SourceId, request: &ModelRunRequest) -> Result<String,
         ModelId::Urma => build_urma_url(source, request)?,
         ModelId::Nbm => build_nbm_url(source, request)?,
         ModelId::RrfsA => build_rrfs_a_url(source, request)?,
-        ModelId::RrfsPublic => build_rrfs_public_url(source, request)?,
+        ModelId::Rrfs | ModelId::RrfsPublic => build_rrfs_conus_url(source, request)?,
         ModelId::Refs => build_refs_url(source, request)?,
         ModelId::RrfsFireWx => build_rrfs_firewx_url(source, request)?,
         ModelId::WrfGdex => build_wrf_gdex_url(source, request)?,
@@ -6995,38 +7055,21 @@ struct GefsProduct {
 
 fn gefs_product_from_product(product: &str) -> Result<GefsProduct, ModelError> {
     let token = normalize_token(product);
-    let (directory, file_product) =
-        if token.contains("pgrb2bp5") || token.contains("pgrb2b") || token.contains("secondary") {
-            ("pgrb2bp5", "pgrb2b.0p50")
-        } else if token.contains("pgrb2sp25")
-            || token.contains("pgrb2s")
-            || token.contains("0p25")
-            || token.contains("0_25")
-        {
-            ("pgrb2sp25", "pgrb2s.0p25")
-        } else {
-            ("pgrb2ap5", "pgrb2a.0p50")
-        };
-    let candidate = token
-        .split(['_', '/'])
-        .find(|part| {
-            *part == "gec00"
-                || *part == "geavg"
-                || *part == "gespr"
-                || (part.len() == 5
-                    && part.starts_with("gep")
-                    && part[3..].chars().all(|ch| ch.is_ascii_digit()))
-        })
-        .unwrap_or(if directory == "pgrb2sp25" {
-            "geavg"
-        } else {
-            "gec00"
-        });
-    Ok(GefsProduct {
-        directory,
-        file_product,
-        member_or_stat: candidate.to_string(),
-    })
+    let (family, explicit) = token.split_once('/').map(|(family, value)| (family, Some(value)))
+        .unwrap_or((token.as_str(), None));
+    let (directory, file_product) = match family {
+        "pgrb2ap5" | "pgrb2a" => ("pgrb2ap5", "pgrb2a.0p50"),
+        "pgrb2bp5" | "pgrb2b" | "secondary" => ("pgrb2bp5", "pgrb2b.0p50"),
+        "pgrb2sp25" | "pgrb2s" | "0p25" | "0_25" => ("pgrb2sp25", "pgrb2s.0p25"),
+        _ => return Err(ModelError::UnsupportedProduct { model: ModelId::Gefs, product: product.into() }),
+    };
+    let candidate = explicit.unwrap_or(if directory == "pgrb2sp25" { "geavg" } else { "gec00" });
+    let individual = product_member(ModelId::Gefs, &format!("{directory}/{candidate}")).is_some();
+    let statistic = matches!(candidate, "geavg" | "gespr");
+    if !individual && !statistic || statistic && directory == "pgrb2bp5" {
+        return Err(ModelError::UnsupportedProduct { model: ModelId::Gefs, product: product.into() });
+    }
+    Ok(GefsProduct { directory, file_product, member_or_stat: candidate.to_string() })
 }
 
 fn build_ecmwf_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
@@ -7093,7 +7136,7 @@ fn build_aifs_url(source: SourceId, request: &ModelRunRequest) -> Result<String,
             request.cycle.date_yyyymmdd, request.cycle.hour_utc, request.forecast_hour
         )),
         SourceId::Ecmwf => {
-            if !ecmwf_open_data_forecast_hour_supported(
+            if !aifs_open_data_forecast_hour_supported(
                 request.cycle.hour_utc,
                 request.forecast_hour,
             ) {
@@ -7101,7 +7144,7 @@ fn build_aifs_url(source: SourceId, request: &ModelRunRequest) -> Result<String,
                     model: request.model,
                     cycle_hour: request.cycle.hour_utc,
                     forecast_hour: request.forecast_hour,
-                    reason: "AIFS-Single open data follows the ECMWF open-data step cadence; use aifs-inference for experimental multi-year AIFS NetCDF runs".to_string(),
+                    reason: "ECMWF AIFS Single v2 publishes 6-hourly steps from f000 through f360 on 00/06/12/18z cycles; explicit local archive URLs retain their own experimental horizons".to_string(),
                 });
             }
             let stream = match normalize_token(&request.product).as_str() {
@@ -7130,6 +7173,12 @@ fn build_aifs_url(source: SourceId, request: &ModelRunRequest) -> Result<String,
     }
 }
 
+fn aifs_open_data_forecast_hour_supported(cycle_hour_utc: u8, forecast_hour: u16) -> bool {
+    AIFS_CYCLE_HOURS.contains(&cycle_hour_utc)
+        && forecast_hour <= AIFS_OPEN_DATA_MAX_FORECAST_HOUR
+        && forecast_hour % 6 == 0
+}
+
 fn build_aigfs_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
     if source != SourceId::Nomads {
         return Ok(unsupported_source(source, request.model));
@@ -7155,27 +7204,39 @@ fn build_aigfs_url(source: SourceId, request: &ModelRunRequest) -> Result<String
 }
 
 fn build_aigefs_url(source: SourceId, request: &ModelRunRequest) -> Result<String, ModelError> {
+    let token = normalize_token(&request.product);
+    let (family, selection) = token.split_once('/').or_else(|| token.split_once('_'))
+        .unwrap_or((token.as_str(), "mem000"));
+    let family = match family {
+        "sfc" | "surface" => "sfc",
+        "pres" | "pressure" => "pres",
+        _ => return Err(ModelError::UnsupportedProduct { model: request.model, product: request.product.clone() }),
+    };
+    let selected = ModelRunRequest { product: format!("{family}/{selection}"), ..request.clone() };
+    let individual = product_member(request.model, &selected.product).is_some();
+    if !individual && !matches!(selection, "avg" | "spr" | "p10" | "p50" | "p90") {
+        return Err(ModelError::UnsupportedProduct { model: request.model, product: request.product.clone() });
+    }
+    if !forecast_hour_supported(request.model, request.cycle.hour_utc, request.forecast_hour) {
+        return Err(ModelError::UnsupportedForecastHour { model: request.model,
+            cycle_hour: request.cycle.hour_utc, forecast_hour: request.forecast_hour,
+            reason: "AI-GEFS products publish every six hours through f384".into() });
+    }
+    if individual {
+        return Ok(member_url(source, &selected).unwrap_or_else(|| unsupported_source(source, request.model)));
+    }
     if source != SourceId::Nomads {
         return Ok(unsupported_source(source, request.model));
     }
-    let token = normalize_token(&request.product);
-    let family = if token.contains("pres") || token.contains("pressure") {
-        "pres"
-    } else {
-        "sfc"
-    };
-    let stat = token
-        .split(['_', '/'])
-        .find(|part| matches!(*part, "avg" | "spr" | "p10" | "p50" | "p90"))
-        .unwrap_or("avg");
+    if family == "sfc" && request.forecast_hour == 0 {
+        return Err(ModelError::UnsupportedForecastHour { model: request.model,
+            cycle_hour: request.cycle.hour_utc, forecast_hour: request.forecast_hour,
+            reason: "surface statistics start at f006; select an individual member for f000".into() });
+    }
     Ok(format!(
         "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigefs/prod/aigefs.{}/{:02}/ensstat/products/atmos/grib2/aigefs.t{:02}z.{}.{}.f{:03}.grib2",
-        request.cycle.date_yyyymmdd,
-        request.cycle.hour_utc,
-        request.cycle.hour_utc,
-        family,
-        stat,
-        request.forecast_hour
+        request.cycle.date_yyyymmdd, request.cycle.hour_utc,
+        request.cycle.hour_utc, family, selection, request.forecast_hour
     ))
 }
 
@@ -7571,12 +7632,21 @@ fn build_rrfs_a_url(source: SourceId, request: &ModelRunRequest) -> Result<Strin
     ))
 }
 
-fn build_rrfs_public_url(
+fn build_rrfs_conus_url(
     source: SourceId,
     request: &ModelRunRequest,
 ) -> Result<String, ModelError> {
-    if source != SourceId::Aws {
+    let Some((_, _, base)) = RRFS_CONUS_BASES.iter().find(|(model, origin, _)|
+        *model == request.model && *origin == source) else {
         return Ok(unsupported_source(source, request.model));
+    };
+    if !forecast_hour_supported(request.model, request.cycle.hour_utc, request.forecast_hour) {
+        return Err(ModelError::UnsupportedForecastHour {
+            model: request.model,
+            cycle_hour: request.cycle.hour_utc,
+            forecast_hour: request.forecast_hour,
+            reason: "The requested RRFS CONUS cycle and hour are outside its declared provider schedule".into(),
+        });
     }
 
     let suffix = match normalize_token(&request.product).as_str() {
@@ -7595,7 +7665,7 @@ fn build_rrfs_public_url(
     };
 
     Ok(format!(
-        "https://noaa-rrfs-pds.s3.amazonaws.com/rrfs_public/rrfs.{}/{:02}/rrfs.t{:02}z.{}",
+        "{base}/rrfs.{}/{:02}/rrfs.t{:02}z.{}",
         request.cycle.date_yyyymmdd, request.cycle.hour_utc, request.cycle.hour_utc, suffix
     ))
 }
@@ -7874,8 +7944,10 @@ fn plot_recipe_fetch_defaults(
         (ModelId::Aigefs, _, false) if has_ensemble_spread_selector => {
             ("pres/spr", PlotRecipeFetchPolicy::PreferIndexedSubset)
         }
-        (ModelId::Aigefs, _, true) => ("sfc/avg", PlotRecipeFetchPolicy::PreferIndexedSubset),
-        (ModelId::Aigefs, _, false) => ("pres/avg", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Aigefs, _, true) if has_ensemble_mean_selector => ("sfc/avg", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Aigefs, _, false) if has_ensemble_mean_selector => ("pres/avg", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Aigefs, _, true) => ("sfc/mem000", PlotRecipeFetchPolicy::PreferIndexedSubset),
+        (ModelId::Aigefs, _, false) => ("pres/mem000", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::Hgefs, _, true) if has_ensemble_spread_selector => {
             ("sfc/spr", PlotRecipeFetchPolicy::PreferIndexedSubset)
         }
@@ -7931,13 +8003,13 @@ fn plot_recipe_fetch_defaults(
         (ModelId::RrfsA, true, _) => ("prs-conus", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::RrfsA, false, true) => ("nat-na", PlotRecipeFetchPolicy::PreferIndexedSubset),
         (ModelId::RrfsA, false, false) => ("prs-conus", PlotRecipeFetchPolicy::PreferIndexedSubset),
-        (ModelId::RrfsPublic, true, _) => {
+        (ModelId::Rrfs | ModelId::RrfsPublic, true, _) => {
             ("2dfld-conus", PlotRecipeFetchPolicy::PreferIndexedSubset)
         }
-        (ModelId::RrfsPublic, false, true) => {
+        (ModelId::Rrfs | ModelId::RrfsPublic, false, true) => {
             ("2dfld-conus", PlotRecipeFetchPolicy::PreferIndexedSubset)
         }
-        (ModelId::RrfsPublic, false, false) => {
+        (ModelId::Rrfs | ModelId::RrfsPublic, false, false) => {
             ("prs-conus", PlotRecipeFetchPolicy::PreferIndexedSubset)
         }
         (ModelId::RrfsFireWx, true, _) => {
@@ -8090,7 +8162,7 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
             | ModelId::Urma
             | ModelId::Nbm
             | ModelId::RrfsA
-            | ModelId::RrfsPublic
+            | ModelId::Rrfs | ModelId::RrfsPublic
             | ModelId::RrfsFireWx,
         ) => Some(format!(
             "{} is only verified and wired for HRRR right now; the native GRIB signature is not verified yet for model '{model}'",
@@ -8098,7 +8170,7 @@ fn native_field_gap_reason(field: &GribFieldSpec, model: ModelId) -> Option<Stri
         )),
         (
             "smoke_mass_density_8m_agl" | "column_integrated_smoke",
-            ModelId::RrfsA | ModelId::RrfsPublic | ModelId::RrfsFireWx,
+            ModelId::RrfsA | ModelId::Rrfs | ModelId::RrfsPublic | ModelId::RrfsFireWx,
         ) => Some(format!(
             "{} is only verified and wired for HRRR wrfnat right now; the native GRIB signature is not verified yet for model '{model}'",
             field.label

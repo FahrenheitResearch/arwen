@@ -1,4 +1,8 @@
 mod cache;
+mod wind_orientation;
+pub use wind_orientation::{validate_regional_lambert_wind_grid, rotate_normalized_grid_relative_wind_fields_to_earth};
+mod member_identity;
+pub use member_identity::{verify_model_member_bytes, verify_model_selected_bytes};
 
 pub use cache::{
     CachedFetchMetadata, CachedFetchResult, CachedFieldResult, artifact_cache_dir,
@@ -42,6 +46,8 @@ pub enum IoError {
     Download(String),
     #[error("cache error: {0}")]
     Cache(String),
+    #[error("unsafe grid-relative wind for {model}: {detail}")]
+    UnsafeGridRelativeWind { model: ModelId, detail: String },
     #[error("grib error: {0}")]
     Grib(String),
     #[error("field '{selector}' was not found in GRIB data")]
@@ -1287,6 +1293,7 @@ pub fn extract_field_values_partial_from_model_bytes_at_forecast_hour(
             let mut extracted = Vec::new();
             let mut missing = Vec::new();
             let mut grid_memo = GridMemo::new();
+            let mut wind_rotation_grids = HashSet::new();
             if !selectors.is_empty() {
                 let prepared = selectors
                     .iter()
@@ -1296,16 +1303,20 @@ pub fn extract_field_values_partial_from_model_bytes_at_forecast_hour(
                 let matched = match_prepared_selectors(&grib, &prepared, forecast_hour);
                 for (prepared_selector, message) in prepared.iter().zip(matched.into_iter()) {
                     match message {
-                        Some((message, _)) => extracted.push(build_field_values(
-                            message,
-                            prepared_selector.selector,
-                            prepared_selector.selector.native_units(),
-                            &mut grid_memo,
-                        )?),
+                        Some((message, _)) => {
+                            let is_wind = wind_orientation::is_horizontal_wind_component(prepared_selector.selector);
+                            let needs_rotation = is_wind && message.grid.template == 30 && message.grid.resolution_flags & 0x08 != 0;
+                            if needs_rotation { validate_regional_lambert_wind_grid(model, &message.grid)?; }
+                            let field = build_field_values(message, prepared_selector.selector,
+                                prepared_selector.selector.native_units(), &mut grid_memo)?;
+                            if needs_rotation { wind_rotation_grids.insert(field.grid_index); }
+                            extracted.push(field);
+                        },
                         None => missing.push(prepared_selector.selector),
                     }
                 }
             }
+            wind_orientation::rotate_regional_grid_relative_wind_values(model, &mut extracted, &grid_memo, &wind_rotation_grids)?;
             if model == ModelId::Nbm {
                 synthesize_nbm_10m_wind_component_values_from_speed_direction(
                     &grib,
